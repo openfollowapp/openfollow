@@ -94,7 +94,7 @@ _TYPE_ERRORS: dict[_FieldParser, str] = {
     _as_optional_float: "Must be a number (or empty).",
     _as_bool: "Must be one of: true, false, yes, no, on, off.",
     _as_int_list: "Must be a comma-separated list of whole numbers.",
-    _as_ip_list: "Each entry must be a valid IPv4 or IPv6 address.",
+    _as_ip_list: "Each entry must be a valid IPv4 address.",
 }
 
 
@@ -178,15 +178,17 @@ def _validate_service_name(value: str, _cfg: AppConfig | None) -> str | None:
 
 
 def _validate_ip_list(value: str, _cfg: AppConfig | None) -> str | None:
-    """Per-entry IP validation. Surfaces the first offending entry."""
+    """Per-entry IPv4 validation. Surfaces the first offending entry."""
     if not value:
         return None
     entries = [e.strip() for e in value.split(",") if e.strip()]
     for idx, entry in enumerate(entries, start=1):
         try:
-            ipaddress.ip_address(entry)
+            addr = ipaddress.ip_address(entry)
         except ValueError:
-            return f"Entry {idx} ({entry!r}) is not a valid IPv4 or IPv6 address."
+            return f"Entry {idx} ({entry!r}) is not a valid IPv4 address."
+        if not isinstance(addr, ipaddress.IPv4Address):
+            return f"Entry {idx} ({entry!r}) is an IPv6 address; OSC input is IPv4 only."
     return None
 
 
@@ -611,7 +613,7 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "enabled": FieldRule(_as_bool),
         "port": FieldRule(_as_int, lo=1, hi=65535, human_error="Port must be between 1 and 65535."),
         "allowed_sender_ips": FieldRule(
-            _as_ip_list, custom=_validate_ip_list, human_error="Comma-separated IPv4 / IPv6 addresses."
+            _as_ip_list, custom=_validate_ip_list, human_error="Comma-separated IPv4 addresses."
         ),
         # Empty = off (unicast/broadcast only); else a multicast group to join.
         "multicast_group": FieldRule(

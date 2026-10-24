@@ -89,6 +89,7 @@ from openfollow.configuration import (
     effective_lens,
     enforce_network_mode,
     feature_gated,
+    is_ipv4_literal,
     load_config_for_save,
     migrate_ui_keys,
     path_name_from,
@@ -2138,7 +2139,7 @@ def _as_int_list(value: Any, default: list[int]) -> list[int]:
 
 
 def _as_ip_list(value: Any, default: list[str]) -> list[str]:
-    """Parse a list of IP addresses.
+    """Parse a list of IPv4 addresses, the OSC listener's only family.
 
     Accepts either a comma-separated form-field string or a JSON list.
     Semantics are careful around the allow-all sentinel because empty
@@ -2147,12 +2148,12 @@ def _as_ip_list(value: Any, default: list[str]) -> list[str]:
 
     - Explicit empty (``""`` or ``[]``) → return ``[]`` (caller intends
       to clear the allowlist).
-    - Submitted value is non-empty but every entry is an invalid IP →
+    - Submitted value is non-empty but no entry is an IPv4 address →
       return the caller-supplied ``default`` unchanged. Returning ``[]``
       here would silently disable the filter, turning a single typo
-      (``192.168.1.999``) into "accept from any host".
-    - Submitted value has at least one valid entry → return that valid
-      subset (invalid entries are dropped silently).
+      (``192.168.1.999``) or an IPv6 entry into "accept from any host".
+    - Submitted value has at least one IPv4 entry → return that subset
+      (every other entry, IPv6 included, is dropped silently).
     - Non-string, non-list input → return ``default``.
     """
     raw: list[str]
@@ -2173,13 +2174,7 @@ def _as_ip_list(value: Any, default: list[str]) -> list[str]:
     if not raw:
         return []
 
-    cleaned: list[str] = []
-    for entry in raw:
-        try:
-            ipaddress.ip_address(entry)
-        except ValueError:
-            continue
-        cleaned.append(entry)
+    cleaned = [entry for entry in raw if is_ipv4_literal(entry)]
     # Fail closed: a non-empty submission that yields zero valid IPs
     # looks like a typo, not "clear the filter". Preserving ``default``
     # keeps whatever the operator had configured.

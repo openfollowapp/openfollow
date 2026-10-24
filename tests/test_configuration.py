@@ -3222,6 +3222,25 @@ def test_osc_config_post_init_strips_whitespace() -> None:
     assert cfg.allowed_sender_ips == ["192.168.1.10", "10.0.0.1"]
 
 
+@pytest.mark.parametrize(
+    ("entries", "kept"),
+    [
+        (["192.0.2.1", "2001:db8::1"], ["192.0.2.1"]),
+        (["::ffff:192.0.2.1", "198.51.100.7"], ["198.51.100.7"]),
+        (["fe80::1%eth0", "192.0.2.1", "not-an-ip", "192.0.2.300"], ["192.0.2.1"]),
+    ],
+)
+def test_osc_config_allowlist_keeps_only_ipv4_entries(entries: list[str], kept: list[str]) -> None:
+    """The listener is IPv4, so no other entry can ever match a sender."""
+    assert OscConfig(allowed_sender_ips=entries).allowed_sender_ips == kept
+
+
+@pytest.mark.parametrize("entries", [["2001:db8::1"], ["::1", "fe80::1"], ["2001:db8::1", "not-an-ip"]])
+def test_osc_config_allowlist_without_ipv4_entry_never_reads_as_allow_all(entries: list[str]) -> None:
+    """Dropping every entry would leave the empty list, which accepts every sender."""
+    assert OscConfig(allowed_sender_ips=entries).allowed_sender_ips == entries
+
+
 def test_osc_config_clamps_port_to_blur_bounds() -> None:
     # Port must be in range 1-65535.
     assert OscConfig(port=0).port == 1

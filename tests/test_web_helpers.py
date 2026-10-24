@@ -978,7 +978,19 @@ def test_as_ip_list_accepts_comma_separated_string() -> None:
 
 
 def test_as_ip_list_accepts_json_list() -> None:
-    assert _as_ip_list(["192.0.2.1", "fe80::1"], []) == ["192.0.2.1", "fe80::1"]
+    assert _as_ip_list(["192.0.2.1", "198.51.100.7"], []) == ["192.0.2.1", "198.51.100.7"]
+
+
+@pytest.mark.parametrize("ipv6", ["2001:db8::1", "fe80::1", "::1", "::ffff:192.0.2.9", "fe80::1%eth0"])
+def test_as_ip_list_drops_ipv6_entries(ipv6: str) -> None:
+    assert _as_ip_list(f"192.0.2.1, {ipv6}", []) == ["192.0.2.1"]
+    assert _as_ip_list(["192.0.2.1", ipv6], []) == ["192.0.2.1"]
+
+
+@pytest.mark.parametrize("submitted", ["2001:db8::1", "2001:db8::1, ::1", ["fe80::1"]])
+def test_as_ip_list_of_ipv6_entries_only_keeps_the_previous_allowlist(submitted: object) -> None:
+    """Fail closed: an all-IPv6 submission must not clear the filter to allow-all."""
+    assert _as_ip_list(submitted, ["192.0.2.1"]) == ["192.0.2.1"]
 
 
 def test_as_ip_list_drops_invalid_entries_silently() -> None:
@@ -1034,6 +1046,22 @@ def test_apply_section_data_osc_parses_allowed_sender_ips() -> None:
     assert config.osc.enabled is True
     assert config.osc.port == 9001
     assert config.osc.allowed_sender_ips == ["127.0.0.1", "192.168.1.10"]
+
+
+@pytest.mark.parametrize(
+    ("submitted", "saved"),
+    [
+        ("2001:db8::1", ["198.51.100.7"]),
+        ("192.0.2.5, 2001:db8::1", ["192.0.2.5"]),
+    ],
+)
+def test_apply_section_data_osc_refuses_ipv6_senders(submitted: str, saved: list[str]) -> None:
+    config = AppConfig()
+    config.osc.allowed_sender_ips = ["198.51.100.7"]
+
+    assert apply_section_data(config, "osc", {"allowed_sender_ips": submitted}) is True
+
+    assert config.osc.allowed_sender_ips == saved
 
 
 def test_apply_section_data_rttrpm_output_parses_fields() -> None:

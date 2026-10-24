@@ -130,6 +130,19 @@ def test_validate_ip_list_per_entry_error() -> None:
     assert "999.0.0.1" in err
 
 
+@pytest.mark.parametrize(
+    ("value", "entry"),
+    [
+        ("192.0.2.1, 2001:db8::1", "Entry 2 ('2001:db8::1')"),
+        ("2001:db8::1", "Entry 1 ('2001:db8::1')"),
+        ("::ffff:192.0.2.1", "Entry 1 ('::ffff:192.0.2.1')"),
+        ("192.0.2.1, fe80::1%eth0", "Entry 2 ('fe80::1%eth0')"),
+    ],
+)
+def test_validate_ip_list_refuses_an_ipv6_entry(value: str, entry: str) -> None:
+    assert validate("osc", "allowed_sender_ips", value) == f"{entry} is an IPv6 address; OSC input is IPv4 only."
+
+
 def test_validate_float_within_range() -> None:
     assert validate("camera", "fov", "60") is None
 

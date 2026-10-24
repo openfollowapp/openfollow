@@ -436,12 +436,18 @@ class TestWizardPage:
         _, body = _get(live_server[1], "/wizard")
         step = _wizard_step(body, "lens")
         choices = re.findall(
-            r'<input type="radio" name="lens_current" value="(\w+)"><span><strong>([^<]+)</strong>', step
+            r'<input type="radio" name="lens_current" value="(\w+)">'
+            r"<span><strong>([^<]+)</strong><small>([^<]+)</small>",
+            step,
         )
         assert choices == [
-            ("keep", "Keep the current calibration"),
-            ("clear", "Clear it and measure the lens again"),
-            ("load", "Load another lens calibration"),
+            (
+                "keep",
+                "Keep the current calibration",
+                "Choose this if the camera, the lens and the zoom have not changed.",
+            ),
+            ("clear", "Clear it and measure the lens again", "Trace new lines to calibrate the lens."),
+            ("load", "Load another lens calibration", "Saved on this station or in a settings file."),
         ]
         # The question sits above the notices, the notices above the picture, and the picture's controls end
         # before the step's own Next.

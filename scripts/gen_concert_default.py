@@ -561,26 +561,45 @@ def mid_truss(out: list[str]) -> None:
         moving_light(out, -6.0 + 1.2 * k, MID_TRUSS_Y, MID_TRUSS_Z, spot=k % 2 == 1)
 
 
+# Moving lights hung upside down, in metres: base length x width x height, width across the yoke, head
+# radius and length. Spot: a Martin MAC Viper XIP; wash: a Prolights Astra Wash19Pix.
+SPOT = (0.429, 0.281, 0.15, 0.479, 0.19, 0.59)
+WASH = (0.41, 0.25, 0.13, 0.41, 0.17, 0.3)
+
+
 def moving_light(out: list[str], x: float, y: float, z: float, spot: bool) -> None:
-    """A moving light hung upside down from the chord at height ``z``, seen from behind: the base with its
-    display, the yoke, and the head, a long spot head with vents or a short, wide wash head with a round cover."""
-    base, side, top = "#26272c", "#1b1c20", "#303137"
-    box(out, x - 0.22, x + 0.22, y - 0.17, y + 0.17, z - 0.17, z - 0.02, top, base)  # base under the clamps
-    out.append(poly([(x - 0.08, y + 0.171, z - 0.06), (x + 0.08, y + 0.171, z - 0.06), (x + 0.08, y + 0.171, z - 0.12),
-                     (x - 0.08, y + 0.171, z - 0.12)], "#2f6fb0"))  # fmt: skip
-    for xa in (x - 0.23, x + 0.19):  # yoke arms
-        box(out, xa, xa + 0.04, y - 0.06, y + 0.06, z - 0.55, z - 0.17, top, side)
-    if spot:
-        box(out, x - 0.14, x + 0.14, y - 0.32, y + 0.12, z - 0.62, z - 0.3, top, base)
-        for k in range(4):  # vents across the back of the head
-            zv = z - 0.37 - 0.06 * k
-            out.append(line((x - 0.1, y + 0.121, zv), (x + 0.1, y + 0.121, zv), "#3c3d44", 1.5))
-    else:
-        box(out, x - 0.18, x + 0.18, y - 0.16, y + 0.16, z - 0.6, z - 0.3, top, base)
-        circle = [
-            (x + 0.13 * math.cos(t), y + 0.161, z - 0.45 + 0.13 * math.sin(t)) for t in np.linspace(0, 2 * math.pi, 20)
-        ]
-        out.append(poly(circle, "#2c2d33", "#45464d", 1.2))  # the round cover on the back of the head
+    """A moving light hung upside down from the chord at height ``z``, its head pointing straight down: the
+    round head in the yoke under the base, whose dimmed display faces the camera; the lens at the bottom
+    faces away from it."""
+    base_l, base_w, base_h, yoke_w, r, length = SPOT if spot else WASH
+    head_top = z - base_h - 0.03
+    cylinder(out, x, y, head_top - length, head_top, r, "#2e2f35", "#1a1b1f")
+    out.append(poly(disc(x, y, head_top, r, 24), "#24252a", "#3e3f46", 1.0))
+    if spot:  # cooling fins around the spot's head
+        for k in range(1, 6):
+            zf = head_top - 0.09 * k
+            out.append(line((x - r * 0.9, y + r * 0.45, zf), (x + r * 0.9, y + r * 0.45, zf), "#3c3d44", 1.2))
+    for xa in (x - yoke_w / 2, x + yoke_w / 2 - 0.04):  # yoke arms down to the head's sides
+        box(out, xa, xa + 0.04, y - 0.05, y + 0.05, head_top - length / 2, z - base_h, "#303137", "#1b1c20")
+    box(out, x - base_l / 2, x + base_l / 2, y - base_w / 2, y + base_w / 2, z - base_h, z - 0.02, "#303137", "#222328")
+    ys, z_hi, z_lo = y + base_w / 2 + 0.001, z - 0.04, z - base_h + 0.04  # the display, dimmed for the show
+    out.append(
+        poly([(x - 0.07, ys, z_hi), (x + 0.07, ys, z_hi), (x + 0.07, ys, z_lo), (x - 0.07, ys, z_lo)], "#1a3550")
+    )
+
+
+def cylinder(out: list[str], x: float, y: float, z0: float, z1: float, r: float, lit: str, dark: str) -> None:
+    """The side of an upright cylinder that faces the camera, as strips shaded from ``lit`` facing it to
+    ``dark`` at its rim."""
+    toward = math.atan2(CAMERA[1] - y, CAMERA[0] - x)
+    n = 24
+    for k in range(n):
+        t0, t1 = 2 * math.pi * k / n, 2 * math.pi * (k + 1) / n
+        facing = math.cos((t0 + t1) / 2 - toward)
+        if facing <= 0:
+            continue
+        a, b = (x + r * math.cos(t0), y + r * math.sin(t0)), (x + r * math.cos(t1), y + r * math.sin(t1))
+        out.append(poly([(*a, z0), (*b, z0), (*b, z1), (*a, z1)], lit if facing > 0.55 else dark))
 
 
 def side_lights(out: list[str]) -> None:

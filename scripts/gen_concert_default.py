@@ -42,7 +42,7 @@ from openfollow.scene.solver import apply_overlay_distortion, project_points  # 
 ASSET = ROOT / "openfollow" / "video" / "inputs" / "assets" / "concert_default.jpg"
 W, H = 1920.0, 1080.0
 # Back truss upstage of the riser: pos_x, pos_y, pos_z, pitch, yaw, roll, horizontal fov.
-CAMERA = np.array([0.0, 10.0, 9.0, -50.0, 180.0, 0.0, 82.5])
+CAMERA = np.array([0.0, 10.0, 9.0, -48.0, 180.0, 0.0, 82.5])
 K1, K2 = -0.37, -0.17  # barrel / fisheye, corner correction: a 2.8 mm M12 lens
 # Pinhole geometry is cut to this box before the lens bows it, which keeps the SVG small.
 CLIP = (-1.5 * W, -1.5 * H, 2.5 * W, 2.5 * H)
@@ -55,7 +55,7 @@ FLOOR_Z = -1.8  # house floor below the deck
 PIT_Y = LIP_Y - 2.7  # barricade
 LEG_KNOT = 1.5  # tie-back height
 # The mid truss across the stage: plane (y), bottom chord height, box size and half span, all in metres.
-MID_TRUSS_Y, MID_TRUSS_Z, TRUSS_BOX, TRUSS_HALF_SPAN = 4.6, 6.3, 0.4, 12.5
+MID_TRUSS_Y, MID_TRUSS_Z, TRUSS_BOX, TRUSS_HALF_SPAN = 4.6, 6.9, 0.34, 12.5
 # Two tied-back legs per side: plane (y), outer and inner edge at the top, the tie (x, this side), the height
 # they hang from, and whether the cloth falls straight from the top and curves only toward the tie (the
 # downstage pair, from the grid out of the picture; the mid-stage pair hangs from the mid truss).

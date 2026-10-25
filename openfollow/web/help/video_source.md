@@ -44,7 +44,7 @@ Which network interface SRT, RTSP and RTP use is set under **Network Interface A
   | Camera setting | Value |
   |---|---|
   | Position X / Y / Z | 0 / 10 / 9 m |
-  | Pitch | -50° |
+  | Pitch | -48° |
   | Yaw | 180° |
   | Roll | 0° |
   | Horizontal Field of View | 82.5° |

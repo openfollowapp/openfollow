@@ -385,7 +385,7 @@ def riser(out: list[str]) -> None:
         box(out, xa - 0.4, xa + 0.4, y1 - 0.8, y1 - 0.2, h, h + 1.2, "#3e4148", "#2b2d32")
     drum_kit(out, 0.0, y0 + 1.3, h)
     for xm in (-3.55, -2.75, 2.75, 3.55):  # two spots on each side of the kit
-        standing_light(out, xm, y0 + 1.4, h, toward_centre=-1 if xm > 0 else 1)
+        standing_light(out, xm, y0 + 1.7, h, toward_centre=-1 if xm > 0 else 1)
 
 
 # A right-handed metal kit about its centre, in metres; +x is the drummer's left (stage left), -y is toward

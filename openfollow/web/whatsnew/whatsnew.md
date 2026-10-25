@@ -31,4 +31,4 @@ The **Setup Wizard** now runs Video Source, Lens, **Camera Calibration** and Rev
 
 ## The camera is set in the Setup Wizard only
 
-The **Camera & Lens Calibration** section of the Camera & Grid tab now shows position, orientation, field of view and lens read-only: to change them, run the **Setup Wizard** again. **Apply to all stations** copies the camera with its calibration. Ctrl/Cmd+S on the Operator Screen no longer saves the camera.
+The **Camera & Lens Calibration** section of the Camera & Grid tab now shows position, orientation, field of view and lens read-only: to change them, run the **Setup Wizard** again. **Apply to all stations** copies the camera with its calibration. Ctrl/Cmd+S on the Operator Screen no longer saves the camera. Its **Calibration** column shows when the calibration was saved, from which video source, the lens rating and how closely the pinned points fit the saved camera.

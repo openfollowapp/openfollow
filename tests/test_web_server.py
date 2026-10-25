@@ -2275,8 +2275,9 @@ def test_the_camera_tab_lists_the_calibration_marks_read_only(live_server, mode:
     shown_title, rows = _calibration_rows(html_text)
     assert shown_title == "Calibration points"
     assert _readout(_camera_section(html_text))["Type"] == kind
-    assert rows[0] == ["DSL", "Known point", "X = 5.000 m<br>Y = 0.000 m<br>Z = 0.000 m", "–", "Yes"]
-    assert rows[1] == ["DSR", "Known point", "X = -5.000 m<br>Y = 0.000 m<br>Z = 0.000 m", "–", "No"]
+    # Without video there is no picture to count an error in.
+    assert rows[0] == ["DSL", "Known point", "X = 5.000 m<br>Y = 0.000 m<br>Z = 0.000 m", "–", "Yes", "–"]
+    assert rows[1] == ["DSR", "Known point", "X = -5.000 m<br>Y = 0.000 m<br>Z = 0.000 m", "–", "No", "–"]
     assert len(rows) == (4 if mode == "simple" else 5)
     if mode == "advanced":
         assert rows[4] == [
@@ -2285,6 +2286,7 @@ def test_the_camera_tab_lists_the_calibration_marks_read_only(live_server, mode:
             "X = 2.500 m<br>Y = 9.000 m<br>Z = 0.000 m",
             "DSL 21.400 m<br>DSR 23.900 m",
             "Yes",
+            "–",
         ]
 
 
@@ -7164,16 +7166,24 @@ def test_the_camera_broadcast_sends_the_saved_camera_with_its_calibration(live_s
     monkeypatch.setattr(server, "get_peers", lambda: [SimpleNamespace(name="peer", ip="10.0.0.99", web_port=80)])
     camera = _held_camera("advanced")
     camera.pos_x, camera.calibration_height = 1.25, 9.8
+    camera.calibration_lens_rating, camera.calibration_time = "fair", "2026-10-25T11:04:00+01:00"
+    camera.calibration_source = "NDI®: Stage"
     save_config(AppConfig(camera=camera), server.config_path)
     status, body = _post_json(base, "/api/config/camera/broadcast", posted)
     assert status == 200 and body.get("success") is True
     (data,) = sent
     assert (data["pos_x"], data["calibration_mode"], data["calibration_height"]) == (1.25, "advanced", 9.8)
     assert [m["id"] for m in data["calibration_marks"]] == [1, 2, 3, 4, 5]
-    # A station receiving it keeps the pose with its marks.
+    # A station receiving it keeps the pose with its marks and what describes them.
     receiver = AppConfig()
     assert apply_section_data(receiver, "camera", data)
     assert (receiver.camera.pos_x, len(receiver.camera.calibration_marks)) == (1.25, 5)
+    got = receiver.camera
+    assert (got.calibration_lens_rating, got.calibration_time, got.calibration_source) == (
+        "fair",
+        "2026-10-25T11:04:00+01:00",
+        "NDI®: Stage",
+    )
     assert load_config(server.config_path).camera == camera
 
 
@@ -7656,6 +7666,187 @@ def test_without_video_the_lens_centre_reads_no_video(video_server, resolution) 
     _, body = _get(base, "/section/camera")
     readout = _readout(_camera_section(body))
     assert (readout["Right of the picture centre"], readout["Above the picture centre"]) == ("No video", "No video")
+
+
+def _pinned_camera(cfg: AppConfig, misses: dict[int, float], size: tuple[int, int] = (1920, 1080)) -> CameraConfig:
+    """``cfg``'s camera with the Simple corners pinned where it sees them, lens included, each miss px to the right."""
+    import numpy as np
+
+    from openfollow.scene.solver import apply_overlay_distortion, camera_params, project_points
+
+    cam = cfg.camera
+    marks = _corner_marks()
+    world = np.array([[m["x"], m["y"], m["z"]] for m in marks], dtype=np.float64)
+    seen = apply_overlay_distortion(
+        project_points(camera_params(cam), world, *size), *size, cam.lens_k1, cam.lens_k2, cam.lens_cx, cam.lens_cy
+    )
+    for mark, (x, y) in zip(marks, seen, strict=True):
+        mark["pin"] = [(x + misses.get(mark["id"], 0.0)) / size[0], y / size[1]]
+    return CameraConfig(**{**asdict(cam), "calibration_mode": "simple", "calibration_marks": marks})
+
+
+_RECORDED = {
+    "calibration_lens_rating": "good",
+    "calibration_time": "2026-10-26T09:30:42-02:30",
+    "calibration_source": "RTSP: rtsp://192.0.2.10/stream",
+}
+
+
+def test_the_calibration_column_shows_what_the_setup_wizard_recorded(video_server) -> None:
+    server, base, _ = video_server
+    cfg = load_config(server.config_path)
+    cfg.camera = _pinned_camera(cfg, {1: 2.5, 3: 0.6})
+    for name, value in _RECORDED.items():
+        setattr(cfg.camera, name, value)
+    cfg.camera.calibration_marks[1].pin = []
+    save_config(cfg, server.config_path)
+    _, body = _get(base, "/section/camera")
+    section = _camera_section(body)
+    readout = _readout(section[section.index('id="camera-calibration"') :])
+    # The time reads as the browser that saved it wrote it, in its own offset.
+    assert readout == {
+        "Type": "Simple",
+        "Calibrated": "2026-10-26 09:30",
+        "Video source": "RTSP: rtsp://192.0.2.10/stream",
+        "Lens rating": "Good",
+        "Pinned": "3 of 4",
+        "Accuracy": "Within 2.5 px",
+    }
+    _, rows = _calibration_rows(section)
+    assert [row[-1] for row in rows] == ["2.5 px", "–", "0.6 px", "0.0 px"]
+
+
+@pytest.mark.parametrize(
+    ("rating", "shown"),
+    [
+        ("excellent", "Excellent"),
+        ("good", "Good"),
+        ("fair", "Fair"),
+        ("poor", "Poor"),
+        ("not_usable", "Not usable"),
+        ("user_input", "User input"),
+        ("loaded", "Loaded"),
+    ],
+)
+def test_the_calibration_column_names_each_lens_rating(video_server, rating: str, shown: str) -> None:
+    server, base, _ = video_server
+    cfg = load_config(server.config_path)
+    cfg.camera = _pinned_camera(cfg, {})
+    cfg.camera.calibration_lens_rating = rating
+    save_config(cfg, server.config_path)
+    assert _readout(_camera_section(_get(base, "/section/camera")[1]))["Lens rating"] == shown
+
+
+def test_a_calibration_without_a_record_shows_none_of_its_rows(video_server) -> None:
+    server, base, _ = video_server
+    cfg = load_config(server.config_path)
+    cfg.camera = _pinned_camera(cfg, {})
+    save_config(cfg, server.config_path)
+    readout = _readout(_camera_section(_get(base, "/section/camera")[1]))
+    assert not {"Calibrated", "Video source", "Lens rating"} & set(readout)
+    assert (readout["Pinned"], readout["Accuracy"]) == ("4 of 4", "Within 0.0 px")
+
+
+def test_the_accuracy_is_counted_in_the_live_video_s_pixels(video_server) -> None:
+    # The pins are fractions of the picture: a 3 px miss at 1920 wide is 2 px at 1280.
+    server, base, stats = video_server
+    cfg = load_config(server.config_path)
+    cfg.camera = _pinned_camera(cfg, {2: 3.0})
+    save_config(cfg, server.config_path)
+    stats["video"] = {"resolution": {"width": 1280, "height": 720}}
+    assert _readout(_camera_section(_get(base, "/section/camera")[1]))["Accuracy"] == "Within 2.0 px"
+
+
+def test_the_accuracy_reads_no_video_without_a_picture(video_server) -> None:
+    server, base, stats = video_server
+    cfg = load_config(server.config_path)
+    cfg.camera = _pinned_camera(cfg, {1: 2.0})
+    save_config(cfg, server.config_path)
+    stats["video"] = {}
+    section = _camera_section(_get(base, "/section/camera")[1])
+    assert _readout(section)["Accuracy"] == "No video"
+    assert [row[-1] for row in _calibration_rows(section)[1]] == ["–"] * 4
+
+
+def test_without_pins_there_is_no_accuracy(video_server) -> None:
+    server, base, _ = video_server
+    cfg = load_config(server.config_path)
+    cfg.camera = _pinned_camera(cfg, {})
+    for mark in cfg.camera.calibration_marks:
+        mark.pin = []
+    save_config(cfg, server.config_path)
+    readout = _readout(_camera_section(_get(base, "/section/camera")[1]))
+    assert readout["Pinned"] == "0 of 4" and "Accuracy" not in readout
+
+
+def test_a_recorded_video_source_is_shown_as_text(video_server) -> None:
+    server, base, _ = video_server
+    cfg = load_config(server.config_path)
+    cfg.camera = _pinned_camera(cfg, {})
+    cfg.camera.calibration_source = 'NDI®: <img src=x onerror="alert(1)">'
+    save_config(cfg, server.config_path)
+    section = _camera_section(_get(base, "/section/camera")[1])
+    assert "<img" not in section
+    assert _readout(section)["Video source"] == "NDI®: &lt;img src=x onerror=&quot;alert(1)&quot;&gt;"
+
+
+_WIZARD_SAVE = {
+    "calibration_mode": "simple",
+    "calibration_marks": _corner_marks(),
+    "calibration_time": "2026-10-25T11:04:00+01:00",
+}
+
+
+@pytest.mark.parametrize(
+    ("source_type", "label", "recorded"),
+    [
+        ("rtsp", "rtsp://192.0.2.10/stream", "RTSP: rtsp://192.0.2.10/stream"),
+        ("srt", "SRT srt://192.0.2.10:5000", "SRT srt://192.0.2.10:5000"),
+        ("ndi", "Stage (Left)", "NDI®: Stage (Left)"),
+        ("testpattern", "Media Gallery (Clip)", "Media Gallery (Clip)"),
+        ("no_such_input", "Something", "Something"),
+        ("rtsp", "", ""),
+    ],
+    ids=["rtsp", "srt", "ndi", "gallery", "unknown input", "no label"],
+)
+def test_a_setup_wizard_save_records_the_video_source_the_station_shows(
+    video_server, source_type: str, label: str, recorded: str
+) -> None:
+    server, base, stats = video_server
+    stats["video"] = {"resolution": {"width": 1920, "height": 1080}, "source_type": source_type, "source_label": label}
+    status, _ = _post_json(base, "/api/config/camera", _WIZARD_SAVE)
+    assert status == 200
+    assert load_config(server.config_path).camera.calibration_source == recorded
+
+
+def test_a_setup_wizard_save_without_video_stats_records_no_source(video_server) -> None:
+    server, base, stats = video_server
+    stats.clear()
+    assert _post_json(base, "/api/config/camera", _WIZARD_SAVE)[0] == 200
+    camera = load_config(server.config_path).camera
+    assert (camera.calibration_time, camera.calibration_source) == ("2026-10-25T11:04:00+01:00", "")
+
+
+@pytest.mark.parametrize(
+    ("path", "data"),
+    [
+        ("/api/config/camera", {**_WIZARD_SAVE, "calibration_source": "SRT srt://192.0.2.20:5000"}),
+        ("/api/config/camera?from=Peer", {**_WIZARD_SAVE, "calibration_source": "SRT srt://192.0.2.20:5000"}),
+        ("/api/config/camera?from=Peer", _WIZARD_SAVE),
+        ("/api/config/camera", {k: v for k, v in _WIZARD_SAVE.items() if k != "calibration_time"}),
+    ],
+    ids=["brought", "pushed", "pushed without", "no time"],
+)
+def test_only_a_setup_wizard_save_is_stamped_with_this_station_s_source(video_server, path: str, data: dict) -> None:
+    """A source brought, or a push from a station that showed another, is never this station's."""
+    server, base, stats = video_server
+    stats["video"] = {
+        "resolution": {"width": 1920, "height": 1080},
+        "source_type": "rtsp",
+        "source_label": "rtsp://192.0.2.10/s",
+    }
+    assert _post_json(base, path, data)[0] == 200
+    assert load_config(server.config_path).camera.calibration_source == data.get("calibration_source", "")
 
 
 def test_validate_endpoint_advisory_note(live_server) -> None:

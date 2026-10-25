@@ -18,6 +18,7 @@
 %   'grid': {'width': _g.width, 'depth': _g.depth, 'spacing': _g.spacing, 'x_offset': _g.x_offset, 'y_offset': _g.y_offset, 'z_offset': _g.z_offset},
 %   'fov': config.camera.fov,
 %   'height': config.camera.calibration_height,
+%   'lens_rating': config.camera.calibration_lens_rating,
 %   'lens': [_lens_k1, _lens_k2, _lens_cx, _lens_cy],
 %   'max_marks': MAX_CALIBRATION_MARKS,
 % }
@@ -3873,6 +3874,22 @@
     if (S.lensTouched) return 'User input';
     return lensMeasured() ? 'The station\'s lens' : 'Not measured';
   }
+  // The lens rating Save and finish records, by the case the Lens row of the review shows.
+  var LENS_RATING_RECORD = { low: 'not_usable', medium: 'poor', okay: 'fair', good: 'good', excellent: 'excellent' };
+  function lensRatingRecord(l) {
+    if (lensHasCurrent() && S.lensChoice === 'keep') return SAVED.lens_rating;
+    if (lensIsTheFits(l)) return LENS_RATING_RECORD[lensShownRating(lensFit)] || '';
+    if (lensFit) return lensFitApplies(lensFit) || lensHandTuned() ? 'user_input' : '';
+    if (S.lensLoaded) return lensSame(l, [S.lensLoaded.k1, S.lensLoaded.k2, S.lensLoaded.cx, S.lensLoaded.cy]) ? 'loaded' : 'user_input';
+    if (S.lensTouched) return 'user_input';
+    return lensMeasured() ? SAVED.lens_rating : '';
+  }
+  // Now by this browser's clock, as ISO 8601 with its UTC offset.
+  function localIsoNow() {
+    var d = new Date(), off = -d.getTimezoneOffset(), p = function(n) { return String(Math.floor(Math.abs(n))).padStart(2, '0'); };
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds())
+      + (off < 0 ? '-' : '+') + p(off / 60) + ':' + p(off % 60);
+  }
   // Why Save and finish refuses a lens that cannot be saved, named by what is wrong with it.
   function wizLensSaveError(p) {
     if (p.kind === 'range') return { error: 'A lens centre field does not hold a whole number from −' + p.max + ' to ' + p.max + '.', action: 'Correct it in the Lens step before you finish.' };
@@ -3897,6 +3914,7 @@
     });
     var camera = { pos_x: s.cam.pos_x, pos_y: s.cam.pos_y, pos_z: s.cam.pos_z, pitch: s.cam.pitch, yaw: s.cam.yaw, roll: s.cam.roll, fov: s.cam.fov,
       calibration_mode: S.mode, calibration_marks: marks, calibration_height: S.height,
+      calibration_lens_rating: lensRatingRecord(wizLens()), calibration_time: localIsoNow(),
       lens_k1: wizReadLensCoeff('wiz_lens_k1'), lens_k2: wizReadLensCoeff('wiz_lens_k2'), lens_cx: S.lensCentre[0], lens_cy: S.lensCentre[1] };
     var g = calibGrid();
     var gridWrite = S.mode === 'simple'

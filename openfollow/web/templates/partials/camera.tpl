@@ -1,5 +1,7 @@
 % import math
+% from datetime import datetime
 % from openfollow.lens_model import C_BOUND
+% from openfollow.scene.calibration_points import pin_errors
 % from openfollow.units import UnitSystem, format_length
 % _us = UnitSystem(config.ui.unit_system)
 % _cam = config.camera
@@ -11,6 +13,11 @@
 % _cpx = lambda v: max(-_cmax, min(_cmax, round(v * _hd)))
 % # A rounded value of -0 reads as 0.
 % _fix = lambda v, n: "%.*f" % (n, round(v, n) + 0.0)
+% _marks = _cam.calibration_marks
+% _pinned = sum(1 for _m in _marks if _m.pin)
+% # Pins are fractions of the snapshot, counted in pixels of the live video.
+% _errors = pin_errors(_cam, *_vs) if _vs else {}
+% _ratings = {"excellent": "Excellent", "good": "Good", "fair": "Fair", "poor": "Poor", "not_usable": "Not usable", "user_input": "User input", "loaded": "Loaded"}
 <form id="camera-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="camera" data-help="camera"
       data-template-form="1">
     <div class="section-head">
@@ -55,10 +62,30 @@
             <h3 class="group-title">Calibration</h3>
             <dl class="network-state-grid" id="camera-calibration">
                 <dt>Type</dt>
-                <dd>{{("Simple" if _cam.calibration_mode == "simple" else "Advanced") if _cam.calibration_marks else "None"}}</dd>
-                % if _cam.calibration_marks and _cam.calibration_height is not None:
+                <dd>{{("Simple" if _cam.calibration_mode == "simple" else "Advanced") if _marks else "None"}}</dd>
+                % if _marks:
+                % if _cam.calibration_time:
+                <dt>Calibrated</dt>
+                <dd>{{datetime.fromisoformat(_cam.calibration_time).strftime("%Y-%m-%d %H:%M")}}</dd>
+                % end
+                % if _cam.calibration_source:
+                <dt>Video source</dt>
+                <dd>{{_cam.calibration_source}}</dd>
+                % end
+                % if _cam.calibration_lens_rating:
+                <dt>Lens rating</dt>
+                <dd>{{_ratings[_cam.calibration_lens_rating]}}</dd>
+                % end
+                <dt>Pinned</dt>
+                <dd>{{_pinned}} of {{len(_marks)}}</dd>
+                % if _pinned and (_errors or not _vs):
+                <dt>Accuracy</dt>
+                <dd>{{"Within %.1f px" % max(_errors.values()) if _errors else "No video"}}</dd>
+                % end
+                % if _cam.calibration_height is not None:
                 <dt>Camera height</dt>
                 <dd>Fixed at {{format_length(_cam.calibration_height, _us)}}</dd>
+                % end
                 % end
             </dl>
         </div>
@@ -68,8 +95,8 @@
     @media (max-width: 680px) { .camera-readout { grid-template-columns: 1fr; } }
     </style>
 
-    % if config.camera.calibration_marks:
-    % _marks = {m.id: m for m in config.camera.calibration_marks}
+    % if _marks:
+    % _by_id = {m.id: m for m in _marks}
     <details class="inline-advanced" id="camera-calibration-marks">
         <summary>Calibration points</summary>
         <table class="data-table">
@@ -80,10 +107,11 @@
                     <th scope="col">Position</th>
                     <th scope="col">Measured from</th>
                     <th scope="col">Pinned</th>
+                    <th scope="col">Error</th>
                 </tr>
             </thead>
             <tbody>
-            % for _m in config.camera.calibration_marks:
+            % for _m in _marks:
                 % _at = [_m.x, _m.y, _m.z] if _m.kind == "known" else _m.position
                 <tr>
                     <th scope="row">{{_m.name}}</th>
@@ -94,11 +122,12 @@
                     <td>–</td>
                     % end
                     % if _m.kind == "triangulated":
-                    <td>{{_marks[_m.from_a].name}} {{format_length(_m.distance_a, _us)}}<br>{{_marks[_m.from_b].name}} {{format_length(_m.distance_b, _us)}}</td>
+                    <td>{{_by_id[_m.from_a].name}} {{format_length(_m.distance_a, _us)}}<br>{{_by_id[_m.from_b].name}} {{format_length(_m.distance_b, _us)}}</td>
                     % else:
                     <td>–</td>
                     % end
                     <td>{{"Yes" if _m.pin else "No"}}</td>
+                    <td>{{"%.1f px" % _errors[_m.id] if _m.id in _errors else "–"}}</td>
                 </tr>
             % end
             </tbody>

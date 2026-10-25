@@ -763,6 +763,9 @@ function fetch(url, opts) {
 function wizLensValid() { return pairValid; }
 function wizLensProblem() { return { kind: problem, off: [false, problem === 'range'], max: 183 }; }
 function wizReadLensCoeff(id) { return id === 'wiz_lens_k1' ? -0.21 : 0.03; }
+function wizLens() { return [-0.21, 0.03, S.lensCentre[0], S.lensCentre[1]]; }
+function lensRatingRecord(l) { return 'rated ' + l.join(' '); }
+function localIsoNow() { return '2026-10-25T11:04:05+01:00'; }
 function calibGrid() { return RECT; }
 """
 
@@ -820,6 +823,16 @@ class TestWizardApply:
             )
         ]
         assert (out["shown"], out["removed"], out["href"]) == ([], ["openfollow:wizard"], "/")
+
+    @pytest.mark.parametrize("state", [_SIMPLE_STATE, _ADVANCED_STATE], ids=["simple", "advanced"])
+    def test_the_calibration_is_saved_with_its_lens_rating_and_this_browser_s_time(self, state: dict) -> None:
+        camera = _apply(state)["calls"][-1][1]
+        assert (camera["calibration_lens_rating"], camera["calibration_time"]) == (
+            "rated -0.21 0.03 0.02 -0.01",
+            "2026-10-25T11:04:05+01:00",
+        )
+        # The station records the video source it shows itself.
+        assert "calibration_source" not in camera
 
     @pytest.mark.parametrize("height", [9.8, None])
     @pytest.mark.parametrize("state", [_SIMPLE_STATE, _ADVANCED_STATE], ids=["simple", "advanced"])
@@ -2006,3 +2019,88 @@ def test_the_served_wizard_has_one_point_menu_and_its_panel_slot_under_the_pictu
     between = page[start:slot]
     assert between.count("<div") == between.count("</div>")
     assert slot < page.index('id="cal-refresh"')
+
+
+# The lens rating Save and finish records, one case per Lens row of the review
+
+_RATING_PAGE = """
+function lensHasCurrent() { return page.current; }
+function lensIsTheFits(l) { return page.isTheFits; }
+function lensShownRating(fit) { return fit.shown; }
+function lensFitApplies(fit) { return fit.applies; }
+function lensHandTuned() { return page.tuned; }
+function lensMeasured() { return page.measured; }
+function lensSame(a, b) { return a.every(function(v, i) { return v === b[i]; }); }
+var SAVED = { lens_rating: 'excellent' };
+"""
+
+
+def _rating(page: dict, S: dict, lens_fit=None, lens=(-0.2, 0.03, 0.0, 0.0)) -> str:
+    return run_wizard_js(
+        "lensRatingRecord(L)",
+        prelude=_RATING_PAGE,
+        functions=("lensRatingRecord",),
+        variables=("LENS_RATING_RECORD",),
+        page={"current": False, "isTheFits": False, "tuned": False, "measured": False, **page},
+        S={"lensChoice": "", "lensLoaded": None, "lensTouched": False, **S},
+        lensFit=lens_fit,
+        L=list(lens),
+    )
+
+
+@needs_node
+@unit
+class TestLensRatingRecord:
+    def test_a_kept_lens_keeps_the_rating_it_was_saved_with(self) -> None:
+        assert _rating({"current": True}, {"lensChoice": "keep"}) == "excellent"
+
+    @pytest.mark.parametrize(
+        ("shown", "recorded"),
+        [("low", "not_usable"), ("medium", "poor"), ("okay", "fair"), ("good", "good"), ("excellent", "excellent")],
+    )
+    def test_the_fit_s_lens_records_the_rating_the_review_shows(self, shown: str, recorded: str) -> None:
+        assert _rating({"isTheFits": True}, {}, {"shown": shown, "applies": True}) == recorded
+
+    @pytest.mark.parametrize(("applies", "tuned"), [(True, False), (True, True), (False, True)])
+    def test_a_lens_changed_after_its_fit_is_user_input(self, applies: bool, tuned: bool) -> None:
+        assert _rating({"tuned": tuned}, {}, {"shown": "good", "applies": applies}) == "user_input"
+
+    def test_a_fit_not_applied_rates_nothing(self) -> None:
+        assert _rating({"measured": True}, {}, {"shown": "low", "applies": False}) == ""
+
+    def test_a_loaded_lens_as_loaded_is_loaded(self) -> None:
+        loaded = {"k1": -0.2, "k2": 0.03, "cx": 0.0, "cy": 0.0, "name": "Wide"}
+        assert _rating({}, {"lensLoaded": loaded}) == "loaded"
+
+    def test_a_loaded_lens_changed_by_hand_is_user_input(self) -> None:
+        loaded = {"k1": -0.25, "k2": 0.03, "cx": 0.0, "cy": 0.0, "name": "Wide"}
+        assert _rating({}, {"lensLoaded": loaded}) == "user_input"
+
+    def test_a_lens_typed_by_hand_is_user_input(self) -> None:
+        assert _rating({}, {"lensTouched": True}) == "user_input"
+
+    def test_the_station_s_lens_used_as_it_is_keeps_its_rating(self) -> None:
+        assert _rating({"current": True, "measured": True}, {"lensChoice": "load"}) == "excellent"
+
+    def test_a_lens_not_measured_rates_nothing(self) -> None:
+        assert _rating({}, {}) == ""
+
+
+@needs_node
+@unit
+@pytest.mark.parametrize(
+    ("zone", "expected"),
+    [
+        ("UTC", "2026-10-25T10:04:05+00:00"),
+        ("Asia/Kolkata", "2026-10-25T15:34:05+05:30"),
+        ("America/St_Johns", "2026-10-25T07:34:05-02:30"),
+        ("Pacific/Kiritimati", "2026-10-26T00:04:05+14:00"),
+    ],
+)
+def test_the_calibration_time_is_this_browser_s_local_time_with_its_offset(zone: str, expected: str) -> None:
+    # A fixed instant read in the browser's zone: 10:04:05 UTC on 25 October 2026.
+    page = (
+        f"process.env.TZ = {json.dumps(zone)}; var RealDate = Date;"
+        " globalThis.Date = function() { return new RealDate(RealDate.UTC(2026, 9, 25, 10, 4, 5)); };"
+    )
+    assert run_wizard_js("localIsoNow()", prelude=page, functions=("localIsoNow",)) == expected

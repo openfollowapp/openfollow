@@ -180,16 +180,13 @@ def run_export(export_args: list[str]) -> int:
 
 
 def _typelibs_outside(repository: Any, root: Path) -> list[str]:
-    """Typelib files of ``REQUIRED_TYPELIBS`` and their dependencies that lie outside ``root``.
+    """Typelib files of every loaded namespace that lie outside ``root``.
 
     libgirepository falls back to its build-time prefix, so on the build host a
     typelib the freeze dropped still loads, from Homebrew. Paths are compared
     unresolved: PyInstaller links the typelib directory into ``sys._MEIPASS``.
     """
-    namespaces = {name for name, _version in REQUIRED_TYPELIBS}
-    for name, _version in REQUIRED_TYPELIBS:
-        namespaces |= {dependency.rsplit("-", 1)[0] for dependency in repository.get_dependencies(name)}
-    paths = [repository.get_typelib_path(name) for name in sorted(namespaces)]
+    paths = [repository.get_typelib_path(name) for name in sorted(repository.get_loaded_namespaces())]
     return [path for path in paths if not Path(path).is_relative_to(root)]
 
 
@@ -207,6 +204,9 @@ def run_selfcheck() -> int:
             repository.require(namespace, version)
             if namespace not in ("Gtk", "Gdk"):
                 importlib.import_module(f"gi.repository.{namespace}")
+        # Their overrides load GLibUnix / GioUnix, which no typelib depends on; GLib.unix_signal_add lives there.
+        for namespace in ("GLib", "Gio"):
+            importlib.import_module(f"gi.repository.{namespace}")
         bundle = getattr(sys, "_MEIPASS", None)
         if bundle and (outside := _typelibs_outside(repository, Path(bundle))):
             print(f"FAIL: typelibs from outside the bundle: {', '.join(outside)}")

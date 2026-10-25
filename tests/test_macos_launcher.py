@@ -10,6 +10,8 @@ the bundle relies on.
 
 from __future__ import annotations
 
+import importlib.abc
+import importlib.machinery
 import importlib.util
 import os
 import sys
@@ -274,8 +276,29 @@ def test_run_export_returns_one_on_failure(launcher, monkeypatch, tmp_path) -> N
 
 _HOMEBREW_TYPELIBS = "/opt/homebrew/lib/girepository-1.0"
 
-# What the fake repository reports as loaded with a namespace, as "<namespace>-<version>".
+# What the fake repository loads with a namespace, as "<namespace>-<version>".
 _TYPELIB_DEPENDENCIES = {"GstPbutils": ("GstVideo-1.0", "Gst-1.0")}
+
+# What PyGObject's overrides load on import, though no typelib depends on it.
+_OVERRIDE_LOADS = {"GLib": "GLibUnix", "Gio": "GioUnix"}
+
+
+class _OverrideImporter(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    """Imports ``gi.repository.GLib`` / ``Gio``, loading what their overrides load."""
+
+    def __init__(self, loaded: set[str]) -> None:
+        self._loaded = loaded
+
+    def find_spec(self, fullname: str, path: object, target: object = None) -> importlib.machinery.ModuleSpec | None:
+        name = fullname.removeprefix("gi.repository.")
+        return importlib.util.spec_from_loader(fullname, self) if name in _OVERRIDE_LOADS else None
+
+    def create_module(self, spec: importlib.machinery.ModuleSpec) -> None:
+        return None
+
+    def exec_module(self, module: types.ModuleType) -> None:
+        name = module.__name__.removeprefix("gi.repository.")
+        self._loaded |= {name, _OVERRIDE_LOADS[name]}
 
 
 def _install_fake_gst(
@@ -285,6 +308,7 @@ def _install_fake_gst(
     plugins: frozenset[str] = frozenset({"typefindfunctions"}),
     namespaces: frozenset[str] = frozenset(),
     unloadable: frozenset[str] = frozenset({"Gtk", "Gdk"}),
+    require_errors: dict[str, str] | None = None,
     typelib_dir: str = _HOMEBREW_TYPELIBS,
     typelib_dirs: dict[str, str] | None = None,
     discoverer_error: str = "",
@@ -294,6 +318,7 @@ def _install_fake_gst(
     ``plugins`` are the GStreamer plugins the registry holds, ``namespaces``
     the typelibs gi reports as unavailable, ``unloadable`` the ones whose
     import fails. Gtk and Gdk fail by default: importing them opens the display.
+    ``require_errors`` maps a namespace to the error loading its typelib raises.
     Every typelib loads from ``typelib_dir`` unless ``typelib_dirs`` names another.
     """
 
@@ -310,14 +335,28 @@ def _install_fake_gst(
             get=lambda: types.SimpleNamespace(find_plugin=lambda name: object() if name in plugins else None)
         ),
     )
+    gi = types.ModuleType("gi")
+    gi.RepositoryError = type("RepositoryError", (Exception,), {})  # type: ignore[attr-defined]
+    loaded: set[str] = set()
+
+    def require(namespace: str, version: str) -> None:
+        if namespace in (require_errors or {}):
+            raise gi.RepositoryError((require_errors or {})[namespace])  # type: ignore[attr-defined]
+        loaded.add(namespace)
+        loaded.update(dependency.rsplit("-", 1)[0] for dependency in _TYPELIB_DEPENDENCIES.get(namespace, ()))
+
+    def get_typelib_path(namespace: str) -> str:
+        if namespace not in loaded:
+            raise RuntimeError(f"Namespace '{namespace}' not loaded")
+        return f"{(typelib_dirs or {}).get(namespace, typelib_dir)}/{namespace}.typelib"
+
     default_repository = types.SimpleNamespace(
-        require=lambda namespace, version: None,
-        get_dependencies=lambda namespace: _TYPELIB_DEPENDENCIES.get(namespace, ()),
-        get_typelib_path=lambda namespace: f"{(typelib_dirs or {}).get(namespace, typelib_dir)}/{namespace}.typelib",
+        require=require,
+        get_loaded_namespaces=lambda: sorted(loaded),
+        get_typelib_path=get_typelib_path,
     )
     repository = types.ModuleType("gi.repository")
     repository.__path__ = []  # type: ignore[attr-defined]  # a package, so a missing name falls back to sys.modules
-    gi = types.ModuleType("gi")
 
     def require_version(namespace: str, version: str) -> None:
         if namespace in namespaces:
@@ -328,6 +367,11 @@ def _install_fake_gst(
     gi.repository = repository  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "gi", gi)
     monkeypatch.setitem(sys.modules, "gi.repository", repository)
+    for name in _OVERRIDE_LOADS:
+        # Absent, so the import reaches the importer; the teardown restores the real module.
+        monkeypatch.setitem(sys.modules, f"gi.repository.{name}", None)
+        monkeypatch.delitem(sys.modules, f"gi.repository.{name}")
+    monkeypatch.setattr(sys, "meta_path", [_OverrideImporter(loaded), *sys.meta_path])
     for name, module in {
         "Gst": gst,
         "GstPbutils": types.SimpleNamespace(Discoverer=types.SimpleNamespace(new=new_discoverer)),
@@ -388,6 +432,8 @@ def test_selfcheck_reaches_the_discoverer_without_importing_gtk(launcher, monkey
     [
         *(name for name, _version in _load_launcher().REQUIRED_TYPELIBS),
         pytest.param("GstVideo", id="dependency-of-GstPbutils"),
+        pytest.param("GLibUnix", id="loaded-by-the-GLib-overrides"),
+        pytest.param("GioUnix", id="loaded-by-the-Gio-overrides"),
     ],
 )
 def test_selfcheck_fails_on_a_typelib_outside_the_bundle(launcher, monkeypatch, capsys, tmp_path, namespace) -> None:
@@ -419,6 +465,24 @@ def test_selfcheck_fails_on_a_typelib_beside_the_bundle(launcher, monkeypatch, c
 
     assert launcher.run_selfcheck() == 1
     assert capsys.readouterr().out.strip() == f"FAIL: typelibs from outside the bundle: {beside}/GstApp.typelib"
+
+
+@pytest.mark.parametrize(
+    ("namespace", "dependency"),
+    [
+        pytest.param("Gtk", "'Atk', version '1.0'", id="Gtk-without-Atk"),
+        pytest.param("Gdk", "'HarfBuzz', version '0.0'", id="Gdk-without-HarfBuzz"),
+    ],
+)
+def test_selfcheck_fails_when_a_display_typelib_does_not_load(
+    launcher, monkeypatch, capsys, namespace, dependency
+) -> None:
+    # Gtk / Gdk are never imported, so only loading their typelibs finds a dependency the bundle lacks.
+    error = f"Typelib file for namespace {dependency} not found"
+    _install_fake_gst(monkeypatch, set(), require_errors={namespace: error})
+
+    assert launcher.run_selfcheck() == 1
+    assert capsys.readouterr().out.strip() == f"FAIL: {error}"
 
 
 def test_selfcheck_takes_the_typelibs_linked_into_the_bundle(launcher, monkeypatch, capsys, tmp_path) -> None:

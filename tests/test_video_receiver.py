@@ -46,6 +46,7 @@ from openfollow.video.failure import (
     RESOURCE_NOT_AUTHORIZED,
     RESOURCE_NOT_FOUND,
     RESOURCE_OPEN_READ,
+    RESOURCE_SETTINGS,
     STREAM_CODEC_NOT_FOUND,
     STREAM_DOMAIN,
     ConnectionPhase,
@@ -59,6 +60,8 @@ from openfollow.video.inputs._base import (
     SourceEndpoint,
 )
 from openfollow.video.inputs._pin import PinRefusal
+from openfollow.video.inputs.rtsp import RtspInput
+from tests import _fake_gst as shared_fake_gst
 
 pytestmark = pytest.mark.unit
 
@@ -377,6 +380,7 @@ class FakeInput:
         self.segment_done_calls = 0
         self.discover_results: list[list[str]] | None = None
         self.discover_calls: list[float] = []
+        self.bus_errors: list[BusError] = []
 
     def create_pipeline(
         self,
@@ -396,6 +400,9 @@ class FakeInput:
     def on_bus_segment_done(self, pipeline: Any) -> bool:
         self.segment_done_calls += 1
         return True
+
+    def on_bus_error(self, error: BusError) -> None:
+        self.bus_errors.append(error)
 
     def observe_progress(self, pipeline: Any, report: Any) -> None:
         # Hand the reporter to the test so it can drive protocol progress the
@@ -511,6 +518,9 @@ class FakeInputAlt:
 
     def on_bus_async_done(self, pipeline: Any) -> None:
         self.async_done_calls += 1
+
+    def on_bus_error(self, error: BusError) -> None:
+        pass
 
     def observe_progress(self, pipeline: Any, report: Any) -> None:
         self.progress_reporters.append(report)
@@ -5117,6 +5127,137 @@ class TestTheDiagnosisSurvivesToTheStateTheOperatorSees:
         r.play()
 
         assert r.status_marker.failure == VideoFailure.UNAUTHORIZED
+
+
+class TestAFailedAttemptReachesTheInputBeforeTheRetry:
+    """The input reads what failed before it builds the next attempt."""
+
+    def test_the_error_is_handed_to_the_input(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        error = BusError("Could not open resource", RESOURCE_DOMAIN, RESOURCE_OPEN_READ, "debug text")
+
+        r._handle_bus_error(error)
+
+        assert r._input.bus_errors == [error]
+
+    def test_a_failure_with_no_error_hands_nothing_over(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._on_connection_timeout()
+        assert r._input.bus_errors == []
+
+    def test_an_input_that_raises_still_gets_its_retry(
+        self, fake_gst, fake_glib, fake_input_cls, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+
+        def _boom(_error: BusError) -> None:
+            raise RuntimeError("input bug")
+
+        r._input.on_bus_error = _boom
+        with caplog.at_level(logging.ERROR, logger=receiver_mod.__name__):
+            r._handle_bus_error(BusError("Could not open resource", RESOURCE_DOMAIN, RESOURCE_OPEN_READ))
+
+        assert r._state.reconnect_source_id is not None
+        assert r.status_marker.failure == VideoFailure.UNREACHABLE
+        assert "input bug" in caplog.text
+
+
+class _PlayablePipeline(shared_fake_gst.FakePipeline):
+    """The plugin-side fake pipeline, with the bus and state calls the receiver makes."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__(name)
+        self.bus = FakeBus()
+
+    def get_bus(self) -> FakeBus:
+        return self.bus
+
+    def set_state(self, state: str) -> str:
+        return FakeStateChangeReturn.SUCCESS
+
+    def get_state(self, timeout_ns: int = 0) -> tuple[str, str, str]:
+        return (FakeStateChangeReturn.SUCCESS, FakeState.NULL, FakeState.NULL)
+
+    def get_by_name(self, name: str) -> Any:
+        # Holds the receiver's own sink, a different fake, beside the plugin's elements.
+        return next((elem for elem in self.elements if elem.get_name() == name), None)
+
+
+class TestAnRtspAddressFamilyFailureRetriesOverTcp:
+    """The real RTSP input behind the receiver: the server described its
+    stream, then rtspsrc's UDP ports turned out to be of the other IP family
+    than the address the connection reached. The retry has to run over TCP
+    interleaved, and the operator is told what was observed, not the
+    element's own wording."""
+
+    _ERROR = BusError(
+        message="Could not get/set settings from/on resource.",
+        domain=RESOURCE_DOMAIN,
+        code=RESOURCE_SETTINGS,
+        debug=(
+            "../gst/udp/gstmultiudpsink.c(1229): gst_multiudpsink_configure_client (): "
+            "/GstPipeline:rtsp-sink/GstRTSPSrc:rtspsrc/GstUDPSink:udpsink0:\nInvalid address family (got 10)"
+        ),
+    )
+
+    @pytest.fixture
+    def receiver(self, fake_gst, fake_glib, monkeypatch: pytest.MonkeyPatch) -> receiver_mod.GstNativeSinkReceiver:
+        from gi.repository import Gst  # noqa: F401 - loads the attribute patched below
+
+        plugin_gst = shared_fake_gst.make_fake_gst()
+        plugin_gst.Pipeline = SimpleNamespace(new=_PlayablePipeline)
+        monkeypatch.setattr("gi.repository.Gst", plugin_gst)
+        monkeypatch.setattr(receiver_mod, "get_input_class", lambda input_id: RtspInput if input_id == "rtsp" else None)
+        # An address literal: the build looks nothing up.
+        return receiver_mod.GstNativeSinkReceiver(
+            source_type="rtsp", input_config={"rtsp_url": "rtsp://[2001:db8::10]:554/stream"}, reconnect_delay=0.2
+        )
+
+    @staticmethod
+    def _protocols(r: receiver_mod.GstNativeSinkReceiver) -> object:
+        return r._pipeline.get_by_name("rtspsrc").properties["protocols"]
+
+    @staticmethod
+    def _describe(r: receiver_mod.GstNativeSinkReceiver) -> None:
+        rtspsrc = r._pipeline.get_by_name("rtspsrc")
+        for signal, callback in rtspsrc.signals:
+            if signal == "on-sdp":
+                callback(rtspsrc, None)
+
+    @staticmethod
+    def _retry(r: receiver_mod.GstNativeSinkReceiver, fake_glib: FakeGLib) -> None:
+        _delay, callback = fake_glib.timers[r._state.reconnect_source_id]
+        callback()
+
+    def test_the_retry_runs_over_tcp_interleaved(self, receiver, fake_glib) -> None:
+        receiver.play()
+        assert self._protocols(receiver) == 0x7
+        self._describe(receiver)
+
+        receiver._handle_bus_error(self._ERROR)
+        self._retry(receiver, fake_glib)
+
+        assert self._protocols(receiver) == 0x4
+
+    def test_the_failure_is_classified_not_shown_raw(self, receiver) -> None:
+        receiver.play()
+        self._describe(receiver)
+
+        receiver._handle_bus_error(self._ERROR)
+
+        assert receiver.status_marker.failure == VideoFailure.NO_DATA
+
+    def test_a_failed_tcp_retry_is_classified_and_the_next_stays_on_tcp(self, receiver, fake_glib) -> None:
+        receiver.play()
+        self._describe(receiver)
+        receiver._handle_bus_error(self._ERROR)
+        self._retry(receiver, fake_glib)
+
+        receiver._on_connection_timeout()
+
+        assert receiver.status_marker.failure == VideoFailure.NO_DATA
+        self._retry(receiver, fake_glib)
+        assert self._protocols(receiver) == 0x4
 
 
 class TestRefusalReachesTheClassifier:

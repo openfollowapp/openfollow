@@ -444,9 +444,6 @@ def leg(out: list[str], sgn: int, y: float, x_out: float, x_in: float, x_tie: fl
         if k % 2 == 0:  # a highlight along every other fold
             for p0, p1 in zip(fold[::3], fold[3::3], strict=False):
                 out.append(line(p0, p1, "#fbfaf8", 1.4, 0.55))
-    xk = sgn * x_tie
-    out.append(line((xk - 0.32, y, LEG_KNOT), (xk + 0.32, y, LEG_KNOT), "#5a5651", 6))
-    out.append(line((xk - sgn * 0.3, y, LEG_KNOT), (xk - sgn * 0.42, y, LEG_KNOT - 0.6), "#5a5651", 3))
 
 
 def side_lights(out: list[str]) -> None:

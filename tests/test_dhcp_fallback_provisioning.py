@@ -230,8 +230,9 @@ _WAIT_INSTALLED = "/usr/share/openfollow/nm-wait-online.sh"
 _IP_CONFIG = "connecting (getting IP configuration)"
 _FALLBACK = "169.254.7.9/16"
 _LEASE = "192.0.2.10/24"
-# Polls (a second each) a device must hold only its fallback before it counts.
-_GRACE = 3
+# The script polls four times a second; a device counts once it has held only its fallback for 3 s, 12 polls.
+_POLLS_PER_S = 4
+_GRACE = 3 * _POLLS_PER_S
 
 # One poll's view: is NetworkManager's startup complete, and each device's
 # (type, state, IPv4 addresses). ``None`` for devices: NetworkManager not running.
@@ -239,10 +240,11 @@ _Poll = tuple[bool, dict[str, tuple[str, str, list[str]]] | None]
 
 
 def _run_wait(tmp_path: Path, polls: list[_Poll], cap: int = 10, shell: str = "/bin/sh") -> tuple[int, int]:
-    """Run the packaged wait with ``nm-online``, ``nmcli`` and ``ip`` stubbed.
+    """Run the packaged wait with ``nm-online``, ``nmcli``, ``ip`` and ``sleep`` stubbed.
 
-    Poll *n* sees ``polls[n]``, the last one repeating. Returns the exit code
-    and how many times it polled.
+    Poll *n* sees ``polls[n]``, the last one repeating. ``sleep`` advances the
+    script's clock instead of waiting. Returns the exit code and how many times
+    it polled.
     """
     if not _WAIT_SCRIPT.is_file():
         pytest.skip("no packaging/debian/nm-wait-online.sh in this tree")
@@ -259,11 +261,13 @@ def _run_wait(tmp_path: Path, polls: list[_Poll], cap: int = 10, shell: str = "/
             (poll / f"addr_{name}").write_text("".join(f"{line}\n" for line in lines), encoding="utf-8")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
+    clock = tmp_path / "uptime"
+    clock.write_text("100.00 0.00\n", encoding="utf-8")
     state = f'cur="$(cat "{tmp_path}/cur")"; dir="{tmp_path}/p$cur"'
     stubs = {
-        # Answers only the startup question (-s); any other use is an error.
+        # Answers only the startup question (-s), and only once without waiting (--timeout=0).
         "nm-online": (
-            'case " $* " in *" -s "*) ;; *) exit 2 ;; esac\n'
+            'case " $* " in *" -s "*" --timeout=0 "*) ;; *) exit 2 ;; esac\n'
             f'n="$(cat "{tmp_path}/count" 2>/dev/null || echo 0)"\n'
             f'echo "$((n + 1))" > "{tmp_path}/count"\n'
             f'[ "$n" -lt {len(polls)} ] && cur="$n" || cur={len(polls) - 1}\n'
@@ -273,6 +277,11 @@ def _run_wait(tmp_path: Path, polls: list[_Poll], cap: int = 10, shell: str = "/
         "nmcli": f'{state}\n[ -f "$dir/devices" ] || exit 8\ncat "$dir/devices"\n',
         # ip -4 -o addr show dev <name>
         "ip": f'{state}\neval "dev=\\${{$#}}"\ncat "$dir/addr_$dev" 2>/dev/null\nexit 0\n',
+        "sleep": (
+            f'echo "$1" >> "{tmp_path}/sleeps"\n'
+            f'awk -v d="$1" \'{{ printf "%.2f 0.00\\n", $1 + d }}\' "{clock}" > "{clock}.new"\n'
+            f'mv "{clock}.new" "{clock}"\n'
+        ),
     }
     for name, body in stubs.items():
         stub = bin_dir / name
@@ -280,7 +289,7 @@ def _run_wait(tmp_path: Path, polls: list[_Poll], cap: int = 10, shell: str = "/
         stub.chmod(0o755)
     result = subprocess.run(
         [shell, str(_WAIT_SCRIPT), str(cap)],
-        env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
+        env={"PATH": f"{bin_dir}:/usr/bin:/bin", "OPENFOLLOW_UPTIME": str(clock)},
         capture_output=True,
         text=True,
         check=False,
@@ -379,11 +388,11 @@ _ADDRESSLESS = (False, _eth0(_IP_CONFIG))
             4 + _GRACE,
             id="carrier-lost-restarts-the-grace",
         ),
-        # eth0 has held its fallback since poll 1 when eth1's lease lands on poll 4.
+        # eth0 has held its fallback for the grace when eth1's lease lands, the poll after it.
         pytest.param(
-            [(False, {**_eth0(_IP_CONFIG, _FALLBACK), "eth1": ("ethernet", _IP_CONFIG, [])})] * 3
+            [(False, {**_eth0(_IP_CONFIG, _FALLBACK), "eth1": ("ethernet", _IP_CONFIG, [])})] * _GRACE
             + [(False, {**_eth0(_IP_CONFIG, _FALLBACK), "eth1": ("ethernet", _IP_CONFIG, [_LEASE])})],
-            4,
+            1 + _GRACE,
             id="grace-counts-per-device",
         ),
         # eth1's fallback lands on poll 3, so its grace ends three polls after eth0's would.
@@ -434,4 +443,11 @@ def test_wait_online_succeeds_once_every_activating_device_has_an_address(
 def test_wait_online_fails_at_the_cap_while_a_device_has_no_address(
     tmp_path: Path, shell: str, devices: dict[str, tuple[str, str, list[str]]] | None
 ) -> None:
-    assert _run_wait(tmp_path, [(False, devices)], cap=3, shell=shell) == (1, 3)
+    assert _run_wait(tmp_path, [(False, devices)], cap=3, shell=shell) == (1, 3 * _POLLS_PER_S)
+
+
+def test_wait_online_checks_four_times_a_second_without_waiting_in_nm_online(tmp_path: Path) -> None:
+    """``nm-online --timeout=0`` answers at once, so the script's own pause sets the rate, and a lease ends the
+    wait within a quarter second instead of a second."""
+    assert _run_wait(tmp_path, [_ON_FALLBACK], cap=1) == (1, _POLLS_PER_S)
+    assert (tmp_path / "sleeps").read_text(encoding="utf-8").split() == ["0.25"] * _POLLS_PER_S

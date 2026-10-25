@@ -3,7 +3,7 @@
 """Write a Media Gallery default's calibration next to its picture: the camera and grid it was drawn with.
 
 The file holds ``[camera]`` and ``[grid]`` in ``config.toml`` form and takes the picture's name
-(``arena_default.jpg`` gives ``arena_default.toml``). A lens centre is recorded only when the
+(``concert_default.jpg`` gives ``concert_default.toml``). A lens centre is recorded only when the
 picture was drawn about one; a missing key is the config's 0. Nothing reads it at runtime.
 """
 

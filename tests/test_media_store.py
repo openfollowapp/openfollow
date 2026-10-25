@@ -70,7 +70,7 @@ def test_storage_path_falls_back_to_workdir(monkeypatch: pytest.MonkeyPatch) -> 
 
 @pytest.mark.parametrize(
     "media_id",
-    [ms.DEFAULT_STAGE_ID, ms.DEFAULT_ARENA_ID, ms.DEFAULT_FESTIVAL_ID, ms.DEFAULT_GREY_ID, "0123456789abcdef"],
+    [ms.DEFAULT_STAGE_ID, ms.DEFAULT_CONCERT_ID, ms.DEFAULT_FESTIVAL_ID, ms.DEFAULT_GREY_ID, "0123456789abcdef"],
 )
 def test_valid_ids(media_id: str) -> None:
     assert ms.is_valid_id(media_id)
@@ -99,7 +99,6 @@ def test_invalid_ids(media_id: str) -> None:
 
 def test_defaults_are_read_only() -> None:
     assert ms.is_read_only(ms.DEFAULT_STAGE_ID)
-    assert ms.is_read_only(ms.DEFAULT_ARENA_ID)
     assert ms.is_read_only(ms.DEFAULT_CONCERT_ID)
     assert ms.is_read_only(ms.DEFAULT_FESTIVAL_ID)
     assert ms.is_read_only(ms.DEFAULT_GREY_ID)
@@ -113,7 +112,6 @@ def test_list_media_defaults_only_when_empty(storage: Path) -> None:
     items = ms.list_media()
     assert [i.media_id for i in items] == [
         ms.DEFAULT_STAGE_ID,
-        ms.DEFAULT_ARENA_ID,
         ms.DEFAULT_CONCERT_ID,
         ms.DEFAULT_FESTIVAL_ID,
         ms.DEFAULT_GREY_ID,
@@ -129,7 +127,6 @@ def test_resolve_defaults(storage: Path) -> None:
 
 
 _BUNDLED_PICTURES = [
-    pytest.param(ms.DEFAULT_ARENA_ID, "ARENA_ASSET_JPG", "Arena", id="arena"),
     pytest.param(ms.DEFAULT_CONCERT_ID, "CONCERT_ASSET_JPG", "Concert", id="concert"),
     pytest.param(ms.DEFAULT_FESTIVAL_ID, "FESTIVAL_ASSET_JPG", "Festival", id="festival"),
 ]

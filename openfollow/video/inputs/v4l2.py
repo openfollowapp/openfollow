@@ -251,20 +251,25 @@ def _choose_mode(
 ) -> _CaptureMode | None:
     """The mode to pin: raw when the link carries it at the render size, else MJPEG, else the largest left.
 
-    ``dims`` ``None`` (native) asks for the largest size listed at the rate. ``None``
-    when nothing reaches the rate: the source then negotiates as it would unpinned.
+    A rate above the camera's fastest asks for its fastest; videorate repeats frames
+    up to the request. ``dims`` ``None`` (native) asks for the largest size listed.
+    ``None`` when no raw mode fits the link and there is no MJPEG: the source then
+    negotiates as it would unpinned.
     """
-    at_rate = [m for m in modes if m.rate >= framerate - Fraction(1, 2)]
-    raw = [m for m in at_rate if m.fourcc in _RAW_FORMATS and _fits_link(m, budget)]
-    mjpeg = [m for m in at_rate if m.fourcc in _MJPEG_FOURCCS]
-    usable = raw + mjpeg
-    if not usable:
+    deliverable = [
+        m for m in modes if m.fourcc in _MJPEG_FOURCCS or (m.fourcc in _RAW_FORMATS and _fits_link(m, budget))
+    ]
+    if not deliverable:
         return None
+    rate = min(Fraction(framerate), max(m.rate for m in deliverable))
+    usable = [m for m in deliverable if m.rate >= rate - Fraction(1, 2)]
+    raw = [m for m in usable if m.fourcc in _RAW_FORMATS]
+    mjpeg = [m for m in usable if m.fourcc in _MJPEG_FOURCCS]
     width, height = dims or max(((m.width, m.height) for m in usable), key=lambda wh: wh[0] * wh[1])
     for candidates in (raw, mjpeg):
         covering = [m for m in candidates if m.width >= width and m.height >= height]
         if covering:
-            return min(covering, key=lambda m: (m.area, abs(m.rate - framerate)))
+            return min(covering, key=lambda m: (m.area, abs(m.rate - rate)))
     return max(usable, key=lambda m: (m.area, m.fourcc in _RAW_FORMATS))
 
 

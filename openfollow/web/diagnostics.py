@@ -561,6 +561,31 @@ def collect_runtime_state(p: DiagnosticsProviders) -> list[str]:
     system = stats.get("system") or {}
     out_res = system.get("output_resolution")
     rows.append(f"  Output resolution:      {_fmt_resolution(out_res) if out_res else '- (no canvas)'}")
+    rows.extend(_runtime_senders(stats.get("network") or {}))
+    return rows
+
+
+def _runtime_senders(network: dict[str, Any]) -> list[str]:
+    """Whether each sender's datagrams are leaving, and the rows that put on screen."""
+    rows = ["  Senders:"]
+    senders = network.get("senders") or []
+    if not senders:
+        rows.append("    (none running)")
+    for sender in senders:
+        state = str(sender.get("state") or "?")
+        line = f"    {str(sender.get('label') or '?'):<13} {state:<9}"
+        line += f" {sender.get('sent_total', 0)} sent, {sender.get('failed_total', 0)} failed"
+        rows.append(line)
+        if state != "ok":
+            since = sender.get("failing_for_s")
+            lasted = f" for {float(since):.0f} s" if isinstance(since, (int, float)) else ""
+            errno_ = sender.get("errno")
+            code = f" [errno {errno_}]" if errno_ is not None else ""
+            rows.append(f"      {sender.get('failed', 0)} failed{lasted}: {sender.get('error') or '?'}{code}")
+            if sender.get("local_network"):
+                rows.append("      reads as macOS Local Network access being off for this app")
+    for alert in network.get("alerts") or []:
+        rows.append(f"    on screen: {alert.get('text', '')}")
     return rows
 
 

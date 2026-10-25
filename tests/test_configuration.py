@@ -71,6 +71,10 @@ class _DummyRuntimeServices:
         self.window_size_changes: list[tuple[int, int]] = []
         self.video_swaps: list[AppConfig] = []
         self.station_fqdn_changes: list[str] = []
+        self.osc_record_sweeps = 0
+
+    def forget_idle_osc_send_records(self) -> None:
+        self.osc_record_sweeps += 1
 
     def apply_station_fqdn_change(self, fqdn: str) -> None:
         self.station_fqdn_changes.append(fqdn)
@@ -4873,6 +4877,45 @@ def test_apply_runtime_reloads_trigger_zones() -> None:
 
     assert zone_engine.reloaded == [new_zones]
     assert app._config.trigger_zones == new_zones
+
+
+@pytest.mark.parametrize(
+    ("change", "sweeps"),
+    [
+        ("transmitters", 1),
+        ("destinations", 1),
+        ("zones", 1),
+        ("transmitters+zones", 1),
+        ("unrelated", 0),
+    ],
+)
+def test_an_osc_routing_change_forgets_the_records_nothing_sends_to(change: str, sweeps: int) -> None:
+    """A cached OSC client outlives its row, so its last streak must not come back when the row does."""
+    from openfollow.configuration import (
+        OscDestinationConfig,
+        OscDestinationsConfig,
+        OscTransmitterConfig,
+        OscTransmittersConfig,
+        TriggerZonesConfig,
+    )
+
+    app = _app_with()
+    app._runtime_services._zone_engine = _DummyZoneEngine()  # type: ignore[attr-defined]
+    overrides: dict[str, object] = {}
+    if "transmitters" in change:
+        overrides["osc_transmitters"] = OscTransmittersConfig(transmitters=[OscTransmitterConfig(id="row1")])
+    if "destinations" in change:
+        overrides["osc_destinations"] = OscDestinationsConfig(
+            destinations=[OscDestinationConfig(id="default", name="Default", host="192.0.2.40")]
+        )
+    if "zones" in change:
+        overrides["trigger_zones"] = TriggerZonesConfig(enabled=True)
+    if change == "unrelated":
+        overrides["psn_system_name"] = "Stage left"
+
+    apply_runtime_config_changes(app, AppConfig(**overrides))
+
+    assert app._runtime_services.osc_record_sweeps == sweeps
 
 
 def test_apply_runtime_osc_destinations_change_reapplies_both_consumers() -> None:

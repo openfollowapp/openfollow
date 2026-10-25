@@ -100,6 +100,14 @@
         <div class="stat-panel-head">
             <h3 class="stat-panel-title">Device</h3>
         </div>
+% for text, action in alerts.network:
+        <div class="notice error">
+            <div>{{text}}</div>
+% if action:
+            <div class="notice-sub">{{action}}</div>
+% end
+        </div>
+% end
 % if alerts.controllers:
         <div class="notice error">
 % for line in alerts.controllers:

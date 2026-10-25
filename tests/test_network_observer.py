@@ -18,6 +18,9 @@ import pytest
 
 from openfollow.runtime.network_observer import (
     DOWN_POLLS_BEFORE_SUSPEND,
+    PLANE_DOWN_ACTION,
+    PLANE_FAILED_ACTION,
+    PLANE_UNPLUGGED_ACTION,
     POLL_INTERVAL_S,
     NetworkPlaneObserver,
     Plane,
@@ -534,6 +537,35 @@ class TestAlertsAndThrottling:
         second.go_down()
         _poll_n(obs, clk, DOWN_POLLS_BEFORE_SUSPEND)
         assert obs.alerts() == ["plane0: zzz0 is down", "plane1: aaa0 is down"]
+
+    def test_alert_rows_carry_the_key_of_the_plane_they_report(self) -> None:
+        """What lets a sender on a plane already reported down go unreported twice."""
+        down = _Recorder(iface="eth1")
+        up = _Recorder(iface="eth0")
+        obs, clk = _observer(up, down)
+        down.go_down()
+        _poll_n(obs, clk, 1)
+        assert obs.alert_rows() == [("plane1", "plane1: eth1 is down", PLANE_DOWN_ACTION)]
+
+    def test_every_alert_row_carries_its_next_step(self) -> None:
+        """Live Statistics shows each row with a second line; a plane row is no exception."""
+        down, unplugged, failing = _Recorder(iface="eth1"), _Recorder(iface="enx0"), _Recorder(iface="eth2")
+        failing.apply_error = OSError("cannot bind")
+        clk = _Clock()
+        obs = NetworkPlaneObserver(
+            planes=[r.plane(f"plane{i}") for i, r in enumerate((down, unplugged, failing))],
+            clock=clk,
+            iface_present=lambda iface: iface != "enx0",
+        )
+        down.go_down()
+        unplugged.go_down()
+        _poll_n(obs, clk, 1)
+        assert [(row.text, row.action) for row in obs.alert_rows()] == [
+            ("plane0: eth1 is down", PLANE_DOWN_ACTION),
+            ("plane1: enx0 is not connected", PLANE_UNPLUGGED_ACTION),
+            ("plane2: eth2 – cannot bind", PLANE_FAILED_ACTION),
+        ]
+        assert all(len(row.action) <= 110 for row in obs.alert_rows())
 
     def test_alert_falls_back_when_the_interface_cannot_be_named(self) -> None:
         rec = _Recorder(iface="")

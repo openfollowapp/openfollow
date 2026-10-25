@@ -20,7 +20,8 @@ from typing import Any
 from openfollow.configuration import VALID_OSC_FRAMINGS as _VALID_OSC_FRAMINGS_TUPLE
 from openfollow.net_egress import Egress, pin_socket_egress
 from openfollow.net_utils import IPV4_RESOLVER, join_multicast_group_on_iface
-from openfollow.osc.transport import TcpOscSender
+from openfollow.osc.transport import TcpBackoffError, TcpOscSender
+from openfollow.send_health import SendHealth
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +200,7 @@ class _ClientEntry:
 
     client: Any
     stats: ClientStats = field(default_factory=ClientStats)
+    health: SendHealth = field(default_factory=lambda: SendHealth("OSC output"))
 
 
 # pragma: no branch – pythonosc is a pyproject-pinned dependency, so the
@@ -282,8 +284,9 @@ class OscService:
     """Process-wide OSC service. The constructor opens no sockets.
 
     Send-side: caches one client per ``(host, port, protocol, framing)``
-    target. ``send()`` never raises – failures are caught, rate-limited in
-    the log, and counted in per-target ``ClientStats``.
+    target. ``send()`` never raises – failures are caught and counted in
+    per-target ``ClientStats``; a network failure is also recorded in that
+    target's ``SendHealth``, which logs it.
 
     Receive-side: a single ``BlockingOSCUDPServer`` (when started) hosts one
     ``Dispatcher``. ``subscribe``/``unsubscribe`` mutate the dispatcher
@@ -383,8 +386,14 @@ class OscService:
                 entry.stats.total_errors += 1
                 entry.stats.last_error = str(exc)
                 errors = entry.stats.total_errors
+            if isinstance(exc, TcpBackoffError):
+                # Nothing was attempted; the refusal that opened the window is on record.
+                return False
+            if isinstance(exc, OSError):
+                entry.health.record_failure(exc, host)
+                return False
             # Throttle: log the first few, then every 100th, so a
-            # permanently-down receiver doesn't flood the log.
+            # message that never encodes doesn't flood the log.
             if errors <= 5 or errors % 100 == 0:
                 logger.warning(
                     "OSC send to %s://%s:%d failed (%d errors): %s",
@@ -397,6 +406,7 @@ class OscService:
             return False
         with self._cache_lock:
             entry.stats.total_sent += 1
+        entry.health.record_success()
         return True
 
     def evict(
@@ -460,6 +470,31 @@ class OscService:
                 last_error=entry.stats.last_error,
             )
 
+    def send_health_for(
+        self,
+        host: str,
+        port: int,
+        protocol: str = "udp",
+        framing: str = "slip",
+        egress: Egress | None = None,
+    ) -> SendHealth | None:
+        """The send record of a target's cached client; None before its first send."""
+        key = (host, int(port), protocol, _cache_framing(protocol, framing), egress)
+        with self._cache_lock:
+            entry = self._cache.get(key)
+        return entry.health if entry is not None else None
+
+    def reset_send_health_except(self, targets: Iterable[tuple[str, int, str, str, Egress | None]]) -> None:
+        """Forget the streak of every cached target not in *targets* (host, port, protocol, framing, egress)."""
+        keep = {
+            (host, int(port), protocol, _cache_framing(protocol, framing), egress)
+            for host, port, protocol, framing, egress in targets
+        }
+        with self._cache_lock:
+            idle = [entry.health for key, entry in self._cache.items() if key not in keep]
+        for health in idle:
+            health.reset()
+
     def _get_or_create_client(
         self,
         host: str,
@@ -492,7 +527,7 @@ class OscService:
                 with self._cache_lock:
                     self._create_retry_at[key] = time.monotonic() + _PINNED_CREATE_RETRY_S
             return None
-        new_entry = _ClientEntry(client=client)
+        new_entry = _ClientEntry(client=client, health=SendHealth(f"OSC to {protocol}://{host}:{port}"))
         with self._cache_lock:
             # Re-check under lock to resolve a duplicate-creation race.
             existing = self._cache.get(key)

@@ -37,8 +37,10 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 from openfollow.net_utils import ResolveStatus
+from openfollow.retry_backoff import RETRY_BACKOFF_MAX_S, RETRY_BACKOFF_S
 from openfollow.uri_redaction import redact_uris_in_text
 
 logger = logging.getLogger(__name__)
@@ -53,12 +55,6 @@ POLL_INTERVAL_S = 1.0
 # leaves a gap of ~1 s for a static apply and up to ~5 s for a DHCP handshake,
 # so a missing sample is reported at once but is no reason to stop the plane.
 DOWN_POLLS_BEFORE_SUSPEND = 8
-
-# Backoff after a failed apply/suspend, so a plane whose backend keeps raising
-# doesn't retry once a second for the length of a show. Each failure doubles
-# the wait, up to the cap.
-_RETRY_BACKOFF_S = 2.0
-_RETRY_BACKOFF_MAX_S = 60.0
 
 
 def _always_enabled() -> bool:
@@ -113,7 +109,8 @@ class _PlaneState:
     # An outage that began after the failure leads instead, until it ends.
     superseded: bool = False
     retry_at: float = 0.0
-    backoff: float = _RETRY_BACKOFF_S
+    # After a failed apply/suspend, so a backend that keeps raising isn't retried once a second.
+    backoff: float = RETRY_BACKOFF_S
     # Interface name from the last resolve, so ``alerts()`` can name it without
     # re-resolving. ``alerts()`` runs on the render path.
     iface: str = ""
@@ -128,6 +125,18 @@ class _PlaneState:
 
 # A plane with nothing to follow (see ``Plane.enabled``).
 NOT_FOLLOWED = "not followed"
+
+PLANE_DOWN_ACTION = "Check the cable, or choose another interface under Network Interface Assignment."
+PLANE_UNPLUGGED_ACTION = "Plug the adapter back in, or choose another interface under Network Interface Assignment."
+PLANE_FAILED_ACTION = "Check the interface under Network Interface Assignment, or download a diagnostics bundle."
+
+
+class PlaneAlert(NamedTuple):
+    """One ``alerts()`` row, the plane it reports, and the next step the web shows under it."""
+
+    key: str
+    text: str
+    action: str
 
 
 @dataclass(frozen=True)
@@ -267,7 +276,7 @@ class NetworkPlaneObserver:
         state.failure = redact_uris_in_text(str(exc) or exc.__class__.__name__)
         state.superseded = False
         state.retry_at = now + state.backoff
-        state.backoff = min(state.backoff * 2, _RETRY_BACKOFF_MAX_S)
+        state.backoff = min(state.backoff * 2, RETRY_BACKOFF_MAX_S)
         logger.exception("Network observer: %s failed", plane.label)
 
     @staticmethod
@@ -275,7 +284,7 @@ class NetworkPlaneObserver:
         state.failure = ""
         state.superseded = False
         state.retry_at = 0.0
-        state.backoff = _RETRY_BACKOFF_S
+        state.backoff = RETRY_BACKOFF_S
 
     def _poll_one(self, plane: Plane, now: float) -> None:
         if not plane.enabled():
@@ -364,7 +373,11 @@ class NetworkPlaneObserver:
         every interface via psutil - so an outage would put that enumeration on
         the render path for as long as it lasted.
         """
-        out: list[str] = []
+        return [row.text for row in self.alert_rows()]
+
+    def alert_rows(self) -> list[PlaneAlert]:
+        """``alerts()`` with each plane's state key and next step."""
+        out: list[PlaneAlert] = []
         for plane in self._polled:
             state = self._states.get(plane.state_key)
             if state is None:
@@ -373,10 +386,14 @@ class NetworkPlaneObserver:
                 # A failed rebind or suspend leads: it says why the plane is
                 # dead, also while its retry waits out the backoff.
                 where = f"{self._name(state.iface)} – " if state.iface else ""
-                out.append(f"{plane.label}: {where}{state.failure}")
+                out.append(PlaneAlert(plane.state_key, f"{plane.label}: {where}{state.failure}", PLANE_FAILED_ACTION))
             elif state.suspended or state.down_polls:
                 # Off the show from the first addressless poll; the suspend is
                 # debounced only so Apply and Renew don't tear the plane down.
-                outage = "is down" if state.present else "is not connected"
-                out.append(f"{plane.label}: {self._name(state.iface) or 'interface'} {outage}")
+                if state.present:
+                    outage, action = "is down", PLANE_DOWN_ACTION
+                else:
+                    outage, action = "is not connected", PLANE_UNPLUGGED_ACTION
+                text = f"{plane.label}: {self._name(state.iface) or 'interface'} {outage}"
+                out.append(PlaneAlert(plane.state_key, text, action))
         return out

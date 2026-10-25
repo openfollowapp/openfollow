@@ -31,6 +31,7 @@ from openfollow.rttrpm.server import (
     encode_rttrpm_packet,
     encode_rttrpm_trackable_module,
 )
+from openfollow.send_health import SendHealth
 
 pytestmark = pytest.mark.unit
 
@@ -698,6 +699,52 @@ class TestRttrpmEgressPin:
             assert srv._send_thread is None
             assert srv.bound_source_ip() is None
 
+    def test_a_restart_refused_its_pin_logs_only_the_refusal(self, monkeypatch, caplog) -> None:
+        """Its generation is torn down at once, so a rebuild or a skipped send would only add to the log."""
+        import logging as _logging
+
+        class _OnePass(Exception):
+            pass
+
+        class _RunsOnePassThread:
+            """A send thread scheduled the moment it starts: its loop runs one pass, up to its first wait."""
+
+            def __init__(self, *, target: object, args: tuple[threading.Event], daemon: bool, name: str) -> None:
+                self._target = target
+                self._args = args
+
+            def start(self) -> None:
+                def wait(_timeout: float | None = None) -> bool:
+                    raise _OnePass
+
+                self._args[0].wait = wait  # type: ignore[method-assign]
+                try:
+                    self._target(*self._args)  # type: ignore[operator]
+                except _OnePass:
+                    pass
+
+            def join(self, timeout: float | None = None) -> None:
+                pass
+
+            def is_alive(self) -> bool:
+                return False
+
+        monkeypatch.setattr("openfollow.rttrpm.server.threading.Thread", _RunsOnePassThread)
+        _calls, pin = self._pins(fail=True)
+        srv = RttrpmServer(host="198.51.100.20")
+        srv.register_marker(_marker(1))
+        with (
+            patch("openfollow.rttrpm.server.socket.socket"),
+            patch("openfollow.rttrpm.server.pin_socket_egress", pin),
+            caplog.at_level(_logging.DEBUG),
+            pytest.raises(OSError, match="pinned to eth1"),
+        ):
+            srv.restart(host="198.51.100.20", port=36700, fps=60.0, context=0, egress=self._EGRESS)
+        assert [(r.levelno, r.getMessage()) for r in caplog.records if r.name.startswith("openfollow")] == [
+            (_logging.WARNING, "RTTrPM: cannot send via eth1")
+        ]
+        assert srv.send_health.status().failed_total == 0
+
     def test_bound_source_ip_is_none_until_started_and_after_stop(self) -> None:
         with patch("openfollow.rttrpm.server.socket.socket"):
             srv = RttrpmServer(host="198.51.100.20")
@@ -743,21 +790,249 @@ class TestRttrpmStopTimeout:
 
 
 class TestRttrpmSendErrorSuppression:
-    def test_send_log_is_rate_limited_after_first_5_errors(self, caplog) -> None:
+    def test_a_burst_of_send_errors_logs_once(self, caplog, monkeypatch) -> None:
         import errno as _e
         import logging as _logging
 
+        # However long the burst takes, it never reaches failing.
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", float("inf"))
         srv = RttrpmServer(host="127.0.0.1")
         sock = MagicMock()
         sock.sendto.side_effect = OSError(_e.EACCES, "denied")  # non-transient
         srv._socket = sock
 
-        with caplog.at_level(_logging.WARNING, logger="openfollow.rttrpm.server"):
+        with caplog.at_level(_logging.WARNING):
             for _ in range(20):
                 srv._send(b"x")
 
-        # First 5 logged, the next 15 suppressed (none of 6..20 hit %100).
-        assert len(caplog.records) == 5
+        assert [r.message for r in caplog.records] == ["RTTrPM output: send failed: [Errno 13] denied"]
+        assert srv.send_health.status().failed == 20
+
+    def test_a_good_send_is_counted(self) -> None:
+        srv = RttrpmServer(host="127.0.0.1")
+        srv._socket = MagicMock()
+        srv._send(b"x")
+        assert srv.send_health.status().sent_total == 1
+
+
+class TestRttrpmSendHealthLifecycle:
+    def test_stopping_forgets_the_streak(self) -> None:
+        import errno as _e
+
+        srv = RttrpmServer(host="192.0.2.30")
+        srv.send_health.record_failure(OSError(_e.ENETUNREACH, "unreachable"), "192.0.2.30")
+        srv.stop()
+        assert srv.send_health.status().state == "ok"
+
+    def test_an_output_with_nothing_to_send_ends_its_failing_streak(self) -> None:
+        """No trackable means no send, so a row saying sends keep failing would never clear."""
+        import errno as _e
+
+        from openfollow.send_health import FAILING_AFTER_S
+
+        now = [100.0]
+        srv = RttrpmServer(host="192.0.2.30")
+        srv._send_health = SendHealth("RTTrPM output", clock=lambda: now[0])
+        srv.send_health.record_failure(OSError(_e.EACCES, "denied"), "192.0.2.30")
+        now[0] += FAILING_AFTER_S
+        srv.send_health.record_failure(OSError(_e.EACCES, "denied"), "192.0.2.30")
+        assert srv.send_health.status().state == "failing"
+        srv._send_packet()
+        assert srv.send_health.status().state == "ok"
+
+    def test_a_send_failing_after_its_generation_stopped_records_nothing(self) -> None:
+        import errno as _e
+
+        srv = RttrpmServer(host="192.0.2.30")
+        sock = MagicMock()
+        sock.sendto.side_effect = OSError(_e.EBADF, "Bad file descriptor")
+        srv._socket = sock
+        stale = threading.Event()
+        stale.set()
+        srv._send(b"x", stale)
+        assert srv.send_health.status().failed_total == 0
+
+    def test_a_packet_skipped_while_the_socket_is_rebuilt_is_a_failure(self, monkeypatch) -> None:
+        """A rebuild that keeps failing must not hold the streak short of a row."""
+        import errno as _e
+
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        srv = RttrpmServer(host="192.0.2.30")
+        srv.register_marker(_marker(1))
+        sock = MagicMock()
+        sock.sendto.side_effect = OSError(_e.ENETUNREACH, "Network is unreachable")
+        srv._socket = sock
+        with patch("openfollow.rttrpm.server.socket.socket", side_effect=OSError("no fds")):
+            srv._send_packet()
+            assert srv._socket is None
+            srv._send_packet()
+        status = srv.send_health.status()
+        assert status.state == "failing"
+        assert (status.failed, status.error) == (2, "Network is unreachable")
+
+    def test_the_rest_of_a_split_packet_skipped_after_a_failed_rebuild_is_a_failure(self, monkeypatch) -> None:
+        import errno as _e
+
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        srv = RttrpmServer(host="192.0.2.30")
+        # Past one datagram's worth of trackables, so the packet splits.
+        for marker_id in range(1, 61):
+            srv.register_marker(_marker(marker_id))
+        sock = MagicMock()
+        sock.sendto.side_effect = OSError(_e.ENETUNREACH, "Network is unreachable")
+        srv._socket = sock
+        with patch("openfollow.rttrpm.server.socket.socket", side_effect=OSError("no fds")):
+            srv._send_packet()
+        assert sock.sendto.call_count == 1
+        status = srv.send_health.status()
+        assert (status.state, status.failed) == ("failing", 2)
+
+    def test_an_unpinned_socket_that_cannot_be_created_raises_a_row_named_by_its_error(self, monkeypatch) -> None:
+        import errno as _e
+
+        # The send thread never runs; the test drives the packets.
+        monkeypatch.setattr(threading, "Thread", MagicMock())
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        srv = RttrpmServer(host="192.0.2.30")
+        srv.register_marker(_marker(1))
+        with patch("openfollow.rttrpm.server.socket.socket", side_effect=OSError(_e.EMFILE, "Too many open files")):
+            srv.start()
+            assert srv._socket is None
+            srv._send_packet()
+            srv._send_packet()
+        status = srv.send_health.status()
+        assert status.state == "failing"
+        assert (status.error, status.errno) == ("Too many open files", _e.EMFILE)
+
+    def test_a_socket_still_down_after_an_idle_spell_raises_the_row_again(self, monkeypatch) -> None:
+        """Nothing to send ends the streak, but the socket a failed rebuild left down is still down."""
+        import errno as _e
+
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        srv = RttrpmServer(host="192.0.2.30")
+        marker = _marker(1)
+        srv.register_marker(marker)
+        sock = MagicMock()
+        sock.sendto.side_effect = OSError(_e.ENETUNREACH, "Network is unreachable")
+        srv._socket = sock
+        with patch("openfollow.rttrpm.server.socket.socket", side_effect=OSError(_e.EMFILE, "Too many open files")):
+            srv._send_packet()
+            assert srv._socket is None
+            srv.unregister_marker(marker.marker_id)
+            srv._send_packet()
+            assert srv.send_health.status().state == "ok"
+            srv.register_marker(marker)
+            srv._send_packet()
+            srv._send_packet()
+        status = srv.send_health.status()
+        assert (status.state, status.error) == ("failing", "Too many open files")
+
+    @pytest.mark.parametrize(
+        "send",
+        [lambda srv, stop: srv._send_packet(stop), lambda srv, stop: srv._send(b"x", stop)],
+        ids=["packet", "datagram"],
+    )
+    def test_a_send_skipped_after_its_generation_stopped_records_nothing(self, monkeypatch, send) -> None:
+        import errno as _e
+
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        srv = RttrpmServer(host="192.0.2.30")
+        srv.register_marker(_marker(1))
+        srv.send_health.record_failure(OSError(_e.ENETUNREACH, "Network is unreachable"), "192.0.2.30")
+        srv._socket = None
+        stale = threading.Event()
+        stale.set()
+        send(srv, stale)
+        status = srv.send_health.status()
+        assert (status.state, status.failed_total) == ("retrying", 1)
+
+    def test_a_failure_is_recorded_against_the_configured_host(self) -> None:
+        import errno as _e
+
+        srv = RttrpmServer(host="239.1.1.1")
+        sock = MagicMock()
+        sock.sendto.side_effect = OSError(_e.EACCES, "denied")
+        srv._socket = sock
+        srv._send(b"x")
+        status = srv.send_health.status()
+        assert (status.failed, status.errno) == (1, _e.EACCES)
+
+    def test_a_restart_within_the_rebuild_throttle_names_its_own_open_error(self, monkeypatch) -> None:
+        """The send loop may not rebuild yet, so the row has only start()'s error to go by."""
+        import errno as _e
+
+        monkeypatch.setattr(threading, "Thread", MagicMock())
+        monkeypatch.setattr("openfollow.rttrpm.server._SOCKET_REBUILD_MIN_INTERVAL_SECONDS", 3600.0)
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        srv = RttrpmServer(host="192.0.2.30")
+        srv.register_marker(_marker(1))
+        sock = MagicMock()
+        sock.sendto.side_effect = OSError(_e.ENETUNREACH, "Network is unreachable")
+        with patch(
+            "openfollow.rttrpm.server.socket.socket", side_effect=[sock, OSError(_e.EMFILE, "Too many open files")]
+        ):
+            srv.start()
+            srv._send_packet()
+        assert srv._socket is None
+        with patch(
+            "openfollow.rttrpm.server.socket.socket", side_effect=OSError(_e.ENOBUFS, "No buffer space available")
+        ):
+            srv.restart(host="192.0.2.30", port=36700, fps=60.0, context=0, egress=None)
+            srv._send_packet()
+            srv._send_packet()
+        status = srv.send_health.status()
+        assert (status.state, status.error) == ("failing", "No buffer space available")
+        srv.stop()
+
+    def test_a_stopped_generation_with_nothing_to_send_leaves_the_record_alone(self, monkeypatch) -> None:
+        import errno as _e
+
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        srv = RttrpmServer(host="192.0.2.30")
+        for _ in range(2):
+            srv.send_health.record_failure(OSError(_e.ENETUNREACH, "Network is unreachable"), "192.0.2.30")
+        stale = threading.Event()
+        stale.set()
+        srv._send_packet(stale)
+        assert srv.send_health.status().state == "failing"
+
+    def test_a_refused_open_keeps_nothing_it_opened_alive(self, monkeypatch, caplog) -> None:
+        """The cause outlives the attempt; the exception's traceback would hold the socket it closed with it."""
+        import gc
+        import logging as _logging
+        import weakref
+
+        # A captured log record keeps the exception in its args.
+        caplog.set_level(_logging.ERROR, logger="openfollow.rttrpm.server")
+        monkeypatch.setattr(threading, "Thread", MagicMock())
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        opened: list[weakref.ref[object]] = []
+
+        class _Socket:
+            def close(self) -> None:
+                pass
+
+        def make_socket(*_args: object) -> _Socket:
+            sock = _Socket()
+            opened.append(weakref.ref(sock))
+            return sock
+
+        def refuse(_sock: object, egress: Egress, *, multicast: bool = False) -> None:
+            raise InterfaceUnavailable(f"cannot send via {egress.iface}")
+
+        srv = RttrpmServer(host="198.51.100.20", egress=Egress("eth1", "198.51.100.10"))
+        srv.register_marker(_marker(1))
+        with (
+            patch("openfollow.rttrpm.server.socket.socket", make_socket),
+            patch("openfollow.rttrpm.server.pin_socket_egress", refuse),
+        ):
+            srv.start()
+            gc.collect()
+            assert opened[0]() is None
+            srv._send_packet()
+            srv._send_packet()
+        assert srv.send_health.status().error == "cannot send via eth1"
+        srv.stop()
 
 
 class TestRttrpmRebuildSocketFailure:
@@ -1041,3 +1316,20 @@ class TestRttrpmThreadGenerations:
 
         assert srv._socket is live_socket
         live_socket.close.assert_not_called()
+
+    def test_a_stopped_generation_leaves_the_socket_rebuild_to_the_live_one(self) -> None:
+        """A survivor of stop() finds no socket: it must not spend the rebuild slot the live generation needs."""
+        srv = RttrpmServer(host="127.0.0.1", port=4242)
+        srv.register_marker(_marker(1))
+        srv._socket = None
+        srv._next_rebuild_at = 0.0
+        stale = threading.Event()
+        stale.set()
+
+        new_sock = MagicMock()
+        with patch("openfollow.rttrpm.server.socket.socket", return_value=new_sock):
+            srv._send_packet(stale)
+            srv._send_packet(threading.Event())
+
+        assert srv._socket is new_sock
+        new_sock.sendto.assert_called_once()

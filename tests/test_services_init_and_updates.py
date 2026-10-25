@@ -137,33 +137,21 @@ class _FakeOtpServer:
         self.stopped = False
         self.restart_calls: list[dict[str, Any]] = []
         self.system_name_updates: list[str] = []
-        # Mirror every ``OtpServer`` field the orchestrator inspects:
-        # ``_socket`` (post-init bind guard), ``_transform_dest`` /
-        # ``_advertisement_dest`` (used by the off→on bind-failure error
-        # message), and the full kwargs set the transactional rollback
-        # captures before retrying with the prior cfg. Defaults are
-        # populated from kwargs so the prior cfg the orchestrator
-        # captures matches the cfg the test constructed with.
+        # Mirror the full kwargs set the transactional rollback captures
+        # before retrying with the prior cfg. Defaults are populated from
+        # kwargs so the prior cfg the orchestrator captures matches the
+        # cfg the test constructed with.
         self._source_ip = kwargs.get("source_ip", "")
         self._source_iface = kwargs.get("source_iface", "")
         self._system_name = kwargs.get("system_name", "OpenFollow")
         self._system_number = kwargs.get("system_number", 1)
         self._port = kwargs.get("port", 5568)
         self._priority = kwargs.get("priority", 100)
-        self._transform_dest = f"239.159.1.{self._system_number}"
-        self._advertisement_dest = "239.159.2.1"
-        self._socket: object | None = object()
-
-    def _is_multicast_mode(self) -> bool:
-        # Mirrors ``OtpServer._is_multicast_mode``. Production callers
-        # never pass ``mcast_ip`` (it's a test-only override); the fake
-        # always behaves as the production multicast path.
-        return True
 
     def register_marker(self, marker: _FakeMarker) -> None:
         self.registered.append(marker)
 
-    def start(self) -> None:
+    def start(self, *, retry_open: bool = True) -> None:
         self.started = True
 
     def stop(self) -> None:
@@ -190,6 +178,15 @@ class _FakeOtpServer:
         self._system_name = name
 
 
+class _RefusingOtpServer(_FakeOtpServer):
+    """Mirrors ``OtpServer.start`` for a multicast socket that never opens."""
+
+    def start(self, *, retry_open: bool = True) -> None:
+        if not retry_open:
+            raise OSError("OTP failed to open multicast socket")
+        super().start()
+
+
 class _FakeRttrpmServer:
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
@@ -204,16 +201,17 @@ class _FakeRttrpmServer:
         self._fps = float(kwargs.get("fps", 30))
         self._context = kwargs.get("context", 0)
         self._egress = kwargs.get("egress")
-        # A refused pin leaves no socket; tests set this to model one.
+        # Tests set this to model a pin the interface refuses.
         self.pin_refused = False
-        self._socket: object | None = None
 
     def register_marker(self, marker: _FakeMarker) -> None:
         self.registered.append(marker)
 
-    def start(self) -> None:
+    def start(self, *, retry_open: bool = True) -> None:
+        # Mirrors ``RttrpmServer.start``: a refused pin is retried, or raised when told not to retry.
+        if self._egress is not None and self.pin_refused and not retry_open:
+            raise OSError(f"RTTrPM could not open a socket pinned to {self._egress.iface}")
         self.started = True
-        self._socket = None if self._egress is not None and self.pin_refused else object()
 
     def stop(self) -> None:
         self.stopped = True
@@ -223,6 +221,12 @@ class _FakeRttrpmServer:
         for name in ("host", "port", "fps", "context", "egress"):
             if name in kwargs:
                 setattr(self, f"_{name}", kwargs[name])
+
+
+class _RefusingRttrpmServer(_FakeRttrpmServer):
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.pin_refused = True
 
 
 class _FakePsnReceiver:
@@ -2122,17 +2126,10 @@ class TestApplyOtpOutputChange:
         assert services._app._otp_server is not None
         assert services._app._otp_server.started is True
 
-    def test_off_to_on_raises_when_init_otp_silently_fails_to_bind(
+    def test_off_to_on_raises_when_the_socket_will_not_open(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-
-        class _SilentlyFailingOtpServer(_FakeOtpServer):
-            def __init__(self, **kwargs: Any) -> None:
-                super().__init__(**kwargs)
-                # Mirror the real failure mode: the multicast socket
-                # never opens (start() spawned a retry thread instead).
-                self._socket = None
-
+        """The dispatcher needs the failure to revert on."""
         services._app._otp_server = None
         services._app._server = _FakePsnServer()
         services._app._controlled_ids = []
@@ -2140,14 +2137,27 @@ class TestApplyOtpOutputChange:
             services._app._config,
             otp_output=self._enabled_cfg(),
         )
-        monkeypatch.setattr(services_module, "OtpServer", _SilentlyFailingOtpServer)
+        monkeypatch.setattr(services_module, "OtpServer", _RefusingOtpServer)
 
         with pytest.raises(OSError, match="failed to open multicast socket"):
             services.apply_otp_output_change(self._enabled_cfg())
 
-        # Orchestrator tore the half-initialised server back down so
-        # the next reload starts fresh.
+        # Dropped, so the next reload starts fresh.
         assert services._app._otp_server is None
+
+    def test_boot_keeps_a_server_whose_socket_will_not_open(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """At startup the server retries the open itself; raising would leave OTP off until a restart."""
+        services._app._otp_server = None
+        services._app._server = _FakePsnServer()
+        services._app._controlled_ids = []
+        services._app._config = replace(services._app._config, otp_output=self._enabled_cfg())
+        monkeypatch.setattr(services_module, "OtpServer", _RefusingOtpServer)
+
+        services.init_otp()
+
+        assert isinstance(services._app._otp_server, _RefusingOtpServer)
 
     def test_off_to_off_is_noop(self, services: AppRuntimeServices) -> None:
         services._app._otp_server = None
@@ -2437,16 +2447,9 @@ class TestApplyRttrpmOutputChange:
     def test_off_to_on_with_a_refused_pin_raises_and_drops_the_server(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """``start()`` leaves a refused pin to the send loop; the live apply must
-        still see it fail, or the dispatcher never reverts the config."""
+        """A live enable must see a refused pin fail, or the dispatcher never reverts the config."""
         self._ifaces(monkeypatch, {"eth1": "198.51.100.10"})
-
-        class _Refusing(_FakeRttrpmServer):
-            def __init__(self, **kwargs: Any) -> None:
-                super().__init__(**kwargs)
-                self.pin_refused = True
-
-        monkeypatch.setattr(services_module, "RttrpmServer", _Refusing)
+        monkeypatch.setattr(services_module, "RttrpmServer", _RefusingRttrpmServer)
         services._app._rttrpm_server = None
         services._app._server = _FakePsnServer()
         services._app._controlled_ids = []
@@ -2455,6 +2458,21 @@ class TestApplyRttrpmOutputChange:
         with pytest.raises(OSError, match="pinned to eth1"):
             services.apply_rttrpm_output_change(cfg)
         assert services._app._rttrpm_server is None
+
+    def test_boot_keeps_a_server_whose_pin_is_refused(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """At startup the send loop retries the pin; raising would leave RTTrPM off until a restart."""
+        self._ifaces(monkeypatch, {"eth1": "198.51.100.10"})
+        monkeypatch.setattr(services_module, "RttrpmServer", _RefusingRttrpmServer)
+        services._app._rttrpm_server = None
+        services._app._server = _FakePsnServer()
+        services._app._controlled_ids = []
+        services._app._config = replace(services._app._config, rttrpm_output=self._enabled_cfg(source_iface="eth1"))
+
+        services.init_rttrpm()
+
+        assert isinstance(services._app._rttrpm_server, _RefusingRttrpmServer)
 
     def test_init_does_not_start_on_a_pinned_interface_without_an_address(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch

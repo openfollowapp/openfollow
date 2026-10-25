@@ -7,18 +7,19 @@ Closes the gaps left by the packet-content integration suite:
 * ``_try_open_multicast_socket_once`` – success path (``source_ip``
   honoured, empty source_ip leaves ``iface_ip`` unset) and exception
   path (warning logged, return False).
-* ``_retry_multicast_socket_background`` – retries until success,
-  retries until max attempts exhausted (error logged), early-exit on
-  ``stop_event.set()`` mid-retry.
+* ``_retry_multicast_socket_background`` – retries on a backoff that
+  doubles to a minute until success, early-exit on ``stop_event.set()``.
 * ``_recover_multicast_socket_background`` – loops indefinitely until
-  success (INFO log), early-exits on ``stop_event.set()``.
+  success (the reopen logged at DEBUG, never as a recovery), early-exits
+  on ``stop_event.set()``.
 * ``start`` – opens multicast sync-success path AND sync-failure →
-  spawns the retry thread.  Also the unicast path when ``mcast_ip`` is
+  spawns the retry thread, or raises before any thread starts when a live
+  apply asks it not to retry.  Also the unicast path when ``mcast_ip`` is
   falsy.
 * ``stop`` – joins background threads with bounded timeouts; logs
   WARNING on any thread that doesn't stop in time.
-* ``_send`` – throttled warning schedule (first 5 errors + every
-  100th) and the "broken stack close raises" defensive branch in
+* ``_send`` – one log line per failure streak however many sends it
+  fails, and the "broken stack close raises" defensive branch in
   ``_handle_send_error``.
 """
 
@@ -26,14 +27,17 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import gc
+import logging
 import socket
 import threading
+import weakref
 from typing import Any
 
 import pytest
 
 import openfollow.psn.server as server_module
-from openfollow.psn.server import _MAX_SOCKET_RETRIES, PsnServer
+from openfollow.psn.server import PsnServer
 
 pytestmark = pytest.mark.unit
 
@@ -187,54 +191,77 @@ class TestTryOpenMulticastSocketOnce:
 # --------------------------------------------------------------------------- #
 
 
+class _RecordedWaits:
+    """A generation's ``stop.wait`` that returns at once and records each wait; stops after *waits*."""
+
+    def __init__(self, stop: threading.Event, waits: int | None = None) -> None:
+        self._stop = stop
+        self._waits = waits
+        self.timeouts: list[float] = []
+
+    def __call__(self, timeout: float | None = None) -> bool:
+        assert timeout is not None
+        self.timeouts.append(timeout)
+        if self._waits is not None and len(self.timeouts) >= self._waits:
+            self._stop.set()
+        return self._stop.is_set()
+
+
+def _record_waits(monkeypatch: pytest.MonkeyPatch, srv: PsnServer, waits: int | None = None) -> _RecordedWaits:
+    recorded = _RecordedWaits(srv._stop_event, waits)
+    monkeypatch.setattr(srv._stop_event, "wait", recorded)
+    return recorded
+
+
 class TestRetryMulticastSocketBackground:
-    def test_early_stop_exits_before_any_retry(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """``stop_event.set()`` between start and the retry thread must
-        cause the background loop to exit immediately without spending
-        the full ``_SOCKET_RETRY_DELAY`` budget.
-        """
-        # Zero-delay wait so the thread loops through the sentinel check
-        # fast.  The monkeypatch makes ``stop_event.wait`` non-blocking.
-        monkeypatch.setattr(server_module, "_SOCKET_RETRY_DELAY", 0.0)
+    def test_early_stop_exits_before_any_retry(self) -> None:
         srv = PsnServer()
         srv._stop_event.set()
-        srv._retry_multicast_socket_background()  # must not raise, must terminate
-        # No successful socket constructed.
+        srv._retry_multicast_socket_background()
         assert srv._socket is None
+        assert _FakeMcastSocket.instances == []
 
-    def test_success_on_second_attempt_logs_info(
+    def test_success_on_a_retry_logs_info(
         self,
         caplog: pytest.LogCaptureFixture,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setattr(server_module, "_SOCKET_RETRY_DELAY", 0.0)
         _FakeMcastSocket.script = [OSError(99, "boom")]  # attempt 2 fails
-        # After the script drains, the next construction succeeds.
         srv = PsnServer()
         srv._exit_stack = contextlib.ExitStack()
+        recorded = _record_waits(monkeypatch, srv)
         with caplog.at_level("INFO", logger="openfollow.psn.server"):
             srv._retry_multicast_socket_background()
         assert srv._socket is not None
-        assert any("connected on retry" in rec.message for rec in caplog.records if rec.levelname == "INFO")
+        assert recorded.timeouts == [2.0, 4.0]
+        assert [rec.message for rec in caplog.records if rec.levelname == "INFO"] == [
+            "PSN multicast socket connected on retry 3."
+        ]
 
-    def test_all_attempts_fail_logs_error(
+    def test_it_keeps_retrying_on_a_backoff_that_doubles_to_a_minute(
         self,
         caplog: pytest.LogCaptureFixture,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setattr(server_module, "_SOCKET_RETRY_DELAY", 0.0)
-        # Fail every attempt from 2 through _MAX_SOCKET_RETRIES.
-        _FakeMcastSocket.script = [OSError(99, "boom")] * (_MAX_SOCKET_RETRIES - 1)
+        """A network fixed long after the start must still bring PSN back, without a restart."""
+        _FakeMcastSocket.script = [OSError(errno.EADDRNOTAVAIL, "Can't assign requested address")] * 8
         srv = PsnServer()
         srv._exit_stack = contextlib.ExitStack()
+        recorded = _record_waits(monkeypatch, srv)
         with caplog.at_level("ERROR", logger="openfollow.psn.server"):
             srv._retry_multicast_socket_background()
+        assert srv._socket is not None
+        assert recorded.timeouts == [2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0, 60.0, 60.0]
+        assert caplog.records == []
+
+    def test_a_stop_ends_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _FakeMcastSocket.script = [OSError(errno.EADDRNOTAVAIL, "Can't assign requested address")] * 10
+        srv = PsnServer()
+        srv._exit_stack = contextlib.ExitStack()
+        _record_waits(monkeypatch, srv, waits=3)
+        srv._retry_multicast_socket_background()
         assert srv._socket is None
-        assert any(
-            "failed after" in rec.message and "attempts" in rec.message
-            for rec in caplog.records
-            if rec.levelname == "ERROR"
-        )
+        assert len(_FakeMcastSocket.script) == 8
 
 
 # --------------------------------------------------------------------------- #
@@ -271,20 +298,25 @@ class TestRecoverMulticastSocketBackground:
         # Bailed at the post-wait stop check → no socket open attempted.
         assert srv._socket is None
 
-    def test_eventual_success_logs_recovered(
+    def test_eventual_reopen_is_not_reported_as_a_recovery(
         self,
         caplog: pytest.LogCaptureFixture,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        """A reopened socket proves nothing: with macOS Local Network access
+        off, a fresh socket opens fine and its first send even returns
+        success. Only sends that keep succeeding count as a recovery."""
         monkeypatch.setattr(server_module, "_SOCKET_RETRY_DELAY", 0.0)
         # Two failures, then success on the third construction.
         _FakeMcastSocket.script = [OSError(99, "boom"), OSError(99, "boom")]
         srv = PsnServer()
         srv._exit_stack = contextlib.ExitStack()
-        with caplog.at_level("INFO", logger="openfollow.psn.server"):
+        srv.send_health.record_failure(OSError(errno.EHOSTUNREACH, "No route to host"), "236.10.10.10")
+        with caplog.at_level("INFO"):
             srv._recover_multicast_socket_background()
         assert srv._socket is not None
-        assert any("recovered on attempt" in rec.message for rec in caplog.records if rec.levelname == "INFO")
+        assert not [rec for rec in caplog.records if rec.levelno >= logging.INFO and "recover" in rec.message]
+        assert srv.send_health.status().state == "retrying"
 
 
 # --------------------------------------------------------------------------- #
@@ -321,6 +353,11 @@ class _DummyThread:
         self.started = True
         self._alive = True
 
+    def run(self) -> None:
+        """Run the target to its end, as the thread would."""
+        self.target(*self.args)
+        self._alive = False
+
     def join(self, timeout: float = 0.0) -> None:
         self.join_timeouts.append(timeout)
         # Simulate a clean join.
@@ -328,6 +365,26 @@ class _DummyThread:
 
     def is_alive(self) -> bool:
         return self._alive
+
+
+class _OnePass(Exception):
+    """Ends a loop at its first wait."""
+
+
+class _RunsOnePassThread(_DummyThread):
+    """A thread scheduled the moment it starts: its loop runs one pass, up to its first wait."""
+
+    def start(self) -> None:
+        super().start()
+        stop = self.args[0]
+
+        def wait(_timeout: float | None = None) -> bool:
+            raise _OnePass
+
+        stop.wait = wait  # type: ignore[method-assign]
+        with contextlib.suppress(_OnePass):
+            self.target(*self.args)
+        self._alive = False
 
 
 @pytest.fixture(autouse=True)
@@ -420,30 +477,30 @@ class TestStartStop:
 
 
 class TestSendThrottleAndRecovery:
-    def test_send_errors_throttle_to_every_hundredth_after_five(
+    def test_a_burst_of_send_errors_logs_once(
         self,
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """First 5 errors log, then only every 100th. This keeps the log
-        readable when an interface is down for a while without losing
-        the first-failure signal.
-        """
+        """One streak logs its first failure, however many sends it fails, so
+        the log stays readable while an interface is down for a while."""
         # Non-transient errno so _handle_send_error is a no-op – we
-        # want to isolate the logging-throttle branch, not the recovery.
+        # want to isolate the logging, not the recovery.
         monkeypatch.setattr(server_module, "_SOCKET_RETRY_DELAY", 0.0)
+        # However long the burst takes, it never reaches failing.
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", float("inf"))
         _FakeMcastSocket.sendto_raises = OSError(errno.EACCES, "operation not permitted")
         srv = PsnServer(mcast_ip="236.10.10.10")
         srv._exit_stack = contextlib.ExitStack()
         assert srv._try_open_multicast_socket_once(attempt=1) is True
 
-        with caplog.at_level("WARNING", logger="openfollow.psn.server"):
+        with caplog.at_level("WARNING"):
             for _ in range(105):
                 srv._send(b"\x00\x01")
 
-        warnings = [r for r in caplog.records if r.levelname == "WARNING" and "PSN send failed" in r.message]
-        # Errors 1-5 log, then 100 is the next (6 total records).
-        assert len(warnings) == 6
+        warnings = [r for r in caplog.records if "PSN" in r.message and "fail" in r.message]
+        assert [r.message for r in warnings] == ["PSN: send failed: [Errno 13] operation not permitted"]
+        assert srv.send_health.status().failed == 105
 
     def test_handle_send_error_unicast_is_noop(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Without multicast, there's no socket to rebuild – unicast UDP
@@ -515,13 +572,307 @@ class TestSendBeforeSocketOpen:
         srv._socket = None
         # Must not raise.
         srv._send(b"\x00")
-        # Send total stays zero – the guard fires before the lock.
-        assert srv._send_total == 0
+        status = srv.send_health.status()
+        assert (status.sent_total, status.failed_total) == (0, 0)
+
+    def test_a_send_failing_after_its_generation_stopped_records_nothing(self) -> None:
+        """A send thread that outlived stop()'s join must not open a streak on the next generation."""
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        _FakeMcastSocket.sendto_raises = OSError(errno.EBADF, "Bad file descriptor")
+        srv._socket = _FakeMcastSocket(socket.AF_INET)
+        stale = threading.Event()
+        stale.set()
+        srv._send(b"\x00", stale)
+        assert srv.send_health.status().failed_total == 0
+
+    def test_a_send_skipped_while_the_socket_is_rebuilt_is_a_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A rebuild that keeps failing must not hold the streak short of a row."""
+        # The recovery thread never runs, so the socket stays down.
+        monkeypatch.setattr(server_module.threading, "Thread", _DummyThread)
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        srv._exit_stack = contextlib.ExitStack()
+        assert srv._try_open_multicast_socket_once(attempt=1) is True
+        _FakeMcastSocket.sendto_raises = OSError(errno.ENETUNREACH, "Network is unreachable")
+        srv._send(b"\x00")
+        assert srv._socket is None
+        srv._send(b"\x00")
+        status = srv.send_health.status()
+        assert status.state == "failing"
+        assert (status.failed, status.error) == (2, "Network is unreachable")
+
+    @pytest.mark.parametrize(
+        ("refusal", "error"),
+        [
+            (OSError(errno.EADDRNOTAVAIL, "Can't assign requested address"), "Can't assign requested address"),
+            (
+                server_module.multicast_expert.MulticastExpertError("Interface eth9 not found"),
+                "Interface eth9 not found",
+            ),
+        ],
+        ids=["os-error", "multicast-expert-error"],
+    )
+    def test_a_socket_that_never_opened_raises_a_row_named_by_its_error(
+        self, monkeypatch: pytest.MonkeyPatch, refusal: Exception, error: str
+    ) -> None:
+        """No send ever failed, yet nothing goes out while the socket will not open."""
+        monkeypatch.setattr(server_module.threading, "Thread", _DummyThread)
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        _FakeMcastSocket.script = [refusal]
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        srv.start()
+        assert srv._socket is None
+        srv._send(b"\x00")
+        srv._send(b"\x00")
+        status = srv.send_health.status()
+        assert (status.state, status.error) == ("failing", error)
+        srv.stop()
+        srv._send(b"\x00")
+        assert srv.send_health.status().state == "ok"
+
+    def test_a_stopped_generations_failed_open_names_no_streak(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        _FakeMcastSocket.script = [OSError(errno.EADDRNOTAVAIL, "Can't assign requested address")]
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        stale = threading.Event()
+        stale.set()
+        assert srv._try_open_multicast_socket_once(attempt=2, stop_event=stale) is False
+        srv._send(b"\x00")
+        srv._send(b"\x00")
+        assert srv.send_health.status().failed_total == 0
+
+    def test_a_send_skipped_after_its_generation_stopped_records_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        srv.send_health.record_failure(OSError(errno.ENETUNREACH, "Network is unreachable"), "236.10.10.10")
+        srv._socket = None
+        stale = threading.Event()
+        stale.set()
+        srv._send(b"\x00", stale)
+        status = srv.send_health.status()
+        assert (status.state, status.failed_total) == ("retrying", 1)
+
+
+def _not_assignable() -> OSError:
+    return OSError(errno.EADDRNOTAVAIL, "Can't assign requested address")
+
+
+_NOT_ASSIGNABLE = _not_assignable()
+
+
+class TestSocketOpenRetry:
+    """A multicast socket that will not open at the start is retried until it opens or its generation ends."""
+
+    def test_a_socket_that_opens_late_clears_the_row(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(server_module.threading, "Thread", _DummyThread)
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        monkeypatch.setattr("openfollow.send_health.RECOVERY_HOLD_S", 0.0)
+        _FakeMcastSocket.script = [_NOT_ASSIGNABLE] * 5
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        srv.start()
+        srv._send(b"\x00")
+        srv._send(b"\x00")
+        assert srv.send_health.status().state == "failing"
+        recorded = _record_waits(monkeypatch, srv)
+        retry = srv._socket_thread
+        assert retry is not None
+        retry.run()
+        assert recorded.timeouts == [2.0, 4.0, 8.0, 16.0, 32.0]
+        srv._send(b"\x00")
+        srv._send(b"\x00")
+        status = srv.send_health.status()
+        assert (status.state, status.sent_total) == ("ok", 2)
+        srv.stop()
+
+    def test_stopping_ends_a_retry_waiting_out_its_backoff(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(server_module.threading, "Thread", _DummyThread)
+        _FakeMcastSocket.script = [_NOT_ASSIGNABLE]
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        srv.start()
+        retry = srv._socket_thread
+        assert retry is not None
+        generation = srv._stop_event
+        waits: list[float | None] = []
+
+        def stopped_while_waiting(timeout: float | None = None) -> bool:
+            waits.append(timeout)
+            srv.stop()
+            return threading.Event.wait(generation, timeout)
+
+        monkeypatch.setattr(generation, "wait", stopped_while_waiting)
+        retry.run()
+        assert waits == [2.0]
+        assert _FakeMcastSocket.instances == []
+
+    def test_a_rebind_ends_the_previous_generations_retry(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(server_module.threading, "Thread", _DummyThread)
+        _FakeMcastSocket.script = [_NOT_ASSIGNABLE]
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        srv.start()
+        superseded = srv._socket_thread
+        assert superseded is not None
+        srv.rebind("192.0.2.10")
+        live = srv._socket
+        superseded.run()
+        assert srv._socket is live
+        assert len(_FakeMcastSocket.instances) == 1
+        srv.stop()
+
+    @pytest.mark.parametrize("opens", [False, True], ids=["refused", "opened"])
+    def test_a_retry_whose_generation_stops_mid_open_neither_stores_nor_sends(
+        self, monkeypatch: pytest.MonkeyPatch, opens: bool
+    ) -> None:
+        monkeypatch.setattr(server_module.threading, "Thread", _DummyThread)
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        _FakeMcastSocket.script = [_NOT_ASSIGNABLE]
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        srv.start()
+        superseded = srv._socket_thread
+        assert superseded is not None
+        _record_waits(monkeypatch, srv)
+        restarted = False
+
+        class _RestartedMidOpen(_FakeMcastSocket):
+            def __init__(self, family: int, **kwargs: Any) -> None:
+                nonlocal restarted
+                if not restarted:
+                    restarted = True
+                    _FakeMcastSocket.script = [OSError(errno.ENODEV, "No such device")]
+                    srv.stop()
+                    srv.start()
+                    if not opens:
+                        raise OSError(errno.EADDRNOTAVAIL, "Can't assign requested address")
+                super().__init__(family, **kwargs)
+
+        monkeypatch.setattr(server_module.multicast_expert, "McastTxSocket", _RestartedMidOpen)
+        superseded.run()
+        srv._send(b"\x00")
+        srv._send(b"\x00")
+        status = srv.send_health.status()
+        assert (status.state, status.error) == ("failing", "No such device")
+        assert [(sock.closed, sock.sendto_calls) for sock in _FakeMcastSocket.instances] == (
+            [(True, [])] if opens else []
+        )
+        srv.stop()
+
+    def test_a_failed_open_keeps_nothing_it_half_opened_alive(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The cause outlives the attempt; the exception's traceback would hold the half-open socket's fd with it."""
+        # A captured log record keeps the exception in its args.
+        caplog.set_level(logging.ERROR, logger="openfollow.psn.server")
+        monkeypatch.setattr(server_module.threading, "Thread", _DummyThread)
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        half_open: list[weakref.ref[object]] = []
+
+        class _HalfOpen:
+            pass
+
+        class _RefusedAfterSocket(_FakeMcastSocket):
+            def __init__(self, family: int, **kwargs: Any) -> None:
+                held = _HalfOpen()
+                half_open.append(weakref.ref(held))
+                raise OSError(errno.EADDRNOTAVAIL, "Can't assign requested address")
+
+        monkeypatch.setattr(server_module.multicast_expert, "McastTxSocket", _RefusedAfterSocket)
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        srv.start()
+        gc.collect()
+        assert half_open[0]() is None
+        srv._send(b"\x00")
+        srv._send(b"\x00")
+        assert srv.send_health.status().error == "Can't assign requested address"
+        srv.stop()
+
+
+class TestIdleRecord:
+    def test_removing_every_marker_ends_the_failing_row(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """With no marker PSN sends nothing, so nothing is failing; the row returns with the markers."""
+        monkeypatch.setattr(server_module.threading, "Thread", _DummyThread)
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        _FakeMcastSocket.script = [_NOT_ASSIGNABLE]
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        srv.start()
+        srv.add_marker(1, "M1")
+        srv._send_data_packet()
+        srv._send_data_packet()
+        assert srv.send_health.status().state == "failing"
+        srv.remove_marker(1)
+        srv._send_data_packet()
+        assert srv.send_health.status().state == "ok"
+        srv.add_marker(1, "M1")
+        srv._send_data_packet()
+        srv._send_data_packet()
+        assert srv.send_health.status().state == "failing"
+        srv.stop()
+
+    def test_a_stopped_generation_with_no_markers_leaves_the_record_alone(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        for _ in range(2):
+            srv.send_health.record_failure(OSError(errno.ENETUNREACH, "Network is unreachable"), "236.10.10.10")
+        stale = threading.Event()
+        stale.set()
+        srv._send_data_packet(stale)
+        assert srv.send_health.status().state == "failing"
+
+    def test_the_open_error_is_forgotten_once_the_socket_opens(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A socket torn down after a send error is being rebuilt, not refusing to open."""
+        monkeypatch.setattr(server_module.threading, "Thread", _DummyThread)
+        _FakeMcastSocket.script = [_NOT_ASSIGNABLE]
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        srv.start()
+        _record_waits(monkeypatch, srv)
+        retry = srv._socket_thread
+        assert retry is not None
+        retry.run()
+        srv.add_marker(1, "M1")
+        _FakeMcastSocket.sendto_raises = OSError(errno.ENETUNREACH, "Network is unreachable")
+        srv._send_data_packet()
+        srv.remove_marker(1)
+        srv._send_data_packet()
+        srv.add_marker(1, "M1")
+        srv._send_data_packet()
+        status = srv.send_health.status()
+        assert (status.state, status.failed_total) == ("ok", 1)
+        srv.stop()
 
 
 # --------------------------------------------------------------------------- #
 # Live-apply seams: rebind_mcast_ip + update_system_name
 # --------------------------------------------------------------------------- #
+
+
+class TestSendHealthLifecycle:
+    def test_a_rebind_starts_a_new_record(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(server_module.threading, "Thread", _DummyThread)
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        srv.start()
+        srv.send_health.record_failure(OSError(errno.ENETUNREACH, "Network is unreachable"), "236.10.10.10")
+        srv.rebind("192.0.2.10")
+        assert srv.send_health.status().state == "ok"
+        srv.stop()
+
+    def test_stopping_forgets_the_streak(self) -> None:
+        """A stopped output is off, not failing."""
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        srv.send_health.record_failure(OSError(errno.ENETUNREACH, "Network is unreachable"), "236.10.10.10")
+        srv.stop()
+        assert srv.send_health.status().state == "ok"
+
+    def test_a_good_send_is_counted_against_the_group(self) -> None:
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        srv._exit_stack = contextlib.ExitStack()
+        assert srv._try_open_multicast_socket_once(attempt=1) is True
+        srv._send(b"\x00")
+        assert srv.send_health.status().sent_total == 1
+        _FakeMcastSocket.sendto_raises = OSError(errno.EHOSTUNREACH, "No route to host")
+        srv._handle_send_error = lambda exc, stop_event=None: None  # type: ignore[method-assign]
+        srv._send(b"\x00")
+        status = srv.send_health.status()
+        assert (status.failed, status.errno) == (1, errno.EHOSTUNREACH)
 
 
 class TestRebindMcastIp:
@@ -552,9 +903,36 @@ class TestRebindMcastIp:
         srv.start()
         # Force every subsequent _try_open call to fail so ``start``'s
         # sync attempt returns False and the post-check fires.
-        _FakeMcastSocket.script = [OSError(99, "boom") for _ in range(_MAX_SOCKET_RETRIES + 1)]
+        _FakeMcastSocket.script = [OSError(99, "boom")]
         with pytest.raises(OSError, match="failed to open multicast socket"):
             srv.rebind_mcast_ip("239.0.0.1")
+
+    def test_a_rebind_that_cannot_open_logs_only_the_refusal(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Its generation is torn down at once, so a send it skipped would only add to the log on every retry."""
+        monkeypatch.setattr(server_module.threading, "Thread", _RunsOnePassThread)
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        srv.add_marker(1, "M1")
+        _FakeMcastSocket.script = [_not_assignable()]
+        with caplog.at_level(logging.DEBUG), pytest.raises(OSError, match="failed to open multicast socket"):
+            srv.rebind("192.0.2.10")
+        assert [(r.levelno, r.getMessage()) for r in caplog.records if r.name.startswith("openfollow")] == [
+            (logging.WARNING, f"PSN multicast socket failed (attempt 1): {_not_assignable()}")
+        ]
+        assert srv.send_health.status().failed_total == 0
+        assert srv.bound_source_ip() is None
+
+    def test_a_start_that_cannot_open_still_raises_its_row(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """At boot the generation lives on, retrying, and nothing it skips goes out."""
+        monkeypatch.setattr(server_module.threading, "Thread", _RunsOnePassThread)
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        srv.add_marker(1, "M1")
+        _FakeMcastSocket.script = [_not_assignable()]
+        srv.start()
+        status = srv.send_health.status()
+        assert (status.state, status.error) == ("failing", "Can't assign requested address")
 
     def test_rebind_strips_whitespace_from_mcast_ip(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Hand-edited TOML or web-UI values can carry leading/trailing

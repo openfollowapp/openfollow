@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from bottle import template
+from bottle import html_escape, template
 
 from openfollow.web import server as _server_module  # noqa: F401 – registers tpl path
 
@@ -461,3 +461,31 @@ class TestThePipelineWordingIsEvidenceNotTheMessage:
         """A local fault has no sentence, so the raw text is the whole message."""
         panel = self._panel_for(failure="unknown", error_message="v4l2src is Linux-only")
         assert "v4l2src is Linux-only" in panel
+
+
+class TestNetworkRows:
+    _ROWS = {
+        "alerts": [
+            {"text": "macOS refuses this station's network sends", "action": "Turn it <on>."},
+            {"text": "PSN: eth0.10 is down", "action": ""},
+        ]
+    }
+
+    def test_each_row_is_an_error_box_in_the_device_panel(self) -> None:
+        device = _panel(_render(network=self._ROWS), "Device")
+        assert device.count('class="notice error"') == 2
+        assert html_escape("macOS refuses this station's network sends") in device
+        assert "PSN: eth0.10 is down" in device
+
+    def test_the_next_step_sits_under_its_row_escaped(self) -> None:
+        device = _panel(_render(network=self._ROWS), "Device")
+        assert '<div class="notice-sub">Turn it &lt;on&gt;.</div>' in device
+        # A row without a step gets no empty second line.
+        assert device.count("notice-sub") == 1
+
+    def test_the_rows_lead_the_panel(self) -> None:
+        device = _panel(_render(network=self._ROWS), "Device")
+        assert device.index("notice error") < device.index('class="metric-list"')
+
+    def test_no_rows_no_box(self) -> None:
+        assert "notice" not in _panel(_render(network={"alerts": []}), "Device")

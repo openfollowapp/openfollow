@@ -1123,11 +1123,95 @@ class TestOtpUpdateSystemName:
         assert len({_system_number_of(p) for p in pages}) == 1
 
 
+def _not_assignable() -> OSError:
+    import errno as _e
+
+    return OSError(_e.EADDRNOTAVAIL, "Can't assign requested address")
+
+
+_NOT_ASSIGNABLE = _not_assignable()
+
+
+def _record_waits(srv: OtpServer, waits: int | None = None) -> list[float]:
+    """Make the live generation's waits return at once and record them; stop it after *waits*."""
+    timeouts: list[float] = []
+    stop = srv._stop_event
+
+    def wait(timeout: float | None = None) -> bool:
+        assert timeout is not None
+        timeouts.append(timeout)
+        if waits is not None and len(timeouts) >= waits:
+            stop.set()
+        return stop.is_set()
+
+    stop.wait = wait  # type: ignore[method-assign]
+    return timeouts
+
+
+class _OnePass(Exception):
+    """Ends a loop at its first wait."""
+
+
+class _RunsOnePassThread:
+    """A thread scheduled the moment it starts: its loop runs one pass, up to its first wait."""
+
+    def __init__(self, *, target: Any, args: tuple[Any, ...] = (), daemon: bool = False, name: str = "") -> None:
+        self._target = target
+        self._args = args
+        self.name = name
+
+    def start(self) -> None:
+        stop = self._args[0]
+
+        def wait(_timeout: float | None = None) -> bool:
+            raise _OnePass
+
+        stop.wait = wait
+        try:
+            self._target(*self._args)
+        except _OnePass:
+            pass
+
+    def join(self, timeout: float | None = None) -> None:
+        pass
+
+    def is_alive(self) -> bool:
+        return False
+
+
 class TestOtpStartFailsAndSpawnsRetryThread:
     """When the initial multicast socket open fails (``McastTxSocket``
     raises), ``start()`` spawns a daemon retry thread. Production: the
     operator's network interface comes up later and the retry succeeds.
     """
+
+    def test_a_start_told_not_to_retry_raises_before_any_thread_starts(self, monkeypatch, caplog) -> None:
+        """A live apply tears the generation down at once; a send it skipped would only add to the log."""
+        import logging as _logging
+
+        monkeypatch.setattr("openfollow.otp.server.threading.Thread", _RunsOnePassThread)
+        with patch("openfollow.otp.server.multicast_expert.McastTxSocket", side_effect=_not_assignable()):
+            srv = OtpServer(system_number=1)
+            with (
+                caplog.at_level(_logging.DEBUG),
+                pytest.raises(OSError, match="failed to open multicast socket"),
+            ):
+                srv.restart(system_name="X", system_number=2, port=OTP_PORT, source_ip="", priority=100)
+        assert [(r.levelno, r.getMessage()) for r in caplog.records if r.name.startswith("openfollow")] == [
+            (_logging.WARNING, f"OTP multicast socket failed (attempt 1): {_not_assignable()}")
+        ]
+        assert srv.send_health.status().failed_total == 0
+        assert srv.bound_source_ip() is None
+
+    def test_a_start_at_boot_still_raises_its_row(self, monkeypatch) -> None:
+        monkeypatch.setattr("openfollow.otp.server.threading.Thread", _RunsOnePassThread)
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        with patch("openfollow.otp.server.multicast_expert.McastTxSocket", side_effect=_not_assignable()):
+            srv = OtpServer(system_number=1)
+            srv.register_marker(Marker(1, "M1"))
+            srv.start()
+        status = srv.send_health.status()
+        assert (status.state, status.error) == ("failing", "Can't assign requested address")
 
     def test_initial_failure_spawns_retry_thread(self) -> None:
         with patch("openfollow.otp.server.multicast_expert.McastTxSocket") as mcls:
@@ -1161,8 +1245,6 @@ class TestOtpRetryMulticastBackground:
         import logging as _logging
 
         srv = OtpServer(system_number=1)
-        # First call fails, second succeeds – exactly within the bounded
-        # retry budget (_MAX_SOCKET_RETRIES = 3).
         attempts: list[int] = []
 
         handed: list[object] = []
@@ -1181,15 +1263,31 @@ class TestOtpRetryMulticastBackground:
         assert handed == [srv._stop_event]
         assert any("connected on retry" in r.message for r in caplog.records)
 
-    def test_retry_exhausts_logs_error(self, caplog) -> None:
+    def test_retry_keeps_going_on_a_backoff_that_doubles_to_a_minute(self, caplog) -> None:
+        """A network fixed long after the start must still bring OTP back, without a restart."""
         import logging as _logging
 
         srv = OtpServer(system_number=1)
-        srv._try_open_multicast_socket_once = lambda **_kw: False  # type: ignore[assignment]
-        srv._stop_event.wait = lambda timeout=None: False  # type: ignore[assignment]
-        with caplog.at_level(_logging.ERROR, logger="openfollow.otp.server"):
+        timeouts = _record_waits(srv)
+        with (
+            patch(
+                "openfollow.otp.server.multicast_expert.McastTxSocket",
+                side_effect=[_NOT_ASSIGNABLE] * 8 + [MagicMock()],
+            ),
+            caplog.at_level(_logging.ERROR, logger="openfollow.otp.server"),
+        ):
             srv._retry_multicast_socket_background()
-        assert any("failed after" in r.message for r in caplog.records)
+        assert srv._socket is not None
+        assert timeouts == [2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0, 60.0, 60.0]
+        assert caplog.records == []
+
+    def test_a_stop_ends_the_retry(self) -> None:
+        srv = OtpServer(system_number=1)
+        _record_waits(srv, waits=3)
+        with patch("openfollow.otp.server.multicast_expert.McastTxSocket", side_effect=_NOT_ASSIGNABLE) as mcls:
+            srv._retry_multicast_socket_background()
+        assert srv._socket is None
+        assert mcls.call_count == 2
 
     def test_retry_aborts_when_stop_event_set(self) -> None:
         srv = OtpServer(system_number=1)
@@ -1402,28 +1500,245 @@ class TestOtpSendOsErrorPath:
         mock_sock = MagicMock()
         mock_sock.sendto.side_effect = OSError(_e.ENETUNREACH, "unreachable")
         srv._socket = mock_sock
-        with caplog.at_level(_logging.WARNING, logger="openfollow.otp.server"):
+        with caplog.at_level(_logging.WARNING):
             srv._send(b"\x00" * 16, "239.159.1.1")
-        assert srv._send_errors == 1
-        assert any("OTP send failed" in r.message for r in caplog.records)
+        assert srv.send_health.status().failed == 1
+        assert any("OTP output: send failed" in r.message for r in caplog.records)
         # Cleanup: ENETUNREACH is transient → spawned recovery thread.
         srv._stop_event.set()
         if srv._socket_thread is not None:
             srv._socket_thread.join(timeout=2.0)
 
-    def test_send_log_throttled_after_5_errors(self, caplog) -> None:
+    def test_a_burst_of_send_errors_logs_once(self, caplog, monkeypatch) -> None:
         import logging as _logging
 
+        # However long the burst takes, it never reaches failing.
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", float("inf"))
         srv = OtpServer(system_number=1)
         mock_sock = MagicMock()
         mock_sock.sendto.side_effect = OSError(99999, "non-transient")
         srv._socket = mock_sock
-        with caplog.at_level(_logging.WARNING, logger="openfollow.otp.server"):
+        with caplog.at_level(_logging.WARNING):
             for _ in range(20):
                 srv._send(b"\x00", "239.159.1.1")
-        # First 5 errors logged, then every 100th – so 20 calls = 5 logs.
-        warning_lines = [r for r in caplog.records if "OTP send failed" in r.message]
-        assert len(warning_lines) == 5
+        warning_lines = [r for r in caplog.records if "OTP output" in r.message]
+        assert len(warning_lines) == 1
+        assert srv.send_health.status().failed == 20
+
+    def test_a_good_send_is_counted(self) -> None:
+        srv = OtpServer(system_number=1)
+        srv._socket = MagicMock()
+        srv._send(b"\x00", "239.159.1.1")
+        assert srv.send_health.status().sent_total == 1
+
+
+class TestOtpSendHealthLifecycle:
+    def test_stopping_forgets_the_streak(self) -> None:
+        import errno as _e
+
+        srv = OtpServer(system_number=1)
+        srv.send_health.record_failure(OSError(_e.ENETUNREACH, "unreachable"), "239.159.1.1")
+        srv.stop()
+        assert srv.send_health.status().state == "ok"
+
+    def test_a_send_failing_after_its_generation_stopped_records_nothing(self) -> None:
+        import errno as _e
+
+        srv = OtpServer(system_number=1)
+        sock = MagicMock()
+        sock.sendto.side_effect = OSError(_e.EBADF, "Bad file descriptor")
+        srv._socket = sock
+        stale = threading.Event()
+        stale.set()
+        srv._send(b"\x00", "239.159.1.1", stale)
+        assert srv.send_health.status().failed_total == 0
+
+    def test_a_send_skipped_while_the_socket_is_rebuilt_is_a_failure(self, monkeypatch) -> None:
+        """A rebuild that keeps failing must not hold the streak short of a row."""
+        import errno as _e
+
+        # The recovery thread waits out the test, so the socket stays down.
+        monkeypatch.setattr("openfollow.otp.server._SOCKET_RETRY_DELAY", 60.0)
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        srv = OtpServer(system_number=1)
+        sock = MagicMock()
+        sock.sendto.side_effect = OSError(_e.ENETUNREACH, "Network is unreachable")
+        srv._socket = sock
+        try:
+            srv._send(b"\x00", "239.159.1.1")
+            assert srv._socket is None
+            srv._send(b"\x00", "239.159.1.1")
+            status = srv.send_health.status()
+            assert status.state == "failing"
+            assert (status.failed, status.error) == (2, "Network is unreachable")
+        finally:
+            srv._stop_event.set()
+            if srv._socket_thread is not None:
+                srv._socket_thread.join(timeout=2.0)
+
+    def test_a_socket_that_never_opened_raises_a_row_named_by_its_error(self, monkeypatch) -> None:
+        """No send ever failed, yet nothing goes out while the socket will not open."""
+        import multicast_expert
+
+        # The retry and send threads never run; the test drives the sends.
+        monkeypatch.setattr(threading, "Thread", MagicMock())
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        with patch(
+            "openfollow.otp.server.multicast_expert.McastTxSocket",
+            side_effect=multicast_expert.MulticastExpertError("Interface eth9 not found"),
+        ):
+            srv = OtpServer(system_number=1)
+            srv.start()
+        assert srv._socket is None
+        srv._send(b"\x00", "239.159.1.1")
+        srv._send(b"\x00", "239.159.1.1")
+        status = srv.send_health.status()
+        assert (status.state, status.error) == ("failing", "Interface eth9 not found")
+        srv._stop_event.set()
+        srv._send(b"\x00", "239.159.1.1")
+        assert srv.send_health.status().failed_total == 2
+
+    def test_a_stopped_generations_failed_open_names_no_streak(self, monkeypatch) -> None:
+        import errno as _e
+
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        with patch(
+            "openfollow.otp.server.multicast_expert.McastTxSocket",
+            side_effect=OSError(_e.EADDRNOTAVAIL, "Can't assign requested address"),
+        ):
+            srv = OtpServer(system_number=1)
+            stale = threading.Event()
+            stale.set()
+            assert srv._try_open_multicast_socket_once(attempt=2, stop_event=stale) is False
+        srv._send(b"\x00", "239.159.1.1")
+        srv._send(b"\x00", "239.159.1.1")
+        assert srv.send_health.status().failed_total == 0
+
+    def test_a_send_skipped_after_its_generation_stopped_records_nothing(self, monkeypatch) -> None:
+        import errno as _e
+
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        srv = OtpServer(system_number=1)
+        srv.send_health.record_failure(OSError(_e.ENETUNREACH, "Network is unreachable"), "239.159.1.1")
+        srv._socket = None
+        stale = threading.Event()
+        stale.set()
+        srv._send(b"\x00", "239.159.1.1", stale)
+        status = srv.send_health.status()
+        assert (status.state, status.failed_total) == ("retrying", 1)
+
+    def test_starting_forgets_the_streak(self) -> None:
+        import errno as _e
+
+        srv = OtpServer(system_number=1, mcast_ip="")
+        srv.send_health.record_failure(OSError(_e.ENETUNREACH, "unreachable"), "127.0.0.1")
+        srv.start()
+        try:
+            assert srv.send_health.status().state == "ok"
+        finally:
+            srv.stop()
+
+
+class TestOtpSocketOpenRetry:
+    """See ``PsnServer``: a socket that will not open at the start is retried until it opens or its generation ends."""
+
+    def test_a_socket_that_opens_late_clears_the_row(self, monkeypatch) -> None:
+        monkeypatch.setattr(threading, "Thread", MagicMock())
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        monkeypatch.setattr("openfollow.send_health.RECOVERY_HOLD_S", 0.0)
+        with patch(
+            "openfollow.otp.server.multicast_expert.McastTxSocket",
+            side_effect=[_NOT_ASSIGNABLE] * 5 + [MagicMock()],
+        ):
+            srv = OtpServer(system_number=1)
+            srv.start()
+            srv._send(b"\x00", "239.159.1.1")
+            srv._send(b"\x00", "239.159.1.1")
+            assert srv.send_health.status().state == "failing"
+            timeouts = _record_waits(srv)
+            srv._retry_multicast_socket_background(srv._stop_event)
+        assert timeouts == [2.0, 4.0, 8.0, 16.0, 32.0]
+        srv._send(b"\x00", "239.159.1.1")
+        srv._send(b"\x00", "239.159.1.1")
+        status = srv.send_health.status()
+        assert (status.state, status.sent_total) == ("ok", 2)
+        srv.stop()
+
+    def test_a_restart_ends_the_previous_generations_retry(self, monkeypatch) -> None:
+        monkeypatch.setattr(threading, "Thread", MagicMock())
+        with patch(
+            "openfollow.otp.server.multicast_expert.McastTxSocket", side_effect=[_NOT_ASSIGNABLE, MagicMock()]
+        ) as mcls:
+            srv = OtpServer(system_number=1)
+            srv.start()
+            superseded = srv._stop_event
+            srv.restart(system_name="OpenFollow", system_number=1, port=OTP_PORT, source_ip="", priority=100)
+            live = srv._socket
+            srv._retry_multicast_socket_background(superseded)
+        assert srv._socket is live
+        assert mcls.call_count == 2
+        srv.stop()
+
+    @pytest.mark.parametrize("opens", [False, True], ids=["refused", "opened"])
+    def test_a_retry_whose_generation_stops_mid_open_neither_stores_nor_sends(self, monkeypatch, opens) -> None:
+        import errno as _e
+
+        monkeypatch.setattr(threading, "Thread", MagicMock())
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        superseded_socket = MagicMock()
+        srv = OtpServer(system_number=1)
+
+        def restart_mid_open(*_args: object, **_kwargs: object) -> MagicMock:
+            mcls.side_effect = OSError(_e.ENODEV, "No such device")
+            srv.stop()
+            srv.start()
+            if not opens:
+                raise _NOT_ASSIGNABLE
+            return superseded_socket
+
+        with patch("openfollow.otp.server.multicast_expert.McastTxSocket", side_effect=[_NOT_ASSIGNABLE]) as mcls:
+            srv.start()
+            superseded = srv._stop_event
+            _record_waits(srv)
+            mcls.side_effect = restart_mid_open
+            srv._retry_multicast_socket_background(superseded)
+        srv._send(b"\x00", "239.159.1.1")
+        srv._send(b"\x00", "239.159.1.1")
+        status = srv.send_health.status()
+        assert (status.state, status.error) == ("failing", "No such device")
+        superseded_socket.__enter__.return_value.sendto.assert_not_called()
+        assert superseded_socket.__exit__.call_count == (1 if opens else 0)
+        srv.stop()
+
+    def test_a_failed_open_keeps_nothing_it_half_opened_alive(self, monkeypatch, caplog) -> None:
+        """The cause outlives the attempt; the exception's traceback would hold the half-open socket's fd with it."""
+        import gc
+        import logging as _logging
+        import weakref
+
+        # A captured log record keeps the exception in its args.
+        caplog.set_level(_logging.ERROR, logger="openfollow.otp.server")
+        monkeypatch.setattr(threading, "Thread", MagicMock())
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        half_open: list[weakref.ref[object]] = []
+
+        class _HalfOpen:
+            pass
+
+        def refuse_after_socket(*_args: object, **_kwargs: object) -> None:
+            held = _HalfOpen()
+            half_open.append(weakref.ref(held))
+            raise _not_assignable()
+
+        with patch("openfollow.otp.server.multicast_expert.McastTxSocket", side_effect=refuse_after_socket):
+            srv = OtpServer(system_number=1)
+            srv.start()
+        gc.collect()
+        assert half_open[0]() is None
+        srv._send(b"\x00", "239.159.1.1")
+        srv._send(b"\x00", "239.159.1.1")
+        assert srv.send_health.status().error == "Can't assign requested address"
+        srv.stop()
 
 
 class TestOtpHandleSendErrorEdges:

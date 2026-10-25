@@ -59,6 +59,7 @@ from typing import TYPE_CHECKING, NamedTuple
 from openfollow.net_egress import Egress, is_multicast_host, pin_socket_egress
 from openfollow.packet_chunking import MAX_DATAGRAM_BYTES, chunk_to_datagrams
 from openfollow.psn.marker import is_marker_stale
+from openfollow.send_health import FailureCause, SendHealth
 
 if TYPE_CHECKING:
     from openfollow.psn.marker import Marker
@@ -261,8 +262,9 @@ class RttrpmServer:
         self._stop_event = threading.Event()
         self._socket: socket.socket | None = None
         self._send_thread: threading.Thread | None = None
-        self._send_errors: int = 0
-        self._send_total: int = 0
+        self._send_health = SendHealth("RTTrPM output")
+        # What kept the socket from opening last; names a streak a skipped send starts.
+        self._open_error: FailureCause | None = None
         self._next_rebuild_at: float = 0.0
         self._stale_warned = False
         # Warn-once-per-episode guard: True while a run of capped frames is
@@ -291,20 +293,37 @@ class RttrpmServer:
         with self._lock:
             return self._markers.get(marker_id)
 
+    @property
+    def send_health(self) -> SendHealth:
+        """Whether this server's sends are leaving."""
+        return self._send_health
+
     # -- Lifecycle ------------------------------------------------------------
 
-    def start(self) -> None:
-        """Open the UDP socket and start the send thread."""
+    def start(self, *, retry_open: bool = True) -> None:
+        """Open the UDP socket and start the send thread.
+
+        A socket that will not open is retried by the send loop. With
+        ``retry_open=False`` a pinned one raises ``OSError`` instead, before the
+        thread starts, as ``PsnServer.start()`` does; an unpinned one is still
+        left to the send loop.
+        """
+        self._send_health.reset()
         # One stop signal per generation – see ``PsnServer.start()``.
         stop_event = threading.Event()
         self._stop_event = stop_event
         self._cap_warned = False
         try:
             self._socket = self._open_socket()
+            self._open_error = None
         except OSError as exc:
-            # The send loop retries it; it never sends unpinned meanwhile.
+            # Retried by the send loop, unless a pinned one raises below; never sent unpinned meanwhile.
             logger.warning("RTTrPM: %s", exc)
             self._socket = None
+            self._open_error = FailureCause.from_exception(exc)
+        egress = self._egress
+        if self._socket is None and not retry_open and egress is not None:
+            raise OSError(f"RTTrPM could not open a socket pinned to {egress.iface} ({egress.address or 'no address'})")
         self._send_thread = threading.Thread(
             target=self._send_loop, args=(stop_event,), daemon=True, name="RTTrPM-Send"
         )
@@ -323,12 +342,13 @@ class RttrpmServer:
             self._socket = None
         if sock is not None:
             sock.close()
+        self._send_health.reset()
 
     def restart(self, *, host: str, port: int, fps: float, context: int, egress: Egress | None) -> None:
         """Stop, reconfigure, and restart; marker registrations survive.
 
-        Raises ``OSError`` when a pinned socket cannot be opened. ``start()``
-        leaves that to the send loop's retry, which suits boot but gives a live
+        Raises ``OSError`` when a pinned socket cannot be opened. At boot
+        ``start()`` leaves that to the send loop's retry, which gives a live
         apply nothing to roll back on.
         """
         self.stop()
@@ -337,10 +357,7 @@ class RttrpmServer:
         self._fps = fps
         self._context = context
         self._egress = egress
-        self.start()
-        if egress is not None and self._socket is None:
-            self.stop()
-            raise OSError(f"RTTrPM could not open a socket pinned to {egress.iface} ({egress.address or 'no address'})")
+        self.start(retry_open=False)
 
     def bound_source_ip(self) -> str | None:
         """Address this server sends from: "" when unpinned, None when stopped or its pin failed."""
@@ -394,6 +411,9 @@ class RttrpmServer:
         self._warn_if_withheld(len(markers) - len(live))
         markers = live
         if not markers:
+            # Nothing is sent, so no send can end a failing streak.
+            if not self._resolve_stop(stop_event).is_set():
+                self._send_health.reset()
             return
         # A prior socket rebuild that failed leaves _socket None; retry it
         # (throttled) here so the loop can recover instead of spinning on a
@@ -402,6 +422,7 @@ class RttrpmServer:
             self._maybe_rebuild_socket_after_error(stop_event)
             if self._socket is None:
                 # Still down: skip encoding a packet _send() would only drop.
+                self._record_skipped(stop_event)
                 return
         # Freeze name and position before sizing anything. The trackable module
         # is 34 octets plus the name, and the size the split budgets against is
@@ -476,28 +497,26 @@ class RttrpmServer:
             submitted,
         )
 
+    def _record_skipped(self, stop_event: threading.Event | None) -> None:
+        """Count a send skipped for want of a socket, unless its generation has stopped."""
+        if not self._resolve_stop(stop_event).is_set():
+            self._send_health.record_skipped(self._open_error, self._host)
+
     def _send(self, data: bytes, stop_event: threading.Event | None = None) -> None:
         sock = self._socket
         if sock is None:
+            self._record_skipped(stop_event)
             return
-        with self._lock:
-            self._send_total += 1
         try:
             sock.sendto(data, (self._host, self._port))
         except OSError as exc:
-            with self._lock:
-                self._send_errors += 1
-                errors = self._send_errors
-                total = self._send_total
-            if errors <= 5 or errors % 100 == 0:
-                logger.warning(
-                    "RTTrPM send failed (%d/%d errors): %s",
-                    errors,
-                    total,
-                    exc,
-                )
+            if self._resolve_stop(stop_event).is_set():
+                return
+            self._send_health.record_failure(exc, self._host)
             if exc.errno in _TRANSIENT_SEND_ERRNOS:
                 self._maybe_rebuild_socket_after_error(stop_event)
+            return
+        self._send_health.record_success()
 
     def _maybe_rebuild_socket_after_error(self, stop_event: threading.Event | None = None) -> None:
         stop = self._resolve_stop(stop_event)
@@ -521,9 +540,11 @@ class RttrpmServer:
             old_sock = self._socket
             try:
                 self._socket = self._open_socket()
+                self._open_error = None
             except OSError as exc:
                 logger.warning("RTTrPM: socket rebuild failed: %s", exc)
                 self._socket = None
+                self._open_error = FailureCause.from_exception(exc)
         if old_sock is not None:
             try:
                 old_sock.close()

@@ -2,7 +2,7 @@
 
 Where the real camera sits in the venue and which lens it uses. OpenFollow uses these to project tracked points into stage coordinates, so they must match the physical rig.
 
-Only the **Setup Wizard** (the Open Setup Wizard button on the General or Camera & Grid tab) sets them. It calculates position, orientation and field of view from marks on the stage pinned on the picture: the four corners of a measured rectangle (**Simple**), or known points and distance points (**Advanced**). Its Lens step measures the lens. This section shows the values it applied; a camera that moved, or a new lens, is set by running it again.
+The **Setup Wizard** (**Open Setup Wizard** here, or on the General tab) calculates position, orientation and field of view from marks on the stage pinned on the picture: the four corners of a measured rectangle (**Simple**), or known points and distance points (**Advanced**). Its Lens step measures the lens. This section shows the values the station uses and edits none of them; besides the Setup Wizard, only a whole camera arriving with its calibration changes them: an import, **Apply to all stations** on another station, or a Camera & Grid template.
 
 Positions are in **metres**, relative to the **Reference Point** – the single physical point on stage that is the (0, 0, 0) of your show (see Core Concepts). Orientation is in **degrees**.
 
@@ -25,8 +25,6 @@ If the overlay doesn't sit on the video on a camera whose yaw isn't `0`, re-run 
 ## Lens
 
 **Horizontal Field of View** is the angular width the camera sees, in degrees.
-
-## Lens distortion
 
 Wide-angle and fisheye lenses bow straight lines, so the pinhole overlay (grid, markers, zones) no longer sits on top of the curved video. Two values and the lens centre bow the **overlay** to match the lens. The video frame itself is never warped (warping every pixel would be too slow on a Pi), so there is no performance cost when all of them are `0`.
 
@@ -55,7 +53,7 @@ The calibration the **Setup Wizard** applied last is listed read-only under **Ca
 
 In Simple the rectangle is the grid: a change to the grid's width, depth or offsets, on the Grid tab, from another station or by an import, moves the corners with it and unpins them, since they were pinned on the old grid. Advanced points stay as they are.
 
-A position, orientation or field of view that arrives without its calibration, from another station or a request to the station, or in an imported file from before calibration points, clears the calibration: it describes the camera it was pinned for, so the next run of the Setup Wizard starts from no points.
+A position, orientation or field of view written without its calibration, by a request to the station or an imported file that carries no calibration points, clears the calibration: it describes the camera it was pinned for, so the next run of the Setup Wizard starts from no points.
 
 ## Saving & sharing
 

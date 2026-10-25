@@ -1,10 +1,14 @@
 % import math
+% from openfollow.lens_model import C_BOUND
 % from openfollow.units import UnitSystem, format_length
 % _us = UnitSystem(config.ui.unit_system)
 % _cam = config.camera
 % # The lens centre counts in pixels of the live video; without one there is no number to show.
 % _vs = get('video_size')
 % _hd = 0.5 * math.hypot(*_vs) if _vs else 0.0
+% # Whole pixels within the Setup Wizard's bound, which a centre at the bound can round past.
+% _cmax = math.floor(C_BOUND * _hd)
+% _cpx = lambda v: max(-_cmax, min(_cmax, round(v * _hd)))
 <form id="camera-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="camera" data-help="camera"
       data-template-form="1">
     <div class="section-head">
@@ -40,9 +44,9 @@
                 <dt>Corner correction</dt>
                 <dd>{{"%.3f" % _cam.lens_k2}}</dd>
                 <dt>Right of the picture centre</dt>
-                <dd>{{"%d px" % round(_cam.lens_cx * _hd) if _vs else "No video"}}</dd>
+                <dd>{{"%d px" % _cpx(_cam.lens_cx) if _vs else "No video"}}</dd>
                 <dt>Above the picture centre</dt>
-                <dd>{{"%d px" % round(-_cam.lens_cy * _hd) if _vs else "No video"}}</dd>
+                <dd>{{"%d px" % _cpx(-_cam.lens_cy) if _vs else "No video"}}</dd>
             </dl>
         </div>
     </div>

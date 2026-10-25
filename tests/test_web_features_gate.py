@@ -103,7 +103,7 @@ def test_the_camera_tabs_calibration_marks_are_not_gated() -> None:
 
 def test_the_camera_tabs_lens_is_not_gated() -> None:
     text = _read("partials/camera.tpl")
-    group = text[: text.index('<h3 class="group-title">Lens distortion</h3>')].rsplit("<div", 1)[1]
+    group = text[: text.index('<h3 class="group-title">Lens</h3>')].rsplit("<div", 1)[1]
     assert "data-feature" not in group
 
 

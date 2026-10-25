@@ -15,7 +15,6 @@ import io
 import json
 import os
 import re
-import subprocess
 import sys
 import tarfile
 import time
@@ -42,7 +41,6 @@ from openfollow.web import whats_new as whats_new_module
 from openfollow.web.routes import apply_section_data
 from openfollow.web.server import ConfigWebServer
 from tests._ports import live_on_free_port, start_on_free_port
-from tests._wizard_js import NODE, needs_node
 
 pytestmark = pytest.mark.integration
 
@@ -7635,6 +7633,19 @@ def test_the_camera_tab_shows_lengths_in_the_station_s_units(video_server) -> No
     assert _readout(_camera_section(body))["Position X"] == "4 ft 11.06 in"
 
 
+def test_a_lens_centre_at_the_bound_reads_within_the_setup_wizard_s_bound(video_server) -> None:
+    # At 1280 x 720 the bound is 183.58 px: rounding alone shows 184, one pixel past the Setup Wizard's 183.
+    server, base, stats = video_server
+    cfg = load_config(server.config_path)
+    cfg.camera.lens_k1 = cfg.camera.lens_k2 = 0.0
+    cfg.camera.lens_cx, cfg.camera.lens_cy = 0.25, 0.25
+    save_config(cfg, server.config_path)
+    stats["video"] = {"resolution": {"width": 1280, "height": 720}}
+    _, body = _get(base, "/section/camera")
+    readout = _readout(_camera_section(body))
+    assert (readout["Right of the picture centre"], readout["Above the picture centre"]) == ("183 px", "-183 px")
+
+
 @pytest.mark.parametrize("resolution", [{"width": 0, "height": 0}, None], ids=["no size", "no video stats"])
 def test_without_video_the_lens_centre_reads_no_video(video_server, resolution) -> None:
     _, base, stats = video_server
@@ -7642,43 +7653,6 @@ def test_without_video_the_lens_centre_reads_no_video(video_server, resolution) 
     _, body = _get(base, "/section/camera")
     readout = _readout(_camera_section(body))
     assert (readout["Right of the picture centre"], readout["Above the picture centre"]) == ("No video", "No video")
-
-
-_CAMERA_PAGE = """
-var window = {}, gated = 0, prevented = 0;
-var els = { 'camera-lens-cx': { value: 'saved-cx' }, 'camera-lens-cy': { value: 'saved-cy' },
-  'camera-lens-cx-error': { innerHTML: '' }, 'camera-lens-cy-error': { innerHTML: '' } };
-var document = { getElementById: function(id) { return els[id] || null; }, body: { addEventListener: function() {} } };
-function refreshFormGate() { gated++; }
-function field(axis, value) {
-  return { value: value, max: '275', disabled: false, form: {},
-    dataset: { hidden: 'camera-lens-' + axis, halfDiag: HD },
-    attrs: {}, setAttribute: function(k, v) { this.attrs[k] = v; },
-    getAttribute: function(k) { return k === 'aria-describedby' ? 'camera-lens-' + axis + '-error' : null; } };
-}
-"""
-
-
-@needs_node
-@pytest.mark.parametrize(
-    ("right", "above", "centre"),
-    [
-        ("42", "18", (42 / _HD_1080, -18 / _HD_1080)),
-        ("-275", "-275", (-275 / _HD_1080, 275 / _HD_1080)),
-        ("0", "0", (0, 0)),
-    ],
-)
-@needs_node
-@pytest.mark.parametrize(
-    ("value", "refused"),
-    [("276", True), ("-276", True), ("", True), ("12.5", True), ("-0.5", True), ("12", False), ("12.0", False),
-     ("-275", False)],
-)  # fmt: skip
-@needs_node
-def _run_node(source: str) -> Any:
-    assert NODE is not None
-    done = subprocess.run([NODE, "-e", source], capture_output=True, text=True, timeout=60, check=True)
-    return json.loads(done.stdout)
 
 
 def test_validate_endpoint_advisory_note(live_server) -> None:

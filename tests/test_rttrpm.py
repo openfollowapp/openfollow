@@ -841,6 +841,46 @@ class TestRttrpmSendHealthLifecycle:
         status = srv.send_health.status()
         assert (status.state, status.failed) == ("failing", 2)
 
+    def test_an_unpinned_socket_that_cannot_be_created_raises_a_row_named_by_its_error(self, monkeypatch) -> None:
+        import errno as _e
+
+        # The send thread never runs; the test drives the packets.
+        monkeypatch.setattr(threading, "Thread", MagicMock())
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        srv = RttrpmServer(host="192.0.2.30")
+        srv.register_marker(_marker(1))
+        with patch("openfollow.rttrpm.server.socket.socket", side_effect=OSError(_e.EMFILE, "Too many open files")):
+            srv.start()
+            assert srv._socket is None
+            srv._send_packet()
+            srv._send_packet()
+        status = srv.send_health.status()
+        assert status.state == "failing"
+        assert (status.error, status.errno) == ("Too many open files", _e.EMFILE)
+
+    def test_a_socket_still_down_after_an_idle_spell_raises_the_row_again(self, monkeypatch) -> None:
+        """Nothing to send ends the streak, but the socket a failed rebuild left down is still down."""
+        import errno as _e
+
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        srv = RttrpmServer(host="192.0.2.30")
+        marker = _marker(1)
+        srv.register_marker(marker)
+        sock = MagicMock()
+        sock.sendto.side_effect = OSError(_e.ENETUNREACH, "Network is unreachable")
+        srv._socket = sock
+        with patch("openfollow.rttrpm.server.socket.socket", side_effect=OSError(_e.EMFILE, "Too many open files")):
+            srv._send_packet()
+            assert srv._socket is None
+            srv.unregister_marker(marker.marker_id)
+            srv._send_packet()
+            assert srv.send_health.status().state == "ok"
+            srv.register_marker(marker)
+            srv._send_packet()
+            srv._send_packet()
+        status = srv.send_health.status()
+        assert (status.state, status.error) == ("failing", "Too many open files")
+
     @pytest.mark.parametrize(
         "send",
         [lambda srv, stop: srv._send_packet(stop), lambda srv, stop: srv._send(b"x", stop)],

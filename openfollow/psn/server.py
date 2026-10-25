@@ -99,6 +99,8 @@ class PsnServer:
         self._info_thread: threading.Thread | None = None
         self._socket_thread: threading.Thread | None = None
         self._send_health = SendHealth("PSN")
+        # What kept the multicast socket from opening last; names a streak a skipped send starts.
+        self._open_error: Exception | None = None
         self._oversize_drops: int = 0
 
     def add_marker(self, marker_id: int, name: str) -> Marker:
@@ -288,6 +290,8 @@ class PsnServer:
                 _MAX_SOCKET_RETRIES,
                 exc,
             )
+            if not self._resolve_stop(stop_event).is_set():
+                self._open_error = exc
             return False
         # The open runs off the lock so a retry on a flapping NIC can't stall the
         # send loops or stop(); only the hand-over is locked, which is what pairs
@@ -508,11 +512,11 @@ class PsnServer:
         # Deliberately unlocked: locking would serialise every datagram behind
         # the socket hand-over. A send racing teardown sends, returns, or fails.
         sock = self._socket
+        dest = self._mcast_ip if self._mcast_ip else self._target_ip
         if sock is None:
             if not self._resolve_stop(stop_event).is_set():
-                self._send_health.record_skipped()
+                self._send_health.record_skipped(self._open_error, dest)
             return
-        dest = self._mcast_ip if self._mcast_ip else self._target_ip
         try:
             sock.sendto(data, (dest, self._port))
         except OSError as exc:

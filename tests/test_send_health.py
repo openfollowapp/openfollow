@@ -148,25 +148,50 @@ class TestRecovery:
         assert health.status().state == "ok"
 
 
-class TestSkippedSends:
-    """A send the sender skips for want of a socket, while it rebuilds the one a failure tore down."""
+_NO_FDS = OSError(errno.EMFILE, "Too many open files")
 
-    def test_one_inside_a_streak_is_a_failure(self) -> None:
+
+class TestSkippedSends:
+    """A send the sender skips for want of a socket, handing over the error that kept it from opening."""
+
+    def test_one_inside_a_streak_is_a_failure_of_that_streak(self) -> None:
         """A rebuild that keeps failing must not hold the streak short of a row."""
         health, clock = _health()
         health.record_failure(_REFUSED, _GROUP)
         clock.now += FAILING_AFTER_S
-        health.record_skipped()
+        health.record_skipped(_NO_FDS, _GROUP)
         status = health.status()
         assert status.failing
         assert (status.failed, status.sent_total, status.failed_total) == (2, 0, 2)
         assert (status.error, status.errno) == ("No route to host", errno.EHOSTUNREACH)
 
-    def test_one_outside_a_streak_records_nothing(self) -> None:
+    def test_one_outside_a_streak_starts_one_named_by_the_open_error(self) -> None:
+        """A socket that never opened, or that stayed down past a reset, still becomes a row."""
         health, clock = _health()
-        health.record_skipped()
+        health.record_skipped(_NO_FDS, "192.0.2.30")
+        assert health.status().state == "retrying"
         clock.now += FAILING_AFTER_S
-        health.record_skipped()
+        health.record_skipped(_NO_FDS, "192.0.2.30")
+        status = health.status()
+        assert status.failing
+        assert (status.error, status.errno, status.failed) == ("Too many open files", errno.EMFILE, 2)
+        assert (status.sent_total, status.failed_total) == (0, 2)
+
+    def test_an_open_error_that_is_not_an_os_error_reads_as_its_text(self) -> None:
+        health, clock = _health()
+        missing = RuntimeError("Interface eth9 not found")
+        health.record_skipped(missing, _GROUP)
+        clock.now += FAILING_AFTER_S
+        health.record_skipped(missing, _GROUP)
+        status = health.status()
+        assert status.failing
+        assert (status.error, status.errno) == ("Interface eth9 not found", None)
+
+    def test_one_with_no_open_error_outside_a_streak_records_nothing(self) -> None:
+        health, clock = _health()
+        health.record_skipped(None, _GROUP)
+        clock.now += FAILING_AFTER_S
+        health.record_skipped(None, _GROUP)
         status = health.status()
         assert status.state == "ok"
         assert (status.sent_total, status.failed_total) == (0, 0)
@@ -176,7 +201,7 @@ class TestSkippedSends:
         _failing(health, clock)
         health.record_success()
         clock.now += 0.5
-        health.record_skipped()
+        health.record_skipped(None, _GROUP)
         health.record_success()
         clock.now += RECOVERY_HOLD_S - 0.01
         health.record_success()
@@ -188,9 +213,9 @@ class TestSkippedSends:
         with caplog.at_level(logging.INFO, logger="openfollow.send_health"):
             health.record_failure(unreachable, _GROUP)
             clock.now += FAILING_AFTER_S
-            health.record_skipped()
+            health.record_skipped(_NO_FDS, _GROUP)
             clock.now += 60.0
-            health.record_skipped()
+            health.record_skipped(_NO_FDS, _GROUP)
         assert _messages(caplog) == [
             f"PSN: send failed: [Errno {errno.ENETUNREACH}] Network is unreachable",
             f"PSN: sends keep failing: [Errno {errno.ENETUNREACH}] Network is unreachable",
@@ -201,7 +226,7 @@ class TestSkippedSends:
         health, clock = _health("darwin")
         health.record_failure(_REFUSED, _GROUP)
         clock.now += FAILING_AFTER_S
-        health.record_skipped()
+        health.record_skipped(None, _GROUP)
         assert send_alerts([health.status()]) == [
             SendAlert(LOCAL_NETWORK_TEXT, LOCAL_NETWORK_ACTION, LOCAL_NETWORK_HUD_TEXT)
         ]

@@ -608,6 +608,8 @@ class OtpServer:
         self._adv_thread: threading.Thread | None = None
         self._socket_thread: threading.Thread | None = None
         self._send_health = SendHealth("OTP output")
+        # What kept the multicast socket from opening last; names a streak a skipped send starts.
+        self._open_error: Exception | None = None
         # Counter for dropped folios: one needing more pages than Last Page
         # can number, or one whose pages will not encode. Neither is reachable
         # by configuration, but without throttling either would flood the log
@@ -831,6 +833,8 @@ class OtpServer:
                 _MAX_SOCKET_RETRIES,
                 exc,
             )
+            if not self._resolve_stop(stop_event).is_set():
+                self._open_error = exc
             return False
         # Locked hand-over only, off-lock open. See PsnServer for the rationale.
         with self._lock:
@@ -1104,7 +1108,7 @@ class OtpServer:
         sock = self._socket
         if sock is None:
             if not self._resolve_stop(stop_event).is_set():
-                self._send_health.record_skipped()
+                self._send_health.record_skipped(self._open_error, dest_ip)
             return
         try:
             sock.sendto(data, (dest_ip, self._port))

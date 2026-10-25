@@ -550,6 +550,46 @@ class TestSendBeforeSocketOpen:
         assert status.state == "failing"
         assert (status.failed, status.error) == (2, "Network is unreachable")
 
+    @pytest.mark.parametrize(
+        ("refusal", "error"),
+        [
+            (OSError(errno.EADDRNOTAVAIL, "Can't assign requested address"), "Can't assign requested address"),
+            (
+                server_module.multicast_expert.MulticastExpertError("Interface eth9 not found"),
+                "Interface eth9 not found",
+            ),
+        ],
+        ids=["os-error", "multicast-expert-error"],
+    )
+    def test_a_socket_that_never_opened_raises_a_row_named_by_its_error(
+        self, monkeypatch: pytest.MonkeyPatch, refusal: Exception, error: str
+    ) -> None:
+        """No send ever failed, yet once the retry gives up nothing goes out for the whole generation."""
+        monkeypatch.setattr(server_module.threading, "Thread", _DummyThread)
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        _FakeMcastSocket.script = [refusal]
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        srv.start()
+        assert srv._socket is None
+        srv._send(b"\x00")
+        srv._send(b"\x00")
+        status = srv.send_health.status()
+        assert (status.state, status.error) == ("failing", error)
+        srv.stop()
+        srv._send(b"\x00")
+        assert srv.send_health.status().state == "ok"
+
+    def test_a_stopped_generations_failed_open_names_no_streak(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        _FakeMcastSocket.script = [OSError(errno.EADDRNOTAVAIL, "Can't assign requested address")]
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        stale = threading.Event()
+        stale.set()
+        assert srv._try_open_multicast_socket_once(attempt=2, stop_event=stale) is False
+        srv._send(b"\x00")
+        srv._send(b"\x00")
+        assert srv.send_health.status().failed_total == 0
+
     def test_a_send_skipped_after_its_generation_stopped_records_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
         srv = PsnServer(mcast_ip="236.10.10.10")

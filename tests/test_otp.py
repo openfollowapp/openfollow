@@ -1478,6 +1478,44 @@ class TestOtpSendHealthLifecycle:
             if srv._socket_thread is not None:
                 srv._socket_thread.join(timeout=2.0)
 
+    def test_a_socket_that_never_opened_raises_a_row_named_by_its_error(self, monkeypatch) -> None:
+        """No send ever failed, yet once the retry gives up nothing goes out for the whole generation."""
+        import multicast_expert
+
+        # The retry and send threads never run; the test drives the sends.
+        monkeypatch.setattr(threading, "Thread", MagicMock())
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        with patch(
+            "openfollow.otp.server.multicast_expert.McastTxSocket",
+            side_effect=multicast_expert.MulticastExpertError("Interface eth9 not found"),
+        ):
+            srv = OtpServer(system_number=1)
+            srv.start()
+        assert srv._socket is None
+        srv._send(b"\x00", "239.159.1.1")
+        srv._send(b"\x00", "239.159.1.1")
+        status = srv.send_health.status()
+        assert (status.state, status.error) == ("failing", "Interface eth9 not found")
+        srv._stop_event.set()
+        srv._send(b"\x00", "239.159.1.1")
+        assert srv.send_health.status().failed_total == 2
+
+    def test_a_stopped_generations_failed_open_names_no_streak(self, monkeypatch) -> None:
+        import errno as _e
+
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        with patch(
+            "openfollow.otp.server.multicast_expert.McastTxSocket",
+            side_effect=OSError(_e.EADDRNOTAVAIL, "Can't assign requested address"),
+        ):
+            srv = OtpServer(system_number=1)
+            stale = threading.Event()
+            stale.set()
+            assert srv._try_open_multicast_socket_once(attempt=2, stop_event=stale) is False
+        srv._send(b"\x00", "239.159.1.1")
+        srv._send(b"\x00", "239.159.1.1")
+        assert srv.send_health.status().failed_total == 0
+
     def test_a_send_skipped_after_its_generation_stopped_records_nothing(self, monkeypatch) -> None:
         import errno as _e
 

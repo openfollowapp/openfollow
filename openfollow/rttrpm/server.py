@@ -263,6 +263,8 @@ class RttrpmServer:
         self._socket: socket.socket | None = None
         self._send_thread: threading.Thread | None = None
         self._send_health = SendHealth("RTTrPM output")
+        # What kept the socket from opening last; names a streak a skipped send starts.
+        self._open_error: OSError | None = None
         self._next_rebuild_at: float = 0.0
         self._stale_warned = False
         # Warn-once-per-episode guard: True while a run of capped frames is
@@ -311,6 +313,7 @@ class RttrpmServer:
             # The send loop retries it; it never sends unpinned meanwhile.
             logger.warning("RTTrPM: %s", exc)
             self._socket = None
+            self._open_error = exc
         self._send_thread = threading.Thread(
             target=self._send_loop, args=(stop_event,), daemon=True, name="RTTrPM-Send"
         )
@@ -489,7 +492,7 @@ class RttrpmServer:
     def _record_skipped(self, stop_event: threading.Event | None) -> None:
         """Count a send skipped for want of a socket, unless its generation has stopped."""
         if not self._resolve_stop(stop_event).is_set():
-            self._send_health.record_skipped()
+            self._send_health.record_skipped(self._open_error, self._host)
 
     def _send(self, data: bytes, stop_event: threading.Event | None = None) -> None:
         sock = self._socket
@@ -532,6 +535,7 @@ class RttrpmServer:
             except OSError as exc:
                 logger.warning("RTTrPM: socket rebuild failed: %s", exc)
                 self._socket = None
+                self._open_error = exc
         if old_sock is not None:
             try:
                 old_sock.close()

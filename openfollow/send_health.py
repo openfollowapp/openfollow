@@ -12,8 +12,9 @@ Two rules carry the weight:
 
 *A streak is failing once failures keep arriving*: a failure landing
 ``FAILING_AFTER_S`` after the streak's first. A burst at one instant never
-becomes a row by itself, but a send skipped while the sender rebuilds the
-socket the burst tore down is a failure too, so a rebuild that long does.
+becomes a row by itself. A send skipped for want of a socket is a failure too,
+named by the error that kept the socket from opening when no streak is open, so
+a socket rebuild that takes that long, or a socket that never opens, does.
 
 *Recovery needs sends that keep succeeding.* With Local Network denied, the
 first send on a fresh socket returns success and nothing leaves, so every
@@ -156,28 +157,37 @@ class SendHealth:
 
     def record_failure(self, exc: OSError, dest: str) -> None:
         """Count a send to *dest* that raised *exc*. Logs once per streak, then as a reminder."""
-        reason = str(exc) or exc.__class__.__name__
         with self._lock:
-            self._error = exc.strerror or reason
-            self._errno = exc.errno
-            self._multicast = is_multicast_host(dest)
-            self._reason = reason
+            self._note_error(exc, dest)
             entry = self._count_failure()
         if entry is not None:
             logger.log(entry[0], "%s", entry[1])
 
-    def record_skipped(self) -> None:
-        """Count a send skipped while the socket a failure tore down is rebuilt.
+    def record_skipped(self, cause: Exception | None, dest: str) -> None:
+        """Count a send to *dest* skipped for want of a socket; *cause* kept the socket from opening.
 
-        Inside a streak it is a failure with that streak's error, so a rebuild
-        that keeps failing still becomes a row. Outside one it records nothing.
+        Inside a streak it is one more failure of that streak's error, so a
+        rebuild that keeps failing still becomes a row. Outside one *cause*
+        starts a streak, so a socket that never opened, or stayed down past a
+        reset, becomes a row too. With no *cause* it records nothing.
         """
         with self._lock:
             if self._streak_start is None:
-                return
+                if cause is None:
+                    return
+                self._note_error(cause, dest)
             entry = self._count_failure()
         if entry is not None:
             logger.log(entry[0], "%s", entry[1])
+
+    def _note_error(self, exc: Exception, dest: str) -> None:
+        """Make *exc*, met sending to *dest*, the error the next failure counts. Caller holds the lock."""
+        reason = str(exc) or exc.__class__.__name__
+        strerror, err = (exc.strerror, exc.errno) if isinstance(exc, OSError) else (None, None)
+        self._error = strerror or reason
+        self._errno = err
+        self._multicast = is_multicast_host(dest)
+        self._reason = reason
 
     def _count_failure(self) -> tuple[int, str] | None:
         """Count one failure of the last recorded error; the log line it earns, if any. Caller holds the lock."""

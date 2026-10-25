@@ -179,15 +179,17 @@ def run_export(export_args: list[str]) -> int:
     return 0
 
 
-def _typelibs_outside(repository: Any, root: Path) -> list[str]:
+def _typelibs_outside(repository: Any, root: str) -> list[str]:
     """Typelib files of every loaded namespace that lie outside ``root``.
 
     libgirepository falls back to its build-time prefix, so on the build host a
-    typelib the freeze dropped still loads, from Homebrew. Paths are compared
-    unresolved: PyInstaller links the typelib directory into ``sys._MEIPASS``.
+    typelib the freeze dropped still loads, from Homebrew. Paths are normalised
+    without resolving links: PyInstaller links the typelib directory into
+    ``sys._MEIPASS``.
     """
+    root = os.path.normpath(root)
     paths = [repository.get_typelib_path(name) for name in sorted(repository.get_loaded_namespaces())]
-    return [path for path in paths if not Path(path).is_relative_to(root)]
+    return [path for path in paths if os.path.commonpath((root, os.path.normpath(path))) != root]
 
 
 def run_selfcheck() -> int:
@@ -208,7 +210,7 @@ def run_selfcheck() -> int:
         for namespace in ("GLib", "Gio"):
             importlib.import_module(f"gi.repository.{namespace}")
         bundle = getattr(sys, "_MEIPASS", None)
-        if bundle and (outside := _typelibs_outside(repository, Path(bundle))):
+        if bundle and (outside := _typelibs_outside(repository, bundle)):
             print(f"FAIL: typelibs from outside the bundle: {', '.join(outside)}")
             return 1
         from gi.repository import Gst, GstPbutils

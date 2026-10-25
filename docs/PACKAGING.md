@@ -536,7 +536,9 @@ crash. The scrubbed environment does not stop the bundled libgirepository from
 falling back to the build host's Homebrew typelibs. So once the check has loaded
 the pinned typelibs and imported `GLib` and `Gio`, whose overrides load
 `GLibUnix` / `GioUnix` (no typelib depends on them), it reads the path of every
-typelib loaded so far, and fails on one from outside the `.app`. The elements it
+typelib loaded so far. It fails on one whose path, normalised without resolving
+links, lies outside `sys._MEIPASS` (`Contents/Frameworks`, into which
+PyInstaller links `gi_typelibs` from `Contents/Resources`). The elements it
 requires (`REQUIRED_GST_ELEMENTS` in `launcher.py`) are every one the app builds
 on macOS: those its pipelines create by name, and those `decodebin` plugs for
 Media Gallery uploads and clips and for H.264 / H.265 / MPEG-TS streams.

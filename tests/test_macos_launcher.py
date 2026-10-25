@@ -453,18 +453,28 @@ def test_selfcheck_fails_on_a_typelib_outside_the_bundle(launcher, monkeypatch, 
     )
 
 
-def test_selfcheck_fails_on_a_typelib_beside_the_bundle(launcher, monkeypatch, capsys, tmp_path) -> None:
-    beside = tmp_path / "Frameworks-old" / "gi_typelibs"
+@pytest.mark.parametrize(
+    "outside",
+    [
+        pytest.param("Frameworks-old/gi_typelibs", id="beside-the-bundle"),
+        pytest.param("Frameworks/gi_typelibs/../../Homebrew", id="out-through-a-parent-directory"),
+    ],
+)
+def test_selfcheck_fails_on_a_typelib_path_that_only_starts_inside_the_bundle(
+    launcher, monkeypatch, capsys, tmp_path, outside
+) -> None:
     monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path / "Frameworks"), raising=False)
     _install_fake_gst(
         monkeypatch,
         set(),
         typelib_dir=str(tmp_path / "Frameworks" / "gi_typelibs"),
-        typelib_dirs={"GstApp": str(beside)},
+        typelib_dirs={"GstApp": f"{tmp_path}/{outside}"},
     )
 
     assert launcher.run_selfcheck() == 1
-    assert capsys.readouterr().out.strip() == f"FAIL: typelibs from outside the bundle: {beside}/GstApp.typelib"
+    assert capsys.readouterr().out.strip() == (
+        f"FAIL: typelibs from outside the bundle: {tmp_path}/{outside}/GstApp.typelib"
+    )
 
 
 @pytest.mark.parametrize(

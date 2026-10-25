@@ -2249,6 +2249,13 @@ def clean_avf_device_name(raw: object) -> str:
     return CONTROL_CHARS_RE.sub("", raw).strip()[:AVF_DEVICE_NAME_MAX_LEN].strip()
 
 
+def clean_avf_unique_id(raw: object) -> str:
+    """A stored camera ID: text only, trimmed, no control or direction characters."""
+    if not isinstance(raw, str):
+        return ""
+    return CONTROL_CHARS_RE.sub("", raw).strip()
+
+
 @dataclass
 class NetworkConfig:
     """Optional ``[network]`` section.
@@ -2486,9 +2493,9 @@ class AppConfig:
             self.rtsp_password = ""
         if not isinstance(self.srt_passphrase, str):
             self.srt_passphrase = ""
-        # The build refuses an ID no listed camera matches, so edge whitespace would read as "not found".
-        self.avf_unique_id = _coerce_str(self.avf_unique_id, "").strip()
-        # Rendered on the HUD and in the web UI; the USB camera's web-save path cleans it the same way.
+        # The build refuses an ID no listed camera matches, and an unnamed camera shows its ID on
+        # the HUD; the USB camera's web-save path cleans both fields the same way.
+        self.avf_unique_id = clean_avf_unique_id(self.avf_unique_id)
         self.avf_device_name = clean_avf_device_name(self.avf_device_name)
         self.avf_device_index = _coerce_int(self.avf_device_index, -1, lo=-1)
         # Auto online-sync knobs: normalise so a hand-edited TOML can't feed a

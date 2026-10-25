@@ -1145,6 +1145,24 @@ class TestTheNameIsStoredWithTheCamera:
 
         assert cfg.avf_device_name == stored
 
+    @pytest.mark.parametrize(
+        "posted",
+        ["0x1410\x00\x070000", "0x1410\u202e0000\u2066", "  0x14100000\n"],
+        ids=["control", "bidi", "whitespace"],
+    )
+    def test_a_crafted_id_is_cleaned_as_a_load_would(self, posted: str) -> None:
+        cfg = self._saved({"avf_unique_id": posted})
+
+        assert cfg.avf_unique_id == "0x14100000"
+
+    def test_an_id_the_hud_shows_is_clean(self) -> None:
+        """A camera not listed this run and stored without a name is shown by its ID."""
+        from openfollow.configuration import AppConfig
+
+        cfg = AppConfig(video_source_type="avf", avf_unique_id="0x1410\u202e0000")
+
+        assert AvfInput.get_source_label(AvfInput.runtime_config(cfg)).startswith("0x14100000 (")
+
     def test_a_camera_never_listed_reads_as_its_unique_id(self) -> None:
         assert AvfInput.source_labels(["47B4B64B"]) == ["47B4B64B"]
 

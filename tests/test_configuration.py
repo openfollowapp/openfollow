@@ -413,6 +413,20 @@ def test_avf_unique_id_is_stripped_on_load(raw: str, expected: str) -> None:
     assert AppConfig(avf_unique_id=raw).avf_unique_id == expected
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("0x1410\x00\x070000", "0x14100000"),
+        ("0x1410\u202e0000\u2066", "0x14100000"),
+        ("\u200e", ""),
+    ],
+    ids=["control", "bidi", "only-direction-marks"],
+)
+def test_avf_unique_id_is_cleaned_on_load(raw: str, expected: str) -> None:
+    """A camera not listed this run and stored without a name shows its ID on the HUD."""
+    assert AppConfig(avf_unique_id=raw).avf_unique_id == expected
+
+
 @pytest.mark.parametrize("bad", ["abc", "1.5", None, True, [1], {"a": 1}])
 def test_avf_device_index_coerces_wrong_type_to_default(bad: object) -> None:
     assert AppConfig(avf_device_index=bad).avf_device_index == -1  # type: ignore[arg-type]

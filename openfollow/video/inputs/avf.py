@@ -456,12 +456,12 @@ class AvfInput(VideoInputBase):
         A name listed this run wins; otherwise a name sent with the ID (an
         import, a peer) is kept, and a camera left as it was keeps its name.
         """
-        from openfollow.configuration import clean_avf_device_name
+        from openfollow.configuration import clean_avf_device_name, clean_avf_unique_id
 
         stored_id = getattr(cfg, "avf_unique_id", "")
         stored_name = getattr(cfg, "avf_device_name", "")
         super().apply_config_fields(cfg, form_data)
-        unique_id = str(getattr(cfg, "avf_unique_id", "") or "")
+        unique_id = cfg.avf_unique_id = clean_avf_unique_id(getattr(cfg, "avf_unique_id", ""))
         name: object = ""
         if unique_id in _camera_names:
             name = _camera_names[unique_id]

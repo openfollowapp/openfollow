@@ -378,30 +378,61 @@ def riser(out: list[str]) -> None:
         out.append(poly(strip, "#f4f4f2"))
     for xa in (-4.3, -2.4, 2.4, 4.3):  # backline amps
         box(out, xa - 0.4, xa + 0.4, y1 - 0.8, y1 - 0.2, h, h + 1.2, "#3e4148", "#2b2d32")
-    drum = (0.0, y0 + 1.3)
-    drums = (
-        (0.0, 0.2, 0.28, 0.55),
-        (-0.3, -0.2, 0.12, 0.75),
-        (0.3, -0.22, 0.13, 0.75),
-        (0.55, 0.2, 0.2, 0.6),
-        (-0.55, 0.1, 0.17, 0.7),
-    )
-    cymbals = (
-        (-0.75, -0.45, 0.23, 1.3),
-        (0.8, -0.4, 0.26, 1.35),
-        (0.25, -0.6, 0.2, 1.15),
-        (-0.35, 0.55, 0.24, 1.45),
-    )
-    seat = (drum[0] + 0.05, drum[1] + 0.85)  # the drum throne behind the kit
-    for dx, dy, _r, z in (*drums, *cymbals):  # every stand under the kit, so no drum hides behind one
-        stand(out, drum[0] + dx, drum[1] + dy, h, h + z)
-    stand(out, *seat, h, h + 0.52)
-    for dx, dy, r, z in drums:
-        out.append(poly(disc(drum[0] + dx, drum[1] + dy, h + z, r, 20), "#e9e4dc", "#7a756c", 1.2))
-    for dx, dy, r, z in cymbals:
-        out.append(poly(disc(drum[0] + dx, drum[1] + dy, h + z, r, 24), "#b98a3e", "#6a4a1a", 1.0))
-        out.append(poly(disc(drum[0] + dx, drum[1] + dy, h + z + 0.001, r * 0.35, 12), "#d6aa5a"))
-    out.append(poly(disc(seat[0], seat[1], h + 0.55, 0.2, 20), "#34343a", "#6a6b72", 1.8))
+    drum_kit(out, 0.0, y0 + 1.3, h)
+
+
+# A right-handed metal kit about its centre, in metres; +x is the drummer's left (stage left),
+# -y is toward the audience. Drums: (x, y, radius, height of the head). Cymbals: (x, y, radius, height).
+KICKS = ((0.33, -0.25), (-0.33, -0.25))  # two 24" bass drums on their sides, batter heads toward the seat
+KICK_R, KICK_DEPTH = 0.3, 0.45
+DRUMS = (
+    (0.12, 0.15, 0.18, 0.66),  # snare, between the knees, a little left
+    (0.3, -0.12, 0.13, 0.88),  # rack toms, 10", 12" and 13", in an arc above the kicks
+    (0.0, -0.18, 0.15, 0.92),
+    (-0.3, -0.12, 0.165, 0.9),
+    (-0.55, 0.3, 0.2, 0.62),  # floor toms, 16" and 18", on the right beside the seat
+    (-0.78, -0.08, 0.23, 0.64),
+)
+CYMBALS = (
+    (0.5, 0.18, 0.18, 0.95),  # hi-hat, left of the snare
+    (0.15, -0.5, 0.13, 1.28),  # splash over the toms
+    (0.6, -0.42, 0.23, 1.42),  # crashes, 18" and 19"
+    (-0.25, -0.6, 0.24, 1.48),
+    (-0.68, -0.4, 0.28, 1.08),  # ride, 22", on the right
+    (0.98, -0.12, 0.23, 1.55),  # chinas at the outer edges, 18" and 20"
+    (-1.02, -0.3, 0.25, 1.6),
+)
+SEAT = (0.0, 0.5, 0.2, 0.58)
+
+
+def drum_kit(out: list[str], cx: float, cy: float, h: float) -> None:
+    """The kit about ``(cx, cy)`` on the riser at ``h``: rack, kicks, stands, then drums and cymbals, each
+    drawn after what lies further from the camera."""
+    at = lambda dx, dy, z: (cx + dx, cy + dy, h + z)  # noqa: E731
+    # The chrome rack: a curved bar in front of the kit on four legs, an arm out to each rack tom and cymbal.
+    arc = [at(1.05 * math.sin(t), -0.72 * math.cos(t) - 0.05, 1.0) for t in np.linspace(-1.35, 1.35, 25)]
+    for p0, p1 in pairwise(arc):
+        out.append(line(p0, p1, C_SILVER, 3.2))
+    for p in arc[::8]:
+        out.append(line((p[0], p[1], h), p, C_SILVER, 2.6))
+    for x, y, _r, z in (*DRUMS[1:4], *CYMBALS[1:4], CYMBALS[5], CYMBALS[6]):
+        near = min(arc, key=lambda q: (q[0] - cx - x) ** 2 + (q[1] - cy - y) ** 2)
+        out.append(line(near, at(x, y, z - 0.02), C_SILVER, 2.2))
+    for x, y in KICKS:  # shell from above, then the batter head facing the seat
+        box(out, cx + x - KICK_R, cx + x + KICK_R, cy + y - KICK_DEPTH, cy + y, h, h + 2 * KICK_R, "#2c2c33", "#1d1d22")
+        head = [at(x + KICK_R * math.cos(t), y, KICK_R + KICK_R * math.sin(t)) for t in np.linspace(0, 2 * math.pi, 28)]
+        out.append(poly(head, "#e9e4dc", "#7a756c", 1.2))
+    for x, y, _r, z in (*DRUMS[:1], *DRUMS[4:], CYMBALS[0], CYMBALS[4], SEAT):  # stand-mounted pieces
+        stand(out, cx + x, cy + y, h, h + z - 0.02)
+    pieces = [(x, y, r, z, False) for x, y, r, z in DRUMS] + [(x, y, r, z, True) for x, y, r, z in CYMBALS]
+    eye = CAMERA[:3]
+    for x, y, r, z, cymbal in sorted(pieces, key=lambda q: -math.dist(eye, at(q[0], q[1], q[3]))):
+        if cymbal:
+            out.append(poly(disc(cx + x, cy + y, h + z, r, 24), "#b98a3e", "#6a4a1a", 1.0))
+            out.append(poly(disc(cx + x, cy + y, h + z + 0.001, r * 0.35, 12), "#d6aa5a"))
+        else:
+            out.append(poly(disc(cx + x, cy + y, h + z, r, 20), "#e9e4dc", "#7a756c", 1.2))
+    out.append(poly(disc(cx + SEAT[0], cy + SEAT[1], h + SEAT[3], SEAT[2], 20), "#34343a", "#6a6b72", 1.8))
 
 
 def stand(out: list[str], x: float, y: float, z0: float, z1: float) -> None:

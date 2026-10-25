@@ -10,8 +10,9 @@ the in-app model export, and the build-time self-check all run from one bundle:
   (``web/routes.py``) re-invokes the app with a leading ``--export``; we forward
   the rest to ``export_onnx`` in-process.
 - ``OPENFOLLOW_SELFCHECK=1``: import the native stack (gi/Gst + detection deps)
-  and verify the key GStreamer elements resolve, then exit. Used by the DMG
-  build's post-bundle verifier without opening a window.
+  and verify every typelib, GStreamer element and typefinder the app needs
+  resolves from the bundle, then exit. Used by the DMG build's post-bundle
+  verifier without opening a window.
 - default: seed a per-user config + the bundled default model on first run, then
   launch the GUI.
 
@@ -25,6 +26,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
+from typing import Any
 
 APP_NAME = "OpenFollow"
 SEED_CONFIG_NAME = "config.seed.toml"
@@ -177,6 +179,20 @@ def run_export(export_args: list[str]) -> int:
     return 0
 
 
+def _typelibs_outside(repository: Any, root: Path) -> list[str]:
+    """Typelib files of ``REQUIRED_TYPELIBS`` and their dependencies that lie outside ``root``.
+
+    libgirepository falls back to its build-time prefix, so on the build host a
+    typelib the freeze dropped still loads, from Homebrew. Paths are compared
+    unresolved: PyInstaller links the typelib directory into ``sys._MEIPASS``.
+    """
+    namespaces = {name for name, _version in REQUIRED_TYPELIBS}
+    for name, _version in REQUIRED_TYPELIBS:
+        namespaces |= {dependency.rsplit("-", 1)[0] for dependency in repository.get_dependencies(name)}
+    paths = [repository.get_typelib_path(name) for name in sorted(namespaces)]
+    return [path for path in paths if not Path(path).is_relative_to(root)]
+
+
 def run_selfcheck() -> int:
     """Verify the bundled native stack resolves; print OK / FAIL, return 0 / 1."""
     try:
@@ -184,11 +200,17 @@ def run_selfcheck() -> int:
 
         import gi
 
+        repository = gi.Repository.get_default()
         for namespace, version in REQUIRED_TYPELIBS:
             gi.require_version(namespace, version)
-            # Importing Gtk / Gdk initialises the display, which a headless build has none of.
+            # Loads Gtk / Gdk too, whose import would initialise the display a headless build has none of.
+            repository.require(namespace, version)
             if namespace not in ("Gtk", "Gdk"):
                 importlib.import_module(f"gi.repository.{namespace}")
+        bundle = getattr(sys, "_MEIPASS", None)
+        if bundle and (outside := _typelibs_outside(repository, Path(bundle))):
+            print(f"FAIL: typelibs from outside the bundle: {', '.join(outside)}")
+            return 1
         from gi.repository import Gst, GstPbutils
 
         Gst.init(None)

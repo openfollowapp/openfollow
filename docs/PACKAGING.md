@@ -532,12 +532,16 @@ HOME=$HOME OPENFOLLOW_SELFCHECK=1 …`) and fails the build unless the bundled
 `.app` (every typelib the app pins, the `typefindfunctions` plugin and a
 `GstPbutils` Discoverer included) and the app exits cleanly; a failure prints
 the exit status and everything the app wrote, such as the missing elements or a
-crash. The elements it requires (`REQUIRED_GST_ELEMENTS` in `launcher.py`) are
-every one the app builds on macOS: those its pipelines create by name, and those
-`decodebin` plugs for Media Gallery uploads and clips and for H.264 / H.265 /
-MPEG-TS streams. `tests/test_macos_bundle_contract.py` fails when an element the
-sources create by name, or one the diagnostics bundle checks, is missing from
-that list, and pins each listed element to a plugin the allowlist keeps.
+crash. The scrubbed environment does not stop the bundled libgirepository from
+falling back to the build host's Homebrew typelibs, so the check reads where
+each pinned typelib and every typelib it depends on was loaded from, and fails
+on one from outside the `.app`. The elements it requires
+(`REQUIRED_GST_ELEMENTS` in `launcher.py`) are every one the app builds on
+macOS: those its pipelines create by name, and those `decodebin` plugs for Media
+Gallery uploads and clips and for H.264 / H.265 / MPEG-TS streams.
+`tests/test_macos_bundle_contract.py` fails when an element the sources create
+by name, or one the diagnostics bundle checks, is missing from that list, and
+pins each listed element to a plugin the allowlist keeps.
 
 The About page's **License**, **Third-party notices** and **Written offer** read
 `LICENSE`, `THIRD_PARTY_NOTICES.md` and `WRITTEN_OFFER.md` from beside the

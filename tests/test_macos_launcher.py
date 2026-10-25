@@ -272,6 +272,12 @@ def test_run_export_returns_one_on_failure(launcher, monkeypatch, tmp_path) -> N
 # ---------------------------------------------------------------------------
 
 
+_HOMEBREW_TYPELIBS = "/opt/homebrew/lib/girepository-1.0"
+
+# What the fake repository reports as loaded with a namespace, as "<namespace>-<version>".
+_TYPELIB_DEPENDENCIES = {"GstPbutils": ("GstVideo-1.0", "Gst-1.0")}
+
+
 def _install_fake_gst(
     monkeypatch,
     missing: set[str],
@@ -279,6 +285,8 @@ def _install_fake_gst(
     plugins: frozenset[str] = frozenset({"typefindfunctions"}),
     namespaces: frozenset[str] = frozenset(),
     unloadable: frozenset[str] = frozenset({"Gtk", "Gdk"}),
+    typelib_dir: str = _HOMEBREW_TYPELIBS,
+    typelib_dirs: dict[str, str] | None = None,
     discoverer_error: str = "",
 ) -> None:
     """Stand in for gi / Gst, resolving every element except ``missing``.
@@ -286,6 +294,7 @@ def _install_fake_gst(
     ``plugins`` are the GStreamer plugins the registry holds, ``namespaces``
     the typelibs gi reports as unavailable, ``unloadable`` the ones whose
     import fails. Gtk and Gdk fail by default: importing them opens the display.
+    Every typelib loads from ``typelib_dir`` unless ``typelib_dirs`` names another.
     """
 
     def new_discoverer(timeout: int) -> object:
@@ -301,6 +310,11 @@ def _install_fake_gst(
             get=lambda: types.SimpleNamespace(find_plugin=lambda name: object() if name in plugins else None)
         ),
     )
+    default_repository = types.SimpleNamespace(
+        require=lambda namespace, version: None,
+        get_dependencies=lambda namespace: _TYPELIB_DEPENDENCIES.get(namespace, ()),
+        get_typelib_path=lambda namespace: f"{(typelib_dirs or {}).get(namespace, typelib_dir)}/{namespace}.typelib",
+    )
     repository = types.ModuleType("gi.repository")
     repository.__path__ = []  # type: ignore[attr-defined]  # a package, so a missing name falls back to sys.modules
     gi = types.ModuleType("gi")
@@ -310,6 +324,7 @@ def _install_fake_gst(
             raise ValueError(f"Namespace {namespace} not available")
 
     gi.require_version = require_version  # type: ignore[attr-defined]
+    gi.Repository = types.SimpleNamespace(get_default=lambda: default_repository)  # type: ignore[attr-defined]
     gi.repository = repository  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "gi", gi)
     monkeypatch.setitem(sys.modules, "gi.repository", repository)
@@ -363,6 +378,74 @@ def test_selfcheck_fails_when_a_typelib_does_not_load(launcher, monkeypatch, cap
 def test_selfcheck_reaches_the_discoverer_without_importing_gtk(launcher, monkeypatch, capsys) -> None:
     # The fake leaves Gtk / Gdk unimportable, so reaching the Discoverer proves neither was imported.
     _install_fake_gst(monkeypatch, set(), discoverer_error="reached the discoverer")
+
+    assert launcher.run_selfcheck() == 1
+    assert capsys.readouterr().out.strip() == "FAIL: reached the discoverer"
+
+
+@pytest.mark.parametrize(
+    "namespace",
+    [
+        *(name for name, _version in _load_launcher().REQUIRED_TYPELIBS),
+        pytest.param("GstVideo", id="dependency-of-GstPbutils"),
+    ],
+)
+def test_selfcheck_fails_on_a_typelib_outside_the_bundle(launcher, monkeypatch, capsys, tmp_path, namespace) -> None:
+    # On the build host, libgirepository finds a typelib the freeze dropped in Homebrew.
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+    _install_fake_gst(
+        monkeypatch,
+        set(),
+        typelib_dir=str(tmp_path / "gi_typelibs"),
+        typelib_dirs={namespace: _HOMEBREW_TYPELIBS},
+    )
+
+    assert launcher.run_selfcheck() == 1
+    assert (
+        capsys.readouterr().out.strip()
+        == f"FAIL: typelibs from outside the bundle: {_HOMEBREW_TYPELIBS}/{namespace}.typelib"
+    )
+
+
+def test_selfcheck_fails_on_a_typelib_beside_the_bundle(launcher, monkeypatch, capsys, tmp_path) -> None:
+    beside = tmp_path / "Frameworks-old" / "gi_typelibs"
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path / "Frameworks"), raising=False)
+    _install_fake_gst(
+        monkeypatch,
+        set(),
+        typelib_dir=str(tmp_path / "Frameworks" / "gi_typelibs"),
+        typelib_dirs={"GstApp": str(beside)},
+    )
+
+    assert launcher.run_selfcheck() == 1
+    assert capsys.readouterr().out.strip() == f"FAIL: typelibs from outside the bundle: {beside}/GstApp.typelib"
+
+
+def test_selfcheck_takes_the_typelibs_linked_into_the_bundle(launcher, monkeypatch, capsys, tmp_path) -> None:
+    # PyInstaller keeps them in Contents/Resources and links the directory into sys._MEIPASS.
+    (tmp_path / "Resources" / "gi_typelibs").mkdir(parents=True)
+    (tmp_path / "Frameworks").mkdir()
+    (tmp_path / "Frameworks" / "gi_typelibs").symlink_to(Path("..") / "Resources" / "gi_typelibs")
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path / "Frameworks"), raising=False)
+    _install_fake_gst(
+        monkeypatch,
+        set(),
+        typelib_dir=str(tmp_path / "Frameworks" / "gi_typelibs"),
+        discoverer_error="reached the discoverer",
+    )
+
+    assert launcher.run_selfcheck() == 1
+    assert capsys.readouterr().out.strip() == "FAIL: reached the discoverer"
+
+
+def test_selfcheck_outside_a_bundle_takes_the_system_typelibs(launcher, monkeypatch, capsys) -> None:
+    monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+    _install_fake_gst(
+        monkeypatch,
+        set(),
+        typelib_dir=_HOMEBREW_TYPELIBS,
+        discoverer_error="reached the discoverer",
+    )
 
     assert launcher.run_selfcheck() == 1
     assert capsys.readouterr().out.strip() == "FAIL: reached the discoverer"

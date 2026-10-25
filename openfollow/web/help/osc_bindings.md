@@ -8,7 +8,7 @@ Each transmitter collapses to a one-line summary (name, trigger type, destinatio
 
 Identity, destination, and transport.
 
-- **Enabled** – master toggle for this transmitter; disabled transmitters do not transmit. If a placeholder's dependency isn't satisfied (e.g. no Default marker for a bare `[x]`), the toggle turns red and the transmitter is forced off until resolved.
+- **Transmitter** – master toggle for this transmitter; disabled transmitters do not transmit. If a placeholder's dependency isn't satisfied (e.g. no Default marker for a bare `[x]`), the toggle turns red and the transmitter is forced off until resolved.
 - **Name** – a label for your own reference. Appears in the Diagnostics tab and the Overview live counters.
 - **Default markers** – the marker(s) that bare position placeholders (`[x]`, `[y]`, `[markerid]`, etc.) resolve against when no `:N` index is given. Enter a comma-separated list to drive several markers from one transmitter: `1, 3, 7` behaves exactly like three separate transmitters sending to markers 1, 3 and 7, each rendered against its own position. The lowest ID is the *primary* (shown in the row header); the rest appear as read-only chips nested under it, ordered by ID. Each entry is one of:
   - a **marker ID** – sends to that marker when this station controls it. An id it doesn't control isn't an error: that entry is skipped at send time and shown with a red dot.

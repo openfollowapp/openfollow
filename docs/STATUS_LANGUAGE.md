@@ -13,8 +13,8 @@ with the reasoning, before adding the variant.
 
 | Level | Means | Examples |
 |---|---|---|
-| **Error** | It does not work, and will not until someone acts | Video unreachable, a refused save, a missing controller, an OSC binding that can never fire, a marker two stations control, detection or 3D Mouse support unavailable |
-| **Caution** | It works, with a limitation worth knowing | A feature marked experimental, a marker no station controls, a web UI pin that missed and serves on every interface |
+| **Error** | It does not work, and will not until someone acts | Video unreachable, a refused save, a missing controller, an OSC binding that can never fire, a marker two stations control, detection or 3D Mouse support unavailable, a power supply under voltage now |
+| **Caution** | It works, with a limitation worth knowing | A feature marked experimental, a marker no station controls, a web UI pin that missed and serves on every interface, an under voltage or throttling since the Pi last started |
 | **Info** | Nothing is wrong; progress or a fact | Starting, idle, restarting, an update is available, a value Save will correct |
 | **Success** | Something just worked, or is healthy | Saved, connected, running, marker added |
 
@@ -108,11 +108,12 @@ or no modifier for neutral. Pill-shaped, uppercase, `--<level>-chip` fill,
 solid `--<level>-line` border, off-white text, **no icon**. "Starting" and
 "Idle" are info; "Off" is neutral. The OSC diagnostics health pill and the
 Experimental badge (caution) are chips too, and so are the state words in a
-table row: "Conflict" and "Not controlled" (caution) in the marker catalog, and
-"Not connected" / "Interface down" (error) in the Network Interface Assignment
-Address column for a function that cannot send; a labelled adapter that is not
-plugged in reads "Not connected" in the neutral chip on the Network Interface
-card, where nothing is failing. A row places a chip, it never restyles one.
+table row: "Conflict" (error) and "Not controlled" (caution) in the marker
+catalog, and "Not connected" / "Interface down" (error) in the Network
+Interface Assignment Address column for a function that cannot send; a
+labelled adapter that is not plugged in reads "Not connected" in the neutral
+chip on the Network Interface card, where nothing is failing. A row places a
+chip, it never restyles one.
 
 ### Small row pills
 
@@ -191,10 +192,30 @@ holds the line.
 
 | Element | Look |
 |---|---|
-| Invalid / valid preview (Setup Wizard) | 1px `--error-line` / `--success-line` |
+| A traced Lens line that does not fit the others (Setup Wizard) | `--caution-line` stroke over a 16 px `--caution-line` glow at 40%, its number a `--caution-line` pill reading `! N` in `--bg-deep`; a fitting one is the accent with no glow and a plain number, its predicted curve `--success-line` |
+| A pin that disagrees with the other points (Setup Wizard) | `--caution-line` stroke on its dot; where the solved camera sees each point, a `--success-mark` ring |
 | Failed / successful save | 2px ring for 0.55 s in `--error-line` / `--success-line` |
 | Invalid field, a control marked unresolved, or a binding another field took | `--error-line` border plus a 1px `--error-line` shadow |
 | An OSC trigger on an input a gamepad or keyboard action also uses | `--caution-line` border plus a 1px `--caution-line` shadow |
+
+### Graded meter
+
+A measurement that has a quality rather than a state, such as the Setup
+Wizard's lens coverage, shows it as five segments (`.wizard-meter`, each
+segment a `.wizard-meter-seg`). The filled segments count the grade, one to
+five, and take the line colour of the level that grade belongs to; the empty
+ones stay the neutral `--border-soft`. The five grades map to three levels:
+
+| Grade | Filled | Level |
+|---|---|---|
+| low, medium | 1, 2 | Caution (`--caution-line`) |
+| okay | 3 | Info (`--info-line`) |
+| good, excellent | 4, 5 | Success (`--success-line`) |
+
+The meter sits inside a box or next to a value and never stands in for the
+word: the grade is written out beside it, and the box it leads takes the same
+level. A meter is never red, because a poor grade is a limitation, not a fault;
+the one thing it measures still works.
 
 ### Inline text
 
@@ -213,16 +234,35 @@ A failed save is a red line under the form's actions, what the station
 observed plus one next step, next to the red ring. It is not a box and never a
 toast.
 
+A change that went through with something worth knowing about it (an import
+or a restore to defaults for which no backup could be made) is a caution toast
+on the page the change reloaded to, in place of its confirmation.
+
+### Pushed settings
+
+Settings another station pushed here are an info box in a locked dialog on
+every page (`base.tpl`'s pushed-settings poll): the box says they are already
+applied, a list below names each push, and a push for which no backup could be
+made carries a caution line (`.field-caution-msg`), the same sentence as the
+toast: "No backup was made. Details in Logs." Its one button removes the
+warning; it is not a confirmation, because nothing waits on it.
+
 ### Toast
 
-The toast only confirms: success fill and border over the opaque dark base,
-off-white text, led by the success sign. A failure never uses the toast.
+The toast confirms: success fill and border over the opaque dark base,
+off-white text, led by the success sign. A change that went through with
+something worth knowing about it takes the caution fill and border instead, led
+by the "i" sign (`.toast-caution`). It stays 10 seconds, a new toast restarts
+the time, and a click closes it. A failure never uses the toast.
 
 ### Destructive actions
 
-Delete, Discard, Forget, Restore Defaults and Restart are not states, but red
-already means "stop or lose something", so they take the error red rather than a
-second, paler one:
+Delete, Discard, Forget, Import, Restore Defaults and Restart are not states, but
+red already means "stop or lose something", so they take the error red rather than
+a second, paler one. Only the control that makes the change is red: a dialog's
+confirm, or a control that acts at once. One that only opens the question is not
+destructive and keeps its normal style (**Import Configuration…**, **Restore
+Defaults** in the Configuration section).
 
 | Control | Look |
 |---|---|
@@ -267,19 +307,27 @@ attributes, so it spells the token's value.
 ### HUD
 
 - Error status rows, the Settings ERROR box, the bottom-left panel in a failure
-  state and a missing controller's marker card use the error fill and border.
-  The marker card keeps its marker-coloured border.
+  state and the marker card of a missing controller, or of a marker another
+  station controls too, use the error fill and border. The marker card keeps
+  its marker-coloured border.
 - Error status rows and the ERROR box lead with the off-white warning sign
   (`draw_warning_sign`).
+- The Settings ERROR box says what was observed on its main line (off-white,
+  bold) and one next step under it (muted), as the web's box. A banner the
+  menu opened with brings its own step (`action=` beside `banner=`) or none;
+  the video failure's step stands only under the video failure.
 - A fault's sentence is a top-right status row, whatever raised it (a video
-  failure, a missing controller, an output whose interface has no address).
+  failure, a missing controller, an output whose interface has no address, a
+  marker another station controls too).
   The bottom-left panel only turns red; it never carries the sentence.
 - A status row takes its level's chip colours from `STATUS_LEVEL_COLORS`,
   led by its level's off-white sign (`draw_level_sign`): the warning sign for
   an error, the "i" for caution and info, the off-white check for a success
   ("Diagnostics saved to …"). A level the HUD does not know draws as an
-  error. The "+N more" row takes the gravest level among the rows it hides,
-  in the order error, caution, info, success.
+  error. Rows are listed gravest first, each level in the order raised, so a
+  notice held until someone acts never pushes a fault out of sight. The "+N
+  more" row takes the gravest level among the rows it hides, in the order
+  error, caution, info, success.
 - Every status row wraps at a space onto a second line and is cut with an
   ellipsis only past it, whatever wrote it; the sign sits centred on a
   two-line row. A row naming an interface by label and name ("OTP output:
@@ -293,6 +341,14 @@ attributes, so it spells the token's value.
   status row is caution today: the HUD shows faults, progress and results, and
   a limitation worth knowing lives on the web UI and the on-screen Network
   screen.
+- The markers this station controls that another station controls too are
+  one error row for all of them: "Control conflict: Marker 3 (Lead)" for one,
+  "Control conflict: Markers 3, 4, 5" for several, cut with "…" so it stays on
+  one line. Each of those markers' cards turns red.
+- Settings another station pushed here are an info row naming the newest push
+  ("Settings pushed from Stage Left (+1 more)"), held until the warning is
+  removed, on the web UI or from the Settings menu, whose first entry is
+  Remove Pushed Settings Warning while one was pending when it opened.
 - The on-screen Network screen: a notice is a row in its level's fill and border,
   led by its sign (`draw_level_sign`), its text wrapped rather than cut. An
   interface pill that names a state takes its level's chip colours (a link-local

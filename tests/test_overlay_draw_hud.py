@@ -1655,6 +1655,16 @@ class TestMarkerCardRendering:
         badge = next(d for d in cr.texts if d.text == "C2 missing")
         assert badge.rgba[:3] == COLOR_TEXT
 
+    @pytest.mark.parametrize(("is_controlled", "red"), [(True, True), (False, False)])
+    def test_a_marker_another_station_controls_too_turns_its_card_red(self, is_controlled: bool, red: bool) -> None:
+        """Only a card this station drives: a viewed marker's conflict is the controllers' own."""
+        cr = FakeCairo()
+        marker = _marker(controller_idx=0, controller_connected=True, is_controlled=is_controlled)
+        marker.control_conflict = True
+        draw_marker_card(FakeRenderer(), cr, x=0, y=0, w=180, h=64, t=marker, selected=False, state=None)
+        assert (("rgba", *COLOR_WARNING_FILL) in cr.calls) is red
+        assert (("rgb", *COLOR_BG_BASE) in cr.calls) is not red
+
     @staticmethod
     def _missing_card(name: str) -> tuple[FakeCairo, Any, Any]:
         cr = FakeCairo()
@@ -1803,6 +1813,49 @@ class TestMarkerCardRendering:
         ops = [c[0] for c in cr.calls]
         assert "push_group" in ops
         assert "pop_group_to_source" in ops
+
+    @pytest.mark.parametrize(
+        ("selected", "flash"), [(False, False), (True, False), (False, True)], ids=["plain", "selected", "identify"]
+    )
+    def test_a_viewer_only_card_looks_the_same_with_its_group_clipped_to_the_card(
+        self, selected: bool, flash: bool
+    ) -> None:
+        import dataclasses
+
+        import cairo
+        import numpy as np
+
+        class _Unclipped(cairo.Context):
+            """Ignores clips, so the card's group covers the whole surface."""
+
+            def clip(self) -> None:
+                self.new_path()
+
+        def card(context: type) -> Any:
+            surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 400, 200)
+            cr = context(surface)
+            # A background with texture, so a difference in how the group is composited shows.
+            cr.set_source(cairo.LinearGradient(0, 0, 400, 200))
+            cr.get_source().add_color_stop_rgba(0, 0.9, 0.2, 0.1, 0.8)
+            cr.get_source().add_color_stop_rgba(1, 0.1, 0.4, 0.9, 0.4)
+            cr.paint()
+            marker = dataclasses.replace(_marker(is_controlled=False), identify_flash=flash)
+            draw_marker_card(FakeRenderer(), cr, 110, 60, 180, 67, marker, selected, None)
+            surface.flush()
+            return np.frombuffer(surface.get_data(), dtype=np.uint8).astype(int)
+
+        assert np.abs(card(cairo.Context) - card(_Unclipped)).max() <= 1
+
+    def test_a_viewer_only_card_restores_its_clip_even_when_a_draw_call_raises(self) -> None:
+        class _BoomCairo(FakeCairo):
+            def show_text(self, text: str) -> None:
+                raise RuntimeError("draw boom")
+
+        cr = _BoomCairo()
+        with pytest.raises(RuntimeError, match="draw boom"):
+            draw_marker_card(FakeRenderer(), cr, x=0, y=0, w=180, h=64, t=_marker(is_controlled=False), selected=False)
+        kinds = [c[0] for c in cr.calls]
+        assert kinds.count("save") == kinds.count("restore")
 
     def test_controlled_marker_skips_group_for_zero_overhead(self) -> None:
         cr = FakeCairo()
@@ -2335,6 +2388,15 @@ class TestTheSettingsMenuMarksWhatOpensAScreen:
 
 
 class TestDrawPiNetworkScreen:
+    def test_a_simple_screen_draws_its_own_title_and_subtitle(self) -> None:
+        state = _base_state(pi_network=_network_state(title="Network", subtitle="One interface."))
+        cr = FakeCairo()
+        draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
+        texts = cr.show_text_strings()
+        assert "NETWORK" in texts
+        assert "One interface." in texts
+        assert "NETWORK INTERFACES" not in texts
+
     def test_a_row_that_opens_a_screen_is_marked(self, chevrons: list) -> None:
         """A d-pad menu otherwise hides which rows take you somewhere until
         you have already pressed one."""
@@ -2993,6 +3055,28 @@ class TestVideoFailureReachesTheDeviceSurfaces:
 
         assert "Video source (rtsp) is not available." in drawn
         assert "Nothing answered at X." not in drawn
+
+    def test_a_banner_carries_its_own_next_step_and_not_the_videos(self) -> None:
+        state = self._state(sentence="Nothing answered at X.", action="Check the camera is powered.")
+        state.settings_menu_banner = "RTSP is live but could not be saved."
+        state.settings_menu_banner_action = "Check the station's storage, then switch again."
+        cr = FakeCairo()
+        draw_settings_menu(FakeRenderer(), cr, state, 1920, 1080)
+        drawn = " ".join(cr.show_text_strings())
+
+        assert "Check the camera is powered." not in drawn
+        step = cr.find_texts("Check the station's storage")[0]
+        assert step.bold is False
+        assert step.rgba == COLOR_TEXT_MUTED
+        assert step.y > cr.find_texts("RTSP is live")[0].y
+
+    def test_a_banner_without_a_step_does_not_borrow_the_videos(self) -> None:
+        state = self._state(sentence="Nothing answered at X.", action="Check the camera is powered.")
+        state.settings_menu_banner = "Pinned network interface 'eth1' is not available."
+        drawn = self._drawn(state)
+
+        assert "Pinned network interface 'eth1' is not available." in drawn
+        assert "Check the camera is powered." not in drawn
 
     def test_a_healthy_feed_draws_no_error_box(self) -> None:
         assert "ERROR" not in self._drawn(self._state(sentence="", error=""))

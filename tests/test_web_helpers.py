@@ -6,13 +6,17 @@ the detection-extras probes."""
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import asdict
+from types import SimpleNamespace
 
 import pytest
 
 import openfollow.video.inputs as inputs_module
-from openfollow.configuration import AppConfig, OscDestinationConfig, OscDestinationsConfig
+from openfollow.configuration import AppConfig, CameraConfig, OscDestinationConfig, OscDestinationsConfig
+from openfollow.input.control_frame import ControlFrame
+from openfollow.lens_model import lens_warp_is_valid
 from openfollow.web.routes import (
     _as_int_list,
     _as_ip_list,
@@ -65,6 +69,23 @@ def test_config_dict_redacted_drops_device_local_fields() -> None:
     # names this box: two stations must never claim one name through a copied config.
     assert "station_fqdn" not in d
     assert d["web_port"] == 8080  # non-secret fields preserved
+
+
+def test_the_touch_remote_switch_never_leaves_the_station_but_its_tuning_does() -> None:
+    cfg = AppConfig()
+    cfg.touch_remote.enabled = True
+    cfg.touch_remote.stick_curve = 1.5
+    exported = _config_dict_redacted(cfg)["touch_remote"]
+    assert "enabled" not in exported
+    assert exported["stick_curve"] == 1.5
+    assert strip_device_local_fields("touch_remote", {"enabled": True, "z_step_m": 0.1}) == {"z_step_m": 0.1}
+
+
+def test_the_operator_screen_override_never_leaves_the_station() -> None:
+    cfg = AppConfig()
+    cfg.display.operator_screen = "cairo"
+
+    assert "operator_screen" not in _config_dict_redacted(cfg)["display"]
 
 
 def test_config_dict_redacted_keeps_stream_credentials() -> None:
@@ -131,7 +152,7 @@ def test_interface_assignment_get_matches_what_post_accepts() -> None:
     """GET used to 404 while POST silently wrote – the two must agree."""
     from openfollow.web.routes import _INTERFACE_ASSIGNMENT_TARGETS, get_section_data
 
-    cfg = AppConfig(psn_source_iface="eth0")
+    cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
     cfg.otp_output.source_iface = "eth1"
     cfg.osc_destinations.destinations[0].source_iface = "eth2"
     data = get_section_data(cfg, "interface_assignment")
@@ -142,7 +163,7 @@ def test_interface_assignment_get_matches_what_post_accepts() -> None:
     assert data["osc_destinations.default.source_iface"] == "eth2"
 
     # Everything GET returns, POST writes back to the same place.
-    fresh = AppConfig()
+    fresh = AppConfig(network_mode="advanced")
     assert apply_section_data(fresh, "interface_assignment", data) is True
     assert get_section_data(fresh, "interface_assignment") == data
 
@@ -217,6 +238,59 @@ def test_apply_section_data_marker_prefers_the_current_z_line_names() -> None:
     assert config.marker.z_line_thickness == 4
 
 
+def test_apply_section_data_reads_the_control_direction_flip_from_an_older_peer() -> None:
+    """An older station broadcasts the flip; dropping it would silently un-turn this station's controls."""
+    config = AppConfig()
+
+    assert apply_section_data(config, "movement", {"invert_control_direction": "true"}) is True
+
+    assert config.marker.control_frame == "heading"
+    assert config.marker.control_heading == pytest.approx(180.0)
+
+
+def test_apply_section_data_reads_an_older_peers_unset_flip_as_stage_axes() -> None:
+    """The flip off meant stage axes, so an older peer's push still turns a station back to them."""
+    config = AppConfig()
+    config.marker.control_frame = "heading"
+    config.marker.control_heading = 180.0
+
+    apply_section_data(config, "movement", {"invert_control_direction": "false"})
+
+    assert config.marker.control_frame == "stage"
+
+
+def test_movement_form_control_frame_reaches_the_input_mapping() -> None:
+    """Form → config → the direction a stick push takes."""
+    config = AppConfig()
+    apply_section_data(config, "movement", {"control_frame": "heading", "control_heading": "90"})
+    app = SimpleNamespace(_config=config, _camera=None, _canvas=None)
+
+    vx, vy = ControlFrame(app).orient("keyboard", 0.0, 1.0, (0.0, 0.0, 0.0))  # type: ignore[arg-type]
+
+    assert (vx, vy) == pytest.approx((1.0, 0.0))
+
+
+@pytest.mark.parametrize(
+    ("posted", "frame", "heading"),
+    [
+        ({"control_frame": "picture"}, "stage", 0.0),
+        ({"control_frame": "camera", "control_heading": "abc"}, "camera", 0.0),
+        ({"control_frame": "heading", "control_heading": "-90"}, "heading", 270.0),
+        ({"control_frame": "heading", "control_heading": "1e400"}, "heading", 0.0),
+        ({"control_frame": "heading", "control_heading": True}, "heading", 0.0),
+    ],
+)
+def test_apply_section_data_movement_normalises_a_crafted_control_frame(
+    posted: dict[str, object], frame: str, heading: float
+) -> None:
+    config = AppConfig()
+
+    apply_section_data(config, "movement", posted)
+
+    assert config.marker.control_frame == frame
+    assert config.marker.control_heading == pytest.approx(heading)
+
+
 def test_apply_section_data_camera_lens_distortion_roundtrips() -> None:
     config = AppConfig()
     ok = apply_section_data(config, "camera", {"lens_k1": "-0.15", "lens_k2": "0.03"})
@@ -225,13 +299,61 @@ def test_apply_section_data_camera_lens_distortion_roundtrips() -> None:
     assert config.camera.lens_k2 == pytest.approx(0.03)
 
 
-def test_apply_section_data_camera_lens_distortion_clamps_out_of_range() -> None:
+def test_apply_section_data_camera_lens_short_of_a_corner_is_pulled_back() -> None:
     config = AppConfig()
-    ok = apply_section_data(config, "camera", {"lens_k1": "5", "lens_k2": "-5"})
+    ok = apply_section_data(config, "camera", {"lens_k1": "-1.5", "lens_k2": "-1.5", "lens_cx": "0.1"})
     assert ok is True
-    # __post_init__ re-runs after the web save, clamping to the configured band.
-    assert config.camera.lens_k1 == 0.4
-    assert config.camera.lens_k2 == -0.2
+    # __post_init__ re-runs after the web save: the pair keeps its direction, short of the limit; the centre stays.
+    k1, k2, cx = config.camera.lens_k1, config.camera.lens_k2, config.camera.lens_cx
+    assert cx == 0.1
+    assert lens_warp_is_valid(k1, k2, cx, 0.0)
+    assert -1.5 < k1 < 0.0 and k2 == pytest.approx(k1)
+    assert not lens_warp_is_valid(k1 * 1.02, k2 * 1.02, cx, 0.0)
+
+
+@pytest.mark.parametrize(
+    "posted,expected",
+    [
+        ({"lens_cx": "0.05", "lens_cy": "-0.02"}, (0.05, -0.02)),
+        ({"lens_cx": "0.9", "lens_cy": "-1e9"}, (0.25, -0.25)),  # clamped as a hand-edited file is
+        ({"lens_cx": "abc", "lens_cy": None}, (0.03, -0.04)),  # no number: the saved centre stays
+        ({"lens_cx": "nan", "lens_cy": "inf"}, (0.0, 0.0)),  # parsed, then refused to the default
+        ({"lens_cx": 10**400}, (0.03, -0.04)),
+        ({"lens_cx": True}, (0.25, -0.04)),  # a JSON true is the number 1, clamped
+        ({}, (0.03, -0.04)),  # a form without the centre keeps it
+    ],
+)
+def test_apply_section_data_camera_lens_centre(posted: dict, expected: tuple[float, float]) -> None:
+    config = AppConfig(camera=CameraConfig(lens_cx=0.03, lens_cy=-0.04))
+    assert apply_section_data(config, "camera", posted) is True
+    assert (config.camera.lens_cx, config.camera.lens_cy) == expected
+
+
+def test_a_lens_centre_from_the_camera_form_moves_what_the_overlay_draws() -> None:
+    import math
+
+    import numpy as np
+
+    from openfollow.configuration import effective_lens
+    from openfollow.runtime.overlay_draw_scene import project
+    from openfollow.scene.solver import camera_params, unproject_to_plane
+
+    config = AppConfig()
+    apply_section_data(config, "camera", {"lens_k1": "-0.3", "lens_k2": "0", "lens_cx": "0.05", "lens_cy": "-0.02"})
+    params = camera_params(config.camera)
+    # The floor point on the camera's axis is drawn at the lens centre: 0.05 D right and 0.02 D up.
+    on_axis = unproject_to_plane(params, np.array([[960.0, 540.0]]), 1920.0, 1080.0, 0.0)
+    drawn = project(params, on_axis, 1920, 1080, *effective_lens(config))[0]
+    half_diag = 0.5 * math.hypot(1920.0, 1080.0)
+    assert drawn == pytest.approx((960.0 + 0.05 * half_diag, 540.0 - 0.02 * half_diag), abs=1e-6)
+
+
+def test_apply_section_data_camera_lens_distortion_keeps_a_wide_lens() -> None:
+    config = AppConfig()
+    ok = apply_section_data(config, "camera", {"lens_k1": "-0.47", "lens_k2": "0.25"})
+    assert ok is True
+    assert config.camera.lens_k1 == pytest.approx(-0.47)
+    assert config.camera.lens_k2 == pytest.approx(0.25)
 
 
 def test_apply_section_data_mouse3d_roundtrips() -> None:
@@ -751,7 +873,7 @@ def test_apply_section_data_mouse_clamps_and_applies() -> None:
 # re-run after a web-form save, otherwise a crafted POST that slips past
 # the field parser (or mutates a field the parser leaves alone) persists
 # an invalid value to config.toml. See "Validation contract" in
-# CLAUDE.md.
+# docs/architecture/config.md.
 
 
 def test_apply_section_data_grid_clamps_appearance_via_post_init() -> None:
@@ -856,7 +978,19 @@ def test_as_ip_list_accepts_comma_separated_string() -> None:
 
 
 def test_as_ip_list_accepts_json_list() -> None:
-    assert _as_ip_list(["192.0.2.1", "fe80::1"], []) == ["192.0.2.1", "fe80::1"]
+    assert _as_ip_list(["192.0.2.1", "198.51.100.7"], []) == ["192.0.2.1", "198.51.100.7"]
+
+
+@pytest.mark.parametrize("ipv6", ["2001:db8::1", "fe80::1", "::1", "::ffff:192.0.2.9", "fe80::1%eth0"])
+def test_as_ip_list_drops_ipv6_entries(ipv6: str) -> None:
+    assert _as_ip_list(f"192.0.2.1, {ipv6}", []) == ["192.0.2.1"]
+    assert _as_ip_list(["192.0.2.1", ipv6], []) == ["192.0.2.1"]
+
+
+@pytest.mark.parametrize("submitted", ["2001:db8::1", "2001:db8::1, ::1", ["fe80::1"]])
+def test_as_ip_list_of_ipv6_entries_only_keeps_the_previous_allowlist(submitted: object) -> None:
+    """Fail closed: an all-IPv6 submission must not clear the filter to allow-all."""
+    assert _as_ip_list(submitted, ["192.0.2.1"]) == ["192.0.2.1"]
 
 
 def test_as_ip_list_drops_invalid_entries_silently() -> None:
@@ -912,6 +1046,22 @@ def test_apply_section_data_osc_parses_allowed_sender_ips() -> None:
     assert config.osc.enabled is True
     assert config.osc.port == 9001
     assert config.osc.allowed_sender_ips == ["127.0.0.1", "192.168.1.10"]
+
+
+@pytest.mark.parametrize(
+    ("submitted", "saved"),
+    [
+        ("2001:db8::1", ["198.51.100.7"]),
+        ("192.0.2.5, 2001:db8::1", ["192.0.2.5"]),
+    ],
+)
+def test_apply_section_data_osc_refuses_ipv6_senders(submitted: str, saved: list[str]) -> None:
+    config = AppConfig()
+    config.osc.allowed_sender_ips = ["198.51.100.7"]
+
+    assert apply_section_data(config, "osc", {"allowed_sender_ips": submitted}) is True
+
+    assert config.osc.allowed_sender_ips == saved
 
 
 def test_apply_section_data_rttrpm_output_parses_fields() -> None:
@@ -1054,49 +1204,7 @@ def test_apply_zone_fields_preserves_vertices_when_key_absent() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _wizard_camera_params
-# ---------------------------------------------------------------------------
-
-
-def test_wizard_camera_params_builds_vector_in_field_order() -> None:
-    from openfollow.web.routes import _WIZARD_CAMERA_FIELDS, _wizard_camera_params
-
-    cam = {f: i + 1 for i, f in enumerate(_WIZARD_CAMERA_FIELDS)}
-    params = _wizard_camera_params(cam)
-    assert params.shape == (len(_WIZARD_CAMERA_FIELDS),)
-    # Order must match _WIZARD_CAMERA_FIELDS verbatim – downstream
-    # project_points/solver reads positional slots, not a dict.
-    for i, _ in enumerate(_WIZARD_CAMERA_FIELDS):
-        assert params[i] == float(i + 1)
-
-
-def test_wizard_camera_params_rejects_non_dict() -> None:
-    from openfollow.web.routes import _wizard_camera_params
-
-    with pytest.raises(TypeError):
-        _wizard_camera_params([1, 2, 3])
-
-
-def test_wizard_camera_params_raises_keyerror_for_missing_field() -> None:
-    from openfollow.web.routes import _WIZARD_CAMERA_FIELDS, _wizard_camera_params
-
-    cam = dict.fromkeys(_WIZARD_CAMERA_FIELDS, 0.0)
-    cam.pop("fov")  # omit one required field
-    with pytest.raises(KeyError):
-        _wizard_camera_params(cam)
-
-
-def test_wizard_camera_params_raises_valueerror_on_non_numeric() -> None:
-    from openfollow.web.routes import _WIZARD_CAMERA_FIELDS, _wizard_camera_params
-
-    cam = dict.fromkeys(_WIZARD_CAMERA_FIELDS, 0.0)
-    cam["yaw"] = "not a number"
-    with pytest.raises(ValueError):
-        _wizard_camera_params(cam)
-
-
-# ---------------------------------------------------------------------------
-# _apply_import_data / _import_needs_restart
+# _apply_import_data
 # ---------------------------------------------------------------------------
 
 
@@ -1114,6 +1222,16 @@ def test_apply_import_data_preserves_psn_source_iface() -> None:
 
     assert new.psn_source_iface == "eth0"  # device iface preserved
     assert new.psn_system_name == "Imported"
+
+
+def test_apply_import_data_reads_the_control_direction_flip_as_heading_180() -> None:
+    """An exported config carrying ``invert_control_direction = true`` imports as Fixed heading 180."""
+    from openfollow.web.routes import _apply_import_data
+
+    new = _apply_import_data(AppConfig(), {"marker": {"invert_control_direction": True}})
+
+    assert new.marker.control_frame == "heading"
+    assert new.marker.control_heading == pytest.approx(180.0)
 
 
 def test_import_cannot_move_this_stations_web_ui() -> None:
@@ -1143,6 +1261,99 @@ def test_interface_assignment_web_ui_pin_is_device_local() -> None:
     assert scrubbed == {}
 
 
+@pytest.mark.parametrize("raw", [None, "abc", 3, True, {"1": 1}])
+def test_an_imported_marker_selection_that_is_not_a_list_reads_as_none(raw: object) -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    new = _apply_import_data(AppConfig(controlled_marker_ids=[1]), {"controlled_marker_ids": raw})
+
+    assert new.controlled_marker_ids == []
+
+
+def test_an_imported_marker_selection_keeps_positive_ids_once() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    new = _apply_import_data(AppConfig(), {"controlled_marker_ids": [0, -1, True, "2", 2.0, 3, 3, 5]})
+
+    assert new.controlled_marker_ids == [3, 5]
+
+
+def test_an_imported_controlled_marker_is_viewed_too() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    new = _apply_import_data(AppConfig(), {"controlled_marker_ids": [2], "viewer_marker_ids": [4]})
+
+    assert new.viewer_marker_ids == [4, 2]
+
+
+def test_an_import_without_a_marker_selection_keeps_this_stations() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    new = _apply_import_data(AppConfig(controlled_marker_ids=[1], viewer_marker_ids=[1, 6]), {"camera": {"fov": 50.0}})
+
+    assert (new.controlled_marker_ids, new.viewer_marker_ids) == ([1], [1, 6])
+
+
+@pytest.mark.parametrize(
+    ("path", "current", "raw", "read_as"),
+    [
+        ("detection.masks", [{"name": "Stage", "vertices": [[0.1, 0.1], [0.9, 0.1], [0.5, 0.9]]}], "abc", []),
+        ("detection.masks_enabled", True, "abc", False),
+        ("midi.patches", [{"id": 2, "alias": "Desk"}], 3, []),
+        ("controller.button_raw_indices", {"A": 3}, "abc", {}),
+        ("controller.swap_triggers", True, None, False),
+        ("controller.mapped_controller_guid", "0300abcd", 3, ""),
+        ("ui.developer_mode", True, "abc", False),
+        ("paths.show_paths", False, "abc", True),
+        ("network.backend", "nm", 3, "auto"),
+        ("network.backend", "nm", "wifi", "auto"),
+        ("update_include_prereleases", True, "abc", False),
+        ("auto_update_check", False, None, True),
+        ("auto_time_sync", False, 3, True),
+        ("time_sync_server", "ntp.example.com", "  ", "ptbtime1.ptb.de"),
+    ],
+)
+def test_an_imported_station_setting_of_the_wrong_type_reads_as_a_load_reads_it(
+    path: str, current: object, raw: object, read_as: object
+) -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    *section, name = path.split(".")
+    station = AppConfig()
+    owner = getattr(station, section[0]) if section else station
+    setattr(owner, name, current)
+    owner.__post_init__()
+    assert getattr(owner, name) != read_as
+
+    new = _apply_import_data(station, {section[0]: {name: raw}} if section else {name: raw})
+
+    assert getattr(getattr(new, section[0]) if section else new, name) == read_as
+
+
+def test_imported_virtual_faders_of_the_wrong_type_read_as_unmapped() -> None:
+    from openfollow.configuration import VirtualFadersConfig
+    from openfollow.web.routes import _apply_import_data
+
+    current = AppConfig()
+    current.virtual_faders.faders[0].name = "Iris"
+
+    new = _apply_import_data(current, {"virtual_faders": {"faders": "abc"}})
+
+    assert new.virtual_faders == VirtualFadersConfig()
+
+
+def test_an_imported_input_that_is_not_running_keeps_its_fields() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    new = _apply_import_data(
+        AppConfig(video_source_type="testpattern"),
+        {"video_source_type": "testpattern", "ndi_source_name": "CAM-HOST (Camera 2)", "picam_width": "abc"},
+    )
+
+    assert new.ndi_source_name == "CAM-HOST (Camera 2)"
+    assert new.picam_width == 1920
+
+
 def test_apply_import_data_preserves_detection_storage_path() -> None:
     from openfollow.web.routes import _apply_import_data
 
@@ -1165,7 +1376,7 @@ def test_apply_import_data_preserves_otp_source_iface(local_pin: str) -> None:
     station's OTP output onto whatever adapter here shares the other box's name."""
     from openfollow.web.routes import _apply_import_data
 
-    current = AppConfig()
+    current = AppConfig(network_mode="advanced")
     current.otp_output.source_iface = local_pin
 
     imported = {"otp_output": {"source_iface": "eth_foreign", "port": 5569}}
@@ -1192,7 +1403,7 @@ def test_import_keeps_this_stations_destination_pins_by_id() -> None:
     from openfollow.configuration import OscDestinationConfig, OscDestinationsConfig
     from openfollow.web.routes import _apply_import_data
 
-    current = AppConfig()
+    current = AppConfig(network_mode="advanced")
     current.osc_destinations = OscDestinationsConfig(
         destinations=[
             OscDestinationConfig(id="foh", host="198.51.100.20", source_iface="eth1"),
@@ -1217,7 +1428,7 @@ def test_import_keeps_this_stations_destination_pins_by_id() -> None:
 def test_import_keeps_this_stations_rttrpm_pin() -> None:
     from openfollow.web.routes import _apply_import_data
 
-    current = AppConfig()
+    current = AppConfig(network_mode="advanced")
     current.rttrpm_output.source_iface = "eth1"
     new = _apply_import_data(current, {"rttrpm_output": {"source_iface": "eth_foreign", "port": 36701}})
     assert new.rttrpm_output.source_iface == "eth1"
@@ -1248,10 +1459,33 @@ def test_full_config_round_trip_leaves_the_receivers_otp_pin_alone() -> None:
     sender.otp_output.enabled = True
     receiver = AppConfig()
 
-    new = _apply_import_data(receiver, _config_dict_redacted(sender))
+    new = _apply_import_data(receiver, _config_dict_redacted(sender), pushed=True)
 
     assert new.otp_output.source_iface == ""
     assert new.otp_output.enabled is True
+
+
+def test_broadcast_all_carries_paths_to_a_peer_that_keeps_its_own_active_flags() -> None:
+    """Every station on one stage shares the floor coordinates, so paths are pushed;
+    what is active, and whether paths are drawn, stays with each station."""
+    from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig
+    from openfollow.web.routes import _apply_import_data, _strip_broadcast_excluded
+
+    sender = AppConfig(
+        paths=PathsConfig(
+            show_paths=False,
+            slide_time=1.5,
+            paths=[PathConfig(name="cross", active=True, points=[PathPointConfig(0, 0, 0), PathPointConfig(4, 0, 0)])],
+        )
+    )
+    receiver = AppConfig(paths=PathsConfig(paths=[PathConfig(name="cross", active=False)]))
+
+    new = _apply_import_data(receiver, _strip_broadcast_excluded(_config_dict_redacted(sender)), pushed=True)
+
+    assert [p.x for p in new.paths.paths[0].points] == [0.0, 4.0]
+    assert new.paths.slide_time == 1.5
+    assert new.paths.paths[0].active is False
+    assert new.paths.show_paths is True
 
 
 def test_apply_import_data_preserves_osc_listen_iface() -> None:
@@ -1260,7 +1494,7 @@ def test_apply_import_data_preserves_osc_listen_iface() -> None:
     subscription."""
     from openfollow.web.routes import _apply_import_data
 
-    current = AppConfig()
+    current = AppConfig(network_mode="advanced")
     current.osc.listen_iface = "eth_local"
 
     imported = {"osc": {"listen_iface": "eth_foreign", "port": 9001}}
@@ -1275,7 +1509,7 @@ def test_the_video_input_pin_never_leaves_this_station() -> None:
     move another station's camera onto whatever adapter shares the name."""
     from openfollow.web.routes import _apply_import_data
 
-    cfg = AppConfig(video_source_type="srt", video_input_iface="eth1")
+    cfg = AppConfig(network_mode="advanced", video_source_type="srt", video_input_iface="eth1")
     assert "video_input_iface" not in _config_dict_redacted(cfg)
     scrubbed = strip_device_local_fields(
         "video_source", {"srt_host": "srt://192.0.2.20:5000", "video_input_iface": "eth1"}
@@ -1302,10 +1536,8 @@ def test_apply_import_data_preserves_testpattern_selected_media() -> None:
     assert new.testpattern_selected_media == "0123456789abcdef"  # device selection kept
 
 
-def test_apply_import_data_skip_restart_sections_applies_every_section(
-    monkeypatch,
-) -> None:
-    """All sections apply live; skip_restart flag is preserved for backwards compatibility."""
+def test_apply_import_data_applies_every_section(monkeypatch) -> None:
+    """Video source, outputs and detection off->on all apply from one import."""
     from openfollow.web.routes import _apply_import_data
 
     monkeypatch.setattr(inputs_module, "get_available_input_ids", lambda: ["rtsp", "srt"])
@@ -1321,7 +1553,7 @@ def test_apply_import_data_skip_restart_sections_applies_every_section(
         "detection": {"enabled": True},  # – off→on now live
         "camera": {"pos_x": 42.0},
     }
-    new = _apply_import_data(current, imported, skip_restart_sections=True)
+    new = _apply_import_data(current, imported)
 
     assert new.video_source_type == "srt"  # applied
     assert new.detection.enabled is True  # applied
@@ -1451,26 +1683,47 @@ def test_apply_import_data_window_dims_and_pin_pass_through() -> None:
 
 
 def test_apply_import_data_applies_ui_section() -> None:
-    """The exported ``[ui]`` block (unit_system + show_experimental_features)
-    must round-trip on import. Regression: the importer skipped the ``ui``
-    section, so an exported "experimental on" / imperial config silently
-    reverted to the importing device's values."""
+    """The exported ``[ui]`` block (unit_system + shown_features) round-trips on import."""
     from openfollow.web.routes import _apply_import_data
 
     current = AppConfig()
-    assert current.ui.show_experimental_features is False
-    assert current.ui.unit_system == "metric"
-
-    imported = {
-        "ui": {
-            "show_experimental_features": True,
-            "unit_system": "imperial",
-        },
-    }
+    imported = {"ui": {"shown_features": ["paths", "zones"], "unit_system": "imperial"}}
     new = _apply_import_data(current, imported)
 
-    assert new.ui.show_experimental_features is True
+    assert new.ui.shown_features == ["zones", "paths"]
     assert new.ui.unit_system == "imperial"
+
+
+def test_apply_import_data_drops_an_unknown_feature_key_and_applies_the_lens() -> None:
+    """An imported feature list with an unknown key keeps the known ones; the lens applies."""
+    from openfollow.configuration import effective_lens
+    from openfollow.web.routes import _apply_import_data
+
+    imported = {
+        "camera": {"lens_k1": -0.2, "lens_k2": 0.05, "lens_cx": 0.03, "lens_cy": -0.01},
+        "ui": {"shown_features": ["zones", "lens_distortion", "psn_input"]},
+    }
+    new = _apply_import_data(AppConfig(), imported)
+
+    assert new.ui.shown_features == ["zones", "psn_input"]
+    assert effective_lens(new) == pytest.approx((-0.2, 0.05, 0.03, -0.01))
+
+
+@pytest.mark.parametrize("path", ["section", "import"])
+def test_camera_sensor_and_focal_keys_are_dropped(path: str) -> None:
+    """A POST /section/camera or an import that still carries the two keys applies like one without them."""
+    from openfollow.web.routes import _apply_import_data
+
+    camera = {"fov": "52.5", "pos_z": "7.0"}
+
+    def apply(data: dict[str, str]) -> AppConfig:
+        if path == "import":
+            return _apply_import_data(AppConfig(), {"camera": data})
+        cfg = AppConfig()
+        assert apply_section_data(cfg, "camera", data) is True
+        return cfg
+
+    assert apply({**camera, "sensor_width_mm": "6.17", "focal_length_mm": "4.0"}) == apply(camera)
 
 
 def test_apply_import_data_ui_round_trips_through_export_dict() -> None:
@@ -1479,63 +1732,82 @@ def test_apply_import_data_ui_round_trips_through_export_dict() -> None:
     from openfollow.web.routes import _apply_import_data
 
     source = AppConfig()
-    source.ui.show_experimental_features = True
+    source.ui.shown_features = ["detection", "touch_remote"]
     source.ui.unit_system = "imperial"
 
     new = _apply_import_data(AppConfig(), _config_dict_redacted(source))
 
-    assert new.ui.show_experimental_features is True
+    assert new.ui.shown_features == ["detection", "touch_remote"]
     assert new.ui.unit_system == "imperial"
 
 
 @pytest.mark.parametrize(
     "ui_payload",
     [
-        {"show_experimental_features": "garbage", "unit_system": "furlongs"},
-        {"show_experimental_features": None, "unit_system": None},
-        {"show_experimental_features": 1234, "unit_system": 5678},
+        {"shown_features": "garbage", "unit_system": "furlongs"},
+        {"shown_features": None, "unit_system": None},
+        {"shown_features": 1234, "unit_system": 5678},
     ],
 )
 def test_apply_import_data_ui_section_bad_values_reset_to_defaults(
     ui_payload,  # noqa: ANN001
 ) -> None:
     """A present-but-invalid ``ui`` field coerces to the *declared* defaults
-    (metric / False) via __post_init__ – exactly like a TOML load. Starting
-    from non-default ui values proves the importer does NOT silently preserve
-    the current setting when the imported value is bad."""
+    via __post_init__ – exactly like a TOML load. Starting from non-default ui
+    values proves the importer does NOT silently preserve the current setting
+    when the imported value is bad."""
+    from openfollow.configuration import DEFAULT_SHOWN_FEATURES
     from openfollow.web.routes import _apply_import_data
 
     current = AppConfig()
     current.ui.unit_system = "imperial"
-    current.ui.show_experimental_features = True
+    current.ui.shown_features = ["paths"]
 
     new = _apply_import_data(current, {"ui": ui_payload})
 
-    assert new.ui.show_experimental_features is False
+    assert new.ui.shown_features == list(DEFAULT_SHOWN_FEATURES)
     assert new.ui.unit_system == "metric"
 
 
 def test_apply_import_data_ui_section_absent_field_preserves_current() -> None:
     """A field omitted from the ``ui`` payload preserves the device's current
-    value; only fields actually present are applied. Covers both single-field
-    payloads (unit_system-only and experimental-only)."""
+    value; only fields actually present are applied."""
     from openfollow.web.routes import _apply_import_data
 
     def _current() -> AppConfig:
         cfg = AppConfig()
         cfg.ui.unit_system = "imperial"
-        cfg.ui.show_experimental_features = True
+        cfg.ui.shown_features = ["paths"]
         return cfg
 
-    # Only unit_system present (and valid); the experimental flag is kept.
     new = _apply_import_data(_current(), {"ui": {"unit_system": "metric"}})
     assert new.ui.unit_system == "metric"
-    assert new.ui.show_experimental_features is True
+    assert new.ui.shown_features == ["paths"]
 
-    # Inverse: only the experimental flag present; unit_system is kept.
-    new = _apply_import_data(_current(), {"ui": {"show_experimental_features": False}})
-    assert new.ui.show_experimental_features is False
+    new = _apply_import_data(_current(), {"ui": {"shown_features": []}})
+    assert new.ui.shown_features == []
     assert new.ui.unit_system == "imperial"
+
+
+@pytest.mark.parametrize(
+    ("ui_payload", "expected"),
+    [
+        ({"show_experimental_features": True}, "all"),
+        ({"show_experimental_features": "on"}, "all"),
+        ({"show_experimental_features": False}, ["paths"]),
+        ({"show_experimental_features": True, "shown_features": ["midi"]}, ["midi"]),
+    ],
+)
+def test_apply_import_data_migrates_an_older_station_s_experimental_flag(ui_payload, expected) -> None:  # noqa: ANN001
+    """An older station exports ``show_experimental_features``: true turns every offered feature on, false
+    keeps this station's list, and a ``shown_features`` beside it wins."""
+    from openfollow.configuration import OFFERED_FEATURES
+    from openfollow.web.routes import _apply_import_data
+
+    current = AppConfig()
+    current.ui.shown_features = ["paths"]
+    new = _apply_import_data(current, {"ui": ui_payload})
+    assert new.ui.shown_features == (list(OFFERED_FEATURES) if expected == "all" else expected)
 
 
 def test_apply_import_data_non_dict_ui_section_preserves_current() -> None:
@@ -1545,43 +1817,12 @@ def test_apply_import_data_non_dict_ui_section_preserves_current() -> None:
 
     current = AppConfig()
     current.ui.unit_system = "imperial"
-    current.ui.show_experimental_features = True
+    current.ui.shown_features = ["paths"]
 
     new = _apply_import_data(current, {"ui": "not-a-dict"})
 
     assert new.ui.unit_system == "imperial"
-    assert new.ui.show_experimental_features is True
-
-
-def test_import_needs_restart_detects_each_restart_reason() -> None:
-    """All config changes apply live; nothing is flagged as requiring restart."""
-    from openfollow.web.routes import _import_needs_restart
-
-    base = AppConfig()
-
-    video_changed = AppConfig()
-    video_changed.video_source_type = "different-source"
-    assert _import_needs_restart(base, video_changed) == []
-
-    otp_changed = AppConfig()
-    otp_changed.otp_output.enabled = not base.otp_output.enabled
-    assert _import_needs_restart(base, otp_changed) == []
-
-    rttrpm_changed = AppConfig()
-    rttrpm_changed.rttrpm_output.enabled = not base.rttrpm_output.enabled
-    assert _import_needs_restart(base, rttrpm_changed) == []
-
-    detection_off_to_on = AppConfig()
-    detection_off_to_on.detection.enabled = True
-    assert _import_needs_restart(base, detection_off_to_on) == []
-
-
-def test_import_needs_restart_returns_empty_when_identical() -> None:
-    from openfollow.web.routes import _import_needs_restart
-
-    base = AppConfig()
-    twin = AppConfig()
-    assert _import_needs_restart(base, twin) == []
+    assert new.ui.shown_features == ["paths"]
 
 
 # ---------------------------------------------------------------------------
@@ -1597,10 +1838,12 @@ _DEVICE_IDENTITY_SAMPLES = [
     ("web_bind", "0.0.0.0"),
     ("web_bind_iface", "eth1"),
     ("station_fqdn", "of-1.stage.example.com"),
+    ("network_mode", "advanced"),
     ("station_id", "f0e1d2c3b4a59687f0e1d2c3b4a59687"),
     ("markers_catalog_path", "/mnt/nvme/openfollow/markers.toml"),
     ("testpattern_selected_media", "0123456789abcdef"),
     ("detection.storage_path", "/mnt/nvme/openfollow/yolo"),
+    ("display.operator_screen", "cairo"),
 ]
 
 
@@ -1702,7 +1945,7 @@ def test_reset_config_to_defaults_leaves_the_source_config_alone() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _as_bool / _as_positive_int / _as_optional_float helpers – full branch coverage
+# _as_bool / _as_positive_int helpers – full branch coverage
 # ---------------------------------------------------------------------------
 
 
@@ -1768,29 +2011,6 @@ def test_as_positive_int_clamps_zero_and_negative_to_one() -> None:
     assert _as_positive_int("bogus", 0) == 1
 
 
-def test_as_optional_float_returns_none_for_none_and_blank() -> None:
-    from openfollow.web.routes import _as_optional_float
-
-    assert _as_optional_float(None, 1.0) is None
-    assert _as_optional_float("", 1.0) is None
-    assert _as_optional_float("   ", 1.0) is None
-
-
-def test_as_optional_float_parses_numeric_strings() -> None:
-    from openfollow.web.routes import _as_optional_float
-
-    assert _as_optional_float("3.14", 0.0) == pytest.approx(3.14)
-    assert _as_optional_float("1e3", 0.0) == pytest.approx(1000.0)
-
-
-def test_as_optional_float_falls_back_on_non_numeric() -> None:
-    from openfollow.web.routes import _as_optional_float
-
-    assert _as_optional_float("not a number", 1.5) == pytest.approx(1.5)
-    # OverflowError path: int(10**5000) coerced to float.
-    assert _as_optional_float(10**5000, 1.5) == pytest.approx(1.5)
-
-
 # ---------------------------------------------------------------------------
 # _peer_auth_headers
 # ---------------------------------------------------------------------------
@@ -1836,7 +2056,7 @@ def test_send_config_to_peer_refuses_public_ip(caplog) -> None:
     from openfollow.web.routes import _send_config_to_peer
 
     with caplog.at_level("WARNING", logger="openfollow.web.routes"):
-        assert _send_config_to_peer("8.8.8.8", 80, "camera", {}, pin="", expected_port=80) is False
+        assert _send_config_to_peer("8.8.8.8", 80, "camera", {}, pin="", expected_port=80, sender="Stage Left") is False
     assert any("non-private" in r.message for r in caplog.records)
 
 
@@ -1844,7 +2064,7 @@ def test_send_config_import_to_peer_refuses_public_ip(caplog) -> None:
     from openfollow.web.routes import _send_config_import_to_peer
 
     with caplog.at_level("WARNING", logger="openfollow.web.routes"):
-        assert _send_config_import_to_peer("1.1.1.1", 80, {}, pin="", expected_port=80) is False
+        assert _send_config_import_to_peer("1.1.1.1", 80, {}, pin="", expected_port=80, sender="Stage Left") is False
     assert any("non-private" in r.message for r in caplog.records)
 
 
@@ -1871,9 +2091,11 @@ def test_send_config_to_peer_posts_on_private_ip(monkeypatch) -> None:
 
     monkeypatch.setattr(routes_mod.urllib.request, "urlopen", _fake_urlopen)
 
-    ok = _send_config_to_peer("10.0.0.5", 8080, "camera", {"pos_x": 1.5}, pin="", expected_port=8080)
+    ok = _send_config_to_peer(
+        "10.0.0.5", 8080, "camera", {"pos_x": 1.5}, pin="", expected_port=8080, sender="Stage Left"
+    )
     assert ok is True
-    assert captured["url"] == "http://10.0.0.5:8080/api/config/camera"
+    assert captured["url"] == "http://10.0.0.5:8080/api/config/camera?from=Stage%20Left"
     assert captured["method"] == "POST"
     assert b'"pos_x": 1.5' in captured["body"]  # type: ignore[operator]
 
@@ -1889,7 +2111,92 @@ def test_send_config_to_peer_returns_false_on_urlerror(monkeypatch) -> None:
 
     monkeypatch.setattr(routes_mod.urllib.request, "urlopen", _fail)
 
-    assert _send_config_to_peer("10.0.0.5", 80, "camera", {}, pin="", expected_port=80) is False
+    assert _send_config_to_peer("10.0.0.5", 80, "camera", {}, pin="", expected_port=80, sender="Stage Left") is False
+
+
+def _peer_answering(monkeypatch, status: int, body: bytes) -> None:
+    import io
+    import urllib.error
+
+    import openfollow.web.routes as routes_mod
+
+    def _answer(req, timeout):
+        raise urllib.error.HTTPError(req.full_url, status, "refused", {}, io.BytesIO(body))  # type: ignore[arg-type]
+
+    monkeypatch.setattr(routes_mod.urllib.request, "urlopen", _answer)
+
+
+_PEER_REASON = {"error": "The settings file on this station is empty", "action": "Restart OpenFollow."}
+
+
+@pytest.mark.parametrize("send", ["section", "import"])
+def test_a_peer_that_said_why_it_did_not_apply_is_reported_with_its_reason(monkeypatch, send: str) -> None:
+    from openfollow.web.discovery import PeerInfo
+    from openfollow.web.routes import _broadcast_to_peers, _send_config_import_to_peer, _send_config_to_peer
+
+    _peer_answering(monkeypatch, 409, json.dumps(_PEER_REASON).encode())
+    peer = PeerInfo(name="Stage Right", ip="10.0.0.5", web_port=80, version="", last_seen=0.0)
+
+    def _send(p: PeerInfo) -> bool:
+        if send == "section":
+            return _send_config_to_peer(p.ip, p.web_port, "grid", {}, expected_port=80, sender="Stage Left")
+        return _send_config_import_to_peer(p.ip, p.web_port, {}, expected_port=80, sender="Stage Left")
+
+    results = _broadcast_to_peers([peer], _send, 5.0)
+
+    assert results == [
+        {
+            "name": "Stage Right",
+            "ip": "10.0.0.5",
+            "success": False,
+            "reason": "The settings file on this station is empty. Restart OpenFollow.",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("kind", "reason"),
+    [
+        (
+            "empty-restorable",
+            "its settings file is empty; restart it to restore the settings from its latest backup copy",
+        ),
+        ("empty", "its settings file is empty; restart it to start again with default settings"),
+        ("unreadable", "its settings file could not be read; import a settings file there to replace it"),
+    ],
+)
+def test_a_peer_s_settings_file_is_named_as_its_own_not_the_sender_s(monkeypatch, kind: str, reason: str) -> None:
+    from openfollow.web.routes import _PeerRefused, _send_config_to_peer
+
+    answer = {
+        "error": "The settings file on this station is empty",
+        "action": "Restart OpenFollow.",
+        "settings_file": kind,
+    }
+    _peer_answering(monkeypatch, 409, json.dumps(answer).encode())
+
+    with pytest.raises(_PeerRefused) as refused:
+        _send_config_to_peer("10.0.0.5", 80, "grid", {}, expected_port=80, sender="Stage Left")
+
+    assert str(refused.value) == reason
+
+
+@pytest.mark.parametrize("body", [b"", b"<html>no</html>", b"[1]", b'{"error": ""}', b'{"error": 3}'])
+def test_a_peer_answer_without_a_reason_is_only_a_failure(monkeypatch, body: bytes) -> None:
+    from openfollow.web.routes import _send_config_to_peer
+
+    _peer_answering(monkeypatch, 500, body)
+
+    assert _send_config_to_peer("10.0.0.5", 80, "grid", {}, expected_port=80, sender="Stage Left") is False
+
+
+def test_a_peer_reason_without_a_usable_action_is_the_reason_alone(monkeypatch) -> None:
+    from openfollow.web.routes import _PeerRefused, _send_config_to_peer
+
+    _peer_answering(monkeypatch, 409, b'{"error": "Bad", "action": 7}')
+
+    with pytest.raises(_PeerRefused, match=r"^Bad\.$"):
+        _send_config_to_peer("10.0.0.5", 80, "grid", {}, expected_port=80, sender="Stage Left")
 
 
 def test_send_config_import_to_peer_returns_false_on_timeout(monkeypatch) -> None:
@@ -1901,7 +2208,7 @@ def test_send_config_import_to_peer_returns_false_on_timeout(monkeypatch) -> Non
 
     monkeypatch.setattr(routes_mod.urllib.request, "urlopen", _timeout)
 
-    assert _send_config_import_to_peer("10.0.0.5", 80, {}, pin="", expected_port=80) is False
+    assert _send_config_import_to_peer("10.0.0.5", 80, {}, pin="", expected_port=80, sender="Stage Left") is False
 
 
 # ---------------------------------------------------------------------------
@@ -2894,8 +3201,8 @@ def test_apply_import_data_preserves_psn_source_ip_across_import() -> None:
     assert new.psn_source_ip == "10.10.10.10"
 
 
-def test_apply_import_data_skip_restart_applies_every_section() -> None:
-    """All sections apply live; skip_restart_sections flag is preserved for backwards compatibility."""
+def test_apply_import_data_applies_detection_and_output_tuning() -> None:
+    """Detection, OTP and RTTrPM tuning apply alongside the always-live camera."""
     from openfollow.web.routes import _apply_import_data
 
     base = AppConfig()
@@ -2911,7 +3218,6 @@ def test_apply_import_data_skip_restart_applies_every_section() -> None:
             "rttrpm_output": {"fps": 60},
             "camera": {"pos_x": 7.5},  # always live
         },
-        skip_restart_sections=True,
     )
 
     # All sections applied – made detection live too.
@@ -2932,7 +3238,7 @@ def test_send_config_import_to_peer_refuses_non_private_ip(caplog) -> None:
     from openfollow.web.routes import _send_config_import_to_peer
 
     with caplog.at_level(_logging.WARNING, logger="openfollow.web.routes"):
-        ok = _send_config_import_to_peer("8.8.8.8", 8000, {"x": 1}, expected_port=8000)
+        ok = _send_config_import_to_peer("8.8.8.8", 8000, {"x": 1}, expected_port=8000, sender="Stage Left")
     assert ok is False
     assert any("non-private" in rec.message.lower() for rec in caplog.records)
 
@@ -2966,12 +3272,13 @@ def test_send_config_import_to_peer_returns_true_on_http_200(monkeypatch) -> Non
         8000,
         {"camera": {"pos_x": 1.0}},
         expected_port=8000,
+        sender="Stage Left",
     )
     assert ok is True
     # Exact path the peer's bottle dispatcher expects – drift here would
     # break peer broadcasts silently (the receiver would 404 and the
-    # import would never apply).
-    assert captured["url"] == "http://198.51.100.5:8000/api/config/import?skip_restart=1"
+    # import would never apply). The query marks it as a push.
+    assert captured["url"] == "http://198.51.100.5:8000/api/config/import?from=Stage%20Left"
     assert captured["timeout"] == 10
     assert b'"camera"' in captured["body"]
 
@@ -2984,7 +3291,9 @@ def test_send_config_import_to_peer_returns_false_on_url_error(monkeypatch) -> N
 
     monkeypatch.setattr(routes_mod.urllib.request, "urlopen", _boom)
 
-    assert routes_mod._send_config_import_to_peer("10.0.0.1", 8000, {}, expected_port=8000) is False
+    assert (
+        routes_mod._send_config_import_to_peer("10.0.0.1", 8000, {}, expected_port=8000, sender="Stage Left") is False
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -3077,13 +3386,13 @@ def test_apply_import_data_ignores_zones_key_when_value_is_not_a_list() -> None:
 )
 def test_is_on_device_request_true_for_loopback(monkeypatch, remote) -> None:
     """The embedded WebKit overlay loads ``http://127.0.0.1:<port>/``;
-    a loopback ``remote_addr`` is the signal to render gamepad-only
+    a loopback connection is the signal to render gamepad-only
     affordances. Cover IPv4, IPv6, and the hostname-resolved form."""
     from openfollow.web import routes as routes_mod
 
     class _FakeReq:
         def __init__(self, addr: str) -> None:
-            self.remote_addr = addr
+            self.environ = {"REMOTE_ADDR": addr}
 
     monkeypatch.setattr(routes_mod, "request", _FakeReq(remote))
     assert routes_mod._is_on_device_request() is True
@@ -3095,40 +3404,69 @@ def test_is_on_device_request_true_for_loopback(monkeypatch, remote) -> None:
 )
 def test_is_on_device_request_false_for_lan_and_empty(monkeypatch, remote) -> None:
     """LAN clients hit the server's external IP – never appear as
-    loopback. An empty ``remote_addr`` (no source available) is
+    loopback. An empty ``REMOTE_ADDR`` (no source available) is
     treated as off-device so the footer hint doesn't leak to remote
     operators who can't act on the B-button instruction."""
     from openfollow.web import routes as routes_mod
 
     class _FakeReq:
         def __init__(self, addr: str) -> None:
-            self.remote_addr = addr
+            self.environ = {"REMOTE_ADDR": addr}
 
     monkeypatch.setattr(routes_mod, "request", _FakeReq(remote))
     assert routes_mod._is_on_device_request() is False
 
 
 def test_is_on_device_request_strips_surrounding_whitespace(monkeypatch) -> None:
-    """Be lenient about whitespace in ``remote_addr`` since some WSGI
+    """Be lenient about whitespace in ``REMOTE_ADDR`` since some WSGI
     layers normalise inconsistently; the loopback check must still
     fire on ``" 127.0.0.1 "`` and similar."""
     from openfollow.web import routes as routes_mod
 
     class _FakeReq:
-        remote_addr = "  127.0.0.1  "
+        environ = {"REMOTE_ADDR": "  127.0.0.1  "}
 
     monkeypatch.setattr(routes_mod, "request", _FakeReq())
     assert routes_mod._is_on_device_request() is True
 
 
-def test_is_on_device_request_handles_none_remote_addr(monkeypatch) -> None:
+def test_is_on_device_request_handles_a_missing_connection_address(monkeypatch) -> None:
     from openfollow.web import routes as routes_mod
 
     class _FakeReq:
-        remote_addr = None
+        environ: dict[str, str] = {}
 
     monkeypatch.setattr(routes_mod, "request", _FakeReq())
     assert routes_mod._is_on_device_request() is False
+
+
+def test_a_lan_client_claiming_loopback_in_forwarded_for_is_not_on_device(monkeypatch) -> None:
+    from bottle import LocalRequest
+
+    from openfollow.web import routes as routes_mod
+
+    req = LocalRequest({"REMOTE_ADDR": "192.0.2.5", "HTTP_X_FORWARDED_FOR": "127.0.0.1"})
+    monkeypatch.setattr(routes_mod, "request", req)
+    assert routes_mod._is_on_device_request() is False
+
+
+def test_no_code_reads_bottles_forwarded_for_address() -> None:
+    """Bottle's ``remote_addr`` / ``remote_route`` read a client-set X-Forwarded-For; ``REMOTE_ADDR`` is the peer."""
+    import ast
+    from pathlib import Path
+
+    import openfollow
+
+    root = Path(openfollow.__file__).parent
+    offenders = []
+    for path in sorted(root.rglob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        if "remote_addr" not in source and "remote_route" not in source:
+            continue
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.Attribute) and node.attr in ("remote_addr", "remote_route"):
+                offenders.append(f"{path.relative_to(root)}:{node.lineno}")
+    assert offenders == []
 
 
 # ---------------------------------------------------------------------------
@@ -3199,7 +3537,7 @@ class TestPeerPortAllowlist:
         from openfollow.web.routes import _send_config_to_peer
 
         with caplog.at_level("WARNING", logger="openfollow.web.routes"):
-            ok = _send_config_to_peer("10.0.0.5", 31337, "camera", {}, pin="", expected_port=8080)
+            ok = _send_config_to_peer("10.0.0.5", 31337, "camera", {}, pin="", expected_port=8080, sender="Stage Left")
         assert ok is False
         assert any("unexpected port" in r.message for r in caplog.records)
 
@@ -3207,7 +3545,7 @@ class TestPeerPortAllowlist:
         from openfollow.web.routes import _send_config_import_to_peer
 
         with caplog.at_level("WARNING", logger="openfollow.web.routes"):
-            ok = _send_config_import_to_peer("10.0.0.5", 31337, {}, pin="", expected_port=8080)
+            ok = _send_config_import_to_peer("10.0.0.5", 31337, {}, pin="", expected_port=8080, sender="Stage Left")
         assert ok is False
         assert any("unexpected port" in r.message for r in caplog.records)
 
@@ -3729,6 +4067,53 @@ def test_restoring_defaults_clears_the_interface_labels() -> None:
 
 
 # ---------------------------------------------------------------------------
+# The keyboard layout names the keyboard plugged into this box: it never travels, and a reset clears it.
+# ---------------------------------------------------------------------------
+
+
+def _with_keyboard_layout(layout: str = "de", variant: str = "nodeadkeys") -> AppConfig:
+    cfg = AppConfig()
+    cfg.controller.keyboard_layout = layout
+    cfg.controller.keyboard_variant = variant
+    return cfg
+
+
+def test_the_keyboard_layout_is_not_exported() -> None:
+    controller = _config_dict_redacted(_with_keyboard_layout())["controller"]
+    assert "keyboard_layout" not in controller
+    assert "keyboard_variant" not in controller
+    # The rest of the section still travels.
+    assert controller["key_reset"] == "x"
+
+
+@pytest.mark.parametrize("section", ["controller", "gamepad", "keyboard", "mouse"])
+def test_the_keyboard_layout_is_never_pushed_to_a_peer(section: str) -> None:
+    """Every section that writes the controller config takes the two fields, so each one strips them."""
+    pushed = strip_device_local_fields(
+        section, {"keyboard_layout": "de", "keyboard_variant": "nodeadkeys", "key_reset": "c"}
+    )
+    assert pushed == {"key_reset": "c"}
+
+
+def test_an_import_keeps_this_stations_keyboard_layout() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    current = _with_keyboard_layout("de", "nodeadkeys")
+    new = _apply_import_data(
+        current, {"controller": {"keyboard_layout": "jp", "keyboard_variant": "OADG109A", "key_reset": "c"}}
+    )
+    assert (new.controller.keyboard_layout, new.controller.keyboard_variant) == ("de", "nodeadkeys")
+    assert new.controller.key_reset == "c"
+
+
+def test_restoring_defaults_returns_the_keyboard_layout_to_system() -> None:
+    from openfollow.web.routes import reset_config_to_defaults
+
+    reset = reset_config_to_defaults(_with_keyboard_layout())
+    assert (reset.controller.keyboard_layout, reset.controller.keyboard_variant) == ("", "")
+
+
+# ---------------------------------------------------------------------------
 # Station FQDN: saved from the General form, accepted as a host, never carried off the box.
 # ---------------------------------------------------------------------------
 
@@ -3800,3 +4185,290 @@ def test_an_import_never_gives_this_station_another_stations_fqdn(current: str) 
 
     new = _apply_import_data(AppConfig(station_fqdn=current), {"station_fqdn": "foreign.example.com"})
     assert new.station_fqdn == current
+
+
+_GOOD_MARKS = [
+    {"id": 1, "kind": "known", "x": 5.0, "y": 0.0, "z": 0.0, "pin": [0.81, 0.94]},
+    {"id": 2, "kind": "known", "x": -5.0, "y": 0.0, "z": 0.0, "pin": [0.14, 0.95]},
+    {
+        "id": 3,
+        "kind": "triangulated",
+        "from_a": 1,
+        "from_b": 2,
+        "distance_a": 21.4,
+        "distance_b": 23.9,
+        "z": 0.0,
+        "pin": [0.4, 0.2],
+    },
+]
+
+
+def test_calibration_marks_arrive_through_the_camera_section() -> None:
+    cfg = AppConfig()
+    data = {"calibration_mode": "advanced", "calibration_marks": [*_GOOD_MARKS, {**_GOOD_MARKS[0], "id": 4, "x": None}]}
+    assert apply_section_data(cfg, "camera", data)
+    assert cfg.camera.calibration_mode == "advanced"
+    assert [(m.id, m.kind) for m in cfg.camera.calibration_marks] == [(1, "known"), (2, "known"), (3, "triangulated")]
+
+
+_SOLVED = ("pos_x", "pos_y", "pos_z", "pitch", "yaw", "roll", "fov")
+
+
+_RECORD = {
+    "calibration_lens_rating": "good",
+    "calibration_time": "2026-10-25T11:04:00+01:00",
+    "calibration_source": "RTSP: rtsp://192.0.2.10/stream",
+}
+
+
+def _calibrated() -> AppConfig:
+    cfg = AppConfig()
+    apply_section_data(cfg, "camera", {"calibration_mode": "advanced", "calibration_marks": _GOOD_MARKS, **_RECORD})
+    cfg.camera.calibration_height = 9.8
+    return cfg
+
+
+def _record(camera) -> dict[str, str]:
+    return {name: getattr(camera, name) for name in _RECORD}
+
+
+@pytest.mark.parametrize("name", _SOLVED)
+def test_a_pose_or_fov_changed_without_marks_clears_the_calibration(name: str) -> None:
+    cfg = _calibrated()
+    assert apply_section_data(cfg, "camera", {name: getattr(cfg.camera, name) + 1.0})
+    camera = cfg.camera
+    assert (camera.calibration_mode, camera.calibration_marks, camera.calibration_height) == ("simple", [], None)
+    assert _record(camera) == dict.fromkeys(_RECORD, "")
+
+
+@pytest.mark.parametrize("name", ["lens_k1", "lens_k2", "lens_cx", "lens_cy"])
+def test_a_lens_changed_without_its_rating_clears_only_the_rating(name: str) -> None:
+    """The rating describes the lens it was measured for; the points still describe the pose."""
+    cfg = _calibrated()
+    apply_section_data(cfg, "camera", {name: 0.01})
+    assert (len(cfg.camera.calibration_marks), _record(cfg.camera)) == (3, {**_RECORD, "calibration_lens_rating": ""})
+
+
+def test_a_lens_written_with_its_rating_keeps_it() -> None:
+    cfg = _calibrated()
+    apply_section_data(cfg, "camera", {"lens_k1": -0.1, "calibration_lens_rating": "loaded"})
+    assert _record(cfg.camera) == {**_RECORD, "calibration_lens_rating": "loaded"}
+
+
+def test_marks_written_with_their_record_keep_it() -> None:
+    cfg = _calibrated()
+    record = {"calibration_lens_rating": "user_input", "calibration_time": "2026-10-26T09:30:00-02:30"}
+    apply_section_data(
+        cfg, "camera", {"pos_x": 2.0, "calibration_marks": _GOOD_MARKS, **record, "calibration_source": "NDI®: Stage"}
+    )
+    assert _record(cfg.camera) == {**record, "calibration_source": "NDI®: Stage"}
+
+
+@pytest.mark.parametrize("name", list(_RECORD))
+@pytest.mark.parametrize("raw", ["missing", None, 3, ["good"]], ids=["missing", "none", "number", "list"])
+def test_marks_written_without_one_of_their_record_clear_it(name: str, raw: object) -> None:
+    """The record describes the marks it came with, never ones another write brought."""
+    cfg = _calibrated()
+    data = {"calibration_marks": _GOOD_MARKS, **_RECORD}
+    if raw == "missing":
+        del data[name]
+    else:
+        data[name] = raw
+    apply_section_data(cfg, "camera", data)
+    assert _record(cfg.camera) == {**_RECORD, name: ""}
+
+
+@pytest.mark.parametrize("raw", ["DSL", None, {"id": 1}])
+def test_a_pose_changed_with_marks_that_are_not_a_list_clears_the_calibration(raw: object) -> None:
+    cfg = _calibrated()
+    apply_section_data(cfg, "camera", {"pos_x": 1.0, "calibration_marks": raw})
+    assert cfg.camera.calibration_marks == []
+
+
+@pytest.mark.parametrize(
+    "data",
+    [{}, {"pos_x": 0.0}, {"lens_k1": 0.0, "calibration_height": 9.8}],
+    ids=["nothing", "same pose", "same lens"],
+)
+def test_a_camera_write_that_keeps_the_pose_keeps_the_calibration(data: dict) -> None:
+    cfg = _calibrated()
+    apply_section_data(cfg, "camera", data)
+    camera = cfg.camera
+    assert (camera.calibration_mode, len(camera.calibration_marks), camera.calibration_height) == ("advanced", 3, 9.8)
+    assert _record(camera) == _RECORD
+
+
+def test_a_pose_written_with_its_marks_keeps_them() -> None:
+    cfg = _calibrated()
+    apply_section_data(cfg, "camera", {"pos_x": 2.0, "yaw": 15.0, "calibration_marks": _GOOD_MARKS[:2]})
+    assert (cfg.camera.pos_x, [m.id for m in cfg.camera.calibration_marks]) == (2.0, [1, 2])
+
+
+def test_another_section_never_touches_the_calibration() -> None:
+    cfg = _calibrated()
+    apply_section_data(cfg, "grid", {"spacing": 0.5})
+    assert len(cfg.camera.calibration_marks) == 3
+    assert _record(cfg.camera) == _RECORD
+
+
+@pytest.mark.parametrize("raw", ["DSL", 3, None, {"id": 1}])
+def test_calibration_marks_that_are_not_a_list_keep_the_saved_ones(raw: object) -> None:
+    cfg = _calibrated()
+    apply_section_data(cfg, "camera", {"calibration_marks": raw, "lens_k1": -0.1})
+    assert [m.id for m in cfg.camera.calibration_marks] == [1, 2, 3]
+    # The lens changed without its rating.
+    assert (cfg.camera.lens_k1, _record(cfg.camera)) == (-0.1, {**_RECORD, "calibration_lens_rating": ""})
+
+
+def test_a_calibration_mode_of_none_keeps_the_saved_one() -> None:
+    cfg = AppConfig()
+    apply_section_data(cfg, "camera", {"calibration_mode": "advanced", "calibration_marks": _GOOD_MARKS})
+    apply_section_data(cfg, "camera", {"calibration_mode": None})
+    assert (cfg.camera.calibration_mode, len(cfg.camera.calibration_marks)) == ("advanced", 3)
+
+
+@pytest.mark.parametrize("raw", ["expert", "Advanced", "", 3, True])
+def test_a_calibration_mode_off_the_list_reads_as_simple_and_keeps_only_corners(raw: object) -> None:
+    cfg = AppConfig()
+    apply_section_data(cfg, "camera", {"calibration_mode": "advanced", "calibration_marks": _GOOD_MARKS})
+    apply_section_data(cfg, "camera", {"calibration_mode": raw})
+    assert cfg.camera.calibration_mode == "simple"
+    assert [m.id for m in cfg.camera.calibration_marks] == [1, 2]
+
+
+@pytest.mark.parametrize(("raw", "expected"), [(9.8, 9.8), (12, 12.0), (-1.5, -1.5)])
+def test_a_calibration_height_arrives_through_the_camera_section(raw: object, expected: float) -> None:
+    cfg = AppConfig()
+    assert apply_section_data(cfg, "camera", {"calibration_height": raw})
+    assert cfg.camera.calibration_height == expected
+
+
+def test_a_calibration_height_of_none_clears_the_saved_one() -> None:
+    cfg = AppConfig()
+    apply_section_data(cfg, "camera", {"calibration_height": 9.8})
+    apply_section_data(cfg, "camera", {"calibration_height": None})
+    assert cfg.camera.calibration_height is None
+
+
+@pytest.mark.parametrize(
+    "raw", [True, "abc", "12", [12.0], {"z": 1}], ids=["bool", "text", "numeric text", "list", "table"]
+)
+def test_a_calibration_height_that_is_no_number_keeps_the_saved_one(raw: object) -> None:
+    cfg = AppConfig()
+    apply_section_data(cfg, "camera", {"calibration_height": 9.8})
+    apply_section_data(cfg, "camera", {"calibration_height": raw, "lens_k1": -0.1})
+    assert (cfg.camera.calibration_height, cfg.camera.lens_k1) == (9.8, -0.1)
+
+
+@pytest.mark.parametrize("raw", [10_000.5, -10_000.5, float("nan"), float("inf")], ids=["above", "below", "nan", "inf"])
+def test_a_calibration_height_out_of_reach_is_dropped_by_the_section_write(raw: float) -> None:
+    cfg = AppConfig()
+    apply_section_data(cfg, "camera", {"calibration_height": 9.8})
+    apply_section_data(cfg, "camera", {"calibration_height": raw})
+    assert cfg.camera.calibration_height is None
+
+
+def test_a_calibration_height_travels_with_an_export_and_an_import() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    camera = CameraConfig(calibration_mode="advanced", calibration_marks=_GOOD_MARKS, calibration_height=9.8)  # type: ignore[arg-type]
+    exported = _config_dict_redacted(AppConfig(camera=camera))
+    assert exported["camera"]["calibration_height"] == 9.8
+    imported = _apply_import_data(AppConfig(), json.loads(json.dumps(exported)))
+    assert imported.camera.calibration_height == 9.8
+
+
+_CORNER_PINS = [[0.81, 0.94], [0.14, 0.95], [0.37, 0.61], [0.66, 0.6]]
+
+
+def _station(width: float = 12.0, z_offset: float = 0.5) -> AppConfig:
+    cfg = AppConfig()
+    cfg.grid.width, cfg.grid.depth, cfg.grid.x_offset, cfg.grid.y_offset = width, 6.0, 1.0, 4.0
+    cfg.grid.z_offset = z_offset
+    return cfg
+
+
+def test_calibration_marks_travel_with_an_export_and_an_import() -> None:
+    """Not device-local: they describe the show's camera."""
+    from openfollow.web.routes import _apply_import_data
+
+    camera = CameraConfig(calibration_mode="advanced", calibration_marks=_GOOD_MARKS)  # type: ignore[arg-type]
+    exported = _config_dict_redacted(AppConfig(camera=camera))
+    assert [m["id"] for m in exported["camera"]["calibration_marks"]] == [1, 2, 3]
+    imported = _apply_import_data(AppConfig(), json.loads(json.dumps(exported)))
+    assert imported.camera.calibration_mode == "advanced"
+    assert imported.camera.calibration_marks == camera.calibration_marks
+
+
+def _simple_marks_at(width: float) -> list[dict]:
+    hw = width / 2.0
+    places = [(1.0 + hw, 1.0), (1.0 - hw, 1.0), (1.0 - hw, 7.0), (1.0 + hw, 7.0)]
+    names = ("DSL", "DSR", "USR", "USL")
+    return [
+        {"id": i + 1, "name": n, "kind": "known", "x": x, "y": y, "z": 0.5, "pin": _CORNER_PINS[i]}
+        for i, (n, (x, y)) in enumerate(zip(names, places, strict=True))
+    ]
+
+
+def test_simple_corners_follow_a_grid_write_and_lose_their_pins() -> None:
+    cfg = _station()
+    assert apply_section_data(
+        cfg, "camera", {"calibration_mode": "simple", "calibration_marks": _simple_marks_at(12.0)}
+    )
+    assert [m.pin for m in cfg.camera.calibration_marks] == _CORNER_PINS
+    assert apply_section_data(cfg, "grid", {"width": 10.0})
+    assert [(m.x, m.y, m.pin) for m in cfg.camera.calibration_marks] == [
+        (6.0, 1.0, []),
+        (-4.0, 1.0, []),
+        (-4.0, 7.0, []),
+        (6.0, 7.0, []),
+    ]
+
+
+def test_a_grid_write_that_keeps_the_corners_keeps_their_pins() -> None:
+    cfg = _station()
+    assert apply_section_data(
+        cfg, "camera", {"calibration_mode": "simple", "calibration_marks": _simple_marks_at(12.0)}
+    )
+    assert apply_section_data(cfg, "grid", {"spacing": 2.0})
+    assert [m.pin for m in cfg.camera.calibration_marks] == _CORNER_PINS
+
+
+def test_a_camera_write_with_corners_off_this_grid_moves_them_and_unpins_them() -> None:
+    """A push from a station with another grid: its corners are this grid's, pinned on nothing here."""
+    cfg = _station()
+    assert apply_section_data(cfg, "camera", {"calibration_mode": "simple", "calibration_marks": _simple_marks_at(8.0)})
+    assert [(m.x, m.pin) for m in cfg.camera.calibration_marks] == [(7.0, []), (-5.0, []), (-5.0, []), (7.0, [])]
+
+
+def test_advanced_marks_never_follow_the_grid() -> None:
+    cfg = _station()
+    marks = [{**m, "kind": "known"} for m in _simple_marks_at(8.0)]
+    assert apply_section_data(cfg, "camera", {"calibration_mode": "advanced", "calibration_marks": marks})
+    assert apply_section_data(cfg, "grid", {"width": 10.0})
+    assert [(m.x, m.pin) for m in cfg.camera.calibration_marks] == [
+        (5.0, _CORNER_PINS[0]),
+        (-3.0, _CORNER_PINS[1]),
+        (-3.0, _CORNER_PINS[2]),
+        (5.0, _CORNER_PINS[3]),
+    ]
+
+
+@pytest.mark.parametrize("how", ["import", "camera write"])
+def test_unknown_camera_calibration_keys_are_dropped_by_a_write(how: str) -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    station = _station()
+    station.camera.calibration_height = 9.5
+    point = {"corner_a": "DSL", "corner_b": "DSR", "distance_a": 21.4, "distance_b": 23.9, "pin_x": 0.4, "pin_y": 0.2}
+    sent = {"lens_k1": -0.1, "corner_pins": _CORNER_PINS, "calibration_points": [point]}
+    if how == "import":
+        station = _apply_import_data(station, {"camera": sent})
+    else:
+        assert apply_section_data(station, "camera", sent)
+    camera = station.camera
+    assert (camera.lens_k1, camera.calibration_mode, camera.calibration_marks) == (-0.1, "simple", [])
+    assert camera.calibration_height == 9.5
+    exported = _config_dict_redacted(station)
+    assert "corner_pins" not in exported["camera"]
+    assert "calibration_points" not in exported["camera"]

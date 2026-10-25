@@ -209,7 +209,7 @@ class TestHelpRoute:
         status, body, ctype = _get(live_server, "/help/camera.html")
         assert status == 200
         assert "text/html" in ctype
-        assert "<h1>Camera</h1>" in body
+        assert "<h1>Camera &amp; Lens Calibration</h1>" in body
 
     def test_underscore_id_doc(self, live_server) -> None:
         # Slug allow-list permits underscores (e.g. video_source).

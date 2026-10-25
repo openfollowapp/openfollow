@@ -8,7 +8,7 @@ and legacy shortcut regression guards. This file fills in:
 - ``cycle_marker`` edge cases (empty list, current==None, wrap-around)
 - ``enter_source_selection`` gating on ``has_source_selection``
 - ``enter_button_detection`` refusal paths + ``process_button_detection``
-- ``on_key_down`` digit shortcuts and Ctrl/Meta+S save flow
+- ``on_key_down`` digit shortcuts, and no Ctrl/Meta+S save
 - ``process_input`` guard paths (button-detection, settings menu, source,
   key_settings edge gating)
 - ``process_source_selection_input``
@@ -225,7 +225,7 @@ def test_process_button_detection_done_with_no_results_clears_wizard() -> None:
 
 
 # ---------------------------------------------------------------------------
-# on_key_down – digit shortcut + Ctrl+S save
+# on_key_down – digit shortcut, no Ctrl/Cmd+S save
 # ---------------------------------------------------------------------------
 
 
@@ -275,47 +275,24 @@ def test_on_key_down_digit_key_out_of_range_is_noop() -> None:
     assert app._selected_id == 1
 
 
-def test_on_key_down_ctrl_s_saves_camera(monkeypatch, tmp_path) -> None:
+@pytest.mark.parametrize("modifier", ["Control", "Meta"])
+def test_ctrl_or_cmd_s_saves_nothing(modifier: str, monkeypatch, tmp_path) -> None:
+    # The camera pose is the Setup Wizard's alone.
     from openfollow.configuration import AppConfig, CameraConfig
 
     writes: list = []
-
-    def _fake_save(cfg, path) -> None:  # noqa: ANN001
-        writes.append(path)
-
-    monkeypatch.setattr(app_modes, "save_config", _fake_save)
-
-    class _KeyboardHandler:
-        keys: set[str] = {"Control"}
-
-        def on_key_down(self, event) -> None:  # noqa: ANN001
-            pass
-
-    class _InputManager:
-        keyboard_handler = _KeyboardHandler()
-
-    class _Camera:
-        def to_config(self):  # noqa: ANN201
-            return CameraConfig(fov=42.0)
-
-    app = SimpleNamespace(
-        _input_manager=_InputManager(),
-        _controlled_ids=[],
-        _selected_id=None,
-        _config=AppConfig(),
+    monkeypatch.setattr(app_modes, "save_config_fields", lambda *args, **kwargs: writes.append(args))
+    camera = CameraConfig(pos_x=1.0, fov=50.0)
+    app = _key_app(
+        _config=AppConfig(camera=camera),
         _config_path=str(tmp_path / "c.toml"),
         _config_mtime=0,
-        _camera=_Camera(),
-        _url_editor_active=False,
-        _field_choice_active=False,
-        _browser_active=False,
+        _camera=SimpleNamespace(to_config=lambda: CameraConfig(pos_x=9.0, fov=42.0)),
     )
-    app._normalize_key = app_modes.normalize_key
-    app._get_config_mtime = lambda: 1
+    app._input_manager.keyboard_handler.keys = {modifier}
     app_modes.on_key_down(app, {"key": "s"})
-    assert writes == [app._config_path]
-    assert app._config.camera.fov == pytest.approx(42.0)
-    assert app._config_mtime == 1
+    assert writes == []
+    assert app._config.camera == camera
 
 
 def test_on_key_down_without_input_manager() -> None:
@@ -360,41 +337,6 @@ def test_on_key_down_digit_gated_while_modal_open() -> None:
     app = _key_app(_settings_menu_active=True)
     app_modes.on_key_down(app, {"key": "2"})
     assert app._selected_id == 10  # unchanged
-
-
-def test_on_key_down_ctrl_s_gated_while_modal_open(monkeypatch) -> None:
-    # #551: Ctrl/Cmd+S must not write config from under a modal.
-    writes: list = []
-    monkeypatch.setattr(app_modes, "save_config", lambda cfg, path: writes.append(path))
-    app = _key_app(_about_active=True, _camera=object())
-    app._input_manager.keyboard_handler.keys = {"Control"}
-    app_modes.on_key_down(app, {"key": "s"})
-    assert writes == []  # save suppressed while modal owns the screen
-
-
-def test_on_key_down_ctrl_s_save_failure_is_swallowed(monkeypatch, tmp_path) -> None:
-    # #551 Low: a save failure routes through _persist_config (logged, not raised).
-    from openfollow.configuration import AppConfig, CameraConfig
-
-    def _boom(cfg, path) -> None:  # noqa: ANN001
-        raise OSError("read-only fs")
-
-    monkeypatch.setattr(app_modes, "save_config", _boom)
-
-    class _Camera:
-        def to_config(self):  # noqa: ANN201
-            return CameraConfig(fov=42.0)
-
-    app = _key_app(
-        _config=AppConfig(),
-        _config_path=str(tmp_path / "c.toml"),
-        _config_mtime=0,
-        _camera=_Camera(),
-    )
-    app._input_manager.keyboard_handler.keys = {"Meta"}
-    app._get_config_mtime = lambda: 1
-    app_modes.on_key_down(app, {"key": "s"})  # must not raise
-    assert app._config_mtime == 0  # mtime not advanced on failed persist
 
 
 def test_on_key_down_digit_gated_during_button_detection() -> None:
@@ -1006,7 +948,7 @@ def test_process_input_prev_marker_pressed_cycles_backwards() -> None:
     assert app._selected_id == 1
 
 
-def test_toggle_zone_overlay_logs_warning_on_save_failure(tmp_path, caplog) -> None:
+def test_toggle_zone_overlay_logs_the_field_on_save_failure(tmp_path, caplog) -> None:
     import logging as _logging
 
     from openfollow.configuration import AppConfig
@@ -1019,7 +961,7 @@ def test_toggle_zone_overlay_logs_warning_on_save_failure(tmp_path, caplog) -> N
         app_modes._toggle_zone_overlay(app)
 
     assert cfg.trigger_zones.show_overlay is True
-    assert any("Failed to persist zone overlay toggle" in rec.message for rec in caplog.records)
+    assert any("Failed to persist trigger_zones.show_overlay" in rec.message for rec in caplog.records)
 
 
 def test_process_source_selection_input_logs_on_exception(caplog) -> None:
@@ -1252,7 +1194,7 @@ def test_settings_menu_confirm_dispatches_to_correct_app_callback(
     calls: list[str] = []
     app = _make_settings_menu_app(has_controller=True, has_source=True, menu_index=menu_index)
     app._settings_menu_active = True
-    # ``_enter_url_editor`` accepts kwargs (banner / revert_type) on
+    # ``_enter_url_editor`` accepts kwargs (banner / source_type) on
     # the real app; the dispatcher invokes it with no args from the
     # menu, but the lambda captures whatever's passed via ``**kw``.
     for name in (
@@ -2146,12 +2088,14 @@ def test_enter_button_detection_handles_no_web_server() -> None:
 
 def test_process_button_detection_completion_applies_results(tmp_path) -> None:
     """When the wizard completes successfully, the result map is applied to
-    `controller.*`, `__post_init__` re-runs validation, the config is
+    `controller.*`, `__post_init__` re-runs validation, the fields it set are
     saved to disk, the gamepad handler reloads, and the web flag clears."""
-    from openfollow.configuration import AppConfig, save_config
+    from openfollow.configuration import AppConfig, load_config, save_config
 
     cfg_path = tmp_path / "cfg.toml"
-    save_config(AppConfig(), str(cfg_path))
+    on_disk = AppConfig()
+    on_disk.controller.key_reset = "y"  # edited since the running config was read
+    save_config(on_disk, str(cfg_path))
 
     apply_called: list[bool] = []
     web_flags: list[bool] = []
@@ -2178,7 +2122,7 @@ def test_process_button_detection_completion_applies_results(tmp_path) -> None:
         def cancel(self): ...
 
         def build_detection_map(self):
-            return {"map_a": "A"}
+            return {"map_a": "B"}
 
         def build_raw_index_map(self):
             return {"A": 0}
@@ -2199,7 +2143,6 @@ def test_process_button_detection_completion_applies_results(tmp_path) -> None:
         _button_detection=_Wizard(),
         _web_server=_WebServer(),
     )
-    app._get_config_mtime = lambda: 1
 
     app_modes.process_button_detection(app)
 
@@ -2207,10 +2150,14 @@ def test_process_button_detection_completion_applies_results(tmp_path) -> None:
     assert apply_called == [True]
     assert web_flags == [False]
     # Detection map was applied to the controller config.
-    assert cfg.controller.map_a == "A"
+    assert cfg.controller.map_a == "B"
     assert cfg.controller.swap_triggers is True
     assert cfg.controller.mapped_controller_name == "Test Controller"
     assert cfg.controller.mapped_controller_guid == "test-guid"
+    saved = load_config(str(cfg_path)).controller
+    assert (saved.map_a, saved.button_raw_indices, saved.swap_triggers) == ("B", {"A": 0}, True)
+    assert (saved.mapped_controller_name, saved.mapped_controller_guid) == ("Test Controller", "test-guid")
+    assert saved.key_reset == "y"
 
 
 def test_process_button_detection_completion_with_no_results_clears_wizard_only() -> None:
@@ -2570,11 +2517,13 @@ def test_process_input_routes_to_about_when_active() -> None:
 
 def test_process_input_clears_keyboard_on_return_from_modal() -> None:
     """Returning to direct marker control after a modal drops any key still
-    tracked as held (one-shot clear) so it can't drift the marker now."""
+    tracked as held (one-shot clear) so it can't drift the marker now, and
+    every held control-frame direction, so a frame saved meanwhile applies."""
     from openfollow.configuration import AppConfig
     from openfollow.input.gamepad import GamepadUpdate
 
     cleared: list[bool] = []
+    released: list[bool] = []
 
     class _KB:
         keys: set[str] = set()
@@ -2582,8 +2531,13 @@ def test_process_input_clears_keyboard_on_return_from_modal() -> None:
         def clear(self) -> None:
             cleared.append(True)
 
+    class _CF:
+        def release_all(self) -> None:
+            released.append(True)
+
     class _IM:
         keyboard_handler = _KB()
+        control_frame = _CF()
 
         def update(self, _dt):  # noqa: ANN001
             return GamepadUpdate()
@@ -2607,6 +2561,7 @@ def test_process_input_clears_keyboard_on_return_from_modal() -> None:
     )
     app_modes.process_input(app, 0.016)
     assert cleared == [True]
+    assert released == [True]
     assert app._marker_control_suspended is False
 
 
@@ -2712,11 +2667,12 @@ def _mac_keyboard_app(
     from openfollow.configuration import AppConfig
     from openfollow.input import keyboard as keyboard_module
     from openfollow.input.events import InputEventBus
+    from openfollow.input.gamepad import GamepadUpdate
     from openfollow.input.keyboard import KeyboardHandler
 
     poll = _HeldKeys()
     monkeypatch.setattr(keyboard_module, "create_keyboard_poller", lambda: poll)
-    monkeypatch.setattr(app_modes, "save_config", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(app_modes, "save_config_fields", lambda *_args, **_kwargs: None)
     cfg = AppConfig()
     cfg.video_source_type = "rtsp"
     cfg.rtsp_url = "rtsp://192.0.2.10/stream"
@@ -2766,14 +2722,7 @@ def _mac_keyboard_app(
     app._input_manager = SimpleNamespace(
         keyboard_handler=KeyboardHandler(app, event_bus=InputEventBus()),
         gamepad_handler=SimpleNamespace(read_settings_toggle=lambda: False, read_settings_menu_input=lambda: idle),
-        update=lambda _dt: SimpleNamespace(
-            settings_open_pressed=False,
-            toggle_help_pressed=False,
-            toggle_zones_pressed=False,
-            next_marker_pressed=False,
-            prev_marker_pressed=False,
-            clear_messages_pressed=False,
-        ),
+        update=lambda _dt: GamepadUpdate(),
     )
     return app, poll
 

@@ -5,13 +5,8 @@
 % # Avoids JS on debug surface (network/discovery broken → htmx broken too);
 % # Download button is plain <a> that works without JS; output in <pre>
 % # slots survives partial degradation. Restart button is operator action
-% # (confirm dialog + reload poll).
-% # comes back. It calls a named ``confirmRestartApp()`` function
-% # defined in ``base.tpl`` (where the ``#top-restart-notice`` banner
-% # also lives). A plain ``<form method="post" action="/api/restart">``
-% # fallback would lose the "Restart the application?" confirm and
-% # the auto-reload, which we judged a worse degradation story than
-% # one JS-dependent button on a debug-focused panel.
+% # (confirm dialog + reload poll) through the shared ``openfollowRestart()``
+% # in ``base.tpl``.
 % #
 % # Only the live cards poll/swap (see ``#diagnostics-live`` below + the
 % # ``partials/diagnostics_cards`` fragment); the section shell, fold state,
@@ -28,11 +23,10 @@
 
     %# Live cards refresh on their own every 5s. Keeping the poll target inside
     %# the section (rather than wrapping the whole section) means the head +
-    %# tools below never get rebuilt, so the section no longer flickers. The
-    %# trigger skips the poll while the section is collapsed (matches overview).
+    %# tools below never get rebuilt, so the section no longer flickers.
     <div id="diagnostics-live"
          hx-get="/section/diagnostics"
-         hx-trigger="every 5s [!this.closest('.section').classList.contains('is-collapsed')]"
+         hx-trigger="every 5s [pollShown(this)], poll-shown[pollShown(this)] from:body"
          hx-swap="innerHTML">
         % include('partials/diagnostics_cards.tpl', cards=cards)
     </div>
@@ -54,14 +48,9 @@
                 Test peer connectivity
             </button>
             %# Restart lives here (not the top chrome) – it's rare-use
-            %# and shouldn't take a permanent action slot. The button
-            %# only calls a named function defined in ``base.tpl``
-            %# (``confirmRestartApp``) so this partial keeps its
-            %# "deliberately avoids JS" contract from the module
-            %# header – the same contract the Download bundle / Test
-            %# peers buttons honour with plain links / hx-* attributes.
+            %# and shouldn't take a permanent action slot.
             <button type="button" class="danger"
-                    onclick="confirmRestartApp()">
+                    onclick="openfollowRestart({title: 'Restart application?', message: 'Video and tracking stop until the station is back.'})">
                 Restart application
             </button>
         </div>

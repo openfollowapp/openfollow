@@ -11,10 +11,10 @@ import time
 from typing import TYPE_CHECKING
 
 from openfollow.configuration import (
+    ConfigFileEmptyError,
     apply_runtime_config_changes,
-    config_write_lock,
     load_config,
-    save_config,
+    save_config_fields,
 )
 from openfollow.psn.marker import MARKER_STALE_AFTER_S
 from openfollow.runtime.app_modes import keyboard_owned
@@ -108,6 +108,7 @@ def housekeeping(app: OpenFollowApp) -> bool:
         app._check_restart_request,
         app._check_pi_network_worker,
         app._check_diagnostics_export,
+        app._check_pushed_settings,
         app._check_button_detection_request,
         app._check_controller_slot_actions,
         app._check_camera_setup_requests,
@@ -179,6 +180,9 @@ def animate(app: OpenFollowApp) -> None:
     # housekeeping timeout (see ``housekeeping``) so they keep their own cadence
     # rather than the frame rate.
     app._check_video_disconnect_banner()
+    if app._input_manager is not None:
+        app._input_manager.update_paths(dt)
+        app._input_manager.update_touch_remote(dt)
     app._process_input(dt)
 
     svc = app._runtime_services
@@ -215,11 +219,18 @@ def check_config_reload(app: OpenFollowApp) -> None:
         return
 
     try:
-        new_config = load_config(app._config_path, strict=True)
+        new_config = load_config(app._config_path, strict=True, missing_ok=False)
+    except ConfigFileEmptyError:
+        # Mtime kept, so the write that follows the truncation is reloaded even within one mtime tick.
+        if app._config_blank_warned_mtime != mtime:
+            app._config_blank_warned_mtime = mtime
+            logger.warning("%s is empty – not reloaded.", app._config_path)
+        return
     except Exception as error:
-        # Parse error; don't advance mtime so the next poll retries (mtime
-        # stays > _config_mtime regardless of further file changes).
-        logger.warning("Config reload error: %s", error)
+        # Parse error; mtime kept so the next poll retries, warned once per mtime like the empty file.
+        if app._config_error_warned_mtime != mtime:
+            app._config_error_warned_mtime = mtime
+            logger.warning("Config reload error: %s", error)
         return
 
     try:
@@ -245,16 +256,12 @@ def check_marker_speeds_persist(app: OpenFollowApp) -> None:
     """Flush the runtime-authoritative per-marker move speeds ~2.5s after the
     last R/T / gamepad-bumper edit, coalescing a tap-streak into one write.
 
-    The flush reads the config fresh from disk under ``config_write_lock`` and
-    injects the live ``marker_move_speeds`` before saving, so a concurrent web
-    section save (which holds the same lock) can never be clobbered by writing
-    the whole in-memory config wholesale. The load is ``strict=True`` (mirrors
-    ``check_config_reload``): this flush fires automatically with no operator
-    intent, so on a malformed/unparseable ``config.toml`` it must raise and retry
-    rather than silently heal the file to its ``.bak`` snapshot or to defaults.
-    The mtime is deliberately left alone: the benign reload that follows is a
-    no-op for speeds (they're not reloaded) and correctly picks up whatever else
-    the disk holds.
+    Only ``marker_move_speeds`` is written, onto the file as it is on disk
+    (``save_config_fields``). Its strict load matters here: this flush fires with
+    no operator intent, so a malformed ``config.toml`` must be retried, never
+    healed to its ``.bak`` snapshot or to defaults. The mtime is deliberately
+    left alone: the benign reload that follows is a no-op for speeds (they're
+    not reloaded) and correctly picks up whatever else the disk holds.
     """
     if not app._marker_speeds_dirty:
         return
@@ -262,10 +269,7 @@ def check_marker_speeds_persist(app: OpenFollowApp) -> None:
         return
 
     try:
-        with config_write_lock:
-            cfg = load_config(app._config_path, strict=True)
-            cfg.marker_move_speeds = dict(app._config.marker_move_speeds)
-            save_config(cfg, app._config_path)
+        save_config_fields(app._config, app._config_path, ["marker_move_speeds"])
     except Exception:
         logger.exception("Failed to persist per-marker move speeds.")
         # Back off to the settle cadence so a persistent failure (e.g. a full

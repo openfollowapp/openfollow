@@ -46,6 +46,9 @@ class _FakeTarget:
     def get_device_scale(self) -> tuple[float, float]:
         return (1.0, 1.0)
 
+    def get_font_options(self) -> cairo.FontOptions:
+        return cairo.FontOptions()
+
 
 class FakeCairo:
     """Recording Cairo context stand-in.
@@ -73,6 +76,7 @@ class FakeCairo:
         self.translates: list[tuple[float, float]] = []
         self.scales: list[tuple[float, float]] = []
         self.patterns: list[Any] = []
+        self.surfaces: list[Any] = []
 
         self._cur_rgba: tuple[float, ...] = (0.0, 0.0, 0.0, 1.0)
         self._cur_x: float = 0.0
@@ -102,6 +106,7 @@ class FakeCairo:
         self.calls.append(("rgb", *args))
 
     def set_source_surface(self, surface: Any, x: float = 0.0, y: float = 0.0) -> None:
+        self.surfaces.append(surface)
         self.calls.append(("source_surface", x, y))
 
     def paint(self) -> None:
@@ -109,6 +114,12 @@ class FakeCairo:
 
     def get_target(self) -> Any:
         return _FakeTarget()
+
+    def get_font_options(self) -> cairo.FontOptions:
+        return cairo.FontOptions()
+
+    def set_font_options(self, options: cairo.FontOptions) -> None:
+        self.calls.append(("font_options",))
 
     def set_source(self, pattern: Any) -> None:
         self.patterns.append(pattern)
@@ -286,6 +297,13 @@ class FakeCairo:
         return [t.text for t in self.texts]
 
 
+class DirectPanels:
+    """``PanelCache`` stand-in that draws each panel straight onto the context it is given."""
+
+    def draw(self, cr: Any, slot: str, key: Any, paint: Any, w: int, h: int) -> None:
+        paint(cr)
+
+
 class FakeRenderer:
     """Stand-in for ``CairoOverlayRenderer`` used by draw-pass tests.
 
@@ -305,6 +323,7 @@ class FakeRenderer:
         # Cache per-frame HUD memoization, mirroring CairoOverlayRenderer.
         self._info_panel_cache: tuple[object, object] | None = None
         self._help_sections_cache: tuple[object, object] | None = None
+        self._panel_cache = DirectPanels()
 
     _set_ui_font = staticmethod(CairoOverlayRenderer._set_ui_font)
     _truncate_text_to_width = staticmethod(CairoOverlayRenderer._truncate_text_to_width)

@@ -1,6 +1,6 @@
 # Network Interface Assignment
 
-Which network each function uses. **Network Interface Settings** above answers "what address does this adapter have"; this panel answers "which adapter does each function go out on".
+Which network each function uses, in **Advanced** network mode; in Simple the station interface carries every function and this panel is not shown. **Network Interface Settings** above answers "what address does this adapter have"; this panel answers "which adapter does each function go out on".
 
 Useful when lighting, video, and management traffic live on separate networks â€“ a dedicated adapter each, or tagged VLANs on one Ethernet run. Pinning keeps each protocol on its intended network: no PSN leaking onto the office LAN, no need for one flat network just because the tracker only binds one way.
 
@@ -22,6 +22,8 @@ The function resumes on its own as soon as the interface has an address again â€
 
 From the moment its interface has no address, the on-screen display shows the function as a red row in the top-right corner, and the panel with the IP address turns red. That matters when the interface that went away is the one carrying this web page: the screen on the device is the only place left to look. The function itself is stopped after a few seconds, so the short gap an Apply or a DHCP renewal leaves shows the row without stopping anything.
 
+PSN covers both directions. If PSN input cannot open its socket although the interface has an address, the on-screen display shows `PSN` as a red row with the reason while PSN output keeps sending, and the station keeps trying on its own: after two seconds, then less often, up to once a minute.
+
 The **address** is allowed to change. If the interface is on DHCP and comes back with a different address than before, that is normal and the function follows it. Only the interface itself is fixed.
 
 ## Rows that can't be pinned
@@ -36,7 +38,7 @@ Which interface the station takes its OSC **multicast** subscription on. Left bl
 
 Subscribing to a group is per-interface. Left to itself the system picks one, and it can pick differently from one restart to the next - so on a station with several networks, OSC sent to the group arrives after one restart and not after the next. Pinning the row is what makes it the same every time. On a station with one network there is nothing to pick and the row changes nothing.
 
-If the pinned interface has no address, the station holds no subscription at all rather than taking one on a different network, and the Address column says so. It subscribes again on its own when the interface comes back.
+If the pinned interface has no address, the station holds no subscription at all rather than taking one on a different network, and the Address column says so. It subscribes again on its own when the interface comes back. While the row has an interface to follow, a listener that cannot start at all, for example because another program holds the OSC port, shows `OSC input` as a red row with the reason, and the station keeps trying to start it the same way.
 
 This row does **not** change which addresses OSC is accepted at. Ordinary OSC sent straight to the station, and OSC sent to the subnet broadcast address, arrive on every interface whatever this row is set to - that is how the listener has to be bound for multicast to work at all. To restrict who may send, use **Allowed sender IPs** under OSC Input.
 
@@ -46,7 +48,7 @@ This row does **not** change which addresses OSC is accepted at. Ordinary OSC se
 
 A pinned row sends only on that interface. A destination the interface cannot reach gets nothing rather than being sent over another adapter. Multicast and broadcast destinations go out on the pinned interface, and TCP destinations connect and reconnect over it.
 
-A destination on this station itself (`127.0.0.1` or `localhost`) never leaves the box, so it is never pinned and its Address column reads `Loopback`.
+A destination on this station itself (`127.0.0.1` or `localhost`) never leaves the box, so it is never pinned and its Address column reads `Loopback`. An OSC destination at one of this station's own network addresses never leaves it either: it is delivered on the station whatever its row is set to, and its Address column reads `This station`.
 
 If the pinned interface has no address, those messages stop. An OSC Output row's Diagnostics and a zone's test send say `interface eth1 is down`, and the on-screen display shows `OSC output` or `RTTrPM output` as a red row in the top-right corner. They resume when the interface comes back. A zone crossing that happened while its interface was down is not sent late.
 

@@ -28,7 +28,7 @@
  % # bound device is unplugged keeps its binding (shown as "(not
  % # connected)") and re-submitting the row preserves it.
  % # ----------------------------------------------------------------
- <div class="group">
+ <div class="group" data-feature="midi">
  <h3 class="group-title">MIDI Patches</h3>
  % if config.midi.patches:
  <div class="row">
@@ -108,18 +108,19 @@
  % # Virtual Faders – visual mixer-style strip row + detail panel.
  % # Each strip is a vertical fader graphic the operator can click
  % # to load that fader's editable config into the detail panel
- % # below. Live values poll every 100 ms via HTMX out-of-band
- % # swaps: the strip's fill bar + handle + numeric value are id-
- % # keyed so the poll response targets each one without
- % # re-rendering the click handler / selection state.
+ % # below. The strips render the live values; while "Show live"
+ % # runs, HTMX out-of-band swaps refresh them: the strip's fill bar + handle + numeric
+ % # value are id-keyed so the poll response targets each one
+ % # without re-rendering the click handler / selection state.
  % # ----------------------------------------------------------------
  <div class="group">
  <h3 class="group-title">Virtual Faders</h3>
+ <button type="button" class="secondary small" data-midi-live aria-pressed="false" onclick="midiToggleLive()">Show live</button>
  % # ``selected_fader`` ships from the route handler – defaults
  % # to 1 on initial render, but a save handler can pass the
  % # just-saved fader's index so re-rendering after a per-fader
  % # save doesn't snap selection back to fader 1. The
- % # ``defined()`` guard keeps the legacy ``index.tpl`` include
+ % # ``defined()`` guard keeps the ``index.tpl`` include
  % # working without having to thread the kwarg through every
  % # caller – only the per-fader save path overrides the default.
  % selected_fader = selected_fader if defined('selected_fader') else 1
@@ -128,12 +129,15 @@
  % # Treated as plain toggle buttons with aria-pressed (more accurate
  % # than tabs): buttons swap one shared content panel.
  <div class="midi-fader-strips" role="group" aria-label="Virtual faders">
+ % live_faders = {entry['index']: entry for entry in (fader_values if defined('fader_values') else [])}
  % for idx, fader in enumerate(config.virtual_faders.faders, start=1):
  % # Selection indicator: ``selected_fader`` controls
  % # which strip starts selected. The browser-side
  % # click handler toggles ``data-selected``; HTMX
  % # swaps the detail panel via the ``hx-get`` below.
- % fill_pct = '%g' % (max(0.0, min(1.0, fader.default_value)) * 100)
+ % live = live_faders.get(idx)
+ % value = live['value'] if live else fader.default_value
+ % fill_pct = '%g' % (max(0.0, min(1.0, value)) * 100)
  % display_name = fader.name or 'Fader %d' % idx
  % is_selected = (idx == selected_fader)
  % # Tint the strip with the fader's assigned colour. Driven
@@ -164,7 +168,7 @@
  style="bottom:{{fill_pct}}%"></div>
  </div>
  <span class="midi-fader-strip-name">{{display_name}}</span>
- <span id="midi-fader-strip-value-{{idx}}" class="midi-fader-strip-value">{{'%.2f' % fader.default_value}}</span>
+ <span id="midi-fader-strip-value-{{idx}}" class="midi-fader-strip-value">{{'%.2f' % value}}{{!'<span class="midi-fader-strip-not-picked-up">not picked up</span>' if live and not live['picked_up'] else ''}}</span>
  </button>
  % end
  </div>
@@ -182,15 +186,11 @@
  % valid_fader_midi_types=valid_fader_midi_types)
  </div>
 
- % # Polling driver for the live fader values. One request every
- % # 100 ms; the response is a flat list of OOB ``<div>`` /
- % # ``<span>`` snippets keyed by the per-strip ids above, so the
- % # fill bar + handle + value all update from one round-trip
- % # without disturbing the click handler or the selection
- % # state. ``hx-swap="none"`` on the driver itself because the
- % # OOB swaps in the response are how the update actually lands.
+ % # Polling driver for the live fader values while "Show live" runs (the
+ % # strips render the live values server-side). The response is a flat
+ % # list of OOB snippets keyed by the per-strip ids above, so ``hx-swap="none"``.
  <div hx-get="/section/midi/faders/values"
- hx-trigger="every 100ms"
+ hx-trigger="every 500ms [midiLiveActive() && pollShown(this)], midi-live from:body, poll-shown[midiLiveActive() && pollShown(this)] from:body"
  hx-swap="none"
  style="display:none"></div>
 
@@ -200,14 +200,13 @@
  % # controls that marker. These aren't editable here: they're
  % # auto-provisioned from ``controlled_marker_ids`` and moved by
  % # the stick, so this is purely a readout that mirrors the
- % # Virtual Faders strip graphic. Live values poll every 100 ms
- % # via OOB swaps keyed by marker id. ``defined()`` guard keeps
- % # the legacy ``index.tpl`` include working without threading the
- % # kwarg through it – that path renders an empty strip set and the
- % # poll fills it in.
+ % # Virtual Faders strip graphic. Live values arrive while "Show
+ % # live" runs, via OOB swaps keyed by marker id. ``defined()`` guard keeps
+ % # a caller that passes no values working: it renders no strips.
  % marker_fader_values = marker_fader_values if defined('marker_fader_values') else []
  <div class="group">
  <h3 class="group-title">Marker Faders</h3>
+ <button type="button" class="secondary small" data-midi-live aria-pressed="false" onclick="midiToggleLive()">Show live</button>
  % if marker_fader_values:
  <div class="midi-fader-strips" role="group" aria-label="Marker faders">
  % for entry in marker_fader_values:
@@ -241,14 +240,42 @@
  <p class="field-note-msg">No controlled markers yet. Add markers under Controlled markers and assign a gamepad to see their faders here.</p>
  % end
 
- % # Polling driver for the live marker-fader values. One request
- % # every 100 ms; the response is OOB snippets keyed by marker id
- % # so each strip's fill + handle + value update from one round-
- % # trip. ``hx-swap="none"`` because the OOB swaps do the work.
+ % # Polling driver for the live marker-fader values, running only
+ % # while "Show live" does. ``hx-swap="none"`` because the OOB
+ % # swaps keyed by marker id do the work.
  <div hx-get="/section/midi/marker-faders/values"
- hx-trigger="every 100ms"
+ hx-trigger="every 500ms [midiLiveActive() && pollShown(this)], midi-live from:body, poll-shown[midiLiveActive() && pollShown(this)] from:body"
  hx-swap="none"
  style="display:none"></div>
  </div>
+
+ <script>
+ (function () {
+     // Live values only on request, for a while: every poll costs the station a request.
+     var LIVE_MS = 10000;
+     // Kept on window so a re-render of the section neither ends a live view nor strands its timer.
+     var live = window.__midiLive = window.__midiLive || { until: 0, timer: null };
+     function label(on) {
+         document.querySelectorAll('[data-midi-live]').forEach(function (button) {
+             button.textContent = on ? 'Stop live' : 'Show live';
+             button.setAttribute('aria-pressed', on ? 'true' : 'false');
+         });
+     }
+     window.midiLiveActive = function () { return Date.now() < live.until; };
+     window.midiToggleLive = function () {
+         clearTimeout(live.timer);
+         if (window.midiLiveActive()) {
+             live.until = 0;
+             label(false);
+             return;
+         }
+         live.until = Date.now() + LIVE_MS;
+         label(true);
+         live.timer = setTimeout(function () { live.until = 0; label(false); }, LIVE_MS);
+         htmx.trigger(document.body, 'midi-live');
+     };
+     label(window.midiLiveActive());
+ })();
+ </script>
 
 </div>

@@ -12,9 +12,6 @@
     </form>
 </div>
 % end
-%# Restart progress banner – global (any tab can trigger the restart
-%# from Diagnostics, so the notice has to live above the tabs).
-<div id="top-restart-notice" class="restart-notice" style="display:none;margin-bottom:1rem;">App is restarting&hellip; Please wait.</div>
 
 <div class="tab-bar">
     <button type="button" class="tab-btn" data-tab="overview">Overview</button>
@@ -23,7 +20,7 @@
     <button type="button" class="tab-btn" data-tab="marker-and-zones">Markers & Zones</button>
     <button type="button" class="tab-btn" data-tab="input">Input</button>
     <button type="button" class="tab-btn" data-tab="output">Output</button>
-    <button type="button" class="tab-btn experimental-feature" data-tab="detection">Person Detection</button>
+    <button type="button" class="tab-btn" data-tab="detection" data-feature="detection">Person Detection</button>
 </div>
 
 <!-- Overview -->
@@ -35,7 +32,7 @@
         </div>
         <div id="statistics-section-content"
              hx-get="/section/statistics"
-             hx-trigger="every 1s"
+             hx-trigger="every 1s [pollShown(this)], poll-shown[pollShown(this)] from:body"
              hx-swap="innerHTML">
             % include('partials/statistics.tpl', stats=stats)
         </div>
@@ -49,6 +46,10 @@
 
 <!-- General -->
 <div class="tab-content" id="tab-general">
+    <div class="wizard-launch">
+        <a href="/wizard" class="btn-link save-btn">Open Setup Wizard</a>
+        <span class="section-note">Guided camera positioning and grid calibration</span>
+    </div>
     % include('partials/general.tpl', config=config, saved=False, local_ips=local_ips, update_status=update_status, fqdn_problems=fqdn_problems, update_available=update_available, latest_version=latest_version, update_supported=update_supported, startup_supported=startup_supported)
     %# "Send config to other stations" (send_config.tpl) is hidden –
     %# peer-broadcast is being replaced with peer-pull; partial and route
@@ -64,8 +65,9 @@
         <span class="section-note">Guided camera positioning and grid calibration</span>
     </div>
     % include('partials/video_source.tpl', config=config, saved=False, available_inputs=available_inputs, input_html_fragments=input_html_fragments, video_failure=video_failure, video_failure_text=video_failure_text, video_error_message=video_error_message, video_failure_action=video_failure_action)
-    % include('partials/camera.tpl', config=config, saved=False)
+    % include('partials/camera.tpl', config=config, saved=False, video_size=get('camera_video_size'))
     % include('partials/grid.tpl', config=config, saved=False)
+    % include('partials/ground_grid.tpl', config=config, saved=False)
 </div>
 
 <!-- Markers & Zones -->
@@ -74,17 +76,20 @@
     % include('partials/movement.tpl', config=config, saved=False)
     % include('partials/trigger_zones.tpl', config=config, saved=False)
     % include('partials/zone_editor.tpl', config=config)
+    % include('partials/paths.tpl', config=config, saved=False)
+    % include('partials/path_editor.tpl')
 </div>
 
 <!-- Input -->
 <div class="tab-content" id="tab-input">
     % include('partials/controller_slots.tpl', controllers=controller_slots)
     % include('partials/gamepad.tpl', config=config, saved=False, button_names=button_names)
-    % include('partials/keyboard.tpl', config=config, saved=False)
+    % include('partials/keyboard.tpl', config=config, saved=False, keyboard_layout=keyboard_layout)
     % include('partials/mouse.tpl', config=config, saved=False)
     % include('partials/mouse3d.tpl', config=config, saved=False, mouse3d_status=stats.get('mouse3d') or {})
     % include('partials/osc.tpl', config=config, saved=False)
     % include('partials/operator_messages.tpl', config=config, saved=False)
+    % include('partials/touch_remote.tpl', config=config, saved=False)
     % # MIDI page: Devices and Virtual Faders sections. Config constants
     % # imported here keep partial dropdowns / fader count in sync with
     % # running ``MidiSubsystem``.
@@ -93,7 +98,8 @@
     %     config=config, saved=False,
     %     discovered_devices=midi_discovered_devices,
     %     valid_fader_midi_types=VALID_FADER_MIDI_TYPES,
-    %     marker_fader_values=marker_fader_values)
+    %     marker_fader_values=marker_fader_values,
+    %     fader_values=fader_values)
 </div>
 
 <!-- Output -->
@@ -142,6 +148,6 @@
 </div>
 
 <!-- Person Detection -->
-<div class="tab-content experimental-feature" id="tab-detection">
+<div class="tab-content" id="tab-detection" data-feature="detection">
     % include('partials/detection.tpl', config=config, saved=False)
 </div>

@@ -9,6 +9,7 @@ vanish from both ``-m unit`` and ``-m "integration or smoke"`` selections.
 """
 
 import os
+import socket
 import warnings
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -58,14 +59,22 @@ class UnmarkedTestWarning(UserWarning):
     """A test was collected without a suite marker and defaulted to ``unit``."""
 
 
+@pytest.fixture
+def every_feature_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Configs built in the test start with every feature on, so a test of a gated subsystem runs it."""
+    import openfollow.configuration as configuration
+
+    monkeypatch.setattr(configuration, "DEFAULT_SHOWN_FEATURES", configuration.FEATURE_KEYS)
+
+
 @pytest.fixture(autouse=True)
 def _restore_os_environ() -> Iterator[None]:
     """Snapshot ``os.environ`` and restore it after every test.
 
     Some production code legitimately mutates the process environment directly
     rather than through ``monkeypatch`` – e.g. ``GamepadHandler.__init__`` does
-    ``os.environ.setdefault("SDL_AUDIODRIVER", "dummy")`` so SDL never opens the
-    ALSA device. ``monkeypatch`` only unwinds the changes it made itself,
+    ``os.environ.setdefault("SDL_VIDEODRIVER", "dummy")`` so SDL never opens a
+    window. ``monkeypatch`` only unwinds the changes it made itself,
     so without this such a write would leak into every later test in the worker
     (a hidden ordering dependency). Restoring the original mapping keeps each
     test hermetic. Cheap: a dict copy plus an equality check, and the restore
@@ -142,6 +151,26 @@ def _no_station_dir(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_host_keyboard(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
+    """No test may read the host's xkb data, keyboard file or kiosk session; one that cares installs its own."""
+    from openfollow import keyboard_layout
+    from tests._xkb import SESSION_ENV
+
+    for name in SESSION_ENV:
+        monkeypatch.delenv(name, raising=False)
+    absent = tmp_path_factory.getbasetemp() / "no-xkb"
+    monkeypatch.setattr(keyboard_layout, "XKB_ROOT", absent)
+    monkeypatch.setattr(keyboard_layout, "EVDEV_LST", absent / "rules" / "evdev.lst")
+    monkeypatch.setattr(keyboard_layout, "SYSTEM_KEYBOARD", absent / "keyboard")
+
+
+@pytest.fixture(autouse=True)
+def _no_host_camera_modes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test may read the mode list of a camera on the host; one that cares installs its own."""
+    monkeypatch.setattr("openfollow.video.inputs.v4l2._read_capture_modes", lambda device: None)
+
+
+@pytest.fixture(autouse=True)
 def _no_host_cgroup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """No test may resolve the unit the test process itself runs under.
 
@@ -185,6 +214,24 @@ def _no_real_midi_backend(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def temp_config_path(tmp_path: Path) -> Path:
     return tmp_path / "config.toml"
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Stop pytest-xdist retitling each worker per test (see test_xdist_worker_title).
+
+    xdist exec's its worker module, so its namespace is reached through the plugin.
+    """
+    if not hasattr(config, "workerinput"):
+        return
+    for plugin in config.pluginmanager.get_plugins():
+        run_one_test = getattr(type(plugin), "run_one_test", None)
+        if type(plugin).__name__ == "WorkerInteractor" and run_one_test is not None:
+            if "setproctitle" in run_one_test.__globals__:
+                run_one_test.__globals__["setproctitle"] = _no_title
+
+
+def _no_title(_title: str) -> None:
+    pass
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -250,3 +297,54 @@ def psn_packet_clock(first: float, rest: float) -> Callable[[], float]:
     """
     seq = iter([first])
     return lambda: next(seq, rest)
+
+
+@pytest.fixture
+def psn_loopback_sockets(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[socket.socket]]:
+    """Open every unpinned PSN receive socket on loopback unicast, not the multicast group.
+
+    A real socket a real receive thread parks on, without depending on the
+    host's multicast routing. A read timeout is stretched from pypsn's 2 s to
+    a minute, so a stop that waits for the read is as slow as its join allows.
+    Stretched rather than removed: a timed read polls, and closing the socket
+    from another thread does not wake a poll, while on macOS it does wake a
+    plain blocking read. Yields the sockets in the order they were opened.
+    """
+    import pypsn
+
+    made: list[socket.socket] = []
+
+    class _ParkedRead(socket.socket):
+        def settimeout(self, value: float | None) -> None:
+            super().settimeout(60.0 if value else value)
+
+    def _socket(_ip: str, _port: int) -> socket.socket:
+        sock = _ParkedRead(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(("127.0.0.1", 0))
+        made.append(sock)
+        return sock
+
+    monkeypatch.setattr(pypsn, "get_socket", _socket)
+    yield made
+    for sock in made:
+        sock.close()
+
+
+def send_psn_tracker(dest: tuple[str, int], tracker_id: int) -> None:
+    """Send one PSN data packet carrying *tracker_id* to *dest*."""
+    import pypsn
+
+    info = pypsn.PsnInfo(timestamp=0, version_high=2, version_low=0, frame_id=0, packet_count=1)
+    zero = pypsn.PsnVector3(0.0, 0.0, 0.0)
+    tracker = pypsn.PsnTracker(
+        tracker_id=tracker_id,
+        pos=pypsn.PsnVector3(1.0, 2.0, 3.0),
+        speed=zero,
+        ori=zero,
+        accel=zero,
+        trgtpos=zero,
+        status=1,
+    )
+    data = pypsn.prepare_psn_data_packet_bytes(pypsn.PsnDataPacket(info=info, trackers=[tracker]))
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as tx:
+        tx.sendto(data, dest)

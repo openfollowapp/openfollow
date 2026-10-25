@@ -1250,8 +1250,7 @@ def test_get_local_peer_info_throttles_ip_refresh(tmp_path, monkeypatch) -> None
 
 
 class TestGetNetworkInterfaces:
-    """The Network Settings interface list costs one backend call per adapter,
-    so it is TTL-cached; ``Scan`` bypasses the cache."""
+    """Each render reads the interface list; a failed read serves the last good one."""
 
     def test_no_provider_returns_empty(self, tmp_path, monkeypatch) -> None:
         """Stations wiring only the single-interface provider must degrade to
@@ -1259,44 +1258,16 @@ class TestGetNetworkInterfaces:
         srv = _make_quiet_server(tmp_path, monkeypatch)
         assert srv.get_network_interfaces() == []
 
-    def test_second_call_inside_ttl_reuses_the_snapshot(self, tmp_path, monkeypatch) -> None:
-        calls: list[int] = []
+    def test_every_call_reads_the_provider(self, tmp_path, monkeypatch) -> None:
+        """Each call asks the provider again."""
+        addresses = iter(["10.0.0.5", "10.0.0.6"])
 
         def _provider() -> list[dict]:
-            calls.append(1)
-            return [{"name": "eth0", "address": "10.0.0.5"}]
+            return [{"name": "eth0", "address": next(addresses)}]
 
         srv = _make_quiet_server(tmp_path, monkeypatch, network_interfaces_provider=_provider)
-        assert srv.get_network_interfaces()[0]["name"] == "eth0"
-        assert srv.get_network_interfaces()[0]["name"] == "eth0"
-        assert len(calls) == 1
-
-    def test_force_bypasses_the_cache(self, tmp_path, monkeypatch) -> None:
-        """Scan has to show a just-plugged adapter without waiting out the TTL."""
-        calls: list[int] = []
-
-        def _provider() -> list[dict]:
-            calls.append(1)
-            return [{"name": "eth0"}]
-
-        srv = _make_quiet_server(tmp_path, monkeypatch, network_interfaces_provider=_provider)
-        srv.get_network_interfaces()
-        srv.get_network_interfaces(force=True)
-        assert len(calls) == 2
-
-    def test_a_cached_rows_list_value_is_not_shared_with_the_caller(self, tmp_path, monkeypatch) -> None:
-        """Rows carry a ``dns`` list, so a per-row ``dict()`` would still hand
-        every render inside the TTL window the same list object the cache
-        holds - one in-place edit downstream rewrites what the next render
-        reads, for the rest of the window."""
-
-        def _provider() -> list[dict]:
-            return [{"name": "eth0", "dns": ["1.1.1.1"]}]
-
-        srv = _make_quiet_server(tmp_path, monkeypatch, network_interfaces_provider=_provider)
-        first = srv.get_network_interfaces()
-        first[0]["dns"].append("8.8.8.8")
-        assert srv.get_network_interfaces()[0]["dns"] == ["1.1.1.1"]
+        assert srv.get_network_interfaces()[0]["address"] == "10.0.0.5"
+        assert srv.get_network_interfaces()[0]["address"] == "10.0.0.6"
 
     def test_provider_failure_serves_the_last_good_snapshot(self, tmp_path, monkeypatch) -> None:
         """A transient backend failure must not blank the interface list -
@@ -1311,7 +1282,27 @@ class TestGetNetworkInterfaces:
         srv = _make_quiet_server(tmp_path, monkeypatch, network_interfaces_provider=_provider)
         assert srv.get_network_interfaces()[0]["address"] == "10.0.0.5"
         state["fail"] = True
-        assert srv.get_network_interfaces(force=True)[0]["address"] == "10.0.0.5"
+        assert srv.get_network_interfaces()[0]["address"] == "10.0.0.5"
+
+    def test_scan_drops_the_shared_reading(self, tmp_path, monkeypatch) -> None:
+        scans: list[int] = []
+        srv = _make_quiet_server(tmp_path, monkeypatch, network_rescan_handler=lambda: scans.append(1))
+        srv.rescan_network()
+        assert scans == [1]
+
+    def test_scan_without_a_shared_reading_keeps_the_last_good_list(self, tmp_path, monkeypatch) -> None:
+        state = {"fail": False}
+
+        def _provider() -> list[dict]:
+            if state["fail"]:
+                raise RuntimeError("nmcli exploded")
+            return [{"name": "eth0"}]
+
+        srv = _make_quiet_server(tmp_path, monkeypatch, network_interfaces_provider=_provider)
+        srv.get_network_interfaces()
+        srv.rescan_network()
+        state["fail"] = True
+        assert [r["name"] for r in srv.get_network_interfaces()] == ["eth0"]
 
     def test_provider_failure_with_no_snapshot_yet_returns_empty(self, tmp_path, monkeypatch) -> None:
         def _provider() -> list[dict]:
@@ -1350,37 +1341,49 @@ class TestGetNetworkInterfaces:
     def test_the_diagnostics_read_with_no_backend_reports_nothing(self, tmp_path, monkeypatch) -> None:
         assert _make_quiet_server(tmp_path, monkeypatch).read_address_sources() is None
 
-    def test_caller_cannot_mutate_the_cache(self, tmp_path, monkeypatch) -> None:
+    @staticmethod
+    def _failing_after_first(rows: list[dict]):
+        calls: list[int] = []
+
+        def _provider() -> list[dict]:
+            calls.append(1)
+            if len(calls) > 1:
+                raise RuntimeError("nmcli exploded")
+            return rows
+
+        return _provider
+
+    def test_caller_cannot_mutate_the_last_good_list(self, tmp_path, monkeypatch) -> None:
         """Rows are handed out as a copy, so a template helper decorating them
-        can't corrupt what the next render reads."""
+        can't corrupt what a failed read serves next."""
         srv = _make_quiet_server(
-            tmp_path,
-            monkeypatch,
-            network_interfaces_provider=lambda: [{"name": "eth0"}],
+            tmp_path, monkeypatch, network_interfaces_provider=self._failing_after_first([{"name": "eth0"}])
         )
         srv.get_network_interfaces().append({"name": "bogus"})
         assert [r["name"] for r in srv.get_network_interfaces()] == ["eth0"]
 
-    def test_caller_cannot_mutate_a_cached_row(self, tmp_path, monkeypatch) -> None:
-        """Copying only the list leaves every caller holding the cached dicts,
-        so a helper decorating a row corrupts the next render."""
+    def test_caller_cannot_mutate_a_last_good_row(self, tmp_path, monkeypatch) -> None:
         srv = _make_quiet_server(
-            tmp_path,
-            monkeypatch,
-            network_interfaces_provider=lambda: [{"name": "eth0"}],
+            tmp_path, monkeypatch, network_interfaces_provider=self._failing_after_first([{"name": "eth0"}])
         )
         srv.get_network_interfaces()[0]["name"] = "corrupted"
         assert [r["name"] for r in srv.get_network_interfaces()] == ["eth0"]
 
-    def test_the_provider_cannot_mutate_the_cache_afterwards(self, tmp_path, monkeypatch) -> None:
-        """The services provider rebuilds its rows each call, but a future one
-        reusing dicts must not reach into what is already cached."""
-        rows = [{"name": "eth0"}]
+    def test_caller_cannot_mutate_a_last_good_rows_list_value(self, tmp_path, monkeypatch) -> None:
+        """Rows carry a ``dns`` list, which a per-row ``dict()`` would still share."""
         srv = _make_quiet_server(
             tmp_path,
             monkeypatch,
-            network_interfaces_provider=lambda: rows,
+            network_interfaces_provider=self._failing_after_first([{"name": "eth0", "dns": ["1.1.1.1"]}]),
         )
+        srv.get_network_interfaces()[0]["dns"].append("8.8.8.8")
+        assert srv.get_network_interfaces()[0]["dns"] == ["1.1.1.1"]
+
+    def test_the_provider_cannot_mutate_the_last_good_list_afterwards(self, tmp_path, monkeypatch) -> None:
+        """The services provider rebuilds its rows each call, but a future one
+        reusing dicts must not reach into what is kept."""
+        rows = [{"name": "eth0"}]
+        srv = _make_quiet_server(tmp_path, monkeypatch, network_interfaces_provider=self._failing_after_first(rows))
         srv.get_network_interfaces()
         rows[0]["name"] = "corrupted"
         assert [r["name"] for r in srv.get_network_interfaces()] == ["eth0"]
@@ -1446,7 +1449,7 @@ def test_a_web_bind_iface_pin_still_serves_the_on_screen_browser(tmp_path, monke
         "net_if_addrs",
         lambda: {"eth1": [SimpleNamespace(family=_socket.AF_INET, address="172.16.4.20")]},
     )
-    cfg = AppConfig(web_bind_iface="eth1")
+    cfg = AppConfig(network_mode="advanced", web_bind_iface="eth1")
     host, _status = resolve_web_bind(cfg.web_bind, cfg.web_bind_iface)
     assert host == "172.16.4.20"
     assert _make_quiet_server(tmp_path, monkeypatch, host=host)._needs_loopback_listener() is True

@@ -23,8 +23,9 @@ from openfollow.configuration import (
 from openfollow.input.mouse import _MIN_GRAB_PX, MouseHandler
 from openfollow.psn.marker import Marker
 from openfollow.runtime.overlay_draw_scene import project as draw_project
-from openfollow.runtime.overlay_layout import SceneView, scene_view
+from openfollow.runtime.overlay_layout import PictureGeometry, SceneView, scene_view
 from openfollow.scene.solver import project_points, unproject_to_plane
+from openfollow.window import operator_scene_view
 
 pytestmark = pytest.mark.unit
 
@@ -52,9 +53,12 @@ class _DummyCamera:
         return self._cfg
 
 
-class _DummyRenderer:
-    def __init__(self, view: SceneView | None) -> None:
-        self.scene_view = view
+class _DummyCanvas:
+    def __init__(self, w: int, h: int) -> None:
+        self._size = (w, h)
+
+    def get_canvas_size(self) -> tuple[int, int]:
+        return self._size
 
 
 class _DummyApp:
@@ -78,9 +82,9 @@ class _DummyApp:
         )
         self._config.controller.mouse_enabled = True
         self._camera = _DummyCamera(self._config.camera)
-        # The scene was drawn across the whole window, as with no source shape.
-        view = scene_view(self._config.window_width, self._config.window_height, 0, 0)
-        self._runtime_services = SimpleNamespace(_overlay_renderer=_DummyRenderer(view))
+        # No window yet and no picture: the scene fills the requested window size.
+        self._canvas: _DummyCanvas | SimpleNamespace | None = None
+        self._video_receiver: SimpleNamespace | None = None
 
         self._server = _DummyServer()
         self._server.add_marker(1).set_pos(0.0, 0.0, 0.0)
@@ -104,14 +108,19 @@ def _cam_buffer(app: _DummyApp) -> np.ndarray:
 def _draw(
     app: _DummyApp, canvas: tuple[int, int], source: tuple[int, int] = (0, 0), par: tuple[int, int] = (1, 1)
 ) -> SceneView:
-    """Stand in for the renderer drawing the scene on ``canvas`` over ``source``."""
-    view = scene_view(*canvas, *source, par)
-    app._runtime_services._overlay_renderer.scene_view = view
-    return view
+    """An Operator Screen of ``canvas`` showing a ``source`` picture of ``par`` pixels."""
+    app._canvas = _DummyCanvas(*canvas)
+    app._video_receiver = SimpleNamespace(picture_geometry=PictureGeometry(*source, par))
+    return scene_view(*canvas, *source, par)
+
+
+def _view(app: _DummyApp) -> SceneView:
+    """The scene view the frame loop hands the renderer."""
+    return operator_scene_view(app)  # type: ignore[arg-type]
 
 
 def _canvas_size(app: _DummyApp) -> tuple[int, int]:
-    rect = app._runtime_services._overlay_renderer.scene_view.rect
+    rect = _view(app).rect
     return rect.width, rect.height
 
 
@@ -317,18 +326,15 @@ class TestPosition:
         assert x == pytest.approx(wx)
         assert y == pytest.approx(wy)
 
-    def test_invert_control_direction_leaves_mouse_absolute(self) -> None:
+    @pytest.mark.parametrize("frame", ["heading", "camera", "screen"])
+    def test_control_frame_leaves_mouse_absolute(self, frame: str) -> None:
         """Mouse control positions the marker where the cursor is, so it is
-        correct from any camera angle by construction and must NOT be flipped by
-        ``invert_control_direction`` – which only reverses relative input
-        (keyboard, gamepad, 3D mouse).
-
-        Pins the invariant the flip's docstrings and the help drawer assert, so
-        a later refactor that pushes the sign down into ``Marker.set_pos`` or a
-        shared delta helper can't silently reverse dragging with a green suite.
+        correct from any camera angle by construction; the control frame turns
+        relative input (keyboard, gamepad, 3D mouse) only.
         """
         app = _DummyApp()
-        app._config.marker.invert_control_direction = True
+        app._config.marker.control_frame = frame
+        app._config.marker.control_heading = 180.0
         handler = MouseHandler(app)
         cx, cy = _ground_center(app, 1)
         handler.on_pointer_down(cx, cy, 1)
@@ -409,17 +415,13 @@ class TestPosition:
         assert handler.on_pointer_down(*whole_window, 1) is False
         assert handler.on_pointer_down(*drawn, 1) is True
 
-    def test_nothing_drawn_yet_ignores_the_pointer(self) -> None:
+    @pytest.mark.parametrize("receiver", [None, SimpleNamespace(picture_geometry=PictureGeometry())])
+    def test_before_any_picture_the_whole_canvas(self, receiver: SimpleNamespace | None) -> None:
         app = _DummyApp()
-        cx, cy = _ground_center(app, 1)
-        app._runtime_services._overlay_renderer.scene_view = None
-        assert MouseHandler(app).on_pointer_down(cx, cy, 1) is False
-
-    def test_no_renderer_ignores_the_pointer(self) -> None:
-        app = _DummyApp()
-        cx, cy = _ground_center(app, 1)
-        app._runtime_services._overlay_renderer = None
-        assert MouseHandler(app).on_pointer_down(cx, cy, 1) is False
+        app._canvas = _DummyCanvas(1000, 500)
+        app._video_receiver = receiver
+        assert tuple(_view(app).rect) == (0, 0, 1000, 500)
+        assert MouseHandler(app).on_pointer_down(*_ground_center(app, 1), 1) is True
 
     def test_second_update_is_noop_once_settled(self) -> None:
         app = _DummyApp()
@@ -583,6 +585,48 @@ class TestWheel:
         _grab(handler, app)
         assert handler.on_wheel(1.0) is True
         assert app._server.get_marker(1).pos[2] == pytest.approx(3.1)
+
+    def test_wheel_leaves_a_marker_the_touch_remote_holds(self) -> None:
+        from openfollow.input.touch_remote import TouchRemote
+
+        app = _DummyApp()
+        app._server.get_marker(1).set_pos(1.0, 2.0, 3.0)
+        handler = MouseHandler(app)
+        _grab(handler, app)
+        app._touch_remote = TouchRemote()
+        app._touch_remote.hold(app._touch_remote.open(), 1)
+        assert handler.on_wheel(1.0) is False
+        assert app._server.get_marker(1).pos[2] == pytest.approx(3.0)
+
+    def test_a_drag_ends_when_the_touch_remote_takes_the_marker(self) -> None:
+        from openfollow.input.touch_remote import TouchRemote
+
+        app = _DummyApp()
+        handler = MouseHandler(app)
+        cx, cy = _ground_center(app, 1)
+        handler.on_pointer_down(cx, cy, 1)
+        handler.on_pointer_move(cx + 100, cy)
+        handler.update()
+        app._touch_remote = TouchRemote()
+        token = app._touch_remote.open()
+        app._touch_remote.hold(token, 1)
+        handler.update()
+        assert handler.active is False
+        app._server.get_marker(1).set_pos(4.0, 4.0, 0.0)
+        app._touch_remote.close(token)
+        handler.update()
+        assert app._server.get_marker(1).pos == pytest.approx((4.0, 4.0, 0.0))
+
+    def test_a_marker_the_touch_remote_holds_cannot_be_grabbed(self) -> None:
+        from openfollow.input.touch_remote import TouchRemote
+
+        app = _DummyApp()
+        app._touch_remote = TouchRemote()
+        app._touch_remote.hold(app._touch_remote.open(), 1)
+        handler = MouseHandler(app)
+        cx, cy = _ground_center(app, 1)
+        assert handler.on_pointer_down(cx, cy, 1) is False
+        assert handler.active is False
 
     def test_wheel_negative(self) -> None:
         app = _DummyApp()
@@ -1117,6 +1161,25 @@ class TestLensDistortionInput:
         # Undistorting a barrel-distorted click pushes it outward.
         assert r_undist > r_cursor
 
+    def test_the_lens_undistorts_the_cursor_with_no_feature_on(self, monkeypatch) -> None:
+        from openfollow.input import mouse as mouse_module
+
+        captured: dict[str, np.ndarray] = {}
+
+        def _spy(params, screen_pts, w, h, plane_z):  # noqa: ANN001, ANN202
+            captured["screen"] = np.array(screen_pts, dtype=float).copy()
+            return np.array([[1.0, 2.0, 0.0]])
+
+        app = _DummyApp()
+        handler = MouseHandler(app)
+        _grab(handler, app)
+        app._config.camera.lens_k1 = -0.2
+        app._config.ui.shown_features = []
+        monkeypatch.setattr(mouse_module, "unproject_to_plane", _spy)
+        handler.on_pointer_move(1200, 600)
+        s = captured["screen"][0]
+        assert math.hypot(s[0] - 640.0, s[1] - 360.0) > math.hypot(1200.0 - 640.0, 600.0 - 360.0)
+
 
 class TestHitTestLensDistortion:
     """The grab hit-test projects through the same lens warp the overlay draws,
@@ -1140,7 +1203,7 @@ class TestHitTestLensDistortion:
         world = np.array([[8.0, 6.0, 0.0]], dtype=np.float64)
         pinhole = project_points(buf, world, float(w), float(h))[0]
         bowed = mouse_module.apply_overlay_distortion(
-            project_points(buf, world, float(w), float(h)), float(w), float(h), -0.3, 0.0
+            project_points(buf, world, float(w), float(h)), float(w), float(h), -0.3, 0.0, 0.0, 0.0
         )[0]
         # Guard against a vacuous test: the warp must move the centre clear of
         # the touch radius, otherwise both clicks would hit regardless.
@@ -1177,7 +1240,7 @@ def _drawn_at(
     x, y, w, h = rect
     cam = app._config.camera
     point = [(wx, wy, app._config.grid.z_offset)]
-    scr = draw_project(_cam_buffer(app), point, w, h, cam.lens_k1, cam.lens_k2, aspect)
+    scr = draw_project(_cam_buffer(app), point, w, h, cam.lens_k1, cam.lens_k2, cam.lens_cx, cam.lens_cy, aspect)
     return float(scr[0, 0]) + x, float(scr[0, 1]) + y
 
 
@@ -1343,7 +1406,7 @@ class TestLetterboxedVideo:
         app = _letterboxed_app(canvas, source, par)
         app._config.grid.z_offset = 0.5  # a raised stage: every reader must use its plane
         x0, y0, w, h = rect
-        aspect = app._runtime_services._overlay_renderer.scene_view.pixel_aspect
+        aspect = _view(app).pixel_aspect
         drawn = _drawn_at(app, rect, 2.0, 3.0, aspect=aspect)
         via_mouse = _dragged_to(app, rect, drawn, aspect=aspect)
         assert via_mouse[0] == pytest.approx(2.0, abs=1e-6)
@@ -1405,7 +1468,7 @@ class TestLetterboxedVideo:
 
     def test_a_frame_of_non_square_pixels_is_read_where_it_is_drawn(self) -> None:
         app = _letterboxed_app((1000, 1000), _D1, _D1_PAR)
-        view = app._runtime_services._overlay_renderer.scene_view
+        view = _view(app)
         assert tuple(view.rect) == _LETTERBOX_D1
         app._config.marker.ground_circle = False  # the touch radius alone decides
         # Near the bottom of the picture, where the stretch moves a point most.
@@ -1420,8 +1483,193 @@ class TestLetterboxedVideo:
     def test_non_square_pixels_and_a_lens_read_back_the_drawn_point(self) -> None:
         app = _letterboxed_app((1000, 1000), _D1, _D1_PAR)
         app._config.camera.lens_k1 = -0.15
-        aspect = app._runtime_services._overlay_renderer.scene_view.pixel_aspect
+        aspect = _view(app).pixel_aspect
         drawn = _drawn_at(app, _LETTERBOX_D1, 6.0, 2.0, aspect=aspect)
         via_mouse = _dragged_to(app, _LETTERBOX_D1, drawn, aspect=aspect)
         assert via_mouse[0] == pytest.approx(6.0, abs=1e-6)
         assert via_mouse[1] == pytest.approx(2.0, abs=1e-6)
+
+
+class TestDecentredStrongLens:
+    """Input to overlay under a strong lens whose centre is off the frame centre."""
+
+    @pytest.mark.parametrize("corner", [(1240.0, 650.0), (40.0, 700.0), (1270.0, 715.0)])
+    def test_a_marker_dragged_into_a_corner_is_drawn_under_the_cursor(self, corner: tuple[float, float]) -> None:
+        from openfollow.configuration import effective_lens
+        from openfollow.runtime.overlay_draw_scene import project
+
+        app = _DummyApp()
+        app._config.marker.ground_circle = False
+        handler = MouseHandler(app)
+        assert _grab(handler, app)
+        camera = app._config.camera
+        camera.lens_k1, camera.lens_k2, camera.lens_cx, camera.lens_cy = -0.53, -0.07, 0.06, -0.04
+        handler.on_pointer_move(*corner)
+        handler.update()
+        w, h = _canvas_size(app)
+        drawn = project(_cam_buffer(app), [app._server.get_marker(1).pos], w, h, *effective_lens(app._config))[0]
+        assert drawn == pytest.approx(corner, abs=1e-6)
+        # The lens moves the stage point: read as pinhole, the cursor names another one.
+        pinhole = project(_cam_buffer(app), [app._server.get_marker(1).pos], w, h)[0]
+        assert math.dist(pinhole, corner) > 50.0
+
+    def test_a_marker_is_grabbed_where_the_decentred_lens_draws_it(self) -> None:
+        from openfollow.configuration import effective_lens
+        from openfollow.input import mouse as mouse_module
+        from openfollow.runtime.overlay_draw_scene import project
+
+        app = _DummyApp()
+        app._config.marker.ground_circle = False
+        camera = app._config.camera
+        camera.lens_k1, camera.lens_k2, camera.lens_cx, camera.lens_cy = 0.0, 0.0, 0.06, -0.04
+        w, h = _canvas_size(app)
+        world = [app._server.get_marker(1).pos]
+        drawn = project(_cam_buffer(app), world, w, h, *effective_lens(app._config))[0]
+        pinhole = project(_cam_buffer(app), world, w, h)[0]
+        assert math.dist(drawn, pinhole) > mouse_module._MIN_GRAB_PX
+        assert MouseHandler(app).on_pointer_down(float(pinhole[0]), float(pinhole[1]), 1) is False
+        assert MouseHandler(app).on_pointer_down(float(drawn[0]), float(drawn[1]), 1) is True
+
+
+class TestLockedOnAPath:
+    """The mouse moves markers freely: a grab takes a marker off its path, and it never writes a locked one."""
+
+    @staticmethod
+    def _app(slide_time: float = 0.0, slide: float = 0.0) -> _DummyApp:
+        """Marker 1 pressed onto a cross along y = 0 at 0.5 m from (0, 2, 0), ``slide`` seconds into the pull."""
+        from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig
+        from openfollow.paths.engine import PathEngine
+
+        app = _DummyApp()
+        engine = PathEngine()
+        cross = PathConfig(
+            name="cross", active=True, points=[PathPointConfig(-5, 0, 0.5, 0), PathPointConfig(5, 0, 0.5, 0)]
+        )
+        engine.reload(PathsConfig(slide_time=slide_time, paths=[cross]), enabled=True)
+        engine.press(1, (0.0, 2.0, 0.0))
+        app._server.get_marker(1).set_pos(*engine.tick(slide)[1])
+        app._paths = engine  # type: ignore[attr-defined]
+        return app
+
+    def test_a_grab_takes_the_marker_off_its_path_where_it_stands_then_moves_it_freely(self) -> None:
+        app = self._app()
+        handler = MouseHandler(app)
+        assert _grab(handler, app)
+        assert not app._paths.is_locked(1)  # type: ignore[attr-defined]
+        assert app._server.get_marker(1).pos == pytest.approx((0.0, 0.0, 0.5))
+        tx, ty = _stage_point_on_screen(app, 2.0, 3.0)
+        handler.on_pointer_move(tx, ty)
+        handler.update()
+        assert app._server.get_marker(1).pos == pytest.approx((2.0, 3.0, 0.5), abs=1e-3)
+
+    def test_a_grab_during_the_pull_leaves_the_marker_where_the_pull_had_it(self) -> None:
+        app = self._app(slide_time=1.0, slide=0.5)
+        assert app._server.get_marker(1).pos == pytest.approx((0.0, 1.0, 0.25))
+        assert _grab(MouseHandler(app), app)
+        assert not app._paths.is_locked(1)  # type: ignore[attr-defined]
+        assert app._paths.tick(0.5) == {}  # type: ignore[attr-defined]
+        assert app._server.get_marker(1).pos == pytest.approx((0.0, 1.0, 0.25))
+
+    def test_a_lock_taken_while_the_mouse_holds_the_marker_ends_the_grab(self) -> None:
+        app = self._app()
+        engine = app._paths  # type: ignore[attr-defined]
+        handler = MouseHandler(app)
+        _grab(handler, app)
+        tx, ty = _stage_point_on_screen(app, 2.0, 3.0)
+        handler.on_pointer_move(tx, ty)
+        engine.press(1, app._server.get_marker(1).pos)
+        before = app._server.get_marker(1).pos
+        handler.update()
+        assert handler.active is False
+        assert app._server.get_marker(1).pos == before
+        # Let go for good: later moves record nothing and write nothing.
+        assert handler.on_pointer_move(tx, ty) is False
+        handler.update()
+        assert app._server.get_marker(1).pos == before
+
+    def test_the_wheel_leaves_a_locked_marker_s_height_alone(self) -> None:
+        app = self._app()
+        handler = MouseHandler(app)
+        _grab(handler, app)
+        app._paths.press(1, app._server.get_marker(1).pos)  # type: ignore[attr-defined]
+        assert handler.on_wheel(1.0) is True
+        assert app._server.get_marker(1).pos == pytest.approx((0.0, 0.0, 0.5))
+
+    def test_a_double_right_click_releases_the_marker_from_its_path(self) -> None:
+        app = self._app()
+        handler = MouseHandler(app)
+        clock = _FakeClock()
+        handler._clock = clock
+        cx, cy = _ground_center(app, 1)
+        handler.on_pointer_down(cx, cy, 1)
+        # Locked again while held, then double right-clicked before the next frame.
+        app._paths.press(1, app._server.get_marker(1).pos)  # type: ignore[attr-defined]
+        clock.t = 0.1
+        handler.on_pointer_down(cx, cy, 3)
+        clock.t = 0.2
+        handler.on_pointer_down(cx, cy, 3)
+        assert not app._paths.is_locked(1)  # type: ignore[attr-defined]
+        assert app._server.get_marker(1).pos == _DEFAULT_POS
+
+
+class TestGrabOnTheGroundGrid:
+    """Inside a ground grid that drops markers, the ring is drawn on its floor, and grabbed there."""
+
+    @staticmethod
+    def _pit(app: _DummyApp, *, experimental: bool = True) -> None:
+        from openfollow.configuration import GroundGridConfig
+
+        app._config.ui.shown_features = ["ground_grid"] if experimental else []
+        app._config.ground_grid = GroundGridConfig(
+            enabled=True, z_offset=-1.5, vertices=[[-2.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]]
+        )
+        app._config.marker.ground_circle = True
+
+    @staticmethod
+    def _seen(app: _DummyApp, z: float) -> tuple[float, float]:
+        w, h = _canvas_size(app)
+        scr = project_points(_cam_buffer(app), np.array([[0.0, 0.0, z]], dtype=np.float64), float(w), float(h))
+        return float(scr[0, 0]), float(scr[0, 1])
+
+    def test_the_ring_drawn_on_the_pit_floor_grabs(self) -> None:
+        app = _DummyApp()
+        self._pit(app)
+        assert MouseHandler(app).on_pointer_down(*self._seen(app, -1.5), 1) is True
+
+    def test_the_stage_level_spot_above_it_does_not(self) -> None:
+        app = _DummyApp()
+        self._pit(app)
+        assert MouseHandler(app).on_pointer_down(*self._seen(app, 0.0), 1) is False
+
+    def test_a_marker_grabbed_on_the_pit_floor_does_not_jump_when_the_mouse_moves(self) -> None:
+        app = _DummyApp()
+        self._pit(app)
+        handler = MouseHandler(app)
+        x, y = self._seen(app, -1.5)
+        assert handler.on_pointer_down(x, y, 1) is True
+        # A move of one pixel from where it was grabbed leaves the marker where it is.
+        handler.on_pointer_move(x + 1.0, y)
+        handler.update()
+        mx, my, _ = app._server.get_marker(1).pos
+        assert (mx, my) == (pytest.approx(0.0, abs=0.05), pytest.approx(0.0, abs=0.05))
+
+    def test_without_experimental_features_the_ring_stays_on_the_main_grid(self) -> None:
+        app = _DummyApp()
+        self._pit(app, experimental=False)
+        assert MouseHandler(app).on_pointer_down(*self._seen(app, 0.0), 1) is True
+
+
+def test_an_unreadable_operator_screen_size_ignores_the_click_instead_of_raising() -> None:
+    """The frame loop must survive a GTK size read that raises; the click just does nothing."""
+
+    def broken() -> tuple[int, int]:
+        raise RuntimeError("no allocation")
+
+    app = _DummyApp()
+    cx, cy = _ground_center(app, 1)
+    app._canvas = SimpleNamespace(get_canvas_size=broken)
+    handler = MouseHandler(app)
+
+    handler.on_pointer_down(cx, cy, 1)
+
+    assert handler.active is False

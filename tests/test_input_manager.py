@@ -6,16 +6,21 @@ per-subsystem failure isolation."""
 
 from __future__ import annotations
 
+import logging
+import math
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 import openfollow.input.input_manager as input_manager_module
-from openfollow.configuration import AppConfig
+from openfollow.configuration import AppConfig, CameraConfig
 from openfollow.input.gamepad import GamepadUpdate
 from openfollow.input.input_manager import InputManager
 from openfollow.operator_messages import OperatorMessageStore
 from openfollow.psn.marker import Marker
+from openfollow.runtime.overlay_layout import PictureGeometry
+from openfollow.scene.solver import camera_params, project_points
 
 pytestmark = pytest.mark.integration
 
@@ -548,8 +553,25 @@ def test_update_isolates_keyboard_failure(monkeypatch) -> None:
     assert app._server.get_marker(10).pos == pytest.approx((1.0, 0.0, 0.0))
 
 
-def test_update_isolates_osc_flush_failure(monkeypatch) -> None:
-    """A raising OSC flush must not drop the gamepad result."""
+def test_a_repeating_keyboard_failure_is_logged_throttled(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+    app = _DummyApp()
+    manager = InputManager(app)
+
+    def _boom(_dt: float) -> None:
+        raise RuntimeError("kbd boom")
+
+    manager.keyboard_handler.update = _boom
+    with caplog.at_level("ERROR", logger="openfollow.input.input_manager"):
+        for _ in range(60):
+            manager.update(1 / 60)
+
+    assert [r.getMessage() for r in caplog.records].count("Keyboard update failed this tick.") == 1
+
+
+def test_update_isolates_osc_flush_failure(monkeypatch, caplog) -> None:
+    """A raising OSC flush must not drop the gamepad result, and repeating it is logged once."""
     monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
     monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
     _FakeGamepadHandler.next_update = GamepadUpdate(settings_open_pressed=True)
@@ -563,9 +585,11 @@ def test_update_isolates_osc_flush_failure(monkeypatch) -> None:
 
     manager.osc_handler = _BoomOsc()
 
-    result = manager.update(0.016)
+    with caplog.at_level("ERROR", logger="openfollow.input.input_manager"):
+        results = [manager.update(1 / 60) for _ in range(60)]
 
-    assert result.settings_open_pressed is True
+    assert all(result.settings_open_pressed for result in results)
+    assert [r.getMessage() for r in caplog.records].count("OSC flush/apply failed this tick.") == 1
 
 
 def test_update_drives_mouse_when_enabled(monkeypatch) -> None:
@@ -622,77 +646,247 @@ def test_update_isolates_mouse_failure(monkeypatch) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# invert_control_direction – upstage-camera control flip
+# Control frame – which stage directions relative input steers in
 # --------------------------------------------------------------------------- #
 
 
-def test_invert_control_direction_flips_keyboard_xy_not_z(monkeypatch) -> None:
-    """With the camera upstage the picture is rotated 180°, so X and Y must
-    reverse together. Z is height and reads the same from any camera position,
-    so it must be left alone."""
+def _with_camera(app: _DummyApp, **pose: float) -> _DummyApp:
+    """Give the dummy app a camera with ``pose`` and a 1920x1080 Operator Screen."""
+    app._camera = SimpleNamespace(to_config=lambda: CameraConfig(**pose))
+    app._canvas = SimpleNamespace(get_canvas_size=lambda: (1920, 1080))
+    app._video_receiver = None
+    return app
+
+
+def _keyboard_step(monkeypatch, app: _DummyApp, velocity: tuple[float, float, float]) -> InputManager:  # noqa: ANN001
     monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
     monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
-    _FakeKeyboardHandler.next_velocity = (1.0, 2.0, 3.0)
-
-    app = _DummyApp()
-    app._config.marker.invert_control_direction = True
+    _FakeKeyboardHandler.next_velocity = velocity
     manager = InputManager(app)
     manager.update(1.0)
+    return manager
 
-    assert app._server.get_marker(10).pos == pytest.approx((-1.0, -2.0, 3.0))
 
-
-def test_keyboard_direction_is_unchanged_by_default(monkeypatch) -> None:
-    """Default-off: an existing install must not have its controls reversed
-    by the upgrade."""
-    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
-    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
-    _FakeKeyboardHandler.next_velocity = (1.0, 2.0, 3.0)
-
+def test_stage_frame_is_the_default_and_moves_in_stage_axes(monkeypatch) -> None:
+    """An existing install must not have its controls turned by the upgrade."""
     app = _DummyApp()
-    manager = InputManager(app)
-    manager.update(1.0)
-
+    assert app._config.marker.control_frame == "stage"
+    _keyboard_step(monkeypatch, app, (1.0, 2.0, 3.0))
     assert app._server.get_marker(10).pos == pytest.approx((1.0, 2.0, 3.0))
 
 
-def test_invert_control_direction_flips_gamepad_xy_not_z(monkeypatch) -> None:
-    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
-    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
-    _FakeGamepadHandler.joystick_indices = (0,)
-    _FakeGamepadHandler.next_update = GamepadUpdate(movements={0: (1.0, 2.0, 3.0)})
-
+@pytest.mark.parametrize(
+    ("heading", "expected"),
+    [
+        (0.0, (1.0, 2.0)),
+        (180.0, (-1.0, -2.0)),
+        # A camera with yaw 90 faces stage left: up is +X, right is downstage.
+        (90.0, (2.0, -1.0)),
+        (270.0, (-2.0, 1.0)),
+    ],
+)
+def test_heading_frame_turns_xy_to_the_heading_and_leaves_z(monkeypatch, heading, expected) -> None:  # noqa: ANN001
     app = _DummyApp()
-    app._selected_id = 11
-    app._config.marker.invert_control_direction = True
-    manager = InputManager(app)
-    manager.update(1.0)
-
-    assert app._server.get_marker(11).pos == pytest.approx((-1.0, -2.0, 3.0))
+    app._config.marker.control_frame = "heading"
+    app._config.marker.control_heading = heading
+    _keyboard_step(monkeypatch, app, (1.0, 2.0, 3.0))
+    assert app._server.get_marker(10).pos == pytest.approx((*expected, 3.0))
 
 
-def test_invert_control_direction_flips_each_gamepad_independently(monkeypatch) -> None:
-    """Multi-operator: the flip is a property of the shared camera view, so it
-    applies to every pad, not just the selected marker's."""
+@pytest.mark.parametrize("yaw", [0.0, 90.0, 180.0, -90.0, 33.0])
+def test_camera_frame_matches_the_heading_of_the_camera_yaw(monkeypatch, yaw) -> None:  # noqa: ANN001
+    by_camera = _with_camera(_DummyApp(), yaw=yaw)
+    by_camera._config.marker.control_frame = "camera"
+    _keyboard_step(monkeypatch, by_camera, (1.0, 2.0, 3.0))
+
+    by_heading = _DummyApp()
+    by_heading._config.marker.control_frame = "heading"
+    by_heading._config.marker.control_heading = yaw
+    _keyboard_step(monkeypatch, by_heading, (1.0, 2.0, 3.0))
+
+    assert by_camera._server.get_marker(10).pos == pytest.approx(by_heading._server.get_marker(10).pos)
+
+
+def test_camera_frame_without_a_camera_moves_in_stage_axes(monkeypatch) -> None:
+    app = _DummyApp()
+    app._camera = None
+    app._config.marker.control_frame = "camera"
+    _keyboard_step(monkeypatch, app, (1.0, 2.0, 0.0))
+    assert app._server.get_marker(10).pos == pytest.approx((1.0, 2.0, 0.0))
+
+
+def test_screen_frame_moves_the_ball_up_the_picture(monkeypatch) -> None:
+    """Stick up keeps the ball on its picture column; the speed stays the stick's."""
+    app = _with_camera(_DummyApp())
+    app._config.marker.control_frame = "screen"
+    marker = app._server.get_marker(10)
+    marker.set_pos(4.0, 0.0, 1.6)
+    params = np.array([0.0, -11.0, 6.0, -22.0, 0.0, 0.0, 60.0])
+    before = project_points(params, np.array([marker.pos]), 1920, 1080)[0]
+
+    _keyboard_step(monkeypatch, app, (0.0, 0.5, 0.0))
+
+    after = project_points(params, np.array([marker.pos]), 1920, 1080)[0]
+    assert after[0] == pytest.approx(before[0], abs=1e-6)
+    assert after[1] < before[1]
+    assert math.dist(marker.pos[:2], (4.0, 0.0)) == pytest.approx(0.5)
+    assert marker.pos[2] == pytest.approx(1.6)
+
+
+def test_screen_frame_off_the_picture_uses_the_camera_heading(monkeypatch) -> None:
+    app = _with_camera(_DummyApp(), yaw=90.0, pos_x=-12.0, pos_y=0.0)
+    app._config.marker.control_frame = "screen"
+    # Behind a camera that faces stage left.
+    app._server.get_marker(10).set_pos(-20.0, 0.0, 0.0)
+    _keyboard_step(monkeypatch, app, (0.0, 1.0, 0.0))
+    assert app._server.get_marker(10).pos == pytest.approx((-19.0, 0.0, 0.0))
+
+
+def test_screen_frame_with_no_canvas_size_uses_the_camera_heading(monkeypatch) -> None:
+    app = _with_camera(_DummyApp(), yaw=90.0, pos_x=-12.0, pos_y=0.0)
+    app._canvas = None
+    app._config.window_width = 0
+    app._config.marker.control_frame = "screen"
+    _keyboard_step(monkeypatch, app, (0.0, 1.0, 0.0))
+    assert app._server.get_marker(10).pos == pytest.approx((1.0, 0.0, 0.0))
+
+
+def test_screen_frame_with_the_ball_above_the_camera_uses_the_camera_heading(monkeypatch) -> None:
+    """Up the picture runs towards a camera lower than the ball; forward stays away from it."""
+    app = _with_camera(_DummyApp(), pos_z=1.5, pitch=-5.0)
+    app._config.marker.control_frame = "screen"
+    app._server.get_marker(10).set_pos(0.0, 0.0, 1.6)
+    _keyboard_step(monkeypatch, app, (0.0, 1.0, 0.0))
+    assert app._server.get_marker(10).pos == pytest.approx((0.0, 1.0, 1.6))
+
+
+def test_screen_axes_that_cancel_a_diagonal_leave_the_marker_still(monkeypatch) -> None:
+    import openfollow.input.control_frame as control_frame_module
+
+    monkeypatch.setattr(control_frame_module, "screen_axes_at", lambda *_a, **_k: ((1.0, 0.0), (-1.0, 0.0)))
+    app = _with_camera(_DummyApp())
+    app._config.marker.control_frame = "screen"
+    _keyboard_step(monkeypatch, app, (1.0, 1.0, 0.5))
+    assert app._server.get_marker(10).pos == pytest.approx((0.0, 0.0, 0.5))
+
+
+@pytest.mark.parametrize(
+    ("picture", "frame"),
+    [
+        (PictureGeometry(), (1920.0, 1080.0)),
+        (PictureGeometry(1024, 768), (1440.0, 1080.0)),
+        (PictureGeometry(704, 576, (12, 11)), (1320.0, 1080.0)),
+    ],
+    ids=["no-picture", "4:3-pillarboxed", "non-square-pixels"],
+)
+def test_screen_frame_reads_the_picture_in_its_own_pixels(monkeypatch, picture, frame) -> None:  # noqa: ANN001
+    """Up the picture is taken where the HUD draws it: the letterboxed box, in frame pixels."""
+    import openfollow.input.control_frame as control_frame_module
+
+    seen: list[tuple[float, float]] = []
+
+    def _spy(params, pos, w, h, *lens):  # noqa: ANN001, ANN202
+        seen.append((w, h))
+        return ((1.0, 0.0), (0.0, 1.0))
+
+    monkeypatch.setattr(control_frame_module, "screen_axes_at", _spy)
+    app = _with_camera(_DummyApp())
+    app._video_receiver = SimpleNamespace(picture_geometry=picture)
+    app._config.marker.control_frame = "screen"
+    _keyboard_step(monkeypatch, app, (0.0, 1.0, 0.0))
+    assert seen and set(seen) == {frame}
+
+
+@pytest.mark.parametrize("shown", [[], ["zones"]], ids=["no features", "zones"])
+def test_screen_frame_reads_the_cameras_lens_whatever_the_features(monkeypatch, shown) -> None:  # noqa: ANN001
+    import openfollow.input.control_frame as control_frame_module
+
+    seen: list[tuple[float, float, float, float]] = []
+
+    def _spy(params, pos, w, h, k1, k2, cx, cy):  # noqa: ANN001, ANN202
+        seen.append((k1, k2, cx, cy))
+        return ((1.0, 0.0), (0.0, 1.0))
+
+    monkeypatch.setattr(control_frame_module, "screen_axes_at", _spy)
+    app = _with_camera(_DummyApp())
+    app._config.marker.control_frame = "screen"
+    camera = app._config.camera
+    camera.lens_k1, camera.lens_k2, camera.lens_cx, camera.lens_cy = -0.2, 0.05, 0.03, -0.01
+    app._config.ui.shown_features = shown
+    _keyboard_step(monkeypatch, app, (0.0, 1.0, 0.0))
+    assert seen and set(seen) == {(-0.2, 0.05, 0.03, -0.01)}
+
+
+_PICTURE_CAMERAS = [
+    pytest.param({}, id="front-of-house"),
+    pytest.param({"pos_x": 0.0, "pos_y": 11.0, "yaw": 180.0}, id="upstage-looking-downstage"),
+    pytest.param({"pos_x": -11.0, "pos_y": 0.0, "yaw": 90.0}, id="stage-right-wing"),
+    pytest.param({"pos_x": 11.0, "pos_y": 0.0, "yaw": -90.0}, id="stage-left-wing"),
+    pytest.param({"pos_x": -8.0, "pos_y": -8.0, "yaw": 45.0, "roll": 4.0}, id="box-boom"),
+    pytest.param({"pos_y": 0.0, "pos_z": 9.0, "pitch": -89.0, "yaw": 30.0}, id="overhead"),
+]
+
+
+@pytest.mark.parametrize("frame", ["camera", "screen"])
+@pytest.mark.parametrize("pose", _PICTURE_CAMERAS)
+@pytest.mark.parametrize(("stick", "picture"), [((1.0, 0.0), (1.0, 0.0)), ((0.0, 1.0), (0.0, -1.0))])
+def test_the_stick_moves_the_marker_that_way_on_the_picture(monkeypatch, frame, pose, stick, picture) -> None:  # noqa: ANN001
+    """Checked on the projected picture, not against the mapping's own formulas: stick
+    right moves the ball right on the Operator Screen and stick up moves it up."""
+    app = _with_camera(_DummyApp(), **pose)
+    app._config.marker.control_frame = frame
+    marker = app._server.get_marker(10)
+    marker.set_pos(0.5, 0.5, 1.0)
+    params = camera_params(CameraConfig(**pose))
+    before = project_points(params, np.array([marker.pos]), 1920, 1080)[0]
+
+    _keyboard_step(monkeypatch, app, (stick[0] * 0.05, stick[1] * 0.05, 0.0))
+
+    after = project_points(params, np.array([marker.pos]), 1920, 1080)[0]
+    moved = after - before
+    # Mostly along the expected picture direction (camera mode follows the floor, so a box-boom bends a little).
+    assert float(np.dot(moved, picture)) > 0.9 * float(np.linalg.norm(moved))
+
+
+def test_a_failing_gamepad_move_spares_the_other_pads_and_the_rest_of_the_frame(monkeypatch) -> None:
     monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
     monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
     _FakeGamepadHandler.joystick_indices = (0, 1)
-    _FakeGamepadHandler.next_update = GamepadUpdate(
-        movements={0: (1.0, 0.0, 0.0), 1: (0.0, 2.0, 0.0)},
-    )
-
+    _FakeGamepadHandler.next_update = GamepadUpdate(movements={0: (1.0, 0.0, 0.0), 1: (0.0, 2.0, 0.0)})
     app = _DummyApp()
-    app._config.marker.invert_control_direction = True
     manager = InputManager(app)
+    orient = manager.control_frame.orient
+
+    def flaky(source, vx, vy, pos):  # noqa: ANN001, ANN202
+        if source[1] == 0:
+            raise ValueError("bad camera")
+        return orient(source, vx, vy, pos)
+
+    manager.control_frame.orient = flaky  # type: ignore[method-assign]
+    manager.osc_handler = SimpleNamespace(flush_updates=lambda: {10: {"z": 4.0}})
     manager.update(1.0)
 
-    assert app._server.get_marker(10).pos == pytest.approx((-1.0, 0.0, 0.0))
+    assert app._server.get_marker(11).pos == pytest.approx((0.0, 2.0, 0.0))
+    assert app._server.get_marker(10).pos == pytest.approx((0.0, 0.0, 4.0))
+
+
+def test_control_frame_turns_every_gamepad(monkeypatch) -> None:
+    """The frame belongs to the shared camera view, so every pad turns, not just the selected one."""
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+    _FakeGamepadHandler.joystick_indices = (0, 1)
+    _FakeGamepadHandler.next_update = GamepadUpdate(movements={0: (1.0, 0.0, 3.0), 1: (0.0, 2.0, 0.0)})
+
+    app = _DummyApp()
+    app._config.marker.control_frame = "heading"
+    app._config.marker.control_heading = 180.0
+    InputManager(app).update(1.0)
+
+    assert app._server.get_marker(10).pos == pytest.approx((-1.0, 0.0, 3.0))
     assert app._server.get_marker(11).pos == pytest.approx((0.0, -2.0, 0.0))
 
 
-def test_invert_control_direction_leaves_gamepad_reset_absolute(monkeypatch) -> None:
-    """Reset writes an absolute default position, not a delta – flipping it
-    would send the marker to the wrong corner of the stage."""
+def test_control_frame_leaves_gamepad_reset_absolute(monkeypatch) -> None:
     monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
     monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
     _FakeGamepadHandler.joystick_indices = (0,)
@@ -700,49 +894,474 @@ def test_invert_control_direction_leaves_gamepad_reset_absolute(monkeypatch) -> 
 
     app = _DummyApp()
     app._selected_id = 11
-    app._config.marker.invert_control_direction = True
-    manager = InputManager(app)
-    manager.update(0.016)
+    app._config.marker.control_frame = "heading"
+    app._config.marker.control_heading = 180.0
+    InputManager(app).update(0.016)
 
     assert app._server.get_marker(11).pos == pytest.approx((5.0, 6.0, 7.0))
 
 
-def test_invert_control_direction_applies_live(monkeypatch) -> None:
-    """Read per frame, so toggling it in the web UI takes effect without a
-    restart – the same contract as the mouse_enabled gate."""
+def test_control_frame_leaves_osc_positions_absolute(monkeypatch) -> None:
+    """A console commanding x=3 lands the marker at x=3 whichever way the camera faces."""
     monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
     monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
-    _FakeKeyboardHandler.next_velocity = (1.0, 0.0, 0.0)
 
     app = _DummyApp()
+    app._config.marker.control_frame = "heading"
+    app._config.marker.control_heading = 180.0
     manager = InputManager(app)
+    manager.osc_handler = SimpleNamespace(flush_updates=lambda: {10: {"x": 3.0, "y": 4.0, "z": 5.0}})
+    manager.update(1.0)
+
+    assert app._server.get_marker(10).pos == pytest.approx((3.0, 4.0, 5.0))
+
+
+def test_a_held_direction_survives_a_frame_change_until_the_input_returns_to_zero(monkeypatch) -> None:
+    app = _DummyApp()
+    manager = _keyboard_step(monkeypatch, app, (1.0, 0.0, 0.0))
+    assert app._server.get_marker(10).pos == pytest.approx((1.0, 0.0, 0.0))
+
+    app._config.marker.control_frame = "heading"
+    app._config.marker.control_heading = 180.0
+    manager.update(1.0)
+    assert app._server.get_marker(10).pos == pytest.approx((2.0, 0.0, 0.0))
+
+    _FakeKeyboardHandler.next_velocity = (0.0, 0.0, 0.0)
+    manager.update(1.0)
+    _FakeKeyboardHandler.next_velocity = (1.0, 0.0, 0.0)
     manager.update(1.0)
     assert app._server.get_marker(10).pos == pytest.approx((1.0, 0.0, 0.0))
 
-    app._config.marker.invert_control_direction = True
+
+def test_a_source_that_stops_reporting_drops_its_held_direction(monkeypatch) -> None:
+    app = _DummyApp()
+    manager = _keyboard_step(monkeypatch, app, (1.0, 0.0, 0.0))
+
+    app._config.marker.control_frame = "heading"
+    app._config.marker.control_heading = 180.0
+    _FakeKeyboardHandler.next_velocity = None
+    manager.update(1.0)
+    manager.update(1.0)
+    _FakeKeyboardHandler.next_velocity = (1.0, 0.0, 0.0)
     manager.update(1.0)
     assert app._server.get_marker(10).pos == pytest.approx((0.0, 0.0, 0.0))
 
 
-def test_invert_control_direction_leaves_osc_positions_absolute(monkeypatch) -> None:
-    """OSC sets an absolute stage coordinate, not a direction of travel, so the
-    upstage flip must never touch it - a console commanding x=3 must land the
-    marker at x=3 whichever way the camera faces.
-
-    Pins the invariant the flip's docstrings assert, so a later refactor that
-    pushes the sign down into ``Marker.set_pos`` or a shared delta helper can't
-    silently reverse the absolute paths with a green suite.
-    """
-    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
-    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
-
+def test_releasing_every_latch_applies_the_current_frame_to_a_held_input(monkeypatch) -> None:
+    """Input coming back from a menu or editor takes the frame saved meanwhile, even if still held."""
     app = _DummyApp()
-    app._config.marker.invert_control_direction = True
-    manager = InputManager(app)
-    manager.osc_handler = SimpleNamespace(
-        flush_updates=lambda: {10: {"x": 3.0, "y": 4.0, "z": 5.0}},
-    )
+    manager = _keyboard_step(monkeypatch, app, (1.0, 0.0, 0.0))
 
+    app._config.marker.control_frame = "heading"
+    app._config.marker.control_heading = 180.0
+    manager.control_frame.release_all()
     manager.update(1.0)
 
+    assert app._server.get_marker(10).pos == pytest.approx((0.0, 0.0, 0.0))
+
+
+def test_screen_frame_with_an_unreadable_canvas_uses_the_camera_heading(monkeypatch) -> None:
+    def broken() -> tuple[int, int]:
+        raise RuntimeError("no allocation")
+
+    app = _with_camera(_DummyApp(), yaw=90.0, pos_x=-12.0, pos_y=0.0)
+    app._canvas = SimpleNamespace(get_canvas_size=broken)
+    app._config.marker.control_frame = "screen"
+    _keyboard_step(monkeypatch, app, (0.0, 1.0, 0.0))
+    assert app._server.get_marker(10).pos == pytest.approx((1.0, 0.0, 0.0))
+
+
+def test_a_held_key_takes_the_current_frame_for_a_newly_selected_marker(monkeypatch) -> None:
+    """The held direction belongs to the marker it was measured for, not to the key."""
+    app = _DummyApp()
+    manager = _keyboard_step(monkeypatch, app, (1.0, 0.0, 0.0))
+
+    app._config.marker.control_frame = "heading"
+    app._config.marker.control_heading = 180.0
+    app._selected_id = 11
+    manager.update(1.0)
+
+    assert app._server.get_marker(11).pos == pytest.approx((-1.0, 0.0, 0.0))
+
+
+def test_each_source_latches_its_own_direction(monkeypatch) -> None:
+    """A pad starting a move after a frame change takes the new frame; a pad already moving keeps its own."""
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+    _FakeGamepadHandler.joystick_indices = (0, 1)
+    _FakeGamepadHandler.next_update = GamepadUpdate(movements={0: (1.0, 0.0, 0.0)})
+    app = _DummyApp()
+    manager = InputManager(app)
+    manager.update(1.0)
+
+    app._config.marker.control_frame = "heading"
+    app._config.marker.control_heading = 180.0
+    _FakeGamepadHandler.next_update = GamepadUpdate(movements={0: (1.0, 0.0, 0.0), 1: (1.0, 0.0, 0.0)})
+    manager.update(1.0)
+
+    assert app._server.get_marker(10).pos == pytest.approx((2.0, 0.0, 0.0))
+    assert app._server.get_marker(11).pos == pytest.approx((-1.0, 0.0, 0.0))
+
+
+# --------------------------------------------------------------------------- #
+# Paths: every input writes a locked marker through the path engine
+# --------------------------------------------------------------------------- #
+
+
+def _cross_engine():  # noqa: ANN202
+    from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig
+    from openfollow.paths.engine import PathEngine
+
+    engine = PathEngine()
+    cross = PathConfig(name="cross", active=True, points=[PathPointConfig(-5, 0, 0, 0), PathPointConfig(5, 0, 0, 0)])
+    engine.reload(PathsConfig(slide_time=0.0, paths=[cross]), enabled=True)
+    return engine
+
+
+@pytest.fixture
+def path_app(monkeypatch):  # noqa: ANN001, ANN201
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+    app = _DummyApp()
+    app._paths = _cross_engine()
+    return app
+
+
+def test_a_locked_marker_lands_then_moves_along_its_path_at_its_height(path_app) -> None:  # noqa: ANN001
+    app = path_app
+    app._server.get_marker(10).set_pos(0.0, 2.0, 0.0)
+    app._paths.press(10, (0.0, 2.0, 0.0))
+    # Up and across, and Z up: only the part along the path moves it, and Z is the path's.
+    _FakeKeyboardHandler.next_velocity = (0.5, 0.5, 1.0)
+    InputManager(app).update(2.0)
+    assert app._server.get_marker(10).pos == pytest.approx((1.0, 0.0, 0.0))
+
+
+def test_a_pad_s_pathfinder_press_locks_the_marker_that_pad_drives(path_app) -> None:  # noqa: ANN001
+    app = path_app
+    app._server.get_marker(11).set_pos(2.0, 3.0, 0.0)
+    _FakeGamepadHandler.next_update = GamepadUpdate(pathfinder_presses={1})
+    InputManager(app).update(0.02)
+    assert app._paths.locked_path(11) == "cross"
+    assert not app._paths.is_locked(10)
+
+
+def test_a_gamepad_push_moves_a_locked_marker_along_its_path(path_app) -> None:  # noqa: ANN001
+    app = path_app
+    app._paths.press(11, (0.0, 0.0, 0.0))
+    app._paths.tick(0.0)
+    _FakeGamepadHandler.next_update = GamepadUpdate(movements={1: (0.0, 1.0, 1.0)})
+    InputManager(app).update(1.0)
+    assert app._server.get_marker(11).pos == pytest.approx((0.0, 0.0, 0.0))
+
+
+def test_a_reset_releases_the_marker_from_its_path(path_app) -> None:  # noqa: ANN001
+    app = path_app
+    app._paths.press(10, (0.0, 1.0, 0.0))
+    _FakeGamepadHandler.next_update = GamepadUpdate(resets={0})
+    InputManager(app).update(0.02)
+    assert not app._paths.is_locked(10)
+    assert app._server.get_marker(10).pos == pytest.approx((5.0, 6.0, 7.0))
+
+
+def test_an_osc_position_for_a_locked_marker_lands_on_its_path(path_app) -> None:  # noqa: ANN001
+    app = path_app
+    app._paths.press(10, (0.0, 0.0, 0.0))
+    app._paths.tick(0.0)
+    manager = InputManager(app)
+    manager.osc_handler = SimpleNamespace(flush_updates=lambda: {10: {"x": 3.0, "y": 4.0, "z": 9.0}})
+    manager.update(0.02)
+    assert app._server.get_marker(10).pos == pytest.approx((3.0, 0.0, 0.0))
+
+
+@pytest.mark.parametrize(
+    ("axes", "pulled", "landed"),
+    [
+        # Only Z: nothing moves, and the pull carries on from where it was.
+        ({"z": 0.0}, (0.0, 1.0, 0.0), (0.0, 0.0, 0.0)),
+        # Only X: the free position moves along X and keeps its Y.
+        ({"x": 3.0}, (3.0, 1.0, 0.0), (3.0, 0.0, 0.0)),
+    ],
+)
+def test_a_per_axis_osc_position_during_the_pull_keeps_the_axes_it_leaves_out(  # noqa: ANN001
+    path_app, axes, pulled, landed
+) -> None:
+    from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig
+
+    app = path_app
+    cross = PathConfig(name="cross", active=True, points=[PathPointConfig(-5, 0, 0, 0), PathPointConfig(5, 0, 0, 0)])
+    app._paths.reload(PathsConfig(slide_time=1.0, paths=[cross]), enabled=True)
+    marker = app._server.get_marker(10)
+    marker.set_pos(0.0, 2.0, 0.0)
+    app._paths.press(10, marker.pos)
+    manager = InputManager(app)
+    manager.update_paths(0.5)
+    manager.osc_handler = SimpleNamespace(flush_updates=lambda: {10: axes})
+    manager.update(0.0)
+    assert marker.pos == pytest.approx(pulled)
+    manager.update_paths(0.5)
+    assert marker.pos == pytest.approx(landed)
+
+
+def test_a_marker_no_longer_controlled_is_released(path_app) -> None:  # noqa: ANN001
+    app = path_app
+    app._paths.press(99, (0.0, 1.0, 0.0))
+    InputManager(app).update_paths(0.02)
+    assert not app._paths.is_locked(99)
+
+
+def test_with_no_marker_controlled_every_lock_is_released(path_app) -> None:  # noqa: ANN001
+    app = path_app
+    app._paths.press(10, (0.0, 1.0, 0.0))
+    app._controlled_ids = []
+    InputManager(app).update_paths(0.02)
+    assert not app._paths.is_locked(10)
+
+
+def test_path_commands_from_osc_reach_the_engine_and_the_marker_lands_that_frame(path_app) -> None:  # noqa: ANN001
+    from openfollow.osc.paths import MarkerPath
+
+    app = path_app
+    app._server.get_marker(10).set_pos(2.0, 1.0, 0.0)
+    manager = InputManager(app)
+    manager.path_osc_handler = SimpleNamespace(take=lambda: [MarkerPath(10, "cross")])
+    manager.update_paths(0.02)
+    assert app._paths.locked_path(10) == "cross"
+    assert app._server.get_marker(10).pos == pytest.approx((2.0, 0.0, 0.0))
+
+
+def test_a_station_controlling_no_marker_still_switches_paths(path_app, tmp_path) -> None:  # noqa: ANN001
+    from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig
+    from openfollow.osc.paths import PathActive
+
+    app = path_app
+    app._controlled_ids = []
+    app._config.ui.shown_features = ["paths"]
+    app._config.paths = PathsConfig(
+        slide_time=0.0,
+        paths=[PathConfig(name="cross", active=True, points=[PathPointConfig(-5, 0, 0), PathPointConfig(5, 0, 0)])],
+    )
+    app._config_path = str(tmp_path / "config.toml")
+    app._get_config_mtime = lambda: 1.0
+    manager = InputManager(app)
+    manager.path_osc_handler = SimpleNamespace(take=lambda: [PathActive("cross", False)])
+    manager.update_paths(0.02)
+    assert app._config.paths.paths[0].active is False
+    assert app._paths.press(10, (0.0, 1.0, 0.0)).value == "none"
+
+
+def test_without_paths_path_commands_are_still_taken(monkeypatch) -> None:  # noqa: ANN001
+    from openfollow.osc.paths import PathActive
+
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+    queued = [PathActive("cross", False)]
+    manager = InputManager(_DummyApp())
+    manager.path_osc_handler = SimpleNamespace(take=lambda: [queued.pop()] if queued else [])
+    manager.update_paths(0.02)
+    assert queued == []
+
+
+def test_a_slide_carries_on_while_a_menu_is_open(path_app) -> None:  # noqa: ANN001
+    from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig
+    from openfollow.runtime.app_modes import process_input
+
+    app = path_app
+    cross = PathConfig(name="cross", active=True, points=[PathPointConfig(-5, 0, 0, 0), PathPointConfig(5, 0, 0, 0)])
+    app._paths.reload(PathsConfig(slide_time=1.0, paths=[cross]), enabled=True)
+    app._server.get_marker(10).set_pos(0.0, 2.0, 0.0)
+    app._paths.press(10, (0.0, 2.0, 0.0))
+    manager = InputManager(app)
+    app._input_manager = manager
+    manager.gamepad_handler.read_settings_toggle = lambda: False
+    app._button_detection = None
+    app._settings_menu_active = True
+    app._process_settings_menu_input = lambda: None
+    # One frame as the frame loop runs it: the engine, then input, which the open menu keeps for itself.
+    manager.update_paths(0.5)
+    process_input(app, 0.5)
+    assert app._server.get_marker(10).pos == pytest.approx((0.0, 1.0, 0.0))
+
+
+def test_the_keyboard_pathfinder_press_locks_the_selected_marker(path_app) -> None:  # noqa: ANN001
+    app = path_app
+    manager = InputManager(app)
+    manager.pathfinder(10)
+    assert app._paths.locked_path(10) == "cross"
+    manager.pathfinder(None)
+    assert app._paths.is_locked(10)
+
+
+def test_without_paths_a_pathfinder_press_does_nothing(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+    app = _DummyApp()
+    InputManager(app).pathfinder(10)
+    assert app._server.get_marker(10).pos == pytest.approx((0.0, 0.0, 0.0))
+
+
+def test_a_sliding_marker_the_server_does_not_have_is_skipped(path_app) -> None:  # noqa: ANN001
+    app = path_app
+    app._controlled_ids = [10, 11, 12]
+    app._paths.press(12, (0.0, 1.0, 0.0))
+    app._paths.press(10, (2.0, 1.0, 0.0))
+    InputManager(app).update_paths(0.02)
+    assert app._server.get_marker(10).pos == pytest.approx((2.0, 0.0, 0.0))
+
+
+@pytest.mark.parametrize("off", ["tracking off", "fully automatic"])
+def test_when_assist_stops_input_moves_a_locked_marker_on_from_its_output(path_app, off: str) -> None:  # noqa: ANN001
+    import numpy as np
+
+    from openfollow.runtime.services_detection_pin import apply_detection_pin, get_or_create_manual_marker
+
+    app = path_app
+    app._config.detection.enabled = True
+    app._config.detection.pin_mode = "assist"
+    app._detection_pin_states = {}
+    app._detection_pin_mode = "assist"
+    app._video_receiver = SimpleNamespace(resolution=(0, 0))
+    # The output stands at x = 3 on the path, the anchor input steers at x = 2, locked there.
+    app._server.get_marker(10).set_pos(3.0, 0.0, 0.0)
+    anchor = get_or_create_manual_marker(app, 10)
+    anchor.set_pos(2.0, 0.0, 0.0)
+    app._paths.press(10, anchor.pos)
+    app._paths.tick(0.0)
+    manager = InputManager(app)
+    # Assist stops between frames, as a config reload does.
+    if off == "tracking off":
+        app._config.detection.enabled = False
+    else:
+        app._config.detection.pin_mode = "replace"
+    _FakeKeyboardHandler.next_velocity = (0.5, 0.0, 0.0)
+    # One frame in the frame loop's order: the engine, input, then the detection pin.
+    manager.update_paths(0.02)
+    manager.update(0.02)
+    apply_detection_pin(
+        app,
+        person_detector=None,
+        unproject_cam_buffer=np.zeros(7),
+        screen_point_buffer=np.zeros((1, 2)),
+        dt=0.02,
+    )
+    assert app._server.get_marker(10).pos == pytest.approx((3.01, 0.0, 0.0))
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _osc_station(monkeypatch, pending: dict[int, dict[str, float]]):  # noqa: ANN202
+    """InputManager on a fake clock whose OSC handler hands out ``pending`` every frame."""
+    monkeypatch.setattr(input_manager_module, "KeyboardHandler", _FakeKeyboardHandler)
+    monkeypatch.setattr(input_manager_module, "GamepadHandler", _FakeGamepadHandler)
+    app = _DummyApp()
+    app._runtime_services._osc_service = None
+    manager = InputManager(app)
+    clock = _Clock()
+    manager._clock = clock
+    adapter = SimpleNamespace(start=lambda: None, stop=lambda: None, flush_updates=lambda: dict(pending))
+    monkeypatch.setattr(input_manager_module, "OscMarkerAdapter", lambda *_a, **_kw: adapter)
+    paths = SimpleNamespace(start=lambda: None, stop=lambda: None, take=lambda: [])
+    monkeypatch.setattr(input_manager_module, "PathOscAdapter", lambda *_a, **_kw: paths)
+    manager.osc_handler = adapter
+    return app, manager, clock
+
+
+def _osc_info_lines(caplog) -> list[str]:  # noqa: ANN001
+    return [r.getMessage() for r in caplog.records if r.levelno >= logging.INFO]
+
+
+def _stream(manager, clock, seconds: float, rate_hz: float = 30.0) -> None:  # noqa: ANN001
+    for _ in range(round(seconds * rate_hz)):
+        manager.update(1 / rate_hz)
+        clock.now += 1 / rate_hz
+
+
+def test_an_osc_position_stream_logs_one_info_line_when_it_starts(monkeypatch, caplog) -> None:
+    app, manager, clock = _osc_station(monkeypatch, {10: {"x": 3.0, "y": 4.0, "z": 5.0}})
+
+    with caplog.at_level(logging.INFO, logger=input_manager_module.logger.name):
+        _stream(manager, clock, seconds=10.0)
+
     assert app._server.get_marker(10).pos == pytest.approx((3.0, 4.0, 5.0))
+    assert _osc_info_lines(caplog) == ["OSC positions arriving for marker 10, first at (3.000, 4.000, 5.000)"]
+
+
+def test_an_osc_stream_resuming_after_a_silence_logs_again(monkeypatch, caplog) -> None:
+    pending = {10: {"x": 3.0, "y": 4.0, "z": 5.0}}
+    _app, manager, clock = _osc_station(monkeypatch, pending)
+
+    with caplog.at_level(logging.INFO, logger=input_manager_module.logger.name):
+        manager.update(1 / 30)
+        start = clock.now
+        # A pause just short of the gap is the same stream; binary fractions keep the sums exact.
+        clock.now = start + input_manager_module._OSC_STREAM_GAP_S - 0.125
+        manager.update(1 / 30)
+        pending[10] = {"x": 1.0}
+        clock.now += input_manager_module._OSC_STREAM_GAP_S
+        _stream(manager, clock, seconds=2.0)
+
+    assert _osc_info_lines(caplog) == [
+        "OSC positions arriving for marker 10, first at (3.000, 4.000, 5.000)",
+        "OSC positions arriving for marker 10, first at (1.000, 4.000, 5.000)",
+    ]
+
+
+def test_each_marker_logs_the_start_of_its_own_osc_stream(monkeypatch, caplog) -> None:
+    pending = {10: {"x": 3.0, "y": 4.0, "z": 5.0}}
+    _app, manager, clock = _osc_station(monkeypatch, pending)
+
+    with caplog.at_level(logging.INFO, logger=input_manager_module.logger.name):
+        _stream(manager, clock, seconds=1.0)
+        pending[11] = {"x": -1.0, "y": 2.0, "z": 0.5}
+        _stream(manager, clock, seconds=1.0)
+
+    assert _osc_info_lines(caplog) == [
+        "OSC positions arriving for marker 10, first at (3.000, 4.000, 5.000)",
+        "OSC positions arriving for marker 11, first at (-1.000, 2.000, 0.500)",
+    ]
+
+
+def test_every_osc_position_write_is_traced_at_debug(monkeypatch, caplog) -> None:
+    _app, manager, clock = _osc_station(monkeypatch, {10: {"x": 3.0, "y": 4.0, "z": 5.0}})
+
+    with caplog.at_level(logging.DEBUG, logger=input_manager_module.logger.name):
+        _stream(manager, clock, seconds=0.1)
+
+    assert [r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG] == [
+        "OSC jump: marker 10 → (3.000, 4.000, 5.000)"
+    ] * 3
+
+
+class _UnwritableMarker(Marker):
+    def set_pos(self, x: float, y: float, z: float, *, status: float | None = None) -> None:
+        raise RuntimeError("marker boom")
+
+
+def test_a_failing_osc_write_leaves_the_other_markers_written(monkeypatch, caplog) -> None:
+    app, manager, clock = _osc_station(monkeypatch, {10: {"x": 3.0}, 11: {"x": -1.0}})
+    app._server.markers[10] = _UnwritableMarker(10, "Marker 10")
+
+    with caplog.at_level("ERROR", logger="openfollow.input.input_manager"):
+        _stream(manager, clock, seconds=1.0, rate_hz=60.0)
+
+    assert app._server.get_marker(11).pos == pytest.approx((-1.0, 0.0, 0.0))
+    # Repeating every frame, it is logged once, throttled.
+    assert [r.getMessage() for r in caplog.records].count("OSC flush/apply failed this tick.") == 1
+
+
+def test_an_osc_stream_on_a_restarted_listener_logs_again(monkeypatch, caplog) -> None:
+    pending = {10: {"x": 3.0, "y": 4.0, "z": 5.0}}
+    _app, manager, clock = _osc_station(monkeypatch, pending)
+
+    with caplog.at_level(logging.INFO, logger=input_manager_module.logger.name):
+        _stream(manager, clock, seconds=1.0)
+        manager.restart_osc(enabled=True, port=9001)
+        _stream(manager, clock, seconds=1.0)
+
+    assert _osc_info_lines(caplog) == ["OSC positions arriving for marker 10, first at (3.000, 4.000, 5.000)"] * 2

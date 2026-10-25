@@ -1,6 +1,6 @@
 # 3D Mouse Input
 
-Steer the selected marker with a 6DOF "3D Mouse" – a spring-centred puck you push, pull, lift and twist. Off by default; turn it on with the **Enabled** checkbox.
+Steer the selected marker with a 6DOF "3D Mouse" – a spring-centred puck you push, pull, lift and twist. Off by default; turn it on with **Steer markers with a 3D Mouse**.
 
 **A controller in its own right.** A 3D Mouse counts alongside gamepads in one shared numbering, ordered by the USB socket each is plugged into (see Controller Slots), so its bound marker carries a controller badge (`C1`, `C2`, …) on the Operator Screen. A 3Dconnexion puck is never treated as a gamepad, even where the operating system offers it as a game controller: it only drives a marker through this section.
 
@@ -15,7 +15,7 @@ A box at the top of this section appears only when something keeps a 3D Mouse fr
 
 - **No 3D Mouse connected** – OpenFollow is looking and has found none. This is the normal state with nothing plugged in; a unit plugged in later, or unplugged and plugged back in, is picked up on its own.
 - **Support is not installed** or **could not start** – the software OpenFollow reads a 3D Mouse through is missing or broken on this station, so no unit can be read, whatever is plugged in.
-- **Not supported by this version of OpenFollow** – the unit is a 3Dconnexion device, but this version has no profile for the model, so it can't read its axes and buttons. Nothing in the station's setup causes this.
+- **Not supported by this version of OpenFollow** – the unit is a 3D Mouse, but this version has no profile for the model, so it can't read its axes and buttons. Nothing in the station's setup causes this.
 - **Not allowed to open it** – the unit was found, but the station's device permissions keep OpenFollow from reading it.
 - **Could not be opened** – the unit was found, but opening it failed for another reason.
 - **Not supported on macOS** – this version of OpenFollow can't read a 3D Mouse on a Mac, so it doesn't look for one. The settings here still save, and travel with a config export to other stations.
@@ -50,9 +50,9 @@ The defaults are in the table above (push drives x / y / z with the up/down moti
 
 **Deadzone** (0–1) – a per-axis dead band near centre: deflection below it is ignored so the marker doesn't creep when your hand rests on the puck. Set it per axis – e.g. a larger deadzone on a twitchy rotation axis than on the translations. Raise an axis's deadzone if the marker drifts at rest on it.
 
-**Invert** – flips that axis's direction.
+**Direction** – **Normal** or **Inverted** for that axis.
 
-> For a camera looking from **upstage**, use **Invert control direction** under Markers & Zones → Marker Movement rather than inverting axes here. It reverses left/right and forward/back together for the 3D Mouse, keyboard and gamepad at once, so every device on the station agrees on which way is stage left. Per-axis **Invert** here is for the puck's own feel, and stacks on top of it.
+> To make the puck follow the camera's view, set **Control frame** under Markers & Zones → Marker Movement rather than inverting axes here. It turns left/right and forward/back together for the 3D Mouse, keyboard and gamepad at once, so every device on the station agrees. Per-axis **Direction** here is for the puck's own feel, and stacks on top of it.
 
 ## Response curve
 
@@ -71,6 +71,6 @@ Each button drives one action. Typing or detecting an index another action alrea
 
 **Detect** – click a binding's **Detect** button, then press the button on the device; the field fills in automatically. It works whether or not the feature is enabled, as long as the device is connected.
 
-Bindable actions: **Reset marker** (return the marker to its default position), **Next / Previous marker** (cycle the selected marker, when this is the only controller – see above), **Speed up / Speed down** (step the move-speed), **Toggle help**, and **Toggle zones**. The Settings menu has no 3D-mouse binding: it needs a keyboard (or gamepad) to open and navigate.
+Bindable actions: **Reset marker** (return the marker to its default position), **Next / Previous marker** (cycle the selected marker, when this is the only controller – see above), **Speed up / Speed down** (step the move-speed), **Toggle help**, **Toggle zones**, and, as experimental features, **Pathfinder** (lock the marker onto the nearest active path, or release it; moving it past an end of the path that releases it lets it go too) and **Toggle paths**. The Settings menu has no 3D-mouse binding: it needs a keyboard (or gamepad) to open and navigate.
 
 **Save** – store the settings. Changes apply immediately, with no restart, but are lost on restart unless you save.

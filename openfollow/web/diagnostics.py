@@ -35,10 +35,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import openfollow
+from openfollow import keyboard_layout
 from openfollow.logging_setup import RingBufferLogHandler
 from openfollow.net_utils import HOST_RESOLVER, read_ipv4_routes
 from openfollow.network.validate import is_link_local
+from openfollow.power_health import THROTTLE_BIT_LABELS, parse_throttled
 from openfollow.privilege import settings_backup
+from openfollow.privilege.device_repair import full_hostname
 from openfollow.uri_redaction import redact_uri, redact_uris_in_text
 
 if TYPE_CHECKING:
@@ -191,6 +194,8 @@ class DiagnosticsProviders:
 
     # Absolute paths of the files the station's configuration is read from.
     config_file_paths: Callable[[], list[str]] | None = None
+    # How config.toml and its backup read, in words that carry none of their contents.
+    config_file_health: Callable[[], str] | None = None
     # ``{"dir": <resolved <storage>/models>, "configured": <model filename>}``.
     detection_models_dir: Callable[[], dict[str, str]] | None = None
 
@@ -221,6 +226,8 @@ class DiagnosticsProviders:
     # The network bind map: the Interface Assignment panel's rows, and every
     # network plane as the observer last left it.
     interface_assignment_rows: Callable[[], list[dict[str, Any]]] | None = None
+    # "simple" or "advanced": whether those rows can be set one by one.
+    network_mode: Callable[[], str] | None = None
     network_planes: Callable[[], list[dict[str, Any]]] | None = None
     # Where each interface's address came from, read now; raises when the
     # network backend cannot be read, ``None`` when it cannot say.
@@ -312,20 +319,13 @@ _SHARED_GST_ELEMENTS: tuple[tuple[str, str], ...] = (
 
 # Decoders, in the order the pipeline prefers them. Absence is not a fault -
 # which one is present is the answer to "why is this Pi dropping frames".
-_DECODER_ELEMENTS: tuple[str, ...] = ("v4l2h264dec", "v4l2h265dec", "avdec_h264", "openh264dec")
-
-# ``vcgencmd get_throttled`` bit meanings. The low bits are live, the high
-# ones latch since boot - an operator chasing an intermittent freeze needs the
-# latched ones, which is the whole reason to read this.
-_THROTTLE_BITS: tuple[tuple[int, str], ...] = (
-    (0, "under-voltage NOW"),
-    (1, "ARM frequency capped NOW"),
-    (2, "currently throttled"),
-    (3, "soft temperature limit active"),
-    (16, "under-voltage has occurred since boot"),
-    (17, "ARM frequency capping has occurred since boot"),
-    (18, "throttling has occurred since boot"),
-    (19, "soft temperature limit has occurred since boot"),
+_DECODER_ELEMENTS: tuple[str, ...] = (
+    "v4l2h264dec",
+    "v4l2h265dec",
+    "v4l2slh265dec",
+    "avdec_h264",
+    "avdec_h265",
+    "openh264dec",
 )
 
 
@@ -346,15 +346,14 @@ def decode_throttled(raw: str) -> str:
     answer to the freezes and dropped USB devices that an undervolted supply
     causes.
     """
-    _, _, value = raw.strip().partition("=")
-    try:
-        bits = int(value, 16)
-    except ValueError:
+    bits = parse_throttled(raw)
+    if bits is None:
         return f"[unavailable: unrecognised reading {raw.strip()!r}]"
     if bits == 0:
         return "none (no under-voltage or throttling, now or since boot)"
-    flags = [label for bit, label in _THROTTLE_BITS if bits & (1 << bit)]
-    return f"{value} - {'; '.join(flags)}" if flags else f"{value} - no known flag set"
+    # The latched since-boot bits are what an intermittent freeze leaves behind.
+    flags = [label for bit, label in THROTTLE_BIT_LABELS if bits & (1 << bit)]
+    return f"{bits:#x} - {'; '.join(flags)}" if flags else f"{bits:#x} - no known flag set"
 
 
 # ---------------------------------------------------------------------------
@@ -558,6 +557,12 @@ def collect_runtime_state(p: DiagnosticsProviders) -> list[str]:
             rows.append(f"         key {item['port_key']}")
         if item.get("notes"):
             rows.append(f"         notes {', '.join(item['notes'])}")
+    conflicts = stats.get("marker_conflicts") or []
+    rows.append(f"  Marker conflicts:       {len(conflicts) or '(none)'}")
+    for conflict in conflicts:
+        stations = ", ".join(str(name) for name in conflict.get("stations") or [])
+        owners = f"this station, {stations}" if conflict.get("this_station") else stations
+        rows.append(f"    marker {conflict.get('marker_id', '?'):<4} controlled by {owners}")
     system = stats.get("system") or {}
     out_res = system.get("output_resolution")
     rows.append(f"  Output resolution:      {_fmt_resolution(out_res) if out_res else '- (no canvas)'}")
@@ -819,7 +824,12 @@ def collect_network_bind_map(p: DiagnosticsProviders) -> list[str]:
     the operator configured, the planes are what the runtime is doing, and a
     disagreement between them is the finding.
     """
+    mode_line: list[str] = []
+    if p.network_mode is not None:
+        mode, err = _safely_value(p.network_mode, "network_mode", "")
+        mode_line = [f"  Network mode: {err or str(mode).capitalize() or '?'}"]
     return [
+        *mode_line,
         "  Configured (as the Network Interface Assignment panel shows it):",
         *_bind_map_configured(p),
         "  Runtime (what each network plane holds now):",
@@ -1053,6 +1063,9 @@ def collect_config(p: DiagnosticsProviders) -> list[str]:
         rows.append(f"  {line}")
     rows.append("  ----- end effective config -----")
     rows.extend(_collect_config_provenance(p))
+    if p.config_file_health is not None:
+        health, err = _safely_value(p.config_file_health, "config_file_health", "")
+        rows.append(f"  Config file health:  {err if err is not None else health}")
     if p.config_diff_from_defaults is not None:
         rows.append("")
         rows.append("  Diff vs defaults:")
@@ -1691,7 +1704,11 @@ def collect_video_capability() -> list[str]:
     for name, used_for in _SHARED_GST_ELEMENTS:
         present = "present" if Gst.ElementFactory.find(name) else "MISSING"
         rows.append(f"    {name:<18}{present:<9}({used_for})")
-    found = [name for name in _DECODER_ELEMENTS if Gst.ElementFactory.find(name)]
+    found = []
+    for name in _DECODER_ELEMENTS:
+        factory = Gst.ElementFactory.find(name)
+        if factory:
+            found.append(f"{name} (ranked out)" if factory.get_rank() == Gst.Rank.NONE else name)
     rows.append(f"  Video decoders:       {', '.join(found) if found else 'none of the expected decoders'}")
     return rows
 
@@ -1782,7 +1799,43 @@ def _collect_detection_models(p: DiagnosticsProviders | None) -> list[str]:
 # E3. Operating system ------------------------------------------------------
 
 
-def collect_os() -> list[str]:
+_XKB_NAME_RE = re.compile(r"[A-Za-z0-9_:,-]*")
+
+
+def _xkb_name(value: str) -> str:
+    """The value as is when it is a plain xkb name, else quoted with its escapes, so it stays on one row."""
+    return value if _XKB_NAME_RE.fullmatch(value) else ascii(value)
+
+
+def _layout_name(layout: str, variant: str) -> str:
+    """A layout and its variant; nothing without a layout, whose variant would describe nothing."""
+    if not layout:
+        return ""
+    return f"{_xkb_name(layout)} ({_xkb_name(variant)})" if variant else _xkb_name(layout)
+
+
+def collect_keyboard_layout(config_path: Path | None, environ: Mapping[str, str] | None = None) -> str:
+    """What the station is set to, what the system file says, and what the kiosk session started with."""
+    env = os.environ if environ is None else environ
+    if config_path is None:
+        configured = "[unknown]"
+    else:
+        configured = _layout_name(*keyboard_layout.read_configured(config_path)) or "system"
+    system = keyboard_layout.read_system_keyboard()
+    on_file = _layout_name(system.get("XKBLAYOUT", ""), system.get("XKBVARIANT", "")) or "[not set]"
+    source = env.get("OPENFOLLOW_KEYBOARD_SOURCE")
+    if source is None:
+        in_use = "[not set by the kiosk session]"
+    else:
+        layout = _layout_name(env.get("XKB_DEFAULT_LAYOUT", ""), env.get("XKB_DEFAULT_VARIANT", ""))
+        in_use = f"{layout or '[none]'} ({_xkb_name(source)})"
+        for label, name in (("model", "XKB_DEFAULT_MODEL"), ("options", "XKB_DEFAULT_OPTIONS")):
+            if env.get(name):
+                in_use += f", {label} {_xkb_name(env[name])}"
+    return f"  keyboard layout              configured {configured} | system file {on_file} | in use {in_use}"
+
+
+def collect_os(config_path: Path | None = None) -> list[str]:
     rows = [
         f"  system                       {platform.system()}",
         f"  release                      {platform.release()}",
@@ -1806,6 +1859,7 @@ def collect_os() -> list[str]:
                 rows.append(f"  {line}")
         else:
             rows.append(f"  sw_vers                      {out}")
+    rows.append(collect_keyboard_layout(config_path))
     return rows
 
 
@@ -2034,25 +2088,58 @@ def _du_kib(path: Path, *, timeout_s: float) -> int | None:
         return None
 
 
-def collect_settings_backups(state_dir: Path | None = None) -> list[str]:
-    """The pre-update settings archives by name and size, and the last attempt.
-
-    Never their contents: an archive holds the web PIN and stream credentials.
-    """
-    state_dir = state_dir or settings_backup.STATE_DIR
-    backup_dir = state_dir / settings_backup.BACKUP_DIR_NAME
-    if not backup_dir.is_dir():
-        return [f"  [not applicable: no {backup_dir}]"]
-    rows = [f"  Folder: {backup_dir}"]
-    archives = settings_backup.list_archives(backup_dir)
+def _archive_rows(folder: Path) -> list[str]:
+    # ``list_archives`` reads a folder it cannot list as empty, which here would read as no backups.
+    try:
+        with os.scandir(folder):
+            pass
+    except OSError as exc:
+        return [f"  Archives: [unavailable: {exc.strerror or exc!s}]"]
+    archives = settings_backup.list_archives(folder)
     if not archives:
-        rows.append("  Archives: none")
+        return ["  Archives: none"]
+    rows = []
     for archive in reversed(archives):
         try:
             size = f"{archive.stat().st_size} B"
         except OSError as exc:
             size = f"[unavailable: {exc.strerror or exc!s}]"
         rows.append(f"    {archive.name}  {size}")
+    return rows
+
+
+def collect_settings_backups(state_dir: Path | None = None, *, web_dir: Path | None = None) -> list[str]:
+    """The settings archives by name and size: the pre-update ones with the
+    last attempt, then the ones taken before a web UI change.
+
+    Never their contents: an archive holds the web PIN and stream credentials.
+    """
+    state_dir = state_dir or settings_backup.STATE_DIR
+    backup_dir = state_dir / settings_backup.BACKUP_DIR_NAME
+    rows = _update_backup_rows(state_dir, backup_dir)
+    if web_dir is not None:
+        try:
+            present = web_dir.is_dir()
+        except OSError as exc:
+            rows.append(f"  Web UI folder: {web_dir} [unavailable: {exc.strerror or exc!s}]")
+        else:
+            if present:
+                rows.append(f"  Web UI folder: {web_dir}")
+                rows.extend(_archive_rows(web_dir))
+            else:
+                rows.append(f"  Web UI folder: {web_dir} (none yet)")
+    return rows
+
+
+def _update_backup_rows(state_dir: Path, backup_dir: Path) -> list[str]:
+    # ``is_dir`` raises inside a folder that can't be searched, and one section must not sink the bundle.
+    try:
+        present = backup_dir.is_dir()
+    except OSError as exc:
+        return [f"  Folder: {backup_dir} [unavailable: {exc.strerror or exc!s}]"]
+    if not present:
+        return [f"  [not applicable: no {backup_dir}]"]
+    rows = [f"  Folder: {backup_dir}", *_archive_rows(backup_dir)]
     record = settings_backup.read_record(state_dir)
     if record is None:
         rows.append("  Last attempt: not recorded")
@@ -2402,6 +2489,8 @@ class UsbDevice:
     is_hub: bool = False
     # Kernel names of the disks it carries (``sda``, ``disk4``), never a partition's.
     disks: tuple[str, ...] = ()
+    # Names of the V4L2 devices it carries (Linux only).
+    cameras: tuple[str, ...] = ()
 
 
 # macOS speed enum → human; covers what ``system_profiler`` emits.
@@ -2470,25 +2559,35 @@ def collect_usb_devices_macos() -> list[UsbDevice]:
     return devices
 
 
-def _usb_disk_owners(block_root: Path) -> dict[str, list[str]]:
-    """``{usb device: [disk, ...]}``: each disk in ``/sys/block`` resolved up to the USB device above it."""
+def _usb_owners(class_root: Path | None, label: Callable[[Path], str]) -> dict[str, list[str]]:
+    """``{usb device: [label, ...]}``: each entry of a sysfs class directory resolved up to the USB device above it."""
     owners: dict[str, list[str]] = {}
+    if class_root is None:
+        return owners
     try:
-        disks = sorted(block_root.iterdir())
+        entries = sorted(class_root.iterdir())
     except OSError:
         return owners
-    for disk in disks:
-        owner = next((d for d in disk.resolve().parents if (d / "idVendor").is_file()), None)
+    for entry in entries:
+        owner = next((d for d in entry.resolve().parents if (d / "idVendor").is_file()), None)
         if owner is not None:
-            owners.setdefault(owner.name, []).append(disk.name)
+            owners.setdefault(owner.name, []).append(label(entry))
     return owners
+
+
+def _v4l2_name(node: Path) -> str:
+    # As the USB Camera input names it.
+    return _read_sysfs(node, "name") or node.name
 
 
 _USB_SYSFS = Path("/sys/bus/usb/devices")
 _BLOCK_SYSFS = Path("/sys/block")
+_V4L_SYSFS = Path("/sys/class/video4linux")
 
 
-def collect_usb_devices_linux(sysfs_root: Path | None = None, block_root: Path | None = None) -> list[UsbDevice]:
+def collect_usb_devices_linux(
+    sysfs_root: Path | None = None, block_root: Path | None = None, v4l_root: Path | None = None
+) -> list[UsbDevice]:
     """Read ``/sys/bus/usb/devices/*/{idVendor,idProduct,product,
     manufacturer,serial,speed,bDeviceClass}`` directly. No
     subprocess, no parser fragility – the kernel's exposing
@@ -2496,9 +2595,10 @@ def collect_usb_devices_linux(sysfs_root: Path | None = None, block_root: Path |
     root = sysfs_root or _USB_SYSFS
     if not root.exists():
         return []
-    # The host's disks only beside the host's sysfs: a caller's own tree reads none unless it names block_root.
-    block = block_root if block_root is not None else (_BLOCK_SYSFS if sysfs_root is None else None)
-    owners = _usb_disk_owners(block) if block is not None else {}
+    # The host's disks and cameras only beside the host's sysfs: a caller's own tree reads none unless it names them.
+    host = sysfs_root is None
+    owners = _usb_owners(block_root if block_root is not None else (_BLOCK_SYSFS if host else None), lambda d: d.name)
+    cameras = _usb_owners(v4l_root if v4l_root is not None else (_V4L_SYSFS if host else None), _v4l2_name)
     devices: list[UsbDevice] = []
     # Guard against ``OSError`` / ``PermissionError`` from
     # ``iterdir()`` – sysfs can exist but be unreadable on
@@ -2535,6 +2635,7 @@ def collect_usb_devices_linux(sysfs_root: Path | None = None, block_root: Path |
                 serial=_read_sysfs(entry, "serial") or "",
                 is_hub=is_hub,
                 disks=tuple(owners.get(entry.name, ())),
+                cameras=tuple(dict.fromkeys(cameras.get(entry.name, ()))),
             )
         )
     return devices
@@ -2641,10 +2742,10 @@ def render_usb_table(
     device gets a "visibility" cell that cross-references the
     device against each input subsystem's enumeration: gamepads by
     the USB ids in their SDL GUID, 3D mice by the USB ids their status
-    reports, storage by the disks it carries, everything else by product /
-    manufacturer string. Operator question this answers in one
-    glance: "is the kernel seeing this device, and is OpenFollow
-    picking it up?"
+    reports, storage by the disks it carries, a camera by the V4L2 devices it
+    carries, everything else by product / manufacturer string. Operator
+    question this answers in one glance: "is the kernel seeing this device,
+    and is OpenFollow picking it up?"
     """
     # Header rendered as a tuple of column titles + separators so
     # the line-length lint stays happy without sacrificing the
@@ -2668,6 +2769,10 @@ def render_usb_table(
             gamepad_by_usb_id.setdefault(usb_id, name or usb_id)
         elif name:
             gamepad_names.append(name)
+    # A camera found under a USB device is matched there; only one found under none is matched by name.
+    listed_cameras = set(cameras or [])
+    placed = {c for d in devices for c in d.cameras}
+    unplaced_cameras = [c for c in cameras or [] if c not in placed]
     for d in devices:
         if d.is_hub:
             vis = "(hub)"
@@ -2693,6 +2798,9 @@ def render_usb_table(
             elif d.disks:
                 vis = f"storage: {_storage_state(d.disks, media)}"
                 counts["storage"] += 1
+            elif own := [c for c in d.cameras if c in listed_cameras]:
+                vis = f"camera: {', '.join(own)}"
+                counts["camera"] += 1
             if not vis:
                 raw = _best_usb_match(haystack, midi_ports or [])
                 if raw:
@@ -2704,7 +2812,7 @@ def render_usb_table(
                     vis = f"gamepad: {raw}"
                     counts["gamepad"] += 1
             if not vis:
-                raw = _best_usb_match(haystack, cameras or [])
+                raw = _best_usb_match(haystack, unplaced_cameras)
                 if raw:
                     vis = f"camera: {raw}"
                     counts["camera"] += 1
@@ -3108,6 +3216,7 @@ def collect_bundle(
     update_service_name: str | None = None,
     repo_root: Path | None = None,
     extra_storage_paths: list[Path] | None = None,
+    config_path: Path | None = None,
     budget_s: float | None = None,
 ) -> DiagnosticsBundle:
     """Run every collector and pack the result into a
@@ -3120,6 +3229,9 @@ def collect_bundle(
     size in the storage breakdown and report disk usage for – the
     route layer passes the operator's configured detection
     ``storage_path`` so its footprint shows up alongside the SD card.
+
+    ``config_path`` is the station's config file; E5c lists the web UI's
+    settings backups kept beside it.
 
     ``budget_s`` is the whole-assembly wall-clock budget; sections not reached
     before it expires are listed as skipped rather than run. ``None`` reads
@@ -3178,7 +3290,7 @@ def collect_bundle(
         "e1_runtime": lambda: collect_runtime_versions(repo_root, budget_s=remaining(_RUNTIME_SECTION_BUDGET_S)),
         "e1b_video": collect_video_capability,
         "e2_detection": lambda: collect_detection_stack(p),
-        "e3_os": collect_os,
+        "e3_os": lambda: collect_os(config_path),
         "e4_cpu": collect_cpu,
         "e5_memdisk": lambda: collect_memory_disk(extra_paths=extra_storage_paths),
         "e5b_storage": lambda: collect_storage_breakdown(
@@ -3186,7 +3298,9 @@ def collect_bundle(
             extra_paths=extra_storage_paths,
             budget_s=remaining(_STORAGE_SECTION_BUDGET_S),
         ),
-        "e5c_backups": collect_settings_backups,
+        "e5c_backups": lambda: collect_settings_backups(
+            web_dir=settings_backup.web_backup_dir(config_path) if config_path else None,
+        ),
         "e6_health": collect_system_health,
         "e7_net": lambda: collect_network_interfaces(
             address_sources=p.address_sources,
@@ -3205,7 +3319,7 @@ def collect_bundle(
         log_times=station_zone(now.astimezone()),
         app_version=openfollow.__version__,
         platform_label=_platform_label(),
-        host_label=f"{platform.node()} ({platform.platform()})",
+        host_label=f"{full_hostname()} ({platform.platform()})",
         service_status=("running" if p.web_port_configured is not None else "NOT RUNNING (sample)"),
         redactions_applied="web_pin=***, X-Auth-Signature stripped",
     )

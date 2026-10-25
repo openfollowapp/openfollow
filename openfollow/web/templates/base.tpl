@@ -28,7 +28,11 @@
  <script src="/assets/js/units.js?v={{_asset_v}}"></script>
  <script src="/assets/js/detect-input.js?v={{_asset_v}}"></script>
  <script src="/assets/js/save-feedback.js?v={{_asset_v}}"></script>
+ <script src="/assets/js/feature-save.js?v={{_asset_v}}"></script>
  <script src="/assets/js/binding-steal.js?v={{_asset_v}}"></script>
+ <script src="/assets/js/polygon-plan.js?v={{_asset_v}}"></script>
+ <script src="/assets/js/picture-view.js?v={{_asset_v}}"></script>
+ <script src="/assets/js/poll-gate.js?v={{_asset_v}}"></script>
  <style>
  :root {
  color-scheme: dark;
@@ -217,6 +221,10 @@
  line-height: 1.35;
  }
  .save-error a, .notice.error a { color: inherit; }
+ .pushed-settings-list { margin: 0; padding: 0; list-style: none; }
+ .pushed-settings-list li { margin: 0 0 0.4rem; }
+ .pushed-settings-list time { margin-right: 0.6rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+ .pushed-settings-earlier { color: var(--muted); }
  .section-head {
  display: flex;
  align-items: center;
@@ -408,6 +416,17 @@
  /* Segmented two-option toggle (Tracking Mode): equal-width cells. */
  .seg-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; max-width: 30rem; padding: 4px; border: 1px solid var(--border-soft); border-radius: 0.7rem; background: rgba(0, 0, 0, 0.22); }
  .seg-toggle--3 { grid-template-columns: repeat(3, 1fr); max-width: 36rem; }
+ /* A plan editor's camera view: the snapshot with an SVG in picture pixels over it. */
+ .plan-view-switch { margin-bottom: 0.6rem; }
+ .pv-stage { position: relative; width: 100%; line-height: 0; border-radius: 6px; overflow: hidden; background: var(--bg-base); }
+ .pv-stage img { display: block; width: 100%; height: auto; }
+ .pv-stage svg { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
+ .pv-nofeed { padding: 24px 12px; border: 1px dashed var(--border); border-radius: 6px; text-align: center; }
+ .pv-zone { stroke-width: 2; fill-opacity: 0.18; cursor: pointer; }
+ .pv-zone-selected { stroke-width: 3; }
+ .pv-grid-line { stroke: var(--muted); stroke-width: 1; fill: none; }
+ .pv-outline { stroke: var(--accent); stroke-width: 2.5; fill: none; }
+ .pv-handle { fill: var(--text); stroke: var(--accent); stroke-width: 2; }
  /* An option is a <label>: it reads in normal case, not the form label's caps. */
  .seg-toggle .seg-option { margin: 0; display: flex; cursor: pointer; text-transform: none; letter-spacing: normal; }
  .seg-toggle .seg-option input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
@@ -681,6 +700,7 @@
  [data-input-type] > .row:last-child { margin-bottom: 0.72rem; }
  .field { display: flex; flex-direction: column; flex: 1; min-width: 130px; }
  .field.wide { flex: 2; min-width: 230px; }
+ .field[hidden] { display: none; }
  /* Inline "press to capture" widget: an input with a Detect button beside it
     (detect-input.js). The button keeps its .secondary.small styling. */
  .detect-input { display: flex; gap: 0.4rem; align-items: stretch; }
@@ -767,6 +787,7 @@
  input[type="color"] { height: 39px; padding: 2px; cursor: pointer; }
  .checkbox-field { justify-content: flex-start; min-width: 180px; }
  .checkbox-wrap { height: 39px; display: flex; align-items: center; }
+ .checkbox-wrap.inline { height: auto; min-height: 39px; }
  input[type="checkbox"] {
  width: 18px;
  height: 18px;
@@ -994,6 +1015,7 @@
  border-color: var(--caution-line);
  box-shadow: 0 0 0 1px var(--caution-line);
  }
+ [data-midi-live] { margin-bottom: 0.62rem; }
  /* Virtual Faders: eight vertical fader strips (horizontal layout);
  clicking a strip selects it for editing in the detail panel below. */
  .midi-fader-strips {
@@ -1294,6 +1316,15 @@
  .data-table input, .data-table select { font-size: inherit; }
  .data-table td.row-actions { white-space: nowrap; text-align: right; }
  .data-table td.row-actions > * + * { margin-left: 0.4rem; }
+ /* Features table: checkbox, title, description. */
+ .feature-table-wrap { overflow-x: auto; }
+ .feature-table td.feature-check { width: 2.2rem; }
+ .feature-table td.feature-check input { margin: 0; }
+ .feature-table th[scope="row"] { font-weight: 600; white-space: nowrap; }
+ .feature-table th[scope="row"] label { margin: 0; cursor: pointer; }
+ .feature-table th[scope="row"] .badge-experimental { margin-left: 0.4rem; }
+ .feature-table td.feature-description { color: var(--muted); }
+ .feature-off-list { margin: 0.4rem 0 0; padding-left: 1.2rem; }
  /* Controller Slots table (Input tab). */
  .slot-row.slot-missing { background: var(--error-row); }
  /* Grey while the slot needs nothing, red when its controller is missing. */
@@ -1460,17 +1491,22 @@
  display: inline-flex;
  align-items: center;
  gap: 8px;
+ --toast-fill: var(--success-fill);
  border: 1px solid var(--success-border);
- background: linear-gradient(var(--success-fill), var(--success-fill)), rgba(7, 19, 13, 0.95);
+ background: linear-gradient(var(--toast-fill), var(--toast-fill)), rgba(7, 19, 13, 0.95);
  color: var(--text);
  padding: 10px 16px 10px 12px;
  border-radius: 999px;
  opacity: 0;
  transition: opacity 0.3s;
  font-weight: 600;
+ cursor: pointer;
+ pointer-events: none;
  }
  .toast::before { content: ""; flex: none; width: 16px; height: 16px; background: var(--success-sign) no-repeat center / contain; }
- .toast.show { opacity: 1; }
+ .toast.show { opacity: 1; pointer-events: auto; }
+ .toast.toast-caution { --toast-fill: var(--caution-fill); border-color: var(--caution-border); }
+ .toast.toast-caution::before { background-image: var(--info-sign); }
  /* Tab navigation */
  .tab-bar {
  display: flex;
@@ -1554,7 +1590,7 @@
  drag-and-drop wiring lives in the document-level JS at the
  bottom of this file. ``cursor: grab`` flips to ``grabbing``
  while the row is mid-drag. */
- .osc-binding-drag-handle, .osc-destination-drag-handle {
+ .osc-binding-drag-handle, .osc-destination-drag-handle, .row-drag-handle {
  cursor: grab;
  color: var(--muted);
  font-family: ui-monospace, monospace;
@@ -1565,10 +1601,10 @@
  user-select: none;
  letter-spacing: -0.1em;
  }
- .osc-binding-drag-handle:hover, .osc-destination-drag-handle:hover { color: var(--text); }
- .osc-binding-drag-handle:active, .osc-destination-drag-handle:active { cursor: grabbing; }
- .osc-binding-row.dragging, .osc-destination-row.dragging { opacity: 0.55; }
- .osc-binding-row.drop-target, .osc-destination-row.drop-target { outline: 2px dashed var(--accent); outline-offset: 2px; }
+ .osc-binding-drag-handle:hover, .osc-destination-drag-handle:hover, .row-drag-handle:hover { color: var(--text); }
+ .osc-binding-drag-handle:active, .osc-destination-drag-handle:active, .row-drag-handle:active { cursor: grabbing; }
+ .osc-binding-row.dragging, .osc-destination-row.dragging, .reorder-row.dragging { opacity: 0.55; }
+ .osc-binding-row.drop-target, .osc-destination-row.drop-target, .reorder-row.drop-target { outline: 2px dashed var(--accent); outline-offset: 2px; }
  .osc-binding-enabled-dot { width: 0.55rem; height: 0.55rem; border-radius: 999px; background: var(--muted); flex: none; }
  /* The state dots: 14px outside, so a -2.6px margin keeps the grey dot's footprint. */
  .osc-binding-enabled-dot.on, .osc-binding-enabled-dot.invalid { box-sizing: content-box; margin: -2.6px; background-clip: content-box; }
@@ -1898,8 +1934,11 @@
  vertical-align: middle;
  margin-left: 0.3rem;
  }
- /* Hide experimental sections unless <body> carries .show-experimental. */
- body:not(.show-experimental) .experimental-feature { display: none !important; }
+ /* A data-feature element shows only while <body> carries feature-<key>. */
+ % from openfollow.configuration import FEATURE_KEYS
+ % for _fkey in FEATURE_KEYS:
+ body:not(.feature-{{_fkey}}) [data-feature="{{_fkey}}"] { display: none !important; }
+ % end
  @media (max-width: 680px) {
  body { padding: 12px 0; }
  .hero-panel { padding: 1rem; margin-bottom: 0.8rem; }
@@ -2045,6 +2084,7 @@
  cursor: pointer;
  }
  .modal-close:hover { background: rgba(255, 255, 255, 0.06); color: var(--text); }
+ .modal-close[hidden] { display: none; }
  .modal-body {
  padding: 1rem 1.2rem;
  color: var(--text);
@@ -2211,7 +2251,7 @@
  /* Status language boxes (docs/STATUS_LANGUAGE.md): one look per level, shared
  by the older class names; the level's sign sits in the left padding. Last in
  the block, so it wins over each class's layout-only rule above. */
- .notice, .update-notice, .restart-notice, .modal-error, .diag-error, .gallery-error,
+ .notice, .update-notice, .modal-error, .diag-error, .gallery-error,
  .wizard-action-required, .network-banner.network-banner-error, .network-banner.network-banner-ok,
  .network-banner.network-banner-info {
  position: relative;
@@ -2225,7 +2265,7 @@
  font-weight: 600;
  line-height: 1.4;
  }
- .notice::before, .update-notice::before, .restart-notice::before, .modal-error::before, .diag-error::before,
+ .notice::before, .update-notice::before, .modal-error::before, .diag-error::before,
  .gallery-error::before, .wizard-action-required::before, .network-banner.network-banner-error::before,
  .network-banner.network-banner-ok::before, .network-banner.network-banner-info::before {
  content: "";
@@ -2272,9 +2312,81 @@
  padding-block: calc((1lh - 1cap) / 2 + var(--pill-pad-y));
  }
  }
+ /* Touch remote: launcher and a compact card on the thumb's side (.remote-left mirrors it). */
+ .remote-launcher {
+ position: fixed; right: 1rem; bottom: calc(env(safe-area-inset-bottom, 0px) + 1rem); z-index: 60;
+ width: 3.5rem; height: 3.5rem; border-radius: 50%; border: none;
+ background: var(--accent); color: var(--btn-ink-dark);
+ display: flex; align-items: center; justify-content: center; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+ }
+ .remote-card {
+ position: fixed; right: 1rem; bottom: calc(env(safe-area-inset-bottom, 0px) + 5.25rem); z-index: 61;
+ width: min(340px, calc(100vw - 2rem)); box-sizing: border-box; max-height: calc(100vh - 7rem); overflow-y: auto;
+ padding: 0.75rem; border-radius: 1.25rem; border: 1px solid var(--border); background: var(--bg-soft);
+ display: flex; flex-direction: column; gap: 0.6rem; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
+ touch-action: pan-y; -webkit-user-select: none; user-select: none;
+ }
+ body.remote-left .remote-launcher, body.remote-left .remote-card { right: auto; left: 1rem; }
+ /* Chips and buttons set their own display; ``hidden`` still wins inside the card. */
+ .remote-launcher[hidden], .remote-card[hidden], .remote-card [hidden] { display: none !important; }
+ .remote-card .notice { margin: 0; font-size: 0.8rem; }
+ .remote-chips { display: flex; gap: 0.5rem; overflow-x: auto; touch-action: pan-x; scrollbar-width: none; }
+ .remote-chip {
+ display: flex; align-items: center; gap: 0.4rem; flex: none; height: 2.5rem; padding: 0 0.75rem;
+ border-radius: var(--btn-radius); border: 2px solid transparent; background: var(--surface-strong);
+ color: var(--muted); font: inherit; font-size: 0.82rem; font-weight: 700; white-space: nowrap;
+ }
+ .remote-chip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+ .remote-chip-dot { width: 0.75rem; height: 0.75rem; border-radius: 50%; background: var(--muted); }
+ .remote-status { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+ .remote-spacer { flex: 1; }
+ .remote-round, .remote-hand {
+ height: 2.5rem; border-radius: var(--btn-radius); border: 1px solid var(--border); background: var(--surface-strong);
+ color: var(--text); display: flex; align-items: center; justify-content: center; flex: none;
+ }
+ .remote-round { width: 2.5rem; padding: 0; }
+ .remote-hand { padding: 0 0.65rem; font: inherit; font-size: 0.78rem; font-weight: 700; }
+ .remote-round[aria-pressed="true"] { border: 2px solid var(--accent); background: var(--accent-soft); color: var(--accent); }
+ .remote-drive { display: flex; gap: 0.75rem; align-items: stretch; justify-content: space-between; }
+ body.remote-left .remote-drive, body.remote-left .remote-status, body.remote-left .remote-chips { flex-direction: row-reverse; }
+ .remote-stick {
+ position: relative; width: 184px; height: 184px; flex: none; border-radius: 50%;
+ border: 2px solid var(--border); background: var(--surface); touch-action: none;
+ }
+ .remote-stick-label { position: absolute; left: 50%; transform: translateX(-50%); font-size: 0.62rem; font-weight: 700; letter-spacing: 0.06em; color: var(--muted); pointer-events: none; }
+ .remote-stick-up { top: 0.45rem; }
+ .remote-stick-down { bottom: 0.45rem; }
+ .remote-knob {
+ position: absolute; left: 50%; top: 50%; width: 72px; height: 72px; margin: -36px 0 0 -36px; border-radius: 50%;
+ background: var(--accent); pointer-events: none; transition: transform 0.14s ease-out;
+ }
+ .remote-stick.active .remote-knob { transition: none; }
+ .remote-z { width: 64px; display: flex; flex-direction: column; align-items: center; gap: 0.25rem; }
+ .remote-z.off { opacity: 0.35; }
+ .remote-z-cap { font-size: 0.68rem; font-weight: 700; color: var(--muted); white-space: nowrap; }
+ .remote-drum {
+ position: relative; flex: 1; width: 100%; min-height: 150px; border-radius: 26px; overflow: hidden;
+ border: 2px solid var(--border); background: var(--bg-deep); touch-action: none;
+ }
+ .remote-drum-ticks {
+ position: absolute; left: 0; right: 0; top: -40px; bottom: -40px; pointer-events: none;
+ background: linear-gradient(180deg, var(--border) 0 2px, transparent 2px) 0 0 / 100% 20px repeat-y;
+ }
+ .remote-drum-mid { position: absolute; left: 6px; right: 6px; top: 50%; height: 3px; margin-top: -1.5px; border-radius: 2px; background: var(--accent); pointer-events: none; }
+ .remote-drum.notched .remote-drum-mid { background: var(--text); }
+ .remote-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: 0.5rem; }
+ .remote-act { height: 2.9rem; padding: 0 0.4rem; }
+ .remote-act[aria-pressed="true"], .remote-act.locked { border: 2px solid var(--accent); }
+ .remote-xyz-row { display: flex; gap: 0.5rem; align-items: flex-end; }
+ .remote-xyz-row label { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.7rem; font-weight: 700; }
+ .remote-xyz-row input { width: 100%; box-sizing: border-box; height: 2.6rem; font-family: ui-monospace, monospace; -webkit-user-select: text; user-select: text; }
+ .remote-xyz-row input[aria-invalid="true"] { border-color: var(--error-line); box-shadow: 0 0 0 1px var(--error-line); }
+ .remote-go { height: 2.6rem; flex: none; }
+ .remote-readout { display: flex; justify-content: space-between; gap: 0.5rem; font: 600 0.75rem ui-monospace, monospace; color: var(--muted); font-variant-numeric: tabular-nums; }
+ @media (prefers-reduced-motion: reduce) { .remote-knob { transition: none; } }
  </style>
 </head>
-<body class="{{'show-experimental' if defined('config') and config and config.ui.show_experimental_features else ''}}">
+<body class="{{' '.join('feature-' + k for k in config.ui.shown_features) if defined('config') and config else ''}}">
  <div class="container">
  <header class="hero-panel">
  <a class="hero-logo-link" href="/" aria-label="OpenFollow – back to overview">
@@ -2327,7 +2439,7 @@
  <a href="/about">About &amp; license</a>
  </footer>
  </div>
- <div id="toast" class="toast"></div>
+ <div id="toast" class="toast" onclick="hideToast()"></div>
  <!-- Single ``#modal-root`` shared by all modals via helper functions.
  Helpers populate ``.modal-card`` and toggle ``hidden`` on backdrop. -->
  <div id="modal-root" class="modal-backdrop" hidden role="dialog" aria-modal="true" aria-labelledby="modal-title">
@@ -2445,6 +2557,111 @@
  const box = document.getElementById('net-busy');
  if (box && netBusyText(evt.detail.elt) !== null) box.hidden = true;
  });
+ // Network mode switch. Simple first reads what it would clear and remove, and
+ // asks only when that is something. The answer reloads the page, because the
+ // mode decides which sections it shows, or names the process it restarts and
+ // the page waits for a new one.
+ function netConfirmSimple(preview) {
+ const list = (items) => '<ul>' + items.map((item) => '<li>' + escapeHTML(item) + '</li>').join('') + '</ul>';
+ let html = '<p>All traffic moves to the station interface, ' + escapeHTML(preview.station) + '.</p>';
+ if (preview.pins.length) html += '<p><strong>Interface pins cleared</strong></p>' + list(preview.pins);
+ if (preview.restart) html += '<p>OpenFollow restarts to serve the web UI on every interface.</p>';
+ if (preview.vlans.length) html += '<p><strong>VLAN interfaces removed</strong></p>' + list(preview.vlans);
+ if (preview.kept.length) html += '<p><strong>VLAN interfaces kept</strong></p>' + list(preview.kept);
+ return new Promise((resolve) => {
+ let confirmed = false;
+ openModal({
+ title: 'Switch to Simple network mode?',
+ bodyHTML: html,
+ footerButtons: [
+ { label: 'Cancel', onClick: () => closeModal() },
+ { label: 'Switch to Simple', kind: 'danger', onClick: () => { confirmed = true; closeModal(); } },
+ ],
+ onClose: () => resolve(confirmed),
+ });
+ });
+ }
+ async function netSwitchMode(input) {
+ const group = input.closest('.net-mode-switch');
+ const radios = Array.from(group.querySelectorAll('input[name="network_mode"]'));
+ const saveError = window.OpenFollow.saveError;
+ const box = saveError.boxFor(group);
+ const busy = document.getElementById('net-busy');
+ const showBusy = (on) => {
+ busy.querySelector('.net-busy-text').textContent =
+ 'Switching to ' + input.value.charAt(0).toUpperCase() + input.value.slice(1) + '…';
+ busy.hidden = !on;
+ };
+ const fail = (info) => {
+ showBusy(false);
+ radios.forEach((radio) => { radio.disabled = false; radio.checked = radio.value === group.dataset.mode; });
+ saveError.show(box, info, 'Not switched.');
+ };
+ const expired = { error: 'Your session has expired.', action: 'Reload the page and sign in again.' };
+ // The switch shows the mode in force until the new one is saved.
+ radios.forEach((radio) => { radio.disabled = true; radio.checked = radio.value === group.dataset.mode; });
+ const body = new URLSearchParams({ network_mode: input.value });
+ try {
+ if (input.value === 'simple') {
+ const resp = await fetch('/section/network/mode/preview');
+ if (resp.redirected) return fail(expired);
+ if (!resp.ok) return fail(await saveError.fromResponse(resp));
+ const preview = await resp.json();
+ const listed = preview.pins.length || preview.vlans.length || preview.kept.length || preview.restart;
+ if (listed && !(await netConfirmSimple(preview))) {
+ radios.forEach((radio) => { radio.disabled = false; radio.checked = radio.value === group.dataset.mode; });
+ return;
+ }
+ // Only what the dialog listed is removed.
+ preview.remove.forEach((name) => body.append('vlans', name));
+ }
+ // A busy line, not the locked progress view: removing a VLAN may ask for the password.
+ showBusy(true);
+ const resp = await fetch('/section/network/mode', {
+ method: 'POST',
+ headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+ body: body.toString(),
+ });
+ if (resp.redirected) return fail(expired);
+ if (!resp.ok) return fail(await saveError.fromResponse(resp));
+ showBusy(false);
+ // The station names the process it is restarting, so the wait ends at a new one.
+ const restarting = resp.headers.get('X-OpenFollow-Restarting');
+ if (restarting) {
+ openfollowRestartProgress(NET_MOVED_NOTE);
+ openfollowAwaitRestart(restarting, NET_MOVED_STEP);
+ return;
+ }
+ const refused = resp.headers.get('X-OpenFollow-Restart-Refused');
+ // The mode decides which sections the page shows. A toast the reload cannot carry is read first.
+ if (refused && !toastOnNextLoad('Not restarted. ' + refused, 'caution')) {
+ setTimeout(() => window.location.reload(), TOAST_MS);
+ return;
+ }
+ window.location.reload();
+ } catch (err) {
+ fail(saveError.UNREACHABLE);
+ }
+ }
+ // Simple's Interface picker moves every plane, so a pick asks first. Cancel
+ // puts the picker back on the interface in force without a request.
+ function netConfirmStation(select) {
+ const inForce = select.querySelector('option[selected]');
+ const chosen = Array.from(select.querySelectorAll('option')).find((option) => option.value === select.value);
+ if (chosen === inForce) return;
+ const to = chosen.dataset.name;
+ const from = select.dataset.from ? 'from ' + select.dataset.from + ' ' : '';
+ modalConfirm({
+ title: 'Move all traffic to ' + to + '?',
+ message: 'PSN, OTP, RTTrPM, OSC and video move ' + from + 'to ' + to + '.'
+ + (select.hasAttribute('data-web-everywhere') ? ' The web UI keeps answering on every interface.' : ''),
+ confirmLabel: 'Move traffic',
+ danger: true,
+ }).then((ok) => {
+ if (ok) htmx.trigger(select.closest('form'), 'net-station-confirmed');
+ else select.value = inForce.value;
+ });
+ }
 
  const sectionFoldStoragePrefix = 'psnfs:section:';
  const advancedFoldStoragePrefix = 'psnfs:advanced:';
@@ -2539,6 +2756,7 @@
  toggle.addEventListener('click', () => {
  const nextCollapsed = !section.classList.contains('is-collapsed');
  setSectionCollapsed(section, toggle, nextCollapsed);
+ if (!nextCollapsed) announcePollsShown();
  writeStorage(
  getSectionFoldStorageKey(key),
  nextCollapsed ? 'collapsed' : 'expanded'
@@ -2575,13 +2793,57 @@
  });
  });
  }
- function showToast(message) {
+ const TOAST_MS = 10000;
+ let _toastTimer = null;
+ // ``level`` 'caution' is a change that went through with something worth knowing about it.
+ function showToast(message, level) {
  const toast = document.getElementById('toast');
  if (!toast) return;
  toast.textContent = message;
+ toast.classList.toggle('toast-caution', level === 'caution');
  toast.classList.add('show');
- setTimeout(() => toast.classList.remove('show'), 2000);
+ // A new toast gets the whole time, not what is left of the one it replaces.
+ clearTimeout(_toastTimer);
+ _toastTimer = setTimeout(hideToast, TOAST_MS);
  }
+ function hideToast() {
+ clearTimeout(_toastTimer);
+ const toast = document.getElementById('toast');
+ if (toast) toast.classList.remove('show');
+ }
+ const NO_BACKUP_MADE = 'No backup was made. Details in Logs.';
+ // A toast for the page the next load brings up; false when nothing can carry
+ // it there (a private window), and it is shown now instead.
+ const _TOAST_AFTER_RELOAD_KEY = 'openfollow.toastAfterReload';
+ function toastOnNextLoad(message, level) {
+ try {
+ sessionStorage.setItem(_TOAST_AFTER_RELOAD_KEY, JSON.stringify({ message, level }));
+ return true;
+ } catch (err) {
+ showToast(message, level);
+ return false;
+ }
+ }
+ // A confirmation for a change the page reloads to show. Shown now instead, a
+ // confirmation still reloads; a caution keeps the page, so it can be read.
+ function toastAfterReload(message, level) {
+ if (toastOnNextLoad(message, level)) {
+ window.location.reload();
+ } else if (level !== 'caution') {
+ setTimeout(() => window.location.reload(), 600);
+ }
+ }
+ document.addEventListener('DOMContentLoaded', () => {
+ let pending = null;
+ try {
+ const stored = sessionStorage.getItem(_TOAST_AFTER_RELOAD_KEY);
+ sessionStorage.removeItem(_TOAST_AFTER_RELOAD_KEY);
+ pending = JSON.parse(stored || 'null');
+ } catch (err) {
+ return;
+ }
+ if (pending) showToast(pending.message, pending.level);
+ });
  // ---- Help drawer () --------------------------------------
  //
  // Non-modal side panel showing the server-rendered help doc for a
@@ -3697,11 +3959,7 @@
  showToast(`Saved and applied to ${peers.length} station(s)`);
  return;
  }
- saveError.show(form, {
- error: `Saved here, but not applied on ${failed.length} of ${peers.length} stations: `
- + failed.map((peer) => peer.name || peer.ip).join(', ') + '.',
- action: 'Check that they are switched on, then apply again.',
- }, '');
+ saveError.show(form, saveError.peerFailure(peers, 'Saved here, but not applied on', 'apply again'), '');
  }).catch(() => saveError.show(form, saveError.UNREACHABLE));
  }
  // Disable Save/Broadcast buttons when form has aria-invalid inputs.
@@ -3817,9 +4075,9 @@
  btn_settings: 'BACK',
  btn_speed_down: 'LB', btn_speed_up: 'RB',
  btn_move_z_down: 'LT', btn_move_z_up: 'RT',
- btn_toggle_zones: 'B',
  btn_next_marker: 'DPAD_RIGHT', btn_prev_marker: 'DPAD_LEFT',
  btn_clear_messages: '',
+ btn_toggle_zones: '', btn_toggle_paths: '', btn_pathfinder: '',
  move_xy_stick: 'left', marker_fader_stick: '',
  btn_menu_confirm: 'A', btn_menu_cancel: 'B',
  };
@@ -3839,6 +4097,7 @@
  key_speed_down: 'r', key_speed_up: 't',
  key_settings: 'm', key_clear_messages: '',
  key_next_marker: 'Tab', key_prev_marker: '',
+ key_pathfinder: '', key_toggle_paths: '',
  };
  container.querySelectorAll('select, input[type="text"]').forEach(el => {
  const def = defaults[el.name];
@@ -3847,40 +4106,81 @@
  window.OpenFollow.clearBindingNotes(container, Object.keys(defaults));
  refreshFormGate(container.closest('form'));
  }
- // Restart button (lives in the Diagnostics partial). Defined here
- // alongside the ``#top-restart-notice`` banner so the partial
- // itself stays JS-free (per its module header), and so the
- // notice element is null-guarded for the case where the
- // diagnostics partial is fetched standalone via
- // ``hx-get="/section/diagnostics"`` and the index-level banner
- // isn't in the DOM. Triggers ``/api/restart`` (which returns
- // immediately) then polls ``/api/info`` every 2 s until the
- // server comes back, at which point it reloads the page.
- async function confirmRestartApp() {
+ // Every restart shows one locked progress view, which stays until /api/info answers from a
+ // new process and the page reloads; ``note`` replaces its second line.
+ const RESTART_WAIT_MS = 90000;
+ // For a restart that may move the web UI to another address.
+ const NET_MOVED_NOTE = 'This page reloads when the station is back. If it does not, the web UI has moved'
+ + ' - the station\'s Network screen lists the address that reaches it.';
+ const NET_MOVED_STEP = 'The web UI may have moved: the station\'s Network screen lists the address that reaches it.';
+ function openfollowRestartProgress(note) {
+ openModal({
+ title: 'Restart OpenFollow',
+ dismissable: false,
+ bodyHTML: '<div class="modal-progress"><div class="modal-spinner"></div>'
+ + '<p role="status" aria-live="polite" tabindex="-1">Restarting OpenFollow\u2026</p></div>'
+ + '<p>' + escapeHTML(note || 'This page reloads when the station is back.') + '</p>',
+ footerButtons: [],
+ });
+ }
+ // Reloads once a process other than ``before`` answers; the old one keeps answering while it
+ // shuts down. After RESTART_WAIT_MS it says the station has not answered, ``step`` the next step.
+ function openfollowAwaitRestart(before, step) {
+ // Elapsed time, not poll counts: a poll can hang on a station half way up.
+ const began = performance.now();
+ let back = false;
+ const p = setInterval(function() {
+ if (performance.now() - began >= RESTART_WAIT_MS) {
+ clearInterval(p);
+ openModal({
+ title: 'Station not back',
+ bodyHTML: '<div class="notice error">The station has not answered for '
+ + Math.round(RESTART_WAIT_MS / 1000) + ' s.<div class="notice-sub">'
+ + escapeHTML(step || 'Check that it is switched on and on this network, then reload this page.')
+ + '</div></div>',
+ footerButtons: [{label: 'Close', kind: 'primary', onClick: () => closeModal()}],
+ });
+ return;
+ }
+ fetch('/api/info', {cache: 'no-store'}).then(function(r) {
+ return r.ok ? r.json() : null;
+ }).then(function(info) {
+ if (back || !info || info.instance === before) return;
+ back = true;
+ clearInterval(p);
+ window.location.reload();
+ }).catch(function() {});
+ }, 2000);
+ }
+ // Every Restart button. ``opts``: title and message for the confirm, ``note`` and ``step`` as above.
+ async function openfollowRestart(opts) {
  const saveError = window.OpenFollow.saveError;
  const box = saveError.origin();
  const ok = await modalConfirm({
- title: 'Restart application?',
- message: 'Video and tracking stop until the station is back.',
+ title: opts.title,
+ message: opts.message,
  confirmLabel: 'Restart',
  danger: true,
  });
  if (!ok) return;
- fetch('/api/restart', {method: 'POST'}).then(async function(res) {
- if (!res.ok) {
- saveError.show(box, await saveError.fromResponse(res), 'Not restarted.');
+ openfollowRestartProgress(opts.note);
+ let res;
+ try {
+ res = await fetch('/api/restart', {method: 'POST'});
+ } catch (e) {
+ closeModal();
+ saveError.show(box, saveError.UNREACHABLE, 'Not restarted.');
  return;
  }
- var n = document.getElementById('top-restart-notice');
- if (n) n.style.display = 'block';
- var p = setInterval(function() {
- fetch('/api/info').then(function(r) {
- if (r.ok) { clearInterval(p); window.location.reload(); }
- }).catch(function() {});
- }, 2000);
- }, function() {
- saveError.show(box, saveError.UNREACHABLE, 'Not restarted.');
- });
+ if (!res.ok) {
+ const info = await saveError.fromResponse(res);
+ closeModal();
+ saveError.show(box, info, 'Not restarted.');
+ return;
+ }
+ let before = '';
+ try { before = (await res.json()).instance || ''; } catch (e) { /* any instance then counts */ }
+ openfollowAwaitRestart(before, opts.step);
  }
  // Save to USB storage device (a Diagnostics tools button): the Operator Screen's steps in
  // the shared modal. Pick a device, follow the export, then read what happened and the next
@@ -3980,10 +4280,13 @@
  }
  async function list() {
  let got = null;
+ // A hidden tab asks nothing; the first tick once it is shown asks again.
+ if (!document.hidden) {
  try {
  got = await _driveExportFetch('/api/diagnostics/drives');
  } catch (err) {
  got = null;
+ }
  }
  if (!open) return;
  if (got && got.res.ok) render(JSON.parse(got.text).media);
@@ -4032,10 +4335,12 @@
  }
  async function poll() {
  let got = null;
+ if (!document.hidden) {
  try {
  got = await _driveExportFetch('/api/diagnostics/export?generation=' + status.generation);
  } catch (err) {
  got = null;
+ }
  }
  if (!polling) return;
  const s = got && got.res.ok ? JSON.parse(got.text) : null;
@@ -4063,16 +4368,6 @@
  ],
  });
  }
- // Toggle the <body> gate class. When turning off, uncheck the detection
- // Enabled box to mirror the server-side cascade; the selector must match
- // the route's cascade fields.
- function onExperimentalToggle(cb) {
- document.body.classList.toggle('show-experimental', cb.checked);
- if (cb.checked) return;
- document.querySelectorAll(
- '#detection-section input[name="enabled"]'
- ).forEach(function (el) { el.checked = false; });
- }
  function switchTab(tabId) {
  // help docs are section-specific; dismiss the drawer when
  // the operator moves to another tab so stale help can't linger.
@@ -4090,6 +4385,7 @@
  // to the owning tab first, then scroll once layout has settled.
  function goToSection(tabId, targetId) {
    switchTab(tabId);
+   announcePollsShown();
    var el = document.getElementById(targetId);
    if (!el) { return; }
    requestAnimationFrame(function () {
@@ -4101,16 +4397,19 @@
  var first = document.querySelector('.tab-btn');
  var defaultTab = first ? first.dataset.tab : 'overview';
  var tabId = stored || defaultTab;
- // Fall back to the default tab if the stored tab is missing or is a
- // hidden experimental tab.
+ // Fall back to the default tab if the stored tab is missing or its
+ // feature is off.
  var el = document.getElementById('tab-' + tabId);
  if (!el
- || (el.classList.contains('experimental-feature')
- && !document.body.classList.contains('show-experimental'))) {
+ || (el.dataset.feature
+ && !document.body.classList.contains('feature-' + el.dataset.feature))) {
  tabId = defaultTab;
  }
  document.querySelectorAll('.tab-btn').forEach(btn => {
- btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+ btn.addEventListener('click', () => {
+ switchTab(btn.dataset.tab);
+ announcePollsShown();
+ });
  });
  switchTab(tabId);
  }
@@ -4997,19 +5296,23 @@
  restoreHiddenInvalid(group);
  refreshFormGate(group.closest('form'));
  });
- // Generic drag-reorder shared by the OSC Transmitters + OSC Destinations
- // row lists: same ⋮⋮ handle on both. Each row carries the bulk-reorder
- // endpoint + swap target in ``data-reorder-url`` / ``data-reorder-target``,
- // so one set of listeners drives both lists.
- const OSC_REORDER_HANDLE_SEL = '.osc-binding-drag-handle, .osc-destination-drag-handle';
- const OSC_REORDER_ROW_SEL = '.osc-binding-row, .osc-destination-row';
+ // Generic drag-reorder shared by the OSC Transmitters, OSC Destinations and
+ // other row lists (``.reorder-row`` rows with a ``.row-drag-handle``): the
+ // same ⋮⋮ handle on each, a row moving only among its own siblings. A row
+ // carrying its bulk-reorder endpoint + swap target in ``data-reorder-url`` /
+ // ``data-reorder-target`` POSTs the new order; any other list receives a
+ // ``rows-reordered`` event with the row ids in their new order.
+ const OSC_REORDER_HANDLE_SEL = '.osc-binding-drag-handle, .osc-destination-drag-handle, .row-drag-handle';
+ const OSC_REORDER_ROW_SEL = '.osc-binding-row, .osc-destination-row, .reorder-row';
  let oscDragSourceId = null;
+ let oscDragSourceRow = null;
  document.addEventListener('dragstart', (event) => {
  const handle = event.target.closest(OSC_REORDER_HANDLE_SEL);
  if (!handle) return;
  const row = handle.closest(OSC_REORDER_ROW_SEL);
  if (!row) return;
  oscDragSourceId = row.dataset.rowId;
+ oscDragSourceRow = row;
  row.classList.add('dragging');
  // ``effectAllowed = "move"`` + a payload satisfies Firefox's
  // drag-init contract; the actual id transfer happens via the
@@ -5028,11 +5331,12 @@
  el.classList.remove('drop-target');
  });
  oscDragSourceId = null;
+ oscDragSourceRow = null;
  });
  document.addEventListener('dragover', (event) => {
  if (!oscDragSourceId) return;
  const targetRow = event.target.closest(OSC_REORDER_ROW_SEL);
- if (!targetRow) return;
+ if (!targetRow || targetRow.parentElement !== oscDragSourceRow.parentElement) return;
  event.preventDefault();
  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
  document.querySelectorAll('.drop-target').forEach(el => {
@@ -5045,13 +5349,12 @@
  document.addEventListener('drop', (event) => {
  if (!oscDragSourceId) return;
  const targetRow = event.target.closest(OSC_REORDER_ROW_SEL);
- if (!targetRow) return;
+ // Don't cross lists: a drag started in one list only reorders within it.
+ if (!targetRow || targetRow.parentElement !== oscDragSourceRow.parentElement) return;
  event.preventDefault();
  const list = targetRow.parentElement;
- if (!list) return;
- // Don't cross lists: a drag started in one list only reorders within it.
- const sourceRow = list.querySelector('[data-row-id="' + oscDragSourceId + '"]');
- if (!sourceRow || sourceRow === targetRow) {
+ const sourceRow = oscDragSourceRow;
+ if (sourceRow === targetRow) {
  oscDragSourceId = null;
  return;
  }
@@ -5064,19 +5367,21 @@
  // Build the new ordering and POST it to the row's own reorder
  // endpoint. HTMX is already loaded so ``htmx.ajax`` keeps the
  // re-render flow identical to every other CRUD round-trip.
+ const order = Array.from(list.children)
+ .filter(el => el.matches(OSC_REORDER_ROW_SEL))
+ .map(el => el.dataset.rowId);
  const url = targetRow.dataset.reorderUrl;
- const targetId = targetRow.dataset.reorderTarget;
- if (url && targetId) {
- const order = Array.from(list.querySelectorAll(OSC_REORDER_ROW_SEL))
- .map(el => el.dataset.rowId)
- .join(',');
+ if (url) {
  window.htmx.ajax('POST', url, {
- target: '#' + targetId,
+ target: '#' + targetRow.dataset.reorderTarget,
  swap: 'outerHTML',
- values: { order },
+ values: { order: order.join(',') },
  });
+ } else {
+ list.dispatchEvent(new CustomEvent('rows-reordered', { bubbles: true, detail: { order } }));
  }
  oscDragSourceId = null;
+ oscDragSourceRow = null;
  });
  document.addEventListener('DOMContentLoaded', () => {
  initializeSectionFolding(document);
@@ -5089,6 +5394,124 @@
  % if defined('whats_new_pending') and whats_new_pending:
  <script>document.addEventListener('DOMContentLoaded', openfollowShowWhatsNew);</script>
  % end
+ % if defined('config') and config:
+ <script>
+ // Settings another station pushed here: a locked modal on every page until someone removes the warning.
+ (function () {
+ const POLL_MS = 3000;
+ // What the open modal lists, so a poll redraws it whenever that changes.
+ let shownKey = '';
+ // The pushes counted when the page first asked: a later count means its forms may predate one.
+ let baseline = null;
+ function pushedSettingsBody(state) {
+ const body = document.createDocumentFragment();
+ const box = document.createElement('div');
+ box.className = 'notice';
+ const lead = document.createElement('div');
+ lead.textContent = 'The pushed settings are already applied.';
+ box.appendChild(lead);
+ body.appendChild(box);
+ const list = document.createElement('ul');
+ list.className = 'pushed-settings-list';
+ state.pushes.forEach((push) => {
+ const item = document.createElement('li');
+ const at = document.createElement('time');
+ at.textContent = push.time;
+ const sender = push.station ? push.station + ' (' + push.address + ')' : push.address;
+ item.append(at, sender + ' pushed ' + push.what);
+ if (push.backup_error) {
+ const caution = document.createElement('div');
+ caution.className = 'field-caution-msg';
+ caution.textContent = NO_BACKUP_MADE;
+ item.appendChild(caution);
+ }
+ list.appendChild(item);
+ });
+ if (state.earlier) {
+ const item = document.createElement('li');
+ item.className = 'pushed-settings-earlier';
+ item.textContent = '+' + state.earlier + ' earlier';
+ list.appendChild(item);
+ }
+ body.appendChild(list);
+ return body;
+ }
+ async function removePushedSettingsWarning(upto, run, btn) {
+ const saveError = window.OpenFollow.saveError;
+ const card = document.querySelector('#modal-root .modal-card');
+ btn.disabled = true;
+ try {
+ const res = await fetch('/api/pushed-settings/remove', {
+ method: 'POST',
+ headers: { 'Content-Type': 'application/json' },
+ body: JSON.stringify({ upto, run }),
+ });
+ // 409: OpenFollow restarted since the modal was drawn; the reload shows what is pending now.
+ if (!res.ok && res.status !== 409) {
+ btn.disabled = false;
+ saveError.show(card, await saveError.fromResponse(res), 'Not removed.', btn.parentElement);
+ return;
+ }
+ } catch (err) {
+ btn.disabled = false;
+ saveError.show(card, saveError.UNREACHABLE, 'Not removed.', btn.parentElement);
+ return;
+ }
+ // The page shows the pushed values; a newer push still pending opens the modal again.
+ window.location.reload();
+ }
+ async function pollPushedSettings() {
+ // A hidden tab asks again when it is shown; the first ask sets the baseline regardless.
+ if (document.hidden && baseline) return;
+ let state;
+ try {
+ const res = await fetch('/api/pushed-settings', { headers: { Accept: 'application/json' } });
+ if (!res.ok) return;
+ state = await res.json();
+ } catch (err) {
+ return;
+ }
+ const root = document.getElementById('modal-root');
+ if (!root || !state || !Array.isArray(state.pushes)) return;
+ const ours = !root.hidden && root.dataset.pushedSettings === '1';
+ if (!baseline) baseline = { run: state.run, received: state.received };
+ // Ids and counts start again on every run.
+ const pushedSinceLoad = state.run === baseline.run ? state.received !== baseline.received : state.received > 0;
+ // A device-password prompt must stay answerable; the locked modal would make it inert.
+ if (document.querySelector('#privilege-password-modal [role="dialog"]')) {
+ if (ours) closeModal();
+ return;
+ }
+ if (!state.pushes.length) {
+ // Removed elsewhere: reload for the pushed values, once no other modal is in the way.
+ if (pushedSinceLoad && (ours || root.hidden)) window.location.reload();
+ else if (ours) closeModal();
+ return;
+ }
+ const key = state.run + ':' + state.earlier + ':' + state.pushes.map((push) => push.id).join(',');
+ if (ours && key === shownKey) return;
+ if (!ours && !root.hidden) return;
+ shownKey = key;
+ const latest = state.pushes[0].id;
+ openModal({
+ title: 'Settings were pushed to this station',
+ bodyHTML: pushedSettingsBody(state),
+ dismissable: false,
+ footerButtons: [
+ { label: 'Remove Warning', kind: 'primary', onClick: (btn) => removePushedSettingsWarning(latest, state.run, btn) },
+ ],
+ onClose: () => { delete root.dataset.pushedSettings; },
+ });
+ root.dataset.pushedSettings = '1';
+ }
+ document.addEventListener('DOMContentLoaded', () => {
+ pollPushedSettings();
+ setInterval(pollPushedSettings, POLL_MS);
+ document.addEventListener('visibilitychange', pollPushedSettings);
+ });
+ })();
+ </script>
+ % end
  %# Privilege-password modal. Surfaces whenever a privileged subsystem
  %# (e.g. a network apply) parks a password prompt on the broker. Global so
  %# it works on every page, not just where the prompting action lives; polls
@@ -5099,9 +5522,14 @@
  <div hx-disinherit="hx-select hx-target">
      <div id="privilege-password-modal"
           hx-get="/system/privilege/password/modal"
-          hx-trigger="load, every 3s"
+          hx-trigger="load, every 3s [!document.hidden], poll-shown from:body"
           hx-target="this"
           hx-swap="innerHTML"></div>
  </div>
+ % from openfollow.configuration import feature_gated
+ % if defined('config') and config and feature_gated(config.touch_remote, config, 'touch_remote').enabled:
+ % include('partials/touch_remote_card.tpl')
+ <script src="/assets/js/touch-remote.js?v={{_asset_v}}"></script>
+ % end
 </body>
 </html>

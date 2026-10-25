@@ -4,74 +4,33 @@
         <span class="section-note">Export, import and restore device settings</span>
     </div>
 
-    <div id="import-restart-notice" class="restart-notice" style="display:none">
-        App is restarting&hellip; Please wait.
-    </div>
-
-    <div id="config-transfer-content">
-        <div class="group">
-            <h3 class="group-title">Export</h3>
-            <p style="color:var(--muted);font-size:0.88rem;margin:0 0 0.6rem;">
-                Download the current configuration as a JSON file.
-            </p>
-            <div class="actions">
-                <button type="button" class="save-btn" onclick="exportConfig()">Export Configuration</button>
-            </div>
-        </div>
-
-        <div class="group">
-            <h3 class="group-title">Import</h3>
-            <p style="color:var(--muted);font-size:0.88rem;margin:0 0 0.6rem;">
-                Load a previously exported configuration file.
-                The device's network IP address will be preserved.
-            </p>
-            <label for="config-import-file">Configuration File (.ofsettings)</label>
-            <input type="file" id="config-import-file" accept=".ofsettings,.openfollowsettings" style="display:none"
-                   onchange="document.getElementById('config-import-filename').textContent = this.files[0] ? this.files[0].name : ''">
-            <div class="actions">
-                <button type="button" class="btn-secondary"
-                        onclick="document.getElementById('config-import-file').click()">
-                    Choose file
-                </button>
-                <span id="config-import-filename" class="field-note" style="margin:0;align-self:center"></span>
-            </div>
-            <div class="actions" id="import-actions" style="margin-top:0.72rem;">
-                <button type="button" class="save-btn" id="import-btn" onclick="importConfig()">Import Configuration</button>
-            </div>
-        </div>
-
-        <div class="group">
-            <h3 class="group-title">Restore Defaults</h3>
-            <div class="actions" id="restore-actions">
-                <button type="button" class="btn-danger" id="restore-defaults-btn"
-                        onclick="restoreDefaults()">Restore Defaults</button>
-            </div>
+    <div class="group">
+        <h3 class="group-title">Export</h3>
+        <div class="actions" id="export-actions">
+            <button type="button" class="save-btn" onclick="exportConfig()">Export Configuration</button>
         </div>
     </div>
 
-    <!-- Restart confirmation overlay -->
-    <div id="import-restart-overlay" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.7);backdrop-filter:blur(4px);align-items:center;justify-content:center;">
-        <div style="background:var(--bg-soft);border:1px solid var(--border);border-radius:1.1rem;padding:1.5rem;max-width:480px;width:calc(100% - 2rem);">
-            <div class="section-head">
-                <h2>Restart Required</h2>
-            </div>
-            <p style="color:var(--muted);font-size:0.9rem;margin:0 0 0.6rem;">
-                The imported configuration has been validated.
-                Some changes require an app restart to take effect:
-            </p>
-            <ul id="import-restart-reasons" style="color:var(--accent);font-size:0.9rem;margin:0 0 1rem;padding-left:1.2rem;"></ul>
-            <div class="actions" style="flex-wrap:wrap;">
-                <button type="button" class="restart-btn" onclick="confirmImportRestart()">Restart Now</button>
-                <button type="button" class="secondary" onclick="skipImportRestart()">Apply Without Restart</button>
-                <button type="button" class="secondary" onclick="cancelImportRestart()">Cancel</button>
-            </div>
+    <div class="group">
+        <h3 class="group-title">Import</h3>
+        <input type="file" id="config-import-file" accept=".ofsettings,.openfollowsettings" style="display:none"
+               onchange="importConfig(this)">
+        <div class="actions" id="import-actions">
+            <button type="button" class="save-btn" id="import-btn"
+                    onclick="document.getElementById('config-import-file').click()">Import Configuration&hellip;</button>
+        </div>
+    </div>
+
+    <div class="group">
+        <h3 class="group-title">Restore Defaults</h3>
+        <div class="actions" id="restore-actions">
+            <button type="button" class="btn-secondary" id="restore-defaults-btn"
+                    onclick="restoreDefaults()">Restore Defaults</button>
         </div>
     </div>
 </div>
 
 <script>
-var _pendingImportData = null;
-
 function _transferFailed(info, lead, actionsId) {
     window.OpenFollow.saveError.show(
         document.getElementById('config-transfer-section'), info, lead, document.getElementById(actionsId));
@@ -81,102 +40,99 @@ function _importFailed(info) {
     _transferFailed(info, 'Not imported.', 'import-actions');
 }
 
-function exportConfig() {
-    window.location.href = '/api/config/export';
-}
-
-function importConfig() {
-    window.OpenFollow.saveError.clear(document.getElementById('config-transfer-section'));
-    var fileInput = document.getElementById('config-import-file');
-    if (!fileInput.files.length) {
-        _importFailed({error: 'No file is selected.', action: 'Choose a configuration file first.'});
+/* Fetched rather than navigated to, so a refusal shows its reason here instead of replacing the page. */
+async function exportConfig() {
+    var saveError = window.OpenFollow.saveError;
+    saveError.clear(document.getElementById('config-transfer-section'));
+    var res;
+    try {
+        res = await fetch('/api/config/export');
+    } catch (e) {
+        _transferFailed(saveError.UNREACHABLE, 'Not exported.', 'export-actions');
         return;
     }
-    var btn = document.getElementById('import-btn');
-    btn.disabled = true;
-    btn.textContent = 'Importing\u2026';
+    if (!res.ok) {
+        _transferFailed(await saveError.fromResponse(res), 'Not exported.', 'export-actions');
+        return;
+    }
+    var named = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') || '');
+    var link = document.createElement('a');
+    link.href = URL.createObjectURL(await res.blob());
+    link.download = named ? named[1] : 'settings.ofsettings';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(function() { URL.revokeObjectURL(link.href); }, 10000);
+}
+
+var _IMPORT_LABEL = 'Import Configuration\u2026';
+
+/* Choosing the file starts the import; the modal is the one step before it applies. */
+function importConfig(input) {
+    var file = input.files && input.files[0];
+    if (!file) return;
+    /* Cleared so picking the same file again after a failure fires change again. */
+    input.value = '';
+    window.OpenFollow.saveError.clear(document.getElementById('config-transfer-section'));
 
     var reader = new FileReader();
     reader.onerror = function() {
-        btn.disabled = false;
-        btn.textContent = 'Import Configuration';
         _importFailed({error: 'The selected file could not be read.'});
     };
-    reader.onload = function(e) {
+    reader.onload = async function(e) {
         var raw = e.target.result;
         try { JSON.parse(raw); }
         catch (err) {
-            btn.disabled = false;
-            btn.textContent = 'Import Configuration';
             _importFailed({error: 'The selected file is not valid JSON.'});
             return;
         }
-        _sendImport(raw, '');
+        var ok = await modalConfirm({
+            title: 'Import configuration?',
+            message: 'Every show setting is replaced by ' + file.name + ', including the station '
+                + 'name. The web login, port and interface stay as they are, and so do local file '
+                + 'paths. A backup of the current settings is saved on the station first.',
+            confirmLabel: 'Import',
+            danger: true,
+        });
+        if (!ok) return;
+        _sendImport(raw, file.name);
     };
-    reader.readAsText(fileInput.files[0]);
+    reader.readAsText(file);
 }
 
-function _sendImport(body, queryParams) {
+function _sendImport(body, name) {
     var btn = document.getElementById('import-btn');
-    fetch('/api/config/import' + queryParams, {
+    btn.disabled = true;
+    btn.textContent = 'Importing ' + name + '\u2026';
+    fetch('/api/config/import', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: body
     })
     .then(async function(res) {
-        btn.disabled = false;
-        btn.textContent = 'Import Configuration';
         var text = await res.text();
         var result = {};
         try { result = JSON.parse(text); } catch (e) { /* not JSON: reported below */ }
         if (!res.ok || result.error) {
+            btn.disabled = false;
+            btn.textContent = _IMPORT_LABEL;
             _importFailed(window.OpenFollow.saveError.fromText(res.status, text));
             return;
         }
-        if (result.restarting) {
-            _showRestartingState();
+        if (result.backup_error) {
+            /* Ready again in case the page stays, which it does when the toast can't outlive a reload. */
+            btn.disabled = false;
+            btn.textContent = _IMPORT_LABEL;
+            toastAfterReload('Imported ' + name + '. ' + NO_BACKUP_MADE, 'caution');
             return;
         }
-        if (result.needs_restart) {
-            _pendingImportData = body;
-            var list = document.getElementById('import-restart-reasons');
-            list.innerHTML = result.restart_reasons.map(function(r) {
-                return '<li>' + r + '</li>';
-            }).join('');
-            document.getElementById('import-restart-overlay').style.display = 'flex';
-            return;
-        }
-        /* success, no restart */
-        showToast(result.skipped_restart_sections
-            ? 'Configuration imported (some changes need a restart)'
-            : 'Configuration imported successfully');
-        setTimeout(function() { window.location.reload(); }, 600);
+        toastAfterReload('Imported ' + name);
     })
     .catch(function() {
         btn.disabled = false;
-        btn.textContent = 'Import Configuration';
+        btn.textContent = _IMPORT_LABEL;
         _importFailed(window.OpenFollow.saveError.UNREACHABLE);
     });
-}
-
-function confirmImportRestart() {
-    document.getElementById('import-restart-overlay').style.display = 'none';
-    if (!_pendingImportData) return;
-    var btn = document.getElementById('import-btn');
-    btn.disabled = true;
-    btn.textContent = 'Importing\u2026';
-    _sendImport(_pendingImportData, '?confirm_restart=1');
-    _pendingImportData = null;
-}
-
-function skipImportRestart() {
-    document.getElementById('import-restart-overlay').style.display = 'none';
-    if (!_pendingImportData) return;
-    var btn = document.getElementById('import-btn');
-    btn.disabled = true;
-    btn.textContent = 'Importing\u2026';
-    _sendImport(_pendingImportData, '?skip_restart=1');
-    _pendingImportData = null;
 }
 
 function _restoreFailed(info) {
@@ -189,51 +145,34 @@ async function restoreDefaults() {
         title: 'Restore defaults?',
         message: 'Every setting goes back to its default and the station restarts. Network '
             + 'access is not reset: the web login, port and interface stay as they are, so this '
-            + 'page comes back on its own \u2013 and local file paths are kept too. Export first '
-            + 'if you want a copy; this cannot be undone.',
+            + 'page comes back on its own \u2013 and local file paths are kept too. A backup of '
+            + 'the current settings is saved on the station first.',
         confirmLabel: 'Restore Defaults',
         danger: true,
     });
     if (!ok) return;
 
-    var btn = document.getElementById('restore-defaults-btn');
-    btn.disabled = true;
-    btn.textContent = 'Restoring\u2026';
-    fetch('/api/config/reset', {method: 'POST'})
-    .then(async function(res) {
-        btn.disabled = false;
-        btn.textContent = 'Restore Defaults';
-        var text = await res.text();
-        var result = {};
-        try { result = JSON.parse(text); } catch (e) { /* not JSON: reported below */ }
-        if (!res.ok || !result.success) {
-            _restoreFailed(window.OpenFollow.saveError.fromText(res.status, text));
-            return;
-        }
-        /* The reset restarts the station; wait for it to answer again. */
-        _showRestartingState();
-    })
-    .catch(function() {
-        btn.disabled = false;
-        btn.textContent = 'Restore Defaults';
+    /* The reset restarts the station: its progress shows from the moment it is sent. */
+    openfollowRestartProgress();
+    var res, text;
+    try {
+        res = await fetch('/api/config/reset', {method: 'POST'});
+        text = await res.text();
+    } catch (e) {
+        closeModal();
         _restoreFailed(window.OpenFollow.saveError.UNREACHABLE);
-    });
-}
-
-function cancelImportRestart() {
-    document.getElementById('import-restart-overlay').style.display = 'none';
-    _pendingImportData = null;
-}
-
-function _showRestartingState() {
-    document.getElementById('config-transfer-content').style.display = 'none';
-    var notice = document.getElementById('import-restart-notice');
-    notice.style.display = 'block';
-    /* Poll until the server comes back up, then reload */
-    var poll = setInterval(function() {
-        fetch('/api/info').then(function(res) {
-            if (res.ok) { clearInterval(poll); window.location.reload(); }
-        }).catch(function() { /* still restarting */ });
-    }, 2000);
+        return;
+    }
+    var result = {};
+    try { result = JSON.parse(text); } catch (e) { /* not JSON: reported below */ }
+    if (!res.ok || !result.success) {
+        closeModal();
+        _restoreFailed(window.OpenFollow.saveError.fromText(res.status, text));
+        return;
+    }
+    if (result.backup_error) {
+        toastOnNextLoad('Restored defaults. ' + NO_BACKUP_MADE, 'caution');
+    }
+    openfollowAwaitRestart(result.instance || '');
 }
 </script>

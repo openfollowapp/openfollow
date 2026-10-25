@@ -561,7 +561,7 @@ def test_build_help_sections_normal_drops_lines_for_empty_keyboard_actions() -> 
     )
     keyboard = next(lines for title, lines in sections if title == "Keyboard")
     assert not any("Reset marker" in line for line in keyboard)
-    assert not any("Toggle help" in line for line in keyboard)
+    assert not any("Toggle Help" in line for line in keyboard)
     assert not any("Settings menu" in line for line in keyboard)
     # Movement still rendered (non-empty defaults).
     assert any("Move X/Y" in line for line in keyboard)
@@ -603,7 +603,7 @@ def test_build_help_sections_normal_btn_returns_empty_when_action_explicitly_cle
     )
     controller = next(lines for title, lines in sections if title == "Controller")
     assert not any("Reset marker" in line for line in controller)
-    assert not any("Toggle help" in line for line in controller)
+    assert not any("Toggle Help" in line for line in controller)
     assert not any("Settings menu" in line for line in controller)
     # The L-Stick movement line is unconditional.
     assert any("Move X/Y" in line for line in controller)
@@ -820,3 +820,50 @@ def test_scene_view_pairs_the_rect_with_the_stretch() -> None:
     assert tuple(view.rect) == (0, 125, 1000, 750)
     assert view.pixel_aspect == pytest.approx(12 / 11)
     assert scene_view(1512, 982, 1920, 1080) == ((0, 66, 1512, 850), 1.0)
+
+
+def test_build_help_sections_names_bound_path_actions() -> None:
+    sections = dict(
+        build_help_sections(
+            mode="normal",
+            keyboard_connected=True,
+            controller_connected=True,
+            keyboard_labels={"pathfinder": "p", "toggle_paths": "o"},
+            button_labels={"pathfinder": "A", "toggle_paths": ""},
+            mouse3d_connected=True,
+            mouse3d_buttons={"pathfinder": 2, "toggle_paths": 3},
+        )
+    )
+    assert "P: Toggle Pathfinder" in sections["Keyboard"]
+    assert "O: Toggle paths" in sections["Keyboard"]
+    assert "A: Toggle Pathfinder" in sections["Controller"]
+    assert not any("Toggle paths" in line for line in sections["Controller"])
+    assert "Btn 2: Toggle Pathfinder" in sections["3D Mouse"]
+    assert "Btn 3: Toggle paths" in sections["3D Mouse"]
+
+
+def test_build_help_sections_leaves_out_unbound_path_actions() -> None:
+    sections = dict(build_help_sections(mode="normal", keyboard_connected=True, controller_connected=False))
+    assert not any("Path" in line for line in sections["Keyboard"])
+
+
+@pytest.mark.parametrize("section", ["Keyboard", "Controller", "3D Mouse"])
+def test_build_help_sections_lists_the_toggles_as_one_group(section: str) -> None:
+    sections = dict(
+        build_help_sections(
+            mode="normal",
+            keyboard_connected=True,
+            controller_connected=True,
+            keyboard_labels={"toggle_help": "h", "toggle_zones": "z", "pathfinder": "p", "toggle_paths": "o"},
+            button_labels={"toggle_help": "Y", "toggle_zones": "B", "pathfinder": "A", "toggle_paths": "Start"},
+            mouse3d_connected=True,
+            mouse3d_buttons={"toggle_help": 0, "toggle_zones": 1, "pathfinder": 2, "toggle_paths": 3},
+        )
+    )
+    lines = sections[section]
+    labels = ("Toggle Help (this overlay)", "Toggle zone", "Toggle Pathfinder", "Toggle paths")
+    rows = [next((i for i, line in enumerate(lines) if label in line), None) for label in labels]
+    assert None not in rows, f"{section} lacks {labels[rows.index(None)]!r}: {lines}"
+    assert rows == list(range(rows[0], rows[0] + len(labels))), lines
+    settings = [i for i, line in enumerate(lines) if "Settings menu" in line]
+    assert all(i > rows[-1] for i in settings), lines

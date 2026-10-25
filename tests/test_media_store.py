@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import errno
 import os
+import struct
 import threading
 from pathlib import Path
 
@@ -187,7 +188,7 @@ def test_a_clip_move_that_fails_part_way_lists_no_half_clip(
 
 @pytest.mark.parametrize(
     "media_id",
-    [ms.DEFAULT_STAGE_ID, ms.DEFAULT_GREY_ID, "0123456789abcdef"],
+    [ms.DEFAULT_STAGE_ID, ms.DEFAULT_CONCERT_ID, ms.DEFAULT_FESTIVAL_ID, ms.DEFAULT_GREY_ID, "0123456789abcdef"],
 )
 def test_valid_ids(media_id: str) -> None:
     assert ms.is_valid_id(media_id)
@@ -216,6 +217,8 @@ def test_invalid_ids(media_id: str) -> None:
 
 def test_defaults_are_read_only() -> None:
     assert ms.is_read_only(ms.DEFAULT_STAGE_ID)
+    assert ms.is_read_only(ms.DEFAULT_CONCERT_ID)
+    assert ms.is_read_only(ms.DEFAULT_FESTIVAL_ID)
     assert ms.is_read_only(ms.DEFAULT_GREY_ID)
     assert not ms.is_read_only("0123456789abcdef")
 
@@ -225,7 +228,12 @@ def test_defaults_are_read_only() -> None:
 
 def test_list_media_defaults_only_when_empty(storage: Path) -> None:
     items = ms.list_media()
-    assert [i.media_id for i in items] == [ms.DEFAULT_STAGE_ID, ms.DEFAULT_GREY_ID]
+    assert [i.media_id for i in items] == [
+        ms.DEFAULT_STAGE_ID,
+        ms.DEFAULT_CONCERT_ID,
+        ms.DEFAULT_FESTIVAL_ID,
+        ms.DEFAULT_GREY_ID,
+    ]
     assert all(i.read_only for i in items)
 
 
@@ -234,6 +242,39 @@ def test_resolve_defaults(storage: Path) -> None:
     grey = ms.resolve(ms.DEFAULT_GREY_ID)
     assert stage is not None and stage.kind == "stage" and stage.path is not None
     assert grey is not None and grey.kind == "grey" and grey.path is None
+
+
+_BUNDLED_PICTURES = [
+    pytest.param(ms.DEFAULT_CONCERT_ID, "CONCERT_ASSET_JPG", "Concert", id="concert"),
+    pytest.param(ms.DEFAULT_FESTIVAL_ID, "FESTIVAL_ASSET_JPG", "Festival", id="festival"),
+]
+
+
+@pytest.mark.parametrize(("media_id", "asset", "label"), _BUNDLED_PICTURES)
+def test_resolve_a_bundled_picture(storage: Path, media_id: str, asset: str, label: str) -> None:
+    path = getattr(ms, asset)
+    item = ms.resolve(media_id)
+    assert item is not None and item.label == label and item.kind == "image" and item.read_only
+    assert item.path == path and item.size_bytes == path.stat().st_size
+
+
+@pytest.mark.parametrize(("media_id", "asset", "label"), _BUNDLED_PICTURES)
+def test_a_bundled_picture_ships_as_a_full_hd_jpeg(media_id: str, asset: str, label: str) -> None:
+    data = getattr(ms, asset).read_bytes()
+    assert data[:3] == b"\xff\xd8\xff"
+    # The frame header (baseline SOF0 or progressive SOF2) carries height, then width.
+    at = next(i for i in range(2, len(data) - 9) if data[i] == 0xFF and data[i + 1] in (0xC0, 0xC2))
+    assert struct.unpack(">HH", data[at + 5 : at + 9]) == (1080, 1920)
+
+
+@pytest.mark.parametrize(("media_id", "asset", "label"), _BUNDLED_PICTURES)
+def test_without_its_file_a_bundled_picture_is_not_offered(
+    storage: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, media_id: str, asset: str, label: str
+) -> None:
+    monkeypatch.setattr(ms, asset, tmp_path / "missing.jpg")
+    offered = [i.media_id for i in ms.list_media()]
+    assert media_id not in offered and len(offered) == len(ms.DEFAULT_IDS) - 1
+    assert ms.resolve(media_id) is None
 
 
 def test_resolve_unknown_and_invalid_return_none(storage: Path) -> None:

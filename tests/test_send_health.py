@@ -73,7 +73,7 @@ class TestStreak:
         assert (status.error, status.errno, status.failed) == ("No route to host", errno.EHOSTUNREACH, 1)
 
     def test_a_burst_at_one_instant_never_becomes_failing(self) -> None:
-        """However slowly the sender then rebuilds its socket."""
+        """However long nothing more is recorded."""
         health, clock = _health()
         for _ in range(500):
             health.record_failure(_REFUSED, _GROUP)
@@ -146,6 +146,65 @@ class TestRecovery:
         clock.now += RECOVERY_HOLD_S
         health.record_success()
         assert health.status().state == "ok"
+
+
+class TestSkippedSends:
+    """A send the sender skips for want of a socket, while it rebuilds the one a failure tore down."""
+
+    def test_one_inside_a_streak_is_a_failure(self) -> None:
+        """A rebuild that keeps failing must not hold the streak short of a row."""
+        health, clock = _health()
+        health.record_failure(_REFUSED, _GROUP)
+        clock.now += FAILING_AFTER_S
+        health.record_skipped()
+        status = health.status()
+        assert status.failing
+        assert (status.failed, status.sent_total, status.failed_total) == (2, 0, 2)
+        assert (status.error, status.errno) == ("No route to host", errno.EHOSTUNREACH)
+
+    def test_one_outside_a_streak_records_nothing(self) -> None:
+        health, clock = _health()
+        health.record_skipped()
+        clock.now += FAILING_AFTER_S
+        health.record_skipped()
+        status = health.status()
+        assert status.state == "ok"
+        assert (status.sent_total, status.failed_total) == (0, 0)
+
+    def test_one_restarts_the_recovery_hold(self) -> None:
+        health, clock = _health()
+        _failing(health, clock)
+        health.record_success()
+        clock.now += 0.5
+        health.record_skipped()
+        health.record_success()
+        clock.now += RECOVERY_HOLD_S - 0.01
+        health.record_success()
+        assert health.status().failing
+
+    def test_the_log_names_the_failure_that_opened_the_streak(self, caplog: pytest.LogCaptureFixture) -> None:
+        unreachable = OSError(errno.ENETUNREACH, "Network is unreachable")
+        health, clock = _health()
+        with caplog.at_level(logging.INFO, logger="openfollow.send_health"):
+            health.record_failure(unreachable, _GROUP)
+            clock.now += FAILING_AFTER_S
+            health.record_skipped()
+            clock.now += 60.0
+            health.record_skipped()
+        assert _messages(caplog) == [
+            f"PSN: send failed: [Errno {errno.ENETUNREACH}] Network is unreachable",
+            f"PSN: sends keep failing: [Errno {errno.ENETUNREACH}] Network is unreachable",
+            f"PSN: sends still failing after 61 s (3 failed): [Errno {errno.ENETUNREACH}] Network is unreachable",
+        ]
+
+    def test_after_a_macos_refusal_they_raise_the_local_network_row(self) -> None:
+        health, clock = _health("darwin")
+        health.record_failure(_REFUSED, _GROUP)
+        clock.now += FAILING_AFTER_S
+        health.record_skipped()
+        assert send_alerts([health.status()]) == [
+            SendAlert(LOCAL_NETWORK_TEXT, LOCAL_NETWORK_ACTION, LOCAL_NETWORK_HUD_TEXT)
+        ]
 
 
 class TestLogging:

@@ -534,6 +534,33 @@ class TestSendBeforeSocketOpen:
         srv._send(b"\x00", stale)
         assert srv.send_health.status().failed_total == 0
 
+    def test_a_send_skipped_while_the_socket_is_rebuilt_is_a_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A rebuild that keeps failing must not hold the streak short of a row."""
+        # The recovery thread never runs, so the socket stays down.
+        monkeypatch.setattr(server_module.threading, "Thread", _DummyThread)
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        srv._exit_stack = contextlib.ExitStack()
+        assert srv._try_open_multicast_socket_once(attempt=1) is True
+        _FakeMcastSocket.sendto_raises = OSError(errno.ENETUNREACH, "Network is unreachable")
+        srv._send(b"\x00")
+        assert srv._socket is None
+        srv._send(b"\x00")
+        status = srv.send_health.status()
+        assert status.state == "failing"
+        assert (status.failed, status.error) == (2, "Network is unreachable")
+
+    def test_a_send_skipped_after_its_generation_stopped_records_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        srv = PsnServer(mcast_ip="236.10.10.10")
+        srv.send_health.record_failure(OSError(errno.ENETUNREACH, "Network is unreachable"), "236.10.10.10")
+        srv._socket = None
+        stale = threading.Event()
+        stale.set()
+        srv._send(b"\x00", stale)
+        status = srv.send_health.status()
+        assert (status.state, status.failed_total) == ("retrying", 1)
+
 
 # --------------------------------------------------------------------------- #
 # Live-apply seams: rebind_mcast_ip + update_system_name

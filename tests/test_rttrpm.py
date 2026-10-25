@@ -806,6 +806,60 @@ class TestRttrpmSendHealthLifecycle:
         srv._send(b"x", stale)
         assert srv.send_health.status().failed_total == 0
 
+    def test_a_packet_skipped_while_the_socket_is_rebuilt_is_a_failure(self, monkeypatch) -> None:
+        """A rebuild that keeps failing must not hold the streak short of a row."""
+        import errno as _e
+
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        srv = RttrpmServer(host="192.0.2.30")
+        srv.register_marker(_marker(1))
+        sock = MagicMock()
+        sock.sendto.side_effect = OSError(_e.ENETUNREACH, "Network is unreachable")
+        srv._socket = sock
+        with patch("openfollow.rttrpm.server.socket.socket", side_effect=OSError("no fds")):
+            srv._send_packet()
+            assert srv._socket is None
+            srv._send_packet()
+        status = srv.send_health.status()
+        assert status.state == "failing"
+        assert (status.failed, status.error) == (2, "Network is unreachable")
+
+    def test_the_rest_of_a_split_packet_skipped_after_a_failed_rebuild_is_a_failure(self, monkeypatch) -> None:
+        import errno as _e
+
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        srv = RttrpmServer(host="192.0.2.30")
+        # Past one datagram's worth of trackables, so the packet splits.
+        for marker_id in range(1, 61):
+            srv.register_marker(_marker(marker_id))
+        sock = MagicMock()
+        sock.sendto.side_effect = OSError(_e.ENETUNREACH, "Network is unreachable")
+        srv._socket = sock
+        with patch("openfollow.rttrpm.server.socket.socket", side_effect=OSError("no fds")):
+            srv._send_packet()
+        assert sock.sendto.call_count == 1
+        status = srv.send_health.status()
+        assert (status.state, status.failed) == ("failing", 2)
+
+    @pytest.mark.parametrize(
+        "send",
+        [lambda srv, stop: srv._send_packet(stop), lambda srv, stop: srv._send(b"x", stop)],
+        ids=["packet", "datagram"],
+    )
+    def test_a_send_skipped_after_its_generation_stopped_records_nothing(self, monkeypatch, send) -> None:
+        import errno as _e
+
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        srv = RttrpmServer(host="192.0.2.30")
+        srv.register_marker(_marker(1))
+        srv.send_health.record_failure(OSError(_e.ENETUNREACH, "Network is unreachable"), "192.0.2.30")
+        srv._socket = None
+        stale = threading.Event()
+        stale.set()
+        send(srv, stale)
+        status = srv.send_health.status()
+        assert (status.state, status.failed_total) == ("retrying", 1)
+
     def test_a_failure_is_recorded_against_the_configured_host(self) -> None:
         import errno as _e
 

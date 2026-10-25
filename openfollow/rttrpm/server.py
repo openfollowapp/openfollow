@@ -411,6 +411,7 @@ class RttrpmServer:
             self._maybe_rebuild_socket_after_error(stop_event)
             if self._socket is None:
                 # Still down: skip encoding a packet _send() would only drop.
+                self._record_skipped(stop_event)
                 return
         # Freeze name and position before sizing anything. The trackable module
         # is 34 octets plus the name, and the size the split budgets against is
@@ -485,9 +486,15 @@ class RttrpmServer:
             submitted,
         )
 
+    def _record_skipped(self, stop_event: threading.Event | None) -> None:
+        """Count a send skipped for want of a socket, unless its generation has stopped."""
+        if not self._resolve_stop(stop_event).is_set():
+            self._send_health.record_skipped()
+
     def _send(self, data: bytes, stop_event: threading.Event | None = None) -> None:
         sock = self._socket
         if sock is None:
+            self._record_skipped(stop_event)
             return
         try:
             sock.sendto(data, (self._host, self._port))

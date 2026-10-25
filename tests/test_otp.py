@@ -1455,6 +1455,42 @@ class TestOtpSendHealthLifecycle:
         srv._send(b"\x00", "239.159.1.1", stale)
         assert srv.send_health.status().failed_total == 0
 
+    def test_a_send_skipped_while_the_socket_is_rebuilt_is_a_failure(self, monkeypatch) -> None:
+        """A rebuild that keeps failing must not hold the streak short of a row."""
+        import errno as _e
+
+        # The recovery thread waits out the test, so the socket stays down.
+        monkeypatch.setattr("openfollow.otp.server._SOCKET_RETRY_DELAY", 60.0)
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        srv = OtpServer(system_number=1)
+        sock = MagicMock()
+        sock.sendto.side_effect = OSError(_e.ENETUNREACH, "Network is unreachable")
+        srv._socket = sock
+        try:
+            srv._send(b"\x00", "239.159.1.1")
+            assert srv._socket is None
+            srv._send(b"\x00", "239.159.1.1")
+            status = srv.send_health.status()
+            assert status.state == "failing"
+            assert (status.failed, status.error) == (2, "Network is unreachable")
+        finally:
+            srv._stop_event.set()
+            if srv._socket_thread is not None:
+                srv._socket_thread.join(timeout=2.0)
+
+    def test_a_send_skipped_after_its_generation_stopped_records_nothing(self, monkeypatch) -> None:
+        import errno as _e
+
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        srv = OtpServer(system_number=1)
+        srv.send_health.record_failure(OSError(_e.ENETUNREACH, "Network is unreachable"), "239.159.1.1")
+        srv._socket = None
+        stale = threading.Event()
+        stale.set()
+        srv._send(b"\x00", "239.159.1.1", stale)
+        status = srv.send_health.status()
+        assert (status.state, status.failed_total) == ("retrying", 1)
+
     def test_starting_forgets_the_streak(self) -> None:
         import errno as _e
 

@@ -1103,6 +1103,8 @@ class OtpServer:
         # the socket hand-over. A send racing teardown sends, returns, or fails.
         sock = self._socket
         if sock is None:
+            if not self._resolve_stop(stop_event).is_set():
+                self._send_health.record_skipped()
             return
         try:
             sock.sendto(data, (dest_ip, self._port))

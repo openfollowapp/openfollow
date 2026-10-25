@@ -6,14 +6,14 @@ The network observer watches interfaces, so it cannot see a send the OS refuses
 on an interface that is up. macOS does exactly that while OpenFollow's Local
 Network permission is off: every LAN send fails with ``EHOSTUNREACH`` while the
 address, the route and the socket all look healthy. Each sender records its
-sends here, and a run of failures that outlasts one socket rebuild becomes a
-status row.
+sends here, and failures that keep arriving become a status row.
 
 Two rules carry the weight:
 
 *A streak is failing once failures keep arriving*: a failure landing
-``FAILING_AFTER_S`` after the streak's first. A burst at one instant followed by
-a quiet socket rebuild never becomes a row, however slowly the sender retries.
+``FAILING_AFTER_S`` after the streak's first. A burst at one instant never
+becomes a row by itself, but a send skipped while the sender rebuilds the
+socket the burst tore down is a failure too, so a rebuild that long does.
 
 *Recovery needs sends that keep succeeding.* With Local Network denied, the
 first send on a fresh socket returns success and nothing leaves, so every
@@ -131,6 +131,8 @@ class SendHealth:
         self._quiet_starts = 0
         self._start_logged = False
         self._error = ""
+        # The last failure's full text, which the log quotes.
+        self._reason = ""
         self._errno: int | None = None
         self._multicast = False
 
@@ -156,52 +158,73 @@ class SendHealth:
         """Count a send to *dest* that raised *exc*. Logs once per streak, then as a reminder."""
         reason = str(exc) or exc.__class__.__name__
         with self._lock:
-            now = self._clock()
-            self._failed_total += 1
-            self._first_ok = None
             self._error = exc.strerror or reason
             self._errno = exc.errno
             self._multicast = is_multicast_host(dest)
+            self._reason = reason
+            entry = self._count_failure()
+        if entry is not None:
+            logger.log(entry[0], "%s", entry[1])
+
+    def record_skipped(self) -> None:
+        """Count a send skipped while the socket a failure tore down is rebuilt.
+
+        Inside a streak it is a failure with that streak's error, so a rebuild
+        that keeps failing still becomes a row. Outside one it records nothing.
+        """
+        with self._lock:
             if self._streak_start is None:
-                self._streak_start = now
-                self._streak_failures = 1
-                self._last_log = now
-                message = f"{self.label}: send failed: {reason}"
-                self._start_logged = now >= self._quiet_until
-                if self._start_logged:
-                    self._quiet_until = now + _REMIND_EVERY_S
-                    if self._quiet_starts:
-                        plural = "s" if self._quiet_starts != 1 else ""
-                        message += f" ({self._quiet_starts} brief failure{plural} since the last report)"
-                    self._quiet_starts = 0
-                    level = logging.WARNING
-                else:
-                    self._quiet_starts += 1
-                    level = logging.DEBUG
+                return
+            entry = self._count_failure()
+        if entry is not None:
+            logger.log(entry[0], "%s", entry[1])
+
+    def _count_failure(self) -> tuple[int, str] | None:
+        """Count one failure of the last recorded error; the log line it earns, if any. Caller holds the lock."""
+        now = self._clock()
+        reason = self._reason
+        self._failed_total += 1
+        self._first_ok = None
+        if self._streak_start is None:
+            self._streak_start = now
+            self._streak_failures = 1
+            self._last_log = now
+            message = f"{self.label}: send failed: {reason}"
+            self._start_logged = now >= self._quiet_until
+            if self._start_logged:
+                self._quiet_until = now + _REMIND_EVERY_S
+                if self._quiet_starts:
+                    plural = "s" if self._quiet_starts != 1 else ""
+                    message += f" ({self._quiet_starts} brief failure{plural} since the last report)"
+                self._quiet_starts = 0
+                level = logging.WARNING
             else:
-                self._streak_failures += 1
-                lasted = now - self._streak_start
-                if not self._failing and lasted >= FAILING_AFTER_S:
-                    self._failing = True
-                    self._last_log = now
-                    if not self._start_logged:
-                        # Reported here, so the next summary leaves it out.
-                        self._quiet_starts -= 1
-                    message = f"{self.label}: sends keep failing: {reason}"
-                    if looks_like_local_network(self._errno, self._multicast, self._platform):
-                        message += (
-                            " – macOS is refusing them, which is what Local Network access being off for"
-                            " OpenFollow looks like (System Settings → Privacy & Security → Local Network)"
-                        )
-                    level = logging.ERROR
-                elif self._failing and now - self._last_log >= _REMIND_EVERY_S:
-                    self._last_log = now
-                    failed = self._streak_failures
-                    message = f"{self.label}: sends still failing after {lasted:.0f} s ({failed} failed): {reason}"
-                    level = logging.WARNING
-                else:
-                    return
-        logger.log(level, "%s", message)
+                self._quiet_starts += 1
+                level = logging.DEBUG
+        else:
+            self._streak_failures += 1
+            lasted = now - self._streak_start
+            if not self._failing and lasted >= FAILING_AFTER_S:
+                self._failing = True
+                self._last_log = now
+                if not self._start_logged:
+                    # Reported here, so the next summary leaves it out.
+                    self._quiet_starts -= 1
+                message = f"{self.label}: sends keep failing: {reason}"
+                if looks_like_local_network(self._errno, self._multicast, self._platform):
+                    message += (
+                        " – macOS is refusing them, which is what Local Network access being off for"
+                        " OpenFollow looks like (System Settings → Privacy & Security → Local Network)"
+                    )
+                level = logging.ERROR
+            elif self._failing and now - self._last_log >= _REMIND_EVERY_S:
+                self._last_log = now
+                failed = self._streak_failures
+                message = f"{self.label}: sends still failing after {lasted:.0f} s ({failed} failed): {reason}"
+                level = logging.WARNING
+            else:
+                return None
+        return level, message
 
     def reset(self) -> None:
         """Forget the current streak: the sender was stopped, restarted or repointed."""

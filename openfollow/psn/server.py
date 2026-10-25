@@ -509,6 +509,8 @@ class PsnServer:
         # the socket hand-over. A send racing teardown sends, returns, or fails.
         sock = self._socket
         if sock is None:
+            if not self._resolve_stop(stop_event).is_set():
+                self._send_health.record_skipped()
             return
         dest = self._mcast_ip if self._mcast_ip else self._target_ip
         try:

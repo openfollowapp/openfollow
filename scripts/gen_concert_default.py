@@ -497,11 +497,23 @@ def side_risers(out: list[str]) -> None:
         out.append(poly([(x0, y0, h), (x1, y0, h), (x1, y0 + e, h), (x0, y0 + e, h)], "#f4f4f2"))
         ie = sorted((inner, inner + sgn * e))
         out.append(poly([(ie[0], y0, h), (ie[1], y0, h), (ie[1], y1, h), (ie[0], y1, h)], "#f4f4f2"))
-        for xm in (sgn * (xi + 0.7), sgn * (xi + 2.0), sgn * (xi + 3.3)):  # moving heads: base, head, lens
-            ym = (y0 + y1) / 2
-            box(out, xm - 0.22, xm + 0.22, ym - 0.22, ym + 0.22, h, h + 0.15, "#1c1d21", "#111215")
-            out.append(poly(disc(xm, ym, h + 0.55, 0.24, 18), "#202126", "#3a3c42", 1.5))
-            out.append(poly(disc(xm, ym - 0.05, h + 0.56, 0.13, 14), "#5a5e66"))
+        for xm in (sgn * (xi + 0.7), sgn * (xi + 2.0), sgn * (xi + 3.3)):
+            standing_light(out, xm, (y0 + y1) / 2, h, toward_centre=-sgn)
+
+
+def standing_light(out: list[str], x: float, y: float, z: float, toward_centre: int) -> None:
+    """A spot standing on the deck at height ``z``, its head aimed at the audience and tilted up: sized as a
+    Martin MAC Viper XIP (SPOT), the base, the yoke and the round head seen from behind."""
+    base_l, base_w, base_h, yoke_w, r, length = SPOT
+    tilt = math.radians(15.0)
+    pivot = np.array([x, y, z + 0.45])
+    aim = np.array([0.0, -math.cos(tilt), math.sin(tilt)])
+    back, front = pivot - 0.4 * length * aim, pivot + 0.6 * length * aim
+    box(out, x - base_l / 2, x + base_l / 2, y - base_w / 2, y + base_w / 2, z, z + base_h, "#303137", "#222328")
+    arms = sorted((x - yoke_w / 2, x + yoke_w / 2 - 0.04), key=lambda xa: toward_centre * xa)
+    box(out, arms[0], arms[0] + 0.04, y - 0.05, y + 0.05, z + base_h, pivot[2] + 0.05, "#303137", "#1b1c20")
+    can(out, back, front, r, "#3a3d44")
+    box(out, arms[1], arms[1] + 0.04, y - 0.05, y + 0.05, z + base_h, pivot[2] + 0.05, "#303137", "#1b1c20")
 
 
 def leg(out: list[str], sgn: int, y: float, x_out: float, x_in: float, x_tie: float, top: float, falls: bool) -> None:
@@ -603,12 +615,64 @@ def cylinder(out: list[str], x: float, y: float, z0: float, z1: float, r: float,
 
 
 def side_lights(out: list[str]) -> None:
-    """A small white fixture at each side of the stage, with its glow on the deck."""
+    """A GLP JDC1 strobe on its floor bracket at each side of the stage, aimed across the stage at the centre:
+    its beam fans out low through the haze toward the centre and spills onto the deck."""
+    depth, half_long, z0, z1 = 0.15, 0.17, 0.08, 0.24  # the head: 150 mm deep, its face 340 x 160 mm
     for sgn in (-1, 1):
-        x, y = sgn * (STAGE_X - 0.15), 2.6
-        for k in np.linspace(1.0, 0.2, 8):
-            out.append(poly(disc(x, y, 0.02, 1.1 * k, 24), "#ffffff", opacity=0.06))
-        box(out, x - 0.12, x + 0.12, y - 0.25, y + 0.25, 0.0, 0.18, "#e9ecf2", "#5a5d64")
+        x_back, y = sgn * (STAGE_X - 0.1), 2.6
+        x_face = x_back - sgn * depth
+        for k in np.linspace(1.0, 0.25, 7):  # the beam in the haze, widening toward the centre
+            reach, half = 4.5 * k, 1.2 * k
+            tip_x = x_face - sgn * reach
+            beam = [(x_face, y - half_long, (z0 + z1) / 2), (tip_x, y - half, z1 + 0.1), (tip_x, y + half, z1 + 0.1),
+                    (x_face, y + half_long, (z0 + z1) / 2)]  # fmt: skip
+            out.append(poly(beam, "#ffffff", opacity=0.035))
+        for k in np.linspace(1.0, 0.3, 6):  # the spill on the deck in front of the face
+            pool = [(x_face - sgn * (0.2 + 1.6 * k) * (0.5 + 0.5 * math.cos(t)), y + 0.7 * k * math.sin(t), 0.01)
+                    for t in np.linspace(0, 2 * math.pi, 24)]  # fmt: skip
+            out.append(poly(pool, "#ffffff", opacity=0.05))
+        xs = sorted((x_back, x_face))
+        for ya in (y - half_long - 0.03, y + half_long):  # the bracket's arms at both ends of the head
+            box(out, xs[0] + 0.05, xs[1] - 0.05, ya, ya + 0.03, 0.0, (z0 + z1) / 2 + 0.03, "#2a2b30", "#1c1d21")
+        box(out, xs[0], xs[1], y - half_long, y + half_long, z0, z1, "#2c2d33", "#1f2024")
+        out.append(
+            poly(_face(x_face, y, half_long - 0.01, z0 + 0.01, z1 - 0.01), "#cfd8e6")
+        )  # the pixel panels, lit white
+        out.append(
+            poly(_face(x_face, y, half_long - 0.01, (z0 + z1) / 2 - 0.015, (z0 + z1) / 2 + 0.015), "#ffffff")
+        )  # the strobe line
+
+
+def _face(x: float, y: float, half: float, za: float, zb: float) -> list[tuple[float, float, float]]:
+    """A rectangle in the plane x = ``x``, ``half`` either side of ``y``, from ``za`` up to ``zb``."""
+    return [(x, y - half, za), (x, y + half, za), (x, y + half, zb), (x, y - half, zb)]
+
+
+def can(out: list[str], back, front, r: float, lens: str, cap: str = "#24252a") -> None:
+    """A round body from its ``back`` to its ``front`` centre: the side facing the camera shaded, and whichever
+    end faces it, the ``front`` filled with ``lens`` inside a dark rim, the ``back`` with ``cap``."""
+    back, front = np.asarray(back, dtype=float), np.asarray(front, dtype=float)
+    axis = (front - back) / np.linalg.norm(front - back)
+    u = np.cross(axis, (0.0, 0.0, 1.0) if abs(axis[2]) < 0.9 else (1.0, 0.0, 0.0))
+    u /= np.linalg.norm(u)
+    v = np.cross(axis, u)
+    eye = CAMERA[:3]
+    ring = lambda c, rr, t: c + rr * (math.cos(t) * u + math.sin(t) * v)  # noqa: E731
+    ts = np.linspace(0, 2 * math.pi, 25)
+    for t0, t1 in pairwise(ts):
+        tm = (t0 + t1) / 2
+        normal = math.cos(tm) * u + math.sin(tm) * v
+        facing = float(np.dot(normal, (eye - (back + front) / 2) / np.linalg.norm(eye - (back + front) / 2)))
+        if facing <= 0:
+            continue
+        quad = [ring(back, r, t0), ring(front, r, t0), ring(front, r, t1), ring(back, r, t1)]
+        tone = "#44464e" if facing > 0.92 else "#2c2d33" if facing > 0.6 else "#1b1c20"  # a highlight along the top
+        out.append(poly([tuple(q) for q in quad], tone))
+    if np.dot(axis, eye - front) > 0:
+        out.append(poly([tuple(ring(front, r, t)) for t in ts], "#141518"))
+        out.append(poly([tuple(ring(front, 0.8 * r, t)) for t in ts], lens))
+    if np.dot(-axis, eye - back) > 0:
+        out.append(poly([tuple(ring(back, r, t)) for t in ts], cap, "#3e3f46", 1.0))
 
 
 def tape(out: list[str]) -> None:

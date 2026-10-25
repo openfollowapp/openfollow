@@ -1,0 +1,20 @@
+# The camera and grid arena_default.jpg was drawn with, written by scripts/gen_arena_default.py.
+
+[camera]
+pos_x = 0.0
+pos_y = 9.8
+pos_z = 7.6
+pitch = -21.5
+yaw = 180.0
+roll = 0.0
+fov = 65.8
+lens_k1 = -0.15
+lens_k2 = -0.03
+
+[grid]
+width = 10.0
+depth = 1.0
+spacing = 1.0
+x_offset = 0.0
+y_offset = 0.5
+z_offset = 0.0

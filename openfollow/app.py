@@ -23,9 +23,12 @@ from openfollow.configuration import (
     bootstrap_config_if_missing,
     config_write_lock,
     load_config,
+    load_config_for_save,
     network_mode_unsaved,
+    restore_empty_config,
     save_config,
 )
+from openfollow.input.touch_remote import TouchRemote
 from openfollow.logging_setup import ThrottledExceptionLogger
 from openfollow.marker_catalog import (
     MarkerCatalog,
@@ -232,6 +235,7 @@ class OpenFollowApp:
         # a station that has silently respawned several times reads exactly
         # like a healthy one in every other section.
         self._crash_restarts: int = crash_restarts
+        restore_empty_config(self._config_path)
         bootstrap_config_if_missing(self._config_path)
         self._config: AppConfig = load_config(self._config_path)
         self._bootstrap_station_identity()
@@ -240,11 +244,14 @@ class OpenFollowApp:
         self._config_mtime: float = self._get_config_mtime()
         self._last_config_check: float = 0.0
         self._config_blank_warned_mtime: float | None = None
+        self._config_error_warned_mtime: float | None = None
         self._web_commands: WebCommandQueue = WebCommandQueue()
         self._runtime_services: AppRuntimeServices = AppRuntimeServices(self)
-        # Markers locked onto paths; rebuilt whenever the paths or the experimental switch change.
+        # Markers locked onto paths; rebuilt whenever the paths or the Paths feature change.
         self._paths: PathEngine = PathEngine()
-        self._paths.reload(self._config.paths, enabled=self._config.ui.show_experimental_features)
+        self._paths.reload(self._config.paths, enabled=self._config.ui.feature_on("paths"))
+        # Browser sessions of the web touch remote and the markers they hold.
+        self._touch_remote: TouchRemote = TouchRemote()
 
         self._canvas: GtkNativeSinkWindow | None = None
         self._camera: Camera | None = None
@@ -327,6 +334,7 @@ class OpenFollowApp:
         self._settings_menu_active: bool = False
         self._settings_menu_index: int = 0
         self._settings_menu_banner: str = ""
+        self._settings_menu_banner_action: str = ""
         # Newest pushed-settings warning pending when the Settings menu opened.
         self._settings_pushed_upto: int | None = None
         self._settings_key_pressed: bool = False
@@ -529,7 +537,7 @@ class OpenFollowApp:
         if resolved:
             banner += f"Using auto-detected {resolved}."
         else:
-            banner += "No usable interface – pick one to continue."
+            banner += "No usable interface."
         self._psn_source_banner = banner
         return banner
 
@@ -732,8 +740,8 @@ class OpenFollowApp:
     def _process_field_choice_picker_input(self) -> None:
         runtime_process_field_choice_picker_input(self)
 
-    def _enter_settings_menu(self, *, banner: str = "") -> None:
-        runtime_enter_settings_menu(self, banner=banner)
+    def _enter_settings_menu(self, *, banner: str = "", action: str = "") -> None:
+        runtime_enter_settings_menu(self, banner=banner, action=action)
 
     def _exit_settings_menu(self) -> None:
         runtime_exit_settings_menu(self)
@@ -790,14 +798,14 @@ class OpenFollowApp:
         """Drop ids from persisted selection (on-disk config for race-free hot-reload)."""
         drop = set(ids)
         with config_write_lock:
-            cfg = load_config(self._config_path)
-            new_controlled = [t for t in cfg.controlled_marker_ids if t not in drop]
-            new_viewer = [t for t in cfg.viewer_marker_ids if t not in drop]
-            if new_controlled == cfg.controlled_marker_ids and new_viewer == cfg.viewer_marker_ids:
-                return  # none of the deleted ids were in our selection
-            cfg.controlled_marker_ids = new_controlled
-            cfg.viewer_marker_ids = new_viewer
             try:
+                cfg = load_config_for_save(self._config_path)
+                new_controlled = [t for t in cfg.controlled_marker_ids if t not in drop]
+                new_viewer = [t for t in cfg.viewer_marker_ids if t not in drop]
+                if new_controlled == cfg.controlled_marker_ids and new_viewer == cfg.viewer_marker_ids:
+                    return  # none of the deleted ids were in our selection
+                cfg.controlled_marker_ids = new_controlled
+                cfg.viewer_marker_ids = new_viewer
                 save_config(cfg, self._config_path)
             except OSError:
                 logger.exception(

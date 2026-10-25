@@ -32,10 +32,10 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
 from urllib.parse import quote, urlsplit
 
-from bottle import Bottle, HTTPResponse, abort, redirect, request, response, static_file, template
+from bottle import Bottle, HTTPResponse, abort, request, response, static_file, template
 
 import openfollow
 
@@ -53,21 +53,27 @@ if TYPE_CHECKING:
 
 from openfollow.configuration import (
     CALIBRATION_CORNERS,
+    CALIBRATION_MODES,
     CONTROLLER_BINDING_FIELDS,
     DEFAULT_UPDATE_SERVICE_NAME,
     GROUND_GRID_MAX_VERTICES,
+    MARK_KINDS,
+    MARK_REACH_M,
     MARKER_TOKEN_ALL,
-    MAX_CALIBRATION_POINTS,
+    MAX_CALIBRATION_MARKS,
     MAX_PATH_POINTS,
     MAX_PATHS,
     MOUSE3D_AXES,
     MOUSE3D_BUTTON_FIELDS,
     NETWORK_MODE_SIMPLE,
     NETWORK_MODES,
+    OFFERED_FEATURES,
     PLANE_PIN_FIELDS,
     VALID_BUTTON_NAMES,
     AppConfig,
-    CalibrationPointConfig,
+    CalibrationMarkConfig,
+    ConfigFileEmptyError,
+    ConfigFileUnreadableError,
     DetectionMaskConfig,
     OscDestinationConfig,
     OscTransmitterConfig,
@@ -75,17 +81,27 @@ from openfollow.configuration import (
     TriggerZoneConfig,
     _coerce_marker_tokens,
     apply_renamed_marker_keys,
+    calibration_mark_drops,
+    config_file_health,
+    config_problem_kind,
+    config_problem_words,
     config_write_lock,
+    effective_lens,
     enforce_network_mode,
-    load_config,
+    feature_gated,
+    is_ipv4_literal,
+    load_config_for_save,
+    marker_id_list,
+    migrate_ui_keys,
     path_name_from,
     plane_pin_key,
     plane_pins,
+    reconcile_simple_corners,
     save_config,
     viewed_with_controlled,
 )
 from openfollow.input.mouse3d_status import status_key
-from openfollow.lens_model import pull_back_to_fold
+from openfollow.lens_model import pull_back_to_valid
 
 # Module-level so handler closures resolve ``save_catalog`` from this
 # namespace at call time (tests monkeypatch it for persist-failure paths).
@@ -117,7 +133,7 @@ from openfollow.palette import AUTO_PICK_ORDER
 from openfollow.privilege import settings_backup
 from openfollow.privilege.camera_config import AUTOMATIC
 from openfollow.runtime.diagnostics_export import WEB, ExportStatus, status_lines
-from openfollow.scene.edge_snap import LumaBand
+from openfollow.scene.edge_snap import LumaBand, NearEdge
 from openfollow.station_fqdn import canonical_host, fqdn_problem
 from openfollow.templates import (
     TEMPLATE_FILE_SUFFIX,
@@ -142,7 +158,7 @@ from openfollow.templates.writer import (
     write_user_template,
 )
 from openfollow.units import UnitSystem, parse_length, parse_speed
-from openfollow.web import diagnostics, peer_auth
+from openfollow.web import diagnostics, lens_calibrations, peer_auth
 from openfollow.web._md import render_help_markdown
 from openfollow.web.bindings import check_binding, osc_row_overlap, osc_trigger_overlap
 from openfollow.web.config_cache import ParsedConfigCache
@@ -249,6 +265,7 @@ VALID_SECTIONS = {
     "mouse3d",
     "osc",
     "operator_messages",
+    "touch_remote",
     "detection",
     "otp_output",
     "rttrpm_output",
@@ -367,6 +384,7 @@ _SECTION_CONFIG_ATTRS = {
     "mouse3d": "mouse3d",
     "osc": "osc",
     "operator_messages": "operator_messages",
+    "touch_remote": "touch_remote",
     "detection": "detection",
     "otp_output": "otp_output",
     "rttrpm_output": "rttrpm_output",
@@ -504,12 +522,21 @@ def _host_refusal(host: str | None, fqdn: str = "") -> HostRefusal | None:
     if host is None or canonical_host(host) in _allowed_request_hosts(fqdn):
         return None
     address = _connection_address()
-    href = None
-    if address is not None:
-        port = str(request.environ.get("SERVER_PORT") or "80")
-        netloc = f"[{address}]" if ":" in address else address
-        href = f"http://{netloc}{'' if port == '80' else ':' + port}/"
+    href = _station_url(address) if address is not None else None
     return HostRefusal(host=host, address=address, href=href)
+
+
+def _station_url(address: str) -> str:
+    """This station's UI at ``address``, on the scheme and port this connection reached."""
+    port = str(request.environ.get("SERVER_PORT") or "80")
+    netloc = f"[{address}]" if ":" in address else address
+    return f"http://{netloc}{'' if port == '80' else ':' + port}/"
+
+
+def _redirect(location: str) -> NoReturn:
+    """A 303 to ``location`` as given. Bottle's ``redirect`` resolves it against
+    ``request.url``, which takes the host and scheme from client-set X-Forwarded-* headers."""
+    raise HTTPResponse(status=303, headers={"Location": location})
 
 
 def _page_host_context(cfg: AppConfig) -> dict[str, Any]:
@@ -975,7 +1002,7 @@ def _deb_update_supported() -> bool:
     """Whether the in-app signed-.deb updater can run on this host.
 
     The updater installs via dpkg/systemd, which only exist on the Linux (Pi)
-    target, so the Software Update section, banner, and footer flag are hidden
+    target, so the Software Update section, its box, and the footer flag are hidden
     everywhere else. Single source of truth for the index and section-reload
     render paths so their platform gate can't drift.
     """
@@ -1124,6 +1151,8 @@ _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
     "rttrpm_output": frozenset({"source_iface"}),
     # Whether this station draws paths; toggled on its own keyboard or pad.
     "paths": frozenset({"show_paths"}),
+    # Whether this station takes remote driving from a browser at all.
+    "touch_remote": frozenset({"enabled"}),
     # The keyboard plugged into this station, in every section that writes the controller config.
     **{section: _KEYBOARD_LAYOUT_FIELDS for section, attr in _SECTION_CONFIG_ATTRS.items() if attr == "controller"},
 }
@@ -1545,6 +1574,17 @@ def _interface_assignment_rows(
         resolver = HOST_RESOLVER if tcp else IPV4_RESOLVER
         return _egress_address(pin, host, station, resolver=resolver, wait_s=wait_s, names=names)
 
+    station_addresses = frozenset(get_local_ipv4_addresses())
+
+    def _osc_sender(dest: OscDestinationConfig) -> str:
+        from openfollow.net_egress import is_loopback_host
+        from openfollow.osc.egress import reaches_station
+
+        # Never pinned, as the sender decides it: the kernel delivers it on this station.
+        if not is_loopback_host(dest.host) and reaches_station(dest.host, station_addresses):
+            return "This station"
+        return _sender(dest.source_iface, dest.host, tcp=dest.protocol == "tcp")
+
     rows: list[dict[str, Any]] = [
         {
             "key": "psn_source_iface",
@@ -1588,7 +1628,7 @@ def _interface_assignment_rows(
             "address": _sender(cfg.rttrpm_output.source_iface, cfg.rttrpm_output.host),
             "editable": True,
             "blank": "station",
-            "experimental": True,
+            "feature": "rttrpm",
         },
         {
             # The pin moves the multicast membership only. The socket binds
@@ -1608,7 +1648,7 @@ def _interface_assignment_rows(
                 "key": plane_pin_key(dest.id),
                 "label": f"OSC Destination {dest.name or f'{dest.host}:{dest.port}'}",
                 "value": dest.source_iface,
-                "address": _sender(dest.source_iface, dest.host, tcp=dest.protocol == "tcp"),
+                "address": _osc_sender(dest),
                 "editable": True,
                 "blank": "station",
             }
@@ -1636,31 +1676,16 @@ def _interface_assignment_rows(
     return rows
 
 
-# The grid fields that place its corners; a change under this (m) is a length re-read from how a form shows it.
-_GRID_CORNER_FIELDS = ("width", "depth", "x_offset", "y_offset", "z_offset")
-_GRID_CORNER_TOLERANCE_M = 1e-3
-
-
-def _grid_corner_placement(cfg: AppConfig) -> tuple[float, ...]:
-    return tuple(float(getattr(cfg.grid, name)) for name in _GRID_CORNER_FIELDS)
-
-
-def _forget_corner_pins_off_grid(cfg: AppConfig, before: tuple[float, ...]) -> None:
-    """Drop ``camera.corner_pins`` once the grid's corners moved from ``before``: they were pinned on those."""
-    after = _grid_corner_placement(cfg)
-    if any(abs(a - b) > _GRID_CORNER_TOLERANCE_M for a, b in zip(before, after, strict=True)):
-        cfg.camera.corner_pins = []
-
-
 def apply_section_data(cfg: AppConfig, section: str, data: Mapping[str, Any]) -> bool:
     """Apply section updates in-place. Returns False for unknown sections.
 
-    A station in Simple keeps no per-plane pin, whichever section a POST names. A grid write that
-    moves the grid's corners drops ``camera.corner_pins``, so a write that brings pins for the new grid
+    A station in Simple keeps no per-plane pin, whichever section a POST names. Simple's corner marks
+    follow the grid, and one the grid moved loses its pin, so a write that brings pins for the new grid
     applies the grid first.
     """
     applied = _apply_section(cfg, section, data)
     enforce_network_mode(cfg)
+    reconcile_simple_corners(cfg)
     return applied
 
 
@@ -1746,6 +1771,19 @@ def _apply_section(cfg: AppConfig, section: str, data: Mapping[str, Any]) -> boo
         # the ``marker`` section; the web UI no longer POSTs them here.
         return True
 
+    if section == "features":
+        # One bool per offered feature; a key left out, or config-only, keeps its state.
+        shown = set(cfg.ui.shown_features)
+        for key in OFFERED_FEATURES:
+            if key in data:
+                if _as_bool(data[key], key in shown):
+                    shown.add(key)
+                else:
+                    shown.discard(key)
+        cfg.ui.shown_features = list(shown)
+        cfg.ui.__post_init__()
+        return True
+
     section_attr = _SECTION_CONFIG_ATTRS.get(section)
     if section_attr is None:
         return False
@@ -1780,7 +1818,7 @@ def _apply_section(cfg: AppConfig, section: str, data: Mapping[str, Any]) -> boo
         tz.__post_init__()
         return True
 
-    if section == "marker":
+    if section in ("marker", "movement"):
         marker_data = dict(data)
         apply_renamed_marker_keys(marker_data)
         data = marker_data
@@ -1792,7 +1830,6 @@ def _apply_section(cfg: AppConfig, section: str, data: Mapping[str, Any]) -> boo
     if parser_map is None:  # pragma: no cover
         return False
     target = getattr(cfg, section_attr)
-    corners_before = _grid_corner_placement(cfg)
     before = {name: getattr(target, name) for name in _BINDING_FIELDS_BY_ATTR.get(section_attr, ())}
     _apply_parsed_updates(target, data, parser_map)
     if before:
@@ -1809,7 +1846,6 @@ def _apply_section(cfg: AppConfig, section: str, data: Mapping[str, Any]) -> boo
         cfg.mouse3d.__post_init__()
     elif section == "grid":
         cfg.grid.__post_init__()
-        _forget_corner_pins_off_grid(cfg, corners_before)
     elif section == "ground_grid":
         cfg.ground_grid.__post_init__()
     elif section == "camera":
@@ -1820,6 +1856,8 @@ def _apply_section(cfg: AppConfig, section: str, data: Mapping[str, Any]) -> boo
         cfg.osc.__post_init__()
     elif section == "operator_messages":
         cfg.operator_messages.__post_init__()
+    elif section == "touch_remote":
+        cfg.touch_remote.__post_init__()
     elif section == "otp_output":
         cfg.otp_output.__post_init__()
     # pragma: no branch – exhaustive elif chain over the section keys;
@@ -1858,6 +1896,11 @@ def _coerce_timer(value: Any, default: float) -> float:
     if not math.isfinite(out):
         return default
     return max(0.0, out)
+
+
+def _as_heading(value: Any, default: float) -> float:
+    # A bool passes through so MarkerConfig reads it as config.toml does, not as float(True).
+    return value if isinstance(value, bool) else _as_float(value, default)
 
 
 def _as_float_or_zero(value: Any, default: float) -> float:
@@ -1905,6 +1948,13 @@ def _as_optional_float(value: Any, default: float | None) -> float | None:
         return float(value)
     except (TypeError, ValueError, OverflowError):
         return default
+
+
+def _as_optional_measured(value: Any, current: float | None) -> float | None:
+    """A JSON number or None as sent, else *current*; the dataclass drops one out of reach."""
+    if value is None or (isinstance(value, int | float) and not isinstance(value, bool)):
+        return value
+    return current
 
 
 # Per-section form fields carrying a physical length/speed (need
@@ -2110,7 +2160,7 @@ def _as_int_list(value: Any, default: list[int]) -> list[int]:
 
 
 def _as_ip_list(value: Any, default: list[str]) -> list[str]:
-    """Parse a list of IP addresses.
+    """Parse a list of IPv4 addresses, the OSC listener's only family.
 
     Accepts either a comma-separated form-field string or a JSON list.
     Semantics are careful around the allow-all sentinel because empty
@@ -2119,12 +2169,12 @@ def _as_ip_list(value: Any, default: list[str]) -> list[str]:
 
     - Explicit empty (``""`` or ``[]``) → return ``[]`` (caller intends
       to clear the allowlist).
-    - Submitted value is non-empty but every entry is an invalid IP →
+    - Submitted value is non-empty but no entry is an IPv4 address →
       return the caller-supplied ``default`` unchanged. Returning ``[]``
       here would silently disable the filter, turning a single typo
-      (``192.168.1.999``) into "accept from any host".
-    - Submitted value has at least one valid entry → return that valid
-      subset (invalid entries are dropped silently).
+      (``192.168.1.999``) or an IPv6 entry into "accept from any host".
+    - Submitted value has at least one IPv4 entry → return that subset
+      (every other entry, IPv6 included, is dropped silently).
     - Non-string, non-list input → return ``default``.
     """
     raw: list[str]
@@ -2145,13 +2195,7 @@ def _as_ip_list(value: Any, default: list[str]) -> list[str]:
     if not raw:
         return []
 
-    cleaned: list[str] = []
-    for entry in raw:
-        try:
-            ipaddress.ip_address(entry)
-        except ValueError:
-            continue
-        cleaned.append(entry)
+    cleaned = [entry for entry in raw if is_ipv4_literal(entry)]
     # Fail closed: a non-empty submission that yields zero valid IPs
     # looks like a typo, not "clear the filter". Preserving ``default``
     # keeps whatever the operator had configured.
@@ -2186,8 +2230,11 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "focal_length_mm": _as_optional_float,
         "lens_k1": _as_float,
         "lens_k2": _as_float,
-        "calibration_points": _as_json_list,
-        "corner_pins": _as_json_list,
+        "lens_cx": _as_float,
+        "lens_cy": _as_float,
+        "calibration_mode": _as_str,
+        "calibration_marks": _as_json_list,
+        "calibration_height": _as_optional_measured,
     },
     "grid": {
         "visible": _as_bool,
@@ -2220,7 +2267,8 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "default_pos_x": _as_float,
         "default_pos_y": _as_float,
         "default_pos_z": _as_float,
-        "invert_control_direction": _as_bool,
+        "control_frame": _as_str,
+        "control_heading": _as_heading,
     },
     "marker": {
         "marker_style": _as_str,
@@ -2318,6 +2366,13 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "max_visible": _as_int,
         "route_by_marker": _as_bool,
         "scale": _as_float,
+    },
+    "touch_remote": {
+        "enabled": _as_bool,
+        "stick_curve": _as_float,
+        "stick_dead_zone": _as_float,
+        "z_step_m": _as_float,
+        "z_notch_px": _as_int,
     },
     "otp_output": {
         "enabled": _as_bool,
@@ -2659,6 +2714,15 @@ def _osc_binding_marker_label(token: str, catalog: Any) -> str:
     if token.startswith("c"):
         return f"Controller {token}"
     return _catalog_marker_label(int(token), catalog)
+
+
+def _camera_video_size(server: ConfigWebServer) -> tuple[int, int] | None:
+    """The live video's size, which the Camera form's lens centre fields count in; ``None`` before any video."""
+    size = (server.get_runtime_stats().get("video") or {}).get("resolution") or {}
+    width, height = size.get("width"), size.get("height")
+    if isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0:
+        return width, height
+    return None
 
 
 def _mouse3d_status_view(server: ConfigWebServer) -> dict[str, Any]:
@@ -3194,6 +3258,9 @@ def _config_dict_redacted(cfg: AppConfig) -> dict[str, Any]:
     # multicast membership there until somebody finds the setting.
     d["osc"].pop("listen_iface", None)
     d["rttrpm_output"].pop("source_iface", None)
+    d["touch_remote"].pop("enabled", None)
+    # Set for this station's GPU and driver: on another station it would hide a working GL display.
+    d["display"].pop("operator_screen", None)
     for name in _KEYBOARD_LAYOUT_FIELDS:
         d["controller"].pop(name, None)
     for dest in d["osc_destinations"]["destinations"]:
@@ -3207,7 +3274,8 @@ def _config_dict_redacted(cfg: AppConfig) -> dict[str, Any]:
 _BROADCAST_EXCLUDED_SECTIONS = frozenset(
     # ``interface_assignment`` names NICs on this box; copying it to a peer
     # would repin that peer's PSN and OTP to an interface it may not have.
-    {"osc_destinations", "osc_transmitters", "trigger_zones", "interface_assignment"},
+    # ``features`` is set on each station by its own Save, never by a section broadcast.
+    {"osc_destinations", "osc_transmitters", "trigger_zones", "interface_assignment", "features"},
 )
 
 
@@ -3264,6 +3332,8 @@ _DEVICE_IDENTITY_FIELDS: tuple[str, ...] = (
     "markers_catalog_path",
     "testpattern_selected_media",
     "detection.storage_path",
+    # Set for this station's GPU and driver.
+    "display.operator_screen",
 )
 
 
@@ -3339,36 +3409,87 @@ def _section_label(section: str) -> str:
     return _SECTION_LABELS.get(section) or section.replace("_", " ").capitalize()
 
 
-def _backup_before(config_path: str, kind: str) -> dict[str, str]:
+def _backup_before(config_path: str, kind: str, named_by: AppConfig | None = None) -> dict[str, str]:
     """Archive the settings ``kind`` is about to replace; the response fields reporting it.
 
+    *named_by* names the archive and finds the catalog when the file does not read.
     A failed backup never blocks the change: the operator is told, and it is logged.
     Call it before taking ``_config_write_lock``: the main loop takes that lock too,
     and writing an archive to an SD card can take a while.
     """
-    result = settings_backup.run_web_backup(Path(config_path), openfollow.__version__, kind)
+    settings: dict[str, object] | None = None
+    if named_by is not None:
+        settings = {"psn_system_name": named_by.psn_system_name, "markers_catalog_path": named_by.markers_catalog_path}
+    result = settings_backup.run_web_backup(Path(config_path), openfollow.__version__, kind, settings=settings)
     if result.error:
         logger.warning("Settings backup before %s failed, continuing: %s", kind, result.error)
         return {"backup_error": result.error}
     return {"backup": result.archive}
 
 
-def _turn_off_experimental_features(cfg: AppConfig) -> None:
-    """What turning experimental features off turns off with them: detection, the ground grid's drop, and every
-    path's Active flag."""
-    cfg.detection.enabled = False
-    cfg.ground_grid.enabled = False
-    for path in cfg.paths.paths:
-        path.active = False
+# Sub-config fields only a file import restores, normalised by the sub-config's ``__post_init__``
+# as a config.toml load does: no section form the import goes through applies them.
+_FILE_IMPORT_FIELDS: dict[str, tuple[str, ...]] = {
+    "detection": ("masks", "masks_enabled"),
+    "controller": ("button_raw_indices", "swap_triggers", "mapped_controller_name", "mapped_controller_guid"),
+    "midi": ("patches",),
+    "virtual_faders": ("faders",),
+    "ui": ("developer_mode",),
+    "paths": ("show_paths",),
+    "network": ("backend",),
+}
+# Read once at startup: the reload never applies them, so an import takes effect at the next start.
+_STARTUP_ONLY_FIELDS = ("update_include_prereleases", "auto_update_check", "auto_time_sync", "time_sync_server")
 
 
-def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any]) -> AppConfig:
+def _apply_file_import_data(cfg: AppConfig, data: dict[str, Any]) -> None:
+    """Apply what a file import restores and a push leaves as it is.
+
+    That is this station's own setup: its marker selection, detection masks, the
+    fields of every video input rather than only the running one's, its 3D Mouse,
+    operator messages, MIDI patches, virtual faders, gamepad mapping and whether it
+    draws paths, and the settings read at startup (network backend, update and
+    time sync).
+    """
+    for name in ("controlled_marker_ids", "viewer_marker_ids"):
+        if name in data:
+            setattr(cfg, name, marker_id_list(data[name], path="imported settings", field_name=name))
+    cfg.viewer_marker_ids = viewed_with_controlled(cfg.controlled_marker_ids, cfg.viewer_marker_ids)
+
+    from openfollow.video.inputs import get_registry
+
+    video_fields = strip_device_local_fields("video_source", data)
+    for input_cls in get_registry().values():
+        input_cls.apply_config_fields(cfg, video_fields)
+
+    for section in ("mouse3d", "operator_messages"):
+        if isinstance(data.get(section), dict):
+            apply_section_data(cfg, section, data[section])
+
+    for section, names in _FILE_IMPORT_FIELDS.items():
+        raw = data.get(section)
+        if not isinstance(raw, dict) or not any(name in raw for name in names):
+            continue
+        target = getattr(cfg, section)
+        for name in names:
+            if name in raw:
+                setattr(target, name, raw[name])
+        target.__post_init__()
+
+    for name in _STARTUP_ONLY_FIELDS:
+        if name in data:
+            setattr(cfg, name, data[name])
+    cfg.normalise_startup_settings()
+
+
+def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any], *, pushed: bool = False) -> AppConfig:
     """Build a new config from import data, preserving this device's identity.
 
     Each section is applied without its ``_DEVICE_LOCAL_FIELDS_BY_SECTION``,
     and the ``_DEVICE_IDENTITY_FIELDS`` are snapshotted before the section
     applies and written back after – a config from another box must not
-    rewrite this station's interface, login or host paths.
+    rewrite this station's interface, login or host paths. A file import
+    (not *pushed*) also restores what ``_apply_file_import_data`` applies.
     """
     cfg = copy.deepcopy(current_cfg)
     device_identity = capture_device_identity(cfg)
@@ -3376,7 +3497,7 @@ def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any]) -> AppConfi
     # General section (top-level scalar fields)
     apply_section_data(cfg, "general", strip_device_local_fields("general", data))
 
-    # Sections that are always live-reloadable. The grid goes before the camera, whose corner pins it drops.
+    # Sections that are always live-reloadable. The grid goes before the camera, whose Simple pins it drops.
     for section in (
         "grid",
         "camera",
@@ -3386,6 +3507,7 @@ def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any]) -> AppConfi
         "otp_output",
         "rttrpm_output",
         "detection",
+        "touch_remote",
     ):
         if section in data and isinstance(data[section], dict):
             apply_section_data(cfg, section, strip_device_local_fields(section, data[section]))
@@ -3437,30 +3559,31 @@ def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any]) -> AppConfi
         apply_section_data(cfg, "marker", data["marker"])
         apply_section_data(cfg, "movement", data["marker"])
 
-    # UI preferences (unit system + experimental-features visibility gate).
-    # Not device-local, so they round-trip on import. ``ui`` is not a routable
-    # /section/<name> form (it is saved via /settings/units + /settings/experimental),
-    # so it has no apply_section_data branch – apply it inline here, then re-run
-    # __post_init__ so a crafted/legacy payload is coerced like a TOML load.
+    # UI preferences (unit system + the Features list). Not device-local, so
+    # they round-trip on import. ``ui`` is not a routable /section/<name> form,
+    # so it is applied inline here, then __post_init__ coerces a crafted or
+    # older station's payload like a TOML load.
     if "ui" in data and isinstance(data["ui"], dict):
-        ui_data = data["ui"]
+        ui_data = dict(data["ui"])
+        migrate_ui_keys(ui_data)
         # Assign the raw imported values and let __post_init__ coerce, so a
         # present-but-invalid field falls back to the *declared* default
-        # (metric / False) exactly like a TOML load – not to this device's
-        # current value. Absent fields are skipped, preserving the current.
+        # exactly like a TOML load – not to this device's current value.
+        # Absent fields are skipped, preserving the current.
         if "unit_system" in ui_data:
             cfg.ui.unit_system = ui_data["unit_system"]
-        if "show_experimental_features" in ui_data:
-            cfg.ui.show_experimental_features = ui_data["show_experimental_features"]
+        if "shown_features" in ui_data:
+            cfg.ui.shown_features = ui_data["shown_features"]
         cfg.ui.__post_init__()
-        if "show_experimental_features" in ui_data and not cfg.ui.show_experimental_features:
-            _turn_off_experimental_features(cfg)
 
     # Fields not covered by any section
     if "window_width" in data:
         cfg.window_width = _as_int(data["window_width"], cfg.window_width)
     if "window_height" in data:
         cfg.window_height = _as_int(data["window_height"], cfg.window_height)
+
+    if not pushed:
+        _apply_file_import_data(cfg, data)
 
     restore_device_identity(cfg, device_identity)
     return cfg
@@ -3489,30 +3612,21 @@ def _load_json_body() -> Any:
     return data
 
 
-# The wizard solves the pinhole pose; lens distortion (lens_k1/lens_k2) is kept
-# separate from this vector because the DLT solve is pinhole. The wizard applies
-# the distortion warp around the pinhole projection instead (see the project /
-# unproject / solve endpoints), so the corner-pinning overlay bows to match a
-# fisheye snapshot and the solve undistorts the pinned corners first.
-_WIZARD_CAMERA_FIELDS = ("pos_x", "pos_y", "pos_z", "pitch", "yaw", "roll", "fov")
+_WIZARD_LENS_KEYS = ("lens_k1", "lens_k2", "lens_cx", "lens_cy")
 
 
-def _wizard_lens_coeffs(cam: Any) -> tuple[float, float]:
-    """Extract the lens-distortion coefficients from a wizard camera dict.
+def _wizard_lens_coeffs(cam: Any) -> tuple[float, float, float, float]:
+    """The lens ``(k1, k2, cx, cy)`` a wizard request names; absent reads as pinhole, a value that is no number raises.
 
-    Absent or unparseable values fall back to ``0.0`` (pinhole), so an older
-    client that posts no coefficients keeps the previous behaviour. A pair
-    that folds the warp inside the frame is pulled back toward the fold, as
-    ``CameraConfig.__post_init__`` does.
+    The centre is clamped and a pair that cannot follow the picture out to its corners is
+    pulled back, as ``CameraConfig.__post_init__`` does.
     """
-
-    def _as_coeff(value: Any) -> float:
-        f = _as_float(value, 0.0)
-        return f if math.isfinite(f) else 0.0
-
+    if cam is None:
+        return 0.0, 0.0, 0.0, 0.0
     if not isinstance(cam, dict):
-        return 0.0, 0.0
-    return pull_back_to_fold(_as_coeff(cam.get("lens_k1", 0.0)), _as_coeff(cam.get("lens_k2", 0.0)))
+        raise TypeError("camera must be an object")
+    k1, k2, cx, cy = (_json_number(cam[key], key) if key in cam else 0.0 for key in _WIZARD_LENS_KEYS)
+    return pull_back_to_valid(k1, k2, cx, cy)
 
 
 # A band column per chord pixel at most, on a snapshot no wider than the wizard accepts.
@@ -3534,9 +3648,11 @@ def _json_luma(pixels: Any, rows: int, cols: int, name: str) -> Any:
     return np.frombuffer(buf, dtype=np.uint8).reshape(rows, cols).astype(np.float64)
 
 
-def _parse_lens_snap_body(data: Any) -> tuple[float, float, list[float], list[float], LumaBand]:
+def _parse_lens_snap_body(
+    data: Any,
+) -> tuple[float, float, list[float], list[float], LumaBand, NearEdge | None]:
     """Validate a ``/api/wizard/lens/snap`` body; raises for the endpoint's 400."""
-    from openfollow.scene.edge_snap import MAX_BAND_HALF, MAX_BAND_STEP, MIN_BAND_HALF
+    from openfollow.scene.edge_snap import LINE_SAMPLE_FRACTIONS, MAX_BAND_HALF, MAX_BAND_STEP, MIN_BAND_HALF
 
     if not isinstance(data, dict):
         raise TypeError("body must be an object")
@@ -3555,7 +3671,18 @@ def _parse_lens_snap_body(data: Any) -> tuple[float, float, list[float], list[fl
     if not 2 <= cols <= _LENS_BAND_MAX_COLUMNS:
         raise ValueError(f"band columns must be within 2..{_LENS_BAND_MAX_COLUMNS}")
     luma = _json_luma(band["data"], rows, cols, "band data")
-    return img_w, img_h, ends[0], ends[1], LumaBand(step, half, luma)
+    # A used suggestion names its own edge: its samples and its contrast side.
+    near = None
+    if data.get("near") is not None:
+        raw = data["near"]
+        if not isinstance(raw, dict):
+            raise TypeError("near must be an object")
+        samples = raw["points"]
+        if not isinstance(samples, list) or len(samples) != len(LINE_SAMPLE_FRACTIONS):
+            raise ValueError(f"near points must be a list of {len(LINE_SAMPLE_FRACTIONS)} points")
+        polarity = _json_int(raw.get("polarity", 0), "near polarity")
+        near = NearEdge(tuple((p[0], p[1]) for p in (_json_point(q, "near point") for q in samples)), polarity)
+    return img_w, img_h, ends[0], ends[1], LumaBand(step, half, luma), near
 
 
 # The scaled luma the edge suggestions are found in, at most (a snapshot scaled to the map width).
@@ -3580,32 +3707,7 @@ def _parse_lens_edges_body(data: Any) -> tuple[float, float, int, Any, bool]:
     return img_w, img_h, scale, luma, data.get("with_map") is True
 
 
-def _wizard_camera_params(cam: Any) -> Any:
-    """Coerce a wizard camera dict into the np.float64 parameter vector.
-
-    Raises ``KeyError``/``TypeError``/``ValueError``/``OverflowError`` on bad input
-    so the endpoints can convert any failure into a uniform HTTP 400 response.
-    Imported lazily to keep numpy off the import path of routes that
-    don't use it.
-    """
-    import numpy as np
-
-    if not isinstance(cam, dict):
-        raise TypeError("camera must be an object")
-    params = np.array(
-        [float(cam[k]) for k in _WIZARD_CAMERA_FIELDS],
-        dtype=np.float64,
-    )
-    # Reject a degenerate fov here so the endpoint returns 400, not a 500 from
-    # the divide-by-zero in the solver. Bounds mirror CameraConfig.__post_init__.
-    fov = float(params[6])
-    if not 1.0 <= fov <= 179.0:
-        raise ValueError(f"fov must be within [1, 179] degrees, got {fov}")
-    return params
-
-
-# The widest snapshot side the wizard takes: an 8K frame, twice over.
-_WIZARD_MAX_CANVAS = 16384.0
+_WIZARD_MAX_CANVAS = float(lens_calibrations.MAX_SIDE)
 
 
 def _require_wizard_canvas(img_w: float, img_h: float) -> None:
@@ -3659,42 +3761,51 @@ def _json_canvas(data: dict[str, Any]) -> tuple[float, float]:
     return img_w, img_h
 
 
-def _wizard_calibration_points(
-    raw: Any, img_w: float, img_h: float
-) -> list[tuple[CalibrationPointConfig, list[float]]]:
-    """The posted calibration points with their pins in snapshot pixels; malformed raises.
+def _wizard_marks(
+    raw: Any, img_w: float, img_h: float, mode: str
+) -> list[tuple[CalibrationMarkConfig, list[float] | None]]:
+    """The posted marks with their pins in snapshot pixels (None when not pinned); malformed raises.
 
-    The ranges are the config's own rule, so a point the Setup Wizard can solve with is one it can save.
+    The rules are the config's own, so a mark the Setup Wizard can solve with is one it can save.
     """
-    if raw is None:
-        return []
-    if not isinstance(raw, list) or len(raw) > MAX_CALIBRATION_POINTS:
-        raise ValueError(f"calibration_points must be a list of at most {MAX_CALIBRATION_POINTS}")
-    points = []
+    if not isinstance(raw, list) or len(raw) > MAX_CALIBRATION_MARKS:
+        raise ValueError(f"marks must be a list of at most {MAX_CALIBRATION_MARKS}")
+    marks: list[tuple[CalibrationMarkConfig, list[float] | None]] = []
     for n, entry in enumerate(raw, start=1):
         if not isinstance(entry, dict):
-            raise ValueError(f"calibration point {n} must be an object")
-        corners = (entry.get("corner_a"), entry.get("corner_b"))
-        if not all(isinstance(c, str) and c in CALIBRATION_CORNERS for c in corners):
-            raise ValueError(f"calibration point {n} needs two grid corners")
-        pin = _json_point(entry.get("pin"), f"calibration point {n} pin")
-        point = CalibrationPointConfig(
-            corner_a=str(corners[0]),
-            corner_b=str(corners[1]),
-            distance_a=_json_number(entry.get("distance_a"), f"calibration point {n} distance_a"),
-            distance_b=_json_number(entry.get("distance_b"), f"calibration point {n} distance_b"),
-            height=_json_number(entry.get("height", 0.0), f"calibration point {n} height"),
-            pin_x=pin[0] / img_w,
-            pin_y=pin[1] / img_h,
-        )
-        problem = point.problem()
+            raise ValueError(f"mark {n} must be an object")
+        kind = entry.get("kind")
+        if kind not in MARK_KINDS:
+            raise ValueError(f"mark {n} needs a kind of known or triangulated")
+        pin = None if entry.get("pin") is None else _json_point(entry.get("pin"), f"mark {n} pin")
+        fields: dict[str, Any] = {
+            "id": _json_int(entry.get("id"), f"mark {n} id"),
+            "kind": kind,
+            "z": _json_number(entry.get("z"), f"mark {n} z"),
+            "pin": [] if pin is None else [pin[0] / img_w, pin[1] / img_h],
+        }
+        if kind == "known":
+            fields["x"] = _json_number(entry.get("x"), f"mark {n} x")
+            fields["y"] = _json_number(entry.get("y"), f"mark {n} y")
+        else:
+            for key in ("from_a", "from_b"):
+                fields[key] = _json_int(entry.get(key), f"mark {n} {key}")
+            for key in ("distance_a", "distance_b"):
+                fields[key] = _json_number(entry.get(key), f"mark {n} {key}")
+        mark = CalibrationMarkConfig(**fields)
+        problem = mark.problem() or ("repeats an id" if any(m.id == mark.id for m, _ in marks) else "")
+        if not problem and mode == "simple" and (mark.kind != "known" or mark.id > len(CALIBRATION_CORNERS)):
+            problem = "is not one of Simple's four corners"
         if problem:
-            raise ValueError(f"calibration point {n} {problem}")
-        points.append((point, pin))
-    return points
+            raise ValueError(f"mark {n} {problem}")
+        marks.append((mark, pin))
+    kept, dropped = calibration_mark_drops([m for m, _ in marks])
+    if dropped:
+        raise ValueError(dropped[0])
+    return marks
 
 
-_SUPERSEDED = json.dumps({"error": "A newer solve was asked for."})
+_SUPERSEDED = json.dumps({"error": "A newer calculation was requested."})
 
 
 class _WizardSolveTurns:
@@ -3727,26 +3838,6 @@ class _WizardSolveTurns:
                 return self._seqs.get(page, number) != number
 
         return stale
-
-
-def _point_answer(fit: Any, params: Any, img_w: float, img_h: float, k1: float, k2: float) -> dict[str, Any]:
-    """One point of a solve's answer; ``seen`` is where the solved camera shows its place on the snapshot."""
-    import numpy as np
-
-    from openfollow.scene.solver import apply_overlay_distortion, project_points
-
-    seen = None
-    if fit.position is not None:
-        projected = project_points(params, np.array([fit.position], dtype=np.float64), img_w, img_h)
-        if bool(np.isfinite(projected).all()):
-            seen = apply_overlay_distortion(projected, img_w, img_h, k1, k2)[0].tolist()
-    return {
-        "status": fit.status,
-        "reason": fit.reason,
-        "residual": fit.residual if math.isfinite(fit.residual) else None,
-        "position": None if fit.position is None else list(fit.position),
-        "seen": seen,
-    }
 
 
 def _repo_root_for_diagnostics() -> Path | None:
@@ -3886,9 +3977,16 @@ _UPDATE_RUNNING = "An update is running."
 _RESTART_AFTER_UPDATE = "Restart once it has finished."
 
 
-def _save_failed(status: int, error: str, action: str = "") -> HTTPResponse:
+def _update_refused(server: Any) -> str:
+    """Why an update was not queued: a restart under way, or another update."""
+    if server.is_restart_pending():
+        return "OpenFollow is restarting. Start the update once it is back."
+    return "An update is already running. Please wait for it to finish."
+
+
+def _save_failed(status: int, error: str, action: str = "", **detail: str) -> HTTPResponse:
     """A refused or failed save, in the ``{error, action}`` shape the save-feedback line reads."""
-    body = json.dumps({"error": error, "action": action})
+    body = json.dumps({"error": error, "action": action, **detail})
     return HTTPResponse(body=body, status=status, headers={"Content-Type": "application/json"})
 
 
@@ -3899,7 +3997,7 @@ def build_diagnostics_bundle(server: ConfigWebServer, cfg: AppConfig | None = No
     copy carries the same content and name. Off a request the config is read
     from disk.
     """
-    cfg = cfg or load_config(server.config_path)
+    cfg = cfg or _last_whole_config(server)
     # Size the operator's configured detection model store alongside
     # the SD card so the storage breakdown shows where models live
     # (NVMe vs. an SD-card fallback). Expand ``~`` first – the
@@ -3998,6 +4096,7 @@ def _build_diagnostics_providers(
         online_sync_status=server.online_sync_status_provider,
         source_endpoint=lambda: _active_source_endpoint(cfg),
         config_file_paths=lambda: _config_file_paths(server, cfg),
+        config_file_health=lambda: config_file_health(server.config_path),
         detection_models_dir=lambda: _detection_models_dir(cfg),
         config_diff_from_defaults=lambda: _config_diff_from_defaults(cfg),
         request_semaphore_rejections=(lambda: server.request_semaphore_rejections),
@@ -4274,6 +4373,37 @@ def _push_path(path: str, sender: str) -> str:
     return f"{path}?{PUSHED_FROM_PARAM}={quote(sender, safe='')}"
 
 
+# A peer's own words about its settings file are in the first person; the sender names the peer.
+_PEER_SETTINGS_FILE: dict[object, str] = {
+    "empty-restorable": "its settings file is empty; restart it to restore the settings from its latest backup copy",
+    "empty": "its settings file is empty; restart it to start again with default settings",
+    "unreadable": "its settings file could not be read; import a settings file there to replace it",
+}
+
+
+class _PeerRefused(Exception):
+    """A peer answered with the reason it did not apply what was sent."""
+
+
+def _peer_refusal(error: urllib.error.HTTPError) -> _PeerRefused | None:
+    """The reason in a peer's ``{error, action}`` answer, or ``None`` when it gave none."""
+    try:
+        answer = json.loads(error.read(4096).decode("utf-8"))
+    except (OSError, ValueError):
+        return None
+    said = answer.get("error") if isinstance(answer, dict) else None
+    if not isinstance(said, str) or not said.strip():
+        return None
+    about_its_file = _PEER_SETTINGS_FILE.get(answer.get("settings_file"))
+    if about_its_file is not None:
+        return _PeerRefused(about_its_file)
+    action = answer.get("action")
+    reason = said.strip().rstrip(".") + "."
+    if isinstance(action, str) and action.strip():
+        reason += " " + action.strip()
+    return _PeerRefused(reason[:300])
+
+
 def _send_config_to_peer(
     ip: str, port: int, section: str, data: dict[str, Any], pin: str = "", *, expected_port: int, sender: str
 ) -> bool:
@@ -4293,7 +4423,12 @@ def _send_config_to_peer(
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=5) as resp:  # nosec B310
             return bool(resp.status == 200)
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
+    except urllib.error.HTTPError as error:
+        refusal = _peer_refusal(error)
+        if refusal is not None:
+            raise refusal from error
+        return False
+    except (urllib.error.URLError, TimeoutError):
         return False
 
 
@@ -4316,7 +4451,12 @@ def _send_config_import_to_peer(
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=10) as resp:  # nosec B310
             return bool(resp.status == 200)
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
+    except urllib.error.HTTPError as error:
+        refusal = _peer_refusal(error)
+        if refusal is not None:
+            raise refusal from error
+        return False
+    except (urllib.error.URLError, TimeoutError):
         return False
 
 
@@ -4398,22 +4538,25 @@ def _broadcast_to_peers(
     results_lock = threading.Lock()
     pending = threading.Semaphore(0)
 
-    def _record(peer: PeerInfo, ok: bool) -> None:
+    def _record(peer: PeerInfo, ok: bool, reason: str = "") -> None:
+        result: dict[str, Any] = {"name": peer.name, "ip": peer.ip, "success": ok}
+        if reason:
+            result["reason"] = reason
         with results_lock:
-            results_by_key[f"{peer.ip}:{peer.web_port}"] = {
-                "name": peer.name,
-                "ip": peer.ip,
-                "success": ok,
-            }
+            results_by_key[f"{peer.ip}:{peer.web_port}"] = result
 
     def _run(peer: PeerInfo) -> None:
         try:
+            reason = ""
             try:
                 ok = bool(send(peer))
+            except _PeerRefused as refusal:
+                logger.warning("Peer %s did not apply the broadcast: %s", peer.ip, refusal)
+                ok, reason = False, str(refusal)
             except Exception:
                 logger.exception("Peer broadcast to %s raised", peer.ip)
                 ok = False
-            _record(peer, ok)
+            _record(peer, ok, reason)
         finally:
             _broadcast_semaphore.release()
             pending.release()
@@ -4522,17 +4665,18 @@ _ENV_CONFIG_KEY = "openfollow.loaded_config"
 _CONFIG_CACHE = ParsedConfigCache()
 
 
-def _port_suffix(netloc: str) -> str:
-    """The ``:port`` suffix of a URL netloc, or ``""`` when no explicit port.
+def _last_whole_config(server: ConfigWebServer) -> AppConfig:
+    """The config as the file last read whole, read again once it changes.
 
-    Handles bracketed IPv6 host literals: a bare ``[fe80::1]`` has no port (the
-    trailing hextet must not be read as one) – only ``[fe80::1]:8080`` does.
+    For a read that only shows the config. Unlike the request's copy it sees a
+    save the same request made, and it works off a request too.
     """
-    if netloc.startswith("["):
-        _, sep, port = netloc.rpartition("]:")
-        return f":{port}" if sep else ""
-    _, sep, port = netloc.rpartition(":")
-    return f":{port}" if sep else ""
+    return _CONFIG_CACHE.load(server.config_path)
+
+
+def _config_for_save(server: ConfigWebServer) -> AppConfig:
+    """The config file, read whole for a write; a missing one starts from its last whole read."""
+    return load_config_for_save(server.config_path, missing=lambda: _last_whole_config(server))
 
 
 def _request_config(server: ConfigWebServer) -> AppConfig:
@@ -4568,6 +4712,7 @@ def _register_marker_catalog_routes(
                 {
                     "entries": [],
                     "peer_selections": [],
+                    "marker_conflicts": [],
                     "this_station": {
                         "station_id": cfg.station_id,
                         "station_name": cfg.psn_system_name,
@@ -4593,6 +4738,8 @@ def _register_marker_catalog_routes(
             {
                 "entries": entries,
                 "peer_selections": peer_selections,
+                # The runtime's decision, not one of this page's own, so the table and the Operator Screen agree.
+                "marker_conflicts": server.get_runtime_stats().get("marker_conflicts") or [],
                 "this_station": {
                     "station_id": cfg.station_id,
                     "station_name": cfg.psn_system_name,
@@ -4624,7 +4771,7 @@ def _register_marker_catalog_routes(
         if catalog is None:
             response.status = 503
             return json.dumps({"error": "catalog unavailable"})
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         with _marker_catalog_lock:
             # Snapshot the prior entry (tombstones included) so we can
             # roll back the in-memory upsert if persistence fails –
@@ -4685,7 +4832,7 @@ def _register_marker_catalog_routes(
         if catalog is None:
             response.status = 503
             return json.dumps({"error": "catalog unavailable"})
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         with _marker_catalog_lock:
             # Snapshot the pre-tombstone entry so we can restore it
             # if persistence fails – without the rollback the UI / poll
@@ -4724,22 +4871,22 @@ def _register_marker_catalog_routes(
         # still leaves the marker gone from the catalog UI, and the
         # startup selection-prune reconciles it on the next restart.
         with _config_write_lock:
-            fresh = load_config(server.config_path)
-            new_controlled = [t for t in fresh.controlled_marker_ids if t != marker_id]
-            new_viewer = [t for t in fresh.viewer_marker_ids if t != marker_id]
-            if new_controlled != fresh.controlled_marker_ids or new_viewer != fresh.viewer_marker_ids:
-                fresh.controlled_marker_ids = new_controlled
-                fresh.viewer_marker_ids = new_viewer
-                try:
+            try:
+                fresh = _config_for_save(server)
+                new_controlled = [t for t in fresh.controlled_marker_ids if t != marker_id]
+                new_viewer = [t for t in fresh.viewer_marker_ids if t != marker_id]
+                if new_controlled != fresh.controlled_marker_ids or new_viewer != fresh.viewer_marker_ids:
+                    fresh.controlled_marker_ids = new_controlled
+                    fresh.viewer_marker_ids = new_viewer
                     save_config(fresh, server.config_path)
-                except OSError:
-                    logger.exception(
-                        "Marker %s tombstoned but failed to prune it from "
-                        "the selection in %s; live marker will persist "
-                        "until the next restart reconciles it",
-                        marker_id,
-                        server.config_path,
-                    )
+            except OSError:
+                logger.exception(
+                    "Marker %s tombstoned but failed to prune it from "
+                    "the selection in %s; live marker will persist "
+                    "until the next restart reconciles it",
+                    marker_id,
+                    server.config_path,
+                )
         sync = server.get_marker_catalog_sync()
         if sync is not None:
             sync.request_delta([marker_id])
@@ -4800,7 +4947,7 @@ def _register_marker_catalog_routes(
             return kept + [mid for mid in posted if mid not in kept]
 
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             cfg.controlled_marker_ids = _keep_order(cfg.controlled_marker_ids, controlled)
             cfg.viewer_marker_ids = viewed_with_controlled(
                 cfg.controlled_marker_ids, _keep_order(cfg.viewer_marker_ids, viewer)
@@ -4836,7 +4983,7 @@ def _register_input_plugin_routes(
                 input_cls: type[VideoInputBase],
             ) -> Callable[[], Any]:
                 def _handler() -> Any:
-                    cfg = load_config(server.config_path)
+                    cfg = _last_whole_config(server)
                     config = input_cls.get_config_field_values(
                         cfg,
                     )
@@ -4871,7 +5018,7 @@ def _render_gallery_grid(server: ConfigWebServer, *, error: str = "") -> str:
     # Highlight the *effective* selection: an unresolvable / deleted id plays the
     # Stage default at runtime, so the grid must mark Stage too rather than leave
     # no tile selected (which would disagree with the active source).
-    raw_selected = load_config(server.config_path).testpattern_selected_media
+    raw_selected = _last_whole_config(server).testpattern_selected_media
     selected = raw_selected if media_store.resolve(raw_selected) is not None else media_store.DEFAULT_STAGE_ID
     tiles: list[str] = []
     for item in media_store.list_media():
@@ -4937,7 +5084,7 @@ def _register_gallery_routes(app: Bottle, server: ConfigWebServer) -> None:
             response.status = 400
             return _render_gallery_grid(server, error="Unknown media.")
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             cfg.testpattern_selected_media = media_id
             save_config(cfg, server.config_path)
         return _render_gallery_grid(server)
@@ -5001,23 +5148,21 @@ def _json_error(status: int, message: str) -> str:
     return json.dumps({"error": message})
 
 
-def _camera_view(cfg: AppConfig) -> tuple[Any, float, float]:
-    """The saved camera as the solver's parameter vector, with its lens."""
-    import numpy as np
+def _camera_view(cfg: AppConfig) -> tuple[Any, tuple[float, float, float, float]]:
+    """The saved camera as the solver's parameter vector, with the lens it is drawn with."""
+    from openfollow.scene.solver import camera_params
 
-    cam = cfg.camera
-    params = np.array([cam.pos_x, cam.pos_y, cam.pos_z, cam.pitch, cam.yaw, cam.roll, cam.fov], dtype=np.float64)
-    return params, cam.lens_k1, cam.lens_k2
+    return camera_params(cfg.camera), effective_lens(cfg)
 
 
 # Chords per straight world segment when the lens bows it, as on the Operator Screen.
-_PICTURE_SUBDIVISIONS = 12
-# Upper bound on the world points one picture request projects.
-_PICTURE_MAX_POINTS = 20000
+_PICTURE_SUBDIVISIONS = 24
+# Upper bound on the world points one picture request projects once subdivided: 1666 points a request.
+_PICTURE_MAX_POINTS = 40000
 
 
 def _picture_points(
-    params: Any, k1: float, k2: float, w: float, h: float, points: Sequence[Sequence[float]]
+    params: Any, lens: tuple[float, float, float, float], w: float, h: float, points: Sequence[Sequence[float]]
 ) -> list[list[float] | None]:
     """World points as seen by the camera in a ``w`` x ``h`` picture, lens included; null behind it."""
     import numpy as np
@@ -5026,7 +5171,7 @@ def _picture_points(
 
     if not len(points):
         return []
-    screen = apply_overlay_distortion(project_points(params, np.asarray(points, dtype=np.float64), w, h), w, h, k1, k2)
+    screen = apply_overlay_distortion(project_points(params, np.asarray(points, dtype=np.float64), w, h), w, h, *lens)
     return [[float(x), float(y)] if np.isfinite(x) and np.isfinite(y) else None for x, y in screen]
 
 
@@ -5044,9 +5189,9 @@ def _subdivided(polyline: Sequence[Sequence[float]], n: int) -> list[list[float]
 
 def _picture_polylines(cfg: AppConfig, w: float, h: float, polylines: Sequence[Sequence[Sequence[float]]]) -> list[Any]:
     """World polylines as picture polylines in the saved camera, bowed like the Operator Screen draws them."""
-    params, k1, k2 = _camera_view(cfg)
-    n = _PICTURE_SUBDIVISIONS if (k1 or k2) else 1
-    return [_picture_points(params, k1, k2, w, h, _subdivided(line, n)) for line in polylines]
+    params, lens = _camera_view(cfg)
+    n = _PICTURE_SUBDIVISIONS if (lens[0] or lens[1]) else 1
+    return [_picture_points(params, lens, w, h, _subdivided(line, n)) for line in polylines]
 
 
 def _picture_size(data: Mapping[str, Any]) -> tuple[float, float]:
@@ -5116,7 +5261,7 @@ def _register_scene_routes(app: Bottle, server: ConfigWebServer) -> None:
             (points,) = _world_polylines([data.get("points", [])], 3)
         except ValueError as exc:
             return _json_error(400, str(exc))
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         return json.dumps(
             {
                 "polylines": _picture_polylines(cfg, w, h, lines),
@@ -5140,9 +5285,9 @@ def _register_scene_routes(app: Bottle, server: ConfigWebServer) -> None:
                 raise ValueError("not finite")
         except (KeyError, TypeError, ValueError, OverflowError):
             return _json_error(400, "x, y, z, w and h must be numbers")
-        cfg = load_config(server.config_path)
-        params, k1, k2 = _camera_view(cfg)
-        pinhole = invert_overlay_distortion(np.array([[x, y]], dtype=np.float64), w, h, k1, k2)
+        cfg = _last_whole_config(server)
+        params, lens = _camera_view(cfg)
+        pinhole = invert_overlay_distortion(np.array([[x, y]], dtype=np.float64), w, h, *lens)
         world = unproject_to_plane(params, pinhole, w, h, z)[0]
         if not (np.isfinite(world[0]) and np.isfinite(world[1])):
             return _json_error(422, "That point of the picture does not reach the stage.")
@@ -5165,7 +5310,7 @@ def _register_scene_routes(app: Bottle, server: ConfigWebServer) -> None:
                 raise ValueError("z must be finite")
         except (KeyError, TypeError, ValueError, OverflowError):
             return _json_error(400, "vertices, z, w and h must be numbers")
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         g = cfg.grid
         verts = verts[:GROUND_GRID_MAX_VERTICES]
         corners = [[*v, z] for v in verts]
@@ -5183,6 +5328,155 @@ def _register_scene_routes(app: Bottle, server: ConfigWebServer) -> None:
         )
 
 
+_REMOTE_API = "/api/remote"
+# Z notches one drive message may carry; a finger cannot turn more between two messages.
+_REMOTE_MAX_NOTCHES = 1000
+
+
+def _register_touch_remote_routes(app: Bottle, server: ConfigWebServer) -> None:
+    """Register the touch remote's routes: sessions, holds, driving and the card's state."""
+    from openfollow.input.touch_remote import ACTIONS, GLIDE, KEPT, LOST, MAX_REACH_M, OK, RemoteAction
+
+    def _gate() -> tuple[Any, AppConfig] | str:
+        response.content_type = "application/json"
+        cfg = _request_config(server)
+        remote = server.touch_remote
+        if remote is None or not feature_gated(cfg.touch_remote, cfg, "touch_remote").enabled:
+            return _json_error(403, "The touch remote is switched off on this station.")
+        return remote, cfg
+
+    def _session_body() -> tuple[Any, AppConfig, dict[str, Any], str] | str:
+        gate = _gate()
+        if isinstance(gate, str):
+            return gate
+        data = _load_json_body()
+        if not isinstance(data, dict):
+            return _json_error(400, "Expected a JSON object")
+        token = data.get("token")
+        if not isinstance(token, str) or not token:
+            return _json_error(400, "token must be a string")
+        return gate[0], gate[1], data, token
+
+    def _answer(outcome: str) -> str:
+        if outcome == OK:
+            return json.dumps({"success": True})
+        if outcome == LOST:
+            return _json_error(409, "Another remote took this marker.")
+        return _json_error(404, "This remote session has ended.")
+
+    @app.post(_REMOTE_API + "/open")
+    def remote_open() -> Any:
+        gate = _gate()
+        if isinstance(gate, str):
+            return gate
+        return json.dumps({"token": gate[0].open()})
+
+    @app.post(_REMOTE_API + "/close")
+    def remote_close() -> Any:
+        body = _session_body()
+        if isinstance(body, str):
+            return body
+        remote, _cfg, _data, token = body
+        remote.close(token)
+        return json.dumps({"success": True})
+
+    @app.post(_REMOTE_API + "/hold")
+    def remote_hold() -> Any:
+        """Take a controlled marker for this remote, from any other remote holding it."""
+        body = _session_body()
+        if isinstance(body, str):
+            return body
+        remote, cfg, data, token = body
+        try:
+            marker_id = _json_int(data.get("marker"), "marker")
+        except (TypeError, ValueError):
+            return _json_error(400, "marker must be a whole number")
+        if marker_id not in cfg.controlled_marker_ids:
+            return _json_error(409, f"This station does not control marker {marker_id}.")
+        outcome = remote.hold(token, marker_id)
+        if outcome not in (OK, KEPT):
+            return _answer(outcome)
+        # The frame loop switches detection off for a new hold only; the card says so.
+        detection_on = cfg.detection.enabled and cfg.ui.feature_on("detection")
+        return json.dumps({"success": True, "detection_off": outcome == OK and detection_on})
+
+    @app.post(_REMOTE_API + "/drive")
+    def remote_drive() -> Any:
+        """The stick and the Z notches turned since the last message; also the remote's heartbeat."""
+        body = _session_body()
+        if isinstance(body, str):
+            return body
+        remote, _cfg, data, token = body
+        try:
+            marker_id = _json_int(data.get("marker"), "marker")
+            stick = (_json_number(data.get("sx", 0), "sx"), _json_number(data.get("sy", 0), "sy"))
+            notches = _json_int(data.get("z_notches", 0), "z_notches")
+        except (TypeError, ValueError):
+            return _json_error(400, "marker and z_notches must be whole numbers, sx and sy numbers")
+        if abs(notches) > _REMOTE_MAX_NOTCHES:
+            return _json_error(400, f"z_notches must be within ±{_REMOTE_MAX_NOTCHES}")
+        return _answer(remote.drive(token, marker_id, stick, notches))
+
+    @app.post(_REMOTE_API + "/action")
+    def remote_action() -> Any:
+        """Reset, Pathfinder, or a glide to ``x`` / ``y`` / ``z`` in metres."""
+        body = _session_body()
+        if isinstance(body, str):
+            return body
+        remote, _cfg, data, token = body
+        kind = data.get("action")
+        if kind not in ACTIONS:
+            return _json_error(400, f"action must be one of: {', '.join(ACTIONS)}")
+        try:
+            marker_id = _json_int(data.get("marker"), "marker")
+            target = (
+                (_json_number(data.get("x"), "x"), _json_number(data.get("y"), "y"), _json_number(data.get("z"), "z"))
+                if kind == GLIDE
+                else None
+            )
+        except (TypeError, ValueError):
+            return _json_error(400, "marker must be a whole number, x, y and z finite numbers")
+        if target is not None and any(abs(v) > MAX_REACH_M for v in target):
+            return _json_error(400, f"x, y and z must be within ±{MAX_REACH_M:,.0f} m")
+        return _answer(remote.act(token, marker_id, RemoteAction(kind, target)))
+
+    @app.get(_REMOTE_API + "/state")
+    def remote_state() -> Any:
+        """What the card shows: the controlled markers, this remote's hold, the settings it works with."""
+        gate = _gate()
+        if isinstance(gate, str):
+            return gate
+        remote, cfg = gate
+        status = remote.status(request.query.get("token", ""))
+        if status is None:
+            return _json_error(404, "This remote session has ended.")
+        catalog = server.get_marker_catalog()
+        entries = {e.id: e for e in catalog.live_entries()} if catalog is not None else {}
+        markers = []
+        for marker_id in cfg.controlled_marker_ids:
+            entry = entries.get(marker_id)
+            markers.append(
+                {
+                    "id": marker_id,
+                    "name": entry.name if entry is not None else "",
+                    "color": entry.color if entry is not None else "",
+                    "pos": server.get_marker_position(marker_id),
+                }
+            )
+        paths = server.get_path_state()
+        return json.dumps(
+            {
+                **status,
+                "markers": markers,
+                "z_step_m": cfg.touch_remote.z_step_m,
+                "z_notch_px": cfg.touch_remote.z_notch_px,
+                "paths_on": cfg.ui.feature_on("paths"),
+                "recording": paths.get("recording") is not None,
+                "locked": sorted(int(m) for m in paths.get("locks", {})),
+            }
+        )
+
+
 def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
     """Register the path editor's routes: the paths, recording, and the view over the video frame."""
     from openfollow.paths.engine import path_ends
@@ -5190,7 +5484,7 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
     from openfollow.paths.network import extend_to_corners
 
     def _snapshot() -> dict[str, Any]:
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         state = server.get_path_state()
         return {
             "show_paths": cfg.paths.show_paths,
@@ -5230,7 +5524,7 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
         if isinstance(data, str):
             return data
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             if len(cfg.paths.paths) >= MAX_PATHS:
                 return _json_error(409, f"Paths are limited to {MAX_PATHS}.")
             name = path_name_from(data.get("name", "")) if data.get("name") else ""
@@ -5250,7 +5544,7 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
         if isinstance(data, str):
             return data
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             path = cfg.paths.find(name)
             if path is None:
                 return _json_error(404, f"No path called {name}.")
@@ -5280,7 +5574,7 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
         if isinstance(data, str):
             return data
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             path = cfg.paths.find(name)
             if path is None:
                 return _json_error(404, f"No path called {name}.")
@@ -5292,7 +5586,7 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
     def paths_delete(name: str) -> Any:
         response.content_type = "application/json"
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             path = cfg.paths.find(name)
             if path is None:
                 return _json_error(404, f"No path called {name}.")
@@ -5308,7 +5602,7 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
         if isinstance(data, str):
             return data
         on = _as_bool(data.get("on"), False)
-        if load_config(server.config_path).paths.find(name) is None:
+        if _last_whole_config(server).paths.find(name) is None:
             return _json_error(404, f"No path called {name}.")
         if not server.record_path(name if on else None):
             return _json_error(409, "Paths are switched off.")
@@ -5336,11 +5630,11 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
             _require_wizard_canvas(w, h)
         except (KeyError, TypeError, ValueError):
             return _json_error(400, "w and h must be the picture's size in pixels")
-        cfg = load_config(server.config_path)
-        params, k1, k2 = _camera_view(cfg)
+        cfg = _last_whole_config(server)
+        params, lens = _camera_view(cfg)
 
         def seen(points: list[tuple[float, float, float]]) -> list[list[float] | None]:
-            return _picture_points(params, k1, k2, w, h, points)
+            return _picture_points(params, lens, w, h, points)
 
         curves = [
             build_curve([PathPoint(p.x, p.y, p.z, p.radius) for p in path.points], path.closed)
@@ -5378,8 +5672,28 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
         return json.dumps({"paths": views, "markers": markers})
 
 
+def _refuse_over_unreadable_config(callback: Callable[..., Any]) -> Callable[..., Any]:
+    """A route plugin answering a write that found the config file empty or unreadable, for the save-feedback line."""
+
+    @functools.wraps(callback)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return callback(*args, **kwargs)
+        except ConfigFileUnreadableError as error:
+            logger.warning("%s: %s", "Not exported" if request.method == "GET" else "Not saved", error)
+            said, step = config_problem_words(error)
+            return _save_failed(
+                409, f"The settings file on this station {said}", f"{step}.", settings_file=config_problem_kind(error)
+            )
+
+    return wrapper
+
+
 def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     """Register all routes on the Bottle app."""
+    app.install(_refuse_over_unreadable_config)
+    # A file that breaks before the first request is then served as it read here, not as its backup.
+    _CONFIG_CACHE.load(server.config_path)
 
     # Mirror bundled system templates into the operator's templates folder
     # on every start. Idempotent overwrite enforces the "system templates
@@ -5585,13 +5899,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         elif request.headers.get("HX-Request"):
             raise HTTPResponse(body="", headers={"HX-Redirect": "/login"})
         else:
-            redirect("/login")
+            _redirect("/login")
 
     @app.get("/login")
     def login_page() -> Any:
         cfg = _request_scoped_config()
         if not cfg.web_pin:
-            redirect("/")
+            _redirect("/")
         return template(
             "login",
             error="",
@@ -5602,10 +5916,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.post("/login")
     def login_submit() -> Any:
-        cfg = load_config(server.config_path)
+        cfg = _request_scoped_config()
         pin = cfg.web_pin
         if not pin:
-            redirect("/")
+            _redirect("/")
 
         remote = _client_address()
         # Reserve a single guess atomically: refuse while locked out (short-
@@ -5683,7 +5997,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         the live values makes the write faithful and the subsequent hot-reload a
         no-op for that (device-local, runtime-authoritative) field.
         """
-        cfg = load_config(server.config_path)
+        cfg = _config_for_save(server)
         speeds = server.get_marker_move_speeds()
         if speeds:
             cfg.marker_move_speeds = dict(speeds)
@@ -5787,7 +6101,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 root=str(license_path.parent),
                 mimetype="text/plain",
             )
-        redirect("https://www.gnu.org/licenses/agpl-3.0.txt")
+        _redirect("https://www.gnu.org/licenses/agpl-3.0.txt")
 
     # --- HTML Page Routes ---
 
@@ -5855,6 +6169,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             local=local,
             station_down=server.station_interface_down,
             stats=server.get_runtime_stats(),
+            camera_video_size=_camera_video_size(server),
             controller_slots=_controller_slots_view(server),
             local_ips=_get_local_ips(),
             update_status=server.get_update_status(),
@@ -5862,7 +6177,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # index.tpl includes the General partial directly, so the initial
             # render must supply the Software Update section's version label.
             current_version=openfollow.__version__,
-            # Update-available banner (General section) + footer flag (base.tpl);
+            # Update-available box (General section) + footer flag (base.tpl);
             # read once so the flag and version label can't disagree mid-render.
             **_page_update_context(server),
             **_page_host_context(config),
@@ -5895,6 +6210,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # Per-controlled-marker fader snapshot so the MIDI page's
             # read-only Marker Faders strips render populated at first paint.
             marker_fader_values=server.marker_fader_values(),
+            fader_values=server.midi_fader_values(),
             # Fader / device-alias names so the OSC bindings partial pre-fills
             # its dropdowns at first render.
             **_osc_binding_form_sources(config),
@@ -6277,12 +6593,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             net=_build_network_form_context(iface=iface, banner=banner, vlan_form=vlan_form),
         )
 
-    def _network_redirect_url(address: str) -> str:
-        """Build a same-scheme/same-port URL on ``address`` so a static /
-        manual-address apply can reload the UI at the new IP."""
-        parts = request.urlparts
-        return f"{parts.scheme}://{address}{_port_suffix(parts.netloc)}/"
-
     def _parse_network_form() -> tuple[str, str, dict[str, Any]]:
         """Pull (iface, method_value, fields) off the posted form. ``fields``
         carries the raw operator input – re-rendered verbatim on error."""
@@ -6501,7 +6811,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # dead page and the explanation is lost with the response body.
             and not result.pending
         ):
-            response.set_header("HX-Redirect", _network_redirect_url(address))
+            response.set_header("HX-Redirect", _station_url(address))
             return ""
         if result.pending:
             # Deliberately not "applied", and no reconnect advice: the
@@ -6917,6 +7227,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             extra["detection_started"] = server.is_button_detection_active()
         elif name == "keyboard":
             extra["keyboard_layout"] = build_keyboard_layout_view(config)
+        elif name == "camera":
+            extra["video_size"] = _camera_video_size(server)
         # ``detection`` is intentionally NOT handled here – it has a
         # dedicated ``@app.get("/section/detection")`` route that
         # builds the extras-status / install-job state needed by the
@@ -7020,9 +7332,17 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             return _save_failed(422, f"Custom domain name: {fqdn_refusal}")
         with _config_write_lock:
             cfg = _load_config_for_edit()
+            launcher_was = feature_gated(cfg.touch_remote, cfg, "touch_remote").enabled
             apply_section_data(cfg, "general", form_data)
+            # The Features boxes save with this form; unticked boxes send nothing, so the
+            # marker says the list was on the page and an absent key means off.
+            if "features_submitted" in form_data:
+                apply_section_data(cfg, "features", {key: key in form_data for key in OFFERED_FEATURES})
             save_config(cfg, server.config_path)
 
+        if feature_gated(cfg.touch_remote, cfg, "touch_remote").enabled != launcher_was:
+            # The launcher is part of every page: reload so it appears or goes.
+            response.set_header("HX-Refresh", "true")
         return _render_general(cfg, saved=True)
 
     def _persist_ui_change(mutate: Callable[[AppConfig], None]) -> AppConfig:
@@ -7031,7 +7351,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         sets the [ui] fields the route owns; ``UiConfig.__post_init__``
         coerces raw form values."""
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             mutate(cfg)
             cfg.ui.__post_init__()  # coerce raw [ui] form values
             save_config(cfg, server.config_path)
@@ -7049,29 +7369,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         cfg = _persist_ui_change(lambda c: setattr(c.ui, "unit_system", choice))
         return _render_general(cfg, saved=True)
 
-    @app.post("/settings/experimental")
-    def update_experimental() -> Any:
-        """Persist ``[ui] show_experimental_features``. Turning it off also
-        disables ``detection.enabled`` and ``ground_grid.enabled`` and
-        deactivates every path (all still experimental); the config-reload
-        watcher applies that at runtime. The
-        body-class show/hide flip is done client-side. Responds empty
-        (hx-swap="none")."""
-        show = _as_bool(request.forms.get("show_experimental_features"), False)
-
-        def _mutate(cfg: AppConfig) -> None:
-            cfg.ui.show_experimental_features = show
-            if not show:
-                _turn_off_experimental_features(cfg)
-
-        _persist_ui_change(_mutate)
-        return ""
-
     def _render_startup(startup: dict[str, Any]) -> Any:
         return template("partials/startup", startup=startup)
 
     def _render_camera_setup(setup: dict[str, Any], *, mode: str = "view", banner: dict[str, str] | None = None) -> Any:
-        camera_name = str(load_config(server.config_path).picam_camera_name)
+        camera_name = str(_last_whole_config(server).picam_camera_name)
         return template("partials/camera_setup", setup=setup, mode=mode, banner=banner, camera_name=camera_name)
 
     @app.get("/section/video_source/camera-setup")
@@ -7146,11 +7448,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         actually queued – a rejected request (another update in flight) must
         not leave the operator polling a locked progress modal.
         """
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         response.content_type = "application/json"
         service_name = _service_unit_name(cfg)
         if not server.request_deb_update(service_name=service_name):
-            return json.dumps({"ok": False, "error": "An update is already running. Please wait for it to finish."})
+            return json.dumps({"ok": False, "error": _update_refused(server)})
         return json.dumps({"ok": True})
 
     @app.get("/section/general/deb-update/check")
@@ -7163,14 +7465,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """
         from openfollow.runtime.deb_update import check_for_update
 
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
+        repo, include_prereleases = server.update_source(cfg.update_github_repo, cfg.update_include_prereleases)
         response.content_type = "application/json"
         try:
-            info = check_for_update(
-                cfg.update_github_repo,
-                openfollow.__version__,
-                include_prereleases=cfg.update_include_prereleases,
-            )
+            info = check_for_update(repo, openfollow.__version__, include_prereleases=include_prereleases)
             return json.dumps({"ok": True, **info})
         except Exception as exc:  # surface any network/API error as feedback
             return json.dumps({"ok": False, "error": str(exc)})
@@ -7210,7 +7509,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         if total > _MAX_UPLOAD_BYTES:
             return json.dumps({"ok": False, "error": f"File too large (max {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB)."})
 
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         service_name = _service_unit_name(cfg)
 
         staged_path = f"/tmp/{DEB_UPDATE_TMP_PREFIX}{secrets.token_hex(8)}.ofupdate"  # nosec B108
@@ -7220,7 +7519,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             fields = validate_uploaded_deb(deb_path, _deb_arch())
             if not server.request_local_update(service_name, deb_path=staged_path):
                 _discard_staged(staged_path)
-                return json.dumps({"ok": False, "error": "An update is already running. Please wait for it to finish."})
+                return json.dumps({"ok": False, "error": _update_refused(server)})
             version = fields.get("Version", "?")
             # The control Version is the Debian form (e.g. ``0.2.5~rc8``); drop
             # the pre-release tilde so packaging.Version can parse it for the
@@ -7258,7 +7557,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def update_camera() -> Any:
         """Update camera settings."""
         cfg = _save_section_from_form("camera")
-        return template("partials/camera", config=cfg, saved=True)
+        return template("partials/camera", config=cfg, saved=True, video_size=_camera_video_size(server))
 
     @app.post("/section/grid")
     def update_grid() -> Any:
@@ -7366,7 +7665,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def start_button_detection() -> Any:
         """Trigger the in-app button detection wizard."""
         server.request_button_detection()
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         return template(
             "partials/gamepad",
             config=cfg,
@@ -7384,7 +7683,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         main-loop tick), so ``detection_started`` may still read "running"
         for one poll until the flag clears."""
         server.cancel_button_detection()
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         return template(
             "partials/gamepad",
             config=cfg,
@@ -7398,6 +7697,16 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Update OSC settings."""
         cfg = _save_section_from_form("osc", bool_fields=("enabled",))
         return template("partials/osc", config=cfg, saved=True)
+
+    @app.post("/section/touch_remote")
+    def update_touch_remote() -> Any:
+        """Save the Touch Remote section."""
+        was = _request_config(server).touch_remote.enabled
+        cfg = _save_section_from_form("touch_remote", bool_fields=("enabled",))
+        if cfg.touch_remote.enabled != was:
+            # The launcher is part of every page: reload so it appears or goes.
+            response.set_header("HX-Refresh", "true")
+        return template("partials/touch_remote", config=cfg, saved=True)
 
     @app.post("/section/operator_messages")
     def update_operator_messages() -> Any:
@@ -7438,6 +7747,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             midi_patches=_midi_patches_for_form(cfg),
             valid_fader_midi_types=VALID_FADER_MIDI_TYPES,
             marker_fader_values=server.marker_fader_values(),
+            fader_values=server.midi_fader_values(),
         )
 
     @app.get("/section/midi")
@@ -7468,7 +7778,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         from openfollow.configuration import MidiPatch
 
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             cfg.midi.patches.append(MidiPatch(id=cfg.midi.next_patch_id()))
             save_config(cfg, server.config_path)
         return _render_midi_section(cfg, saved=True)
@@ -7479,7 +7789,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         ``apply_config`` opens / closes the listener port on the next
         hot-reload tick. No-op when the id is unknown (concurrent delete)."""
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             patch = cfg.midi.patch_by_id(patch_id)
             if patch is not None:
                 patch.alias = _as_str(request.forms.get("alias", ""), "").strip()
@@ -7504,7 +7814,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Remove a patch by id. Bindings/faders that referenced it fall
         back to their "(missing)" dropdown option until re-pointed."""
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             cfg.midi.patches = [p for p in cfg.midi.patches if p.id != patch_id]
             save_config(cfg, server.config_path)
         return _render_midi_section(cfg, saved=True)
@@ -7575,7 +7885,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 )
             )
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             cfg.virtual_faders = VirtualFadersConfig(faders=new_faders)
             save_config(cfg, server.config_path)
         return _render_midi_section(cfg, saved=True)
@@ -7628,7 +7938,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # coerced to a valid choice by ``VirtualFaderConfig.__post_init__``.
         posted_kind = _as_str(request.forms.get("source_kind", ""), "")
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             existing = list(cfg.virtual_faders.faders)
             existing[idx - 1] = VirtualFaderConfig(
                 name=_as_str(request.forms.get("name", ""), ""),
@@ -7873,7 +8183,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         crafted ``../`` traversal or unknown name can't reach outside the
         models directory.
         """
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         name = (request.forms.get("model", "") or "").strip()
         on_disk = _discover_storage_models(cfg.detection.storage_path)
         if not name or name != Path(name).name or name not in on_disk:
@@ -7903,7 +8213,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         and the model-export tools (ultralytics + onnx, installed by
         ``install-detection.sh``). It writes ``<storage>/models/<model>``.
         """
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         # ``export_model`` (not ``model``) so the export dropdown can't clobber
         # the active-model selector when the whole form is saved.
         model = (request.forms.get("export_model", "") or "").strip()
@@ -8142,7 +8452,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """
         template_id = _as_str(request.forms.get("template_id", ""), "").strip()
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             row = OscTransmitterConfig(name="New transmitter")
             if template_id:
                 # Both system and user templates flow through one
@@ -8216,7 +8526,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 response.status = 400
                 return message_error
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             found = _find_osc_binding(cfg, row_id)
             if found is None:
                 abort(404, "Unknown binding")
@@ -8243,7 +8553,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         ``name`` are changed (name suffixed with ``" (copy)"`` so the
         list view tells the two apart)."""
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             found = _find_osc_binding(cfg, row_id)
             if found is None:
                 abort(404, "Unknown binding")
@@ -8263,7 +8573,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         row was already gone – keeps the UI stable in the face of
         concurrent edits across tabs."""
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             found = _find_osc_binding(cfg, row_id)
             if found is not None:
                 idx, _ = found
@@ -8284,7 +8594,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """
         direction = _as_str(request.forms.get("direction", ""), "")
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             found = _find_osc_binding(cfg, row_id)
             if found is None:
                 abort(404, "Unknown binding")
@@ -8321,7 +8631,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # already on disk.
         saved = bool(wanted_ids)
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             transmitters = cfg.osc_transmitters.transmitters
             current = {row.id: row for row in transmitters}
             if wanted_ids:
@@ -8388,7 +8698,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.post("/section/osc_destinations/add")
     def add_osc_destination() -> Any:
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             dest = OscDestinationConfig(name="New destination")
             cfg.osc_destinations.destinations.append(dest)
             save_config(cfg, server.config_path)
@@ -8398,7 +8708,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def save_osc_destination(dest_id: str) -> Any:
         form_data: dict[str, Any] = dict(request.forms)
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             found = _find_osc_destination(cfg, dest_id)
             if found is None:
                 abort(404, "Unknown destination")
@@ -8411,7 +8721,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.post("/section/osc_destination/<dest_id>/duplicate")
     def duplicate_osc_destination(dest_id: str) -> Any:
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             found = _find_osc_destination(cfg, dest_id)
             if found is None:
                 abort(404, "Unknown destination")
@@ -8428,7 +8738,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.post("/section/osc_destination/<dest_id>/delete")
     def delete_osc_destination(dest_id: str) -> Any:
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             found = _find_osc_destination(cfg, dest_id)
             if found is not None:
                 idx, _ = found
@@ -8440,7 +8750,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def move_osc_destination(dest_id: str) -> Any:
         direction = _as_str(request.forms.get("direction", ""), "")
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             found = _find_osc_destination(cfg, dest_id)
             if found is None:
                 abort(404, "Unknown destination")
@@ -8466,7 +8776,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         wanted_ids = [s for s in (s.strip() for s in raw_order.split(",")) if s]
         saved = bool(wanted_ids)
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             dests = cfg.osc_destinations.destinations
             current = {d.id: d for d in dests}
             if wanted_ids:
@@ -8595,7 +8905,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         which feed back into the ring buffer. Returns the manager's
         report dict (``sent`` / ``error`` / ``address`` / ``args``)."""
         response.content_type = "application/json"
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         if _find_osc_binding(cfg, row_id) is None:
             response.status = 404
             return json.dumps({"available": False, "error": "Unknown binding"})
@@ -8863,7 +9173,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # Save response, so the JS button can reuse the section
         # ``hx-swap`` plumbing without a one-off content-type
         # negotiation.
-        cfg = load_config(server.config_path)
+        cfg = _last_whole_config(server)
         return _render_osc_bindings_section(cfg, saved=True)
 
     # ---- File-based template system ---------------------------------------
@@ -9023,7 +9333,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             payload = dict(payload_raw)
         elif template_type == "camera_grid":
             with _config_write_lock:
-                cfg = load_config(server.config_path)
+                cfg = _config_for_save(server)
                 payload = {
                     "camera": asdict(cfg.camera),
                     "grid": asdict(cfg.grid),
@@ -9031,14 +9341,14 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 }
         elif template_type == "paths":
             with _config_write_lock:
-                cfg = load_config(server.config_path)
+                cfg = _config_for_save(server)
                 paths = [asdict(path) for path in cfg.paths.paths]
                 for path in paths:
                     path.pop("active")
                 payload = {"slide_time": cfg.paths.slide_time, "paths": paths}
         else:  # zones – the only remaining option per the early gate
             with _config_write_lock:
-                cfg = load_config(server.config_path)
+                cfg = _config_for_save(server)
                 payload = asdict(cfg.trigger_zones)
         try:
             written_path = write_user_template(
@@ -9112,7 +9422,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # marker. ``name`` falls back to the envelope name so a minimal
             # ``{address, args}`` template still gets a readable label.
             with _config_write_lock:
-                cfg = load_config(server.config_path)
+                cfg = _config_for_save(server)
                 kwargs: dict[str, Any] = {
                     "name": tpl.payload.get("name", tpl.name),
                     "address": tpl.payload.get("address", ""),
@@ -9145,16 +9455,17 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             from openfollow.configuration import CameraConfig, GridConfig, GroundGridConfig
 
             with _config_write_lock:
-                cfg = load_config(server.config_path)
+                cfg = _config_for_save(server)
                 cfg.camera = CameraConfig(**tpl.payload["camera"])
                 cfg.grid = GridConfig(**tpl.payload["grid"])
+                reconcile_simple_corners(cfg)
                 if "ground_grid" in tpl.payload:
                     cfg.ground_grid = GroundGridConfig(**tpl.payload["ground_grid"])
                 save_config(cfg, server.config_path)
             return json.dumps({"ok": True})
         if tpl.type == "paths":
             with _config_write_lock:
-                cfg = load_config(server.config_path)
+                cfg = _config_for_save(server)
                 apply_section_data(cfg, "paths", strip_device_local_fields("paths", tpl.payload))
                 save_config(cfg, server.config_path)
             return json.dumps({"ok": True})
@@ -9163,7 +9474,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         from openfollow.configuration import TriggerZonesConfig
 
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             cfg.trigger_zones = TriggerZonesConfig(**tpl.payload)
             save_config(cfg, server.config_path)
         return json.dumps({"ok": True})
@@ -9391,14 +9702,14 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     f'aria-live="assertive">'
                     f"{html_mod.escape(unit_err, quote=True)}</span>"
                 )
-        # Only the lens pair's fold check reads the TOML config (a sibling left
+        # Only the lens's limit check reads the TOML config (a sibling left
         # empty keeps its saved value); skip the per-keystroke parse for every
         # other rule (see ``validation.needs_cfg``). The request-scoped cache reuses the
         # parse from ``_check_auth``'s PIN read so blur validation doesn't
         # duplicate disk I/O.
         cfg = _request_scoped_config() if needs_cfg(section, field_name) else None
         # ``request.query`` is a MultiDict; flatten siblings into a plain
-        # dict so the cross-field rules (the lens fold check, the ``max_speed``
+        # dict so the cross-field rules (the lens limit check, the ``max_speed``
         # advisory) can read the rest of the form without seeing the field
         # being validated as its own context entry.
         context = {k: request.query.get(k, "") for k in request.query if k != field_name}
@@ -9734,7 +10045,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         disallowed character to ``-`` rather than dropping it, so
         ``safe_name`` is never empty (no bare ``.ofsettings``).
         """
-        cfg = _request_scoped_config()
+        cfg = _config_for_save(server)
         safe_name = _safe_content_disposition_name(cfg.psn_system_name)
         response.content_type = "application/json"
         response.set_header(
@@ -9789,6 +10100,21 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         server.pushed_settings.remove(upto)
         return json.dumps({"success": True})
 
+    def _import_base(*, may_replace: bool) -> tuple[AppConfig, bool]:
+        """The config an import builds on, and whether it replaces a file that does not read.
+
+        Only an Import from a file replaces one, keeping the device identity of the file's last
+        whole read (else the backup's). An empty file is restored by a restart instead.
+        """
+        try:
+            return _config_for_save(server), False
+        except ConfigFileEmptyError:
+            raise
+        except ConfigFileUnreadableError:
+            if not may_replace:
+                raise
+            return _last_whole_config(server), True
+
     @app.post("/api/config/import")
     def api_import_config() -> Any:
         """Import a config from JSON, preserving this station's identity.
@@ -9806,9 +10132,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             return json.dumps({"error": "Expected a JSON object"})
 
         pushed_by = _pushed_by()
-        backup = _backup_before(server.config_path, "import" if pushed_by is None else "push")
+        # Read before the archive: a refused import leaves none.
+        base, replacing = _import_base(may_replace=pushed_by is None)
+        backup = _backup_before(
+            server.config_path, "import" if pushed_by is None else "push", base if replacing else None
+        )
         with _config_write_lock:
-            current = load_config(server.config_path)
+            current, replacing = _import_base(may_replace=pushed_by is None)
             # Per-marker move speeds are device-local + runtime-authoritative:
             # preserve THIS station's live speeds and ignore any that rode along in
             # the imported payload. Overlay them onto ``current`` so the deepcopy
@@ -9818,8 +10148,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             speeds = server.get_marker_move_speeds()
             if speeds:
                 current.marker_move_speeds = dict(speeds)
-            full_cfg = _apply_import_data(current, data if pushed_by is None else _without_station_name(data))
-            save_config(full_cfg, server.config_path)
+            if pushed_by is None:
+                full_cfg = _apply_import_data(current, data)
+            else:
+                full_cfg = _apply_import_data(current, _without_station_name(data), pushed=True)
+            save_config(full_cfg, server.config_path, replace_unreadable=replacing)
         if pushed_by is not None:
             _record_push(pushed_by, "every shared setting", backup)
         return json.dumps({"success": True, **backup})
@@ -9845,11 +10178,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         after_update = "Restore defaults once it has finished."
         if server.is_update_busy():
             return _save_failed(409, _UPDATE_RUNNING, after_update)
+        _config_for_save(server)  # before the archive: a refused reset leaves none
         backup = _backup_before(server.config_path, "defaults")
 
         def write_defaults() -> None:
             with _config_write_lock:
-                current = load_config(server.config_path)
+                current = _config_for_save(server)
                 save_config(reset_config_to_defaults(current), server.config_path)
 
         # Checked again with the write: an update queued during the backup leaves the settings as they are.
@@ -9864,7 +10198,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def api_broadcast_all() -> Any:
         """Broadcast full config to all peers via their import endpoint."""
         response.content_type = "application/json"
-        cfg = load_config(server.config_path)
+        cfg = _config_for_save(server)
         # web_pin/web_port are device-local and stripped on receive; also drop
         # the PIN here so the credential never travels in the broadcast body
         # (peer auth still carries it in the signed header via ``pin=``).
@@ -9931,7 +10265,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 pushed_by = None
         if pushed_by is not None:
             # A known section before archiving, and the archive before the lock.
-            if not apply_section_data(load_config(server.config_path), section, scrubbed):
+            if not apply_section_data(_config_for_save(server), section, scrubbed):
                 response.status = 404
                 return json.dumps({"error": "Unknown section"})
             backup = _backup_before(server.config_path, "push")
@@ -9941,7 +10275,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # applies never touch top-level ``marker_move_speeds`` (device-local,
             # runtime-authoritative), and Part 0 keeps the ensuing reload from
             # clobbering the live dict, so a plain disk load is correct here.
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             if not apply_section_data(cfg, section, scrubbed):
                 response.status = 404
                 return json.dumps({"error": "Unknown section"})
@@ -10092,7 +10426,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             response.status = 400
             return json.dumps({"error": "Expected a JSON object"})
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             zone = TriggerZoneConfig()
             _apply_zone_fields(zone, data)
             cfg.trigger_zones.zones.append(zone)
@@ -10110,7 +10444,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             response.status = 400
             return json.dumps({"error": "Expected a JSON object"})
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             zones = cfg.trigger_zones.zones
             if index < 0 or index >= len(zones):
                 response.status = 404
@@ -10125,7 +10459,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def api_duplicate_zone(index: int) -> Any:
         response.content_type = "application/json"
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             zones = cfg.trigger_zones.zones
             if index < 0 or index >= len(zones):
                 response.status = 404
@@ -10195,7 +10529,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Remove zone at ``index``."""
         response.content_type = "application/json"
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             zones = cfg.trigger_zones.zones
             if index < 0 or index >= len(zones):
                 response.status = 404
@@ -10232,7 +10566,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             response.status = 400
             return json.dumps({"error": "Expected a JSON object"})
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             cfg.detection.masks_enabled = _as_bool(data.get("enabled"), cfg.detection.masks_enabled)
             save_config(cfg, server.config_path)
         return json.dumps({"success": True, "masks_enabled": cfg.detection.masks_enabled})
@@ -10248,7 +10582,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             response.status = 400
             return json.dumps({"error": "Expected a JSON object"})
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             mask = DetectionMaskConfig()
             _apply_mask_fields(mask, data)
             cfg.detection.masks.append(mask)
@@ -10266,7 +10600,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             response.status = 400
             return json.dumps({"error": "Expected a JSON object"})
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             masks = cfg.detection.masks
             if index < 0 or index >= len(masks):
                 response.status = 404
@@ -10280,7 +10614,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Remove the mask at ``index``."""
         response.content_type = "application/json"
         with _config_write_lock:
-            cfg = load_config(server.config_path)
+            cfg = _config_for_save(server)
             masks = cfg.detection.masks
             if index < 0 or index >= len(masks):
                 response.status = 404
@@ -10312,177 +10646,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         response.set_header("Cache-Control", "no-store")
         return jpeg
 
-    @app.post("/api/wizard/project")
-    def api_wizard_project() -> Any:
-        """Project grid corners + reference point to screen coordinates."""
-        response.content_type = "application/json"
-        data = _load_json_body()
-        if data is None:
-            return json.dumps({"error": "Invalid JSON"})
-
-        # OverflowError: a JSON integer no float holds, read by float().
-        try:
-            cam = data["camera"]
-            grid = data["grid"]
-            img_w = float(data["image_width"])
-            img_h = float(data["image_height"])
-            _require_wizard_canvas(img_w, img_h)
-            params = _wizard_camera_params(cam)
-            w = float(grid["width"])
-            d = float(grid["depth"])
-            ox = float(grid.get("x_offset") or 0)
-            oy = float(grid.get("y_offset") or 0)
-            oz = float(grid.get("z_offset") or 0)
-        except (KeyError, TypeError, ValueError, OverflowError) as exc:
-            response.status = 400
-            return json.dumps({"error": str(exc)})
-
-        import numpy as np
-
-        from openfollow.scene.solver import apply_overlay_distortion, project_points
-
-        k1, k2 = _wizard_lens_coeffs(cam)
-        hw, hd = w / 2.0, d / 2.0
-
-        # PSN +X is stage left, so the stage-left corners (DSL, USL) sit at
-        # +hw and the stage-right corners (DSR, USR) at -hw. On a front-of-house
-        # camera that places stage left on the right of the image (audience
-        # right) and stage right on the left (audience left).
-        corners_psn = np.array(
-            [
-                [ox + hw, oy - hd, oz],  # DSL (downstage stage-left)
-                [ox - hw, oy - hd, oz],  # DSR (downstage stage-right)
-                [ox - hw, oy + hd, oz],  # USR (upstage stage-right)
-                [ox + hw, oy + hd, oz],  # USL (upstage stage-left)
-            ],
-            dtype=np.float64,
-        )
-
-        # Reference point at ground level (where the physical mark is)
-        ref_psn = np.array([[0, 0, 0]], dtype=np.float64)
-
-        # Bow the projected overlay to match a fisheye / wide-angle snapshot so
-        # the corner-pinning preview lines up with the distorted video.
-        screen_corners = apply_overlay_distortion(
-            project_points(params, corners_psn, img_w, img_h), img_w, img_h, k1, k2
-        )
-        screen_ref = apply_overlay_distortion(project_points(params, ref_psn, img_w, img_h), img_w, img_h, k1, k2)
-        projected = [screen_corners, screen_ref]
-
-        result = {
-            "corners": {
-                "DSL": screen_corners[0].tolist(),
-                "DSR": screen_corners[1].tolist(),
-                "USR": screen_corners[2].tolist(),
-                "USL": screen_corners[3].tolist(),
-            },
-            "reference": screen_ref[0].tolist(),
-        }
-
-        # Bowed boundary outline so the wizard quad curves exactly like the HUD
-        # grid (which subdivides each straight world edge). Same subdivision
-        # count as the renderer keeps the two curves identical. Best-effort: a
-        # behind-camera edge point omits the outline and the client falls back to
-        # the straight corner quad.
-        from openfollow.runtime.overlay_draw_scene import _DISTORTION_SUBDIVISIONS
-
-        n_sub = _DISTORTION_SUBDIVISIONS if (k1 or k2) else 1
-        loop = np.vstack([corners_psn, corners_psn[0:1]])  # close the quad
-        edge_ts = np.linspace(0.0, 1.0, n_sub + 1)[:-1]  # drop shared join vertex
-        outline_world = np.array(
-            [loop[i] + t * (loop[i + 1] - loop[i]) for i in range(4) for t in edge_ts],
-            dtype=np.float64,
-        )
-        outline_screen = apply_overlay_distortion(
-            project_points(params, outline_world, img_w, img_h), img_w, img_h, k1, k2
-        )
-        if np.isfinite(outline_screen).all():
-            result["outline"] = outline_screen.tolist()
-
-        if abs(oz) > 1e-6:
-            # Elevated point at grid height (top of z-offset line)
-            ref_elevated = np.array([[0, 0, oz]], dtype=np.float64)
-            screen_elevated = apply_overlay_distortion(
-                project_points(params, ref_elevated, img_w, img_h), img_w, img_h, k1, k2
-            )
-            projected.append(screen_elevated)
-            result["reference_elevated"] = screen_elevated[0].tolist()
-            result["z_offset"] = oz
-
-        # A grid corner at or behind the camera plane projects to NaN/Inf. The
-        # default json.dumps emits literal `NaN` tokens – invalid JSON the
-        # browser's JSON.parse rejects, which silently drops the wizard overlay
-        # (no corners, no error). Fail loudly with actionable guidance instead.
-        if not all(np.isfinite(arr).all() for arr in projected):
-            response.status = 400
-            return json.dumps(
-                {
-                    "error": (
-                        "Camera cannot see all grid corners with these parameters. "
-                        "Adjust the camera position and angle in the Camera Position step."
-                    )
-                }
-            )
-
-        return json.dumps(result)
-
-    @app.post("/api/wizard/unproject")
-    def api_wizard_unproject() -> Any:
-        """Unproject screen points to a world plane (for coarse calibration)."""
-        response.content_type = "application/json"
-        data = _load_json_body()
-        if data is None:
-            return json.dumps({"error": "Invalid JSON"})
-
-        import numpy as np
-
-        from openfollow.scene.solver import invert_overlay_distortion, unproject_to_plane
-
-        try:
-            cam = data["camera"]
-            screen_points = data["screen_points"]
-            img_w = float(data["image_width"])
-            img_h = float(data["image_height"])
-            _require_wizard_canvas(img_w, img_h)
-            plane_z = float(data.get("plane_z", 0.0))
-            params = _wizard_camera_params(cam)
-            k1, k2 = _wizard_lens_coeffs(cam)
-            if not isinstance(screen_points, list) or not screen_points:
-                raise ValueError("screen_points must be a non-empty list")
-            for p in screen_points:
-                if not isinstance(p, (list, tuple)) or len(p) != 2:
-                    raise ValueError("each screen_point must be [x, y]")
-            # Coerce coordinates *inside* the try/except so non-numeric values
-            # (e.g. ["a", "b"]) surface as 400, not 500 from the np.array below.
-            pts = np.array(
-                [[float(p[0]), float(p[1])] for p in screen_points],
-                dtype=np.float64,
-            )
-        except (KeyError, TypeError, ValueError, OverflowError) as exc:
-            response.status = 400
-            return json.dumps({"error": str(exc)})
-
-        # The clicked points sit on the distorted snapshot; undistort them to the
-        # pinhole frame before unprojecting (identity when no distortion is set).
-        pts = invert_overlay_distortion(pts, img_w, img_h, k1, k2)
-        world = unproject_to_plane(params, pts, img_w, img_h, plane_z)
-
-        if len(pts) == 2 and not np.any(np.isnan(world)):
-            delta = world[1] - world[0]
-            return json.dumps(
-                {
-                    "world_points": world.tolist(),
-                    "delta": {"x": float(delta[0]), "y": float(delta[1])},
-                }
-            )
-
-        return json.dumps({"world_points": world.tolist()})
-
     solve_turns = _WizardSolveTurns()
 
     @app.post("/api/wizard/solve")
     def api_wizard_solve() -> Any:
-        """Run DLT camera solve from 4 corner correspondences."""
+        """The camera from the Setup Wizard's marks: Simple's four corners or Advanced's points."""
         response.content_type = "application/json"
         data = _load_json_body()
         if data is None:
@@ -10493,27 +10661,27 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 raise TypeError("the body must be a JSON object")
             # Recorded before the rest is read: a newer body refused as malformed still supersedes.
             stale = solve_turns.turn(data)
-            world_corners = data["world_corners"]
-            screen_corners = data["screen_corners"]
-            img_w = float(data["image_width"])
-            img_h = float(data["image_height"])
-            _require_wizard_canvas(img_w, img_h)
-            if not isinstance(world_corners, list) or len(world_corners) != 4:
-                raise ValueError("world_corners must be a list of exactly 4 points")
-            if not isinstance(screen_corners, list) or len(screen_corners) != 4:
-                raise ValueError("screen_corners must be a list of exactly 4 points")
-            for p in world_corners:
-                if not isinstance(p, (list, tuple)) or len(p) != 3:
-                    raise ValueError("each world_corner must be [x, y, z]")
-                # Coerce + reject non-finite here so numpy's solve can't 500 later.
-                if not all(math.isfinite(float(c)) for c in p):
-                    raise ValueError("world_corner coords must be finite numbers")
-            for p in screen_corners:
-                if not isinstance(p, (list, tuple)) or len(p) != 2:
-                    raise ValueError("each screen_corner must be [x, y]")
-                if not all(math.isfinite(float(c)) for c in p):
-                    raise ValueError("screen_corner coords must be finite numbers")
-            calibration_points = _wizard_calibration_points(data.get("calibration_points"), img_w, img_h)
+            img_w, img_h = _json_canvas(data)
+            mode = data.get("mode")
+            if mode not in CALIBRATION_MODES:
+                raise ValueError("mode must be simple or advanced")
+            hint = data.get("hint")
+            if hint is not None:
+                if not isinstance(hint, list) or len(hint) != 3:
+                    raise ValueError("hint must be [x, y, z]")
+                hint = [_json_number(v, "hint") for v in hint]
+                if any(abs(v) > MARK_REACH_M for v in hint):
+                    raise ValueError(f"hint must be within {MARK_REACH_M:g} m of the origin")
+            saved_fov = _json_number(data.get("saved_fov", 60.0), "saved_fov")
+            if not 1.0 <= saved_fov <= 179.0:
+                raise ValueError("saved_fov must be between 1 and 179")
+            height = data.get("camera_height")
+            if height is not None:
+                height = _json_number(height, "camera_height")
+                if abs(height) > MARK_REACH_M:
+                    raise ValueError(f"camera_height must be within {MARK_REACH_M:g} m of the origin")
+            marks = _wizard_marks(data.get("marks"), img_w, img_h, mode)
+            lens = _wizard_lens_coeffs(data.get("camera"))
         except (KeyError, TypeError, ValueError, OverflowError) as exc:
             response.status = 400
             return json.dumps({"error": str(exc)})
@@ -10523,91 +10691,134 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
         import numpy as np
 
-        from openfollow.scene.calibration_points import CalibrationPoint, SolveSuperseded, solve_with_points
-        from openfollow.scene.solver import (
-            apply_overlay_distortion,
-            invert_overlay_distortion,
-            project_points,
-            solve_camera_dlt,
-        )
+        from openfollow.scene.calibration_points import Mark, SolveSuperseded, plausibility, solve_marks
+        from openfollow.scene.solver import apply_overlay_distortion, invert_overlay_distortion
 
-        k1, k2 = _wizard_lens_coeffs(data.get("camera"))
-
-        # The corners were pinned on the distorted snapshot. Undistort them to the
-        # pinhole frame so the pinhole DLT solve isn't biased by the lens curve.
-        screen_arr = np.array(screen_corners, dtype=np.float64)
-        screen_undistorted = invert_overlay_distortion(screen_arr, img_w, img_h, k1, k2)
-
-        world_tuples = [tuple(p) for p in world_corners]
-        screen_tuples = [(float(p[0]), float(p[1])) for p in screen_undistorted]
-
-        solved = None
-        if calibration_points:
-            # Each point names its corners; ``world_corners`` arrive in CALIBRATION_CORNERS order.
-            corner_at = {
-                name: (float(world_corners[i][0]), float(world_corners[i][1]), float(world_corners[i][2]))
-                for i, name in enumerate(CALIBRATION_CORNERS)
-            }
-            pins = invert_overlay_distortion(
-                np.array([pin for _point, pin in calibration_points], dtype=np.float64), img_w, img_h, k1, k2
-            )
-            measured = [
-                CalibrationPoint(
-                    corner_a=corner_at[point.corner_a],
-                    corner_b=corner_at[point.corner_b],
-                    distance_a=point.distance_a,
-                    distance_b=point.distance_b,
-                    height=point.height,
-                    pin=(float(pin[0]), float(pin[1])),
-                )
-                for (point, _), pin in zip(calibration_points, pins, strict=True)
-            ]
-            try:
-                solved = solve_with_points(world_tuples, screen_tuples, measured, img_w, img_h, stale=stale)
-            except SolveSuperseded:
-                response.status = 409
-                return _SUPERSEDED
-            result = None if solved is None else solved.camera
-        else:
-            result = solve_camera_dlt(world_tuples, screen_tuples, img_w, img_h)
-        if result is None:
+        need = []
+        if mode == "advanced" and hint is None:
+            need.append("the camera position")
+        known = sum(1 for m, _ in marks if m.kind == "known")
+        if mode == "advanced" and known < 2:
+            need.append(f"{2 - known} more known point" + ("" if known == 1 else "s"))
+        pinned = sum(1 for _, pin in marks if pin is not None)
+        if pinned < 4:
+            need.append(f"{4 - pinned} more pinned point" + ("" if pinned == 3 else "s"))
+        if need:
             response.status = 422
-            return json.dumps({"error": "Invalid perspective – adjust corners"})
+            return json.dumps({"error": "The camera cannot be calculated yet.", "need": need})
 
-        # Reproject corners with solved camera for snapping
-        params = np.array(
-            [
-                result.pos_x,
-                result.pos_y,
-                result.pos_z,
-                result.pitch,
-                result.yaw,
-                result.roll,
-                result.fov,
-            ],
-            dtype=np.float64,
+        # The pins were placed on the distorted snapshot; the solve is pinhole.
+        raw_pins = {m.id: pin for m, pin in marks if pin is not None}
+        ids = list(raw_pins)
+        flat = invert_overlay_distortion(np.array([raw_pins[i] for i in ids], dtype=np.float64), img_w, img_h, *lens)
+        undistorted = {i: (float(p[0]), float(p[1])) for i, p in zip(ids, flat, strict=True)}
+        solve_input = [
+            Mark(
+                id=m.id,
+                kind="known" if m.kind == "known" else "triangulated",
+                z=m.z,
+                position=(m.x, m.y) if m.kind == "known" else None,
+                from_a=m.from_a,
+                from_b=m.from_b,
+                distance_a=m.distance_a,
+                distance_b=m.distance_b,
+                pin=undistorted.get(m.id),
+            )
+            for m, _ in marks
+        ]
+        try:
+            solved = solve_marks(solve_input, img_w, img_h, hint, saved_fov, stale=stale, height=height)
+        except SolveSuperseded:
+            response.status = 409
+            return _SUPERSEDED
+        answers = []
+        errors: dict[int, float] = {}
+        for fit in solved.marks:
+            seen = None
+            if fit.seen is not None:
+                seen = apply_overlay_distortion(np.array([fit.seen]), img_w, img_h, *lens)[0].tolist()
+                if fit.id in raw_pins:
+                    errors[fit.id] = math.dist(seen, raw_pins[fit.id])
+            answers.append(
+                {
+                    "id": fit.id,
+                    "position": fit.position,
+                    "reason": fit.reason,
+                    "seen": seen,
+                    "error": errors.get(fit.id),
+                    "distance_error": fit.distance_error,
+                }
+            )
+        if solved.camera is None:
+            response.status = 422
+            return json.dumps({"error": solved.error, "marks": answers})
+        cam = solved.camera
+        return json.dumps(
+            {
+                "camera": {
+                    "pos_x": cam.pos_x,
+                    "pos_y": cam.pos_y,
+                    "pos_z": cam.pos_z,
+                    "pitch": cam.pitch,
+                    "yaw": cam.yaw,
+                    "roll": cam.roll,
+                    "fov": cam.fov,
+                },
+                "marks": answers,
+                "count": len(errors),
+                "largest_error": max(errors.values(), default=0.0),
+                "steep": solved.steep,
+                "reasons": plausibility(
+                    cam, solved.marks, errors, hint, mode == "advanced", floor_off=solved.floor_off
+                ),
+            }
         )
-        world_arr = np.array(world_corners, dtype=np.float64)
-        # Re-distort the reprojected corners back into the snapshot frame so the
-        # snap feedback lands where the operator pinned (on the distorted video).
-        reprojected = apply_overlay_distortion(project_points(params, world_arr, img_w, img_h), img_w, img_h, k1, k2)
 
-        answer: dict[str, Any] = {
-            "camera": {
-                "pos_x": result.pos_x,
-                "pos_y": result.pos_y,
-                "pos_z": result.pos_z,
-                "pitch": result.pitch,
-                "yaw": result.yaw,
-                "roll": result.roll,
-                "fov": result.fov,
-            },
-            "reprojected_corners": reprojected.tolist(),
-        }
-        if solved is not None:
-            answer["corner_residual"] = solved.corner_residual
-            answer["calibration_points"] = [_point_answer(fit, params, img_w, img_h, k1, k2) for fit in solved.points]
-        return json.dumps(answer)
+    @app.get("/api/wizard/lens/calibrations")
+    def api_wizard_lens_calibrations() -> Any:
+        """The lens calibrations saved on this station, newest first."""
+        response.content_type = "application/json"
+        directory = lens_calibrations.calibrations_dir(server.config_path)
+        return json.dumps({"calibrations": [asdict(c) for c in lens_calibrations.list_calibrations(directory)]})
+
+    @app.post("/api/wizard/lens/calibrations")
+    def api_wizard_lens_save() -> Any:
+        """Save the lens on this station under a name; a name already saved, ignoring case, is replaced."""
+        response.content_type = "application/json"
+        data = _load_json_body()
+        if not isinstance(data, dict):
+            response.status = 400
+            return json.dumps({"error": "the body must be a JSON object"})
+        # The size is optional (no snapshot yet), but sent as both sides or neither.
+        sized = "width" in data or "height" in data
+        width, height = data.get("width"), data.get("height")
+        problem = (
+            lens_calibrations.name_problem(data.get("name"))
+            or lens_calibrations.lens_problem(data.get("k1"), data.get("k2"), data.get("cx"), data.get("cy"))
+            or (lens_calibrations.size_problem(width, height) if sized else "")
+        )
+        if problem:
+            response.status = 400
+            return json.dumps({"error": problem})
+        directory = lens_calibrations.calibrations_dir(server.config_path)
+        try:
+            saved = lens_calibrations.save_calibration(
+                directory,
+                data["name"],
+                data["k1"],
+                data["k2"],
+                data["cx"],
+                data["cy"],
+                openfollow.__version__,
+                datetime.now().date(),
+                width=width,
+                height=height,
+            )
+        except OSError as exc:
+            logger.warning("saving lens calibration failed: %s", exc)
+            response.status = 500
+            return json.dumps({"error": "The station could not write the file."})
+        return json.dumps({"saved": asdict(saved)})
 
     @app.post("/api/wizard/lens/snap")
     def api_wizard_lens_snap() -> Any:
@@ -10617,7 +10828,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         if data is None:
             return json.dumps({"error": "Invalid JSON"})
         try:
-            img_w, img_h, p0, p1, band = _parse_lens_snap_body(data)
+            img_w, img_h, p0, p1, band, near = _parse_lens_snap_body(data)
         except (KeyError, TypeError, ValueError) as exc:
             response.status = 400
             return json.dumps({"error": str(exc)})
@@ -10625,7 +10836,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         from openfollow.scene.edge_snap import snap_line_to_edges
 
         try:
-            points = snap_line_to_edges(p0, p1, band, img_w, img_h)
+            points = snap_line_to_edges(p0, p1, band, img_w, img_h, near=near)
         except ValueError as exc:
             response.status = 400
             return json.dumps({"error": str(exc)})
@@ -10635,6 +10846,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def api_wizard_lens_edges() -> Any:
         """Suggest the snapshot's edges a Lens line could be traced along, from its scaled luma."""
         response.content_type = "application/json"
+        if not _request_config(server).ui.feature_on("lens_suggestions"):
+            return _json_error(403, "Lens line suggestions are switched off on this station.")
         data = _load_json_body()
         if data is None:
             return json.dumps({"error": "Invalid JSON"})
@@ -10654,6 +10867,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 "samples": [[x, y] for x, y in candidate_sample_points(c.points, LINE_SAMPLE_FRACTIONS)],
                 "length": c.length,
                 "strength": c.strength,
+                "polarity": c.polarity,
             }
             for c in found.candidates
         ]
@@ -10665,7 +10879,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.post("/api/wizard/lens/fit")
     def api_wizard_lens_fit() -> Any:
-        """Fit k1 / k2 to the traced lines; returns the rating and each line's predicted curve."""
+        """Fit k1 and k2 to the traced lines about the lens centre given (0 when absent); returns the rating and
+        each line's predicted curve."""
         response.content_type = "application/json"
         data = _load_json_body()
         if data is None:
@@ -10683,6 +10898,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 if not isinstance(pts, list):
                     raise ValueError("each line needs a points list")
                 lines.append([_json_point(p, "point") for p in pts])
+            cx, cy = (_json_number(data[key], key) if key in data else 0.0 for key in ("cx", "cy"))
         except (KeyError, TypeError, ValueError) as exc:
             response.status = 400
             return json.dumps({"error": str(exc)})
@@ -10690,7 +10906,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         from openfollow.scene.lens_fit import fit_lens_from_lines, fit_result_to_dict
 
         try:
-            result = fit_lens_from_lines(lines, img_w, img_h)
+            result = fit_lens_from_lines(lines, img_w, img_h, cx=cx, cy=cy)
         except ValueError as exc:
             response.status = 400
             return json.dumps({"error": str(exc)})
@@ -10705,4 +10921,5 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     _register_input_plugin_routes(app, server)
     _register_gallery_routes(app, server)
     _register_path_routes(app, server)
+    _register_touch_remote_routes(app, server)
     _register_scene_routes(app, server)

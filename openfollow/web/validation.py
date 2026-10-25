@@ -15,11 +15,13 @@ from typing import Any
 from openfollow.configuration import (
     _DEFAULT_PSN_MCAST_IP,
     _DEFAULT_PSN_SYSTEM_NAME,
+    CONTROL_FRAMES,
     MENU_RESERVED_BUTTONS,
     MOUSE3D_AXES,
     MOUSE3D_AXIS_TARGETS,
     MOUSE3D_BUTTON_FIELDS,
     NETWORK_MODES,
+    OFFERED_FEATURES,
     RESERVED_MOVEMENT_KEYS,
     VALID_BUTTON_NAMES,
     VALID_CURVES,
@@ -38,7 +40,7 @@ from openfollow.configuration import (
     _canonical_marker_token,
 )
 from openfollow.keyboard_layout import LAYOUT_RE, VARIANT_RE
-from openfollow.lens_model import lens_warp_is_valid
+from openfollow.lens_model import C_BOUND, lens_warp_is_valid
 from openfollow.net_adapters import LABEL_MAX_LEN
 from openfollow.station_fqdn import FQDN_INPUT_MAX_LEN, fqdn_problem
 from openfollow.text_hygiene import CONTROL_CHARS_RE
@@ -48,6 +50,7 @@ from openfollow.web.routes import (
     _as_button_index,
     _as_float,
     _as_float_or_zero,
+    _as_heading,
     _as_int,
     _as_int_list,
     _as_ip_list,
@@ -91,7 +94,7 @@ _TYPE_ERRORS: dict[_FieldParser, str] = {
     _as_optional_float: "Must be a number (or empty).",
     _as_bool: "Must be one of: true, false, yes, no, on, off.",
     _as_int_list: "Must be a comma-separated list of whole numbers.",
-    _as_ip_list: "Each entry must be a valid IPv4 or IPv6 address.",
+    _as_ip_list: "Each entry must be a valid IPv4 address.",
 }
 
 
@@ -175,15 +178,17 @@ def _validate_service_name(value: str, _cfg: AppConfig | None) -> str | None:
 
 
 def _validate_ip_list(value: str, _cfg: AppConfig | None) -> str | None:
-    """Per-entry IP validation. Surfaces the first offending entry."""
+    """Per-entry IPv4 validation. Surfaces the first offending entry."""
     if not value:
         return None
     entries = [e.strip() for e in value.split(",") if e.strip()]
     for idx, entry in enumerate(entries, start=1):
         try:
-            ipaddress.ip_address(entry)
+            addr = ipaddress.ip_address(entry)
         except ValueError:
-            return f"Entry {idx} ({entry!r}) is not a valid IPv4 or IPv6 address."
+            return f"Entry {idx} ({entry!r}) is not a valid IPv4 address."
+        if not isinstance(addr, ipaddress.IPv4Address):
+            return f"Entry {idx} ({entry!r}) is an IPv6 address; OSC input is IPv4 only."
     return None
 
 
@@ -419,10 +424,16 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "focal_length_mm": FieldRule(
             _as_optional_float, lo=0.0, human_error="Focal length must be a positive number (or empty)."
         ),
-        # The pair's one bound, the fold check, is cross-field: ``validate`` reads
-        # the sibling from the form context, or from the saved config when it is empty.
+        # The lens's one rule, that the overlay reaches every corner, is cross-field: ``validate``
+        # reads the siblings from the form context, or from the saved config when one is empty.
         "lens_k1": FieldRule(_as_float, human_error="Must be a number."),
         "lens_k2": FieldRule(_as_float, human_error="Must be a number."),
+        "lens_cx": FieldRule(
+            _as_float, lo=-C_BOUND, hi=C_BOUND, human_error=f"Must be a number from {-C_BOUND:g} to {C_BOUND:g}."
+        ),
+        "lens_cy": FieldRule(
+            _as_float, lo=-C_BOUND, hi=C_BOUND, human_error=f"Must be a number from {-C_BOUND:g} to {C_BOUND:g}."
+        ),
     },
     "ground_grid": {
         "enabled": FieldRule(_as_bool),
@@ -465,7 +476,12 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "default_pos_x": FieldRule(_as_float, human_error="Must be a number."),
         "default_pos_y": FieldRule(_as_float, human_error="Must be a number."),
         "default_pos_z": FieldRule(_as_float, human_error="Must be a number."),
-        "invert_control_direction": FieldRule(_as_bool),
+        "control_frame": FieldRule(
+            _as_str,
+            choices=CONTROL_FRAMES,
+            human_error="Control frame must be 'stage', 'heading', 'camera' or 'screen'.",
+        ),
+        "control_heading": FieldRule(_as_heading, human_error="Heading must be a number of degrees."),
     },
     "marker": {
         "marker_style": FieldRule(
@@ -597,7 +613,7 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "enabled": FieldRule(_as_bool),
         "port": FieldRule(_as_int, lo=1, hi=65535, human_error="Port must be between 1 and 65535."),
         "allowed_sender_ips": FieldRule(
-            _as_ip_list, custom=_validate_ip_list, human_error="Comma-separated IPv4 / IPv6 addresses."
+            _as_ip_list, custom=_validate_ip_list, human_error="Comma-separated IPv4 addresses."
         ),
         # Empty = off (unicast/broadcast only); else a multicast group to join.
         "multicast_group": FieldRule(
@@ -606,6 +622,16 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
             custom=_validate_multicast_ip,
             human_error="Multicast IPv4 address (224.0.0.0–239.255.255.255) or blank.",
         ),
+    },
+    # The Features list: one checkbox per offered feature.
+    "features": {key: FieldRule(_as_bool) for key in OFFERED_FEATURES},
+    # Touch remote: only ``enabled`` has a form input; the tuning fields come from config.toml or the JSON API.
+    "touch_remote": {
+        "enabled": FieldRule(_as_bool),
+        "stick_curve": FieldRule(_as_float, lo=1.0, hi=3.0, human_error="Stick curve must be between 1 and 3."),
+        "stick_dead_zone": FieldRule(_as_float, lo=0.0, hi=0.5, human_error="Dead zone must be between 0 and 0.5."),
+        "z_step_m": FieldRule(_as_float, lo=0.001, hi=1.0, human_error="Z step must be between 0.001 and 1 m."),
+        "z_notch_px": FieldRule(_as_int, lo=8, hi=80, human_error="Notch spacing must be between 8 and 80 px."),
     },
     # OSC operator / next-cue overlay.
     "operator_messages": {
@@ -874,28 +900,34 @@ FIELD_RULES["network"] = {
 
 
 # --- Public API -------------------------------------------------------------
-_LENS_FIELDS = ("lens_k1", "lens_k2")
-_LENS_FOLD_ERROR = "This pair folds the overlay inside the frame. Bring either value closer to 0."
+_LENS_FIELDS = ("lens_k1", "lens_k2", "lens_cx", "lens_cy")
+_LENS_LIMIT_ERROR = "This pair cannot follow the picture out to its corners. Bring either value closer to 0."
+_LENS_CENTRE_ERROR = "This lens centre stops the overlay short of the picture's corners. Bring it closer to 0."
 
 
-def _lens_fold_error(field: str, value: float, context: Mapping[str, Any] | None, cfg: AppConfig | None) -> str | None:
-    """The fold check on the pair, with the sibling as the save will read it.
+def _lens_limit_error(field: str, value: float, context: Mapping[str, Any] | None, cfg: AppConfig | None) -> str | None:
+    """The lens rule on all four values, with the siblings as the save will read them.
 
-    An empty sibling keeps its saved value (0 without a config); one that is not a
-    finite number carries its own error, so the pair is not judged on it.
+    An empty sibling keeps its saved value (0 without a config) and a centre past its
+    bound is clamped, as the save does; one that is not a finite number carries its own
+    error, so the lens is not judged on it. The pair's error comes first: the centre's
+    names it only when the pair alone would reach the corners.
     """
-    other = _LENS_FIELDS[1] if field == _LENS_FIELDS[0] else _LENS_FIELDS[0]
-    raw = context.get(other) if context is not None else None
-    if isinstance(raw, str):
-        raw = raw.strip()
-    if raw in (None, ""):
-        sibling = float(getattr(cfg.camera, other)) if cfg is not None else 0.0
-    else:
-        sibling = _as_float(raw, math.nan)
-        if not math.isfinite(sibling):
-            return None
-    k1, k2 = (value, sibling) if field == _LENS_FIELDS[0] else (sibling, value)
-    return None if lens_warp_is_valid(k1, k2) else _LENS_FOLD_ERROR
+    lens = []
+    for name in _LENS_FIELDS:
+        raw = value if name == field else (context.get(name) if context is not None else None)
+        if isinstance(raw, str):
+            raw = raw.strip()
+        if raw in (None, ""):
+            number = float(getattr(cfg.camera, name)) if cfg is not None else 0.0
+        else:
+            number = _as_float(raw, math.nan)
+            if not math.isfinite(number):
+                return None
+        lens.append(number if name in ("lens_k1", "lens_k2") else min(max(number, -C_BOUND), C_BOUND))
+    if not lens_warp_is_valid(lens[0], lens[1], 0.0, 0.0):
+        return _LENS_LIMIT_ERROR
+    return None if lens_warp_is_valid(*lens) else _LENS_CENTRE_ERROR
 
 
 def validate(
@@ -983,9 +1015,9 @@ def validate(
         if rule.hi is not None and bound_value > rule.hi:
             return rule.human_error
     if section == "camera" and field in _LENS_FIELDS:
-        fold_err = _lens_fold_error(field, parsed, context, cfg)
-        if fold_err is not None:
-            return fold_err
+        limit_err = _lens_limit_error(field, parsed, context, cfg)
+        if limit_err is not None:
+            return limit_err
     if rule.custom is not None:
         custom_err = rule.custom(value, cfg)
         if custom_err is not None:
@@ -1059,7 +1091,7 @@ def note(
 _CFG_USING_VALIDATORS: frozenset[_CustomValidator] = frozenset()
 
 
-# Fields whose check reads the saved config outside their rule: the lens pair reads a
+# Fields whose check reads the saved config outside their rule: the lens reads a
 # sibling left empty as the value the save keeps.
 _CFG_USING_FIELDS: frozenset[tuple[str, str]] = frozenset(("camera", name) for name in _LENS_FIELDS)
 

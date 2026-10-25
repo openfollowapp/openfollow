@@ -156,7 +156,7 @@ def _load_config(config_path: Path) -> dict[str, object]:
 
 
 def _sources(config_path: Path, config: dict[str, object]) -> list[tuple[str, Path]]:
-    """``(arcname, path)`` for each source; the catalog and templates sit beside ``config_path``."""
+    """``(arcname, path)`` for each source; the catalog, templates and saved lenses sit beside ``config_path``."""
     state_dir = config_path.parent
     raw = config.get("markers_catalog_path")
     catalog = Path(raw) if isinstance(raw, str) and raw else Path("markers.toml")
@@ -166,6 +166,7 @@ def _sources(config_path: Path, config: dict[str, object]) -> list[tuple[str, Pa
         ("config.toml", config_path),
         ("markers.toml", catalog),
         ("templates/user", state_dir / "templates" / "user"),
+        ("lens-calibrations", state_dir / "lens-calibrations"),
     ]
 
 
@@ -346,15 +347,18 @@ def run_web_backup(
     now: datetime | None = None,
     keep: int = KEEP,
     write: Callable[[Path, list[tuple[str, Path]], dict[str, object]], None] = _write_archive,
+    settings: dict[str, object] | None = None,
 ) -> WebBackup:
     """Archive the settings before the web UI's ``kind`` of change replaces them.
 
-    Leaves :data:`RECORD_NAME` alone: it describes the last update's backup.
+    The station name and catalog path come from *settings* when given, for a
+    config file that does not read. Leaves :data:`RECORD_NAME` alone: it
+    describes the last update's backup.
     """
     moment = now or datetime.now(timezone.utc)
     ts = moment.astimezone(timezone.utc).isoformat(timespec="seconds")
     backup_dir = web_backup_dir(config_path)
-    config = _load_config(config_path)
+    config = _load_config(config_path) if settings is None else settings
     manifest: dict[str, object] = {"kind": kind, "version": version, "created": ts}
     with _WEB_BACKUP_LOCK:
         name = archive_name(config.get("psn_system_name"), version, moment, kind)

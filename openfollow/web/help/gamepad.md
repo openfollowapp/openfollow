@@ -7,7 +7,7 @@ Configure how a connected USB gamepad drives markers: stick sensitivity and resp
 - **Gamepad** – master toggle for gamepad input. Turn off to ignore the controller while keeping its configuration intact.
 - **Stick Y axis** – the forward/back sense of the movement stick, and nothing else. **Push up to move down the screen** is flight-sim style. Left/right and height are unaffected: height comes from the triggers, not the stick.
 
-    > This is a personal stick-feel preference, separate from **Control direction** under Markers & Zones → Marker Movement, which sets which way the camera looks for every input device. Set the camera there, and the stick's feel here.
+    > This is a personal stick-feel preference, separate from **Control frame** under Markers & Zones → Marker Movement, which sets which way every input device steers relative to the camera. Set the frame there, and the stick's feel here.
 - **Axis Deadzone (0–1)** – the fraction of stick travel treated as zero. Default `0.15`. Raise it if the marker creeps when the stick is released; lower it for tighter response on a well-centred stick.
 - **Response Curve** – how stick deflection translates to marker velocity:
   - `Linear` – velocity scales proportionally with deflection.

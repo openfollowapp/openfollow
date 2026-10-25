@@ -1,4 +1,4 @@
-<div id="path-editor-section" class="section experimental-feature" data-fold-key="path_editor" data-help="path_editor">
+<div id="path-editor-section" class="section" data-feature="paths" data-fold-key="path_editor" data-help="path_editor">
     <div class="section-head">
         <h2>Path Editor <span class="badge-experimental">Experimental</span></h2>
         <span class="section-note">Each path's points and options, over the camera picture</span>
@@ -533,11 +533,7 @@ function peArrowhead(x, y, ux, uy, half, side) {
             }).then(function(json) {
                 var peers = json.peer_results, missed = peers.filter(function(peer) { return !peer.success; });
                 if (!missed.length) { showToast('Applied to ' + peers.length + ' station(s)'); return; }
-                failed({
-                    error: 'Not applied on ' + missed.length + ' of ' + peers.length + ' stations: ' + missed.map(function(peer) { return peer.name || peer.ip; }).join(', ') + '.',
-                    action: 'Check that they are switched on, then apply again.',
-                    href: ''
-                }, '');
+                failed(window.OpenFollow.saveError.peerFailure(peers, 'Not applied on', 'apply again'), '');
             }, function(info) { failed(info, 'Not applied.'); });
         });
     });

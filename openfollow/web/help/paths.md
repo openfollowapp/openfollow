@@ -2,7 +2,7 @@
 
 *Experimental.* A path is a line on stage that a marker can be locked onto. Once locked, the marker moves only along the path, and its height follows the path's points. Paths are edited in the Path Editor below; this section holds the settings every path shares.
 
-- **Show paths** – draws the active paths on the Operator Screen: semi-transparent grey lines, opaque white while a marker is locked onto one. An open path's end that holds has a dot, an end that releases an arrowhead. The path being recorded is drawn too. The **Toggle Paths** binding switches the same setting. Kept by this station when settings are imported or pushed.
+- **Show paths** – draws the active paths on the Operator Screen: semi-transparent grey lines, opaque white while a marker is locked onto one. An open path's end that holds has a dot, an end that releases an arrowhead. The path being recorded is drawn too. The **Toggle Paths** binding switches the same setting. Kept by this station when another station pushes its settings; an imported settings file replaces it.
 - **Slide time (s)** – how long the pull onto a path lasts after a **Pathfinder** press, however far away the path is, from `0` (at once) to `10`. Default `1`. The marker keeps moving under its input while the path pulls it in, harder and harder, and it ends on the path where its movement took it.
 
 ## Locking and moving
@@ -17,4 +17,4 @@ Where two active paths cross, or one ends within 20 cm of another, and their hei
 
 `/path/{name}/active 1` / `0` switches a path, and `/marker/{id}/path {name}` locks a marker onto a path (no name releases it). See OSC Input.
 
-While experimental features are off, paths do nothing, and turning them off switches every path off.
+While the **Paths** feature is off (General tab, Features), paths do nothing and every marker on one is let go; each path keeps its Active setting.

@@ -14,11 +14,10 @@ authors = [
 ]
 # Upper cap tracks upstream wheel availability: torch/scipy/onnxruntime ship no
 # cp314 wheels yet, so detection/export break on 3.14. Bump to <3.15 once they do.
-requires-python = ">=3.10,<3.14"
+requires-python = ">=3.13,<3.14"
 dependencies = [
     "pypsn @ git+https://github.com/open-stage/python-psn.git",
     "numpy>=1.24",
-    "tomli>=1.2.0; python_version<'3.11'",
     "tomli-w>=1.0",
     "bottle>=0.12",
     "pygame-ce>=2.5.8",
@@ -44,7 +43,10 @@ dependencies = [
     # Pure-Python, no native deps (safe on the Pi). ``escape=True`` (see
     # ``openfollow/web/_md.py``) keeps the rendered fragment inert, so no HTML
     # sanitiser dependency is needed.
-    "mistune>=3.3.4",
+    "mistune>=3.4.0",
+    # The GL Operator Screen's OpenGL ES calls. Pure Python over the system libEGL and
+    # libGLESv2 (both .deb Depends); imported only when the GL display starts.
+    "PyOpenGL>=3.1.7",
 ]
 
 [project.optional-dependencies]
@@ -90,12 +92,12 @@ include = [
 # This is the only ruff version in the repo: the pre-commit hook runs it out of
 # the poetry env rather than fetching its own at a ``rev``, so a second pin
 # cannot drift from this one.
-ruff = "0.16.9"
+ruff = "0.17.1"
 pytest = "^9.1.1"
 pytest-cov = "^7.1"
 coverage = { extras = ["toml"], version = "^7.16" }
 pre-commit = "^4.6.2"
-mypy = "^2.3"
+mypy = "^2.4"
 
 # Static type checking: mypy --strict for all openfollow.* modules.
 # Third-party stubs without type info use ignore_missing_imports.
@@ -119,7 +121,7 @@ optional = true
 
 [tool.poetry.group.package-macos.dependencies]
 pyinstaller = ">=6.22.3"
-pyinstaller-hooks-contrib = ">=2026.8"
+pyinstaller-hooks-contrib = ">=2026.9"
 
 # Mutation testing, optional: mutmut pulls in setproctitle, which pytest-xdist
 # then uses to retitle its workers on every test.
@@ -130,7 +132,7 @@ optional = true
 mutmut = "^3.8"
 
 # Linting: ruff check/format (faster pyflakes/pycodestyle/isort/pyupgrade bundle).
-# line-length=120 matches old flake8 setting. target-version=py310 matches requires-python.
+# line-length=120 matches old flake8 setting.
 [tool.ruff]
 line-length = 120
 target-version = "py310"
@@ -165,13 +167,13 @@ module = [
     "psutil",
     "pypsn.*",
     "multicast_expert.*",
-    "tomli",
     "tomli_w",
     "cv2",
     "onnxruntime",
     "mido",
     "pyspacemouse",
     "easyhid",
+    "OpenGL",
 ]
 ignore_missing_imports = true
 

@@ -13,8 +13,8 @@ with the reasoning, before adding the variant.
 
 | Level | Means | Examples |
 |---|---|---|
-| **Error** | It does not work, and will not until someone acts | Video unreachable, a refused save, a missing controller, an OSC binding that can never fire, a marker two stations control, detection or 3D Mouse support unavailable |
-| **Caution** | It works, with a limitation worth knowing | A feature marked experimental, a marker no station controls, a web UI pin that missed and serves on every interface |
+| **Error** | It does not work, and will not until someone acts | Video unreachable, a refused save, a missing controller, an OSC binding that can never fire, a marker two stations control, detection or 3D Mouse support unavailable, a power supply under voltage now |
+| **Caution** | It works, with a limitation worth knowing | A feature marked experimental, a marker no station controls, a web UI pin that missed and serves on every interface, an under voltage or throttling since the Pi last started |
 | **Info** | Nothing is wrong; progress or a fact | Starting, idle, restarting, an update is available, a value Save will correct |
 | **Success** | Something just worked, or is healthy | Saved, connected, running, marker added |
 
@@ -108,11 +108,12 @@ or no modifier for neutral. Pill-shaped, uppercase, `--<level>-chip` fill,
 solid `--<level>-line` border, off-white text, **no icon**. "Starting" and
 "Idle" are info; "Off" is neutral. The OSC diagnostics health pill and the
 Experimental badge (caution) are chips too, and so are the state words in a
-table row: "Conflict" and "Not controlled" (caution) in the marker catalog, and
-"Not connected" / "Interface down" (error) in the Network Interface Assignment
-Address column for a function that cannot send; a labelled adapter that is not
-plugged in reads "Not connected" in the neutral chip on the Network Interface
-card, where nothing is failing. A row places a chip, it never restyles one.
+table row: "Conflict" (error) and "Not controlled" (caution) in the marker
+catalog, and "Not connected" / "Interface down" (error) in the Network
+Interface Assignment Address column for a function that cannot send; a
+labelled adapter that is not plugged in reads "Not connected" in the neutral
+chip on the Network Interface card, where nothing is failing. A row places a
+chip, it never restyles one.
 
 ### Small row pills
 
@@ -191,9 +192,8 @@ holds the line.
 
 | Element | Look |
 |---|---|
-| Invalid / valid preview (Setup Wizard) | 1px `--error-line` / `--success-line` |
-| A traced Lens line that does not fit the others (Setup Wizard) | `--caution-line` stroke; a fitting one is the accent, its predicted curve `--success-line` |
-| A calibration point left out (Setup Wizard) | `--error-mark` ring where its distances put it, and an `--error-mark` line to it from the point's dot |
+| A traced Lens line that does not fit the others (Setup Wizard) | `--caution-line` stroke over a 16 px `--caution-line` glow at 40%, its number a `--caution-line` pill reading `! N` in `--bg-deep`; a fitting one is the accent with no glow and a plain number, its predicted curve `--success-line` |
+| A pin that disagrees with the other points (Setup Wizard) | `--caution-line` stroke on its dot; where the solved camera sees each point, a `--success-mark` ring |
 | Failed / successful save | 2px ring for 0.55 s in `--error-line` / `--success-line` |
 | Invalid field, a control marked unresolved, or a binding another field took | `--error-line` border plus a 1px `--error-line` shadow |
 | An OSC trigger on an input a gamepad or keyboard action also uses | `--caution-line` border plus a 1px `--caution-line` shadow |
@@ -307,12 +307,18 @@ attributes, so it spells the token's value.
 ### HUD
 
 - Error status rows, the Settings ERROR box, the bottom-left panel in a failure
-  state and a missing controller's marker card use the error fill and border.
-  The marker card keeps its marker-coloured border.
+  state and the marker card of a missing controller, or of a marker another
+  station controls too, use the error fill and border. The marker card keeps
+  its marker-coloured border.
 - Error status rows and the ERROR box lead with the off-white warning sign
   (`draw_warning_sign`).
+- The Settings ERROR box says what was observed on its main line (off-white,
+  bold) and one next step under it (muted), as the web's box. A banner the
+  menu opened with brings its own step (`action=` beside `banner=`) or none;
+  the video failure's step stands only under the video failure.
 - A fault's sentence is a top-right status row, whatever raised it (a video
-  failure, a missing controller, an output whose interface has no address).
+  failure, a missing controller, an output whose interface has no address, a
+  marker another station controls too).
   The bottom-left panel only turns red; it never carries the sentence.
 - A status row takes its level's chip colours from `STATUS_LEVEL_COLORS`,
   led by its level's off-white sign (`draw_level_sign`): the warning sign for
@@ -335,6 +341,10 @@ attributes, so it spells the token's value.
   status row is caution today: the HUD shows faults, progress and results, and
   a limitation worth knowing lives on the web UI and the on-screen Network
   screen.
+- The markers this station controls that another station controls too are
+  one error row for all of them: "Control conflict: Marker 3 (Lead)" for one,
+  "Control conflict: Markers 3, 4, 5" for several, cut with "…" so it stays on
+  one line. Each of those markers' cards turns red.
 - Settings another station pushed here are an info row naming the newest push
   ("Settings pushed from Stage Left (+1 more)"), held until the warning is
   removed, on the web UI or from the Settings menu, whose first entry is

@@ -190,9 +190,9 @@
                         % end
                     </div>
                     <div class="row">
-                        % include('partials/button_binding_select.tpl', name='btn_toggle_zones', label=action_labels['btn_toggle_zones'], value=c.btn_toggle_zones, buttons=action_buttons)
+                        % include('partials/button_binding_select.tpl', name='btn_toggle_zones', label=action_labels['btn_toggle_zones'], value=c.btn_toggle_zones, buttons=action_buttons, feature='zones')
                         % for name in ('btn_toggle_paths', 'btn_pathfinder'):
-                        % include('partials/button_binding_select.tpl', name=name, label=action_labels[name], value=getattr(c, name), buttons=action_buttons, field_class='experimental-feature')
+                        % include('partials/button_binding_select.tpl', name=name, label=action_labels[name], value=getattr(c, name), buttons=action_buttons, feature='paths')
                         % end
                     </div>
                 </div>

@@ -127,22 +127,37 @@ class TestImageChain:
         assert pipeline.get_by_name("image_scale_caps") is not None
         assert pipeline.get_by_name("convert") is not None
 
-    def test_arena_default_plays_its_jpeg(self) -> None:
-        pipeline = _build({"testpattern_selected_media": media_store.DEFAULT_ARENA_ID})
-        assert pipeline.get_by_name("media_source").properties["location"] == str(media_store.ARENA_ASSET_JPG)
+    @pytest.mark.parametrize(
+        ("media_id", "asset"),
+        [
+            (media_store.DEFAULT_ARENA_ID, "ARENA_ASSET_JPG"),
+            (media_store.DEFAULT_CONCERT_ID, "CONCERT_ASSET_JPG"),
+            (media_store.DEFAULT_FESTIVAL_ID, "FESTIVAL_ASSET_JPG"),
+        ],
+    )
+    def test_a_bundled_picture_plays_its_jpeg(self, media_id: str, asset: str) -> None:
+        pipeline = _build({"testpattern_selected_media": media_id})
+        assert pipeline.get_by_name("media_source").properties["location"] == str(getattr(media_store, asset))
         assert pipeline.get_by_name("image_imagefreeze") is not None
         with pytest.raises(RuntimeError, match="jpegdec"):
-            _build(
-                {"testpattern_selected_media": media_store.DEFAULT_ARENA_ID},
-                fake=make_fake_gst(missing_elements={"jpegdec"}),
-            )
+            _build({"testpattern_selected_media": media_id}, fake=make_fake_gst(missing_elements={"jpegdec"}))
 
-    def test_arena_without_its_file_plays_stage(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize(
+        ("media_id", "asset"),
+        [
+            (media_store.DEFAULT_ARENA_ID, "ARENA_ASSET_JPG"),
+            (media_store.DEFAULT_CONCERT_ID, "CONCERT_ASSET_JPG"),
+            (media_store.DEFAULT_FESTIVAL_ID, "FESTIVAL_ASSET_JPG"),
+        ],
+    )
+    def test_a_bundled_picture_without_its_file_plays_stage(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, media_id: str, asset: str
+    ) -> None:
         jpg = tmp_path / "stage_default.jpg"
         jpg.write_bytes(b"fake")
         monkeypatch.setattr(media_store, "STAGE_ASSET_JPG", jpg)
-        monkeypatch.setattr(media_store, "ARENA_ASSET_JPG", tmp_path / "missing.jpg")
-        pipeline = _build({"testpattern_selected_media": media_store.DEFAULT_ARENA_ID})
+        monkeypatch.setattr(media_store, asset, tmp_path / "missing.jpg")
+        pipeline = _build({"testpattern_selected_media": media_id})
         assert pipeline.get_by_name("media_source").properties["location"] == str(jpg)
 
     def test_image_chain_forces_fixed_1080p_output(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -473,6 +488,7 @@ class TestConfigAndLabels:
         [
             (media_store.DEFAULT_STAGE_ID, "Media Gallery (Stage)"),
             (media_store.DEFAULT_ARENA_ID, "Media Gallery (Arena)"),
+            (media_store.DEFAULT_FESTIVAL_ID, "Media Gallery (Festival)"),
             (media_store.DEFAULT_GREY_ID, "Media Gallery (Grey)"),
         ],
     )

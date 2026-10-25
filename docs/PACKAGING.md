@@ -141,14 +141,14 @@ web UI at `http://<host-ip>/`.
 ## Settings backups
 
 Every upgrade, reinstall and downgrade through the package manager archives the
-station's settings first, whichever route started it: *Check & Install
-Latest*, an offline `.ofupdate`, or a hand-run `apt` / `dpkg`. The package's
+station's settings first, whichever route started it: *Install Latest Version
+Online*, *Install .ofupdate File*, or a hand-run `apt` / `dpkg`. The package's
 `preinst` does it on `upgrade`, before the new files are unpacked, so it covers
 the release that introduces it.
 
 - **What goes in:** `config.toml`, the marker catalog (`markers.toml`, or
-  wherever `markers_catalog_path` points), `templates/user/`, and a
-  `manifest.json` recording each file's original path, the from / to versions
+  wherever `markers_catalog_path` points), `templates/user/`, the saved lens
+  calibrations (`lens-calibrations/`), and a `manifest.json` recording each file's original path, the from / to versions
   and the UTC time. A missing source is skipped and listed in the manifest. The
   Media Gallery and the detection models are left out: an update never rewrites
   them, and they are large.
@@ -176,11 +176,12 @@ The backup program is `openfollow/privilege/settings_backup.py`. Nothing from
 the package is on disk when the `preinst` runs, so `render-preinst.sh` inlines
 the program into `preinst.in` at build time; keep it standard-library only.
 
-To restore by hand:
+To restore by hand (the command restores whatever the archive holds, so an
+older archive without `lens-calibrations/` restores the same way):
 
 ```bash
 sudo systemctl stop openfollow
-sudo -u openfollow tar xzf /var/lib/openfollow/backups/<file>.ofbackup -C /var/lib/openfollow config.toml templates/user
+sudo -u openfollow tar -xzf /var/lib/openfollow/backups/<file>.ofbackup -C /var/lib/openfollow --exclude=manifest.json --exclude=markers.toml
 # markers.toml: copy it back to the path manifest.json names
 sudo systemctl start openfollow
 ```
@@ -253,7 +254,8 @@ NetworkManager must own the links – on a `systemd-networkd` image the `nmcli` 
 is absent, the privilege broker's `network.nm.*` rows read as `unavailable`, and the
 Network page silently falls back to a read-only view. This also matches the Ansible
 deploy path, which already assumes NetworkManager. The `.deb`'s
-`NetworkManager-wait-online` timeout drop-in bounds a cable-less boot to ~15 s.
+`NetworkManager-wait-online` drop-in replaces its wait (see **Boot wait for the
+network** below).
 
 NetworkManager also owns tagged-VLAN sub-interfaces, which the Network page creates
 and removes via two sudoers grants beside the existing `nmcli con mod` / `up` / `down`
@@ -321,6 +323,36 @@ at `<hostname>.local` or at the address on the on-screen HUD;
 against each other and asserts nothing in the app sets these properties at
 runtime; `tests/test_image_layer.py` fails if the image writes any file the
 `.deb` declares a conffile.
+
+**Boot wait for the network.** `openfollow.service` is ordered after
+`network-online.target`, so the app starts with a LAN address rather than
+loopback. The stock `NetworkManager-wait-online` runs `nm-online -s`, which
+waits for NetworkManager's *startup* to complete: every auto-activated profile
+activated or given up on. The infinite `dhcp-timeout` above means an unanswered
+DHCP activation never gives up, so on a LAN without DHCP startup never
+completes: that wait would run out on every boot, fail the unit and leave
+`systemctl is-system-running` at `degraded`, though the fallback address is up
+within seconds. Plain `nm-online` (without `-s`) does not help: it waits for an
+activated connection, and that profile stays activating.
+
+The `.deb`'s drop-in
+(`/usr/lib/systemd/system/NetworkManager-wait-online.service.d/10-openfollow-timeout.conf`)
+runs `/usr/share/openfollow/nm-wait-online.sh 20` instead. Once a second it
+succeeds when `nm-online -s` does, or when at least one device is activating
+and every activating device (loopback aside) holds an IPv4 address. A lease
+counts at once. A device holding only its 169.254 fallback counts once it has
+held it for 3 s of consecutive polls (`grace` in the script), and starts over
+if it loses it, so a DHCP server that answers within 3 s of the fallback still
+gives the station its lease before the app starts. Requiring an activating
+device keeps the start of a boot, before any carrier, waiting for startup as
+before, so a NIC that will get a lease is not raced. After 20 s with a device
+still addressless, or on a fallback held for less than the grace, the unit
+fails, as it should: the station has no settled address there. On a cable-less
+boot nothing activates, and the wait passes as soon as startup completes.
+
+On a LAN whose DHCP answers later than the grace, the wait passes on the
+169.254 address. The app rebinds each plane when its address changes, so the
+lease that follows is picked up as on any replug.
 
 **Single account.** `rpi-image-gen`'s `rpi-user-credentials` layer creates the
 `openfollow` login user (password `openfollow`, **passwordless sudo**, in the
@@ -470,11 +502,11 @@ is not a git checkout.)
 
 The in-app updater is the **GitHub Releases signed-bundle installer**
 ([`openfollow/runtime/deb_update.py`](../openfollow/runtime/deb_update.py)): the
-General → **Software Update** section's *Check & Install Latest* downloads the
-newest release's `openfollow_<version>_<arch>.ofupdate` bundle, and *Offline
-install* takes an operator-supplied `.ofupdate` over the LAN. Both paths verify
-the bundle's signature (against the on-device public key) and the `.deb`'s
-SHA-256 before installing, and fail closed otherwise. See
+General → **Software Update** section's *Install Latest Version Online*
+downloads the newest release's `openfollow_<version>_<arch>.ofupdate` bundle,
+and *Install .ofupdate File* takes an operator-supplied `.ofupdate` over the
+LAN. Both paths verify the bundle's signature (against the on-device public
+key) and the `.deb`'s SHA-256 before installing, and fail closed otherwise. See
 [`SERVICE.md`](./SERVICE.md#web-update-button) for the install/privilege details.
 
 ## macOS `.dmg` (developer build)

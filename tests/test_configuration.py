@@ -4,42 +4,48 @@
 
 from __future__ import annotations
 
+import logging
+import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from types import SimpleNamespace
 
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib  # type: ignore[no-redef]
-
-import logging
-
 import pytest
+import tomllib
 
 from openfollow.configuration import (
     DEFAULT_UPDATE_SERVICE_NAME,
+    FEATURE_KEYS,
     MOUSE3D_AXES,
     RESERVED_MOVEMENT_KEYS,
     AppConfig,
     CameraConfig,
+    ConfigFileEmptyError,
+    ConfigFileUnreadableError,
     ControllerConfig,
     DetectionConfig,
     GridConfig,
     MarkerConfig,
+    MidiConfig,
+    MidiPatch,
     Mouse3DConfig,
     OscConfig,
     OtpOutputConfig,
     RttrpmOutputConfig,
+    TouchRemoteConfig,
+    TriggerZonesConfig,
     _apply_with_fallback,
     apply_runtime_config_changes,
     config_to_toml_dict,
     config_write_lock,
+    effective_lens,
     load_config,
+    load_config_for_save,
     save_config,
     save_config_fields,
     viewed_with_controlled,
 )
-from openfollow.lens_model import lens_warp_is_valid
+from openfollow.lens_model import C_BOUND, lens_warp_is_valid
 
 _NEW_BUTTON_FIELDS = (
     "btn_next_marker",
@@ -71,9 +77,14 @@ class _DummyRuntimeServices:
         self.psn_system_name_changes: list[str] = []
         self.detection_changes: list[DetectionConfig] = []
         self.detection_swaps: list[DetectionConfig] = []
+        self.detector_build_pending = False
         self.window_size_changes: list[tuple[int, int]] = []
         self.video_swaps: list[AppConfig] = []
         self.station_fqdn_changes: list[str] = []
+        self.psn_input_changes = 0
+
+    def apply_psn_input_change(self) -> None:
+        self.psn_input_changes += 1
 
     def apply_station_fqdn_change(self, fqdn: str) -> None:
         self.station_fqdn_changes.append(fqdn)
@@ -116,8 +127,9 @@ class _DummyRuntimeServices:
     def apply_detection_change(self, new_cfg: DetectionConfig) -> None:
         self.detection_changes.append(new_cfg)
 
-    def swap_detector(self, new_cfg: DetectionConfig) -> None:
+    def swap_detector(self, new_cfg: DetectionConfig, on_failure: Callable[[], None] | None = None) -> None:
         self.detection_swaps.append(new_cfg)
+        self.detection_swap_on_failure = on_failure
 
     def apply_window_size_change(self, width: int, height: int) -> None:
         self.window_size_changes.append((width, height))
@@ -225,6 +237,7 @@ class _DummyInputManager:
 class _DummyApp:
     def __init__(self, config: AppConfig) -> None:
         self._config = config
+        self._config_mtime = 0.0
         self._runtime_services = _DummyRuntimeServices()
         self._web_server = _DummyWebServer()
         self._web_commands = _DummyWebCommands()
@@ -422,6 +435,24 @@ def test_example_config_matches_current_schema() -> None:
     assert cfg.osc_destinations.get(first.id) is first
 
 
+def test_example_config_seeds_the_default_features_and_names_the_experimental_ones() -> None:
+    """A new station is seeded from the example, so its list is the default one and its comment the other keys."""
+    import re
+    from pathlib import Path
+
+    from openfollow.configuration import DEFAULT_SHOWN_FEATURES, EXPERIMENTAL_FEATURES
+
+    text = (Path(__file__).resolve().parents[1] / "config.example.toml").read_text(encoding="utf-8")
+    assert tomllib.loads(text)["ui"]["shown_features"] == list(DEFAULT_SHOWN_FEATURES)
+    lines = text.splitlines()
+    end = next(i for i, line in enumerate(lines) if line.startswith("shown_features"))
+    start = end
+    while lines[start - 1].startswith("#"):
+        start -= 1
+    named = re.findall(r'"([a-z_0-9]+)"', "\n".join(lines[start:end]))
+    assert sorted(named) == sorted(EXPERIMENTAL_FEATURES)
+
+
 @pytest.mark.parametrize(("section", "defaults"), [("controller", ControllerConfig()), ("mouse3d", Mouse3DConfig())])
 def test_example_config_binds_nothing_the_defaults_leave_unbound(section: str, defaults: object) -> None:
     """A station seeded from the example must not start with a binding a fresh config leaves unbound."""
@@ -536,75 +567,6 @@ def test_bootstrap_handles_bare_filename_with_no_directory(
     assert (tmp_path / "config.toml").read_text(encoding="utf-8") == 'foo = "bar"\n'
 
 
-def test_configuration_falls_back_to_tomli_when_tomllib_missing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """On Python 3.10 the stdlib ``tomllib`` module doesn't exist and
-    the module falls back to the ``tomli`` backport.  Force the
-    fallback via ``sys.modules`` injection so the branch is exercised
-    on every Python version.
-
-    Loads ``configuration.py`` as a fresh module under a different
-    name (``_configuration_tomli_fallback``) so we don't perturb the
-    canonical ``openfollow.configuration`` import that the rest of
-    the suite shares – reloading the canonical module would redefine
-    every dataclass and break dataclass-equality assertions in
-    sibling tests.
-
-    pyproject installs ``tomli`` only on Python <3.11, so on 3.11+
-    we inject a stub ``tomli`` so the fallback's ``import tomli``
-    itself doesn't fail.
-    """
-    import importlib.util
-    import pathlib
-    import sys
-    import types
-
-    # Block stdlib ``tomllib`` so the except arm fires inside the
-    # freshly-loaded module.
-    monkeypatch.setitem(sys.modules, "tomllib", None)
-    # Inject a stand-in ``tomli`` so the except body's
-    # ``import tomli as tomllib`` resolves on Python 3.11+ where the
-    # real backport isn't installed.
-    fake_tomli = types.ModuleType("tomli")
-    parsed: list[str] = []
-
-    def _loads(text: str) -> dict[str, str]:
-        parsed.append(text)
-        return {"stub": "ok"}
-
-    fake_tomli.loads = _loads  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "tomli", fake_tomli)
-
-    # Load configuration.py fresh under a throwaway module name so we
-    # don't touch the canonical ``openfollow.configuration`` cached
-    # in ``sys.modules`` (reloading it would invalidate every
-    # dataclass identity used by sibling tests).
-    config_path = pathlib.Path(__file__).resolve().parent.parent / "openfollow" / "configuration.py"
-    spec = importlib.util.spec_from_file_location(
-        "_configuration_tomli_fallback",
-        config_path,
-    )
-    assert spec is not None and spec.loader is not None
-    fresh = importlib.util.module_from_spec(spec)
-    # Register under its synthetic name so internal ``dataclass``
-    # machinery (which looks up ``cls.__module__`` in sys.modules)
-    # finds the freshly-loaded module while it executes. Removed in
-    # the finally block so we don't leak the throwaway module.
-    sys.modules[spec.name] = fresh
-    try:
-        spec.loader.exec_module(fresh)
-
-        # The freshly-loaded module's ``tomllib`` symbol points at the
-        # stub ``tomli`` because ``import tomllib`` raised ImportError
-        # at the top of the file.
-        assert fresh.tomllib is fake_tomli
-        assert fresh.tomllib.loads('foo = "bar"\n') == {"stub": "ok"}
-        assert parsed == ['foo = "bar"\n']
-    finally:
-        sys.modules.pop(spec.name, None)
-
-
 def test_load_config_malformed_toml_returns_defaults(temp_config_path, caplog) -> None:
     """Non-strict load should log the error and fall back to defaults."""
     temp_config_path.write_text("this = is not valid toml [[\n", encoding="utf-8")
@@ -619,8 +581,9 @@ def test_load_config_malformed_toml_returns_defaults(temp_config_path, caplog) -
 def test_load_config_malformed_toml_strict_raises(temp_config_path) -> None:
     temp_config_path.write_text("this = is not valid toml [[\n", encoding="utf-8")
 
-    with pytest.raises(tomllib.TOMLDecodeError):
+    with pytest.raises(ConfigFileUnreadableError) as raised:
         load_config(str(temp_config_path), strict=True)
+    assert isinstance(raised.value.__cause__, tomllib.TOMLDecodeError)
 
 
 def test_load_config_missing_file_strict_still_returns_defaults(
@@ -803,14 +766,26 @@ def test_save_succeeds_despite_leftover_temp_from_prior_crash(
     assert load_config(str(temp_config_path)).psn_system_name == "Fresh"
 
 
+def _fail_the_first_fsync(monkeypatch, error: Exception | None = None) -> None:
+    import openfollow.configuration as cfg_mod
+
+    real = cfg_mod.os.fsync
+    calls: list[int] = []
+
+    def _fsync(fd: int) -> None:
+        calls.append(fd)
+        if len(calls) == 1:
+            raise error or OSError("disk full")
+        real(fd)
+
+    monkeypatch.setattr(cfg_mod.os, "fsync", _fsync)
+
+
 def test_save_continues_when_bak_copy_fails(temp_config_path, monkeypatch, caplog) -> None:
     """A failed backup copy must not abort the primary save."""
     save_config(AppConfig(psn_system_name="V1"), str(temp_config_path))
 
-    def _boom(*_a, **_k):
-        raise OSError("disk full")
-
-    monkeypatch.setattr("openfollow.configuration.shutil.copy2", _boom)
+    _fail_the_first_fsync(monkeypatch)  # the snapshot's
     with caplog.at_level("WARNING"):
         save_config(AppConfig(psn_system_name="V2"), str(temp_config_path))
 
@@ -826,10 +801,7 @@ def test_save_bak_failure_preserves_previous_bak(temp_config_path, monkeypatch) 
     bak = _bak_of(temp_config_path)
     assert tomllib.loads(bak.read_text(encoding="utf-8"))["psn_system_name"] == "V1"
 
-    def _boom(*_a, **_k):
-        raise OSError("disk full")
-
-    monkeypatch.setattr("openfollow.configuration.shutil.copy2", _boom)
+    _fail_the_first_fsync(monkeypatch)  # the snapshot's
     save_config(AppConfig(psn_system_name="V3"), str(temp_config_path))
 
     # Primary advanced; the previous good .bak (V1) is untouched, not clobbered
@@ -887,8 +859,432 @@ def test_load_strict_ignores_bak(temp_config_path) -> None:
     save_config(good, str(temp_config_path))  # .bak present
     temp_config_path.write_text("bad [[", encoding="utf-8")
 
-    with pytest.raises(tomllib.TOMLDecodeError):
+    with pytest.raises(ConfigFileUnreadableError):
         load_config(str(temp_config_path), strict=True)
+
+
+# An empty or unreadable file is never read as the defaults, nor written over
+
+_EMPTY = pytest.mark.parametrize("content", ["", "  \n\t\n"], ids=["empty", "whitespace"])
+# Valid TOML that is not a config: each of these makes building the config raise.
+_WRONG_SHAPES = [
+    b"grid = 5\n",
+    b'camera = "x"\n',
+    b"paths = [1]\n",
+    b"osc_destinations = 3\n",
+    b"osc_transmitters = {transmitters = 3}\n",
+]
+_WRONG_SHAPE_IDS = ["grid-int", "camera-str", "paths-list", "osc-destinations-int", "osc-transmitters-int"]
+_UNREADABLE = pytest.mark.parametrize(
+    "content",
+    [b"", b"  \n\t\n", b"not [[ valid toml", b"\xff\xfe = 1\n", *_WRONG_SHAPES],
+    ids=["empty", "whitespace", "unparseable", "not-utf8", *_WRONG_SHAPE_IDS],
+)
+
+
+def _good_config_with_backup(path, name: str = "Good Config") -> None:
+    save_config(AppConfig(psn_system_name=name, controlled_marker_ids=[3]), str(path))
+    save_config(AppConfig(psn_system_name=name, controlled_marker_ids=[3]), str(path))
+
+
+@_EMPTY
+def test_load_recovers_an_empty_file_from_the_backup(temp_config_path, caplog, content) -> None:
+    _good_config_with_backup(temp_config_path)
+    temp_config_path.write_text(content, encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        loaded = load_config(str(temp_config_path))
+
+    assert (loaded.psn_system_name, loaded.controlled_marker_ids) == ("Good Config", [3])
+    assert [r.message for r in caplog.records if "is empty" in r.message] == [
+        f"Config file {temp_config_path} is empty – recovered from {temp_config_path}.bak."
+    ]
+
+
+@_EMPTY
+def test_an_empty_file_without_a_backup_loads_as_the_defaults_and_says_so(temp_config_path, caplog, content) -> None:
+    temp_config_path.write_text(content, encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        loaded = load_config(str(temp_config_path))
+
+    assert loaded == AppConfig()
+    assert [r.message for r in caplog.records if "is empty" in r.message] == [
+        f"Config file {temp_config_path} is empty – using defaults."
+    ]
+
+
+def test_a_broken_file_is_reported_once_until_it_changes(temp_config_path, caplog) -> None:
+    """Every web request reads the file again; a broken one is logged once, not once per request."""
+    _good_config_with_backup(temp_config_path)
+    temp_config_path.write_text("", encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        load_config(str(temp_config_path))
+        load_config(str(temp_config_path))
+        temp_config_path.write_text("not [[ valid toml", encoding="utf-8")
+        load_config(str(temp_config_path))
+        load_config(str(temp_config_path))
+
+    assert [r.message.split(" – ")[0] for r in caplog.records if "recovered" in r.message] == [
+        f"Config file {temp_config_path} is empty",
+        f"Config file {temp_config_path} could not be read/parsed",
+    ]
+
+
+def test_a_broken_file_is_reported_again_once_it_has_read_whole_in_between(temp_config_path, caplog) -> None:
+    """The same file, broken the same way twice with a whole read between, is reported twice."""
+    _good_config_with_backup(temp_config_path)
+    whole = temp_config_path.read_bytes()
+    stamp = os.stat(temp_config_path)
+
+    def _write_in_place(content: bytes) -> None:
+        temp_config_path.write_bytes(content)
+        os.utime(temp_config_path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+
+    with caplog.at_level("WARNING"):
+        _write_in_place(b"")
+        load_config(str(temp_config_path))
+        _write_in_place(whole)
+        load_config(str(temp_config_path))
+        _write_in_place(b"")
+        load_config(str(temp_config_path))
+
+    assert len([r for r in caplog.records if "is empty" in r.message]) == 2
+
+
+@_UNREADABLE
+def test_load_config_for_save_refuses_an_empty_or_unreadable_file(temp_config_path, content) -> None:
+    _good_config_with_backup(temp_config_path)
+    temp_config_path.write_bytes(content)
+
+    with pytest.raises(ConfigFileUnreadableError) as raised:
+        load_config_for_save(str(temp_config_path))
+
+    assert isinstance(raised.value, OSError)
+    assert isinstance(raised.value, ConfigFileEmptyError) == (not content.strip())
+    assert str(temp_config_path) in str(raised.value)
+    assert temp_config_path.read_bytes() == content
+
+
+def test_load_config_for_save_reads_a_whole_file(temp_config_path) -> None:
+    save_config(AppConfig(psn_system_name="On Disk"), str(temp_config_path))
+
+    assert load_config_for_save(str(temp_config_path)).psn_system_name == "On Disk"
+
+
+def test_load_config_for_save_recovers_a_missing_file_from_the_backup(temp_config_path) -> None:
+    _good_config_with_backup(temp_config_path)
+    temp_config_path.unlink()
+
+    assert load_config_for_save(str(temp_config_path)).psn_system_name == "Good Config"
+
+
+def test_load_config_for_save_reads_a_first_run_as_the_defaults(temp_config_path) -> None:
+    assert load_config_for_save(str(temp_config_path)) == AppConfig()
+
+
+@_UNREADABLE
+def test_save_config_never_writes_over_an_empty_or_unreadable_file(temp_config_path, content) -> None:
+    _good_config_with_backup(temp_config_path)
+    backup = _bak_of(temp_config_path).read_bytes()
+    temp_config_path.write_bytes(content)
+
+    with pytest.raises(ConfigFileUnreadableError):
+        save_config(AppConfig(psn_system_name="Defaults And One Change"), str(temp_config_path))
+
+    assert temp_config_path.read_bytes() == content
+    assert _bak_of(temp_config_path).read_bytes() == backup
+    assert list(temp_config_path.parent.glob("*.tmp")) == []
+
+
+@_UNREADABLE
+def test_save_config_replaces_an_unreadable_file_only_when_told_to(temp_config_path, content) -> None:
+    temp_config_path.write_bytes(content)
+
+    save_config(AppConfig(psn_system_name="Replacement"), str(temp_config_path), replace_unreadable=True)
+
+    assert load_config(str(temp_config_path), strict=True).psn_system_name == "Replacement"
+
+
+def test_a_config_path_that_cannot_be_opened_is_neither_read_for_a_save_nor_written(temp_config_path) -> None:
+    temp_config_path.mkdir()
+
+    with pytest.raises(ConfigFileUnreadableError, match="could not be read"):
+        load_config_for_save(str(temp_config_path))
+    with pytest.raises(ConfigFileUnreadableError, match="could not be read"):
+        save_config(AppConfig(), str(temp_config_path))
+
+    assert temp_config_path.is_dir()
+
+
+def test_save_config_decides_on_the_file_as_it_is_when_it_writes(temp_config_path) -> None:
+    """A config read whole before an editor truncated the file still finds it empty."""
+    save_config(AppConfig(psn_system_name="Read Whole"), str(temp_config_path))
+    cfg = load_config_for_save(str(temp_config_path))
+    temp_config_path.write_text("", encoding="utf-8")
+
+    with pytest.raises(ConfigFileEmptyError):
+        save_config(cfg, str(temp_config_path))
+
+    assert temp_config_path.read_text(encoding="utf-8") == ""
+
+
+@_EMPTY
+def test_an_empty_file_does_not_ask_for_the_network_mode_to_be_saved(temp_config_path, content) -> None:
+    from openfollow.configuration import network_mode_unsaved
+
+    temp_config_path.write_text(content, encoding="utf-8")
+
+    assert not network_mode_unsaved(str(temp_config_path))
+
+
+@_EMPTY
+def test_an_empty_file_is_restored_from_its_backup_which_stays(temp_config_path, caplog, content) -> None:
+    import stat
+
+    from openfollow.configuration import restore_empty_config
+
+    _good_config_with_backup(temp_config_path)
+    backup = _bak_of(temp_config_path).read_bytes()
+    temp_config_path.write_text(content, encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        restore_empty_config(str(temp_config_path))
+
+    assert temp_config_path.read_bytes() == backup
+    assert _bak_of(temp_config_path).read_bytes() == backup
+    assert stat.S_IMODE(os.stat(temp_config_path).st_mode) == 0o600
+    assert list(temp_config_path.parent.glob("*.tmp")) == []
+    assert caplog.messages == [f"Config file {temp_config_path} is empty – restored it from {temp_config_path}.bak."]
+    save_config(AppConfig(psn_system_name="Saved Again"), str(temp_config_path))
+    assert load_config(str(temp_config_path), strict=True).psn_system_name == "Saved Again"
+
+
+@pytest.mark.parametrize("backup", [None, b"", b"  \n", b"not [[ toml", b"\xff\xfe = 1\n", *_WRONG_SHAPES])
+@_EMPTY
+def test_an_empty_file_without_a_readable_backup_is_removed_for_a_first_run(
+    temp_config_path, caplog, content, backup
+) -> None:
+    from openfollow.configuration import restore_empty_config
+
+    temp_config_path.write_text(content, encoding="utf-8")
+    if backup is not None:
+        _bak_of(temp_config_path).write_bytes(backup)
+
+    with caplog.at_level("WARNING"):
+        restore_empty_config(str(temp_config_path))
+
+    assert not temp_config_path.exists()
+    assert backup is None or _bak_of(temp_config_path).read_bytes() == backup
+    assert [m for m in caplog.messages if "is empty" in m] == [
+        f"Config file {temp_config_path} is empty and has no readable backup – starting as a first run."
+    ]
+
+
+@pytest.mark.parametrize("content", [None, b"not [[ toml", b'psn_system_name = "Kept"\n'])
+def test_restore_leaves_a_missing_unreadable_or_whole_file_alone(temp_config_path, caplog, content) -> None:
+    from openfollow.configuration import restore_empty_config
+
+    _good_config_with_backup(temp_config_path)
+    if content is None:
+        temp_config_path.unlink()
+    else:
+        temp_config_path.write_bytes(content)
+
+    with caplog.at_level("WARNING"):
+        restore_empty_config(str(temp_config_path))
+
+    assert (temp_config_path.read_bytes() if temp_config_path.exists() else None) == content
+    assert caplog.messages == []
+
+
+def test_an_empty_file_that_cannot_be_restored_is_left_and_logged(temp_config_path, caplog, monkeypatch) -> None:
+    import openfollow.configuration as cfg_mod
+
+    _good_config_with_backup(temp_config_path)
+    temp_config_path.write_text("", encoding="utf-8")
+
+    def _refuse(*_a: object) -> None:
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(cfg_mod.os, "replace", _refuse)
+    with caplog.at_level("WARNING"):
+        cfg_mod.restore_empty_config(str(temp_config_path))
+    monkeypatch.undo()
+
+    assert temp_config_path.read_text(encoding="utf-8") == ""
+    assert list(temp_config_path.parent.glob("*.tmp")) == []
+    assert caplog.messages == [f"Config file {temp_config_path} is empty and could not be restored."]
+
+
+@pytest.mark.parametrize("primary", [None, b"", b"not [[ toml"], ids=["missing", "empty", "unparseable"])
+def test_a_backup_that_is_not_utf8_reads_as_no_backup(temp_config_path, primary) -> None:
+    _bak_of(temp_config_path).write_bytes(b'psn_system_name = "\xff\xfe"\n')
+    if primary is not None:
+        temp_config_path.write_bytes(primary)
+
+    assert load_config(str(temp_config_path)) == AppConfig()
+
+
+@_UNREADABLE
+def test_replacing_an_unreadable_file_keeps_the_good_backup(temp_config_path, content) -> None:
+    _good_config_with_backup(temp_config_path)
+    backup = _bak_of(temp_config_path).read_bytes()
+    temp_config_path.write_bytes(content)
+
+    save_config(AppConfig(psn_system_name="Replacement"), str(temp_config_path), replace_unreadable=True)
+
+    assert _bak_of(temp_config_path).read_bytes() == backup
+    assert load_config(str(temp_config_path), strict=True).psn_system_name == "Replacement"
+
+
+def test_the_backup_holds_the_bytes_the_save_checked(temp_config_path, monkeypatch) -> None:
+    """An editor emptying the file just after the check must not reach the backup."""
+    import openfollow.configuration as cfg_mod
+
+    save_config(AppConfig(psn_system_name="Checked"), str(temp_config_path))
+    checked = temp_config_path.read_bytes()
+    real_loads = cfg_mod.tomllib.loads
+
+    def _loads_then_truncate(text: str) -> object:
+        parsed = real_loads(text)
+        temp_config_path.write_bytes(b"")
+        return parsed
+
+    monkeypatch.setattr(cfg_mod.tomllib, "loads", _loads_then_truncate)
+    save_config(AppConfig(psn_system_name="Next"), str(temp_config_path))
+    monkeypatch.undo()
+
+    assert _bak_of(temp_config_path).read_bytes() == checked
+
+
+def test_save_config_change_writes_the_running_config_when_the_file_vanished_after_the_check(
+    temp_config_path, monkeypatch
+) -> None:
+    import openfollow.configuration as cfg_mod
+    from openfollow.configuration import save_config_change
+
+    monkeypatch.setattr(cfg_mod.os.path, "exists", lambda _p: True)
+    running = AppConfig(web_port=8080, psn_system_name="Stage Left")
+
+    save_config_change(str(temp_config_path), running, lambda cfg: setattr(cfg, "web_port", 9090))
+
+    monkeypatch.undo()
+    saved = load_config(str(temp_config_path), strict=True)
+    assert (saved.web_port, saved.psn_system_name) == (9090, "Stage Left")
+
+
+@_UNREADABLE
+def test_save_config_change_refuses_an_empty_or_unreadable_file(temp_config_path, content) -> None:
+    from openfollow.configuration import save_config_change
+
+    temp_config_path.write_bytes(content)
+    running = AppConfig(psn_system_name="Running")
+
+    with pytest.raises(ConfigFileUnreadableError):
+        save_config_change(str(temp_config_path), running, lambda cfg: setattr(cfg, "web_port", 9090))
+
+    assert temp_config_path.read_bytes() == content
+
+
+@pytest.mark.parametrize("content", _WRONG_SHAPES, ids=_WRONG_SHAPE_IDS)
+def test_a_file_that_parses_but_is_no_config_is_recovered_from_the_backup(temp_config_path, content) -> None:
+    _good_config_with_backup(temp_config_path)
+    temp_config_path.write_bytes(content)
+
+    assert load_config(str(temp_config_path)).psn_system_name == "Good Config"
+
+
+@pytest.mark.parametrize("backup", _WRONG_SHAPES, ids=_WRONG_SHAPE_IDS)
+@pytest.mark.parametrize(
+    "primary", [None, b"", b"not [[ toml", b"grid = 5\n"], ids=["missing", "empty", "unparseable", "shape"]
+)
+def test_a_backup_that_is_no_config_reads_as_no_backup(temp_config_path, primary, backup) -> None:
+    _bak_of(temp_config_path).write_bytes(backup)
+    if primary is not None:
+        temp_config_path.write_bytes(primary)
+
+    assert load_config(str(temp_config_path)) == AppConfig()
+
+
+@pytest.mark.parametrize("content", _WRONG_SHAPES, ids=_WRONG_SHAPE_IDS)
+def test_a_file_that_parses_but_is_no_config_is_a_problem_for_saving(temp_config_path, content) -> None:
+    from openfollow.configuration import config_file_problem
+
+    temp_config_path.write_bytes(content)
+
+    problem = config_file_problem(str(temp_config_path))
+    assert isinstance(problem, ConfigFileUnreadableError)
+    assert not isinstance(problem, ConfigFileEmptyError)
+
+
+@pytest.mark.parametrize(
+    ("backup", "step"),
+    [
+        (True, "Restart OpenFollow to restore the settings from the latest backup copy"),
+        (None, "Restart OpenFollow to start again with default settings"),
+        (b"grid = 5\n", "Restart OpenFollow to start again with default settings"),
+    ],
+    ids=["readable-backup", "no-backup", "backup-no-config"],
+)
+def test_an_empty_file_is_mended_by_what_a_restart_will_do(temp_config_path, backup, step) -> None:
+    from openfollow.configuration import config_file_problem, config_problem_words
+
+    if backup is True:
+        _good_config_with_backup(temp_config_path)
+    elif backup is not None:
+        _bak_of(temp_config_path).write_bytes(backup)
+    temp_config_path.write_bytes(b"")
+
+    problem = config_file_problem(str(temp_config_path))
+    assert problem is not None
+    assert config_problem_words(problem) == ("is empty", step)
+
+
+def test_an_unreadable_file_is_replaced_by_an_import(temp_config_path) -> None:
+    from openfollow.configuration import config_file_problem, config_problem_words
+
+    _good_config_with_backup(temp_config_path)
+    temp_config_path.write_bytes(b"grid = 5\n")
+
+    problem = config_file_problem(str(temp_config_path))
+    assert problem is not None
+    assert config_problem_words(problem) == ("could not be read", "Import a settings file to replace it")
+
+
+@pytest.mark.parametrize(
+    ("primary", "backup", "health"),
+    [
+        ("good", "good", "reads whole; backup reads whole"),
+        (b"", "good", "is empty; backup reads whole"),
+        (b"not [[ toml", None, "could not be read; no readable backup"),
+        (b"grid = 5\n", b"camera = 1\n", "could not be read; no readable backup"),
+        (None, "good", "missing; backup reads whole"),
+    ],
+)
+def test_the_health_of_the_config_file_names_no_contents(temp_config_path, primary, backup, health) -> None:
+    from openfollow.configuration import config_file_health
+
+    save_config(AppConfig(psn_system_name="secret-ish", web_pin="4321"), str(temp_config_path))
+    good = temp_config_path.read_bytes()
+    if backup is not None:
+        _bak_of(temp_config_path).write_bytes(good if backup == "good" else backup)
+    if primary is None:
+        temp_config_path.unlink()
+    elif primary != "good":
+        temp_config_path.write_bytes(primary)
+
+    assert config_file_health(str(temp_config_path)) == health
+
+
+def test_a_save_read_of_a_missing_file_takes_the_fallback_it_is_given(temp_config_path) -> None:
+    _good_config_with_backup(temp_config_path)
+    temp_config_path.unlink()
+
+    newer = AppConfig(psn_system_name="Last Whole Read")
+    assert load_config_for_save(str(temp_config_path), missing=lambda: newer) is newer
+    assert load_config_for_save(str(temp_config_path)).psn_system_name == "Good Config"
 
 
 # Per-marker move speed (``AppConfig.marker_move_speeds``)
@@ -1087,6 +1483,17 @@ def test_controller_keyboard_layout_is_what_the_session_helper_reads(tmp_path) -
     cfg.controller.keyboard_variant = "OADG109A"
     save_config(cfg, str(path))
     assert read_configured(path) == ("jp", "OADG109A")
+
+
+@pytest.mark.parametrize("raw", [None, "abc", 1, [True]])
+def test_controller_swap_triggers_that_is_no_bool_reads_as_not_swapped(raw: object) -> None:
+    assert ControllerConfig(swap_triggers=raw).swap_triggers is False  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("raw", [None, 3, True, ["Pad"]])
+@pytest.mark.parametrize("name", ["mapped_controller_name", "mapped_controller_guid"])
+def test_controller_mapped_pad_that_is_no_string_reads_as_none(name: str, raw: object) -> None:
+    assert getattr(ControllerConfig(**{name: raw}), name) == ""
 
 
 def test_controller_button_raw_indices_coerced_to_int() -> None:
@@ -1426,18 +1833,109 @@ def test_apply_runtime_ui_unit_system_propagates_to_config() -> None:
     assert app._web_commands.restart_requested is False
 
 
-def test_apply_runtime_ui_show_experimental_propagates_to_config() -> None:
-    """``show_experimental_features`` is gated off ``app._config`` for the web
-    body class, so a change must propagate live without a restart."""
+def test_apply_runtime_ui_shown_features_propagates_to_config() -> None:
+    """The Features list is read off ``app._config``, so a change applies live without a restart."""
     app = _DummyApp(AppConfig())
-    assert app._config.ui.show_experimental_features is False
+    assert not app._config.ui.feature_on("paths")
     new_config = AppConfig()
-    new_config.ui.show_experimental_features = True
+    new_config.ui.shown_features = ["paths"]
 
     apply_runtime_config_changes(app, new_config)
 
-    assert app._config.ui.show_experimental_features is True
+    assert app._config.ui.shown_features == ["paths"]
     assert app._web_commands.restart_requested is False
+
+
+class _RecordingZoneEngine:
+    def __init__(self) -> None:
+        self.reloads: list[TriggerZonesConfig] = []
+
+    def reload_config(self, config: TriggerZonesConfig, destinations: object = None) -> None:
+        self.reloads.append(config)
+
+
+class _RecordingMidi:
+    def __init__(self) -> None:
+        self.applied: list[list[object]] = []
+
+    def apply_config(self, patches: list[object]) -> None:
+        self.applied.append(list(patches))
+
+
+def _with_features(cfg: AppConfig, *keys: str) -> AppConfig:
+    cfg.ui.shown_features = list(keys)
+    cfg.ui.__post_init__()
+    return cfg
+
+
+class TestFeatureGatesHotReload:
+    """A Features change re-applies exactly the services whose entry flipped, with the gated config."""
+
+    def test_psn_input_flip_reapplies_the_receiver_once(self) -> None:
+        app = _DummyApp(AppConfig())
+        apply_runtime_config_changes(app, _with_features(AppConfig(), "zones", "midi"))
+        assert app._runtime_services.psn_input_changes == 1
+        apply_runtime_config_changes(app, _with_features(AppConfig(), "zones", "midi", "paths"))
+        assert app._runtime_services.psn_input_changes == 1
+
+    @pytest.mark.parametrize("feature_on", [True, False])
+    def test_rttrpm_runs_only_with_its_entry(self, feature_on) -> None:  # noqa: ANN001
+        app = _DummyApp(AppConfig())
+        new = AppConfig(rttrpm_output=RttrpmOutputConfig(enabled=True))
+        _with_features(new, *(["rttrpm"] if feature_on else []))
+        apply_runtime_config_changes(app, new)
+        assert app._runtime_services.rttrpm_changes[-1].enabled is feature_on
+        assert app._config.rttrpm_output.enabled is True
+
+    def test_rttrpm_entry_flip_alone_reapplies_the_sender(self) -> None:
+        app = _DummyApp(_with_features(AppConfig(rttrpm_output=RttrpmOutputConfig(enabled=True)), "rttrpm"))
+        new = _with_features(AppConfig(rttrpm_output=RttrpmOutputConfig(enabled=True)))
+        apply_runtime_config_changes(app, new)
+        assert [cfg.enabled for cfg in app._runtime_services.rttrpm_changes] == [False]
+
+    def test_detection_entry_off_stops_the_detector_and_keeps_its_switch(self) -> None:
+        app = _DummyApp(_with_features(AppConfig(detection=DetectionConfig(enabled=True)), "detection"))
+        apply_runtime_config_changes(app, _with_features(AppConfig(detection=DetectionConfig(enabled=True))))
+        assert [cfg.enabled for cfg in app._runtime_services.detection_changes] == [False]
+        assert app._config.detection.enabled is True
+
+    def test_detection_entry_on_starts_the_detector(self) -> None:
+        app = _DummyApp(AppConfig(detection=DetectionConfig(enabled=True)))
+        app._runtime_services._person_detector = None
+        apply_runtime_config_changes(
+            app, _with_features(AppConfig(detection=DetectionConfig(enabled=True)), "detection")
+        )
+        assert [cfg.enabled for cfg in app._runtime_services.detection_swaps] == [True]
+
+    def test_zones_entry_flip_reloads_the_engine_with_the_gated_config(self) -> None:
+        app = _DummyApp(AppConfig(trigger_zones=TriggerZonesConfig(enabled=True)))
+        engine = _RecordingZoneEngine()
+        app._runtime_services._zone_engine = engine
+        apply_runtime_config_changes(app, _with_features(AppConfig(trigger_zones=TriggerZonesConfig(enabled=True))))
+        apply_runtime_config_changes(
+            app, _with_features(AppConfig(trigger_zones=TriggerZonesConfig(enabled=True)), "zones")
+        )
+        assert [cfg.enabled for cfg in engine.reloads] == [False, True]
+        assert app._config.trigger_zones.enabled is True
+
+    def test_midi_entry_off_closes_every_patch_and_keeps_them(self) -> None:
+        patch = MidiPatch(id=1, alias="Fader box")
+        app = _DummyApp(AppConfig(midi=MidiConfig(patches=[patch])))
+        midi = _RecordingMidi()
+        app._runtime_services._midi = midi
+        apply_runtime_config_changes(app, _with_features(AppConfig(midi=MidiConfig(patches=[patch]))))
+        apply_runtime_config_changes(app, _with_features(AppConfig(midi=MidiConfig(patches=[patch])), "midi"))
+        assert midi.applied == [[], [patch]]
+        assert app._config.midi.patches == [patch]
+
+    def test_unchanged_features_reapply_nothing(self) -> None:
+        app = _DummyApp(AppConfig(rttrpm_output=RttrpmOutputConfig(enabled=True)))
+        midi = _RecordingMidi()
+        app._runtime_services._midi = midi
+        apply_runtime_config_changes(app, AppConfig(rttrpm_output=RttrpmOutputConfig(enabled=True)))
+        assert app._runtime_services.rttrpm_changes == []
+        assert app._runtime_services.psn_input_changes == 0
+        assert midi.applied == []
 
 
 def test_apply_runtime_network_backend_propagates_to_config() -> None:
@@ -1451,6 +1949,26 @@ def test_apply_runtime_network_backend_propagates_to_config() -> None:
     apply_runtime_config_changes(app, new_config)
 
     assert app._config.network.backend == "nm"
+    assert app._web_commands.restart_requested is False
+
+
+def test_apply_runtime_leaves_the_update_and_time_sync_settings_for_the_next_start() -> None:
+    """The updater and the online-sync worker read them off the running config, so a saved
+    change (an import) waits for the next start rather than reaching one of them only."""
+    app = _DummyApp(AppConfig())
+    new_config = AppConfig(
+        update_github_repo="stage-crew/openfollow",
+        update_include_prereleases=True,
+        auto_update_check=False,
+        auto_time_sync=False,
+        time_sync_server="ntp.example.com",
+    )
+
+    apply_runtime_config_changes(app, new_config)
+
+    kept = app._config
+    assert (kept.update_github_repo, kept.update_include_prereleases) == ("openfollowapp/openfollow", False)
+    assert (kept.auto_update_check, kept.auto_time_sync, kept.time_sync_server) == (True, True, "ptbtime1.ptb.de")
     assert app._web_commands.restart_requested is False
 
 
@@ -1536,6 +2054,85 @@ def test_apply_runtime_operator_messages_restarts_handler() -> None:
     assert app._config.operator_messages.enabled is True
     assert app._input_manager.operator_message_restarts == 1
     assert app._web_commands.restart_requested is False
+
+
+def test_apply_runtime_touch_remote_changes_apply_live() -> None:
+    app = _DummyApp(AppConfig(touch_remote=TouchRemoteConfig(enabled=True)))
+    apply_runtime_config_changes(app, AppConfig(touch_remote=TouchRemoteConfig(enabled=True, stick_curve=1.0)))
+    assert app._config.touch_remote.stick_curve == 1.0
+    apply_runtime_config_changes(app, AppConfig())
+    assert app._config.touch_remote.enabled is False
+    assert app._web_commands.restart_requested is False
+
+
+def test_touch_remote_defaults() -> None:
+    cfg = TouchRemoteConfig()
+    assert (cfg.enabled, cfg.stick_curve, cfg.stick_dead_zone, cfg.z_step_m, cfg.z_notch_px) == (
+        False,
+        2.0,
+        0.08,
+        0.05,
+        20,
+    )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value", "want"),
+    [
+        ("stick_curve", "abc", 2.0),
+        ("stick_curve", None, 2.0),
+        ("stick_curve", True, 2.0),
+        ("stick_dead_zone", "abc", 0.08),
+        ("stick_dead_zone", None, 0.08),
+        ("stick_dead_zone", True, 0.08),
+        ("z_step_m", "abc", 0.05),
+        ("z_step_m", None, 0.05),
+        ("z_step_m", False, 0.05),
+        ("z_notch_px", "abc", 20),
+        ("z_notch_px", None, 20),
+        ("z_notch_px", True, 20),
+        ("enabled", None, False),
+        ("enabled", [1], False),
+    ],
+)
+def test_touch_remote_wrong_types_fall_back_to_defaults(field_name: str, value: object, want: object) -> None:
+    assert getattr(TouchRemoteConfig(**{field_name: value}), field_name) == want
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value", "want"),
+    [
+        ("stick_curve", 0.2, 1.0),
+        ("stick_curve", 9.0, 3.0),
+        ("stick_curve", float("nan"), 2.0),
+        ("stick_dead_zone", -0.1, 0.0),
+        ("stick_dead_zone", 0.9, 0.5),
+        ("z_step_m", 0.0, 0.001),
+        ("z_step_m", 5.0, 1.0),
+        ("z_step_m", float("inf"), 0.05),
+        ("z_notch_px", 1, 8),
+        ("z_notch_px", 500, 80),
+    ],
+)
+def test_touch_remote_out_of_range_is_clamped(field_name: str, value: object, want: float) -> None:
+    assert getattr(TouchRemoteConfig(**{field_name: value}), field_name) == pytest.approx(want)
+
+
+def test_touch_remote_survives_a_hand_edited_config_toml(tmp_path) -> None:  # noqa: ANN001
+    path = tmp_path / "config.toml"
+    path.write_text('[touch_remote]\nenabled = true\nstick_curve = "steep"\nz_notch_px = 1000\nstale_key = 1\n')
+    cfg = load_config(str(path)).touch_remote
+    assert (cfg.enabled, cfg.stick_curve, cfg.z_notch_px) == (True, 2.0, 80)
+
+
+def test_touch_remote_crafted_section_post_is_normalised() -> None:
+    from openfollow.web.routes import apply_section_data
+
+    cfg = AppConfig()
+    apply_section_data(cfg, "touch_remote", {"enabled": "on", "stick_dead_zone": "0.9", "z_notch_px": "-4"})
+    assert cfg.touch_remote.enabled is True
+    assert cfg.touch_remote.stick_dead_zone == 0.5
+    assert cfg.touch_remote.z_notch_px == 8
 
 
 def test_apply_runtime_updates_system_name_without_restart() -> None:
@@ -2481,8 +3078,8 @@ def test_a_switch_that_could_not_be_saved_is_saved_by_switching_again_once_the_f
     good = AppConfig(video_source_type="ndi", ndi_source_name="CAM-HOST (Camera 1)", rtsp_url="rtsp://192.0.2.20/a")
     save_config(good, path)
     app = _app_on_file(path)
-    banners: list[str] = []
-    app._enter_settings_menu = lambda **kw: banners.append(kw.get("banner", ""))
+    banners: list[tuple[str, str]] = []
+    app._enter_settings_menu = lambda **kw: banners.append((kw.get("banner", ""), kw.get("action", "")))
     app._enter_url_editor = lambda **_kw: None
     app._available_source_types = [("rtsp", "RTSP")]
     app._selected_source_type_index = 0
@@ -2490,9 +3087,14 @@ def test_a_switch_that_could_not_be_saved_is_saved_by_switching_again_once_the_f
 
     app_modes.confirm_source_type_selection(app)
     assert app._config.video_source_type == "rtsp"
-    assert banners == ["RTSP is live but could not be saved to config.toml. Fix the file, then switch again."]
+    assert banners == [
+        (
+            "RTSP is live but could not be saved. The settings file could not be read.",
+            "Import a settings file to replace it, then switch again.",
+        )
+    ]
 
-    save_config(good, path)
+    save_config(good, path, replace_unreadable=True)  # the operator repairs it
     assert apply_runtime_config_changes(app, load_config(path, strict=True)) is True
     assert app._config.video_source_type == "ndi"
     app_modes.confirm_source_type_selection(app)
@@ -2651,6 +3253,25 @@ def test_osc_config_unknown_container_type_becomes_empty() -> None:
 def test_osc_config_post_init_strips_whitespace() -> None:
     cfg = OscConfig(allowed_sender_ips=["  192.168.1.10  ", "\t10.0.0.1 "])
     assert cfg.allowed_sender_ips == ["192.168.1.10", "10.0.0.1"]
+
+
+@pytest.mark.parametrize(
+    ("entries", "kept"),
+    [
+        (["192.0.2.1", "2001:db8::1"], ["192.0.2.1"]),
+        (["::ffff:192.0.2.1", "198.51.100.7"], ["198.51.100.7"]),
+        (["fe80::1%eth0", "192.0.2.1", "not-an-ip", "192.0.2.300"], ["192.0.2.1"]),
+    ],
+)
+def test_osc_config_allowlist_keeps_only_ipv4_entries(entries: list[str], kept: list[str]) -> None:
+    """The listener is IPv4, so no other entry can ever match a sender."""
+    assert OscConfig(allowed_sender_ips=entries).allowed_sender_ips == kept
+
+
+@pytest.mark.parametrize("entries", [["2001:db8::1"], ["::1", "fe80::1"], ["2001:db8::1", "not-an-ip"]])
+def test_osc_config_allowlist_without_ipv4_entry_never_reads_as_allow_all(entries: list[str]) -> None:
+    """Dropping every entry would leave the empty list, which accepts every sender."""
+    assert OscConfig(allowed_sender_ips=entries).allowed_sender_ips == entries
 
 
 def test_osc_config_clamps_port_to_blur_bounds() -> None:
@@ -3145,11 +3766,9 @@ def test_camera_config_preserves_optional_float_none() -> None:
 
 
 def test_camera_config_lens_distortion_defaults_to_pinhole() -> None:
-    # Existing configs (no lens_k1/lens_k2 in TOML) must render byte-for-byte
-    # as a pinhole overlay – both coefficients default to 0.0.
+    # A config without lens keys draws exactly what a pinhole camera sees.
     cfg = CameraConfig()
-    assert cfg.lens_k1 == 0.0
-    assert cfg.lens_k2 == 0.0
+    assert (cfg.lens_k1, cfg.lens_k2, cfg.lens_cx, cfg.lens_cy) == (0.0, 0.0, 0.0, 0.0)
 
 
 @pytest.mark.parametrize(
@@ -3157,11 +3776,12 @@ def test_camera_config_lens_distortion_defaults_to_pinhole() -> None:
     [
         (0.1, 0.1),
         ("0.15", 0.15),
-        (1.5, 1.5),  # pincushion never folds, so no box clamps it
+        (0.9, 0.9),  # pincushion, valid up to k1 = 1 without a corner term
         (None, 0.0),
         ("nope", 0.0),
         (float("inf"), 0.0),  # non-finite -> declared default
         (float("nan"), 0.0),
+        (10**400, 0.0),
     ],
 )
 def test_camera_config_coerces_lens_k1(bad_k: object, expected: float) -> None:
@@ -3174,11 +3794,12 @@ def test_camera_config_coerces_lens_k1(bad_k: object, expected: float) -> None:
     [
         (0.03, 0.03),
         ("0.04", 0.04),
-        (1.5, 1.5),
+        (-0.8, -0.8),
         (None, 0.0),
         ("nope", 0.0),
         (float("inf"), 0.0),
         (float("nan"), 0.0),
+        (10**400, 0.0),
     ],
 )
 def test_camera_config_coerces_lens_k2(bad_k: object, expected: float) -> None:
@@ -3186,85 +3807,181 @@ def test_camera_config_coerces_lens_k2(bad_k: object, expected: float) -> None:
     assert cfg.lens_k2 == expected
 
 
-# Pairs that fold, the end stops of the slider's earlier box (-0.4 / -0.2) among them.
-_FOLDING_LENS_PAIRS = [
-    (-0.4, 0.0),
-    (-0.35, 0.0),
-    (-0.38, 0.02),
-    (-0.4, -0.2),
-    (0.4, -1.0),
-    (-1.5, 0.0),
-    (0.0, -1.5),
-    (5.0, -5.0),
-    (-5e3, 0.0),
+@pytest.mark.parametrize("field", ["lens_cx", "lens_cy"])
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (0.04, 0.04),
+        ("-0.03", -0.03),
+        (C_BOUND, C_BOUND),
+        (-C_BOUND, -C_BOUND),
+        (0.0, 0.0),
+    ],
+)
+def test_camera_config_keeps_a_lens_centre_inside_its_bound(field: str, value: object, expected: float) -> None:
+    assert getattr(CameraConfig(**{field: value}), field) == expected
+
+
+@pytest.mark.parametrize("field", ["lens_cx", "lens_cy"])
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (C_BOUND + 1e-9, C_BOUND),
+        (-C_BOUND - 1e-9, -C_BOUND),
+        (3.0, C_BOUND),
+        ("-7", -C_BOUND),
+    ],
+)
+def test_camera_config_clamps_a_lens_centre_past_its_bound(field: str, value: object, expected: float) -> None:
+    assert getattr(CameraConfig(**{field: value}), field) == expected
+
+
+@pytest.mark.parametrize("field", ["lens_cx", "lens_cy"])
+@pytest.mark.parametrize("value", [None, "abc", [0.1], {"x": 0.1}, float("nan"), float("inf"), float("-inf"), 10**400])
+def test_camera_config_lens_centre_that_is_no_number_reads_as_0(field: str, value: object) -> None:
+    assert getattr(CameraConfig(**{field: value}), field) == 0.0
+
+
+@pytest.mark.parametrize("field", ["lens_cx", "lens_cy"])
+def test_camera_config_lens_centre_reads_a_boolean_as_the_number_it_is(field: str) -> None:
+    # float(True) is 1, past the bound, as for every float field read by _coerce_float.
+    assert getattr(CameraConfig(**{field: True}), field) == C_BOUND
+    assert getattr(CameraConfig(**{field: False}), field) == 0.0
+
+
+# Lenses whose map stops short of a frame corner, with and without a lens centre.
+_LENSES_SHORT_OF_A_CORNER = [
+    (-1.0, 0.0, 0.0, 0.0),  # the pole on the corner
+    (-0.6, -0.4, 0.0, 0.0),
+    (0.4, 0.2, 0.0, 0.0),  # the fold on the corner
+    (-1.5, 0.0, 0.0, 0.0),
+    (0.0, 1.5, 0.0, 0.0),
+    (4.0, -1.0, 0.0, 0.0),  # P dips inside the frame
+    (-5e3, 0.0, 0.0, 0.0),
+    (-0.9, 0.0, 0.1, 0.05),  # valid about the frame centre, not about this one
+    (-0.53, -0.4, -C_BOUND, C_BOUND),
 ]
 
 
-def _assert_pulled_back_toward_the_fold(old: tuple[float, float], new: tuple[float, float]) -> None:
-    """Valid, on the old pair's own ray short of it, and close to where that ray folds."""
+def _assert_pulled_back_toward_the_limit(old: tuple[float, ...], new: tuple[float, ...]) -> None:
+    """Valid, the centre kept, the pair on its own ray short of it, and close to where that ray stops."""
     assert lens_warp_is_valid(*new)
+    assert new[2:] == old[2:]
     scale = (new[0] * old[0] + new[1] * old[1]) / (old[0] ** 2 + old[1] ** 2)
     assert 0.0 < scale < 1.0
-    assert new == pytest.approx((scale * old[0], scale * old[1]), rel=1e-12, abs=1e-15)
-    assert not lens_warp_is_valid(old[0] * scale * 1.02, old[1] * scale * 1.02)
+    assert new[:2] == pytest.approx((scale * old[0], scale * old[1]), rel=1e-12, abs=1e-15)
+    assert not lens_warp_is_valid(old[0] * scale * 1.02, old[1] * scale * 1.02, *old[2:])
 
 
-@pytest.mark.parametrize("k1,k2", _FOLDING_LENS_PAIRS)
-def test_camera_config_pulls_a_folding_lens_pair_back_toward_the_fold(
-    k1: float, k2: float, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+def _lens_of(cfg: CameraConfig) -> tuple[float, float, float, float]:
+    return cfg.lens_k1, cfg.lens_k2, cfg.lens_cx, cfg.lens_cy
+
+
+@pytest.mark.parametrize("lens", _LENSES_SHORT_OF_A_CORNER)
+def test_camera_config_pulls_a_lens_back_until_it_reaches_every_corner(
+    lens: tuple[float, float, float, float], caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A pair an earlier release accepted keeps its lens, short of the fold, rather than going pinhole."""
     import openfollow.configuration as cfg_mod
 
     monkeypatch.setattr(cfg_mod, "_reported_drops", {})
+    k1, k2, cx, cy = lens
     with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
-        cfg = CameraConfig(lens_k1=k1, lens_k2=k2)
-    _assert_pulled_back_toward_the_fold((k1, k2), (cfg.lens_k1, cfg.lens_k2))
+        cfg = CameraConfig(lens_k1=k1, lens_k2=k2, lens_cx=cx, lens_cy=cy)
+    _assert_pulled_back_toward_the_limit(lens, _lens_of(cfg))
     [message] = [rec.getMessage() for rec in caplog.records]
-    assert f"lens_k1={float(k1)} / lens_k2={float(k2)} folds" in message
+    assert f"lens_k1={float(k1)} / lens_k2={float(k2)} with lens centre {cx:.6g} / {cy:.6g}" in message
+    assert "cannot follow the picture out to its corners" in message
     assert f"using {cfg.lens_k1:.6g} / {cfg.lens_k2:.6g}" in message
 
 
-def test_a_folding_lens_pair_is_reported_once_not_on_every_load(caplog, monkeypatch) -> None:
+def test_camera_config_pulls_back_to_the_closed_form_point() -> None:
+    # 1 - 1.2 t s with the far corner at s = 1.1^2: t* = 1 / (1.2 * 1.21), less the 1 % margin.
+    cfg = CameraConfig(lens_k1=-1.2, lens_k2=0.0, lens_cx=0.1, lens_cy=0.0)
+    assert _lens_of(cfg) == pytest.approx((-0.99 / 1.21, 0.0, 0.1, 0.0), rel=1e-12)
+
+
+def test_camera_config_clamps_the_centre_before_it_judges_the_pair() -> None:
+    # k1 = -0.7 reaches a corner 1.1 half-diagonals out, not the 1 + |c| of the clamped centre.
+    cfg = CameraConfig(lens_k1=-0.7, lens_cx=1.0, lens_cy=-1.0)
+    assert (cfg.lens_cx, cfg.lens_cy) == (C_BOUND, -C_BOUND)
+    assert lens_warp_is_valid(*_lens_of(cfg))
+    assert -0.7 < cfg.lens_k1 < 0.0
+
+
+def test_a_lens_short_of_a_corner_is_reported_once_not_on_every_load(caplog, monkeypatch) -> None:
     import openfollow.configuration as cfg_mod
 
     monkeypatch.setattr(cfg_mod, "_reported_drops", {})
     with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
         for _ in range(3):
-            CameraConfig(lens_k1=-0.4, lens_k2=0.0)
+            CameraConfig(lens_k1=-1.2, lens_k2=0.0)
     assert len(caplog.records) == 1
 
 
-def test_a_pulled_back_lens_pair_is_stable_across_a_save_and_load(temp_config_path) -> None:
-    temp_config_path.write_text("[camera]\nlens_k1 = -0.38\nlens_k2 = 0.02\n", encoding="utf-8")
+def test_the_report_names_the_centre_the_pair_was_judged_with(caplog, monkeypatch) -> None:
+    import openfollow.configuration as cfg_mod
+
+    monkeypatch.setattr(cfg_mod, "_reported_drops", {})
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        CameraConfig(lens_k1=-0.9, lens_cx=0.6, lens_cy=-9.0)
+    [message] = [rec.getMessage() for rec in caplog.records]
+    assert "with lens centre 0.25 / -0.25 cannot follow" in message
+
+
+def test_a_clamped_centre_alone_is_not_reported(caplog, monkeypatch) -> None:
+    import openfollow.configuration as cfg_mod
+
+    monkeypatch.setattr(cfg_mod, "_reported_drops", {})
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        CameraConfig(lens_k1=-0.2, lens_cx=0.9)
+    assert caplog.records == []
+
+
+def test_a_pulled_back_lens_is_stable_across_a_save_and_load(temp_config_path) -> None:
+    temp_config_path.write_text(
+        "[camera]\nlens_k1 = -0.9\nlens_k2 = -0.1\nlens_cx = 0.12\nlens_cy = -0.3\n", encoding="utf-8"
+    )
     loaded = load_config(str(temp_config_path))
-    _assert_pulled_back_toward_the_fold((-0.38, 0.02), (loaded.camera.lens_k1, loaded.camera.lens_k2))
+    _assert_pulled_back_toward_the_limit((-0.9, -0.1, 0.12, -C_BOUND), _lens_of(loaded.camera))
     save_config(loaded, str(temp_config_path))
     again = load_config(str(temp_config_path))
-    assert (again.camera.lens_k1, again.camera.lens_k2) == (loaded.camera.lens_k1, loaded.camera.lens_k2)
+    assert _lens_of(again.camera) == _lens_of(loaded.camera)
 
 
-@pytest.mark.parametrize("k1,k2", [(0.4, 0.2), (0.4, -0.2), (-0.3, 0.0), (-0.2, 0.05)])
-def test_camera_config_keeps_a_lens_pair_that_does_not_fold(k1: float, k2: float) -> None:
-    cfg = CameraConfig(lens_k1=k1, lens_k2=k2)
-    assert (cfg.lens_k1, cfg.lens_k2) == (k1, k2)
+@pytest.mark.parametrize(
+    "lens",
+    [
+        (0.4, 0.15, 0.0, 0.0),
+        (0.9, -0.2, 0.0, 0.0),
+        (-0.3, 0.0, 0.0, 0.0),
+        (-0.527, -0.069, 0.0, 0.0),  # an equidistant 2.3 mm lens
+        (-0.527, -0.069, 0.04, -0.03),
+        (0.0, -0.8, 0.0, 0.0),
+        (-0.2, 0.05, C_BOUND, -C_BOUND),
+    ],
+)
+def test_camera_config_keeps_a_lens_that_reaches_every_corner(lens: tuple[float, float, float, float]) -> None:
+    k1, k2, cx, cy = lens
+    assert _lens_of(CameraConfig(lens_k1=k1, lens_k2=k2, lens_cx=cx, lens_cy=cy)) == lens
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), "abc", None])
 def test_camera_config_lens_values_that_are_no_number_still_read_as_0(bad: object) -> None:
-    cfg = CameraConfig(lens_k1=bad, lens_k2=bad)  # type: ignore[arg-type]
-    assert (cfg.lens_k1, cfg.lens_k2) == (0.0, 0.0)
+    cfg = CameraConfig(lens_k1=bad, lens_k2=bad, lens_cx=bad, lens_cy=bad)  # type: ignore[arg-type]
+    assert _lens_of(cfg) == (0.0, 0.0, 0.0, 0.0)
 
 
-@pytest.mark.parametrize("k1,k2", [(-0.47, 0.25), (-0.45, 0.2), (0.6, 0.4), (-0.3, 0.0)])
-def test_camera_config_keeps_a_wide_lens_pair_outside_the_old_box(k1: float, k2: float) -> None:
-    cfg = CameraConfig(lens_k1=k1, lens_k2=k2)
-    assert (cfg.lens_k1, cfg.lens_k2) == (k1, k2)
+def test_camera_config_wrong_type_on_one_lens_value_keeps_the_others() -> None:
+    cfg = CameraConfig(lens_k1="abc", lens_k2=0.3, lens_cx=0.02, lens_cy=None)  # type: ignore[arg-type]
+    assert _lens_of(cfg) == (0.0, 0.3, 0.02, 0.0)
 
 
-def test_camera_config_wrong_type_on_one_coefficient_keeps_the_other() -> None:
-    cfg = CameraConfig(lens_k1="abc", lens_k2=0.3)  # type: ignore[arg-type]
-    assert (cfg.lens_k1, cfg.lens_k2) == (0.0, 0.3)
+def test_a_lens_centre_change_hot_reloads_onto_the_running_config() -> None:
+    app = _DummyApp(AppConfig(camera=CameraConfig(lens_k1=-0.3)))
+    new = AppConfig(camera=CameraConfig(lens_k1=-0.3, lens_cx=0.05, lens_cy=-0.02))
+    apply_runtime_config_changes(app, new)
+    assert effective_lens(app._config) == (-0.3, 0.0, 0.05, -0.02)
+    assert app._web_commands.restart_requested is False
 
 
 def test_camera_config_rejects_inf_fov_to_default() -> None:
@@ -3436,7 +4153,6 @@ def test_marker_config_coerces_all_boolean_flags() -> None:
         ground_circle="true",  # type: ignore[arg-type]
         ground_circle_filled="false",  # type: ignore[arg-type]
         z_display_from_stage="yes",  # type: ignore[arg-type]
-        invert_control_direction="true",  # type: ignore[arg-type]
         cone_filled="off",  # type: ignore[arg-type]
         cone_shaded="no",  # type: ignore[arg-type]
     )
@@ -3448,36 +4164,44 @@ def test_marker_config_coerces_all_boolean_flags() -> None:
     assert cfg.ground_circle is True
     assert cfg.ground_circle_filled is False
     assert cfg.z_display_from_stage is True
-    assert cfg.invert_control_direction is True
+
+
+def test_marker_config_control_frame_defaults_to_stage_axes() -> None:
+    """Any other default would turn every operator's controls on upgrade."""
+    cfg = MarkerConfig()
+    assert cfg.control_frame == "stage"
+    assert cfg.control_heading == 0.0
+
+
+@pytest.mark.parametrize("frame", ["stage", "heading", "camera", "screen"])
+def test_marker_config_accepts_every_control_frame(frame: str) -> None:
+    assert MarkerConfig(control_frame=frame).control_frame == frame
+
+
+@pytest.mark.parametrize("raw", ["Screen", "picture", "", None, 1, True, ["camera"]])
+def test_marker_config_unknown_control_frame_falls_back_to_stage(raw: object) -> None:
+    assert MarkerConfig(control_frame=raw).control_frame == "stage"  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
-    "raw,expected",
+    ("raw", "expected"),
     [
-        (True, True),
-        (False, False),
-        ("on", True),
-        ("off", False),
-        ("true", True),
-        # Unrecognised input falls back to the default rather than guessing.
-        # Notably an int: ``_coerce_bool`` accepts only real bools and known
-        # string forms, so ``1`` is not "truthy" here - same as every sibling flag.
-        (1, False),
-        (None, False),
-        ("banana", False),
+        (90.0, 90.0),
+        ("180", 180.0),
+        (360.0, 0.0),
+        (-90.0, 270.0),
+        (450, 90.0),
+        (-1e-15, 0.0),
     ],
 )
-def test_marker_config_coerces_invert_control_direction(raw: object, expected: bool) -> None:
-    """The flag reaches the input loop's sign arithmetic every frame, so a
-    hand-edited TOML must never leave a non-bool there."""
-    cfg = MarkerConfig(invert_control_direction=raw)  # type: ignore[arg-type]
-    assert cfg.invert_control_direction is expected
+def test_marker_config_control_heading_wraps_to_one_turn(raw: object, expected: float) -> None:
+    """A bearing outside one turn names the same direction as its wrap, e.g. a yaw of -90."""
+    assert MarkerConfig(control_heading=raw).control_heading == pytest.approx(expected)  # type: ignore[arg-type]
 
 
-def test_marker_config_control_direction_defaults_off() -> None:
-    """Default must be off: enabling it for an existing install would reverse
-    every operator's controls on upgrade."""
-    assert MarkerConfig().invert_control_direction is False
+@pytest.mark.parametrize("raw", ["abc", None, True, float("nan"), float("inf"), [90.0]])
+def test_marker_config_bad_control_heading_falls_back_to_zero(raw: object) -> None:
+    assert MarkerConfig(control_heading=raw).control_heading == 0.0  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("bad_value", ["abc", "", [1.0]])
@@ -3767,6 +4491,31 @@ def test_detection_config_default_values() -> None:
     assert cfg.prediction == pytest.approx(8.0)
 
 
+@pytest.mark.parametrize("patches", [None, "abc", 3, True, {"id": 1}])
+def test_midi_patches_that_are_not_a_list_read_as_none(patches: object) -> None:
+    assert MidiConfig(patches=patches).patches == []  # type: ignore[arg-type]
+
+
+def test_midi_patches_keep_only_their_patch_entries() -> None:
+    kept = MidiPatch(id=4, alias="Wing")
+    config = MidiConfig(patches=[{"id": 2, "alias": "Desk"}, "Desk", 7, None, kept])  # type: ignore[list-item]
+    assert [(patch.id, patch.alias) for patch in config.patches] == [(2, "Desk"), (4, "Wing")]
+
+
+@pytest.mark.parametrize("faders", [None, "abc", 3, True, {"name": "Iris"}])
+def test_virtual_faders_that_are_not_a_list_read_as_unmapped(faders: object) -> None:
+    from openfollow.configuration import VIRTUAL_FADER_COUNT, VirtualFaderConfig, VirtualFadersConfig
+
+    assert VirtualFadersConfig(faders=faders).faders == [VirtualFaderConfig()] * VIRTUAL_FADER_COUNT  # type: ignore[arg-type]
+
+
+def test_virtual_faders_keep_only_their_fader_entries() -> None:
+    from openfollow.configuration import VirtualFaderConfig, VirtualFadersConfig
+
+    config = VirtualFadersConfig(faders=["Iris", {"name": "Zoom"}, 2, VirtualFaderConfig(name="Focus")])  # type: ignore[list-item]
+    assert [fader.name for fader in config.faders[:3]] == ["Zoom", "Focus", ""]
+
+
 def test_detection_config_masks_enabled_defaults_off() -> None:
     """The masking master switch ships off so drawn masks never restrict
     detection until the operator turns them on."""
@@ -3883,6 +4632,73 @@ def test_load_config_warns_once_per_legacy_marker_key(temp_config_path, caplog, 
     renamed = [r for r in caplog.records if "has been renamed" in r.getMessage()]
     assert len(renamed) == 2
     assert {"drop_line", "drop_line_thickness"} == {r.args[0] for r in renamed}
+
+
+@pytest.mark.parametrize("flag", ["true", '"on"'])
+def test_load_config_reads_the_control_direction_flip_as_heading_180(temp_config_path, flag) -> None:  # noqa: ANN001
+    """The flip was a camera looking downstage, which is a 180-degree heading."""
+    temp_config_path.write_text(f"[marker]\ninvert_control_direction = {flag}\n", encoding="utf-8")
+
+    cfg = load_config(str(temp_config_path))
+
+    assert cfg.marker.control_frame == "heading"
+    assert cfg.marker.control_heading == pytest.approx(180.0)
+
+
+@pytest.mark.parametrize("flag", ["false", '"banana"', "1"])
+def test_load_config_reads_an_unset_control_direction_flip_as_stage_axes(temp_config_path, flag) -> None:  # noqa: ANN001
+    temp_config_path.write_text(f"[marker]\ninvert_control_direction = {flag}\n", encoding="utf-8")
+
+    assert load_config(str(temp_config_path)).marker.control_frame == "stage"
+
+
+def test_load_config_ignores_the_flip_beside_a_control_frame_without_warning(
+    temp_config_path, caplog, monkeypatch
+) -> None:  # noqa: ANN001
+    import openfollow.configuration as configuration
+
+    monkeypatch.setattr(configuration, "_DEPRECATED_WARNED", set())
+    temp_config_path.write_text(
+        '[marker]\ninvert_control_direction = false\ncontrol_frame = "camera"\n', encoding="utf-8"
+    )
+
+    with caplog.at_level("WARNING"):
+        cfg = load_config(str(temp_config_path))
+
+    assert cfg.marker.control_frame == "camera"
+    assert not [r for r in caplog.records if "has been renamed" in r.getMessage()]
+
+
+def test_load_config_prefers_the_control_frame_over_the_flip(temp_config_path) -> None:
+    temp_config_path.write_text(
+        '[marker]\ninvert_control_direction = true\ncontrol_frame = "screen"\n',
+        encoding="utf-8",
+    )
+
+    assert load_config(str(temp_config_path)).marker.control_frame == "screen"
+
+
+def test_load_config_keeps_a_heading_set_beside_the_flip(temp_config_path) -> None:
+    temp_config_path.write_text("[marker]\ninvert_control_direction = true\ncontrol_heading = 90.0\n", encoding="utf-8")
+
+    cfg = load_config(str(temp_config_path))
+
+    assert cfg.marker.control_frame == "heading"
+    assert cfg.marker.control_heading == pytest.approx(90.0)
+
+
+def test_load_config_warns_once_about_the_control_direction_flip(temp_config_path, caplog, monkeypatch) -> None:
+    import openfollow.configuration as configuration
+
+    monkeypatch.setattr(configuration, "_DEPRECATED_WARNED", set())
+    temp_config_path.write_text("[marker]\ninvert_control_direction = false\n", encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        load_config(str(temp_config_path))
+        load_config(str(temp_config_path))
+
+    renamed = [r for r in caplog.records if "has been renamed" in r.getMessage()]
+    assert [(r.args[0], r.args[1]) for r in renamed] == [("invert_control_direction", "control_frame")]
 
 
 def test_load_config_migrates_legacy_otp_source_ip_to_iface(temp_config_path, monkeypatch) -> None:
@@ -4170,6 +4986,11 @@ def test_detection_config_converts_dict_masks_to_dataclasses() -> None:
     assert isinstance(cfg.masks[0], DetectionMaskConfig)
     assert cfg.masks[0].name == "stage"
     assert cfg.masks[0].vertices == [[0.1, 0.1], [0.9, 0.1], [0.5, 0.9]]
+
+
+@pytest.mark.parametrize("masks", [None, "abc", 3, True, {"name": "stage"}])
+def test_detection_config_masks_that_are_not_a_list_read_as_none(masks: object) -> None:
+    assert DetectionConfig(masks=masks).masks == []  # type: ignore[arg-type]
 
 
 def test_detection_config_preserves_already_built_masks() -> None:
@@ -4500,10 +5321,7 @@ def test_save_config_unlinks_temp_file_on_write_error(
     class _BoomError(RuntimeError):
         pass
 
-    def boom_dump(_data, _fp):
-        raise _BoomError("simulated disk failure")
-
-    monkeypatch.setattr(cfg_mod.tomli_w, "dump", boom_dump)
+    _fail_the_first_fsync(monkeypatch, _BoomError("simulated disk failure"))
 
     with pytest.raises(_BoomError):
         cfg_mod.save_config(AppConfig(), str(temp_config_path))
@@ -4520,13 +5338,10 @@ def test_save_config_swallows_unlink_oserror_and_reraises_original(
 ) -> None:
     import openfollow.configuration as cfg_mod
 
-    def boom_dump(_data, _fp):
-        raise RuntimeError("primary failure")
-
     def boom_unlink(_path):
         raise OSError("cleanup also failed")
 
-    monkeypatch.setattr(cfg_mod.tomli_w, "dump", boom_dump)
+    _fail_the_first_fsync(monkeypatch, RuntimeError("primary failure"))
     monkeypatch.setattr(cfg_mod.os, "unlink", boom_unlink)
 
     with pytest.raises(RuntimeError, match="primary failure"):
@@ -4589,7 +5404,7 @@ def test_save_config_fields_refuses_an_empty_file_and_leaves_it(temp_config_path
     it writes leaves one for a moment: the unnamed fields must not become defaults."""
     temp_config_path.write_text(content, encoding="utf-8")
 
-    with pytest.raises(ValueError, match="empty"):
+    with pytest.raises(ConfigFileEmptyError, match="empty"):
         save_config_fields(AppConfig(web_port=8080), str(temp_config_path), ["camera"])
 
     assert temp_config_path.read_text(encoding="utf-8") == content
@@ -4605,7 +5420,7 @@ def test_save_config_fields_decides_on_the_bytes_it_parses(temp_config_path, mon
     temp_config_path.write_text("", encoding="utf-8")
     monkeypatch.setattr(Path, "read_bytes", lambda _self: whole)
 
-    with pytest.raises(ValueError, match="empty"):
+    with pytest.raises(ConfigFileEmptyError, match="empty"):
         save_config_fields(AppConfig(web_port=9090), str(temp_config_path), ["camera"])
 
     monkeypatch.undo()
@@ -4635,7 +5450,7 @@ def test_save_config_fields_writes_whole_a_file_that_vanished_after_an_earlier_c
 def test_load_config_strict_refuses_an_empty_file(temp_config_path, content) -> None:
     temp_config_path.write_text(content, encoding="utf-8")
 
-    with pytest.raises(ValueError, match="empty"):
+    with pytest.raises(ConfigFileEmptyError, match="empty"):
         load_config(str(temp_config_path), strict=True)
     assert load_config(str(temp_config_path)) == AppConfig()
 
@@ -4674,7 +5489,7 @@ def test_save_config_fields_treats_a_file_it_may_not_read_as_unreadable(temp_con
     monkeypatch.setattr(Path, "read_bytes", _read_bytes)
     monkeypatch.setattr(cfg_mod, "open", _open, raising=False)
 
-    with pytest.raises(PermissionError):
+    with pytest.raises(ConfigFileUnreadableError, match="Permission denied"):
         save_config_fields(AppConfig(), target, ["camera"])
     save_config_fields(AppConfig(web_port=9090), target, ["camera"], replace_unreadable=True)
 
@@ -4685,7 +5500,7 @@ def test_save_config_fields_treats_a_file_it_may_not_read_as_unreadable(temp_con
 def test_save_config_fields_leaves_an_unreadable_file_alone(temp_config_path) -> None:
     temp_config_path.write_text("web_port = [unclosed", encoding="utf-8")
 
-    with pytest.raises(tomllib.TOMLDecodeError):
+    with pytest.raises(ConfigFileUnreadableError):
         save_config_fields(AppConfig(), str(temp_config_path), ["camera"])
 
     assert temp_config_path.read_text(encoding="utf-8") == "web_port = [unclosed"
@@ -4696,7 +5511,7 @@ def test_save_config_fields_holds_the_write_lock_across_load_and_save(temp_confi
 
     save_config(AppConfig(), str(temp_config_path))
     held: list[bool] = []
-    real_load, real_save = cfg_mod.load_config, cfg_mod.save_config
+    real_load, real_save = cfg_mod.read_config_whole, cfg_mod.save_config
 
     def _load(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
         held.append(config_write_lock.locked())
@@ -4706,7 +5521,7 @@ def test_save_config_fields_holds_the_write_lock_across_load_and_save(temp_confi
         held.append(config_write_lock.locked())
         real_save(*args, **kwargs)
 
-    monkeypatch.setattr(cfg_mod, "load_config", _load)
+    monkeypatch.setattr(cfg_mod, "read_config_whole", _load)
     monkeypatch.setattr(cfg_mod, "save_config", _save)
 
     save_config_fields(AppConfig(), str(temp_config_path), ["camera"])
@@ -5064,6 +5879,7 @@ def test_apply_runtime_applies_otp_output_change_live() -> None:
     assert app._web_commands.restart_requested is False
 
 
+@pytest.mark.usefixtures("every_feature_on")
 def test_apply_runtime_applies_rttrpm_output_change_live() -> None:
     """RTTRPM output changes apply live without restart."""
     app = _app_with()
@@ -5269,6 +6085,7 @@ def test_apply_runtime_osc_transmitters_failure_reverts_config() -> None:
     assert app._config.viewer_marker_ids == [9]
 
 
+@pytest.mark.usefixtures("every_feature_on")
 def test_apply_runtime_detection_off_to_on_routes_through_swap_detector() -> None:
     """Detection off→on transition routes through swap_detector without restart."""
     # Default config has detection.enabled=False; new config enables it.
@@ -5291,6 +6108,62 @@ def test_apply_runtime_detection_off_to_on_routes_through_swap_detector() -> Non
     assert app._runtime_services.detection_changes == []
 
 
+@pytest.mark.usefixtures("every_feature_on")
+def test_a_detector_that_fails_after_the_swap_returned_reverts_the_stored_config() -> None:
+    """The detector is built off the frame loop: a failure reported later reverts like a raise does."""
+    app = _app_with()
+    app._runtime_services._person_detector = None
+    old_detection = app._config.detection
+    new_det = DetectionConfig(enabled=True, confidence=0.75)
+
+    apply_runtime_config_changes(app, AppConfig(detection=new_det))
+    assert app._config.detection == new_det
+    app._runtime_services.detection_swap_on_failure()
+
+    assert app._config.detection == old_detection
+
+
+@pytest.mark.usefixtures("every_feature_on")
+def test_an_edit_saved_while_a_detector_is_being_built_is_built_rather_than_reloaded() -> None:
+    """The running detector is about to be replaced: an edit staged on it would be lost."""
+    app = _app_with(detection=DetectionConfig(enabled=True, confidence=0.40))
+    app._runtime_services.detector_build_pending = True
+    new_det = DetectionConfig(enabled=True, confidence=0.85)
+
+    apply_runtime_config_changes(app, AppConfig(detection=new_det))
+
+    assert app._runtime_services.detection_swaps == [new_det]
+    assert app._runtime_services.detection_changes == []
+
+
+@pytest.mark.usefixtures("every_feature_on")
+def test_a_detector_swap_that_fails_after_the_reload_is_retried_on_the_next_poll(tmp_path) -> None:
+    import os
+
+    from openfollow.runtime import app_orchestration as orch
+
+    path = str(tmp_path / "config.toml")
+    save_config(AppConfig(), path)
+    os.utime(path, (100.0, 100.0))
+    app = _app_on_file(path)
+    app._runtime_services._person_detector = None
+    app._config_mtime = 100.0
+    app._last_config_check = float("-inf")
+    app._get_config_mtime = lambda: orch.get_config_mtime(app)
+    save_config(AppConfig(detection=DetectionConfig(enabled=True)), path)
+    os.utime(path, (200.0, 200.0))
+
+    orch.check_config_reload(app)
+    app._runtime_services.detection_swap_on_failure()
+    assert app._config.detection.enabled is False
+    app._last_config_check = float("-inf")
+    orch.check_config_reload(app)
+
+    assert [cfg.enabled for cfg in app._runtime_services.detection_swaps] == [True, True]
+    assert app._config.detection.enabled is True
+
+
+@pytest.mark.usefixtures("every_feature_on")
 def test_apply_runtime_applies_detection_change_live_when_already_enabled() -> None:
     """on→on with new cfg: the orchestrator stages the swap on the
     running detector; no process restart."""
@@ -5356,6 +6229,7 @@ def test_apply_runtime_detection_failure_clears_detector_reference_and_reverts()
     assert app._web_commands.restart_requested is False
 
 
+@pytest.mark.usefixtures("every_feature_on")
 def test_apply_runtime_detection_phantom_detector_routes_through_swap_detector() -> None:
     """Phantom detector (unavailable backend) routes through swap_detector."""
     app = _app_with(detection=DetectionConfig(enabled=True, confidence=0.40))
@@ -5371,6 +6245,7 @@ def test_apply_runtime_detection_phantom_detector_routes_through_swap_detector()
     assert app._runtime_services.detection_changes == []
 
 
+@pytest.mark.usefixtures("every_feature_on")
 def test_apply_runtime_detection_no_detector_runnable_routes_through_swap_detector() -> None:
     """Null detector (backend missing at startup) routes through swap_detector."""
     app = _app_with(detection=DetectionConfig(enabled=True, confidence=0.40))
@@ -5385,6 +6260,7 @@ def test_apply_runtime_detection_no_detector_runnable_routes_through_swap_detect
     assert app._runtime_services.detection_changes == []
 
 
+@pytest.mark.usefixtures("every_feature_on")
 def test_apply_runtime_detection_inference_size_change_routes_through_swap_detector() -> None:
     """Inference size changes apply live via swap_detector."""
     app = _app_with(
@@ -5400,11 +6276,12 @@ def test_apply_runtime_detection_inference_size_change_routes_through_swap_detec
     assert app._runtime_services.detection_changes == []
 
 
+@pytest.mark.usefixtures("every_feature_on")
 def test_apply_runtime_detection_swap_failure_reverts_stored_config() -> None:
     """swap_detector failure reverts config for retry."""
 
     class _FailingRuntimeServices(_DummyRuntimeServices):
-        def swap_detector(self, new_cfg: DetectionConfig) -> None:
+        def swap_detector(self, new_cfg: DetectionConfig, on_failure: Callable[[], None] | None = None) -> None:
             raise OSError("simulated swap_detector failure")
 
     app = _app_with()
@@ -6017,6 +6894,61 @@ class TestNetworkConfig:
         )
         cfg = load_config(str(temp_config_path))
         assert cfg.network.backend == "psutil"
+
+
+class TestDisplayConfig:
+    """The Operator Screen override, set by hand in config.toml."""
+
+    def test_default_is_auto(self) -> None:
+        from openfollow.configuration import AppConfig
+
+        assert AppConfig().display.operator_screen == "auto"
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [("auto", "auto"), ("cairo", "cairo"), ("  Cairo ", "cairo"), ("AUTO", "auto")],
+        ids=["auto", "cairo", "padded-mixed-case", "upper-case"],
+    )
+    def test_a_known_choice_is_kept_normalised(self, value: str, expected: str) -> None:
+        from openfollow.configuration import DisplayConfig
+
+        assert DisplayConfig(operator_screen=value).operator_screen == expected
+
+    @pytest.mark.parametrize("value", ["gl", "", "opengl"], ids=["gl", "empty", "unknown"])
+    def test_an_unknown_choice_is_auto(self, value: str) -> None:
+        from openfollow.configuration import DisplayConfig
+
+        assert DisplayConfig(operator_screen=value).operator_screen == "auto"
+
+    @pytest.mark.parametrize("value", [None, 1, True, ["cairo"]], ids=["none", "int", "bool", "list"])
+    def test_a_wrong_type_is_auto(self, value: object) -> None:
+        from openfollow.configuration import DisplayConfig
+
+        assert DisplayConfig(operator_screen=value).operator_screen == "auto"  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        ("toml", "expected"),
+        [
+            ('[display]\noperator_screen = "cairo"\n', "cairo"),
+            ("[display]\noperator_screen = 3\n", "auto"),
+            ('[display]\noperator_screen = "metal"\n', "auto"),
+            ("", "auto"),
+        ],
+        ids=["cairo", "wrong-type", "unknown", "no-section"],
+    )
+    def test_a_hand_edited_file_is_read_and_normalised(self, temp_config_path, toml: str, expected: str) -> None:
+        temp_config_path.write_text(toml, encoding="utf-8")
+
+        assert load_config(str(temp_config_path)).display.operator_screen == expected
+
+    def test_the_choice_survives_a_save(self, temp_config_path) -> None:
+        from openfollow.configuration import AppConfig
+
+        cfg = AppConfig()
+        cfg.display.operator_screen = "cairo"
+        save_config(cfg, str(temp_config_path))
+
+        assert load_config(str(temp_config_path)).display.operator_screen == "cairo"
 
 
 # _apply_with_fallback transactional helper tests
@@ -7397,47 +8329,128 @@ class TestUiConfig:
         )
         assert load_config(str(temp_config_path)).ui.unit_system == "imperial"
 
-    # show_experimental_features opt-in.
-    def test_show_experimental_default_is_false(self) -> None:
+    # The Features list.
+    def test_shown_features_default_is_every_non_experimental_feature(self) -> None:
+        from openfollow.configuration import EXPERIMENTAL_FEATURES, FEATURE_KEYS, UiConfig
+
+        assert UiConfig().shown_features == [key for key in FEATURE_KEYS if key not in EXPERIMENTAL_FEATURES]
+        assert UiConfig().shown_features == ["zones", "midi", "psn_input"]
+
+    def test_lens_line_suggestions_are_experimental_and_offered(self) -> None:
+        from openfollow.configuration import EXPERIMENTAL_FEATURES, OFFERED_FEATURES, UiConfig
+
+        assert "lens_suggestions" in EXPERIMENTAL_FEATURES and "lens_suggestions" in OFFERED_FEATURES
+        assert not UiConfig().feature_on("lens_suggestions")
+        assert UiConfig(shown_features=["lens_suggestions"]).feature_on("lens_suggestions")
+
+    def test_shown_features_drops_an_unknown_key_on_load_and_the_lens_applies(self, temp_config_path) -> None:  # noqa: ANN001
+        from openfollow.configuration import effective_lens, load_config
+
+        temp_config_path.write_text(
+            "[camera]\nlens_k1 = -0.2\nlens_k2 = 0.05\nlens_cx = 0.03\nlens_cy = -0.01\n"
+            '[ui]\nshown_features = ["zones", "lens_distortion", "psn_input"]\n'
+        )
+        loaded = load_config(str(temp_config_path))
+        assert loaded.ui.shown_features == ["zones", "psn_input"]
+        assert effective_lens(loaded) == (-0.2, 0.05, 0.03, -0.01)
+
+    def test_shown_features_keeps_known_keys_in_list_order(self) -> None:
         from openfollow.configuration import UiConfig
 
-        assert UiConfig().show_experimental_features is False
+        ui = UiConfig(shown_features=["touch_remote", "zones", "detection"])
+        assert ui.shown_features == ["zones", "detection", "touch_remote"]
+        assert ui.feature_on("detection")
+        assert not ui.feature_on("midi")
+
+    def test_shown_features_empty_list_turns_everything_off(self) -> None:
+        from openfollow.configuration import FEATURE_KEYS, UiConfig
+
+        ui = UiConfig(shown_features=[])
+        assert ui.shown_features == []
+        assert not any(ui.feature_on(key) for key in FEATURE_KEYS)
+
+    @pytest.mark.parametrize("value", [None, "abc", "zones", True, 42, {"zones": True}])
+    def test_shown_features_wrong_type_falls_back_to_default(self, value) -> None:  # noqa: ANN001
+        from openfollow.configuration import DEFAULT_SHOWN_FEATURES, UiConfig
+
+        assert UiConfig(shown_features=value).shown_features == list(DEFAULT_SHOWN_FEATURES)  # type: ignore[arg-type]
 
     @pytest.mark.parametrize(
-        "value,expected",
+        "entries,expected",
         [
-            (True, True),
-            (False, False),
-            ("true", True),
-            ("on", True),
-            ("1", True),
-            ("false", False),
-            ("off", False),
-            ("0", False),
-            # Unrecognised / wrong-type input falls back to the default (False).
-            ("maybe", False),
-            (42, False),
-            (None, False),
+            (["zones", "warp_drive"], ["zones"]),
+            (["zones", "zones", "midi"], ["zones", "midi"]),
+            (["zones", None, 3, True, ["midi"]], ["zones"]),
+            ([" Zones ", "MIDI"], ["zones", "midi"]),
         ],
     )
-    def test_show_experimental_coercion(self, value, expected) -> None:  # noqa: ANN001
+    def test_shown_features_drops_unknown_duplicate_and_non_string_entries(self, entries, expected) -> None:  # noqa: ANN001
         from openfollow.configuration import UiConfig
 
-        assert UiConfig(show_experimental_features=value).show_experimental_features is expected  # type: ignore[arg-type]
+        assert UiConfig(shown_features=entries).shown_features == expected
 
-    def test_show_experimental_toml_round_trip(self, temp_config_path) -> None:  # noqa: ANN001
-        from openfollow.configuration import (
-            AppConfig,
-            UiConfig,
-            load_config,
-            save_config,
-        )
+    def test_shown_features_toml_round_trip(self, temp_config_path) -> None:  # noqa: ANN001
+        from openfollow.configuration import AppConfig, UiConfig, load_config, save_config
 
-        save_config(
-            AppConfig(ui=UiConfig(show_experimental_features=True)),
-            str(temp_config_path),
+        save_config(AppConfig(ui=UiConfig(shown_features=["paths", "midi"])), str(temp_config_path))
+        assert load_config(str(temp_config_path)).ui.shown_features == ["midi", "paths"]
+
+    def test_shown_features_missing_from_toml_reads_the_default(self, temp_config_path) -> None:  # noqa: ANN001
+        from openfollow.configuration import DEFAULT_SHOWN_FEATURES, load_config
+
+        temp_config_path.write_text('[ui]\nunit_system = "metric"\n')
+        assert load_config(str(temp_config_path)).ui.shown_features == list(DEFAULT_SHOWN_FEATURES)
+
+    @pytest.mark.parametrize(
+        "ui_toml,expected",
+        [
+            ("show_experimental_features = true\n", "all"),
+            ('show_experimental_features = "on"\n', "all"),
+            ("show_experimental_features = false\n", "default"),
+            ('show_experimental_features = "maybe"\n', "default"),
+            ('unit_system = "metric"\n', "default"),
+            ('show_experimental_features = true\nshown_features = ["midi"]\n', ["midi"]),
+            ('show_experimental_features = false\nshown_features = ["paths"]\n', ["paths"]),
+        ],
+    )
+    def test_show_experimental_features_migrates_on_load(self, temp_config_path, ui_toml, expected) -> None:  # noqa: ANN001
+        from openfollow.configuration import DEFAULT_SHOWN_FEATURES, OFFERED_FEATURES, load_config, save_config
+
+        temp_config_path.write_text("[ui]\n" + ui_toml)
+        loaded = load_config(str(temp_config_path))
+        want = (
+            {"all": list(OFFERED_FEATURES), "default": list(DEFAULT_SHOWN_FEATURES)}.get(expected)
+            if isinstance(expected, str)
+            else expected
         )
-        assert load_config(str(temp_config_path)).ui.show_experimental_features is True
+        assert loaded.ui.shown_features == want
+        save_config(loaded, str(temp_config_path))
+        assert "show_experimental_features" not in temp_config_path.read_text()
+
+    @pytest.mark.parametrize("features_on", [["zones", "detection", "paths"], ["detection", "paths", "ground_grid"]])
+    def test_feature_on_reads_the_list(self, features_on) -> None:  # noqa: ANN001
+        from openfollow.configuration import AppConfig, UiConfig, feature_on
+
+        cfg = AppConfig(ui=UiConfig(shown_features=features_on))
+        for key in features_on:
+            assert feature_on(cfg, key)
+        assert feature_on(cfg, "midi") is False
+
+    def test_feature_on_without_a_ui_section_reads_the_defaults(self) -> None:
+        from types import SimpleNamespace
+
+        from openfollow.configuration import feature_on
+
+        assert feature_on(SimpleNamespace(), "zones")
+        assert not feature_on(SimpleNamespace(), "paths")
+
+    @pytest.mark.parametrize("shown", [[], ["zones"], list(FEATURE_KEYS)], ids=["none", "one", "all"])
+    def test_effective_lens_is_the_cameras_whatever_the_features(self, shown) -> None:  # noqa: ANN001
+        from openfollow.configuration import AppConfig, CameraConfig, UiConfig, effective_lens
+
+        camera = CameraConfig(lens_k1=0.12, lens_k2=-0.03, lens_cx=0.04, lens_cy=-0.02)
+        cfg = AppConfig(camera=camera, ui=UiConfig(shown_features=shown))
+        assert effective_lens(cfg) == (0.12, -0.03, 0.04, -0.02)
 
     # developer_mode: config-only, shows the developer's views in the web UI.
     def test_developer_mode_default_is_false(self) -> None:
@@ -7469,7 +8482,7 @@ class TestUiConfig:
         save_config(AppConfig(ui=UiConfig(developer_mode=True)), str(temp_config_path))
         loaded = load_config(str(temp_config_path))
         assert loaded.ui.developer_mode is True
-        assert loaded.ui.show_experimental_features is False
+        assert loaded.ui.shown_features == ["zones", "midi", "psn_input"]
 
 
 class TestTriggerZonesConfigDropsNonObjectZones:
@@ -7956,11 +8969,11 @@ class TestPathsHotReload:
         return app
 
     @staticmethod
-    def _config(*, experimental: bool, active: bool = True) -> AppConfig:
+    def _config(*, paths_on: bool, active: bool = True) -> AppConfig:
         from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig
 
         cfg = AppConfig()
-        cfg.ui.show_experimental_features = experimental
+        cfg.ui.shown_features = ["paths"] if paths_on else []
         cfg.paths = PathsConfig(
             paths=[PathConfig(name="cross", active=active, points=[PathPointConfig(0, 0, 0), PathPointConfig(1, 0, 0)])]
         )
@@ -7968,23 +8981,31 @@ class TestPathsHotReload:
 
     def test_new_paths_reach_the_engine(self) -> None:
         app = self._app()
-        apply_runtime_config_changes(app, self._config(experimental=True))
+        apply_runtime_config_changes(app, self._config(paths_on=True))
         assert app._paths.enabled
         assert app._paths.lock_onto(1, "cross", (0.5, 0.5, 0.0))
 
-    def test_switching_experimental_features_off_releases_everyone(self) -> None:
+    def test_switching_paths_off_releases_everyone(self) -> None:
         app = self._app()
-        apply_runtime_config_changes(app, self._config(experimental=True))
+        apply_runtime_config_changes(app, self._config(paths_on=True))
         app._paths.press(1, (0.5, 0.5, 0.0))
-        apply_runtime_config_changes(app, self._config(experimental=False))
+        apply_runtime_config_changes(app, self._config(paths_on=False))
         assert not app._paths.enabled
         assert not app._paths.is_locked(1)
 
+    def test_switching_paths_off_and_on_keeps_each_path_active(self) -> None:
+        app = self._app()
+        apply_runtime_config_changes(app, self._config(paths_on=True))
+        apply_runtime_config_changes(app, self._config(paths_on=False))
+        assert [(p.name, p.active) for p in app._config.paths.paths] == [("cross", True)]
+        apply_runtime_config_changes(app, self._config(paths_on=True))
+        assert app._paths.lock_onto(1, "cross", (0.5, 0.5, 0.0))
+
     def test_an_unrelated_change_keeps_the_locks(self) -> None:
         app = self._app()
-        apply_runtime_config_changes(app, self._config(experimental=True))
+        apply_runtime_config_changes(app, self._config(paths_on=True))
         app._paths.press(1, (0.5, 0.5, 0.0))
-        changed = self._config(experimental=True)
+        changed = self._config(paths_on=True)
         changed.grid.width = 12.0
         apply_runtime_config_changes(app, changed)
         assert app._paths.is_locked(1)
@@ -8281,35 +9302,90 @@ def test_a_video_pin_simple_cleared_reaches_the_running_config_without_a_rebuild
 
 
 # ---------------------------------------------------------------------------
-# CameraConfig.calibration_points – laser-measured far points for the Setup Wizard
+# CameraConfig.calibration_mode / calibration_marks – the Setup Wizard's last calibration
 # ---------------------------------------------------------------------------
 
-_GOOD_POINT = {
-    "corner_a": "DSL",
-    "corner_b": "DSR",
+_DSL = {"id": 1, "kind": "known", "x": 5.0, "y": 0.0, "z": 0.0, "pin": [0.81, 0.94]}
+_DSR = {"id": 2, "kind": "known", "x": -5.0, "y": 0.0, "z": 0.0, "pin": [0.14, 0.95]}
+_FAR = {
+    "id": 3,
+    "kind": "triangulated",
+    "from_a": 1,
+    "from_b": 2,
     "distance_a": 21.4,
     "distance_b": 23.9,
-    "height": 0.0,
-    "pin_x": 0.41,
-    "pin_y": 0.22,
+    "z": 1.2,
+    "pin": [0.41, 0.22],
 }
 
 
-def _with(**changes: object) -> dict[str, object]:
-    return {**_GOOD_POINT, **changes}
+def _mark(base: dict[str, object], **changes: object) -> dict[str, object]:
+    return {**base, **changes}
 
 
-def test_calibration_points_survive_a_toml_round_trip(tmp_path) -> None:
-    path = tmp_path / "config.toml"
-    points = [_with(position=[2.5, 9.0, 0.0]), _with(corner_a="USL", distance_a=30.5, height=1.2)]
-    save_config(AppConfig(camera=CameraConfig(calibration_points=points)), path)
-    loaded = load_config(path).camera.calibration_points
-    assert [
-        (p.corner_a, p.corner_b, p.distance_a, p.distance_b, p.height, p.pin_x, p.pin_y, p.position) for p in loaded
-    ] == [
-        ("DSL", "DSR", 21.4, 23.9, 0.0, 0.41, 0.22, [2.5, 9.0, 0.0]),
-        ("USL", "DSR", 30.5, 23.9, 1.2, 0.41, 0.22, []),
-    ]
+def _marks(*entries: object, mode: str = "advanced") -> list:
+    return CameraConfig(calibration_mode=mode, calibration_marks=list(entries)).calibration_marks  # type: ignore[arg-type]
+
+
+@pytest.fixture
+def fresh_drop_reports(monkeypatch: pytest.MonkeyPatch) -> None:
+    import openfollow.configuration as cfg_mod
+
+    monkeypatch.setattr(cfg_mod, "_reported_drops", {})
+
+
+def _drop_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.getMessage().startswith("camera.calibration_marks")]
+
+
+def test_a_camera_starts_in_simple_without_marks_and_says_nothing(caplog, fresh_drop_reports) -> None:
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        camera = CameraConfig()
+        assert CameraConfig(calibration_marks=[]).calibration_marks == []
+    assert (camera.calibration_mode, camera.calibration_marks) == ("simple", [])
+    assert caplog.records == []
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("simple", "simple"), ("advanced", "advanced")])
+def test_calibration_mode_keeps_a_known_mode(raw: str, expected: str) -> None:
+    assert CameraConfig(calibration_mode=raw).calibration_mode == expected
+
+
+@pytest.mark.parametrize("raw", ["Advanced", "expert", "", None, 1, True, ["advanced"]])
+def test_calibration_mode_off_the_list_reads_as_simple(raw: object) -> None:
+    assert CameraConfig(calibration_mode=raw).calibration_mode == "simple"  # type: ignore[arg-type]
+
+
+def test_a_known_mark_keeps_its_coordinates_and_pin_and_nothing_it_does_not_read() -> None:
+    (mark,) = _marks(
+        _mark(_DSL, x="5", y=-2, z="0.5", from_a=2, from_b=3, distance_a=4.0, position=[1.0, 2.0, 3.0], fit=9)
+    )
+    assert (mark.id, mark.name, mark.kind, mark.x, mark.y, mark.z) == (1, "P1", "known", 5.0, -2.0, 0.5)
+    assert (mark.from_a, mark.from_b, mark.distance_a, mark.distance_b) == (0, 0, 0.0, 0.0)
+    assert (mark.pin, mark.position) == ([0.81, 0.94], [])
+
+
+def test_a_triangulated_mark_keeps_its_measurements_and_nothing_it_does_not_read() -> None:
+    (_, _, mark) = _marks(_DSL, _DSR, _mark(_FAR, x=4.0, y=7.0, distance_a="21.4", position=[2.5, 9, 1.2]))
+    assert (mark.id, mark.kind, mark.x, mark.y, mark.z) == (3, "triangulated", 0.0, 0.0, 1.2)
+    assert (mark.from_a, mark.from_b, mark.distance_a, mark.distance_b) == (1, 2, 21.4, 23.9)
+    assert (mark.pin, mark.position) == ([0.41, 0.22], [2.5, 9.0, 1.2])
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("  Reference Point  ", "Reference Point"),
+        ("x" * 70, "x" * 60),
+        ("", "P1"),
+        ("   ", "P1"),
+        (None, "P1"),
+        (42, "P1"),
+    ],
+)
+def test_a_mark_name_is_trimmed_capped_and_defaults_to_its_number(raw: object, expected: str) -> None:
+    (mark,) = _marks(_mark(_DSL, name=raw))
+    assert mark.name == expected
 
 
 @pytest.mark.parametrize(
@@ -8327,211 +9403,377 @@ def test_calibration_points_survive_a_toml_round_trip(tmp_path) -> None:
         ([2.5, float("inf"), 0.0], []),
         ("2.5, 9, 0", []),
         (None, []),
-        ({"x": 1}, []),
+        ([10_000.5, 9.0, 0.0], []),
+        ([2.5, -10_000.5, 0.0], []),
+        ([10_000.0, -10_000.0, 10_000.0], [10_000.0, -10_000.0, 10_000.0]),
     ],
 )
-def test_a_calibration_point_position_is_three_numbers_or_none(raw: object, expected: list[float]) -> None:
-    (point,) = CameraConfig(calibration_points=[_with(position=raw)]).calibration_points
-    assert point.position == expected
-    assert point.distance_a == 21.4
-
-
-def test_calibration_points_default_to_none() -> None:
-    assert CameraConfig().calibration_points == []
-
-
-@pytest.mark.parametrize(
-    "bad",
-    [
-        _with(corner_a="DSR"),  # the same corner twice
-        _with(corner_a="FOH"),
-        _with(corner_b=None),
-        _with(distance_a=0.0),
-        _with(distance_b=-3.0),
-        _with(distance_a=200.5),
-        _with(distance_a="abc"),
-        _with(distance_b=None),
-        _with(distance_a=True),
-        _with(distance_a=float("inf")),
-        _with(height=10.5),
-        _with(height=-11.0),
-        _with(height="abc"),
-        _with(height=None),
-        _with(height=True),
-        _with(pin_x=-0.2),
-        _with(pin_y=1.3),
-        _with(pin_x="abc"),
-        _with(pin_y=None),
-        _with(pin_x=True),
-        "DSL DSR 21.4 23.9",
-        42,
-    ],
-)
-def test_a_calibration_point_that_cannot_be_used_is_dropped_never_clamped(bad: object) -> None:
-    """A measurement that is wrong is not a measurement nearby: clamping would invent one."""
-    points = CameraConfig(calibration_points=[bad, _GOOD_POINT]).calibration_points  # type: ignore[list-item]
-    assert [(p.distance_a, p.distance_b) for p in points] == [(21.4, 23.9)]
-
-
-@pytest.mark.parametrize(("height", "pin"), [(-10.0, 0.0), (2.5, 1.0), ("2.5", "0.5"), (10, 0)])
-def test_a_calibration_point_keeps_a_height_and_pin_in_range(height: object, pin: object) -> None:
-    (point,) = CameraConfig(calibration_points=[_with(height=height, pin_x=pin, pin_y=pin)]).calibration_points
-    assert (point.height, point.pin_x, point.pin_y) == (float(height), float(pin), float(pin))  # type: ignore[arg-type]
-
-
-def test_a_calibration_point_without_a_height_is_at_stage_level() -> None:
-    entry = {k: v for k, v in _GOOD_POINT.items() if k != "height"}
-    (point,) = CameraConfig(calibration_points=[entry]).calibration_points
-    assert point.height == 0.0
-
-
-def test_a_dropped_calibration_point_is_reported_once_not_on_every_load(caplog, monkeypatch) -> None:
-    """Every web request loads the config again; one bad entry must not repeat its warning each time."""
-    import openfollow.configuration as cfg_mod
-
-    monkeypatch.setattr(cfg_mod, "_reported_drops", {})
-    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
-        for _ in range(3):
-            CameraConfig(calibration_points=[_with(distance_a=250.0), _GOOD_POINT])
-    assert [r.getMessage() for r in caplog.records] == [
-        "camera.calibration_points: entry 1 needs both distances between 0 and 200 m; dropped"
-    ]
-    # Another file's drops are reported in turn; what is remembered is only the last report.
-    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
-        CameraConfig(calibration_points=[_with(height=11.0)])
-    assert caplog.records[-1].getMessage().startswith("camera.calibration_points: entry 1 needs a height")
-    assert cfg_mod._reported_drops == {"camera.calibration_points": "entry 1 needs a height within 10 m of stage level"}
-
-
-def test_a_camera_built_without_points_between_loads_does_not_repeat_the_warning(caplog, monkeypatch) -> None:
-    """The frame loop builds a bare CameraConfig every frame (``Camera.to_config``); it is no new file."""
-    import openfollow.configuration as cfg_mod
-
-    monkeypatch.setattr(cfg_mod, "_reported_drops", {})
-    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
-        for _ in range(3):
-            CameraConfig(calibration_points=[_with(distance_a=250.0)], corner_pins=[[0.1, 0.2]])
-            CameraConfig()
-    assert len(caplog.records) == 2
-
-
-def test_many_unusable_calibration_points_are_reported_in_one_line(caplog, monkeypatch) -> None:
-    import openfollow.configuration as cfg_mod
-
-    monkeypatch.setattr(cfg_mod, "_reported_drops", {})
-    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
-        kept = CameraConfig(calibration_points=[1] * 1000 + [_GOOD_POINT] * 7).calibration_points
-    assert len(kept) == 6
-    assert [r.getMessage() for r in caplog.records] == [
-        "camera.calibration_points: entry 1 is not a table; entry 2 is not a table; entry 3 is not a table;"
-        " 998 more; dropped"
-    ]
-
-
-def test_calibration_points_keep_the_first_six() -> None:
-    points = [_with(distance_a=20.0 + i) for i in range(8)]
-    kept = CameraConfig(calibration_points=points).calibration_points
-    assert [p.distance_a for p in kept] == [20.0, 21.0, 22.0, 23.0, 24.0, 25.0]
-
-
-@pytest.mark.parametrize("raw", ["DSL", 3, None, {"corner_a": "DSL"}])
-def test_calibration_points_that_are_not_a_list_read_as_none_and_say_so(raw: object, caplog, monkeypatch) -> None:
-    """``[camera.calibration_points]`` (one table) where ``[[...]]`` was meant must not vanish unseen."""
-    import openfollow.configuration as cfg_mod
-
-    monkeypatch.setattr(cfg_mod, "_reported_drops", {})
-    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
-        assert CameraConfig(calibration_points=raw).calibration_points == []  # type: ignore[arg-type]
-    assert [r.getMessage() for r in caplog.records] == ["camera.calibration_points: is not a list of tables; dropped"]
-
-
-def test_unknown_keys_in_a_calibration_point_are_ignored() -> None:
-    (point,) = CameraConfig(calibration_points=[_with(fit=1.4)]).calibration_points
-    assert point.distance_a == 21.4
-
-
-@pytest.mark.parametrize("missing", ["corner_a", "corner_b", "pin_x", "pin_y"])
-def test_a_calibration_point_missing_a_corner_or_its_pin_is_dropped_not_invented(missing, caplog, monkeypatch) -> None:
-    """Filled in as DSL / DSR or the snapshot centre, it would be solved with a mark nobody chose."""
-    import openfollow.configuration as cfg_mod
-
-    monkeypatch.setattr(cfg_mod, "_reported_drops", {})
-    entry = {k: v for k, v in _GOOD_POINT.items() if k != missing}
-    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
-        points = CameraConfig(calibration_points=[entry, _GOOD_POINT]).calibration_points
-    assert [(p.corner_a, p.pin_x) for p in points] == [("DSL", 0.41)]
-    reason = "needs its pin on the snapshot" if missing.startswith("pin") else "needs two different grid corners"
-    assert [r.getMessage() for r in caplog.records] == [f"camera.calibration_points: entry 1 {reason}; dropped"]
-
-
-# ---------------------------------------------------------------------------
-# CameraConfig.corner_pins – the Setup Wizard's corner pins, kept with the pose
-# ---------------------------------------------------------------------------
-
-_PINS = [[0.81, 0.94], [0.14, 0.95], [0.37, 0.61], [0.66, 0.6]]
-
-
-def test_corner_pins_default_to_none_and_say_nothing(caplog, monkeypatch) -> None:
-    import openfollow.configuration as cfg_mod
-
-    monkeypatch.setattr(cfg_mod, "_reported_drops", {})
-    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
-        assert CameraConfig().corner_pins == []
-        assert CameraConfig(corner_pins=[]).corner_pins == []
-    assert caplog.records == []
-
-
-def test_corner_pins_survive_a_toml_round_trip(tmp_path) -> None:
-    path = tmp_path / "config.toml"
-    pins = [[1.2, 0.94], [-0.3, 0.95], [0.37, 0.61], [0.66, 0.6]]  # a corner may sit off the snapshot
-    save_config(AppConfig(camera=CameraConfig(corner_pins=pins)), path)
-    assert load_config(path).camera.corner_pins == pins
+def test_a_triangulated_mark_position_is_three_numbers_or_none(raw: object, expected: list[float]) -> None:
+    (*_, mark) = _marks(_DSL, _DSR, _mark(_FAR, position=raw))
+    assert mark.position == expected
 
 
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        (_PINS, _PINS),
-        ([tuple(p) for p in _PINS], _PINS),
-        ([["0.81", "0.94"], *_PINS[1:]], _PINS),
-        ([[1, 0], *_PINS[1:]], [[1.0, 0.0], *_PINS[1:]]),
-        ([[10.0, -10.0], *_PINS[1:]], [[10.0, -10.0], *_PINS[1:]]),
+        ([0.0, 1.0], [0.0, 1.0]),
+        (("0.5", "0.25"), [0.5, 0.25]),
         ([], []),
+        (None, []),
     ],
 )
-def test_corner_pins_keep_four_pairs_of_numbers(raw: object, expected: list) -> None:
-    assert CameraConfig(corner_pins=raw).corner_pins == expected  # type: ignore[arg-type]
+def test_a_known_mark_pin_is_two_numbers_or_not_pinned(raw: object, expected: list[float]) -> None:
+    """A known mark need not be pinned: it may sit outside the picture."""
+    (mark,) = _marks(_mark(_DSL, pin=raw))
+    assert mark.pin == expected
+
+
+_UNUSABLE_MARKS = {
+    "id none": (_mark(_DSL, id=None), "needs an id between 1 and 999"),
+    "id text": (_mark(_DSL, id="abc"), "needs an id between 1 and 999"),
+    "id bool": (_mark(_DSL, id=True), "needs an id between 1 and 999"),
+    "id zero": (_mark(_DSL, id=0), "needs an id between 1 and 999"),
+    "id negative": (_mark(_DSL, id=-1), "needs an id between 1 and 999"),
+    "id fraction": (_mark(_DSL, id=1.5), "needs an id between 1 and 999"),
+    "id past 999": (_mark(_DSL, id=1000), "needs an id between 1 and 999"),
+    "id huge": (_mark(_DSL, id=1e300), "needs an id between 1 and 999"),
+    "kind none": (_mark(_DSL, kind=None), "needs a kind of known or triangulated"),
+    "kind bool": (_mark(_DSL, kind=True), "needs a kind of known or triangulated"),
+    "kind off the list": (_mark(_DSL, kind="laser"), "needs a kind of known or triangulated"),
+    "kind in capitals": (_mark(_DSL, kind="Known"), "needs a kind of known or triangulated"),
+    "x none": (_mark(_DSL, x=None), "needs its X and Y"),
+    "x text": (_mark(_DSL, x="abc"), "needs its X and Y"),
+    "x bool": (_mark(_DSL, x=True), "needs its X and Y"),
+    "x inf": (_mark(_DSL, x=float("inf")), "needs its X and Y"),
+    "x out of reach": (_mark(_DSL, x=10_000.5), "needs its X and Y"),
+    "x out of reach stage right": (_mark(_DSL, x=-10_000.5), "needs its X and Y"),
+    "y none": (_mark(_DSL, y=None), "needs its X and Y"),
+    "y text": (_mark(_DSL, y="abc"), "needs its X and Y"),
+    "y bool": (_mark(_DSL, y=False), "needs its X and Y"),
+    "y out of reach": (_mark(_DSL, y=-10_000.5), "needs its X and Y"),
+    "z none": (_mark(_DSL, z=None), "needs its Z"),
+    "z text": (_mark(_DSL, z="abc"), "needs its Z"),
+    "z bool": (_mark(_DSL, z=True), "needs its Z"),
+    "z out of reach": (_mark(_DSL, z=10_000.5), "needs its Z"),
+    "pin left of the snapshot": (_mark(_DSL, pin=[-0.01, 0.5]), "needs its pin on the snapshot"),
+    "pin below the snapshot": (_mark(_DSL, pin=[0.5, 1.01]), "needs its pin on the snapshot"),
+    "pin of one number": (_mark(_DSL, pin=[0.5]), "needs its pin on the snapshot"),
+    "pin of three numbers": (_mark(_DSL, pin=[0.5, 0.5, 0.5]), "needs its pin on the snapshot"),
+    "pin with a bool": (_mark(_DSL, pin=[True, 0.5]), "needs its pin on the snapshot"),
+    "pin with none": (_mark(_DSL, pin=[None, 0.5]), "needs its pin on the snapshot"),
+    "pin with text": (_mark(_DSL, pin=["abc", 0.5]), "needs its pin on the snapshot"),
+    "pin with nan": (_mark(_DSL, pin=[float("nan"), 0.5]), "needs its pin on the snapshot"),
+    "pin text": (_mark(_DSL, pin="abc"), "needs its pin on the snapshot"),
+    "pin a number": (_mark(_DSL, pin=0.5), "needs its pin on the snapshot"),
+    "pin a bool": (_mark(_DSL, pin=True), "needs its pin on the snapshot"),
+    "not a table": ("DSL 5 0 0", "is not a table"),
+    "a number": (42, "is not a table"),
+}
+
+
+@pytest.mark.parametrize(("bad", "reason"), list(_UNUSABLE_MARKS.values()), ids=list(_UNUSABLE_MARKS))
+def test_a_known_mark_that_cannot_be_used_is_dropped_never_clamped(bad, reason, caplog, fresh_drop_reports) -> None:
+    """A wrong measurement is not a measurement nearby: clamping would invent one."""
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        marks = _marks(bad, _mark(_DSR, id=7))
+    assert [m.id for m in marks] == [7]
+    assert _drop_warnings(caplog) == [f"camera.calibration_marks: entry 1 {reason}; dropped"]
+
+
+_UNUSABLE_TRIANGULATED = {
+    "from_a none": (_mark(_FAR, from_a=None), "needs two other marks to be measured from"),
+    "from_a text": (_mark(_FAR, from_a="abc"), "needs two other marks to be measured from"),
+    "from_a bool": (_mark(_FAR, from_a=True), "needs two other marks to be measured from"),
+    "from_b missing": ({k: v for k, v in _FAR.items() if k != "from_b"}, "needs two other marks to be measured from"),
+    "from itself": (_mark(_FAR, from_a=3), "needs two other marks to be measured from"),
+    "from one mark twice": (_mark(_FAR, from_b=1), "needs two other marks to be measured from"),
+    "distance_a none": (_mark(_FAR, distance_a=None), "needs both distances between 0 and 200 m"),
+    "distance_a text": (_mark(_FAR, distance_a="abc"), "needs both distances between 0 and 200 m"),
+    "distance_a bool": (_mark(_FAR, distance_a=True), "needs both distances between 0 and 200 m"),
+    "distance_a zero": (_mark(_FAR, distance_a=0.0), "needs both distances between 0 and 200 m"),
+    "distance_b zero": (_mark(_FAR, distance_b=0.0), "needs both distances between 0 and 200 m"),
+    "distance_b negative": (_mark(_FAR, distance_b=-3.0), "needs both distances between 0 and 200 m"),
+    "distance_a past 200 m": (_mark(_FAR, distance_a=200.5), "needs both distances between 0 and 200 m"),
+    "distance_b inf": (_mark(_FAR, distance_b=float("inf")), "needs both distances between 0 and 200 m"),
+    "z none": (_mark(_FAR, z=None), "needs its Z"),
+    "z out of reach": (_mark(_FAR, z=-10_000.5), "needs its Z"),
+    "not pinned": (_mark(_FAR, pin=[]), "needs its pin: two distances allow two places"),
+    "pin malformed": (_mark(_FAR, pin=[0.4]), "needs its pin: two distances allow two places"),
+    "pin off the snapshot": (_mark(_FAR, pin=[1.2, 0.2]), "needs its pin on the snapshot"),
+}
+
+
+@pytest.mark.parametrize(("bad", "reason"), list(_UNUSABLE_TRIANGULATED.values()), ids=list(_UNUSABLE_TRIANGULATED))
+def test_a_triangulated_mark_that_cannot_be_used_is_dropped_never_clamped(
+    bad, reason, caplog, fresh_drop_reports
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        marks = _marks(_DSL, _DSR, bad)
+    assert [m.id for m in marks] == [1, 2]
+    assert _drop_warnings(caplog) == [f"camera.calibration_marks: entry 3 {reason}; dropped"]
 
 
 @pytest.mark.parametrize(
-    "raw",
+    "edge",
     [
-        "0.8, 0.9",
-        3,
-        None,
-        {"DSL": [0.81, 0.94]},
-        _PINS[:3],
-        [*_PINS, [0.5, 0.5]],
-        [[0.81], *_PINS[1:]],
-        [[0.81, 0.94, 0.1], *_PINS[1:]],
-        ["0.81, 0.94", *_PINS[1:]],
-        [[0.81, "x"], *_PINS[1:]],
-        [[True, 0.94], *_PINS[1:]],
-        [[None, 0.94], *_PINS[1:]],
-        [[float("nan"), 0.94], *_PINS[1:]],
-        [[float("inf"), 0.94], *_PINS[1:]],
-        [[10.5, 0.94], *_PINS[1:]],
-        [[0.81, -11.0], *_PINS[1:]],
+        _mark(_DSL, x=10_000.0, y=-10_000.0, z=10_000.0),
+        _mark(_DSL, z=-10_000.0, pin=[0.0, 0.0]),
+        _mark(_DSL, pin=[1.0, 1.0]),
     ],
 )
-def test_unusable_corner_pins_are_dropped_with_one_warning(raw: object, caplog, monkeypatch) -> None:
-    """A wrong pin is no measurement: none at all leaves the next Setup Wizard run on the projection."""
-    import openfollow.configuration as cfg_mod
+def test_a_known_mark_at_the_edge_of_reach_is_kept(edge: dict[str, object]) -> None:
+    (mark,) = _marks(edge)
+    assert (mark.x, mark.y, mark.z) == (float(edge["x"]), float(edge["y"]), float(edge["z"]))  # type: ignore[arg-type]
 
-    monkeypatch.setattr(cfg_mod, "_reported_drops", {})
+
+@pytest.mark.parametrize(("distance_a", "distance_b"), [(200.0, 0.01), (1e-6, 200)])
+def test_a_triangulated_mark_keeps_distances_up_to_200_m(distance_a: float, distance_b: float) -> None:
+    (*_, mark) = _marks(_DSL, _DSR, _mark(_FAR, distance_a=distance_a, distance_b=distance_b))
+    assert (mark.distance_a, mark.distance_b) == (float(distance_a), float(distance_b))
+
+
+_USL = _mark(_DSL, id=4, y=6.0)
+
+
+@pytest.mark.parametrize(
+    ("entries", "kept"),
+    [
+        ([_DSL, _DSR, _FAR, _USL], [1, 2, 4]),  # a triangulated mark, even with a corner's id
+        ([_DSL, _DSR, _mark(_DSR, id=3, y=6.0), _mark(_DSL, id=5, y=6.0)], [1, 2, 3]),
+        ([_DSL, _DSR, _mark(_DSR, id=3, y=6.0), _mark(_DSL, id=12, x=0.0)], [1, 2, 3]),
+    ],
+)
+def test_simple_keeps_only_its_four_corners(entries, kept, caplog, fresh_drop_reports) -> None:
+    """Simple's marks are the rectangle's corners, known marks with ids 1 to 4; anything else is Advanced's."""
     with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
-        for _ in range(2):
-            assert CameraConfig(corner_pins=raw).corner_pins == []  # type: ignore[arg-type]
-    assert [r.getMessage() for r in caplog.records] == [
-        "camera.corner_pins: needs four [x, y] pairs on or near the snapshot; dropped"
+        marks = _marks(*entries, mode="simple")
+    assert [m.id for m in marks] == kept
+    assert len(_drop_warnings(caplog)) == 1
+    assert "is not one of Simple's four corners; dropped" in _drop_warnings(caplog)[0]
+
+
+def test_advanced_keeps_the_same_marks_simple_drops() -> None:
+    assert [m.id for m in _marks(_DSL, _DSR, _FAR, _USL, _mark(_DSL, id=12), mode="advanced")] == [1, 2, 3, 4, 12]
+
+
+def test_a_repeated_id_keeps_the_first_mark(caplog, fresh_drop_reports) -> None:
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        marks = _marks(_DSL, _mark(_DSR, id=1))
+    assert [(m.id, m.x) for m in marks] == [(1, 5.0)]
+    assert _drop_warnings(caplog) == ["camera.calibration_marks: entry 2 repeats id 1; dropped"]
+
+
+def test_a_mark_measured_from_a_mark_that_is_not_there_is_dropped_and_so_is_one_measured_from_it(
+    caplog, fresh_drop_reports
+) -> None:
+    from_dropped = _mark(_FAR, id=4, from_a=3)
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        marks = _marks(_DSL, _DSR, _mark(_FAR, from_b=9), from_dropped)
+    assert [m.id for m in marks] == [1, 2]
+    assert _drop_warnings(caplog) == [
+        "camera.calibration_marks: mark id 3 is measured from a mark that is not kept;"
+        " mark id 4 is measured from a mark that is not kept; dropped"
     ]
+
+
+def test_marks_measured_from_each_other_are_dropped_with_the_marks_measured_from_them(
+    caplog, fresh_drop_reports
+) -> None:
+    """3 needs 4 and 4 needs 3: neither can be placed, nor can 5, which needs 3."""
+    looping = [_mark(_FAR, id=3, from_a=1, from_b=4), _mark(_FAR, id=4, from_a=3, from_b=2)]
+    downstream = _mark(_FAR, id=5, from_a=3, from_b=1)
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        marks = _marks(_DSL, _DSR, *looping, downstream, _mark(_FAR, id=6))
+    assert [m.id for m in marks] == [1, 2, 6]
+    assert _drop_warnings(caplog) == [
+        "camera.calibration_marks: mark id 3 is measured from itself through others;"
+        " mark id 4 is measured from itself through others; mark id 5 is measured from a mark that is not kept; dropped"
+    ]
+
+
+def test_a_mark_measured_from_a_triangulated_mark_is_kept() -> None:
+    chained = _mark(_FAR, id=4, from_a=3, from_b=2)
+    assert [m.id for m in _marks(_DSL, _DSR, _FAR, chained)] == [1, 2, 3, 4]
+
+
+def test_calibration_marks_keep_the_first_twelve_usable(caplog, fresh_drop_reports) -> None:
+    from openfollow.configuration import MAX_CALIBRATION_MARKS
+
+    entries = ["junk", *[_mark(_DSL, id=i, x=float(i)) for i in range(1, 15)]]
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        marks = _marks(*entries)
+    assert MAX_CALIBRATION_MARKS == 12
+    assert [m.id for m in marks] == list(range(1, 13))
+    assert _drop_warnings(caplog) == [
+        "camera.calibration_marks: entry 1 is not a table; entries from 14 on, past the first 12 usable; dropped"
+    ]
+
+
+def test_many_unusable_marks_are_reported_in_one_line(caplog, fresh_drop_reports) -> None:
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        marks = _marks(*([1] * 1000), _DSL)
+    assert [m.id for m in marks] == [1]
+    assert _drop_warnings(caplog) == [
+        "camera.calibration_marks: entry 1 is not a table; entry 2 is not a table; entry 3 is not a table;"
+        " 997 more; dropped"
+    ]
+
+
+@pytest.mark.parametrize("raw", ["DSL", 3, None, {"id": 1, "kind": "known"}])
+def test_calibration_marks_that_are_not_a_list_read_as_none_and_say_so(raw, caplog, fresh_drop_reports) -> None:
+    """``[camera.calibration_marks]`` (one table) where ``[[...]]`` was meant must not vanish unseen."""
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        assert CameraConfig(calibration_marks=raw).calibration_marks == []  # type: ignore[arg-type]
+    assert _drop_warnings(caplog) == ["camera.calibration_marks: is not a list of tables; dropped"]
+
+
+def test_a_dropped_mark_is_reported_once_per_distinct_drop(caplog, fresh_drop_reports) -> None:
+    """Every web request loads the config again; one bad entry must not repeat its warning each time."""
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        for _ in range(3):
+            _marks(_mark(_DSL, x=None), _DSR)
+            CameraConfig()  # the frame loop's bare camera is no new file
+        _marks(_DSL, _mark(_DSR, z=None))
+        _marks(_DSL, _mark(_DSR, z=None))
+    assert _drop_warnings(caplog) == [
+        "camera.calibration_marks: entry 1 needs its X and Y; dropped",
+        "camera.calibration_marks: entry 2 needs its Z; dropped",
+    ]
+
+
+def test_calibration_marks_survive_a_toml_round_trip_with_finite_numbers_only(tmp_path) -> None:
+    import json
+    from dataclasses import asdict
+
+    path = tmp_path / "config.toml"
+    unpinned_known = _mark(_DSR, pin=[])
+    chained = _mark(_FAR, id=4, name="USR riser", from_a=3, from_b=2, z=0.0, position=[-5.0, 6.0, 0.0])
+    camera = CameraConfig(calibration_mode="advanced", calibration_marks=[_DSL, unpinned_known, _FAR, chained])
+    save_config(AppConfig(camera=camera), path)
+    loaded = load_config(str(path)).camera
+    assert loaded.calibration_mode == "advanced"
+    assert loaded.calibration_marks == camera.calibration_marks
+    assert [(m.id, m.name, m.pin, m.position) for m in loaded.calibration_marks] == [
+        (1, "P1", [0.81, 0.94], []),
+        (2, "P2", [], []),
+        (3, "P3", [0.41, 0.22], []),
+        (4, "USR riser", [0.41, 0.22], [-5.0, 6.0, 0.0]),
+    ]
+    assert "nan" not in path.read_text(encoding="utf-8").lower()
+    json.dumps(asdict(loaded), allow_nan=False)  # raises on any NaN or inf
+
+
+# CameraConfig.calibration_height: the camera's exact height the Setup Wizard's solve held
+
+
+def _height_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.getMessage().startswith("camera.calibration_height")]
+
+
+@pytest.mark.parametrize("raw", [None, "", "  "], ids=["none", "empty", "blank"])
+def test_a_calibration_height_not_entered_reads_as_none_and_says_nothing(raw, caplog, fresh_drop_reports) -> None:
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        assert CameraConfig(calibration_height=raw).calibration_height is None  # type: ignore[arg-type]
+        assert CameraConfig().calibration_height is None
+    assert caplog.records == []
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(9.8, 9.8), (12, 12.0), (0.0, 0.0), (-2.5, -2.5), ("9.8", 9.8), (10_000.0, 10_000.0), (-10_000.0, -10_000.0)],
+)
+def test_a_calibration_height_within_reach_is_kept_as_metres(raw, expected: float) -> None:
+    height = CameraConfig(calibration_height=raw).calibration_height
+    assert height == expected and isinstance(height, float)
+
+
+@pytest.mark.parametrize(
+    "raw", [True, False, "abc", [12.0], {"z": 12.0}], ids=["true", "false", "text", "list", "table"]
+)
+def test_a_calibration_height_of_the_wrong_type_is_dropped_and_said(raw, caplog, fresh_drop_reports) -> None:
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        assert CameraConfig(calibration_height=raw).calibration_height is None
+    assert len(_height_warnings(caplog)) == 1
+
+
+@pytest.mark.parametrize("raw", [10_000.5, -10_000.5, 1e300], ids=["above", "below", "huge"])
+def test_a_calibration_height_out_of_reach_is_dropped_not_clamped(raw: float, caplog, fresh_drop_reports) -> None:
+    with caplog.at_level(logging.WARNING, logger="openfollow.configuration"):
+        assert CameraConfig(calibration_height=raw).calibration_height is None
+    assert _height_warnings(caplog) == [f"camera.calibration_height: {raw!r} is not a height within 10000 m; dropped"]
+
+
+@pytest.mark.parametrize("raw", [float("nan"), float("inf"), float("-inf"), "nan", "inf"])
+def test_a_calibration_height_that_is_not_finite_is_dropped(raw, fresh_drop_reports) -> None:
+    assert CameraConfig(calibration_height=raw).calibration_height is None
+
+
+@pytest.mark.parametrize("height", [9.8, None])
+def test_a_calibration_height_survives_a_toml_round_trip(tmp_path, height: float | None) -> None:
+    path = tmp_path / "config.toml"
+    marks = [_DSL, _DSR]
+    camera = CameraConfig(calibration_mode="advanced", calibration_marks=marks, calibration_height=height)  # type: ignore[arg-type]
+    save_config(AppConfig(camera=camera), path)
+    assert load_config(str(path)).camera.calibration_height == height
+    assert ("calibration_height" in path.read_text(encoding="utf-8")) is (height is not None)
+
+
+def test_a_hand_edited_calibration_height_is_read_through_load_config(tmp_path, fresh_drop_reports) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('[camera]\ncalibration_height = "abc"\n', encoding="utf-8")
+    assert load_config(str(path)).camera.calibration_height is None
+    path.write_text("[camera]\ncalibration_height = 7.25\n", encoding="utf-8")
+    assert load_config(str(path)).camera.calibration_height == 7.25
+
+
+_FILE_GRID = "[grid]\nwidth = 12.0\ndepth = 6.0\nx_offset = 1.0\ny_offset = 4.0\nz_offset = 0.5\n"
+# DSL, DSR, USR, USL of that grid
+_FILE_CORNERS = [(7.0, 1.0, 0.5), (-5.0, 1.0, 0.5), (-5.0, 7.0, 0.5), (7.0, 7.0, 0.5)]
+
+
+def test_simple_corners_written_for_another_grid_follow_the_files_grid_unpinned(temp_config_path) -> None:
+    """A grid edited by hand: the corners go with it, and their pins, taken on the old grid, go."""
+    marks = "".join(
+        f'[[camera.calibration_marks]]\nid = {i + 1}\nname = "{n}"\nkind = "known"\n'
+        f"x = {x}\ny = {y}\nz = 0.5\npin = [0.5, 0.5]\n"
+        for i, (n, (x, y)) in enumerate(
+            zip(("DSL", "DSR", "USR", "USL"), [(5.0, 1.0), (-3.0, 1.0), (-3.0, 7.0), (5.0, 7.0)], strict=True)
+        )
+    )
+    temp_config_path.write_text('[camera]\ncalibration_mode = "simple"\n' + marks + _FILE_GRID, encoding="utf-8")
+    camera = load_config(str(temp_config_path)).camera
+    assert [(m.x, m.y, m.z, m.pin) for m in camera.calibration_marks] == [(*c, []) for c in _FILE_CORNERS]
+
+
+@pytest.mark.parametrize("pin", ['"0.5, 0.5"', "{ x = 0.5, y = 0.5 }", "true"])
+def test_a_pin_that_is_no_list_drops_the_mark(pin, temp_config_path) -> None:
+    temp_config_path.write_text(
+        '[camera]\ncalibration_mode = "advanced"\n[[camera.calibration_marks]]\n'
+        f'id = 1\nkind = "known"\nx = 1.0\ny = 2.0\nz = 0.0\npin = {pin}\n',
+        encoding="utf-8",
+    )
+    assert load_config(str(temp_config_path)).camera.calibration_marks == []
+
+
+def test_unknown_camera_calibration_keys_are_dropped(temp_config_path) -> None:
+    temp_config_path.write_text(
+        "[camera]\nfov = 55.0\ncorner_pins = [[0.81, 0.94], [0.14, 0.95], [0.37, 0.61], [0.66, 0.6]]\n"
+        '[[camera.calibration_points]]\ncorner_a = "DSL"\ncorner_b = "DSR"\ndistance_a = 21.4\ndistance_b = 23.9\n'
+        "pin_x = 0.41\npin_y = 0.22\n" + _FILE_GRID,
+        encoding="utf-8",
+    )
+    cfg = load_config(str(temp_config_path))
+    assert (cfg.camera.fov, cfg.camera.calibration_mode, cfg.camera.calibration_marks) == (55.0, "simple", [])
+    save_config(cfg, str(temp_config_path))
+    text = temp_config_path.read_text(encoding="utf-8")
+    assert "corner_pins" not in text
+    assert "calibration_points" not in text
+
+
+def test_a_stored_calibration_points_feature_is_dropped_as_unknown(temp_config_path) -> None:
+    from openfollow.configuration import EXPERIMENTAL_FEATURES, FEATURE_KEYS
+
+    temp_config_path.write_text('[ui]\nshown_features = ["calibration_points", "paths"]\n', encoding="utf-8")
+    assert load_config(str(temp_config_path)).ui.shown_features == ["paths"]
+    assert "calibration_points" not in FEATURE_KEYS
+    assert "calibration_points" not in EXPERIMENTAL_FEATURES

@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 from wsgiref.simple_server import WSGIRequestHandler, WSGIServer
 
 if TYPE_CHECKING:
+    from openfollow.input.touch_remote import TouchRemote
     from openfollow.logging_setup import RingBufferLogHandler
     from openfollow.network.adapter import ApplyResult
     from openfollow.runtime.diagnostics_export import DiagnosticsExport
@@ -177,10 +178,14 @@ class ConfigWebServer:
         path_state_provider: Callable[[], dict[str, Any]] | None = None,
         path_recorder: Callable[[str | None], bool] | None = None,
         path_renamer: Callable[[str, str], None] | None = None,
+        # The touch remote's sessions and holds; the routes answer 403 without it.
+        touch_remote: TouchRemote | None = None,
         # Live per-marker move speeds (R/T + gamepad bumpers). Device-local and
         # runtime-authoritative; the section-save path overlays them onto the fresh
         # disk load so a save can't clobber a speed the operator just ramped.
         marker_move_speeds_provider: Callable[[], dict[int, float]] | None = None,
+        # ``(update_github_repo, update_include_prereleases)`` as the station started with them.
+        update_source_provider: Callable[[], tuple[str, bool]] | None = None,
         full_snapshot_provider: Callable[[], bytes | None] | None = None,
         mouse3d_button_provider: Callable[[], int | None] | None = None,
         osc_binding_status_provider: Callable[[str], dict[str, Any] | None] | None = None,
@@ -298,7 +303,9 @@ class ConfigWebServer:
         self._path_state_provider = path_state_provider
         self._path_recorder = path_recorder
         self._path_renamer = path_renamer
+        self.touch_remote = touch_remote
         self._marker_move_speeds_provider = marker_move_speeds_provider
+        self._update_source_provider = update_source_provider
         self._full_snapshot_provider = full_snapshot_provider
         self._mouse3d_button_provider = mouse3d_button_provider
         self._osc_binding_status_provider = osc_binding_status_provider
@@ -787,6 +794,10 @@ class ConfigWebServer:
         """True while an update is queued or running."""
         return self._command_queue.is_update_busy()
 
+    def is_restart_pending(self) -> bool:
+        """True from a restart request until the process goes down."""
+        return self._command_queue.is_restart_pending()
+
     def request_restart_unless_updating(self) -> bool:
         """Request a restart unless an update is queued or running; False when refused."""
         return self._command_queue.request_restart_unless_updating()
@@ -969,6 +980,16 @@ class ConfigWebServer:
         if self._marker_move_speeds_provider is None:
             return {}
         return self._marker_move_speeds_provider()
+
+    def update_source(self, saved_repo: str, saved_prereleases: bool) -> tuple[str, bool]:
+        """The release repo and pre-release opt-in the updater runs with.
+
+        The installer and the online-sync worker read them as the station started, so the
+        manual check does too; the saved values stand in only when unwired.
+        """
+        if self._update_source_provider is None:
+            return saved_repo, saved_prereleases
+        return self._update_source_provider()
 
     def get_full_snapshot(self) -> bytes | None:
         """Return a full-resolution JPEG snapshot, or None."""

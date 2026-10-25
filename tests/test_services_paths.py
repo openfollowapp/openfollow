@@ -29,7 +29,7 @@ class _Markers:
 
 def _services(tmp_path, *, server=None, receiver=None, controlled=()) -> AppRuntimeServices:  # noqa: ANN001
     cfg = AppConfig(psn_system_name="X")
-    cfg.ui.show_experimental_features = True
+    cfg.ui.shown_features = ["paths"]
     cfg.paths = PathsConfig(
         paths=[PathConfig(name="cross", active=True, points=[PathPointConfig(0, 0, 0), PathPointConfig(4, 0, 0)])]
     )
@@ -84,6 +84,15 @@ def test_recording_reads_the_paths_from_the_file_the_web_ui_just_wrote(tmp_path)
     assert svc._record_path("nope") is False
     assert svc._record_path(None) is True
     assert svc._app._paths.recording is None
+
+
+@pytest.mark.parametrize("content", [b"", b"not [[ toml", b"grid = 5\n"], ids=["empty", "unparseable", "not-a-config"])
+def test_recording_a_broken_file_records_the_running_paths(tmp_path, content: bytes) -> None:  # noqa: ANN001
+    svc = _services(tmp_path)
+    with open(svc._app._config_path, "wb") as f:
+        f.write(content)
+    assert svc._record_path("cross") is True
+    assert svc._app._paths.recording == "cross"
 
 
 def test_a_rename_the_web_ui_is_saving_keeps_the_markers_on_the_path(tmp_path) -> None:  # noqa: ANN001

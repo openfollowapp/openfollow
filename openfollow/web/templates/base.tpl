@@ -28,6 +28,7 @@
  <script src="/assets/js/units.js?v={{_asset_v}}"></script>
  <script src="/assets/js/detect-input.js?v={{_asset_v}}"></script>
  <script src="/assets/js/save-feedback.js?v={{_asset_v}}"></script>
+ <script src="/assets/js/feature-save.js?v={{_asset_v}}"></script>
  <script src="/assets/js/binding-steal.js?v={{_asset_v}}"></script>
  <script src="/assets/js/polygon-plan.js?v={{_asset_v}}"></script>
  <script src="/assets/js/picture-view.js?v={{_asset_v}}"></script>
@@ -699,6 +700,7 @@
  [data-input-type] > .row:last-child { margin-bottom: 0.72rem; }
  .field { display: flex; flex-direction: column; flex: 1; min-width: 130px; }
  .field.wide { flex: 2; min-width: 230px; }
+ .field[hidden] { display: none; }
  /* Inline "press to capture" widget: an input with a Detect button beside it
     (detect-input.js). The button keeps its .secondary.small styling. */
  .detect-input { display: flex; gap: 0.4rem; align-items: stretch; }
@@ -1314,6 +1316,15 @@
  .data-table input, .data-table select { font-size: inherit; }
  .data-table td.row-actions { white-space: nowrap; text-align: right; }
  .data-table td.row-actions > * + * { margin-left: 0.4rem; }
+ /* Features table: checkbox, title, description. */
+ .feature-table-wrap { overflow-x: auto; }
+ .feature-table td.feature-check { width: 2.2rem; }
+ .feature-table td.feature-check input { margin: 0; }
+ .feature-table th[scope="row"] { font-weight: 600; white-space: nowrap; }
+ .feature-table th[scope="row"] label { margin: 0; cursor: pointer; }
+ .feature-table th[scope="row"] .badge-experimental { margin-left: 0.4rem; }
+ .feature-table td.feature-description { color: var(--muted); }
+ .feature-off-list { margin: 0.4rem 0 0; padding-left: 1.2rem; }
  /* Controller Slots table (Input tab). */
  .slot-row.slot-missing { background: var(--error-row); }
  /* Grey while the slot needs nothing, red when its controller is missing. */
@@ -1923,8 +1934,11 @@
  vertical-align: middle;
  margin-left: 0.3rem;
  }
- /* Hide experimental sections unless <body> carries .show-experimental. */
- body:not(.show-experimental) .experimental-feature { display: none !important; }
+ /* A data-feature element shows only while <body> carries feature-<key>. */
+ % from openfollow.configuration import FEATURE_KEYS
+ % for _fkey in FEATURE_KEYS:
+ body:not(.feature-{{_fkey}}) [data-feature="{{_fkey}}"] { display: none !important; }
+ % end
  @media (max-width: 680px) {
  body { padding: 12px 0; }
  .hero-panel { padding: 1rem; margin-bottom: 0.8rem; }
@@ -2298,9 +2312,81 @@
  padding-block: calc((1lh - 1cap) / 2 + var(--pill-pad-y));
  }
  }
+ /* Touch remote: launcher and a compact card on the thumb's side (.remote-left mirrors it). */
+ .remote-launcher {
+ position: fixed; right: 1rem; bottom: calc(env(safe-area-inset-bottom, 0px) + 1rem); z-index: 60;
+ width: 3.5rem; height: 3.5rem; border-radius: 50%; border: none;
+ background: var(--accent); color: var(--btn-ink-dark);
+ display: flex; align-items: center; justify-content: center; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+ }
+ .remote-card {
+ position: fixed; right: 1rem; bottom: calc(env(safe-area-inset-bottom, 0px) + 5.25rem); z-index: 61;
+ width: min(340px, calc(100vw - 2rem)); box-sizing: border-box; max-height: calc(100vh - 7rem); overflow-y: auto;
+ padding: 0.75rem; border-radius: 1.25rem; border: 1px solid var(--border); background: var(--bg-soft);
+ display: flex; flex-direction: column; gap: 0.6rem; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
+ touch-action: pan-y; -webkit-user-select: none; user-select: none;
+ }
+ body.remote-left .remote-launcher, body.remote-left .remote-card { right: auto; left: 1rem; }
+ /* Chips and buttons set their own display; ``hidden`` still wins inside the card. */
+ .remote-launcher[hidden], .remote-card[hidden], .remote-card [hidden] { display: none !important; }
+ .remote-card .notice { margin: 0; font-size: 0.8rem; }
+ .remote-chips { display: flex; gap: 0.5rem; overflow-x: auto; touch-action: pan-x; scrollbar-width: none; }
+ .remote-chip {
+ display: flex; align-items: center; gap: 0.4rem; flex: none; height: 2.5rem; padding: 0 0.75rem;
+ border-radius: var(--btn-radius); border: 2px solid transparent; background: var(--surface-strong);
+ color: var(--muted); font: inherit; font-size: 0.82rem; font-weight: 700; white-space: nowrap;
+ }
+ .remote-chip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+ .remote-chip-dot { width: 0.75rem; height: 0.75rem; border-radius: 50%; background: var(--muted); }
+ .remote-status { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+ .remote-spacer { flex: 1; }
+ .remote-round, .remote-hand {
+ height: 2.5rem; border-radius: var(--btn-radius); border: 1px solid var(--border); background: var(--surface-strong);
+ color: var(--text); display: flex; align-items: center; justify-content: center; flex: none;
+ }
+ .remote-round { width: 2.5rem; padding: 0; }
+ .remote-hand { padding: 0 0.65rem; font: inherit; font-size: 0.78rem; font-weight: 700; }
+ .remote-round[aria-pressed="true"] { border: 2px solid var(--accent); background: var(--accent-soft); color: var(--accent); }
+ .remote-drive { display: flex; gap: 0.75rem; align-items: stretch; justify-content: space-between; }
+ body.remote-left .remote-drive, body.remote-left .remote-status, body.remote-left .remote-chips { flex-direction: row-reverse; }
+ .remote-stick {
+ position: relative; width: 184px; height: 184px; flex: none; border-radius: 50%;
+ border: 2px solid var(--border); background: var(--surface); touch-action: none;
+ }
+ .remote-stick-label { position: absolute; left: 50%; transform: translateX(-50%); font-size: 0.62rem; font-weight: 700; letter-spacing: 0.06em; color: var(--muted); pointer-events: none; }
+ .remote-stick-up { top: 0.45rem; }
+ .remote-stick-down { bottom: 0.45rem; }
+ .remote-knob {
+ position: absolute; left: 50%; top: 50%; width: 72px; height: 72px; margin: -36px 0 0 -36px; border-radius: 50%;
+ background: var(--accent); pointer-events: none; transition: transform 0.14s ease-out;
+ }
+ .remote-stick.active .remote-knob { transition: none; }
+ .remote-z { width: 64px; display: flex; flex-direction: column; align-items: center; gap: 0.25rem; }
+ .remote-z.off { opacity: 0.35; }
+ .remote-z-cap { font-size: 0.68rem; font-weight: 700; color: var(--muted); white-space: nowrap; }
+ .remote-drum {
+ position: relative; flex: 1; width: 100%; min-height: 150px; border-radius: 26px; overflow: hidden;
+ border: 2px solid var(--border); background: var(--bg-deep); touch-action: none;
+ }
+ .remote-drum-ticks {
+ position: absolute; left: 0; right: 0; top: -40px; bottom: -40px; pointer-events: none;
+ background: linear-gradient(180deg, var(--border) 0 2px, transparent 2px) 0 0 / 100% 20px repeat-y;
+ }
+ .remote-drum-mid { position: absolute; left: 6px; right: 6px; top: 50%; height: 3px; margin-top: -1.5px; border-radius: 2px; background: var(--accent); pointer-events: none; }
+ .remote-drum.notched .remote-drum-mid { background: var(--text); }
+ .remote-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: 0.5rem; }
+ .remote-act { height: 2.9rem; padding: 0 0.4rem; }
+ .remote-act[aria-pressed="true"], .remote-act.locked { border: 2px solid var(--accent); }
+ .remote-xyz-row { display: flex; gap: 0.5rem; align-items: flex-end; }
+ .remote-xyz-row label { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.7rem; font-weight: 700; }
+ .remote-xyz-row input { width: 100%; box-sizing: border-box; height: 2.6rem; font-family: ui-monospace, monospace; -webkit-user-select: text; user-select: text; }
+ .remote-xyz-row input[aria-invalid="true"] { border-color: var(--error-line); box-shadow: 0 0 0 1px var(--error-line); }
+ .remote-go { height: 2.6rem; flex: none; }
+ .remote-readout { display: flex; justify-content: space-between; gap: 0.5rem; font: 600 0.75rem ui-monospace, monospace; color: var(--muted); font-variant-numeric: tabular-nums; }
+ @media (prefers-reduced-motion: reduce) { .remote-knob { transition: none; } }
  </style>
 </head>
-<body class="{{'show-experimental' if defined('config') and config and config.ui.show_experimental_features else ''}}">
+<body class="{{' '.join('feature-' + k for k in config.ui.shown_features) if defined('config') and config else ''}}">
  <div class="container">
  <header class="hero-panel">
  <a class="hero-logo-link" href="/" aria-label="OpenFollow – back to overview">
@@ -3873,11 +3959,7 @@
  showToast(`Saved and applied to ${peers.length} station(s)`);
  return;
  }
- saveError.show(form, {
- error: `Saved here, but not applied on ${failed.length} of ${peers.length} stations: `
- + failed.map((peer) => peer.name || peer.ip).join(', ') + '.',
- action: 'Check that they are switched on, then apply again.',
- }, '');
+ saveError.show(form, saveError.peerFailure(peers, 'Saved here, but not applied on', 'apply again'), '');
  }).catch(() => saveError.show(form, saveError.UNREACHABLE));
  }
  // Disable Save/Broadcast buttons when form has aria-invalid inputs.
@@ -4286,16 +4368,6 @@
  ],
  });
  }
- // Toggle the <body> gate class. When turning off, uncheck the detection
- // Enabled box to mirror the server-side cascade; the selector must match
- // the route's cascade fields.
- function onExperimentalToggle(cb) {
- document.body.classList.toggle('show-experimental', cb.checked);
- if (cb.checked) return;
- document.querySelectorAll(
- '#detection-section input[name="enabled"], #ground-grid-section input[name="enabled"]'
- ).forEach(function (el) { el.checked = false; });
- }
  function switchTab(tabId) {
  // help docs are section-specific; dismiss the drawer when
  // the operator moves to another tab so stale help can't linger.
@@ -4325,12 +4397,12 @@
  var first = document.querySelector('.tab-btn');
  var defaultTab = first ? first.dataset.tab : 'overview';
  var tabId = stored || defaultTab;
- // Fall back to the default tab if the stored tab is missing or is a
- // hidden experimental tab.
+ // Fall back to the default tab if the stored tab is missing or its
+ // feature is off.
  var el = document.getElementById('tab-' + tabId);
  if (!el
- || (el.classList.contains('experimental-feature')
- && !document.body.classList.contains('show-experimental'))) {
+ || (el.dataset.feature
+ && !document.body.classList.contains('feature-' + el.dataset.feature))) {
  tabId = defaultTab;
  }
  document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -5454,5 +5526,10 @@
           hx-target="this"
           hx-swap="innerHTML"></div>
  </div>
+ % from openfollow.configuration import feature_gated
+ % if defined('config') and config and feature_gated(config.touch_remote, config, 'touch_remote').enabled:
+ % include('partials/touch_remote_card.tpl')
+ <script src="/assets/js/touch-remote.js?v={{_asset_v}}"></script>
+ % end
 </body>
 </html>

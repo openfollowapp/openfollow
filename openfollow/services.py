@@ -27,17 +27,21 @@ import numpy as np
 from openfollow.configuration import (
     ControllerButtonTrigger,
     HotkeyTrigger,
+    effective_lens,
+    feature_gated,
     is_simple_mode,
     viewed_with_controlled,
 )
 from openfollow.input import InputManager
 from openfollow.input.mouse3d import idle_mouse3d_status
+from openfollow.marker_catalog.control_conflicts import ControlConflict, find_control_conflicts
 from openfollow.net_adapters import display_name
 from openfollow.net_egress import Egress, is_loopback_host, resolve_egress
 from openfollow.net_utils import ResolveStatus, interface_present, plane_source_iface
 from openfollow.network.adapter import format_lease_remaining
 from openfollow.osc.egress import OscEgressTable
 from openfollow.otp import OtpServer
+from openfollow.power_health import PowerState, system_power_monitor
 from openfollow.psn import MARKER_STALE_AFTER_S, PsnReceiver, PsnServer
 from openfollow.psn.server import _UNCHANGED, _Unchanged
 from openfollow.rttrpm import RttrpmServer
@@ -69,10 +73,12 @@ if TYPE_CHECKING:
     from openfollow.configuration import (
         AppConfig,
         DetectionConfig,
+        MidiPatch,
         OscDestinationsConfig,
         OscTransmittersConfig,
         OtpOutputConfig,
         RttrpmOutputConfig,
+        TriggerZonesConfig,
     )
     from openfollow.input.midi import StatusFlagValue
     from openfollow.network.adapter import (  # noqa: F401
@@ -103,6 +109,8 @@ _MOUSE3D_WEB_DETECT_BUDGET_S = 0.35
 # How long one network backend reading serves the web UI after it completes, so
 # every section one render asks for shares it.
 _NETWORK_READING_MAX_AGE_S = 1.0
+# The window hooks the GL Operator Screen needs: one to show it, the rest to fall back to Cairo.
+_GL_CANVAS_HOOKS = ("attach_gl_display", "detach_gl_display", "attach_hud", "gdk_window")
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +221,8 @@ class WebCommandQueue:
         self._clock = clock
         self._restart_lock = threading.Lock()
         self._restart_requested_at: float | None = None
+        # Set once a restart is taken: the process is going down, so no update may start.
+        self._restart_taken = False
         self._update_requested = threading.Event()
         self._button_detection_requested = threading.Event()
         self._button_detection_cancel_requested = threading.Event()
@@ -278,7 +288,7 @@ class WebCommandQueue:
         }
         # Latest newer release the background online-sync worker has found
         # (version tag without the ``v`` prefix), or "" when none / up to date.
-        # Drives the update banner + footer flag; independent of the install
+        # Drives the Software Update box + footer flag; independent of the install
         # state machine above so a published release shows even while no
         # install is running.
         self._update_available_lock = threading.Lock()
@@ -319,13 +329,24 @@ class WebCommandQueue:
             self.request_restart()
             return True
 
-    def consume_restart_requested(self, *, grace_s: float = 0.0) -> bool:
-        """Take a restart request made at least ``grace_s`` ago; a newer request restarts the wait."""
+    def is_restart_pending(self) -> bool:
+        """True from a restart request until the process goes down; no update may start."""
         with self._restart_lock:
+            return self._restart_requested_at is not None or self._restart_taken
+
+    def consume_restart_requested(self, *, grace_s: float = 0.0) -> bool:
+        """Take a restart request made at least ``grace_s`` ago; a newer request restarts the wait.
+
+        Held while an update is queued or running, so a restart never cuts into one.
+        """
+        with self._update_lock, self._restart_lock:
             at = self._restart_requested_at
             if at is None or self._clock() - at < grace_s:
                 return False
+            if self._update_status.get("state", "idle") in _UPDATE_BUSY_STATES:
+                return False
             self._restart_requested_at = None
+            self._restart_taken = True
             return True
 
     def request_button_detection(self) -> None:
@@ -400,13 +421,13 @@ class WebCommandQueue:
         return self._button_detection_active.is_set()
 
     def request_deb_update(self, service_name: str) -> bool:
-        """Queue a GitHub-release .deb update. Returns False if another update is running."""
+        """Queue a GitHub-release .deb update. Returns False if another update is running or a restart is pending."""
         return self._queue_update_request("deb", service_name=service_name)
 
     def request_local_update(self, service_name: str, *, deb_path: str | None = None) -> bool:
         """Queue an offline install of an operator-uploaded ``.deb``.
 
-        Returns False if another update is running (same in-progress guard as
+        Returns False if another update is running or a restart is pending (same guard as
         :meth:`request_deb_update`).
         """
         return self._queue_update_request("deb-local", service_name=service_name, deb_path=deb_path or "")
@@ -415,6 +436,8 @@ class WebCommandQueue:
         """Shared guard and enqueue logic for all update kinds."""
         with self._update_lock:
             if self._update_status.get("state", "idle") in _UPDATE_BUSY_STATES:
+                return False
+            if self.is_restart_pending():
                 return False
             # Clear the detached installer's status file only once we've
             # committed to queueing – a rejected duplicate must not wipe a
@@ -450,6 +473,31 @@ class WebCommandQueue:
                 "error": error,
             }
 
+    def settle_finished_install(self) -> dict[str, str]:
+        """The detached installer ended without stopping this process: end the busy state.
+
+        Its own ``failed`` record is kept; otherwise the install either finished
+        without restarting this process or ended before it reported anything.
+        Returns the status now shown.
+        """
+        detached = _read_detached_update_state()
+        state = detached["state"] if detached else ""
+        if detached is not None and state == "failed":
+            settled = detached
+        elif state == "restarting":
+            settled = {
+                "state": "failed",
+                "message": "Update installed, but OpenFollow was not restarted.",
+                "error": "Restart OpenFollow to run it.",
+            }
+        else:
+            settled = {"state": "failed", "message": "Update failed.", "error": "The installer ended without a result."}
+        with self._update_lock:
+            # Only the install it waited for: a status set since then stands.
+            if self._update_status.get("state") == "restarting":
+                self._update_status = dict(settled)
+            return dict(self._update_status)
+
     def get_update_status(self) -> dict[str, str]:
         """Return update status.
 
@@ -468,7 +516,7 @@ class WebCommandQueue:
         return status
 
     def set_update_available(self, latest: str | None) -> None:
-        """Record the newest available release tag ("" / None clears the banner)."""
+        """Record the newest available release tag ("" / None clears the box)."""
         with self._update_available_lock:
             self._update_available = (latest or "").strip()
 
@@ -647,6 +695,21 @@ class WebCommandQueue:
 # ---------------------------------------------------------------------------
 
 
+def _start_daemon(work: Callable[[], None]) -> None:
+    threading.Thread(target=work, daemon=True, name="PersonDetector-Build").start()
+
+
+def _idle_add_once(work: Callable[[], None]) -> None:
+    """Run ``work`` once on the GTK main loop, at the frame timeout's priority so a busy loop still runs it."""
+    from gi.repository import GLib
+
+    def run() -> bool:
+        work()
+        return False
+
+    GLib.idle_add(run, priority=GLib.PRIORITY_DEFAULT)
+
+
 class AppRuntimeServices:
     """Grouped startup and per-frame services for OpenFollowApp."""
 
@@ -671,6 +734,14 @@ class AppRuntimeServices:
         self._hud_render: HudRenderThread | None = None  # set in init_video when there is a screen
         self._system_stats: SystemStatsCollector | None = None  # set in init_video
         self._person_detector: PersonDetector | None = None  # set in init_video if enabled
+        # A detector is built off the frame loop and wired back on it; tests run both in place.
+        self._off_main_thread: Callable[[Callable[[], None]], None] = _start_daemon
+        self._on_main_thread: Callable[[Callable[[], None]], None] = _idle_add_once
+        # Bumped by every detection change, so a build a later change overtook is dropped.
+        self._detector_builds = 0
+        # One build at a time: the one in flight, and the newest request waiting for it.
+        self._detector_building: int | None = None
+        self._queued_detector_build: tuple[int, DetectionConfig, Callable[[], None] | None] | None = None
 
         self._frame_metrics = FrameMetrics()
         self._frame_start_time = 0.0
@@ -678,6 +749,8 @@ class AppRuntimeServices:
         self._last_runtime_stats_publish = 0.0
         self._runtime_stats_lock = threading.Lock()
         self._runtime_stats_snapshot: dict[str, Any] = self._default_runtime_stats_snapshot()
+        # Decided at each stats publish; the HUD, /api/stats and the web marker table all read this.
+        self._control_conflicts: tuple[ControlConflict, ...] = ()
         # Cache the detection-deps probe so the 4Hz stats loop doesn't call
         # importlib.util.find_spec() on every publish; invalidated by TTL and
         # by any change to the detection config signature.
@@ -954,6 +1027,49 @@ class AppRuntimeServices:
         storage_root = Path(resolve_detection_storage_path(cfg.detection.storage_path))
         seed_bundled_models(source, storage_root / "models")
 
+    def _choose_gl_display(self, canvas: Any) -> Any:
+        """The GL Operator Screen where the platform supports it, else None for the Cairo one."""
+        if not all(hasattr(canvas, name) for name in _GL_CANVAS_HOOKS):
+            return None
+        from openfollow.video import gl_display
+
+        setting = self._app._config.display.operator_screen
+        reason = gl_display.gl_display_blocker(setting) or gl_display.probe_gl_context(canvas.gdk_window())
+        if reason is not None:
+            logger.info("Operator Screen: Cairo (%s)", reason)
+            return None
+        try:
+            display = gl_display.GlDisplay()
+        except Exception as exc:
+            # Say a desktop GStreamer without plugins-bad, which has the display's fakevideosink.
+            logger.warning("Operator Screen: Cairo (the GL display could not be built: %s)", exc)
+            return None
+        logger.info("Operator Screen: GL display")
+        # Before the area is embedded: embedding a widget in the shown window realizes it there and then.
+        display.on_unavailable = self._fall_back_to_cairo
+        return display
+
+    def _fall_back_to_cairo(self, reason: str) -> None:
+        """The GL display failed while running: hand the Operator Screen to Cairo without a restart."""
+        from openfollow.video.receiver import PipelineStuckError
+
+        logger.warning("GL display unavailable (%s): the Operator Screen falls back to Cairo", reason)
+        canvas, hud = self._app._canvas, self._hud_render
+        if canvas is None or hud is None:
+            return
+        canvas.detach_gl_display()
+        hud.set_layered(False)
+        canvas.attach_hud(hud.paint, tick=hud.tick)
+        receiver = self._app._video_receiver
+        if receiver is None:
+            return
+        try:
+            receiver.drop_display()
+        except PipelineStuckError:
+            logger.error(
+                "GL display fallback: the video pipeline did not stop; its next rebuild uses the platform sink"
+            )
+
     def init_video(self) -> None:
         overlay = CairoOverlayRenderer()
         self._overlay_renderer = overlay
@@ -968,6 +1084,7 @@ class AppRuntimeServices:
         self._system_stats = SystemStatsCollector(
             update_interval=1.0,
             preferred_ip=self._resolved_source_ip,
+            power=system_power_monitor(),
         )
 
         canvas = self._app._canvas
@@ -983,7 +1100,7 @@ class AppRuntimeServices:
 
         # Optional person detection (lazy import, zero cost when disabled)
         detector = None
-        if cfg.detection.enabled:
+        if self.detection_config().enabled:
             from openfollow.video.detection import (
                 PersonDetector,
                 check_detection_dependencies,
@@ -1006,17 +1123,20 @@ class AppRuntimeServices:
         self._snapshot_provider = SnapshotProvider()
 
         # Build input-specific config dict from the active plugin
+        from openfollow.runtime.app_modes import save_source_pick
         from openfollow.video.inputs import get_input_class
 
         input_cls = get_input_class(cfg.video_source_type)
         input_config = input_cls.runtime_config(cfg) if input_cls else {}
 
+        gl_display = self._choose_gl_display(canvas)
         receiver = GstNativeSinkReceiver(
+            display=gl_display,
             source_type=cfg.video_source_type,
             input_config=input_config,
             overlay_renderer=overlay,
             on_widget_changed=canvas.embed_widget,
-            config_path=self._app._config_path,
+            on_source_picked=lambda field, value: save_source_pick(self._app, field, value),
             detector=detector,
             preview_provider=self._preview_provider,
             snapshot_provider=self._snapshot_provider,
@@ -1037,8 +1157,13 @@ class AppRuntimeServices:
         # The display tick, not video buffer flow, paces the HUD, so a 0 fps source cannot freeze it.
         # The tick starts and shows pictures drawn on the HUD render thread; the draw callback only pastes.
         if hasattr(canvas, "attach_hud"):
-            self._hud_render = HudRenderThread(overlay)
-            canvas.attach_hud(self._hud_render.paint, tick=self._hud_render.tick)
+            self._hud_render = HudRenderThread(overlay, layered=gl_display is not None)
+            if gl_display is not None:
+                gl_display.set_hud(self._hud_render)
+                canvas.attach_gl_display(gl_display, tick=self._hud_render.tick)
+            else:
+                canvas.attach_hud(self._hud_render.paint, tick=self._hud_render.tick)
+            receiver.set_display_frame_listener(self._hud_render.video_frame)
 
         self._app._video_receiver = receiver
         # Critical phase: a raise skips shutdown(), so tear the already-started
@@ -1136,8 +1261,17 @@ class AppRuntimeServices:
             self.apply_psn_source_ip_change(address)
 
         def _current_psn() -> str | None:
+            # The output's address; the input's alone when the output never started.
             server = self._app._server
-            return server.bound_source_ip() if server is not None else None
+            if server is not None:
+                return server.bound_source_ip()
+            receiver = self._app._psn_receiver
+            return receiver.bound_source_ip() if receiver is not None else None
+
+        def _psn_complete() -> bool:
+            # PSN input belongs to the plane: one that did not bind beside the output is a failure to retry.
+            receiver = self._app._psn_receiver
+            return receiver is None or not receiver.enabled or receiver.bound_source_ip() == _current_psn()
 
         def _suspend_psn() -> None:
             # Both directions, and both attempted even if the first raises:
@@ -1169,7 +1303,7 @@ class AppRuntimeServices:
                 self._app._otp_server.stop()
 
         def _apply_rttrpm(_address: str) -> None:
-            self.apply_rttrpm_output_change(self._app._config.rttrpm_output)
+            self.apply_rttrpm_output_change(self.rttrpm_config())
 
         def _current_rttrpm() -> str | None:
             server = self._app._rttrpm_server
@@ -1223,10 +1357,15 @@ class AppRuntimeServices:
         def _rttrpm_pinned() -> bool:
             # Unpinned, the OS routes it: no interface to follow, and the
             # auto-detected address would never match its unbound socket.
-            cfg = self._app._config.rttrpm_output
+            cfg = self.rttrpm_config()
             if not cfg.enabled or is_loopback_host(cfg.host):
                 return False
             return bool(plane_source_iface(cfg.source_iface, self._app._config.psn_source_iface))
+
+        def _start_osc_listener() -> None:
+            # A failed restart leaves no listener: rebuild it from the config, raising while it cannot bind.
+            if self._osc_service.listener_status()["port"] is None and self._app._input_manager is not None:
+                self._app._input_manager.resume_osc()
 
         def _apply_osc_input(address: str) -> None:
             # Rebinds the listener so the group follows the interface. The
@@ -1238,6 +1377,7 @@ class AppRuntimeServices:
             # as success - it clears the outage, logs that the output resumed
             # and starts the poll again with no backoff - so swallowing the
             # False would retry once a second forever while reporting health.
+            _start_osc_listener()
             cfg = self._app._config
             if not self._osc_service.set_multicast_iface(
                 address, plane_source_iface(cfg.osc.listen_iface, cfg.psn_source_iface)
@@ -1252,19 +1392,18 @@ class AppRuntimeServices:
             return None if iface is None else str(iface)
 
         def _suspend_osc_input() -> None:
+            # Unicast and broadcast keep arriving without the membership.
+            _start_osc_listener()
             self._osc_service.set_multicast_iface(None)
 
         def _osc_input_pinned() -> bool:
-            # Three things have to be true before this is a plane. Unpinned, the
-            # membership is the routing table's to choose and there is no
-            # interface to follow; with no group configured the pin governs
-            # nothing; and with no listener running there is no socket to move a
-            # membership on, so polling would retry once a second forever
-            # against a port that is in use.
+            # Config only. Unpinned, the membership is the routing table's to
+            # choose and there is no interface to follow; with no group
+            # configured the pin governs nothing. A listener that is not running
+            # stays a plane, so its failure is reported and retried.
             cfg = self._app._config.osc
             pinned = plane_source_iface(cfg.listen_iface, self._app._config.psn_source_iface)
-            listening = self._osc_service.listener_status()["port"] is not None
-            return bool(cfg.enabled and cfg.multicast_group and pinned and listening)
+            return bool(cfg.enabled and cfg.multicast_group and pinned)
 
         return [
             Plane(
@@ -1273,6 +1412,7 @@ class AppRuntimeServices:
                 current=_current_psn,
                 apply=_apply_psn,
                 suspend=_suspend_psn,
+                complete=_psn_complete,
             ),
             Plane(
                 label="OTP output",
@@ -1652,8 +1792,24 @@ class AppRuntimeServices:
             )
         return egress
 
+    def midi_patches(self) -> list[MidiPatch]:
+        """The MIDI patches to open: none while the MIDI feature is off."""
+        return self._app._config.midi.patches if self._app._config.ui.feature_on("midi") else []
+
+    def detection_config(self) -> DetectionConfig:
+        """``detection`` as the detector runs it: off while the Person detection feature is off."""
+        return feature_gated(self._app._config.detection, self._app._config, "detection")
+
+    def rttrpm_config(self) -> RttrpmOutputConfig:
+        """``rttrpm_output`` as the sender runs it: off while the RTTrPM feature is off."""
+        return feature_gated(self._app._config.rttrpm_output, self._app._config, "rttrpm")
+
+    def zones_config(self) -> TriggerZonesConfig:
+        """``trigger_zones`` as the engine runs it: off while the Zones feature is off."""
+        return feature_gated(self._app._config.trigger_zones, self._app._config, "zones")
+
     def init_rttrpm(self) -> None:
-        cfg = self._app._config.rttrpm_output
+        cfg = self.rttrpm_config()
         if not cfg.enabled:
             return
         egress = self._rttrpm_egress(cfg)
@@ -1682,16 +1838,33 @@ class AppRuntimeServices:
         # group on whatever interface the OS picks, so the station would answer
         # on a network the operator did not choose while its output was stopped.
         source_ip = self.station_source_ip_or_none()
+        # No server when PSN output failed to start.
+        server = self._app._server
         receiver = PsnReceiver(
             ignore_ids=self._app._controlled_ids,
             source_ip=source_ip or "",
             source_iface=self._app._config.psn_source_iface,
+            enabled=self._app._config.ui.feature_on("psn_input"),
+            own_source=server.source_address if server is not None else lambda: None,
         )
         # Built either way, started only with an address, for the same reason
         # as the server: the recovery path can only rebind one that exists.
         if source_ip is not None:
             receiver.start()
         self._app._psn_receiver = receiver
+
+    def apply_psn_input_change(self) -> None:
+        """Start or stop the PSN receiver for the PSN input feature; raises when it cannot bind."""
+        receiver = self._app._psn_receiver
+        if receiver is None:
+            return
+        on = self._app._config.ui.feature_on("psn_input")
+        receiver.set_enabled(on)
+        if not on or receiver.bound_source_ip() is not None:
+            return
+        source_ip = self.station_source_ip_or_none()
+        if source_ip is not None:
+            receiver.rebind(source_ip, source_iface=self._app._config.psn_source_iface)
 
     def init_virtual_faders(self) -> None:
         """Re-apply the persisted virtual-fader config and provision the
@@ -1719,7 +1892,7 @@ class AppRuntimeServices:
         Re-callable on hot-reload (``apply_config`` is idempotent – same
         patch on the same port is a no-op).
         """
-        self._midi.apply_config(self._app._config.midi.patches)
+        self._midi.apply_config(self.midi_patches())
         # (Re)subscribe the MIDI → fader dispatcher. ``attach`` drops any
         # previous subscription first, so reload passes can't leak
         # duplicate callbacks.
@@ -2182,7 +2355,7 @@ class AppRuntimeServices:
     def _follow_station_rttrpm(self) -> None:
         # Unlike OTP it may not be running: a station interface that was down
         # at boot left nothing to restart.
-        cfg = self._app._config.rttrpm_output
+        cfg = self.rttrpm_config()
         if cfg.enabled and not cfg.source_iface:
             self.apply_rttrpm_output_change(cfg)
 
@@ -2210,7 +2383,7 @@ class AppRuntimeServices:
 
         cfg = self._app._config
         ids = {row.destination_id for row in cfg.osc_transmitters.transmitters if row.enabled}
-        if cfg.trigger_zones.enabled:
+        if self.zones_config().enabled:
             ids |= {zone.destination_id for zone in cfg.trigger_zones.zones if zone.enabled}
         by_id = cfg.osc_destinations.by_id()
         in_use = [by_id[dest_id] for dest_id in ids if dest_id in by_id]
@@ -2532,9 +2705,8 @@ class AppRuntimeServices:
         - off → off                 : no-op.
 
         The fourth state – ``off → on`` – needs the receiver pipeline to
-        wire the appsink into a freshly-constructed detector, which
-        ``init_video`` only does at startup; the dispatcher catches that
-        case and falls back to ``request_restart()``.
+        wire the appsink into a freshly-constructed detector; the
+        dispatcher routes it to ``swap_detector``.
 
         The detector reference lives on ``AppRuntimeServices`` (set in
         ``init_video``), not on ``OpenFollowApp``, so read/write
@@ -2543,16 +2715,19 @@ class AppRuntimeServices:
         production while still passing ``SimpleNamespace`` tests.
         """
         detector = self._person_detector
+        if not new_cfg.enabled:
+            # A detector still being built for an earlier change is dropped when it lands.
+            self._detector_builds += 1
         if detector is not None and new_cfg.enabled:
             detector.reload_config(new_cfg)
         elif detector is not None and not new_cfg.enabled:
-            detector.stop()
+            # An inference in flight finishes off the frame loop.
+            detector.stop(wait=False)
             self._person_detector = None
-        # else: detector is None – caller (dispatcher) handles the
-        # off→on case via request_restart and the off→off case is a
-        # genuine no-op.
+        # else: detector is None – the dispatcher routes off→on to
+        # ``swap_detector``; off→off is a genuine no-op.
 
-    def swap_detector(self, new_cfg: DetectionConfig) -> None:
+    def swap_detector(self, new_cfg: DetectionConfig, on_failure: Callable[[], None] | None = None) -> None:
         """Apply a ``detection`` config change live for the three
         transitions ``apply_detection_change`` cannot serve: off→on,
         unavailable→on (re-probed backend), and ``inference_size``
@@ -2560,11 +2735,85 @@ class AppRuntimeServices:
 
         Each case reduces to the same primitive: rebuild the receiver
         pipeline so the detection branch matches the new detector's
-        appsink caps. ``PersonDetector`` construction is cheap once the
-        model file is cached – ``_load_backend`` is the only heavy step,
-        accepted as a brief GTK-thread stall on save. Backend-init
-        failures land as ``available=False`` (swallowed in ``__init__``);
-        the reason surfaces via runtime-stats ``missing_deps``, not a raise.
+        appsink caps. Building the detector loads its ONNX session, which
+        takes seconds on a large model, so it runs off the frame loop and
+        the branch is wired back on it (``_install_detector``). One build
+        runs at a time; the newest change waiting for it is built next, and
+        a build a later detection change overtook is dropped. A wiring failure calls
+        ``on_failure``, as the dispatcher reverts the stored config on a
+        raise. Backend-init failures land as ``available=False``; the
+        reason surfaces via runtime-stats ``missing_deps``.
+
+        Raises at once only without a video receiver, so the dispatcher
+        reverts rather than committing the new cfg against a missing runtime.
+        """
+        if self._app._video_receiver is None:
+            raise RuntimeError(
+                "swap_detector: no video receiver to swap – runtime is not initialised",
+            )
+        self._detector_builds += 1
+        self._queued_detector_build = (self._detector_builds, new_cfg, on_failure)
+        if self._detector_building is None:
+            self._build_next_detector()
+
+    @property
+    def detector_build_pending(self) -> bool:
+        """Whether the newest detection change is a detector still to be built and wired."""
+        queued = self._queued_detector_build
+        return self._detector_builds in (self._detector_building, queued[0] if queued else None)
+
+    def _build_next_detector(self) -> None:
+        queued, self._queued_detector_build = self._queued_detector_build, None
+        if queued is None or queued[0] != self._detector_builds:
+            return
+        build, new_cfg, on_failure = queued
+        self._detector_building = build
+
+        def construct() -> None:
+            try:
+                # Its first import loads cv2 and onnxruntime, too slow for the frame loop.
+                from openfollow.video.detection import PersonDetector
+
+                detector = PersonDetector(new_cfg)
+            except Exception:
+                logger.exception("detection: the person detector could not be built")
+                self._on_main_thread(lambda: self._detector_built(None, build, on_failure))
+                return
+            self._on_main_thread(lambda: self._detector_built(detector, build, on_failure))
+
+        self._off_main_thread(construct)
+
+    def _detector_built(
+        self, detector: PersonDetector | None, build: int, on_failure: Callable[[], None] | None
+    ) -> None:
+        self._detector_building = None
+        try:
+            if detector is None:
+                self._detector_swap_failed(build, on_failure)
+            else:
+                self._install_detector(detector, build, on_failure)
+        finally:
+            self._build_next_detector()
+
+    def _detector_swap_failed(self, build: int, on_failure: Callable[[], None] | None) -> None:
+        if build == self._detector_builds and on_failure is not None:
+            on_failure()
+
+    def _install_detector(
+        self, new_detector: PersonDetector, build: int, on_failure: Callable[[], None] | None
+    ) -> None:
+        """Wire a built detector into the pipeline on the main thread, unless a later change overtook it."""
+        if build != self._detector_builds:
+            new_detector.stop(wait=False)
+            return
+        try:
+            self._wire_detector(new_detector)
+        except Exception:
+            logger.exception("detection: the new person detector could not be wired in")
+            self._detector_swap_failed(build, on_failure)
+
+    def _wire_detector(self, new_detector: PersonDetector) -> None:
+        """Rebuild the pipeline around ``new_detector``.
 
         Skip-rebuild fast path: when **both** old and new detector are
         unavailable (or there's no old detector) the prior pipeline never
@@ -2573,22 +2822,17 @@ class AppRuntimeServices:
 
         **Transactional rollback** mirrors ``swap_video``: on
         ``swap_detection_branch`` failure, rebuild against the
-        prior detector so the receiver stays consistent with the
-        dispatcher's reverted ``app._config.detection``. Receiver
-        reference stays attached across every failure mode –
-        runtime / UI paths read ``app._video_receiver.<x>`` every
-        frame. ``PipelineStuckError`` is the one failure mode where
-        rollback is unsafe (the rollback would re-attach the shared
-        sink to a new pipeline while the old one is still alive);
-        re-raise WITHOUT a rollback attempt.
+        prior detector, then raise. Receiver reference stays attached
+        across every failure mode – runtime / UI paths read
+        ``app._video_receiver.<x>`` every frame. ``PipelineStuckError``
+        is the one failure mode where rollback is unsafe (the rollback
+        would re-attach the shared sink to a new pipeline while the old
+        one is still alive); re-raise WITHOUT a rollback attempt.
         """
-        from openfollow.video.detection import PersonDetector
         from openfollow.video.receiver import PipelineStuckError
 
         receiver = self._app._video_receiver
-        # A missing receiver means the runtime isn't initialised; raise so
-        # ``_apply_with_fallback`` reverts rather than committing the new
-        # cfg against a missing runtime.
+        # The runtime went away while the detector was built.
         if receiver is None:
             raise RuntimeError(
                 "swap_detector: no video receiver to swap – runtime is not initialised",
@@ -2609,13 +2853,6 @@ class AppRuntimeServices:
         if receiver_detector is not None and getattr(receiver_detector, "available", False):
             old_was_available = True
 
-        # ``PersonDetector.__init__`` self-gates on ``config.enabled``
-        # (returns early without touching cv2 / the backend when
-        # disabled). The dispatcher only routes here when ``new_cfg.enabled``
-        # is True, so the unavailable branch below covers genuine
-        # backend-init failures.
-        new_detector = PersonDetector(new_cfg)
-
         if not new_detector.available and not old_was_available:
             # Both ends unavailable: neither pipeline has a detection
             # branch. Skip the NULL transition and just refresh the
@@ -2623,7 +2860,7 @@ class AppRuntimeServices:
             # ``stop()`` is no-op-safe when the outgoing detector never
             # started (its worker thread was never created).
             if old_detector is not None:
-                old_detector.stop()
+                old_detector.stop(wait=False)
             self._person_detector = new_detector
             return
 
@@ -2635,7 +2872,7 @@ class AppRuntimeServices:
             receiver.swap_detection_branch(new_detector)
         except PipelineStuckError:
             # ``logger.error`` (not ``logger.exception``): the caller
-            # ``_apply_with_fallback`` already runs ``logger.exception``,
+            # ``_install_detector`` already runs ``logger.exception``,
             # so a traceback here would just duplicate the stack frame.
             # The new detector was never wired, so there's nothing to
             # clean up – its backend session is alive in the unreferenced
@@ -2789,9 +3026,14 @@ class AppRuntimeServices:
             path_state_provider=self._path_state,
             path_recorder=self._record_path,
             path_renamer=self._stage_path_rename,
+            touch_remote=self._app._touch_remote,
             # Live per-marker move speeds; the ``dict(...)`` copy is the
             # mutation-isolation boundary so the web thread never holds the live dict.
             marker_move_speeds_provider=lambda: dict(self._app._config.marker_move_speeds),
+            update_source_provider=lambda: (
+                self._app._config.update_github_repo,
+                self._app._config.update_include_prereleases,
+            ),
             full_snapshot_provider=self._snapshot_provider.get_snapshot,
             mouse3d_button_provider=self._mouse3d_latest_button,
             # Diagnostics + conflict-probe hooks. ``init_web_server`` runs
@@ -3449,6 +3691,7 @@ class AppRuntimeServices:
             cam_params_buffer=self._cam_params_buffer,
             dt=dt,
             network_alerts=self.network_alerts(),
+            control_conflicts=self._control_conflicts,
         )
 
         # Replaced on the main thread; a state the render thread received at a refresh is never changed.
@@ -3476,7 +3719,7 @@ class AppRuntimeServices:
         """Create the zone engine from config, wired to the shared OSC service."""
         from openfollow.zones import ZoneEngine
 
-        cfg = self._app._config.trigger_zones
+        cfg = self.zones_config()
         self._restage_osc_egress(self._app._config.osc_destinations)
         self._zone_engine = ZoneEngine(
             cfg,
@@ -3489,8 +3732,7 @@ class AppRuntimeServices:
         """Evaluate zone membership and emit OSC, throttled by ``eval_fps``."""
         if self._zone_engine is None:
             return
-        app = self._app
-        cfg = app._config.trigger_zones
+        cfg = self.zones_config()
         if not cfg.enabled:
             return
 
@@ -3556,9 +3798,9 @@ class AppRuntimeServices:
         from openfollow.scene.solver import invert_overlay_distortion, unproject_to_plane
 
         cam_cfg = app._camera.to_config()
-        # Lens-distortion coefficients live on the config (the pinhole Camera
-        # doesn't carry them), so read them straight from there.
-        lens = app._config.camera
+        # The lens lives on the config (the pinhole Camera doesn't carry it),
+        # so read it straight from there.
+        lens = effective_lens(app._config)
         params = self._zone_cam_buffer
         params[0] = cam_cfg.pos_x
         params[1] = cam_cfg.pos_y
@@ -3577,7 +3819,7 @@ class AppRuntimeServices:
             # The detection sits on the (lens-distorted) video, so undistort the
             # foot point back to the pinhole frame before unprojecting. Identity
             # when no lens distortion is configured.
-            undistorted = invert_overlay_distortion(screen_pt, float(w), float(h), lens.lens_k1, lens.lens_k2)
+            undistorted = invert_overlay_distortion(screen_pt, float(w), float(h), *lens)
             world = unproject_to_plane(params, undistorted, float(w), float(h), plane_z)
             if not np.all(np.isfinite(world[0])):
                 continue
@@ -3704,10 +3946,14 @@ class AppRuntimeServices:
         return {"recording": recording, "locks": locks}
 
     def _record_path(self, name: str | None) -> bool:
-        from openfollow.configuration import load_config
+        from openfollow.configuration import ConfigFileUnreadableError, read_config_whole
 
         # The web UI may have created the path a moment ago; the file is ahead of the running config.
-        return bool(self._app._paths.record(name, load_config(self._app._config_path).paths))
+        try:
+            on_disk = read_config_whole(self._app._config_path)
+        except ConfigFileUnreadableError:
+            on_disk = None
+        return bool(self._app._paths.record(name, (on_disk or self._app._config).paths))
 
     def _stage_path_rename(self, old: str, new: str) -> None:
         self._app._paths.stage_rename(old, new)
@@ -3785,6 +4031,7 @@ class AppRuntimeServices:
                 "ip": "N/A",
                 "hud_fps": 0.0,
                 "output_resolution": None,
+                "power": PowerState().to_dict(),
             },
             "video": {
                 "source_type": cfg.video_source_type,
@@ -3807,7 +4054,7 @@ class AppRuntimeServices:
             "mouse3d": idle_mouse3d_status(cfg.mouse3d.enabled).to_dict(),
             "playback": self._frame_metrics.snapshot(),
             "tracking": {
-                "enabled": bool(cfg.detection.enabled),
+                "enabled": bool(self.detection_config().enabled),
                 "available": False,
                 "running": False,
                 "model": cfg.detection.model,
@@ -3829,7 +4076,17 @@ class AppRuntimeServices:
                 "last_inference_age_ms": None,
                 "missing_deps": [],
             },
+            # Filled once the Operator Screen has drawn for a window (``HudMetrics``); None headless.
+            "hud": None,
+            "marker_conflicts": [],
         }
+
+    def _find_control_conflicts(self) -> tuple[ControlConflict, ...]:
+        """Markers two or more stations control, this one included, from the peers' catalog-sync beacons."""
+        sync = getattr(self._app, "_marker_catalog_sync", None)
+        if sync is None:
+            return ()
+        return find_control_conflicts(self._app._controlled_ids, sync.get_peer_selections())
 
     def _detection_pin_status(self) -> float | None:
         """The PSN tracker status the detection pin last wrote, or None when it drives nothing.
@@ -3888,6 +4145,7 @@ class AppRuntimeServices:
             else None
         )
         ip_address = system_stats.ip_address if system_stats is not None else "N/A"
+        power = system_stats.power if system_stats is not None else PowerState()
 
         hud_fps = 0.0
         if self._overlay_renderer is not None:
@@ -3988,9 +4246,10 @@ class AppRuntimeServices:
                 )
 
         playback_snapshot = self._frame_metrics.snapshot()
+        self._control_conflicts = self._find_control_conflicts()
 
         detection_snapshot: dict[str, Any] = {
-            "enabled": bool(cfg.detection.enabled),
+            "enabled": bool(self.detection_config().enabled),
             "available": False,
             "running": False,
             "model": cfg.detection.model,
@@ -4027,6 +4286,7 @@ class AppRuntimeServices:
                 "ip": ip_address,
                 "hud_fps": hud_fps,
                 "output_resolution": self._canvas_resolution(hud_fps),
+                "power": power.to_dict(),
             },
             "video": video_snapshot,
             "controllers": {
@@ -4040,6 +4300,8 @@ class AppRuntimeServices:
             "mouse3d": mouse3d_status.to_dict(),
             "playback": playback_snapshot,
             "tracking": detection_snapshot,
+            "hud": self._hud_render.stats() if self._hud_render is not None else None,
+            "marker_conflicts": [conflict.to_dict() for conflict in self._control_conflicts],
         }
 
         with self._runtime_stats_lock:
@@ -4107,6 +4369,8 @@ class AppRuntimeServices:
             return
         self._shutdown_in_progress = True
         app = self._app
+        # A detector still being built is dropped when it lands.
+        self._detector_builds += 1
         # Each step is isolated (see ``_safe_stop``) so one failing
         # teardown can't strand the rest – the OSC-service drain and MIDI
         # close at the end must always run.
@@ -4117,6 +4381,8 @@ class AppRuntimeServices:
             self._safe_stop("online sync", online_sync.stop)
         if self._person_detector is not None:
             self._safe_stop("person detector", self._person_detector.stop)
+        if self._system_stats is not None:
+            self._safe_stop("system stats", self._system_stats.stop)
         if app._input_manager is not None:
             self._safe_stop("input manager", app._input_manager.stop)
         # Stop catalog sync before the web server so the receive

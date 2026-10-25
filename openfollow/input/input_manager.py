@@ -5,9 +5,13 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+from openfollow.configuration import _apply_with_fallback, feature_gated, feature_on, save_config_fields
+from openfollow.input.control_frame import ControlFrame
 from openfollow.input.controller_identity import port_label, usb_host_paths
 from openfollow.input.controller_slots import (
     CONNECTED,
@@ -23,6 +27,7 @@ from openfollow.input.gamepad import GamepadHandler, GamepadUpdate
 from openfollow.input.keyboard import KeyboardHandler
 from openfollow.input.mouse import MouseHandler
 from openfollow.input.mouse3d import MOUSE3D_NAME, Mouse3DManager, Mouse3DUpdate
+from openfollow.input.touch_remote import MAX_REACH_M, RESET, holds, snap_z, stick_velocity
 from openfollow.logging_setup import ThrottledExceptionLogger
 from openfollow.net_utils import plane_source_iface
 from openfollow.osc.input import OscMarkerAdapter
@@ -38,6 +43,7 @@ from openfollow.runtime.services_detection_pin import (
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp
     from openfollow.configuration import Mouse3DConfig
+    from openfollow.input.touch_remote import RemoteFrame, TouchRemote
     from openfollow.paths.engine import PathEngine
     from openfollow.psn.marker import Marker
 
@@ -64,16 +70,6 @@ def resolve_osc_multicast_iface(listen_iface: str, station_iface: str) -> str | 
 
     address, status = resolve_multicast_iface(listen_iface, station_iface)
     return None if status == "down" else address
-
-
-def _oriented(vx: float, vy: float, invert: bool) -> tuple[float, float]:
-    """Flip X/Y for an upstage camera, whose view is 180° from the stage axes.
-
-    Relative input only. The 2D mouse (cursor unprojection) and OSC are
-    absolute, so they already follow the picture and must not be flipped. Z is
-    never touched.
-    """
-    return (-vx, -vy) if invert else (vx, vy)
 
 
 class InputManager:
@@ -128,6 +124,7 @@ class InputManager:
             marker_resolver=self._gamepad_marker_id,
         )
         self.mouse_handler = MouseHandler(app)
+        self.control_frame = ControlFrame(app)
         # The mouse glide runs every frame; a persistent failure must not flood
         # the log at the frame rate.
         self._mouse_update_err_log = ThrottledExceptionLogger(logger, "Mouse update failed this tick.")
@@ -137,6 +134,10 @@ class InputManager:
         self.mouse3d_manager = Mouse3DManager(app._config.mouse3d)
         self.mouse3d_manager.start()
         self._mouse3d_update_err_log = ThrottledExceptionLogger(logger, "3D Mouse update failed this tick.")
+        self._remote_update_err_log = ThrottledExceptionLogger(logger, "Touch remote update failed this tick.")
+        self._keyboard_update_err_log = ThrottledExceptionLogger(logger, "Keyboard update failed this tick.")
+        self._gamepad_move_err_log = ThrottledExceptionLogger(logger, "Gamepad move failed this tick.")
+        self._osc_apply_err_log = ThrottledExceptionLogger(logger, "OSC flush/apply failed this tick.")
         # Which slot each controller holds for the session; refreshed on the
         # main loop only, read from any thread via ``_controller_slots``.
         self._clock = time.monotonic
@@ -146,6 +147,8 @@ class InputManager:
         self._identify_flash: tuple[int, float] | None = None
         # Clock time of each marker's latest OSC position write.
         self._osc_last_write: dict[int, float] = {}
+        # Where each remote-held marker glides to, and for which session, until it lands or is steered.
+        self._remote_glides: dict[int, tuple[str, tuple[float, float, float]]] = {}
         self._refresh_slots()
 
         osc_cfg = app._config.osc
@@ -238,8 +241,10 @@ class InputManager:
             paths.release(marker_id)
         marker.set_pos(*self.app._get_default_marker_position())
 
-    def pathfinder(self, marker_id: int | None) -> None:
-        """A Pathfinder press for ``marker_id``: the keyboard's selected marker or a controller's own."""
+    def pathfinder(self, marker_id: int | None, *, remote: bool = False) -> None:
+        """A Pathfinder press for ``marker_id``: the keyboard's selected marker, a controller's own, or the remote's."""
+        if not remote and holds(self.app, marker_id):
+            return
         marker = self._get_marker(marker_id) if marker_id is not None else None
         if marker_id is not None and marker is not None and self._paths() is not None:
             paths_runtime.pathfinder(self.app, marker_id, marker)
@@ -375,18 +380,23 @@ class InputManager:
             gamepad_result.next_marker_pressed = False
             gamepad_result.prev_marker_pressed = False
 
-        # Read live (applies without a restart) and shared, so the three devices agree.
-        invert_xy = self.app._config.marker.invert_control_direction
+        self.control_frame.begin_frame()
 
         # 3D Mouse (6DOF): consume the latest device snapshot. Button edges fold
         # into the shared action flags; movement/reset/speed route to the marker
         # the mouse's unified controller slot drives. Gated on the live enabled flag.
         if self.app._config.mouse3d.enabled:
             try:
-                for local_idx, m3d in self.mouse3d_manager.update(dt).items():
-                    self._apply_mouse3d(m3d, local_idx, dt, gamepad_result, slots, invert_xy)
+                pucks = self.mouse3d_manager.update(dt)
             except Exception:
                 self._mouse3d_update_err_log.log()
+                pucks = {}
+            for local_idx, m3d in pucks.items():
+                # One puck's failure never costs the other pucks their frame.
+                try:
+                    self._apply_mouse3d(m3d, local_idx, dt, gamepad_result, slots)
+                except Exception:
+                    self._mouse3d_update_err_log.log()
 
         # Mouse marker control glides toward the cursor target every frame so
         # smoothing is independent of pointer-event rate. The handler no-ops
@@ -404,7 +414,7 @@ class InputManager:
         # ``poll_hotplug`` so this per-tick call stays cheap.
         # Isolate later subsystems so one raising can't drop the gamepad result.
         midi = getattr(getattr(self.app, "_runtime_services", None), "_midi", None)
-        if midi is not None:
+        if midi is not None and feature_on(self.app._config, "midi"):
             try:
                 midi.poll_hotplug()
             except Exception:
@@ -423,19 +433,20 @@ class InputManager:
                 keyboard_velocity is not None
                 and self.app._selected_id is not None
                 and self.app._config.controller.keyboard_enabled
+                and not holds(self.app, self.app._selected_id)
             ):
                 marker = self._get_marker(self.app._selected_id)
                 if marker:
                     vx, vy, vz = keyboard_velocity
-                    vx, vy = _oriented(vx, vy, invert_xy)
+                    vx, vy = self.control_frame.orient(("keyboard", self.app._selected_id), vx, vy, marker.pos)
                     self._move(self.app._selected_id, marker, vx, vy, vz, dt)
         except Exception:
-            logger.exception("Keyboard update failed this tick.")
+            self._keyboard_update_err_log.log()
 
         # Apply gamepad resets (X button -> configurable default position)
         for controller_idx in gamepad_result.resets:
             marker_id = self._gamepad_marker_id(controller_idx, slots)
-            if marker_id is None:
+            if marker_id is None or holds(self.app, marker_id):
                 continue
             marker = self._get_marker(marker_id)
             if marker:
@@ -453,12 +464,16 @@ class InputManager:
         # Apply gamepad movements to corresponding markers
         for controller_idx, (vx, vy, vz) in gamepad_result.movements.items():
             marker_id = self._gamepad_marker_id(controller_idx, slots)
-            if marker_id is None:
+            if marker_id is None or holds(self.app, marker_id):
                 continue
             marker = self._get_marker(marker_id)
             if marker:
-                ovx, ovy = _oriented(vx, vy, invert_xy)
-                self._move(marker_id, marker, ovx, ovy, vz, dt)
+                # One pad's failure never costs the rest of the frame (other pads, OSC, paths).
+                try:
+                    ovx, ovy = self.control_frame.orient(("gamepad", controller_idx, marker_id), vx, vy, marker.pos)
+                    self._move(marker_id, marker, ovx, ovy, vz, dt)
+                except Exception:
+                    self._gamepad_move_err_log.log()
 
         for controller_idx in gamepad_result.pathfinder_presses:
             self.pathfinder(self._gamepad_marker_id(controller_idx, slots))
@@ -468,43 +483,52 @@ class InputManager:
         # current position so the un-set axes stay where they were).
         if self.osc_handler is not None:
             try:
-                for marker_id, axes in self.osc_handler.flush_updates().items():
-                    if marker_id not in self.app._controlled_ids:
-                        continue
-                    marker = self._get_marker(marker_id)
-                    if not marker:
-                        continue
-                    # While pulled onto a path, the axes left out come from where it would be without the path.
-                    free = paths.free_position(marker_id) if paths is not None else None
-                    cur_x, cur_y, cur_z = free if free is not None else marker.pos
-                    x = axes.get("x", cur_x)
-                    y = axes.get("y", cur_y)
-                    z = axes.get("z", cur_z)
-                    landed = paths.project(marker_id, x, y) if paths is not None else None
-                    x, y, z = landed if landed is not None else (x, y, z)
-                    marker.set_pos(x, y, z)
-                    now = self._clock()
-                    last = self._osc_last_write.get(marker_id)
-                    self._osc_last_write[marker_id] = now
-                    if last is None or now - last >= _OSC_STREAM_GAP_S:
-                        logger.info(
-                            "OSC positions arriving for marker %d, first at (%.3f, %.3f, %.3f)",
-                            marker_id,
-                            x,
-                            y,
-                            z,
-                        )
-                    logger.debug(
-                        "OSC jump: marker %d → (%.3f, %.3f, %.3f)",
-                        marker_id,
-                        x,
-                        y,
-                        z,
-                    )
+                osc_updates = self.osc_handler.flush_updates()
             except Exception:
-                logger.exception("OSC flush/apply failed this tick.")
+                self._osc_apply_err_log.log()
+                osc_updates = {}
+            for marker_id, axes in osc_updates.items():
+                # One marker's failure never costs another marker its write.
+                try:
+                    self._apply_osc_position(marker_id, axes, paths)
+                except Exception:
+                    self._osc_apply_err_log.log()
 
         return gamepad_result
+
+    def _apply_osc_position(self, marker_id: int, axes: dict[str, float], paths: PathEngine | None) -> None:
+        if marker_id not in self.app._controlled_ids or holds(self.app, marker_id):
+            return
+        marker = self._get_marker(marker_id)
+        if not marker:
+            return
+        # While pulled onto a path, the axes left out come from where it would be without the path.
+        free = paths.free_position(marker_id) if paths is not None else None
+        cur_x, cur_y, cur_z = free if free is not None else marker.pos
+        x = axes.get("x", cur_x)
+        y = axes.get("y", cur_y)
+        z = axes.get("z", cur_z)
+        landed = paths.project(marker_id, x, y) if paths is not None else None
+        x, y, z = landed if landed is not None else (x, y, z)
+        marker.set_pos(x, y, z)
+        now = self._clock()
+        last = self._osc_last_write.get(marker_id)
+        self._osc_last_write[marker_id] = now
+        if last is None or now - last >= _OSC_STREAM_GAP_S:
+            logger.info(
+                "OSC positions arriving for marker %d, first at (%.3f, %.3f, %.3f)",
+                marker_id,
+                x,
+                y,
+                z,
+            )
+        logger.debug(
+            "OSC jump: marker %d → (%.3f, %.3f, %.3f)",
+            marker_id,
+            x,
+            y,
+            z,
+        )
 
     def update_paths(self, dt: float) -> None:
         """Run the path engine for one frame, whatever input does: menus open or no marker controlled.
@@ -520,11 +544,116 @@ class InputManager:
             return
         hand_over_anchors(self.app)
         paths.release_all(keep=self.app._controlled_ids)
-        paths_runtime.apply_commands(self.app, commands, self.app._controlled_ids, self._get_marker)
+        # An OSC lock or release never reaches a marker a remote holds.
+        steerable = [m for m in self.app._controlled_ids if not holds(self.app, m)]
+        paths_runtime.apply_commands(self.app, commands, steerable, self._get_marker)
         for slid_id, slid_to in paths.tick(dt).items():
             slid = self._get_marker(slid_id)
             if slid:
                 slid.set_pos(*slid_to)
+
+    def update_touch_remote(self, dt: float) -> None:
+        """Apply what the web touch remote asks of each marker it holds, whatever the menus do.
+
+        ``animate`` calls it every frame after :meth:`update_paths`. The stick is relative input:
+        shaped by ``[touch_remote]``, scaled to the station's ``marker.max_speed`` and oriented like
+        every other relative input. A hold with person detection on switches detection off.
+        """
+        remote = getattr(self.app, "_touch_remote", None)
+        if remote is None:
+            return
+        try:
+            self._apply_touch_remote(remote, dt)
+        except Exception:
+            self._remote_update_err_log.log()
+
+    def _apply_touch_remote(self, remote: TouchRemote, dt: float) -> None:
+        cfg = self.app._config
+        if not feature_gated(cfg.touch_remote, cfg, "touch_remote").enabled:
+            remote.release_all()
+        remote.release_uncontrolled(self.app._controlled_ids)
+        frames = remote.take()
+        holders = {frame.marker_id: frame.holder for frame in frames}
+        for marker_id in [m for m, (who, _t) in self._remote_glides.items() if holders.get(m) != who]:
+            del self._remote_glides[marker_id]
+        # Once per new hold, before its presses, so they move the marker and not an assist anchor;
+        # detection switched back on later while held stays on.
+        if any(frame.new for frame in frames) and cfg.detection.enabled and cfg.ui.feature_on("detection"):
+            self._switch_detection_off()
+        for frame in frames:
+            # One marker's failure never costs another marker its presses.
+            try:
+                self._apply_remote_frame(frame, dt)
+            except Exception:
+                self._remote_update_err_log.log()
+
+    def _apply_remote_frame(self, frame: RemoteFrame, dt: float) -> None:
+        cfg = self.app._config
+        tuning = cfg.touch_remote
+        max_speed = cfg.marker.max_speed
+        paths = self._paths()
+        marker_id = frame.marker_id
+        marker = self._get_marker(marker_id)
+        if marker is None:
+            return
+        for action in frame.actions:
+            self._remote_glides.pop(marker_id, None)
+            if action.target is not None:
+                paths_runtime.release(self.app, marker_id)
+                self._remote_glides[marker_id] = (frame.holder, action.target)
+            elif action.kind == RESET:
+                self._reset(marker_id, marker)
+            else:
+                self.pathfinder(marker_id, remote=True)
+        vx, vy = stick_velocity(frame.stick, tuning.stick_curve, tuning.stick_dead_zone, max_speed)
+        if vx or vy:
+            self._remote_glides.pop(marker_id, None)
+            # Stage directions: a tablet operator need not be watching the camera's picture.
+            self._move(marker_id, marker, vx, vy, 0.0, dt)
+        if frame.z_notches and not (paths is not None and paths.is_locked(marker_id)):
+            self._remote_glides.pop(marker_id, None)
+            x, y, z = marker.pos
+            z = snap_z(z, frame.z_notches, tuning.z_step_m)
+            marker.set_pos(x, y, max(-MAX_REACH_M, min(MAX_REACH_M, z)))
+        # The dead-man holds a glide where it is; it carries on once drive messages arrive again.
+        glide = self._remote_glides.get(marker_id) if frame.live else None
+        if glide is not None:
+            self._glide(marker_id, marker, glide[1], max_speed * dt)
+
+    def _glide(self, marker_id: int, marker: Marker, target: tuple[float, float, float], step: float) -> None:
+        x, y, z = marker.pos
+        tx, ty, tz = target
+        distance = math.dist((x, y, z), target)
+        # A target too far for a float distance lands at once rather than never.
+        if distance <= step or not math.isfinite(distance):
+            marker.set_pos(tx, ty, tz)
+            del self._remote_glides[marker_id]
+            return
+        k = step / distance
+        marker.set_pos(x + (tx - x) * k, y + (ty - y) * k, z + (tz - z) * k)
+
+    def _switch_detection_off(self) -> None:
+        """Turn person detection off, live and in the file, as a hot reload would: a remote took a marker.
+
+        A new config object, never an edit of the one the detector worker holds; reverted if it fails.
+        """
+        app = self.app
+        services = app._runtime_services
+        before = app._config.detection
+        app._config.detection = replace(before, enabled=False)
+        applied = _apply_with_fallback(
+            "detection",
+            lambda: services.apply_detection_change(app._config.detection),
+            on_failure=lambda: setattr(services, "_person_detector", None),
+        )
+        if not applied:
+            app._config.detection = before
+            return
+        try:
+            save_config_fields(app._config, app._config_path, ("detection.enabled",))
+        except Exception:
+            logger.exception("Failed to save person detection switched off.")
+        logger.warning("The touch remote took a marker: person detection is switched off.")
 
     def _apply_mouse3d(
         self,
@@ -533,7 +662,6 @@ class InputManager:
         dt: float,
         gamepad_result: GamepadUpdate,
         slots: tuple[SlotEntry, ...],
-        invert_xy: bool,
     ) -> None:
         """Apply one connected 3D Mouse's frame (``local_idx`` = its instance id).
 
@@ -544,8 +672,7 @@ class InputManager:
         marker this puck's unified slot drives (the selected marker when it's the
         only controller, its fixed slot otherwise); the velocity is a unit rate
         scaled here by the marker's move-speed. ``slots`` is the frame's
-        unified-controller snapshot, and ``invert_xy`` the frame's shared
-        control-direction flag.
+        unified-controller snapshot.
         """
         if self.marker_cycle_active(slots):
             if m3d.next_marker:
@@ -565,7 +692,9 @@ class InputManager:
         marker = self._get_marker(marker_id)
         if marker is None:
             return
-        if m3d.reset:
+        # A remote hold blocks what moves the marker; its speed and fader stay with the puck.
+        held = holds(self.app, marker_id)
+        if m3d.reset and not held:
             self._reset(marker_id, marker)
         if m3d.pathfinder:
             self.pathfinder(marker_id)
@@ -574,8 +703,8 @@ class InputManager:
             for _ in range(abs(m3d.speed_steps)):
                 self.app.adjust_move_speed(direction, marker_id=marker_id)
         vx, vy, vz = m3d.velocity
-        if vx or vy or vz:
-            vx, vy = _oriented(vx, vy, invert_xy)
+        if (vx or vy or vz) and not held:
+            vx, vy = self.control_frame.orient(("mouse3d", local_idx, marker_id), vx, vy, marker.pos)
             speed = self.app.get_marker_move_speed(marker_id)
             self._move(marker_id, marker, vx * speed, vy * speed, vz * speed, dt)
         if m3d.fader_signal:
@@ -717,6 +846,45 @@ class InputManager:
         The operator-message adapter is torn down and rebuilt alongside the
         marker adapter, since it subscribes on that listener.
         """
+        try:
+            self._rebuild_osc(
+                enabled,
+                port,
+                allowed_sender_ips,
+                multicast_group=multicast_group,
+                listen_iface=listen_iface,
+            )
+        except OSError as exc:
+            logger.error(
+                "OSC input restart failed on port %d: %s. OSC input disabled.",
+                port,
+                exc,
+            )
+
+    def resume_osc(self) -> None:
+        """Rebuild OSC input from the live config; raises ``OSError`` while its listener cannot bind.
+
+        For the network observer, which retries on its own backoff and has to
+        see the failure rather than a logged no-op.
+        """
+        cfg = self.app._config.osc
+        self._rebuild_osc(
+            cfg.enabled,
+            cfg.port,
+            list(cfg.allowed_sender_ips),
+            multicast_group=cfg.multicast_group,
+            listen_iface=cfg.listen_iface,
+        )
+
+    def _rebuild_osc(
+        self,
+        enabled: bool,
+        port: int,
+        allowed_sender_ips: list[str] | None,
+        *,
+        multicast_group: str,
+        listen_iface: str,
+    ) -> None:
         # Drop the operator-message adapter before tearing the listener down.
         self._stop_operator_message_handler()
         self._stop_path_osc_handler()
@@ -724,29 +892,24 @@ class InputManager:
             self.osc_handler.stop()
             self.osc_handler = None
         self._osc_last_write.clear()
-        if enabled:
-            self.osc_handler = OscMarkerAdapter(
-                self.app._runtime_services._osc_service,
-                port=port,
-                allowed_sender_ips=list(allowed_sender_ips or []),
-                multicast_group=multicast_group,
-                multicast_iface=resolve_osc_multicast_iface(
-                    listen_iface,
-                    self.app._config.psn_source_iface,
-                ),
-                multicast_iface_name=plane_source_iface(listen_iface, self.app._config.psn_source_iface),
-            )
-            try:
-                self.osc_handler.start()
-            except OSError as exc:
-                logger.error(
-                    "OSC input restart failed on port %d: %s. OSC input disabled.",
-                    port,
-                    exc,
+        try:
+            if enabled:
+                handler = OscMarkerAdapter(
+                    self.app._runtime_services._osc_service,
+                    port=port,
+                    allowed_sender_ips=list(allowed_sender_ips or []),
+                    multicast_group=multicast_group,
+                    multicast_iface=resolve_osc_multicast_iface(
+                        listen_iface,
+                        self.app._config.psn_source_iface,
+                    ),
+                    multicast_iface_name=plane_source_iface(listen_iface, self.app._config.psn_source_iface),
                 )
-                self.osc_handler = None
-        self._rebuild_operator_message_handler()
-        self._rebuild_path_osc_handler()
+                handler.start()
+                self.osc_handler = handler
+        finally:
+            self._rebuild_operator_message_handler()
+            self._rebuild_path_osc_handler()
 
     def restart_mouse3d(self, config: Mouse3DConfig) -> None:
         """Live-apply a 3D Mouse config change.

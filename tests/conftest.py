@@ -9,6 +9,7 @@ vanish from both ``-m unit`` and ``-m "integration or smoke"`` selections.
 """
 
 import os
+import socket
 import warnings
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -58,14 +59,22 @@ class UnmarkedTestWarning(UserWarning):
     """A test was collected without a suite marker and defaulted to ``unit``."""
 
 
+@pytest.fixture
+def every_feature_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Configs built in the test start with every feature on, so a test of a gated subsystem runs it."""
+    import openfollow.configuration as configuration
+
+    monkeypatch.setattr(configuration, "DEFAULT_SHOWN_FEATURES", configuration.FEATURE_KEYS)
+
+
 @pytest.fixture(autouse=True)
 def _restore_os_environ() -> Iterator[None]:
     """Snapshot ``os.environ`` and restore it after every test.
 
     Some production code legitimately mutates the process environment directly
     rather than through ``monkeypatch`` – e.g. ``GamepadHandler.__init__`` does
-    ``os.environ.setdefault("SDL_AUDIODRIVER", "dummy")`` so SDL never opens the
-    ALSA device. ``monkeypatch`` only unwinds the changes it made itself,
+    ``os.environ.setdefault("SDL_VIDEODRIVER", "dummy")`` so SDL never opens a
+    window. ``monkeypatch`` only unwinds the changes it made itself,
     so without this such a write would leak into every later test in the worker
     (a hidden ordering dependency). Restoring the original mapping keeps each
     test hermetic. Cheap: a dict copy plus an equality check, and the restore
@@ -261,3 +270,54 @@ def psn_packet_clock(first: float, rest: float) -> Callable[[], float]:
     """
     seq = iter([first])
     return lambda: next(seq, rest)
+
+
+@pytest.fixture
+def psn_loopback_sockets(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[socket.socket]]:
+    """Open every unpinned PSN receive socket on loopback unicast, not the multicast group.
+
+    A real socket a real receive thread parks on, without depending on the
+    host's multicast routing. A read timeout is stretched from pypsn's 2 s to
+    a minute, so a stop that waits for the read is as slow as its join allows.
+    Stretched rather than removed: a timed read polls, and closing the socket
+    from another thread does not wake a poll, while on macOS it does wake a
+    plain blocking read. Yields the sockets in the order they were opened.
+    """
+    import pypsn
+
+    made: list[socket.socket] = []
+
+    class _ParkedRead(socket.socket):
+        def settimeout(self, value: float | None) -> None:
+            super().settimeout(60.0 if value else value)
+
+    def _socket(_ip: str, _port: int) -> socket.socket:
+        sock = _ParkedRead(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(("127.0.0.1", 0))
+        made.append(sock)
+        return sock
+
+    monkeypatch.setattr(pypsn, "get_socket", _socket)
+    yield made
+    for sock in made:
+        sock.close()
+
+
+def send_psn_tracker(dest: tuple[str, int], tracker_id: int) -> None:
+    """Send one PSN data packet carrying *tracker_id* to *dest*."""
+    import pypsn
+
+    info = pypsn.PsnInfo(timestamp=0, version_high=2, version_low=0, frame_id=0, packet_count=1)
+    zero = pypsn.PsnVector3(0.0, 0.0, 0.0)
+    tracker = pypsn.PsnTracker(
+        tracker_id=tracker_id,
+        pos=pypsn.PsnVector3(1.0, 2.0, 3.0),
+        speed=zero,
+        ori=zero,
+        accel=zero,
+        trgtpos=zero,
+        status=1,
+    )
+    data = pypsn.prepare_psn_data_packet_bytes(pypsn.PsnDataPacket(info=info, trackers=[tracker]))
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as tx:
+        tx.sendto(data, dest)

@@ -10,6 +10,7 @@ Direct Linear Transform, then decompose it into camera parameters
 
 from __future__ import annotations
 
+import functools
 import math
 from typing import Any
 
@@ -17,6 +18,7 @@ import numpy as np
 import numpy.typing as npt
 
 from openfollow.configuration import CameraConfig
+from openfollow.lens_model import lens_limit_radius
 from openfollow.scene.camera import psn_to_pygfx_array
 
 # fov bounds mirror CameraConfig.__post_init__ – outside this band tan(fov/2)
@@ -327,71 +329,124 @@ def ring_silhouette_edges(
     ]
 
 
-# Bracketed Newton steps to invert the radial warp, at most; just above
-# k2 = 9*k1^2/20 the slope nearly vanishes and 24 steps settle every valid pair.
-_DISTORTION_INVERT_ITERS = 40
-_DISTORTION_INVERT_SETTLED = 1e-14
-# A preimage past this many half-diagonals is no longer a screen point; it caps
-# the bracket for a warp that never folds (pincushion).
-_DISTORTION_INVERT_R_CAP = 4.0
+# Screen radii in the per-pair seed table of the pinhole-to-screen inverse, from the lens centre to the limit.
+_DISTORT_TABLE_SIZE = 513
+# Newton steps from the table's seed. A last step this small leaves an error of about its square.
+_DISTORT_POLISH_STEPS = 2
+_DISTORT_POLISHED = 1e-8
+# The bracketed solve stops once a step moves a radius by at most this, in half-diagonals.
+_DISTORT_SETTLED = 1e-13
+# Bracketed steps at most: a bisection halves the bracket, so these reach the float spacing of any limit.
+_DISTORT_MAX_STEPS = 80
 
 
-def _fold_radius(k1: npt.ArrayLike, k2: npt.ArrayLike) -> npt.NDArray[np.float64]:
-    """Vectorised :func:`openfollow.lens_model.lens_fold_radius`, broadcasting ``k1`` against ``k2``."""
-    a = np.asarray(k1, dtype=np.float64)
-    b = np.asarray(k2, dtype=np.float64)
-    a, b = np.broadcast_arrays(a, b)
-    out = np.full(a.shape, np.inf)
-    linear = (b == 0.0) & (a < 0.0)
-    safe_a = np.where(linear, a, -1.0)
-    with np.errstate(over="ignore"):
-        out = np.where(linear, np.sqrt(-1.0 / (3.0 * safe_a)), out)
-    disc = 9.0 * a * a - 20.0 * b
-    quadratic = (b != 0.0) & (disc >= 0.0)
-    sq = np.sqrt(np.where(quadratic, disc, 0.0))
-    # The q form keeps both roots exact when k2 is tiny against k1.
-    q = -0.5 * (3.0 * a + np.where(a < 0.0, -sq, sq))
+def _first_positive_roots(a: npt.ArrayLike, b: npt.ArrayLike) -> npt.NDArray[np.float64]:
+    """Vectorised smallest positive root of ``1 + b s + a s^2``, ``inf`` where there is none."""
+    qa, qb = np.broadcast_arrays(np.asarray(a, dtype=np.float64), np.asarray(b, dtype=np.float64))
     with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
-        s_one = q / np.where(quadratic, 5.0 * b, 1.0)
-        s_two = np.where(q != 0.0, 1.0 / np.where(q != 0.0, q, 1.0), np.inf)
-    smallest = np.minimum(np.where(s_one > 0.0, s_one, np.inf), np.where(s_two > 0.0, s_two, np.inf))
-    return np.where(quadratic, np.sqrt(smallest), out)
+        linear = np.where(qb < 0.0, -1.0 / qb, np.inf)
+        disc = qb * qb - 4.0 * qa
+        # The q form keeps both roots exact when ``a`` is tiny against ``b``.
+        q = -0.5 * (qb + np.copysign(np.sqrt(np.maximum(disc, 0.0)), qb))
+        roots = np.stack([q / qa, 1.0 / q])
+        smallest = np.min(np.where(roots > 0.0, roots, np.inf), axis=0)
+    return np.asarray(np.where(qa == 0.0, linear, np.where(disc >= 0.0, smallest, np.inf)), dtype=np.float64)
 
 
-def invert_normalised_radius(
-    r_d: npt.ArrayLike,
-    k1: npt.ArrayLike,
-    k2: npt.ArrayLike,
-) -> npt.NDArray[np.float64]:
-    """Solve ``r_u * f(r_u) == r_d`` for the pinhole radius, broadcasting all three.
-
-    Radii are normalised to the half-diagonal. A distorted radius the warp can
-    never reach (past the fold under barrel distortion) returns the fold radius,
-    so a corner click stays a bounded, sensible point. NaN passes through.
-    """
-    rd = np.asarray(r_d, dtype=np.float64)
+def _limits(k1: npt.ArrayLike, k2: npt.ArrayLike) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """The limit screen radius and the largest pinhole radius with a screen point (the fold's, else ``inf``)."""
     a = np.asarray(k1, dtype=np.float64)
     b = np.asarray(k2, dtype=np.float64)
-    r_max = np.minimum(_fold_radius(a, b), _DISTORTION_INVERT_R_CAP)
-    rd, a, b, r_max = np.broadcast_arrays(rd, a, b, r_max)
-    lo = np.zeros(rd.shape)
-    hi = np.array(r_max, dtype=np.float64)
-    r = np.minimum(rd, r_max)
-    tiny = 1e-12
-    for _ in range(_DISTORTION_INVERT_ITERS):
-        r2 = r * r
-        h = r * (1.0 + a * r2 + b * r2 * r2) - rd
-        slope = 1.0 + 3.0 * a * r2 + 5.0 * b * r2 * r2
-        lo = np.where(h < 0.0, r, lo)
-        hi = np.where(h > 0.0, r, hi)
-        step = np.where(slope > tiny, h / np.maximum(slope, tiny), 0.0)
+    s_pole = _first_positive_roots(b, a)
+    s_fold = _first_positive_roots(-3.0 * b, -a)
+    s_lim = np.minimum(s_pole, s_fold)
+    r_lim = np.sqrt(s_lim)
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        reach = np.where(s_fold < s_pole, r_lim / (1.0 + a * s_lim + b * s_lim * s_lim), np.inf)
+    return r_lim, np.asarray(reach, dtype=np.float64)
+
+
+def _limit_radius(k1: npt.ArrayLike, k2: npt.ArrayLike) -> npt.NDArray[np.float64]:
+    """Vectorised :func:`openfollow.lens_model.lens_limit_radius`, broadcasting ``k1`` against ``k2``."""
+    return _limits(k1, k2)[0]
+
+
+@functools.lru_cache(maxsize=8)
+def _distort_table(k1: float, k2: float) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], float, float]:
+    """Pinhole radii over screen radii in ``[0, limit)`` for one pair, then the limit and the pinhole reach."""
+    r_lim, reach = (float(v) for v in _limits(k1, k2))
+    r_d = r_lim * np.arange(_DISTORT_TABLE_SIZE) / _DISTORT_TABLE_SIZE
+    s = r_d * r_d
+    return r_d / (1.0 + k1 * s + k2 * s * s), r_d, r_lim, reach
+
+
+def _newton_step(r: Any, r_u: Any, k1: Any, k2: Any) -> tuple[Any, Any]:
+    """``h`` and the Newton step on ``h(r) = r_u D(r^2) - r``, which has no pole, so it holds up to the limit."""
+    s = r * r
+    h = r_u * ((k2 * s + k1) * s + 1.0) - r
+    return h, h / (r_u * r * (4.0 * k2 * s + 2.0 * k1) - 1.0)
+
+
+def _bracketed_radius(r_u: Any, k1: Any, k2: Any, r_lim: Any, r: Any) -> npt.NDArray[np.float64]:
+    """Newton from ``r`` inside ``[0, r_lim]``, bisecting whenever a step leaves the bracket.
+
+    ``h`` is positive below the root and negative above it while ``D > 0``,
+    which keeps the bracket honest.
+    """
+    lo = np.zeros(r_u.shape)
+    hi = np.broadcast_to(np.asarray(r_lim, dtype=np.float64), r_u.shape).copy()
+    pending = ~np.isnan(r_u)
+    for _ in range(_DISTORT_MAX_STEPS):
+        h, step = _newton_step(r, r_u, k1, k2)
+        lo = np.where(h > 0.0, r, lo)
+        hi = np.where(h < 0.0, r, hi)
         cand = r - step
-        bisect = (cand < lo) | (cand > hi) | (slope <= tiny)
-        moved = np.where(bisect, 0.5 * (lo + hi), cand)
-        settled = bool(np.all((np.abs(moved - r) <= _DISTORTION_INVERT_SETTLED) | np.isnan(moved)))
+        moved = np.where((cand >= lo) & (cand <= hi), cand, 0.5 * (lo + hi))
+        pending &= ~(np.abs(moved - r) <= _DISTORT_SETTLED)
         r = moved
-        if settled:
+        if not pending.any():
             break
+    return np.asarray(np.where(np.isnan(r_u), np.nan, r), dtype=np.float64)
+
+
+def _distort_pair(r_u: npt.NDArray[np.float64], k1: float, k2: float) -> npt.NDArray[np.float64]:
+    """:func:`distort_normalised_radius` for one pair: closed form for ``k2 == 0``, else a table seed polished by
+    Newton, with the bracketed solve for any radius the polish leaves unsettled."""
+    pinhole, screen, r_lim, reach = _distort_table(k1, k2)
+    ru = r_u if reach == math.inf else np.minimum(r_u, reach)
+    if k2 == 0.0:
+        return np.asarray(2.0 * ru / (1.0 + np.sqrt(np.maximum(1.0 - 4.0 * k1 * ru * ru, 0.0))), dtype=np.float64)
+    r = np.interp(ru, pinhole, screen)
+    for _ in range(_DISTORT_POLISH_STEPS):
+        _, step = _newton_step(r, ru, k1, k2)
+        r -= step
+    # fmax skips NaN, which passes through.
+    if r.size and np.fmax.reduce(np.abs(step), axis=None) > _DISTORT_POLISHED:
+        rest = np.abs(step) > _DISTORT_POLISHED
+        r[rest] = _bracketed_radius(ru[rest], k1, k2, r_lim, np.interp(ru[rest], pinhole, screen))
+    return r
+
+
+def distort_normalised_radius(r_u: npt.ArrayLike, k1: npt.ArrayLike, k2: npt.ArrayLike) -> npt.NDArray[np.float64]:
+    """The screen radius whose pinhole radius is ``r_u``, broadcasting all three.
+
+    Solves ``r_u = r / (1 + k1 r^2 + k2 r^4)`` for ``r`` up to the limit,
+    radii in half-diagonals about the lens centre. Under barrel every pinhole
+    radius has one, inside the pole; past a fold (pincushion) none does, and
+    the pinhole radius lands on the fold radius. NaN passes through.
+    """
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        if np.ndim(k1) == 0 and np.ndim(k2) == 0:
+            ru = np.asarray(r_u, dtype=np.float64)
+            return _distort_pair(ru.reshape(-1), float(k1), float(k2)).reshape(ru.shape)  # type: ignore[arg-type]
+        ru, a, b = np.broadcast_arrays(*(np.asarray(v, dtype=np.float64) for v in (r_u, k1, k2)))
+        r_lim, reach = _limits(a, b)
+        ru = np.minimum(ru, reach)
+        # k2 == 0 is closed form, stable as k1 -> 0; past a fold its radicand would turn negative.
+        r = 2.0 * ru / (1.0 + np.sqrt(np.maximum(1.0 - 4.0 * a * ru * ru, 0.0)))
+        quartic = b != 0.0
+        if quartic.any():
+            r = np.where(quartic, _bracketed_radius(ru, a, b, r_lim, np.clip(r, 0.0, r_lim)), r)
     return np.asarray(r, dtype=np.float64)
 
 
@@ -401,32 +456,34 @@ def apply_overlay_distortion(
     canvas_h: float,
     k1: float,
     k2: float,
+    cx: float,
+    cy: float,
 ) -> npt.NDArray[np.float64]:
-    """Bow projected overlay points to match a radially distorted lens.
+    """Bow pinhole points onto the lens-distorted picture, the lens model's pinhole-to-screen direction.
 
-    Applies even-order radial distortion ``f = 1 + k1*r^2 + k2*r^4`` about the
-    image centre, with ``r`` normalised to the image half-diagonal (``r == 1``
-    at a corner). ``k < 0`` pulls the edges inward (barrel / fisheye), ``k > 0``
-    pushes them outward (pincushion). Only the rendered HUD is warped; the video
-    frame is never touched.
-
-    Returns the input unchanged when ``k1 == 0.0 and k2 == 0.0`` so the pinhole
-    overlay path costs nothing. Non-finite rows (points behind the camera) pass
-    straight through as NaN for the downstream ``isfinite`` filters.
+    ``k1``, ``k2`` and the lens centre ``(cx, cy)`` follow
+    :mod:`openfollow.lens_model`. Only the rendered HUD is warped; the video
+    frame is never touched. Returns the input unchanged when all four are 0,
+    so the pinhole overlay path costs nothing. Non-finite rows (points behind
+    the camera) pass straight through as NaN for the downstream ``isfinite``
+    filters.
     """
     pts = np.asarray(screen_pts, dtype=np.float64).reshape(-1, 2)
-    if k1 == 0.0 and k2 == 0.0:
+    if k1 == 0.0 and k2 == 0.0 and cx == 0.0 and cy == 0.0:
         return pts
-    cx = canvas_w / 2.0
-    cy = canvas_h / 2.0
+    fx = canvas_w / 2.0
+    fy = canvas_h / 2.0
     half_diag = 0.5 * math.hypot(canvas_w, canvas_h)
-    dx = (pts[:, 0] - cx) / half_diag
-    dy = (pts[:, 1] - cy) / half_diag
-    r2 = dx * dx + dy * dy
-    f = 1.0 + k1 * r2 + k2 * r2 * r2
-    out_x = cx + dx * f * half_diag
-    out_y = cy + dy * f * half_diag
-    return np.column_stack([out_x, out_y])
+    ox = fx + cx * half_diag
+    oy = fy + cy * half_diag
+    if k1 == 0.0 and k2 == 0.0:
+        return np.column_stack((pts[:, 0] + (ox - fx), pts[:, 1] + (oy - fy)))
+    dx = pts[:, 0] - fx
+    dy = pts[:, 1] - fy
+    r_u = np.hypot(dx, dy) / half_diag
+    # The slope at the lens centre is 1, so the centre's own scale is 1.
+    scale = np.divide(distort_normalised_radius(r_u, k1, k2), r_u, out=np.ones_like(r_u), where=r_u > 0.0)
+    return np.column_stack((ox + dx * scale, oy + dy * scale))
 
 
 def invert_overlay_distortion(
@@ -435,32 +492,32 @@ def invert_overlay_distortion(
     canvas_h: float,
     k1: float,
     k2: float,
+    cx: float,
+    cy: float,
 ) -> npt.NDArray[np.float64]:
-    """Map distorted screen points back to the pinhole frame.
+    """Map lens-distorted screen points to the pinhole frame, the lens model's closed-form direction.
 
     Inverse of :func:`apply_overlay_distortion`. Used on the input path: a mouse
     click / detection point lands on the distorted video, so it is undistorted
-    here before :func:`unproject_to_plane` (which stays pinhole). The radial
-    vector keeps its direction, so only its length is solved, by
-    :func:`invert_normalised_radius`.
+    here before :func:`unproject_to_plane` (which stays pinhole). A point at or
+    past the lens's limit radius has no single pinhole point and returns NaN; a
+    valid lens keeps the whole frame inside it.
 
-    Returns the input unchanged when ``k1 == 0.0 and k2 == 0.0``. NaN rows pass
-    through.
+    Returns the input unchanged when all four are 0. NaN rows pass through.
     """
     pts = np.asarray(screen_pts, dtype=np.float64).reshape(-1, 2)
-    if k1 == 0.0 and k2 == 0.0:
+    if k1 == 0.0 and k2 == 0.0 and cx == 0.0 and cy == 0.0:
         return pts
-    cx = canvas_w / 2.0
-    cy = canvas_h / 2.0
+    fx = canvas_w / 2.0
+    fy = canvas_h / 2.0
     half_diag = 0.5 * math.hypot(canvas_w, canvas_h)
-    dx = (pts[:, 0] - cx) / half_diag
-    dy = (pts[:, 1] - cy) / half_diag
-    r_d = np.hypot(dx, dy)
-    r_u = invert_normalised_radius(r_d, k1, k2)
-    scale = np.where(r_d > 0.0, r_u / np.where(r_d > 0.0, r_d, 1.0), 1.0)
-    out_x = cx + dx * scale * half_diag
-    out_y = cy + dy * scale * half_diag
-    return np.column_stack([out_x, out_y])
+    dx = pts[:, 0] - (fx + cx * half_diag)
+    dy = pts[:, 1] - (fy + cy * half_diag)
+    s = (dx * dx + dy * dy) / (half_diag * half_diag)
+    r_lim = lens_limit_radius(k1, k2)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        scale = np.where(s < r_lim * r_lim, 1.0 / ((k2 * s + k1) * s + 1.0), np.nan)
+    return np.column_stack((fx + dx * scale, fy + dy * scale))
 
 
 def unproject_to_plane(
@@ -531,6 +588,98 @@ def unproject_to_plane(
         result[i] = [hit[0], -hit[2], hit[1]]
 
     return result
+
+
+# A flattened camera axis shorter than this is (near) vertical and carries no bearing.
+_FLAT_AXIS_EPS = 1e-6
+# The picture step ``screen_axes_at`` measures over, as a fraction of the canvas height.
+_SCREEN_STEP_FRACTION = 0.01
+
+PlanarAxes = tuple[tuple[float, float], tuple[float, float]]
+
+
+def camera_params(cam: CameraConfig) -> npt.NDArray[np.float64]:
+    """The 7-float ``[pos_x, pos_y, pos_z, pitch, yaw, roll, fov]`` the projection functions take."""
+    return np.array([cam.pos_x, cam.pos_y, cam.pos_z, cam.pitch, cam.yaw, cam.roll, cam.fov], dtype=np.float64)
+
+
+def bearing_axes(yaw_deg: float) -> PlanarAxes:
+    """(right, forward) of a camera with ``yaw_deg`` and no roll, as unit PSN XY vectors."""
+    rad = math.radians(yaw_deg)
+    c, s = math.cos(rad), math.sin(rad)
+    return (c, -s), (s, c)
+
+
+def ground_axes(params: npt.NDArray[Any]) -> PlanarAxes:
+    """The camera's (right, forward) on the floor, as unit PSN XY vectors.
+
+    Right is the camera's right axis flattened onto the floor, forward a
+    quarter turn left of it, so a camera with no roll keeps its yaw bearing at
+    any pitch. As roll stands the right axis up, the flattened view axis takes
+    over forward by the share the right axis lost, so a level camera keeps its
+    bearing up to 120 degrees of roll; an upside-down one steers as its picture
+    shows.
+    """
+    _, _, _, pitch, yaw, roll, _ = params
+    R = _rotation_matrix(math.radians(pitch), math.radians(yaw), math.radians(roll))
+    # Columns are the camera's axes in pygfx (x, y, z), looking along -z; PSN XY is (x, -z).
+    rx, ry = float(R[0, 0]), float(-R[2, 0])
+    lost = 1.0 - math.hypot(rx, ry)
+    fx, fy = -ry - lost * float(R[0, 2]), rx + lost * float(R[2, 2])
+    norm = math.hypot(fx, fy)
+    if norm <= _FLAT_AXIS_EPS:
+        # Only an upside-down camera cancels the two (level, rolled about 120 degrees). Some
+        # upside-down pose must: level, forward is its view; looking down, its picture's up.
+        fx, fy = float(-R[0, 2]), float(R[2, 2])
+        norm = math.hypot(fx, fy)
+    fx, fy = fx / norm, fy / norm
+    return (fy, -fx), (fx, fy)
+
+
+def screen_axes_at(
+    params: npt.NDArray[Any],
+    point_psn: tuple[float, float, float],
+    canvas_w: float,
+    canvas_h: float,
+    k1: float = 0.0,
+    k2: float = 0.0,
+    cx: float = 0.0,
+    cy: float = 0.0,
+) -> PlanarAxes | None:
+    """The stage directions that move ``point_psn`` right and up the picture, at its own height.
+
+    Unit PSN XY vectors, measured over a small step on the lens-distorted
+    picture. ``None`` when the point is behind the camera or off the picture,
+    a step leaves the plane (the horizon), or the plane is not below the
+    camera, where up the picture turns back towards it.
+    """
+    if float(params[2]) <= float(point_psn[2]):
+        return None
+    pt = np.array([point_psn], dtype=np.float64)
+    pinhole_pt = project_points(params, pt, canvas_w, canvas_h)
+    seen = apply_overlay_distortion(pinhole_pt, canvas_w, canvas_h, k1, k2, cx, cy)
+    sx, sy = float(seen[0, 0]), float(seen[0, 1])
+    if not (math.isfinite(sx) and math.isfinite(sy) and 0.0 <= sx <= canvas_w and 0.0 <= sy <= canvas_h):
+        return None
+    step = _SCREEN_STEP_FRACTION * canvas_h
+    picture = np.array([[sx, sy], [sx + step, sy], [sx, sy - step]], dtype=np.float64)
+    pinhole = invert_overlay_distortion(picture, canvas_w, canvas_h, k1, k2, cx, cy)
+    # A pinhole point past a fold lands on the fold radius, and a picture point past the limit has
+    # no pinhole point: then neither the point nor its steps would be where they are drawn.
+    redistorted = apply_overlay_distortion(pinhole, canvas_w, canvas_h, k1, k2, cx, cy)
+    tol = 0.01 * step
+    if not (np.allclose(redistorted, picture, atol=tol) and np.allclose(pinhole[0], pinhole_pt[0], atol=tol)):
+        return None
+    world = unproject_to_plane(params, pinhole, canvas_w, canvas_h, float(point_psn[2]))
+    if not np.all(np.isfinite(world)):
+        return None
+    axes = []
+    for row in (1, 2):
+        dx, dy = float(world[row, 0] - world[0, 0]), float(world[row, 1] - world[0, 1])
+        # A plane homography keeps the three picture points distinct.
+        norm = math.hypot(dx, dy)
+        axes.append((dx / norm, dy / norm))
+    return axes[0], axes[1]
 
 
 # ---------------------------------------------------------------------------

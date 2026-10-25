@@ -365,11 +365,26 @@ def test_on_key_down_digit_gated_while_modal_open() -> None:
 
 
 def test_ctrl_s_saves_the_pose_and_keeps_what_the_setup_wizard_saved(monkeypatch, tmp_path) -> None:
-    from openfollow.configuration import AppConfig, CalibrationPointConfig, CameraConfig
+    from openfollow.configuration import AppConfig, CalibrationMarkConfig, CameraConfig
 
     monkeypatch.setattr(app_modes, "save_config_fields", lambda *_args, **_kwargs: None)
-    point = CalibrationPointConfig("DSL", "DSR", 21.4, 23.9, 0.0, 0.4, 0.2, [2.5, 9.0, 0.0])
-    config = AppConfig(camera=CameraConfig(lens_k1=-0.2, lens_k2=0.05, calibration_points=[point]))
+    marks = [
+        CalibrationMarkConfig(id=1, kind="known", x=5.0, y=0.0, z=0.0, pin=[0.8, 0.9]),
+        CalibrationMarkConfig(id=2, kind="known", x=-5.0, y=0.0, z=0.0, pin=[0.2, 0.9]),
+        CalibrationMarkConfig(
+            id=3,
+            kind="triangulated",
+            from_a=1,
+            from_b=2,
+            distance_a=21.4,
+            distance_b=23.9,
+            z=0.0,
+            pin=[0.4, 0.2],
+            position=[2.5, 9.0, 0.0],
+        ),
+    ]
+    camera = CameraConfig(lens_k1=-0.2, lens_k2=0.05, calibration_mode="advanced", calibration_marks=marks)
+    config = AppConfig(camera=camera)
     pose = CameraConfig(pos_x=1.0, pos_y=-9.0, pos_z=5.0, pitch=-20.0, yaw=3.0, roll=0.5, fov=42.0)
     app = SimpleNamespace(
         _input_manager=SimpleNamespace(keyboard_handler=SimpleNamespace(keys={"Meta"}, on_key_down=lambda e: None)),
@@ -396,7 +411,7 @@ def test_ctrl_s_saves_the_pose_and_keeps_what_the_setup_wizard_saved(monkeypatch
         0.5,
         42.0,
     )
-    assert (cam.lens_k1, cam.lens_k2, cam.calibration_points) == (-0.2, 0.05, [point])
+    assert (cam.lens_k1, cam.lens_k2, cam.calibration_mode, cam.calibration_marks) == (-0.2, 0.05, "advanced", marks)
 
 
 def test_on_key_down_ctrl_s_gated_while_modal_open(monkeypatch) -> None:
@@ -2611,11 +2626,13 @@ def test_process_input_routes_to_about_when_active() -> None:
 
 def test_process_input_clears_keyboard_on_return_from_modal() -> None:
     """Returning to direct marker control after a modal drops any key still
-    tracked as held (one-shot clear) so it can't drift the marker now."""
+    tracked as held (one-shot clear) so it can't drift the marker now, and
+    every held control-frame direction, so a frame saved meanwhile applies."""
     from openfollow.configuration import AppConfig
     from openfollow.input.gamepad import GamepadUpdate
 
     cleared: list[bool] = []
+    released: list[bool] = []
 
     class _KB:
         keys: set[str] = set()
@@ -2623,8 +2640,13 @@ def test_process_input_clears_keyboard_on_return_from_modal() -> None:
         def clear(self) -> None:
             cleared.append(True)
 
+    class _CF:
+        def release_all(self) -> None:
+            released.append(True)
+
     class _IM:
         keyboard_handler = _KB()
+        control_frame = _CF()
 
         def update(self, _dt):  # noqa: ANN001
             return GamepadUpdate()
@@ -2648,6 +2670,7 @@ def test_process_input_clears_keyboard_on_return_from_modal() -> None:
     )
     app_modes.process_input(app, 0.016)
     assert cleared == [True]
+    assert released == [True]
     assert app._marker_control_suspended is False
 
 

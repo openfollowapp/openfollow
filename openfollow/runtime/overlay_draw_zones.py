@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -14,6 +13,8 @@ import numpy.typing as npt
 
 from openfollow.runtime.overlay_draw_scene import _DISTORTION_SUBDIVISIONS, _project_segments, project
 from openfollow.runtime.overlay_draw_style import parse_hex
+from openfollow.runtime.overlay_layers import keep
+from openfollow.runtime.overlay_picture import ink_picture, target_font_options
 from openfollow.runtime.overlay_state import OverlayState
 
 _LABEL_SIZE = 13
@@ -55,11 +56,11 @@ def _zone_outlines(state: OverlayState, w: int, h: int) -> list[_Zone]:
         # from subdivided edges; otherwise the vertex projection is the outline.
         n = _DISTORTION_SUBDIVISIONS if (state.lens_k1 or state.lens_k2) else 1
         if n == 1:
-            outline = project(cam, pts, w, h, state.lens_k1, state.lens_k2)
+            outline = project(cam, pts, w, h, *state.lens)
         else:
             loop = pts + [pts[0]]
             edges = [(loop[i], loop[i + 1]) for i in range(len(pts))]
-            polys = _project_segments(cam, edges, w, h, state.lens_k1, state.lens_k2, n)
+            polys = _project_segments(cam, edges, w, h, *state.lens, n)
             # Drop each edge's last point – it repeats the next edge's first.
             outline = np.vstack([poly[:-1] for poly in polys])
 
@@ -138,8 +139,7 @@ class ZoneCache:
         if cam is None:
             return
         scale = cr.get_target().get_device_scale()
-        options = cr.get_target().get_font_options()
-        options.merge(cr.get_font_options())
+        options = target_font_options(cr)
         # The labels are always gray (``_paint_zones``), so the screen's antialias does not change the picture.
         options.set_antialias(cairo.ANTIALIAS_GRAY)
         # Every input a zone is projected or drawn from; one missing here freezes on screen.
@@ -150,8 +150,7 @@ class ZoneCache:
             ),
             state.zone_z_offset,
             tuple(float(v) for v in cam),
-            state.lens_k1,
-            state.lens_k2,
+            state.lens,
             w,
             h,
             scale,
@@ -160,7 +159,7 @@ class ZoneCache:
         if self._entry is None or self._entry[0] != key:
             self._entry = (key, *self._render(renderer, _zone_outlines(state, w, h), w, h, scale, options))
         _, picture, x0, y0 = self._entry
-        if picture is not None:
+        if picture is not None and not keep(cr, picture, x0, y0):
             cr.set_source_surface(picture, x0, y0)
             cr.paint()
 
@@ -170,32 +169,4 @@ class ZoneCache:
     ) -> tuple[cairo.ImageSurface | None, int, int]:
         if not zones:
             return None, 0, 0
-        sx, sy = scale
-        # Ink extents cover a miter tip or a glyph past its label box; scale and font
-        # options are the target's, as hinted glyph metrics depend on both.
-        recording = cairo.RecordingSurface(cairo.CONTENT_COLOR_ALPHA, None)
-        recording.set_device_scale(sx, sy)
-        measure = cairo.Context(recording)
-        measure.set_font_options(options)
-        _paint_zones(renderer, measure, zones)
-        ix, iy, iw, ih = recording.ink_extents()
-        if iw < 0 or ih < 0:
-            # Cairo's fixed point wraps an extent past 2**23 device pixels, which lens distortion reaches.
-            x0, y0, x1, y1 = 0, 0, w, h
-        else:
-            # One pixel more: Quartz renders a glyph up to a pixel past the extents it measures.
-            x0 = max(0, math.floor(ix / sx) - 1)
-            y0 = max(0, math.floor(iy / sy) - 1)
-            x1 = min(w, math.ceil((ix + iw) / sx) + 1)
-            y1 = min(h, math.ceil((iy + ih) / sy) + 1)
-            if x1 <= x0 or y1 <= y0:
-                return None, 0, 0
-        # Drawn at the target's device scale, so a HiDPI screen gets sharp zones.
-        picture = cairo.ImageSurface(cairo.FORMAT_ARGB32, math.ceil((x1 - x0) * sx), math.ceil((y1 - y0) * sy))
-        picture.set_device_scale(sx, sy)
-        # Painted again rather than replayed, so text lands exactly as drawn directly.
-        ctx = cairo.Context(picture)
-        ctx.set_font_options(options)
-        ctx.translate(-x0, -y0)
-        _paint_zones(renderer, ctx, zones)
-        return picture, x0, y0
+        return ink_picture(lambda ctx: _paint_zones(renderer, ctx, zones), w, h, scale, options)

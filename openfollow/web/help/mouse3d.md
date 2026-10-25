@@ -15,7 +15,7 @@ A box at the top of this section appears only when something keeps a 3D Mouse fr
 
 - **No 3D Mouse connected** – OpenFollow is looking and has found none. This is the normal state with nothing plugged in; a unit plugged in later, or unplugged and plugged back in, is picked up on its own.
 - **Support is not installed** or **could not start** – the software OpenFollow reads a 3D Mouse through is missing or broken on this station, so no unit can be read, whatever is plugged in.
-- **Not supported by this version of OpenFollow** – the unit is a 3Dconnexion device, but this version has no profile for the model, so it can't read its axes and buttons. Nothing in the station's setup causes this.
+- **Not supported by this version of OpenFollow** – the unit is a 3D Mouse, but this version has no profile for the model, so it can't read its axes and buttons. Nothing in the station's setup causes this.
 - **Not allowed to open it** – the unit was found, but the station's device permissions keep OpenFollow from reading it.
 - **Could not be opened** – the unit was found, but opening it failed for another reason.
 - **Not supported on macOS** – this version of OpenFollow can't read a 3D Mouse on a Mac, so it doesn't look for one. The settings here still save, and travel with a config export to other stations.
@@ -52,7 +52,7 @@ The defaults are in the table above (push drives x / y / z with the up/down moti
 
 **Direction** – **Normal** or **Inverted** for that axis.
 
-> For a camera looking from **upstage**, set **Control direction** under Markers & Zones → Marker Movement to **Camera looks downstage** rather than inverting axes here. It reverses left/right and forward/back together for the 3D Mouse, keyboard and gamepad at once, so every device on the station agrees on which way is stage left. Per-axis **Direction** here is for the puck's own feel, and stacks on top of it.
+> To make the puck follow the camera's view, set **Control frame** under Markers & Zones → Marker Movement rather than inverting axes here. It turns left/right and forward/back together for the 3D Mouse, keyboard and gamepad at once, so every device on the station agrees. Per-axis **Direction** here is for the puck's own feel, and stacks on top of it.
 
 ## Response curve
 

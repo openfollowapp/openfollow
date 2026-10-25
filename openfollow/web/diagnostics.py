@@ -39,6 +39,7 @@ from openfollow import keyboard_layout
 from openfollow.logging_setup import RingBufferLogHandler
 from openfollow.net_utils import HOST_RESOLVER, read_ipv4_routes
 from openfollow.network.validate import is_link_local
+from openfollow.power_health import THROTTLE_BIT_LABELS, parse_throttled
 from openfollow.privilege import settings_backup
 from openfollow.privilege.device_repair import full_hostname
 from openfollow.uri_redaction import redact_uri, redact_uris_in_text
@@ -193,6 +194,8 @@ class DiagnosticsProviders:
 
     # Absolute paths of the files the station's configuration is read from.
     config_file_paths: Callable[[], list[str]] | None = None
+    # How config.toml and its backup read, in words that carry none of their contents.
+    config_file_health: Callable[[], str] | None = None
     # ``{"dir": <resolved <storage>/models>, "configured": <model filename>}``.
     detection_models_dir: Callable[[], dict[str, str]] | None = None
 
@@ -316,20 +319,13 @@ _SHARED_GST_ELEMENTS: tuple[tuple[str, str], ...] = (
 
 # Decoders, in the order the pipeline prefers them. Absence is not a fault -
 # which one is present is the answer to "why is this Pi dropping frames".
-_DECODER_ELEMENTS: tuple[str, ...] = ("v4l2h264dec", "v4l2h265dec", "avdec_h264", "openh264dec")
-
-# ``vcgencmd get_throttled`` bit meanings. The low bits are live, the high
-# ones latch since boot - an operator chasing an intermittent freeze needs the
-# latched ones, which is the whole reason to read this.
-_THROTTLE_BITS: tuple[tuple[int, str], ...] = (
-    (0, "under-voltage NOW"),
-    (1, "ARM frequency capped NOW"),
-    (2, "currently throttled"),
-    (3, "soft temperature limit active"),
-    (16, "under-voltage has occurred since boot"),
-    (17, "ARM frequency capping has occurred since boot"),
-    (18, "throttling has occurred since boot"),
-    (19, "soft temperature limit has occurred since boot"),
+_DECODER_ELEMENTS: tuple[str, ...] = (
+    "v4l2h264dec",
+    "v4l2h265dec",
+    "v4l2slh265dec",
+    "avdec_h264",
+    "avdec_h265",
+    "openh264dec",
 )
 
 
@@ -350,15 +346,14 @@ def decode_throttled(raw: str) -> str:
     answer to the freezes and dropped USB devices that an undervolted supply
     causes.
     """
-    _, _, value = raw.strip().partition("=")
-    try:
-        bits = int(value, 16)
-    except ValueError:
+    bits = parse_throttled(raw)
+    if bits is None:
         return f"[unavailable: unrecognised reading {raw.strip()!r}]"
     if bits == 0:
         return "none (no under-voltage or throttling, now or since boot)"
-    flags = [label for bit, label in _THROTTLE_BITS if bits & (1 << bit)]
-    return f"{value} - {'; '.join(flags)}" if flags else f"{value} - no known flag set"
+    # The latched since-boot bits are what an intermittent freeze leaves behind.
+    flags = [label for bit, label in THROTTLE_BIT_LABELS if bits & (1 << bit)]
+    return f"{bits:#x} - {'; '.join(flags)}" if flags else f"{bits:#x} - no known flag set"
 
 
 # ---------------------------------------------------------------------------
@@ -562,6 +557,12 @@ def collect_runtime_state(p: DiagnosticsProviders) -> list[str]:
             rows.append(f"         key {item['port_key']}")
         if item.get("notes"):
             rows.append(f"         notes {', '.join(item['notes'])}")
+    conflicts = stats.get("marker_conflicts") or []
+    rows.append(f"  Marker conflicts:       {len(conflicts) or '(none)'}")
+    for conflict in conflicts:
+        stations = ", ".join(str(name) for name in conflict.get("stations") or [])
+        owners = f"this station, {stations}" if conflict.get("this_station") else stations
+        rows.append(f"    marker {conflict.get('marker_id', '?'):<4} controlled by {owners}")
     system = stats.get("system") or {}
     out_res = system.get("output_resolution")
     rows.append(f"  Output resolution:      {_fmt_resolution(out_res) if out_res else '- (no canvas)'}")
@@ -1062,6 +1063,9 @@ def collect_config(p: DiagnosticsProviders) -> list[str]:
         rows.append(f"  {line}")
     rows.append("  ----- end effective config -----")
     rows.extend(_collect_config_provenance(p))
+    if p.config_file_health is not None:
+        health, err = _safely_value(p.config_file_health, "config_file_health", "")
+        rows.append(f"  Config file health:  {err if err is not None else health}")
     if p.config_diff_from_defaults is not None:
         rows.append("")
         rows.append("  Diff vs defaults:")
@@ -1700,7 +1704,11 @@ def collect_video_capability() -> list[str]:
     for name, used_for in _SHARED_GST_ELEMENTS:
         present = "present" if Gst.ElementFactory.find(name) else "MISSING"
         rows.append(f"    {name:<18}{present:<9}({used_for})")
-    found = [name for name in _DECODER_ELEMENTS if Gst.ElementFactory.find(name)]
+    found = []
+    for name in _DECODER_ELEMENTS:
+        factory = Gst.ElementFactory.find(name)
+        if factory:
+            found.append(f"{name} (ranked out)" if factory.get_rank() == Gst.Rank.NONE else name)
     rows.append(f"  Video decoders:       {', '.join(found) if found else 'none of the expected decoders'}")
     return rows
 
@@ -2481,6 +2489,8 @@ class UsbDevice:
     is_hub: bool = False
     # Kernel names of the disks it carries (``sda``, ``disk4``), never a partition's.
     disks: tuple[str, ...] = ()
+    # Names of the V4L2 devices it carries (Linux only).
+    cameras: tuple[str, ...] = ()
 
 
 # macOS speed enum → human; covers what ``system_profiler`` emits.
@@ -2549,25 +2559,35 @@ def collect_usb_devices_macos() -> list[UsbDevice]:
     return devices
 
 
-def _usb_disk_owners(block_root: Path) -> dict[str, list[str]]:
-    """``{usb device: [disk, ...]}``: each disk in ``/sys/block`` resolved up to the USB device above it."""
+def _usb_owners(class_root: Path | None, label: Callable[[Path], str]) -> dict[str, list[str]]:
+    """``{usb device: [label, ...]}``: each entry of a sysfs class directory resolved up to the USB device above it."""
     owners: dict[str, list[str]] = {}
+    if class_root is None:
+        return owners
     try:
-        disks = sorted(block_root.iterdir())
+        entries = sorted(class_root.iterdir())
     except OSError:
         return owners
-    for disk in disks:
-        owner = next((d for d in disk.resolve().parents if (d / "idVendor").is_file()), None)
+    for entry in entries:
+        owner = next((d for d in entry.resolve().parents if (d / "idVendor").is_file()), None)
         if owner is not None:
-            owners.setdefault(owner.name, []).append(disk.name)
+            owners.setdefault(owner.name, []).append(label(entry))
     return owners
+
+
+def _v4l2_name(node: Path) -> str:
+    # As the USB Camera input names it.
+    return _read_sysfs(node, "name") or node.name
 
 
 _USB_SYSFS = Path("/sys/bus/usb/devices")
 _BLOCK_SYSFS = Path("/sys/block")
+_V4L_SYSFS = Path("/sys/class/video4linux")
 
 
-def collect_usb_devices_linux(sysfs_root: Path | None = None, block_root: Path | None = None) -> list[UsbDevice]:
+def collect_usb_devices_linux(
+    sysfs_root: Path | None = None, block_root: Path | None = None, v4l_root: Path | None = None
+) -> list[UsbDevice]:
     """Read ``/sys/bus/usb/devices/*/{idVendor,idProduct,product,
     manufacturer,serial,speed,bDeviceClass}`` directly. No
     subprocess, no parser fragility – the kernel's exposing
@@ -2575,9 +2595,10 @@ def collect_usb_devices_linux(sysfs_root: Path | None = None, block_root: Path |
     root = sysfs_root or _USB_SYSFS
     if not root.exists():
         return []
-    # The host's disks only beside the host's sysfs: a caller's own tree reads none unless it names block_root.
-    block = block_root if block_root is not None else (_BLOCK_SYSFS if sysfs_root is None else None)
-    owners = _usb_disk_owners(block) if block is not None else {}
+    # The host's disks and cameras only beside the host's sysfs: a caller's own tree reads none unless it names them.
+    host = sysfs_root is None
+    owners = _usb_owners(block_root if block_root is not None else (_BLOCK_SYSFS if host else None), lambda d: d.name)
+    cameras = _usb_owners(v4l_root if v4l_root is not None else (_V4L_SYSFS if host else None), _v4l2_name)
     devices: list[UsbDevice] = []
     # Guard against ``OSError`` / ``PermissionError`` from
     # ``iterdir()`` – sysfs can exist but be unreadable on
@@ -2614,6 +2635,7 @@ def collect_usb_devices_linux(sysfs_root: Path | None = None, block_root: Path |
                 serial=_read_sysfs(entry, "serial") or "",
                 is_hub=is_hub,
                 disks=tuple(owners.get(entry.name, ())),
+                cameras=tuple(dict.fromkeys(cameras.get(entry.name, ()))),
             )
         )
     return devices
@@ -2720,10 +2742,10 @@ def render_usb_table(
     device gets a "visibility" cell that cross-references the
     device against each input subsystem's enumeration: gamepads by
     the USB ids in their SDL GUID, 3D mice by the USB ids their status
-    reports, storage by the disks it carries, everything else by product /
-    manufacturer string. Operator question this answers in one
-    glance: "is the kernel seeing this device, and is OpenFollow
-    picking it up?"
+    reports, storage by the disks it carries, a camera by the V4L2 devices it
+    carries, everything else by product / manufacturer string. Operator
+    question this answers in one glance: "is the kernel seeing this device,
+    and is OpenFollow picking it up?"
     """
     # Header rendered as a tuple of column titles + separators so
     # the line-length lint stays happy without sacrificing the
@@ -2747,6 +2769,10 @@ def render_usb_table(
             gamepad_by_usb_id.setdefault(usb_id, name or usb_id)
         elif name:
             gamepad_names.append(name)
+    # A camera found under a USB device is matched there; only one found under none is matched by name.
+    listed_cameras = set(cameras or [])
+    placed = {c for d in devices for c in d.cameras}
+    unplaced_cameras = [c for c in cameras or [] if c not in placed]
     for d in devices:
         if d.is_hub:
             vis = "(hub)"
@@ -2772,6 +2798,9 @@ def render_usb_table(
             elif d.disks:
                 vis = f"storage: {_storage_state(d.disks, media)}"
                 counts["storage"] += 1
+            elif own := [c for c in d.cameras if c in listed_cameras]:
+                vis = f"camera: {', '.join(own)}"
+                counts["camera"] += 1
             if not vis:
                 raw = _best_usb_match(haystack, midi_ports or [])
                 if raw:
@@ -2783,7 +2812,7 @@ def render_usb_table(
                     vis = f"gamepad: {raw}"
                     counts["gamepad"] += 1
             if not vis:
-                raw = _best_usb_match(haystack, cameras or [])
+                raw = _best_usb_match(haystack, unplaced_cameras)
                 if raw:
                     vis = f"camera: {raw}"
                     counts["camera"] += 1

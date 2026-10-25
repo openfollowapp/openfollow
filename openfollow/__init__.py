@@ -12,11 +12,7 @@ from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover
-    # Python 3.10 lacks tomllib; use tomli backport
-    import tomli as tomllib  # type: ignore[no-redef]
+import tomllib
 
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp

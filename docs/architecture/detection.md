@@ -65,7 +65,8 @@ The five YOLO26 sizes ship as quality tiers (`_DETECTION_TIERS` in `web/routes.p
 - Detector created in `AppRuntimeServices.init_video()` when `detection.enabled = true`
 - `GstNativeSinkReceiver` builds a `tee` → `appsink` branch when detector is provided
 - Detection branch caps are driven by `PersonDetector.input_resolution` (from `inference_size`, 4:3 pre-scale)
-- Enabling/disabling detection requires pipeline restart; other detection settings are live
+- Switching detection on (or off→on after an unavailable backend, or an `inference_size` change) rebuilds the pipeline live through `AppRuntimeServices.swap_detector`. The `PersonDetector` (its ONNX session load takes seconds on a large model) is built on a `PersonDetector-Build` thread and wired back on the GTK main loop, so the frame clock never waits for it. One build runs at a time; the newest change waiting for it is built next, and a build that a later change (switching off, a newer swap, shutdown) overtook is stopped when it lands. A failure after `swap_detector` returned reverts the stored config through `on_failure` and the next config poll retries, as a raise would. An edit saved while a build is pending goes to a new build rather than to the detector about to be replaced
+- Switching off (`apply_detection_change`) and the old detector of a swap stop with `stop(wait=False)`: an inference in flight finishes and the session is released on a `PersonDetector-Stop` thread. Other detection settings are staged on the running worker (`reload_config`)
 
 ## Optional-dependency handling
 - `cv2` is imported inside a `try/except` in `video/detection.py`; if missing, the module still imports and `check_detection_dependencies()` returns `["opencv-python"]`

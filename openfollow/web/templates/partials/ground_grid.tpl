@@ -5,7 +5,7 @@
 % _len = unit_suffix_length(_us)
 % _gg = config.ground_grid
 % from openfollow.configuration import GROUND_GRID_MAX_VERTICES
-<form id="ground-grid-section" class="section experimental-feature {{'saved' if defined('saved') and saved else ''}}" data-fold-key="ground_grid" data-help="ground_grid"
+<form id="ground-grid-section" data-feature="ground_grid" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="ground_grid" data-help="ground_grid"
       hx-post="/section/ground_grid" hx-target="#ground-grid-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
         <h2>Ground Grid <span class="badge-experimental">Experimental</span></h2>

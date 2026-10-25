@@ -20,7 +20,7 @@
     <button type="button" class="tab-btn" data-tab="marker-and-zones">Markers & Zones</button>
     <button type="button" class="tab-btn" data-tab="input">Input</button>
     <button type="button" class="tab-btn" data-tab="output">Output</button>
-    <button type="button" class="tab-btn experimental-feature" data-tab="detection">Person Detection</button>
+    <button type="button" class="tab-btn" data-tab="detection" data-feature="detection">Person Detection</button>
 </div>
 
 <!-- Overview -->
@@ -65,7 +65,7 @@
         <span class="section-note">Guided camera positioning and grid calibration</span>
     </div>
     % include('partials/video_source.tpl', config=config, saved=False, available_inputs=available_inputs, input_html_fragments=input_html_fragments, video_failure=video_failure, video_failure_text=video_failure_text, video_error_message=video_error_message, video_failure_action=video_failure_action)
-    % include('partials/camera.tpl', config=config, saved=False)
+    % include('partials/camera.tpl', config=config, saved=False, video_size=get('camera_video_size'))
     % include('partials/grid.tpl', config=config, saved=False)
     % include('partials/ground_grid.tpl', config=config, saved=False)
 </div>
@@ -89,6 +89,7 @@
     % include('partials/mouse3d.tpl', config=config, saved=False, mouse3d_status=stats.get('mouse3d') or {})
     % include('partials/osc.tpl', config=config, saved=False)
     % include('partials/operator_messages.tpl', config=config, saved=False)
+    % include('partials/touch_remote.tpl', config=config, saved=False)
     % # MIDI page: Devices and Virtual Faders sections. Config constants
     % # imported here keep partial dropdowns / fader count in sync with
     % # running ``MidiSubsystem``.
@@ -97,7 +98,8 @@
     %     config=config, saved=False,
     %     discovered_devices=midi_discovered_devices,
     %     valid_fader_midi_types=VALID_FADER_MIDI_TYPES,
-    %     marker_fader_values=marker_fader_values)
+    %     marker_fader_values=marker_fader_values,
+    %     fader_values=fader_values)
 </div>
 
 <!-- Output -->
@@ -146,6 +148,6 @@
 </div>
 
 <!-- Person Detection -->
-<div class="tab-content experimental-feature" id="tab-detection">
+<div class="tab-content" id="tab-detection" data-feature="detection">
     % include('partials/detection.tpl', config=config, saved=False)
 </div>

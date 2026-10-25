@@ -50,6 +50,9 @@ class _FakeInputManager:
     def update_paths(self, dt: float) -> None:
         self.path_frames.append(dt)
 
+    def update_touch_remote(self, dt: float) -> None:
+        self.path_frames.append(dt)
+
 
 class _FakeCanvas:
     def __init__(self) -> None:
@@ -249,6 +252,18 @@ class TestAnimate:
         assert [name for name, _ in order] == ["paths", "input", "paths", "input"]
         assert order[0][1] == order[1][1] == pytest.approx(orch._DEFAULT_FRAME_DT)
 
+    def test_the_touch_remote_runs_every_frame_after_the_paths_before_input(self) -> None:
+        """Outside input processing too, so an open on-screen menu never stops a held marker's dead-man."""
+        mgr = _FakeInputManager()
+        app = _make_fake_app(input_manager=mgr)
+        order: list[str] = []
+        mgr.update_paths = lambda dt: order.append("paths")  # type: ignore[method-assign]
+        mgr.update_touch_remote = lambda dt: order.append("remote")  # type: ignore[method-assign]
+        app._process_input = lambda dt: order.append("input")
+        orch.animate(app)
+        orch.animate(app)
+        assert order == ["paths", "remote", "input", "paths", "remote", "input"]
+
     def test_runs_display_bound_checks(self) -> None:
         app = _make_fake_app()
         orch.animate(app)
@@ -361,6 +376,7 @@ class TestCheckConfigReload:
             _get_config_mtime=lambda: 200.0,
             _config=None,
             _config_blank_warned_mtime=None,
+            _config_error_warned_mtime=None,
         )
 
     def test_throttled_within_1_second(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -441,8 +457,6 @@ class TestCheckConfigReload:
     ) -> None:
         """An editor that truncates before it writes leaves an empty file, which
         loads as every default: the running station must not take those in."""
-        from openfollow.configuration import AppConfig, save_config
-
         monkeypatch.setattr(orch.time, "monotonic", lambda: 10.0)
         applied: list[object] = []
         monkeypatch.setattr(orch, "apply_runtime_config_changes", lambda _app, cfg: applied.append(cfg) or True)
@@ -456,7 +470,7 @@ class TestCheckConfigReload:
         assert app._config_mtime == 100.0  # kept: the write that follows may share its mtime
         assert [r.getMessage() for r in caplog.records] == [f"{config_path} is empty – not reloaded."]
 
-        save_config(AppConfig(web_port=8080), str(config_path))
+        config_path.write_text("web_port = 8080\n", encoding="utf-8")  # the editor's write
         app._last_config_check = 0.0
         orch.check_config_reload(app)
         assert [cfg.web_port for cfg in applied] == [8080]
@@ -478,6 +492,31 @@ class TestCheckConfigReload:
 
         expected = f"{config_path} is empty – not reloaded."
         assert [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING] == [expected, expected]
+
+    def test_a_file_that_does_not_parse_is_reported_once_per_mtime_and_retried_every_poll(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setattr(orch.time, "monotonic", lambda: 10.0)
+        applied: list[object] = []
+        monkeypatch.setattr(orch, "apply_runtime_config_changes", lambda _app, cfg: applied.append(cfg) or True)
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[grid\n", encoding="utf-8")
+        app = self._app(str(config_path))
+
+        with caplog.at_level(logging.WARNING, logger=orch.logger.name):
+            for mtime in (200.0, 200.0, 200.0, 300.0, 300.0):
+                app._get_config_mtime = lambda mtime=mtime: mtime
+                app._last_config_check = 0.0
+                orch.check_config_reload(app)
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 2
+        assert all(w.startswith(f"Config reload error: Config file {config_path} could not be read") for w in warnings)
+
+        config_path.write_text("web_port = 8080\n", encoding="utf-8")  # the fix, within the same mtime tick
+        app._last_config_check = 0.0
+        orch.check_config_reload(app)
+        assert [cfg.web_port for cfg in applied] == [8080]
+        assert app._config_mtime == 300.0
 
     def test_a_file_emptied_after_an_earlier_read_is_not_reloaded(
         self, tmp_path, monkeypatch: pytest.MonkeyPatch

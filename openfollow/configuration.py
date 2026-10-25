@@ -105,11 +105,7 @@ def _coerce_int(
         out = int(value)
     except (TypeError, ValueError, OverflowError):
         return default
-    # pragma: no branch – every current caller passes ``lo=…``; the
-    # signature keeps ``lo`` optional for symmetry with
-    # ``_coerce_optional_float`` (which has callers that don't pass
-    # bounds), so the False arm is structurally reachable but unused
-    # at every present call site.
+    # Every current caller passes ``lo``.
     if lo is not None:  # pragma: no branch
         out = max(lo, out)
     if hi is not None:
@@ -192,36 +188,6 @@ def is_ipv4_literal(value: str) -> bool:
     except ValueError:
         return False
     return True
-
-
-def _coerce_optional_float(
-    value: Any,
-    default: float | None,
-    *,
-    lo: float | None = None,
-    hi: float | None = None,
-) -> float | None:
-    """Like ``_coerce_float`` but preserves ``None`` for optional fields.
-
-    When ``default`` is ``None``, invalid input collapses to ``None`` –
-    substituting ``0.0`` would turn "not set" into "explicitly zero" for
-    optional lens hints (``sensor_width_mm`` / ``focal_length_mm``).
-    Catches ``OverflowError`` and rejects non-finite results as in
-    ``_coerce_float`` (the lens helper divides by these).
-    """
-    if value is None:
-        return None
-    try:
-        out = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return default
-    if not math.isfinite(out):
-        return default
-    if lo is not None:
-        out = max(lo, out)
-    if hi is not None:
-        out = min(hi, out)
-    return out
 
 
 def _coerce_optional_marker_id(value: Any) -> int | None:
@@ -519,10 +485,6 @@ class CameraConfig:
     yaw: float = 0.0
     roll: float = 0.0
     fov: float = 60.0  # horizontal FOV in degrees
-    # UI hints to derive FOV from sensor width + focal length (mm). Not read by
-    # the projection math; ``fov`` remains the source of truth.
-    sensor_width_mm: float | None = None
-    focal_length_mm: float | None = None
     # The lens the HUD is bowed to match (openfollow.lens_model): the division
     # pair k1 / k2 (barrel negative) and the lens centre's offset from the frame
     # centre in half-diagonals (x right, y down). The video frame is never
@@ -546,8 +508,6 @@ class CameraConfig:
         self.yaw = _coerce_float(self.yaw, 0.0)
         self.roll = _coerce_float(self.roll, 0.0)
         self.fov = _coerce_float(self.fov, 60.0, lo=1.0, hi=179.0)
-        self.sensor_width_mm = _coerce_optional_float(self.sensor_width_mm, None, lo=0.0)
-        self.focal_length_mm = _coerce_optional_float(self.focal_length_mm, None, lo=0.0)
         # The centre is clamped; the pair's one bound is that the overlay reaches every
         # frame corner, and a pair that does not is pulled back along its own direction.
         lens = (
@@ -3180,6 +3140,15 @@ def _filter_known(cls: type, data: dict[str, Any]) -> dict[str, Any]:
     """Strip keys that don't match any field on *cls* (stale TOML entries)."""
     known = {f.name for f in fields(cls)}
     return {k: v for k, v in data.items() if k in known}
+
+
+# Former camera settings a Camera & Grid template saved by an earlier build may carry.
+_FORMER_CAMERA_KEYS = frozenset({"sensor_width_mm", "focal_length_mm"})
+
+
+def without_former_camera_keys(camera: dict[str, Any]) -> dict[str, Any]:
+    """*camera* without its former settings; any other unknown key still fails the dataclass."""
+    return {k: v for k, v in camera.items() if k not in _FORMER_CAMERA_KEYS}
 
 
 _SUB_CONFIG_MAP: dict[str, type] = {

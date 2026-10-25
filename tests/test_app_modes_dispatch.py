@@ -278,7 +278,7 @@ def test_on_key_down_digit_key_out_of_range_is_noop() -> None:
 def test_on_key_down_ctrl_s_saves_the_camera_pose_only(tmp_path) -> None:
     from openfollow.configuration import AppConfig, CameraConfig, load_config, save_config
 
-    lens = {"lens_k1": -0.3, "lens_k2": 0.1, "sensor_width_mm": 6.17, "focal_length_mm": 4.0}
+    lens = {"lens_k1": -0.3, "lens_k2": 0.1}
     # The file holds edits the running config never took in.
     config_path = str(tmp_path / "c.toml")
     save_config(AppConfig(web_port=8080, ndi_source_name="Edited", camera=CameraConfig(**lens)), config_path)

@@ -24,10 +24,7 @@ If the overlay doesn't sit on the video on a camera whose yaw isn't `0`, re-run 
 
 ## Lens
 
-OpenFollow only needs the **horizontal** field of view; the sensor and focal-length fields are an optional way to work it out.
-
-- **Horizontal Field of View** – the angular width the camera sees, in degrees. Pull this from the camera datasheet.
-- **Sensor Size** + **Focal Length** – pick your sensor format (or *Custom…* with a width in mm) and enter the focal length; OpenFollow computes the field of view from the geometry. If you then edit the field of view by hand, these dim to show they're no longer authoritative – your manual value wins.
+**Horizontal Field of View** is the angular width the camera sees, in degrees.
 
 ## Lens distortion
 

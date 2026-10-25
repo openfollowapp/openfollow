@@ -1934,22 +1934,6 @@ def _as_json_list(value: Any, current: Any) -> Any:
     return list(value) if isinstance(value, list) else current
 
 
-def _as_optional_float(value: Any, default: float | None) -> float | None:
-    """Parse to float; explicit None or blank string clears to None.
-
-    When the field key is absent from the payload, ``_apply_parsed_updates``
-    skips it entirely, so "preserve existing" is handled there, not here.
-    """
-    if value is None:
-        return None
-    if isinstance(value, str) and not value.strip():
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError, OverflowError):
-        return default
-
-
 def _as_optional_measured(value: Any, current: float | None) -> float | None:
     """A JSON number or None as sent, else *current*; the dataclass drops one out of reach."""
     if value is None or (isinstance(value, int | float) and not isinstance(value, bool)):
@@ -2226,8 +2210,6 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "yaw": _as_float,
         "roll": _as_float,
         "fov": _as_float,
-        "sensor_width_mm": _as_optional_float,
-        "focal_length_mm": _as_optional_float,
         "lens_k1": _as_float,
         "lens_k2": _as_float,
         "lens_cx": _as_float,
@@ -9452,11 +9434,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # The schema requires BOTH halves, so this apply path needs no
             # conditional checks – a partial template is rejected by the
             # loader and would have returned 404 / 400 above.
-            from openfollow.configuration import CameraConfig, GridConfig, GroundGridConfig
+            from openfollow.configuration import CameraConfig, GridConfig, GroundGridConfig, without_former_camera_keys
 
             with _config_write_lock:
                 cfg = _config_for_save(server)
-                cfg.camera = CameraConfig(**tpl.payload["camera"])
+                cfg.camera = CameraConfig(**without_former_camera_keys(tpl.payload["camera"]))
                 cfg.grid = GridConfig(**tpl.payload["grid"])
                 reconcile_simple_corners(cfg)
                 if "ground_grid" in tpl.payload:

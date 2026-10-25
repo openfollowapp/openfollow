@@ -34,6 +34,7 @@ from openfollow.psn.marker import Marker
 from openfollow.psn.receiver import PsnReceiver
 from openfollow.runtime.marker_velocity import _MAX_REPORTED_SPEED_MPS
 from openfollow.runtime.overlay_draw_hud import draw_marker_card
+from openfollow.runtime.overlay_layout import PictureGeometry
 from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
 from openfollow.runtime.overlay_status_badge import draw_status_badge
 from openfollow.runtime.services_detection_pin import get_or_create_manual_marker
@@ -135,6 +136,8 @@ class _FakeVideoReceiver:
             ),
         )
         self.source_name = "NDI://CAM"
+        self.resolution = (1920, 1080)
+        self.picture_geometry = PictureGeometry(1920, 1080)
         self.source_selection_active = False
         self.discovered_sources = ["CAM1", "CAM2"]
         self.selected_source_index = 1
@@ -1991,3 +1994,52 @@ class TestMissingControllerSurfaces:
         )
         state = _build(app, pool)
         assert state.markers[0].identify_flash is False
+
+
+# --------------------------------------------------------------------------- #
+# Picture shape → state flow
+# --------------------------------------------------------------------------- #
+
+
+class TestPictureGeometryFlow:
+    """The HUD letterboxes the scene by the picture the sink shows, read off
+    the receiver every frame."""
+
+    def test_overlay_state_carries_the_picture_size(self, pool: OverlayStatePool) -> None:
+        app = _build_app()
+        app._video_receiver.picture_geometry = PictureGeometry(1024, 768)
+        assert _build(app, pool).picture_size == (1024, 768)
+
+    def test_overlay_state_carries_the_pixel_aspect_ratio(self, pool: OverlayStatePool) -> None:
+        app = _build_app()
+        app._video_receiver.picture_geometry = PictureGeometry(704, 576, (12, 11))
+        state = _build(app, pool)
+        assert state.picture_par == (12, 11)
+        assert state.pixel_aspect == pytest.approx(12 / 11)
+
+    def test_a_reconnect_keeps_the_box_of_the_picture_still_shown(self, pool: OverlayStatePool) -> None:
+        # A reconnect forgets the source's resolution, but gtksink keeps the
+        # last frame up in its box until new caps arrive.
+        app = _build_app()
+        app._video_receiver.resolution = (0, 0)
+        app._video_receiver.picture_geometry = PictureGeometry(1024, 768)
+        assert _build(app, pool).picture_size == (1024, 768)
+
+    def test_before_any_picture_the_scene_fills_the_canvas(self, pool: OverlayStatePool) -> None:
+        app = _build_app()
+        app._video_receiver.picture_geometry = PictureGeometry()
+        state = _build(app, pool)
+        assert state.picture_size == (0, 0)
+        assert state.picture_par == (1, 1)
+
+    def test_a_changed_shape_replaces_the_pooled_value(self) -> None:
+        pool = OverlayStatePool(pool_size=1)
+        app = _build_app()
+        app._video_receiver.picture_geometry = PictureGeometry(704, 576, (12, 11))
+        first = _build(app, pool)
+        pool.release(first)
+        app._video_receiver.picture_geometry = PictureGeometry(1024, 768)
+        second = _build(app, pool)
+        assert second is first
+        assert second.picture_size == (1024, 768)
+        assert second.picture_par == (1, 1)

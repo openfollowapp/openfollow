@@ -41,6 +41,7 @@ from openfollow.configuration import (
 from openfollow.input.mouse import MouseHandler
 from openfollow.psn.marker import Marker
 from openfollow.runtime.overlay_draw_scene import project
+from openfollow.runtime.overlay_layout import scene_view
 from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
 from openfollow.runtime.services_detection_pin import apply_detection_pin
 from openfollow.scene.solver import unproject_to_plane
@@ -150,7 +151,8 @@ def _make_app(
         _psn_receiver=_StubPsnReceiver(),
         _camera=_StubCamera(camera),
         _video_receiver=_StubVideoReceiver(resolution),
-        _canvas=None,
+        # The scene was drawn across a 1280x720 window.
+        _runtime_services=SimpleNamespace(_overlay_renderer=SimpleNamespace(scene_view=scene_view(1280, 720, 0, 0))),
         _controlled_ids=[],
         _viewer_ids=[],
         _selected_id=None,

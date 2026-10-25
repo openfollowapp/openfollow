@@ -9434,15 +9434,16 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # The schema requires BOTH halves, so this apply path needs no
             # conditional checks – a partial template is rejected by the
             # loader and would have returned 404 / 400 above.
-            from openfollow.configuration import CameraConfig, GridConfig, GroundGridConfig
+            from openfollow.configuration import CameraConfig, GridConfig, GroundGridConfig, _filter_known
 
             with _config_write_lock:
                 cfg = _config_for_save(server)
-                cfg.camera = CameraConfig(**tpl.payload["camera"])
-                cfg.grid = GridConfig(**tpl.payload["grid"])
+                # A template saved by another version may carry fields this one lacks.
+                cfg.camera = CameraConfig(**_filter_known(CameraConfig, tpl.payload["camera"]))
+                cfg.grid = GridConfig(**_filter_known(GridConfig, tpl.payload["grid"]))
                 reconcile_simple_corners(cfg)
                 if "ground_grid" in tpl.payload:
-                    cfg.ground_grid = GroundGridConfig(**tpl.payload["ground_grid"])
+                    cfg.ground_grid = GroundGridConfig(**_filter_known(GroundGridConfig, tpl.payload["ground_grid"]))
                 save_config(cfg, server.config_path)
             return json.dumps({"ok": True})
         if tpl.type == "paths":

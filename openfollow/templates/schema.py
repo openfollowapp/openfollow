@@ -253,6 +253,7 @@ def validate_payload(template_type: str, payload: Mapping[str, Any]) -> None:
         GroundGridConfig,
         PathsConfig,
         TriggerZonesConfig,
+        _filter_known,
     )
 
     if template_type == "osc_output":
@@ -337,7 +338,7 @@ def validate_payload(template_type: str, payload: Mapping[str, Any]) -> None:
                 f"camera_grid payload 'camera' must be object, got {type(camera_dict).__name__}",
             )
         try:
-            CameraConfig(**camera_dict)
+            CameraConfig(**_filter_known(CameraConfig, camera_dict))
         except TypeError as exc:
             raise TemplateValidationError(
                 f"camera_grid payload 'camera' invalid: {exc}",
@@ -348,7 +349,7 @@ def validate_payload(template_type: str, payload: Mapping[str, Any]) -> None:
                 f"camera_grid payload 'grid' must be object, got {type(grid_dict).__name__}",
             )
         try:
-            GridConfig(**grid_dict)
+            GridConfig(**_filter_known(GridConfig, grid_dict))
         except TypeError as exc:
             raise TemplateValidationError(
                 f"camera_grid payload 'grid' invalid: {exc}",
@@ -361,7 +362,7 @@ def validate_payload(template_type: str, payload: Mapping[str, Any]) -> None:
                     f"camera_grid payload 'ground_grid' must be object, got {type(ground_dict).__name__}",
                 )
             try:
-                GroundGridConfig(**ground_dict)
+                GroundGridConfig(**_filter_known(GroundGridConfig, ground_dict))
             except TypeError as exc:
                 raise TemplateValidationError(
                     f"camera_grid payload 'ground_grid' invalid: {exc}",

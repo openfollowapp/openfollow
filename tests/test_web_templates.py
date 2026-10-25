@@ -833,6 +833,25 @@ class TestApplyCameraGrid:
         assert cfg.camera.pos_x == 2.5
         assert cfg.grid.width == 20.0
 
+    def test_a_template_carrying_fields_this_build_lacks_applies(self, live_server) -> None:
+        _, base, cfg_path = live_server
+        write_user_template(
+            _templates_root(cfg_path),
+            "camera_grid",
+            "Saved Earlier",
+            {
+                "camera": {"pos_x": 2.5, "sensor_width_mm": 6.17, "focal_length_mm": 4.0},
+                "grid": {"width": 20.0, "bogus_field": 1},
+                "ground_grid": {"z_offset": -0.8, "bogus_field": 1},
+            },
+        )
+        status, _ = _post_empty(base, "/api/templates/camera_grid.saved-earlier.oftemplate/apply?confirm=1")
+        assert status == 200
+        cfg = load_config(cfg_path)
+        assert (cfg.camera.pos_x, cfg.grid.width, cfg.ground_grid.z_offset) == (2.5, 20.0, -0.8)
+        written = Path(cfg_path).read_text(encoding="utf-8")
+        assert "sensor_width_mm" not in written and "bogus_field" not in written
+
     def test_a_template_with_a_ground_grid_replaces_this_station_s(self, live_server) -> None:
         _, base, cfg_path = live_server
         write_user_template(

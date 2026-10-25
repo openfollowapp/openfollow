@@ -4,8 +4,8 @@
 # NetworkManager-wait-online for a station: succeeds once NetworkManager's
 # startup is complete (nm-online -s), or once every device it is still
 # activating holds an IPv4 address: a lease at once, the link-local fallback
-# once held for $grace seconds. Checks every $step seconds and gives up after $1
-# seconds (default 20), both counted on the time since boot.
+# once held for 3 s. Checks every $step seconds and gives up after $1 seconds
+# (default 20), both counted on the time since boot.
 #
 # nm-online -s alone never succeeds on a LAN without DHCP: the infinite
 # dhcp-timeout (10-openfollow-dhcp-fallback.conf) keeps that activation running
@@ -65,10 +65,14 @@ activating_devices_addressed() {
 
 start=$(now_ms)
 now=$start
-while [ $((now - start)) -lt "$cap_ms" ]; do
+# A clock that does not move still ends the wait, at twice the polls the cap allows.
+polls=0
+max_polls=$((cap_ms / 125))
+while [ $((now - start)) -lt "$cap_ms" ] && [ "$polls" -lt "$max_polls" ]; do
     nm-online -s -q --timeout=0 && exit 0
     activating_devices_addressed && exit 0
     sleep "$step"
+    polls=$((polls + 1))
     now=$(now_ms)
 done
 echo "a device NetworkManager is activating has no settled IPv4 address after $((cap_ms / 1000)) s" >&2

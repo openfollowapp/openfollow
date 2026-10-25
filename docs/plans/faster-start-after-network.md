@@ -8,7 +8,7 @@ polls. This plan removes the fixed waits and polls the network faster.
 ## Decisions
 
 - **Splash:** the splash is stopped once it has been up 1.5 s, counted from the start of `openfollow-splash.service`
-  (its `ActiveEnterTimestampMonotonic` against the system's monotonic clock). On a boot the network takes longer
+  (its `ActiveEnterTimestampMonotonic` against the time since boot). On a boot the network takes longer
   than that, so the step waits 0 s. A restart of the unit starts the splash again (the unit wants it), so a restart
   shows it for 1.5 s instead of today's 3 s plus 2 s of black. The black gap that remains while Cage and the app
   start (about 1.7 s on a restart, 4.8 s on a cold boot) is left to a follow-up that starts the session while the
@@ -17,7 +17,7 @@ polls. This plan removes the fixed waits and polls the network faster.
   on hotplug and by the retry while none is open, and 3D mice are enumerated again every 1.5 s. If a gamepad or a 3D
   mouse present at boot does not reach its saved controller slot without a replug, a bounded wait comes back.
 - **Network wait:** `nm-wait-online.sh` checks every 0.25 s (`nm-online --timeout=0`). The grace stays 3 s and the
-  cap 20 s, both measured in seconds on a monotonic clock instead of counted in polls.
+  cap 20 s, both measured in seconds on the time since boot instead of counted in polls.
 - **Kept as is:** the 3 s grace that lets a DHCP lease beat the link-local fallback, and waiting for every device
   NetworkManager is still activating.
 - No What's new entry: nothing here asks anything of the operator.

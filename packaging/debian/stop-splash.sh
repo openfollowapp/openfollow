@@ -7,10 +7,11 @@
 # again with it, so a restart shows it for the minimum. A splash that is not
 # active is stopped without waiting, which also waits out one still stopping.
 set -u
+export LC_ALL=C
 min_ms=$(awk -v s="${1:-1.5}" 'BEGIN { printf "%d", s * 1000 }')
 unit=openfollow-splash.service
-# Seconds since boot, the clock systemd's monotonic timestamps count on; the
-# tests point this at a clock of their own.
+# Seconds since boot, which match systemd's monotonic timestamps on a station
+# (it never suspends); the tests point this at a clock of their own.
 uptime="${OPENFOLLOW_UPTIME:-/proc/uptime}"
 
 [ "$(systemctl show -P ActiveState "$unit" 2>/dev/null)" = active ] || exec systemctl stop "$unit"

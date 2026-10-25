@@ -239,12 +239,14 @@ _GRACE = 3 * _POLLS_PER_S
 _Poll = tuple[bool, dict[str, tuple[str, str, list[str]]] | None]
 
 
-def _run_wait(tmp_path: Path, polls: list[_Poll], cap: int = 10, shell: str = "/bin/sh") -> tuple[int, int]:
+def _run_wait(
+    tmp_path: Path, polls: list[_Poll], cap: int = 10, shell: str = "/bin/sh", clock_runs: bool = True
+) -> tuple[int, int]:
     """Run the packaged wait with ``nm-online``, ``nmcli``, ``ip`` and ``sleep`` stubbed.
 
     Poll *n* sees ``polls[n]``, the last one repeating. ``sleep`` advances the
-    script's clock instead of waiting. Returns the exit code and how many times
-    it polled.
+    script's clock instead of waiting, unless *clock_runs* is false. Returns the
+    exit code and how many times it polled.
     """
     if not _WAIT_SCRIPT.is_file():
         pytest.skip("no packaging/debian/nm-wait-online.sh in this tree")
@@ -279,8 +281,12 @@ def _run_wait(tmp_path: Path, polls: list[_Poll], cap: int = 10, shell: str = "/
         "ip": f'{state}\neval "dev=\\${{$#}}"\ncat "$dir/addr_$dev" 2>/dev/null\nexit 0\n',
         "sleep": (
             f'echo "$1" >> "{tmp_path}/sleeps"\n'
-            f'awk -v d="$1" \'{{ printf "%.2f 0.00\\n", $1 + d }}\' "{clock}" > "{clock}.new"\n'
-            f'mv "{clock}.new" "{clock}"\n'
+            + (
+                f'awk -v d="$1" \'{{ printf "%.2f 0.00\\n", $1 + d }}\' "{clock}" > "{clock}.new"\n'
+                f'mv "{clock}.new" "{clock}"\n'
+                if clock_runs
+                else ""
+            )
         ),
     }
     for name, body in stubs.items():
@@ -451,3 +457,8 @@ def test_wait_online_checks_four_times_a_second_without_waiting_in_nm_online(tmp
     wait within a quarter second instead of a second."""
     assert _run_wait(tmp_path, [_ON_FALLBACK], cap=1) == (1, _POLLS_PER_S)
     assert (tmp_path / "sleeps").read_text(encoding="utf-8").split() == ["0.25"] * _POLLS_PER_S
+
+
+def test_wait_online_ends_on_a_clock_that_does_not_move(tmp_path: Path) -> None:
+    """An unreadable or frozen clock never runs the cap out; the wait still ends, at twice the polls it allows."""
+    assert _run_wait(tmp_path, [_ON_FALLBACK], cap=1, clock_runs=False) == (1, 2 * _POLLS_PER_S)

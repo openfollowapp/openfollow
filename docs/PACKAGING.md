@@ -43,7 +43,7 @@ is Pi-only).
 | `packaging/debian/control.in` | Package metadata; `@VERSION@/@ARCH@/@PYTHON_DEP@/@ALSA_DEP@` are filled in by the build from the build host. |
 | `packaging/debian/openfollow.service` | Main systemd unit (Cage Wayland kiosk, runs the bundled venv). |
 | `packaging/debian/openfollow-splash.service` + `splash.sh` | Boot splash unit + KMS launcher. |
-| `packaging/debian/stop-splash.sh` | `openfollow.service`'s one start step: stops the splash so DRM is free for Cage, once it has been up 1.5 s since its unit started: on a boot at once, on a restart of the unit, which starts the splash again with it, after 1.5 s. The unit waits for nothing else: it starts after udev settles, and the inputs pick up later USB devices on hotplug. |
+| `packaging/debian/stop-splash.sh` | `openfollow.service`'s one start step: stops the splash so DRM is free for Cage, once it has been up 1.5 s: on a boot at once, on a restart of the unit, which starts the splash again with it, after 1.5 s. The unit waits for nothing else: it starts after udev settles, and the inputs pick up later USB devices on hotplug. |
 | `packaging/debian/render-splash.sh` | Pre-renders the splash PNG at build time. |
 | `packaging/debian/{postinst,prerm,postrm}` | Create the `openfollow` user + linger, enable/disable the units. |
 | `packaging/debian/preinst.in` + `render-preinst.sh` | On upgrade, back up the station's settings before the new files unpack (see [Settings backups](#settings-backups)). |
@@ -339,17 +339,18 @@ activated connection, and that profile stays activating.
 The `.deb`'s drop-in
 (`/usr/lib/systemd/system/NetworkManager-wait-online.service.d/10-openfollow-timeout.conf`)
 runs `/usr/share/openfollow/nm-wait-online.sh 20` instead. Four times a second
-(`nm-online -s --timeout=0` answers at once) it succeeds when that does, or when at least one device is activating
-and every activating device (loopback aside) holds an IPv4 address. A lease
-counts at once. A device holding only its 169.254 fallback counts once it has
-held it for 3 s, on the time since boot (`grace_ms` in the script), and starts
-over if it loses it, so a DHCP server that answers within 3 s of the fallback still
-gives the station its lease before the app starts. Requiring an activating
-device keeps the start of a boot, before any carrier, waiting for startup as
-before, so a NIC that will get a lease is not raced. After 20 s with a device
-still addressless, or on a fallback held for less than the grace, the unit
-fails, as it should: the station has no settled address there. On a cable-less
-boot nothing activates, and the wait passes as soon as startup completes.
+(`nm-online -s --timeout=0` answers at once) it succeeds when that does, or when
+at least one device is activating and every activating device (loopback aside)
+holds an IPv4 address. A lease counts at once. A device holding only its 169.254
+fallback counts once it has held it for 3 s, on the time since boot (`grace_ms`
+in the script), and starts over if it loses it, so a DHCP server that answers
+within 3 s of the fallback still gives the station its lease before the app
+starts. Requiring an activating device keeps the start of a boot, before any
+carrier, waiting for startup as before, so a NIC that will get a lease is not
+raced. After 20 s with a device still addressless, or on a fallback held for
+less than the grace, the unit fails, as it should: the station has no settled
+address there. On a cable-less boot nothing activates, and the wait passes as
+soon as startup completes.
 
 On a LAN whose DHCP answers later than the grace, the wait passes on the
 169.254 address. The app rebinds each plane when its address changes, so the

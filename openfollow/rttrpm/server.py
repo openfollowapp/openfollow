@@ -317,13 +317,12 @@ class RttrpmServer:
             self._socket = self._open_socket()
             self._open_error = None
         except OSError as exc:
-            # The send loop retries it; it never sends unpinned meanwhile.
+            # Retried by the send loop, unless a pinned one raises below; never sent unpinned meanwhile.
             logger.warning("RTTrPM: %s", exc)
             self._socket = None
             self._open_error = FailureCause.from_exception(exc)
         egress = self._egress
         if self._socket is None and not retry_open and egress is not None:
-            self.stop()
             raise OSError(f"RTTrPM could not open a socket pinned to {egress.iface} ({egress.address or 'no address'})")
         self._send_thread = threading.Thread(
             target=self._send_loop, args=(stop_event,), daemon=True, name="RTTrPM-Send"

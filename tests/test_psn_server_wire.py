@@ -926,11 +926,13 @@ class TestRebindMcastIp:
     def test_a_start_that_cannot_open_still_raises_its_row(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """At boot the generation lives on, retrying, and nothing it skips goes out."""
         monkeypatch.setattr(server_module.threading, "Thread", _RunsOnePassThread)
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
         srv = PsnServer(mcast_ip="236.10.10.10")
         srv.add_marker(1, "M1")
         _FakeMcastSocket.script = [_not_assignable()]
         srv.start()
-        assert srv.send_health.status().failed_total > 0
+        status = srv.send_health.status()
+        assert (status.state, status.error) == ("failing", "Can't assign requested address")
 
     def test_rebind_strips_whitespace_from_mcast_ip(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Hand-edited TOML or web-UI values can carry leading/trailing

@@ -666,7 +666,6 @@ class OtpServer:
         if self._is_multicast_mode():
             if not self._try_open_multicast_socket_once(attempt=1):
                 if not retry_open:
-                    self.stop()
                     raise OSError(
                         f"OTP failed to open multicast socket for system_number="
                         f"{self._system_number} (transform={self._transform_dest!r}, "
@@ -748,8 +747,8 @@ class OtpServer:
         Marker registrations survive – only the UDP socket and worker
         threads recycle. Used by ``apply_otp_output_change`` to apply ``otp_output.*`` edits without a process restart.
 
-        Raises ``OSError``, stopped and before any thread starts, when the
-        multicast socket can't be opened synchronously on the new interface.
+        Raises ``OSError`` before any thread starts when the multicast
+        socket can't be opened synchronously on the new interface.
         At boot ``start()`` retries it in the background instead, the wrong
         behaviour for a live apply, where the dispatcher needs a hard signal
         to revert ``app._config.otp_output``.

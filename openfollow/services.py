@@ -2093,10 +2093,7 @@ class AppRuntimeServices:
             server.stop()
             self._app._otp_server = None
         elif server is None and new_cfg.enabled:
-            # At startup a multicast socket that will not open is retried in
-            # the background; here the dispatcher needs a hard signal so
-            # ``_apply_with_fallback`` can revert ``otp_output``, as
-            # ``OtpServer.restart`` gives it.
+            # A live enable must raise: the dispatcher reverts on it, the observer shows its row and backs off.
             try:
                 self.init_otp(retry_open=False)
             except OSError:
@@ -2154,8 +2151,7 @@ class AppRuntimeServices:
             server.stop()
             self._app._rttrpm_server = None
         elif server is None and new_cfg.enabled:
-            # At startup a refused pin is left to the send loop's retry; a live
-            # apply needs the failure to revert on, as ``restart()`` gives it.
+            # A live enable must raise: the dispatcher reverts on it, the observer shows its row and backs off.
             try:
                 self.init_rttrpm(retry_open=False)
             except OSError:

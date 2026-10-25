@@ -1205,10 +1205,13 @@ class TestOtpStartFailsAndSpawnsRetryThread:
 
     def test_a_start_at_boot_still_raises_its_row(self, monkeypatch) -> None:
         monkeypatch.setattr("openfollow.otp.server.threading.Thread", _RunsOnePassThread)
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
         with patch("openfollow.otp.server.multicast_expert.McastTxSocket", side_effect=_not_assignable()):
             srv = OtpServer(system_number=1)
+            srv.register_marker(Marker(1, "M1"))
             srv.start()
-        assert srv.send_health.status().failed_total > 0
+        status = srv.send_health.status()
+        assert (status.state, status.error) == ("failing", "Can't assign requested address")
 
     def test_initial_failure_spawns_retry_thread(self) -> None:
         with patch("openfollow.otp.server.multicast_expert.McastTxSocket") as mcls:

@@ -154,7 +154,6 @@ class PsnServer:
         if self._mcast_ip:
             if not self._try_open_multicast_socket_once(attempt=1):
                 if not retry_open:
-                    self.stop()
                     raise OSError(
                         f"PSN server failed to open multicast socket on "
                         f"mcast_ip={self._mcast_ip!r}, source_ip={self._source_ip!r}",

@@ -723,6 +723,10 @@ class TestChooseMode:
         table = {"MJPG": {(1920, 1080): [(1, 30)], (1280, 720): [(1, 60), (1, 30)]}}
         assert _pick(table, dims, 60, USB2) == expected
 
+    def test_a_rate_just_under_the_request_counts_at_the_render_size(self) -> None:
+        table = {"MJPG": {(1920, 1080): [(1001, 30000)], (2560, 1440): [(1, 30)]}}
+        assert _pick(table, (1920, 1080), 30, USB2) == "MJPG 1920x1080@29.97"
+
     def test_a_raw_mode_a_header_past_the_link_is_not_deliverable(self) -> None:
         # 848x480 YUYV at 30 fps is 24.42 MB/s: under USB 2.0's 24.58, over its 24.29 after the UVC headers.
         table = {"YUYV": {(848, 480): [(1, 30)], (640, 480): [(1, 30)]}, "MJPG": {(848, 480): [(1, 30)]}}

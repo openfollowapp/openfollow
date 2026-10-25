@@ -504,7 +504,7 @@ class V4l2Input(VideoInputBase):
 
     def on_bus_error(self, error: BusError) -> None:
         """Leave the next attempt open after a pinned mode failed on a camera still present."""
-        if self._pinned_device and os.path.exists(self._pinned_device):
+        if os.path.exists(self._pinned_device):  # "" when the last build was open
             self._unpin_next = True
             logger.warning(
                 "V4L2 %s: the pinned camera mode failed; the next attempt negotiates its own", self._pinned_device

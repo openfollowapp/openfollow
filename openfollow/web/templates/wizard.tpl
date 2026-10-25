@@ -2732,8 +2732,8 @@
     wizWriteLensCoeff('wiz_lens_k1', l[0]); wizWriteLensCoeff('wiz_lens_k2', l[1]);
     wizSetLensCentre([l[2], l[3]]); wizShowLensLimit();
   }
-  // Keep puts the camera's own calibration back, also after a load; Clear starts from the lines drawn after an
-  // earlier Clear, else from no lens. Load keeps the choice it had until a calibration is loaded.
+  // Keep puts the camera's own calibration back, also after a load; Clear starts from no lens and measures the
+  // lines still on the picture again. Load keeps the choice it had until a calibration is loaded.
   function chooseLensCurrent(v) {
     if (v === 'load') {
       lensLoadDialog(function() { S.lensChoice = 'load'; renderLensCurrent(); saveToSession(); });
@@ -2743,11 +2743,11 @@
     // Nothing is measured until the lines' fit answers.
     S.lensChoice = v; S.lensLoaded = null; S.lensTouched = false;
     dropLensPoint(); lensSelected = null;
-    if (v === 'clear' && lensLines.length) { renderLensCurrent(); lensChanged(); return; }
-    // A fit still on its way must not replace the kept calibration.
+    // A fit still on its way must not replace the lens chosen here.
     lensFitSeq++;
     lensWriteAll(v === 'keep' ? SAVED.lens : [0, 0, 0, 0]);
     renderLensCurrent(); renderLens(); renderLensResult(); onLensCoeffChanged();
+    if (v === 'clear' && lensLines.length) lensChanged();
   }
   // A lens as its list line names it, the centre in pixels of a w x h picture.
   function lensVals(k1, k2, cx, cy, w, h) {

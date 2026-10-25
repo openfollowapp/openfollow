@@ -3,15 +3,15 @@
 # Copyright (C) 2026 OpenFollow Project
 """Render the Media Gallery's Concert default: a concert stage seen from a camera on the back truss.
 
-The camera hangs on the upstage back truss behind the band riser and looks steeply down over the
-stage into the crowd: dark brown 1 x 2 m stage decks under a white wash, running on, darker, into
-the wings; the band riser with black treads and a white safety edge, and a higher deck with moving
-heads on each side of it; white tape along the lip, the mic stand, pedalboards and setlists at the
-stage edge; two sheer white legs tied back on each side, at the downstage corner and mid-stage;
-sidefills, amp racks, a monitor desk, a guitar world and cases in the wings; front fills in the pit
-before the crowd barrier, and the crowd. The picture is bowed by a 2.8 mm M12 lens through the overlay's
-own model, so a station set to the printed camera and lens draws its grid on the deck seams. Tape
-marks the grid's corners and the Reference Point.
+The camera hangs on the upstage back truss over the back of the band riser and looks down over the stage
+into the crowd: dark brown 1 x 2 m stage decks under a white wash, running on, darker, into the wings;
+the band riser with black treads, a white safety edge and a drum kit with a sampling pad, and a higher
+deck with moving heads on each side of it; white tape along the lip, the mic stand, pedalboards and
+setlists at the stage edge; two sheer white legs tied back on each side, at the downstage corner and
+mid-stage, where they hang from a box truss across the stage; sidefills, amp racks, a monitor desk, a
+guitar world and cases in the wings; front fills in the pit before the crowd barrier, and the crowd. The
+picture is bowed by a 2.8 mm M12 lens through the overlay's own model, so a station set to the printed
+camera and lens draws its grid on the deck seams. Tape marks the grid's corners and the Reference Point.
 
 Needs ``rsvg-convert`` (librsvg) and Pillow. Prints the camera, the lens pair, the grid and the
 corners' pixels.
@@ -53,12 +53,15 @@ WING_X, OFF_X = STAGE_X + 5.0, 20.0  # the deck runs on, darker, into the wings;
 DECK_W, DECK_D = 1.0, 2.0  # 1 m across the front, 2 m running back
 FLOOR_Z = -1.8  # house floor below the deck
 PIT_Y = LIP_Y - 2.7  # barricade
-LEG_TOP, LEG_KNOT = 11.0, 1.5  # leg height and tie-back height
-# Two tied-back legs per side: plane (y), outer and inner edge at the top, the tie (x, this side), and
-# whether the cloth falls straight from the top and curves only toward the tie (the downstage pair).
+LEG_KNOT = 1.5  # tie-back height
+# The mid truss across the stage: plane (y), bottom chord height, box size and half span, all in metres.
+MID_TRUSS_Y, MID_TRUSS_Z, TRUSS_BOX, TRUSS_HALF_SPAN = 4.6, 6.3, 0.4, 12.5
+# Two tied-back legs per side: plane (y), outer and inner edge at the top, the tie (x, this side), the height
+# they hang from, and whether the cloth falls straight from the top and curves only toward the tie (the
+# downstage pair, from the grid out of the picture; the mid-stage pair hangs from the mid truss).
 LEGS = (
-    (LIP_Y + 0.3, STAGE_X + 2.5, STAGE_X - 1.2, STAGE_X + 0.5, True),
-    (4.6, STAGE_X + 4.5, STAGE_X - 0.4, STAGE_X + 0.3, False),
+    (LIP_Y + 0.3, STAGE_X + 2.5, STAGE_X - 1.2, STAGE_X + 0.5, 11.0, True),
+    (MID_TRUSS_Y, STAGE_X + 4.5, STAGE_X - 0.4, STAGE_X + 0.3, MID_TRUSS_Z, False),
 )
 GRID_W, GRID_D, GRID_SPACING = 12.0, 6.0, 2.0  # grid lines on every second deck seam, lip to riser
 CORNERS = {
@@ -499,18 +502,18 @@ def side_risers(out: list[str]) -> None:
             out.append(poly(disc(xm, ym - 0.05, h + 0.56, 0.13, 14), "#5a5e66"))
 
 
-def leg(out: list[str], sgn: int, y: float, x_out: float, x_in: float, x_tie: float, falls: bool) -> None:
+def leg(out: list[str], sgn: int, y: float, x_out: float, x_in: float, x_tie: float, top: float, falls: bool) -> None:
     """A sheer white leg hung above the frame and tied back: drawn as fold strips, lit and shaded in
     turn, that hang from the top, bunch into the tie along a sagging sweep and fall below it in a bell."""
     folds, steps = 18, 40
-    zs = np.linspace(LEG_TOP, 0.0, steps)
+    zs = np.linspace(top, 0.0, steps)
 
     def at(u: float, z: float) -> float:
         """Where the fold ``u`` (0 outer edge, 1 inner edge at the top) hangs at height ``z``."""
         x_top = x_out + (x_in - x_out) * u
         x_knot = x_tie + (u - 0.5) * 0.35  # folds bunched across the tie
         if z >= LEG_KNOT:
-            t = (z - LEG_KNOT) / (LEG_TOP - LEG_KNOT)
+            t = (z - LEG_KNOT) / (top - LEG_KNOT)
             if falls:  # straight down from the top, curving in only toward the tie
                 pull, sag = 1.0 - (1.0 - t) ** 2.2, 0.15 * u * math.sin(math.pi * t)
             else:  # stays near its top position, then sweeps in; the inner folds sag outward on the way
@@ -534,6 +537,24 @@ def leg(out: list[str], sgn: int, y: float, x_out: float, x_in: float, x_tie: fl
         if k % 2 == 0:  # a highlight along every other fold
             for p0, p1 in zip(fold[::3], fold[3::3], strict=False):
                 out.append(line(p0, p1, "#fbfaf8", 1.4, 0.55))
+
+
+def mid_truss(out: list[str]) -> None:
+    """A silver box truss across the stage at mid-stage, on hoist chains that run up out of the picture: four
+    chords, and lacing zigzagging along each face."""
+    y0, y1 = MID_TRUSS_Y - TRUSS_BOX / 2, MID_TRUSS_Y + TRUSS_BOX / 2
+    z0, z1 = MID_TRUSS_Z, MID_TRUSS_Z + TRUSS_BOX
+    span = TRUSS_HALF_SPAN
+    for x in (-9.0, -3.0, 3.0, 9.0):  # hoist chains
+        out.append(line((x, MID_TRUSS_Y, z1), (x, MID_TRUSS_Y, 14.0), "#55575d", 2.0))
+    xs = np.arange(-span, span + 1e-6, TRUSS_BOX)
+    faces = (((y1, z0), (y1, z1)), ((y0, z0), (y1, z0)), ((y0, z1), (y1, z1)))  # upstage, bottom and top
+    for (ya, za), (yb, zb) in faces:
+        for k, (xa, xb) in enumerate(pairwise(xs)):
+            a, b = ((ya, za), (yb, zb)) if k % 2 == 0 else ((yb, zb), (ya, za))
+            out.append(line((xa, a[0], a[1]), (xb, b[0], b[1]), "#a9adb4", 2.4))
+    for y, z in ((y0, z0), (y0, z1), (y1, z0), (y1, z1)):  # chords
+        out.append(line((-span, y, z), (span, y, z), C_SILVER, 5.0))
 
 
 def side_lights(out: list[str]) -> None:
@@ -572,9 +593,11 @@ def build_svg() -> str:
     side_lights(out)
     riser(out)
     side_risers(out)
-    for y, x_out, x_in, x_tie, falls in LEGS:  # downstage pair first, the nearer pair over it
+    for k, (y, x_out, x_in, x_tie, top, falls) in enumerate(LEGS):  # downstage pair first, the nearer over it
+        if k == 1:
+            mid_truss(out)  # in front of the downstage pair, behind the cloth that hangs from it
         for sgn in (-1, 1):
-            leg(out, sgn, y, x_out, x_in, x_tie, falls)
+            leg(out, sgn, y, x_out, x_in, x_tie, top, falls)
     out.append("</svg>\n")
     return "\n".join(part for part in out if part)
 

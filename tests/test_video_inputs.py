@@ -8,6 +8,7 @@ import logging
 
 import pytest
 
+from openfollow.runtime.overlay_layout import PictureGeometry
 from openfollow.runtime.receiver_bus import BusError, ReceiverBusHandler
 from openfollow.runtime.receiver_pipeline import ReceiverPipelineAssembler
 from openfollow.runtime.receiver_state import ReceiverStateMachine
@@ -215,6 +216,44 @@ def test_receiver_state_machine_clear_source_caps_drops_a_prior_source() -> None
 
     assert state.resolution == (0, 0)
     assert state.source_framerate == 0.0
+
+
+def test_receiver_state_machine_pairs_the_pixel_aspect_ratio_with_the_size() -> None:
+    state = ReceiverStateMachine(reconnect_delay=1.0)
+    assert state.pixel_aspect_ratio == (1, 1)
+    assert state.set_resolution(704, 576, (12, 11)) is True
+    assert state.pixel_aspect_ratio == (12, 11)
+    # The same size at another pixel aspect ratio is a new shape on screen.
+    assert state.set_resolution(704, 576, (1, 1)) is True
+    assert state.set_resolution(704, 576) is False
+
+    state.set_resolution(704, 576, (12, 11))
+    state.clear_source_caps()
+    assert state.pixel_aspect_ratio == (1, 1)
+
+    state.set_placeholder_pipeline(True)
+    assert state.set_resolution(1920, 1080, (4, 3)) is False
+    assert state.pixel_aspect_ratio == (1, 1)
+
+
+def test_receiver_state_machine_keeps_the_picture_until_the_next_source_caps() -> None:
+    """gtksink keeps the last frame up in its box through a reconnect and under
+    the black placeholder, so the picture outlives the source's own figures."""
+    state = ReceiverStateMachine(reconnect_delay=1.0)
+    assert state.picture_geometry == PictureGeometry(0, 0, (1, 1))
+    state.set_resolution(704, 576, (12, 11))
+
+    state.reset_video_flow()
+    state.forget_video_history()
+    state.set_placeholder_pipeline(True)
+    state.set_resolution(1920, 1080)
+
+    assert state.resolution == (0, 0)
+    assert state.picture_geometry == PictureGeometry(704, 576, (12, 11))
+
+    state.set_placeholder_pipeline(False)
+    state.set_resolution(1024, 768)
+    assert state.picture_geometry == PictureGeometry(1024, 768, (1, 1))
 
 
 def test_receiver_bus_handler_dispatches_core_message_types() -> None:

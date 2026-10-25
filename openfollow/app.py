@@ -193,6 +193,7 @@ from openfollow.runtime.deb_update import (
     run_local_update as runtime_run_local_update,
 )
 from openfollow.services import AppRuntimeServices, WebCommandQueue
+from openfollow.station_dir import set_config_path
 
 if TYPE_CHECKING:
     from openfollow.input import InputManager
@@ -224,6 +225,7 @@ class OpenFollowApp:
         crash_restarts: int = 0,
     ) -> None:
         self._config_path: str = os.path.abspath(config_path)
+        set_config_path(self._config_path)
         self._log_ring = log_ring
         # Crash-respawns already counted by the supervisor's circuit breaker
         # when it built this generation. Surfaced in the diagnostics bundle:
@@ -246,7 +248,6 @@ class OpenFollowApp:
         # A live video swap failed and is retried on the next config pass.
         self._video_swap_owed = False
         self._video_logged: bool = False
-        self._video_aspect: tuple[int, int] | None = None
         self._server: PsnServer | None = None
         self._otp_server: OtpServer | None = None
         self._rttrpm_server: RttrpmServer | None = None

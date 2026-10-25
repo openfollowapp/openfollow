@@ -32,11 +32,11 @@ def draw_zones(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> N
         # from subdivided edges; otherwise the vertex projection is the outline.
         n = _DISTORTION_SUBDIVISIONS if (state.lens_k1 or state.lens_k2) else 1
         if n == 1:
-            outline = project(cam, pts, w, h, state.lens_k1, state.lens_k2)
+            outline = project(cam, pts, w, h, state.lens_k1, state.lens_k2, state.pixel_aspect)
         else:
             loop = pts + [pts[0]]
             edges = [(loop[i], loop[i + 1]) for i in range(len(pts))]
-            polys = _project_segments(cam, edges, w, h, state.lens_k1, state.lens_k2, n)
+            polys = _project_segments(cam, edges, w, h, state.lens_k1, state.lens_k2, n, state.pixel_aspect)
             # Drop each edge's last point – it repeats the next edge's first.
             outline = np.vstack([poly[:-1] for poly in polys])
 

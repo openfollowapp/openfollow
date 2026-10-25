@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 import threading
 import time
@@ -22,6 +23,7 @@ from openfollow.video.inputs._base import InputCapabilities, ReconnectPolicy
 from openfollow.video.inputs._pin import PinRefusal, config_pin
 
 if TYPE_CHECKING:
+    from openfollow.runtime.overlay_layout import PictureGeometry
     from openfollow.video.detection import PersonDetector
     from openfollow.video.inputs._base import VideoInputBase
     from openfollow.video.overlay import CairoOverlayRenderer
@@ -254,6 +256,15 @@ class GstNativeSinkReceiver:
     @property
     def resolution(self) -> tuple[int, int]:
         return self._state.resolution
+
+    @property
+    def picture_geometry(self) -> PictureGeometry:
+        """Size and pixel aspect ratio of the last source picture on the sink.
+
+        gtksink leaves that frame up in its box through a reconnect, until the
+        next caps, so the HUD boxes the scene by this, not by ``resolution``.
+        """
+        return self._state.picture_geometry
 
     @property
     def source_framerate(self) -> float:
@@ -1041,8 +1052,12 @@ class GstNativeSinkReceiver:
                     w = structure.get_value("width")
                     h = structure.get_value("height")
                     if isinstance(w, int) and isinstance(h, int) and w > 0 and h > 0:
-                        if self._state.set_resolution(w, h):
-                            logger.info("Video resolution: %dx%d", w, h)
+                        par = _pixel_aspect(caps.to_string())
+                        if self._state.set_resolution(w, h, par):
+                            if par == (1, 1):
+                                logger.info("Video resolution: %dx%d", w, h)
+                            else:
+                                logger.info("Video resolution: %dx%d, pixel aspect ratio %d:%d", w, h, *par)
                     self._apply_framerate_from_structure(structure)
         return cast(int, Gst.PadProbeReturn.OK)  # mypy narrowing
 
@@ -1444,6 +1459,21 @@ class GstNativeSinkReceiver:
         finally:
             with self._discovery_lock:
                 self._discovery_running = False
+
+
+def _pixel_aspect(caps: str) -> tuple[int, int]:
+    """The caps' pixel aspect ratio in lowest terms; square when absent or invalid.
+
+    Read from the caps string, as ``_source_format`` is.
+    """
+    match = re.search(r"\bpixel-aspect-ratio=(?:\(fraction\))?(-?\d+)/(-?\d+)", caps)
+    if match is None:
+        return (1, 1)
+    num, den = int(match.group(1)), int(match.group(2))
+    if num <= 0 or den <= 0:
+        return (1, 1)
+    common = math.gcd(num, den)
+    return (num // common, den // common)
 
 
 def _source_format(caps: str) -> str:

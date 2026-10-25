@@ -627,7 +627,7 @@ def _resolved_models_dir(storage_path: str) -> Path:
     """The ``<storage>/models`` directory the runtime loads from.
 
     Storage always resolves to an absolute path (NVMe when mounted, else a
-    ``yolo`` folder under the working dir – see ``resolve_detection_storage_path``),
+    ``yolo`` folder beside the config file – see ``resolve_detection_storage_path``),
     so this is always a concrete path even on a unit without an NVMe.
     """
     from openfollow.video.detection import resolve_detection_storage_path
@@ -1094,7 +1094,7 @@ _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
     # different network here and take the receiver off the one it was on.
     "osc": frozenset({"listen_iface"}),
     # ``storage_path`` is an absolute filesystem path on THIS device (NVMe
-    # mount or a local working dir). A path from another machine is invalid
+    # mount or a local folder). A path from another machine is invalid
     # here – it must never cross via broadcast/import. Blank means auto-resolve.
     "detection": frozenset({"storage_path"}),
     # ``testpattern_selected_media`` is a device-local gallery item id; the media
@@ -4467,13 +4467,13 @@ def _register_input_plugin_routes(
 _GALLERY_PREFIX = "/video-input/testpattern"
 
 
-def _render_gallery_grid(server: ConfigWebServer, *, error: str = "") -> str:
+def _render_gallery_grid(server: ConfigWebServer, *, error: str = "", action: str = "") -> str:
     """Render the thumbnail grid for the Media Gallery as an HTMX partial.
 
     The selected tile gets the ``selected`` class (amber border in CSS); each
     user tile carries download + delete overlay actions, defaults do not. An
     optional error banner lives *inside* the grid container so the next render
-    clears it.
+    clears it; *action* is its next step, on a line of its own.
     """
     from openfollow.video import media_store
 
@@ -4511,7 +4511,10 @@ def _render_gallery_grid(server: ConfigWebServer, *, error: str = "") -> str:
             f"{actions}"
             "</div>"
         )
-    banner = f'<div class="gallery-error" role="alert">{html_mod.escape(error)}</div>' if error else ""
+    banner = ""
+    if error:
+        step = f'<div class="notice-sub">{html_mod.escape(action)}</div>' if action else ""
+        banner = f'<div class="gallery-error" role="alert"><div>{html_mod.escape(error)}</div>{step}</div>'
     return f'<div id="gallery-grid" class="gallery-grid">{banner}{"".join(tiles)}</div>'
 
 
@@ -4564,7 +4567,7 @@ def _register_gallery_routes(app: Bottle, server: ConfigWebServer) -> None:
             _stream_to_file(request.environ["wsgi.input"], staged, total)
             media_store.save_upload(Path(staged))
         except MediaStoreError as exc:
-            return _render_gallery_grid(server, error=exc.message)
+            return _render_gallery_grid(server, error=exc.message, action=exc.action)
         except Exception:
             logger.exception("Media upload failed")
             return _render_gallery_grid(server, error="Upload failed.")
@@ -4576,13 +4579,16 @@ def _register_gallery_routes(app: Bottle, server: ConfigWebServer) -> None:
     def gallery_capture() -> Any:
         response.content_type = "application/json"
         jpeg = server.get_full_snapshot()
+        # A refusal answers 200 so the page reports it beside the Capture button, not under Save.
         if jpeg is None:
-            response.status = 503
-            return json.dumps({"ok": False, "error": "No video frame available to capture."})
+            return json.dumps({"ok": False, "error": "No video frame available to capture.", "action": ""})
         try:
             item = media_store.save_captured_frame(jpeg)
         except MediaStoreError as exc:
-            return json.dumps({"ok": False, "error": exc.message})
+            return json.dumps({"ok": False, "error": exc.message, "action": exc.action})
+        except Exception:
+            logger.exception("Frame capture failed")
+            return json.dumps({"ok": False, "error": "Capture failed.", "action": ""})
         return json.dumps({"ok": True, "media_id": item.media_id})
 
     @app.get(_GALLERY_PREFIX + "/download/<media_id>")
@@ -6977,6 +6983,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             target.unlink()
         except OSError as exc:
             return _render_detection(cfg, install_feedback=f"Could not delete `{name}`: {exc}.", install_error=True)
+        from openfollow.video.detection import detection_cache_dir, remove_coreml_compiles
+
+        remove_coreml_compiles(detection_cache_dir(cfg.detection.storage_path), name)
         logger.info("Deleted detection model %s", name)
         return _render_detection(cfg, install_feedback=f"Deleted `{name}`.")
 

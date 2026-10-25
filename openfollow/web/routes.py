@@ -1695,14 +1695,19 @@ def apply_section_data(cfg: AppConfig, section: str, data: Mapping[str, Any]) ->
     follow the grid, and one the grid moved loses its pin, so a write that brings pins for the new grid
     applies the grid first. A camera write that changes the pose or FOV without bringing calibration
     marks clears the calibration, so the next Setup Wizard run cannot solve the old pose back. One that
-    brings marks clears what describes a calibration and it does not bring.
+    brings marks clears what describes a calibration and it does not bring; a lens changed without its
+    rating clears the rating.
     """
-    solved = _solved_camera(cfg)
+    solved, lens = _solved_camera(cfg), effective_lens(cfg)
     applied = _apply_section(cfg, section, data)
     if isinstance(data.get("calibration_marks"), list):
         stale: Sequence[str] = [name for name in _CALIBRATION_RECORD if not isinstance(data.get(name), str)]
+    elif _solved_camera(cfg) != solved:
+        stale = _CALIBRATION_FIELDS
+    elif effective_lens(cfg) != lens and not isinstance(data.get("calibration_lens_rating"), str):
+        stale = ("calibration_lens_rating",)
     else:
-        stale = _CALIBRATION_FIELDS if _solved_camera(cfg) != solved else ()
+        stale = ()
     blank = CameraConfig()
     for name in stale:
         setattr(cfg.camera, name, getattr(blank, name))

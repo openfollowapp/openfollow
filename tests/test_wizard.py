@@ -2056,7 +2056,7 @@ class TestLensRatingRecord:
 
     @pytest.mark.parametrize(
         ("shown", "recorded"),
-        [("low", "not_usable"), ("medium", "poor"), ("okay", "fair"), ("good", "good"), ("excellent", "excellent")],
+        [("medium", "poor"), ("okay", "fair"), ("good", "good"), ("excellent", "excellent")],
     )
     def test_the_fit_s_lens_records_the_rating_the_review_shows(self, shown: str, recorded: str) -> None:
         assert _rating({"isTheFits": True}, {}, {"shown": shown, "applies": True}) == recorded
@@ -2065,8 +2065,10 @@ class TestLensRatingRecord:
     def test_a_lens_changed_after_its_fit_is_user_input(self, applies: bool, tuned: bool) -> None:
         assert _rating({"tuned": tuned}, {}, {"shown": "good", "applies": applies}) == "user_input"
 
-    def test_a_fit_not_applied_rates_nothing(self) -> None:
-        assert _rating({"measured": True}, {}, {"shown": "low", "applies": False}) == ""
+    @pytest.mark.parametrize(("kept", "recorded"), [("good", "good"), ("user_input", "user_input"), (None, "")])
+    def test_a_fit_not_applied_records_the_rating_of_the_lens_it_kept(self, kept, recorded: str) -> None:
+        fit = {"shown": "low", "applies": False, **({"keptRating": kept} if kept else {})}
+        assert _rating({"measured": True}, {}, fit) == recorded
 
     def test_a_loaded_lens_as_loaded_is_loaded(self) -> None:
         loaded = {"k1": -0.2, "k2": 0.03, "cx": 0.0, "cy": 0.0, "name": "Wide"}
@@ -2104,3 +2106,30 @@ def test_the_calibration_time_is_this_browser_s_local_time_with_its_offset(zone:
         " globalThis.Date = function() { return new RealDate(RealDate.UTC(2026, 9, 25, 10, 4, 5)); };"
     )
     assert run_wizard_js("localIsoNow()", prelude=page, functions=("localIsoNow",)) == expected
+
+
+_TAKE_FIT_PAGE = """
+var lensFit = null, S = { lensChoice: '', lensLoaded: null, lensTouched: false }, SAVED = { lens_rating: '' };
+function wizLens() { return [-0.2, 0.03, 0.0, 0.0]; }
+function lensHasCurrent() { return false; }
+function lensFitApplies(fit) { return fit.rating !== 'low'; }
+function lensIsTheFits(l) { return !!lensFit && lensFitApplies(lensFit); }
+function lensShownRating(fit) { return fit.rating; }
+function lensHandTuned() { return false; }
+function lensMeasured() { return false; }
+"""
+
+
+@needs_node
+@unit
+def test_a_fit_not_applied_after_an_applied_one_keeps_that_fit_s_rating() -> None:
+    """Good, then a line that makes the next fit Not usable: the Good pair stays, and Save and finish rates it Good."""
+    out = run_wizard_js(
+        "(function() { lensTakeFit({ rating: 'good' }, [0, 0]); var first = lensRatingRecord(wizLens());"
+        " lensTakeFit({ rating: 'low' }, [0, 0]);"
+        " return [first, lensRatingRecord(wizLens()), lensFit.kept]; })()",
+        prelude=_TAKE_FIT_PAGE,
+        functions=("lensTakeFit", "lensRatingRecord"),
+        variables=("LENS_RATING_RECORD",),
+    )
+    assert out == ["good", "good", [-0.2, 0.03, 0.0, 0.0]]

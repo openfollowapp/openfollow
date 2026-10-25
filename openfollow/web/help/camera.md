@@ -45,8 +45,8 @@ The **Calibration** column says which calibration the **Setup Wizard** applied l
 
 - **Calibrated** – when it was saved, by the clock of the browser that saved it, in that browser's time zone.
 - **Video source** – the video source the station showed when it was saved, without any password in its address. The calibration fits that camera; another source, or the same camera moved or zoomed, needs a new one.
-- **Lens rating** – the Lens step's rating of the lens it was saved with (**Excellent**, **Good**, **Fair**, **Poor**, **Not usable**), **User input** for values typed or changed by hand, or **Loaded** for a lens calibration loaded unchanged. A lens kept from the calibration before keeps its rating.
-- **Pinned** – how many of its points are placed on the picture.
+- **Lens rating** – the Lens step's rating of the lens it was saved with (**Excellent**, **Good**, **Fair**, **Poor**), **User input** for values typed or changed by hand, or **Loaded** for a lens calibration loaded unchanged. A lens kept from before, by the Setup Wizard or because a fit was not applied, keeps its rating; a lens changed outside the Setup Wizard has none.
+- **Pinned** – how many of its points are placed on the picture: the corners in Simple, the known points and distance points in Advanced.
 - **Accuracy** – the largest distance, in pixels of the live video, between a pinned point and where the saved camera sees it, lens included. Fractions of a pixel to a few pixels is a close fit; a large value means a point was pinned or measured wrong, or the camera has moved since. **No video** without a picture to count in.
 
 A row is missing when the calibration did not record it. **Calibration points** opens its points, read-only, one row per point:
@@ -62,7 +62,7 @@ A row is missing when the calibration did not record it. **Calibration points** 
 
 In Simple the rectangle is the grid: a change to the grid's width, depth or offsets, on the Grid tab, from another station or by an import, moves the corners with it and unpins them, since they were pinned on the old grid. Advanced points stay as they are.
 
-A position, orientation or field of view written without its calibration, by a request to the station or an imported file that carries no calibration points, clears the calibration: it describes the camera it was pinned for, so the next run of the Setup Wizard starts from no points. Calibration points written without their time, video source or lens rating leave those rows empty.
+A position, orientation or field of view written without its calibration, by a request to the station or an imported file that carries no calibration points, clears the calibration: it describes the camera it was pinned for, so the next run of the Setup Wizard starts from no points. Calibration points written without their time, video source or lens rating leave those rows out.
 
 ## Saving & sharing
 

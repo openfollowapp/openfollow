@@ -2274,7 +2274,10 @@ def test_the_camera_tab_lists_the_calibration_marks_read_only(live_server, mode:
     assert status == 200
     shown_title, rows = _calibration_rows(html_text)
     assert shown_title == "Calibration points"
-    assert _readout(_camera_section(html_text))["Type"] == kind
+    readout = _readout(_camera_section(html_text))
+    assert readout["Type"] == kind
+    # Each kind counts its pinned points; Simple's points are its corners.
+    assert readout["Pinned"] == ("3 of 4 corners" if mode == "simple" else "3 of 4 known points, 1 distance point")
     # Without video there is no picture to count an error in.
     assert rows[0] == ["DSL", "Known point", "X = 5.000 m<br>Y = 0.000 m<br>Z = 0.000 m", "–", "Yes", "–"]
     assert rows[1] == ["DSR", "Known point", "X = -5.000 m<br>Y = 0.000 m<br>Z = 0.000 m", "–", "No", "–"]
@@ -7709,7 +7712,7 @@ def test_the_calibration_column_shows_what_the_setup_wizard_recorded(video_serve
         "Calibrated": "2026-10-26 09:30",
         "Video source": "RTSP: rtsp://192.0.2.10/stream",
         "Lens rating": "Good",
-        "Pinned": "3 of 4",
+        "Pinned": "3 of 4 corners",
         "Accuracy": "Within 2.5 px",
     }
     _, rows = _calibration_rows(section)
@@ -7723,7 +7726,6 @@ def test_the_calibration_column_shows_what_the_setup_wizard_recorded(video_serve
         ("good", "Good"),
         ("fair", "Fair"),
         ("poor", "Poor"),
-        ("not_usable", "Not usable"),
         ("user_input", "User input"),
         ("loaded", "Loaded"),
     ],
@@ -7744,7 +7746,7 @@ def test_a_calibration_without_a_record_shows_none_of_its_rows(video_server) -> 
     save_config(cfg, server.config_path)
     readout = _readout(_camera_section(_get(base, "/section/camera")[1]))
     assert not {"Calibrated", "Video source", "Lens rating"} & set(readout)
-    assert (readout["Pinned"], readout["Accuracy"]) == ("4 of 4", "Within 0.0 px")
+    assert (readout["Pinned"], readout["Accuracy"]) == ("4 corners", "Within 0.0 px")
 
 
 def test_the_accuracy_is_counted_in_the_live_video_s_pixels(video_server) -> None:
@@ -7776,7 +7778,7 @@ def test_without_pins_there_is_no_accuracy(video_server) -> None:
         mark.pin = []
     save_config(cfg, server.config_path)
     readout = _readout(_camera_section(_get(base, "/section/camera")[1]))
-    assert readout["Pinned"] == "0 of 4" and "Accuracy" not in readout
+    assert readout["Pinned"] == "0 of 4 corners" and "Accuracy" not in readout
 
 
 def test_a_recorded_video_source_is_shown_as_text(video_server) -> None:

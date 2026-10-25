@@ -15,6 +15,13 @@
 % _fix = lambda v, n: "%.*f" % (n, round(v, n) + 0.0)
 % _marks = _cam.calibration_marks
 % _pinned = sum(1 for _m in _marks if _m.pin)
+% # "4 corners", "3 of 4 known points": the pinned of each kind, named by its count.
+% def _pinned_of(kind, one, many):
+%   _all = [_m for _m in _marks if (_m.kind == "known") == (kind == "known")]
+%   _on = sum(1 for _m in _all if _m.pin)
+%   return ("%d" % _on if _on == len(_all) else "%d of %d" % (_on, len(_all))) + " " + (one if len(_all) == 1 else many) if _all else ""
+% end
+% _pinned_text = _pinned_of("known", "corner", "corners") if _cam.calibration_mode == "simple" else ", ".join(t for t in (_pinned_of("known", "known point", "known points"), _pinned_of("triangulated", "distance point", "distance points")) if t)
 % # Pins are fractions of the snapshot, counted in pixels of the live video.
 % _errors = pin_errors(_cam, *_vs) if _vs else {}
 % _ratings = {"excellent": "Excellent", "good": "Good", "fair": "Fair", "poor": "Poor", "not_usable": "Not usable", "user_input": "User input", "loaded": "Loaded"}
@@ -77,7 +84,7 @@
                 <dd>{{_ratings[_cam.calibration_lens_rating]}}</dd>
                 % end
                 <dt>Pinned</dt>
-                <dd>{{_pinned}} of {{len(_marks)}}</dd>
+                <dd>{{_pinned_text}}</dd>
                 % if _pinned and (_errors or not _vs):
                 <dt>Accuracy</dt>
                 <dd>{{"Within %.1f px" % max(_errors.values()) if _errors else "No video"}}</dd>

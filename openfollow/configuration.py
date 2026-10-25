@@ -387,7 +387,7 @@ def _coerce_bool(value: Any, default: bool) -> bool:
 CALIBRATION_CORNERS = ("DSL", "DSR", "USR", "USL")
 CALIBRATION_MODES = ("simple", "advanced")
 # The Setup Wizard's verdict on the lens it saved with a calibration.
-CALIBRATION_LENS_RATINGS = ("excellent", "good", "fair", "poor", "not_usable", "user_input", "loaded")
+CALIBRATION_LENS_RATINGS = ("excellent", "good", "fair", "poor", "user_input", "loaded")
 CALIBRATION_SOURCE_MAX_LEN = 200
 MARK_KINDS = ("known", "triangulated")
 MAX_CALIBRATION_MARKS = 12
@@ -541,12 +541,15 @@ class CameraConfig:
 
 
 def _coerce_calibration_time(value: Any) -> str:
-    """An ISO 8601 time with its UTC offset, to the second, else \"\"."""
-    if not isinstance(value, str):
-        return ""
-    try:
-        moment = datetime.fromisoformat(value.strip())
-    except ValueError:
+    """An ISO 8601 time with its UTC offset, to the second, else \"\". TOML reads one unquoted as a datetime."""
+    if isinstance(value, datetime):
+        moment = value
+    elif isinstance(value, str):
+        try:
+            moment = datetime.fromisoformat(value.strip())
+        except ValueError:
+            return ""
+    else:
         return ""
     return moment.isoformat(timespec="seconds") if moment.tzinfo is not None else ""
 
@@ -555,7 +558,7 @@ def _coerce_calibration_source(value: Any) -> str:
     """Display text without stream credentials or control characters, at most CALIBRATION_SOURCE_MAX_LEN."""
     if not isinstance(value, str):
         return ""
-    return CONTROL_CHARS_RE.sub("", redact_uris_in_text(value)).strip()[:CALIBRATION_SOURCE_MAX_LEN].strip()
+    return redact_uris_in_text(CONTROL_CHARS_RE.sub("", value)).strip()[:CALIBRATION_SOURCE_MAX_LEN].strip()
 
 
 def _coerce_calibration_height(value: Any) -> float | None:

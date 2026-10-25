@@ -2409,6 +2409,13 @@
     clearTimeout(lensFitTimer);
     lensFitTimer = setTimeout(runLensFit, LENS_FIT_DEBOUNCE_MS);
   }
+  // A fit not applied keeps the lens in the fields, and the rating that lens had.
+  function lensTakeFit(fit, centre) {
+    var kept = wizLens(), keptRating = lensRatingRecord(kept);
+    lensFit = fit;
+    lensFit.centre = centre;
+    if (!lensFitApplies(lensFit)) { lensFit.kept = kept; lensFit.keptRating = keptRating; }
+  }
   function runLensFit() {
     var seq = ++lensFitSeq;
     var lines = lensLines.filter(lensLineCounts), centre = S.lensCentre.slice();
@@ -2445,9 +2452,7 @@
         return;
       }
       lensShowStatus('', true);
-      lensFit = res.data;
-      lensFit.centre = centre;
-      if (!lensFitApplies(lensFit)) lensFit.kept = wizLens();
+      lensTakeFit(res.data, centre);
       lensClearMisfit();
       lines.forEach(function(l, i) {
         var r = res.data.lines[i];
@@ -3875,11 +3880,11 @@
     return lensMeasured() ? 'The station\'s lens' : 'Not measured';
   }
   // The lens rating Save and finish records, by the case the Lens row of the review shows.
-  var LENS_RATING_RECORD = { low: 'not_usable', medium: 'poor', okay: 'fair', good: 'good', excellent: 'excellent' };
+  var LENS_RATING_RECORD = { medium: 'poor', okay: 'fair', good: 'good', excellent: 'excellent' };
   function lensRatingRecord(l) {
     if (lensHasCurrent() && S.lensChoice === 'keep') return SAVED.lens_rating;
     if (lensIsTheFits(l)) return LENS_RATING_RECORD[lensShownRating(lensFit)] || '';
-    if (lensFit) return lensFitApplies(lensFit) || lensHandTuned() ? 'user_input' : '';
+    if (lensFit) return lensFitApplies(lensFit) || lensHandTuned() ? 'user_input' : lensFit.keptRating || '';
     if (S.lensLoaded) return lensSame(l, [S.lensLoaded.k1, S.lensLoaded.k2, S.lensLoaded.cx, S.lensLoaded.cy]) ? 'loaded' : 'user_input';
     if (S.lensTouched) return 'user_input';
     return lensMeasured() ? SAVED.lens_rating : '';

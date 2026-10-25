@@ -9719,13 +9719,16 @@ def test_a_hand_edited_calibration_height_is_read_through_load_config(tmp_path, 
 # CameraConfig's calibration record: the lens rating, time and video source of the Setup Wizard's save
 
 
-@pytest.mark.parametrize("rating", ["excellent", "good", "fair", "poor", "not_usable", "user_input", "loaded", ""])
+@pytest.mark.parametrize("rating", ["excellent", "good", "fair", "poor", "user_input", "loaded", ""])
 def test_a_calibration_lens_rating_on_the_list_is_kept(rating: str) -> None:
     assert CameraConfig(calibration_lens_rating=rating).calibration_lens_rating == rating
 
 
+# A fit rated Not usable is never applied, so no saved lens carries that rating.
 @pytest.mark.parametrize(
-    "raw", ["Good", "okay", "medium", "low", " good"], ids=["case", "okay", "medium", "low", "pad"]
+    "raw",
+    ["Good", "okay", "medium", "low", "not_usable", " good"],
+    ids=["case", "okay", "medium", "low", "not usable", "pad"],
 )
 def test_a_calibration_lens_rating_off_the_list_reads_as_none(raw: str) -> None:
     assert CameraConfig(calibration_lens_rating=raw).calibration_lens_rating == ""
@@ -9774,9 +9777,10 @@ def test_a_calibration_time_of_the_wrong_type_reads_as_none(raw: object) -> None
         ("RTSP: rtsp://user:pw@192.0.2.10/stream", "RTSP: rtsp://192.0.2.10/stream"),
         ("SRT srt://192.0.2.1:5000?passphrase=secret123", "SRT srt://192.0.2.1:5000?passphrase=***"),
         ("NDI®: Stage\x00 \x1b[31mLeft\u202e", "NDI®: Stage [31mLeft"),
+        ("SRT srt://192.0.2.1:5000?pass\x00phrase=secret123", "SRT srt://192.0.2.1:5000?passphrase=***"),
         ("  Media Gallery (Clip)  ", "Media Gallery (Clip)"),
     ],
-    ids=["plain", "credentials", "passphrase", "control characters", "pad"],
+    ids=["plain", "credentials", "passphrase", "control characters", "split passphrase", "pad"],
 )
 def test_a_calibration_source_is_kept_without_credentials_or_control_characters(raw: str, expected: str) -> None:
     assert CameraConfig(calibration_source=raw).calibration_source == expected
@@ -9795,7 +9799,7 @@ def test_a_calibration_source_of_the_wrong_type_reads_as_none(raw: object) -> No
 def test_a_calibration_record_survives_a_toml_round_trip(tmp_path) -> None:
     path = tmp_path / "config.toml"
     record = {
-        "calibration_lens_rating": "not_usable",
+        "calibration_lens_rating": "poor",
         "calibration_time": "2026-10-26T09:30:00-02:30",
         "calibration_source": "USB Camera: Webcam (1280x720@30)",
     }
@@ -9803,6 +9807,14 @@ def test_a_calibration_record_survives_a_toml_round_trip(tmp_path) -> None:
     save_config(AppConfig(camera=camera), path)
     loaded = load_config(str(path)).camera
     assert {name: getattr(loaded, name) for name in record} == record
+
+
+def test_an_unquoted_calibration_time_in_a_hand_edited_file_is_read(tmp_path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text("[camera]\ncalibration_time = 2026-10-25T11:04:00+01:00\n", encoding="utf-8")
+    assert load_config(str(path)).camera.calibration_time == "2026-10-25T11:04:00+01:00"
+    path.write_text("[camera]\ncalibration_time = 2026-10-25T11:04:00\n", encoding="utf-8")
+    assert load_config(str(path)).camera.calibration_time == ""
 
 
 def test_a_hand_edited_calibration_record_is_read_through_load_config(tmp_path) -> None:

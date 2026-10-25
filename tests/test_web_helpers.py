@@ -4193,6 +4193,20 @@ def test_a_pose_or_fov_changed_without_marks_clears_the_calibration(name: str) -
     assert _record(camera) == dict.fromkeys(_RECORD, "")
 
 
+@pytest.mark.parametrize("name", ["lens_k1", "lens_k2", "lens_cx", "lens_cy"])
+def test_a_lens_changed_without_its_rating_clears_only_the_rating(name: str) -> None:
+    """The rating describes the lens it was measured for; the points still describe the pose."""
+    cfg = _calibrated()
+    apply_section_data(cfg, "camera", {name: 0.01})
+    assert (len(cfg.camera.calibration_marks), _record(cfg.camera)) == (3, {**_RECORD, "calibration_lens_rating": ""})
+
+
+def test_a_lens_written_with_its_rating_keeps_it() -> None:
+    cfg = _calibrated()
+    apply_section_data(cfg, "camera", {"lens_k1": -0.1, "calibration_lens_rating": "loaded"})
+    assert _record(cfg.camera) == {**_RECORD, "calibration_lens_rating": "loaded"}
+
+
 def test_marks_written_with_their_record_keep_it() -> None:
     cfg = _calibrated()
     record = {"calibration_lens_rating": "user_input", "calibration_time": "2026-10-26T09:30:00-02:30"}
@@ -4225,8 +4239,8 @@ def test_a_pose_changed_with_marks_that_are_not_a_list_clears_the_calibration(ra
 
 @pytest.mark.parametrize(
     "data",
-    [{}, {"pos_x": 0.0}, {"lens_k1": -0.2, "lens_k2": 0.1, "lens_cx": 0.01, "lens_cy": -0.01}],
-    ids=["nothing", "same pose", "lens only"],
+    [{}, {"pos_x": 0.0}, {"lens_k1": 0.0, "calibration_height": 9.8}],
+    ids=["nothing", "same pose", "same lens"],
 )
 def test_a_camera_write_that_keeps_the_pose_keeps_the_calibration(data: dict) -> None:
     cfg = _calibrated()
@@ -4254,7 +4268,8 @@ def test_calibration_marks_that_are_not_a_list_keep_the_saved_ones(raw: object) 
     cfg = _calibrated()
     apply_section_data(cfg, "camera", {"calibration_marks": raw, "lens_k1": -0.1})
     assert [m.id for m in cfg.camera.calibration_marks] == [1, 2, 3]
-    assert (cfg.camera.lens_k1, _record(cfg.camera)) == (-0.1, _RECORD)
+    # The lens changed without its rating.
+    assert (cfg.camera.lens_k1, _record(cfg.camera)) == (-0.1, {**_RECORD, "calibration_lens_rating": ""})
 
 
 def test_a_calibration_mode_of_none_keeps_the_saved_one() -> None:

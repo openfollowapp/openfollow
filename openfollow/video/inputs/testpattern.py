@@ -152,10 +152,7 @@ class MediaGalleryInput(VideoInputBase):
         src.set_property("is-live", True)
 
         capsfilter = Gst.ElementFactory.make("capsfilter", "capsfilter")
-        capsfilter.set_property(
-            "caps",
-            Gst.Caps.from_string(f"video/x-raw,width={_OUTPUT_WIDTH},height={_OUTPUT_HEIGHT},framerate={_FRAMERATE}"),
-        )
+        capsfilter.set_property("caps", Gst.Caps.from_string(f"{_OUTPUT_CAPS},framerate={_FRAMERATE}"))
         convert = Gst.ElementFactory.make("videoconvert", "convert")
 
         for elem in (src, capsfilter, convert):

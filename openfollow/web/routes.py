@@ -32,10 +32,10 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
 from urllib.parse import quote, urlsplit
 
-from bottle import Bottle, HTTPResponse, abort, redirect, request, response, static_file, template
+from bottle import Bottle, HTTPResponse, abort, request, response, static_file, template
 
 import openfollow
 
@@ -522,12 +522,21 @@ def _host_refusal(host: str | None, fqdn: str = "") -> HostRefusal | None:
     if host is None or canonical_host(host) in _allowed_request_hosts(fqdn):
         return None
     address = _connection_address()
-    href = None
-    if address is not None:
-        port = str(request.environ.get("SERVER_PORT") or "80")
-        netloc = f"[{address}]" if ":" in address else address
-        href = f"http://{netloc}{'' if port == '80' else ':' + port}/"
+    href = _station_url(address) if address is not None else None
     return HostRefusal(host=host, address=address, href=href)
+
+
+def _station_url(address: str) -> str:
+    """This station's UI at ``address``, on the scheme and port this connection reached."""
+    port = str(request.environ.get("SERVER_PORT") or "80")
+    netloc = f"[{address}]" if ":" in address else address
+    return f"http://{netloc}{'' if port == '80' else ':' + port}/"
+
+
+def _redirect(location: str) -> NoReturn:
+    """A 303 to ``location`` as given. Bottle's ``redirect`` resolves it against
+    ``request.url``, which takes the host and scheme from client-set X-Forwarded-* headers."""
+    raise HTTPResponse(status=303, headers={"Location": location})
 
 
 def _page_host_context(cfg: AppConfig) -> dict[str, Any]:
@@ -4656,19 +4665,6 @@ _ENV_CONFIG_KEY = "openfollow.loaded_config"
 _CONFIG_CACHE = ParsedConfigCache()
 
 
-def _port_suffix(netloc: str) -> str:
-    """The ``:port`` suffix of a URL netloc, or ``""`` when no explicit port.
-
-    Handles bracketed IPv6 host literals: a bare ``[fe80::1]`` has no port (the
-    trailing hextet must not be read as one) – only ``[fe80::1]:8080`` does.
-    """
-    if netloc.startswith("["):
-        _, sep, port = netloc.rpartition("]:")
-        return f":{port}" if sep else ""
-    _, sep, port = netloc.rpartition(":")
-    return f":{port}" if sep else ""
-
-
 def _last_whole_config(server: ConfigWebServer) -> AppConfig:
     """The config as the file last read whole, read again once it changes.
 
@@ -5903,13 +5899,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         elif request.headers.get("HX-Request"):
             raise HTTPResponse(body="", headers={"HX-Redirect": "/login"})
         else:
-            redirect("/login")
+            _redirect("/login")
 
     @app.get("/login")
     def login_page() -> Any:
         cfg = _request_scoped_config()
         if not cfg.web_pin:
-            redirect("/")
+            _redirect("/")
         return template(
             "login",
             error="",
@@ -5923,7 +5919,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         cfg = _request_scoped_config()
         pin = cfg.web_pin
         if not pin:
-            redirect("/")
+            _redirect("/")
 
         remote = _client_address()
         # Reserve a single guess atomically: refuse while locked out (short-
@@ -6105,7 +6101,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 root=str(license_path.parent),
                 mimetype="text/plain",
             )
-        redirect("https://www.gnu.org/licenses/agpl-3.0.txt")
+        _redirect("https://www.gnu.org/licenses/agpl-3.0.txt")
 
     # --- HTML Page Routes ---
 
@@ -6597,12 +6593,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             net=_build_network_form_context(iface=iface, banner=banner, vlan_form=vlan_form),
         )
 
-    def _network_redirect_url(address: str) -> str:
-        """Build a same-scheme/same-port URL on ``address`` so a static /
-        manual-address apply can reload the UI at the new IP."""
-        parts = request.urlparts
-        return f"{parts.scheme}://{address}{_port_suffix(parts.netloc)}/"
-
     def _parse_network_form() -> tuple[str, str, dict[str, Any]]:
         """Pull (iface, method_value, fields) off the posted form. ``fields``
         carries the raw operator input – re-rendered verbatim on error."""
@@ -6821,7 +6811,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # dead page and the explanation is lost with the response body.
             and not result.pending
         ):
-            response.set_header("HX-Redirect", _network_redirect_url(address))
+            response.set_header("HX-Redirect", _station_url(address))
             return ""
         if result.pending:
             # Deliberately not "applied", and no reconnect advice: the

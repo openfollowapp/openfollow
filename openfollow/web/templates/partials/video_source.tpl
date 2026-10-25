@@ -86,7 +86,7 @@
             vis('preview-row', value !== 'testpattern');
         };
         </script>
-        <!-- Connection recovery applies to network inputs only (RTSP/SRT/RTP). -->
+        <!-- Shown with the network inputs; Stall Timeout watches every input, Heal Interval only these. -->
         <div class="row" id="recovery-row" style="display:{{'' if config.video_source_type in ('rtsp', 'srt', 'rtp') else 'none'}}">
             <div class="field">
                 <label>Stall Timeout (s)</label>

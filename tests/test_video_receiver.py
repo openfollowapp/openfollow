@@ -53,6 +53,7 @@ from openfollow.video.failure import (
     SourceKind,
     VideoFailure,
 )
+from openfollow.video.inputs import get_registry
 from openfollow.video.inputs._base import (
     ConfigField,
     InputCapabilities,
@@ -4856,7 +4857,8 @@ class TestRecoveryTimerOverrides:
     def test_a_heal_interval_set_while_parked_with_healing_off_wakes_nothing(
         self, fake_gst, fake_glib, fake_input_cls
     ) -> None:
-        """As the Video Source help says: only a change to the source, a confirm or a restart retries it."""
+        """As the Video Source help says: nothing retries it on a timer, and setting a
+        Heal Interval again does not wake it."""
         r = _make_receiver(input_config={"fake_source": "cam-1"})
         r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
         r._state.reconnect_attempt = 2  # hit max_attempts
@@ -4867,6 +4869,107 @@ class TestRecoveryTimerOverrides:
 
         assert r._heal_source_id is None
         assert r._state.reconnect_source_id is None
+
+    def test_a_rebuild_of_the_source_wakes_a_feed_parked_with_healing_off(
+        self, fake_gst, fake_glib, fake_input_cls
+    ) -> None:
+        """A detection change that swaps the detector rebuilds the source, as a change to it does."""
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+        r._state.reconnect_attempt = 2  # hit max_attempts
+        r._do_reconnect()
+        built = FakePipeline()
+        FakeInput.create_pipeline_result = built
+
+        r.swap_detection_branch(None)
+
+        assert r._pipeline is built
+        assert FakeState.PLAYING in built.state_changes
+
+    def test_a_new_heal_interval_takes_over_once_the_waiting_retry_has_run(
+        self, fake_gst, fake_glib, fake_input_cls
+    ) -> None:
+        r = receiver_mod.GstNativeSinkReceiver(
+            source_type="fake",
+            input_config={"fake_source": "cam-1"},
+            heal_interval=5.0,
+        )
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+        r._state.reconnect_attempt = 2  # hit max_attempts
+        r._do_reconnect()
+        waiting = r._heal_source_id
+        assert waiting is not None
+
+        r.set_recovery_timers(heal_interval=2.0)
+
+        assert r._heal_source_id == waiting
+        assert fake_glib.timers[waiting][0] == 5000
+        # The waiting retry runs, the source is still gone, and the feed parks again.
+        FakeInput.create_pipeline_raises = RuntimeError("still gone")
+        r._do_heal()
+        r._state.reconnect_attempt = 2
+        r._do_reconnect()
+        assert r._heal_source_id not in (None, waiting)
+        assert fake_glib.timers[r._heal_source_id][0] == 2000
+
+
+# What each input does once its retries run out; a new input is added here and to the help.
+_AFTER_THE_RETRIES = {
+    "rtsp": "heal",
+    "srt": "heal",
+    "rtp": "heal",
+    "avf": "picker",
+    "ndi": "picker",
+    "picam": "picker",
+    "v4l2": "picker",
+    "testpattern": "build again",
+}
+
+
+def _real_input_receiver(monkeypatch: pytest.MonkeyPatch, input_id: str) -> receiver_mod.GstNativeSinkReceiver:
+    """A receiver on the real *input_id* plugin with the default recovery timers and its source set."""
+    input_cls = get_registry()[input_id]
+    monkeypatch.setattr(receiver_mod, "get_input_class", lambda _input_id: input_cls)
+    return receiver_mod.GstNativeSinkReceiver(
+        source_type=input_id,
+        input_config={input_cls.config_fields()[0].name: "source-1"},
+        stall_timeout=3.0,
+        heal_interval=5.0,
+    )
+
+
+class TestRecoveryTimersByInput:
+    """Which inputs each recovery timer covers, as the Video Source help states it."""
+
+    @pytest.mark.parametrize("input_id", sorted(get_registry()))
+    def test_the_stall_watchdog_watches_every_input(self, fake_gst, fake_glib, monkeypatch, input_id: str) -> None:
+        r = _real_input_receiver(monkeypatch, input_id)
+
+        r._handle_video_connected()
+
+        assert r._watchdog_source_id is not None
+
+    @pytest.mark.parametrize("input_id", sorted(get_registry()))
+    def test_only_the_network_inputs_heal_once_their_retries_run_out(
+        self, fake_gst, fake_glib, monkeypatch, input_id: str
+    ) -> None:
+        r = _real_input_receiver(monkeypatch, input_id)
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+        builds: list[bool] = []
+        monkeypatch.setattr(r, "_schedule_discovery", lambda: None)
+        monkeypatch.setattr(r, "create_pipeline", lambda: builds.append(True))
+        monkeypatch.setattr(r, "play", lambda: None)
+        r._state.reconnect_attempt = r._reconnect_policy.max_attempts
+
+        r._do_reconnect()
+
+        if r._heal_source_id is not None:
+            outcome = "heal"
+        elif r.source_selection_active:
+            outcome = "picker"
+        else:
+            outcome = "build again" if builds else "nothing"
+        assert outcome == _AFTER_THE_RETRIES[input_id]
 
 
 # --------------------------------------------------------------------------- #

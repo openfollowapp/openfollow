@@ -2330,10 +2330,10 @@ class AppConfig:
     # Media Gallery selection; see ``_DEFAULT_SELECTED_MEDIA`` above.
     testpattern_selected_media: str = _DEFAULT_SELECTED_MEDIA
 
-    # Video recovery (network inputs: RTSP/SRT/RTP). ``stall_timeout`` is the
-    # silent-stall watchdog – seconds an established stream may deliver no
-    # frames before it's torn down and reconnected (0 = off). ``heal_interval``
-    # is how often a feed parked on the no-signal placeholder re-probes its URL
+    # Video recovery. ``stall_timeout`` is the silent-stall watchdog of every
+    # input – seconds an established stream may deliver no frames before it's
+    # torn down and reconnected (0 = off). ``heal_interval`` is how often an
+    # RTSP/SRT/RTP feed parked on the no-signal placeholder re-probes its URL
     # so it recovers on its own after the source/network returns (0 = off).
     stall_timeout: float = 3.0
     heal_interval: float = 5.0

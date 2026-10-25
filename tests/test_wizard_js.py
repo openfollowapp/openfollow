@@ -8392,9 +8392,9 @@ def test_a_camera_with_a_lens_calibration_asks_first_what_to_do_with_it(station,
     [
         ("keep", 0, [["wiz_lens_k1", -0.31], ["wiz_lens_k2", -0.01], ["centre", [0.025, -0.015]]], [], True),
         ("clear", 0, [["wiz_lens_k1", 0], ["wiz_lens_k2", 0], ["centre", [0, 0]]], [], False),
-        ("clear", 2, [], ["refit"], False),
+        ("clear", 2, [["wiz_lens_k1", 0], ["wiz_lens_k2", 0], ["centre", [0, 0]]], ["refit"], False),
     ],
-    ids=["keep puts the camera's own values back", "clear starts from no lens", "clear refits the lines drawn"],
+    ids=["keep puts the camera's own values back", "clear starts from no lens", "clear refits the lines from no lens"],
 )
 def test_keep_and_clear_set_the_lens_they_name(choice: str, lines: int, written: list, calls: list, measured) -> None:
     out = _current(
@@ -8407,6 +8407,18 @@ def test_keep_and_clear_set_the_lens_they_name(choice: str, lines: int, written:
     assert [out["choice"], out["written"], out["calls"], out["loaded"]] == [choice, written, calls, None]
     # Kept, the camera's own pair counts as measured; cleared, the lens is measured only by new lines.
     assert out["measured"] is measured
+
+
+def test_clear_after_keep_with_lines_drawn_leaves_no_lens_until_a_fit_is_applied() -> None:
+    """Clear, Keep, Clear with the lines still on the picture: the camera's own lens must not stay in use."""
+    out = _current(
+        "lensLines = new Array(2); chooseLensCurrent('clear'); chooseLensCurrent('keep'); written.length = 0;"
+        " chooseLensCurrent('clear');",
+        _STATION,
+        "",
+    )
+    assert out["written"] == [["wiz_lens_k1", 0], ["wiz_lens_k2", 0], ["centre", [0, 0]]]
+    assert (out["choice"], out["calls"][-1], out["measured"]) == ("clear", "refit", False)
 
 
 @pytest.mark.parametrize("loaded", [True, False], ids=["a calibration loaded", "the dialog cancelled"])

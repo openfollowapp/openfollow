@@ -8,10 +8,11 @@ into the crowd: dark brown 1 x 2 m stage decks under a white wash, running on, d
 the band riser with black treads, a white safety edge and a drum kit with a sampling pad, and a higher
 deck with moving heads on each side of it; white tape along the lip, the mic stand, pedalboards and
 setlists at the stage edge; two sheer white legs tied back on each side, at the downstage corner and
-mid-stage, where they hang from a box truss across the stage; sidefills, amp racks, a monitor desk, a
-guitar world and cases in the wings; front fills in the pit before the crowd barrier, and the crowd. The
-picture is bowed by a 2.8 mm M12 lens through the overlay's own model, so a station set to the printed
-camera and lens draws its grid on the deck seams. Tape marks the grid's corners and the Reference Point.
+mid-stage, where they hang from a box truss across the stage that carries five spot and six wash moving
+lights; sidefills, amp racks, a monitor desk, a guitar world and cases in the wings; front fills in the
+pit before the crowd barrier, and the crowd. The picture is bowed by a 2.8 mm M12 lens through the
+overlay's own model, so a station set to the printed camera and lens draws its grid on the deck seams.
+Tape marks the grid's corners and the Reference Point.
 
 Needs ``rsvg-convert`` (librsvg) and Pillow. Prints the camera, the lens pair, the grid and the
 corners' pixels.
@@ -556,6 +557,30 @@ def mid_truss(out: list[str]) -> None:
             out.append(line((xa, a[0], a[1]), (xb, b[0], b[1]), C_TRUSS_LACING, 2.4))
     for y, z in ((y0, z0), (y0, z1), (y1, z0), (y1, z1)):  # chords
         out.append(line((-span, y, z), (span, y, z), C_TRUSS, 5.0))
+    for k in range(11):  # moving lights under the bottom chord between the legs: wash, spot, wash, ...
+        moving_light(out, -6.0 + 1.2 * k, MID_TRUSS_Y, MID_TRUSS_Z, spot=k % 2 == 1)
+
+
+def moving_light(out: list[str], x: float, y: float, z: float, spot: bool) -> None:
+    """A moving light hung upside down from the chord at height ``z``, seen from behind: the base with its
+    display, the yoke, and the head, a long spot head with vents or a short, wide wash head with a round cover."""
+    base, side, top = "#26272c", "#1b1c20", "#303137"
+    box(out, x - 0.22, x + 0.22, y - 0.17, y + 0.17, z - 0.17, z - 0.02, top, base)  # base under the clamps
+    out.append(poly([(x - 0.08, y + 0.171, z - 0.06), (x + 0.08, y + 0.171, z - 0.06), (x + 0.08, y + 0.171, z - 0.12),
+                     (x - 0.08, y + 0.171, z - 0.12)], "#2f6fb0"))  # fmt: skip
+    for xa in (x - 0.23, x + 0.19):  # yoke arms
+        box(out, xa, xa + 0.04, y - 0.06, y + 0.06, z - 0.55, z - 0.17, top, side)
+    if spot:
+        box(out, x - 0.14, x + 0.14, y - 0.32, y + 0.12, z - 0.62, z - 0.3, top, base)
+        for k in range(4):  # vents across the back of the head
+            zv = z - 0.37 - 0.06 * k
+            out.append(line((x - 0.1, y + 0.121, zv), (x + 0.1, y + 0.121, zv), "#3c3d44", 1.5))
+    else:
+        box(out, x - 0.18, x + 0.18, y - 0.16, y + 0.16, z - 0.6, z - 0.3, top, base)
+        circle = [
+            (x + 0.13 * math.cos(t), y + 0.161, z - 0.45 + 0.13 * math.sin(t)) for t in np.linspace(0, 2 * math.pi, 20)
+        ]
+        out.append(poly(circle, "#2c2d33", "#45464d", 1.2))  # the round cover on the back of the head
 
 
 def side_lights(out: list[str]) -> None:

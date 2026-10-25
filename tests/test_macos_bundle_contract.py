@@ -148,7 +148,7 @@ def test_every_typelib_the_sources_load_is_frozen(spec_tree) -> None:
     assert not missing, f"add to hiddenimports in packaging/macos/openfollow.spec: {missing}"
 
 
-def test_selfcheck_loads_every_typelib_the_sources_pin() -> None:
+def test_selfcheck_requires_every_typelib_the_sources_pin() -> None:
     pinned, _namespaces = _gi_namespaces()
     required = {(name, version) for name, version in pinned if name not in _OPTIONAL_NAMESPACES}
     assert required == set(_load("launcher").REQUIRED_TYPELIBS)

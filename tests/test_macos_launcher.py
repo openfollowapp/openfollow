@@ -302,6 +302,7 @@ def _install_fake_gst(
         ),
     )
     repository = types.ModuleType("gi.repository")
+    repository.__path__ = []  # type: ignore[attr-defined]  # a package, so a missing name falls back to sys.modules
     gi = types.ModuleType("gi")
 
     def require_version(namespace: str, version: str) -> None:
@@ -320,8 +321,11 @@ def _install_fake_gst(
         "Gdk": types.SimpleNamespace(),
         "Rsvg": types.SimpleNamespace(),
     }.items():
-        setattr(repository, name, module)
-        monkeypatch.setitem(sys.modules, f"gi.repository.{name}", None if name in unloadable else module)
+        if name in unloadable:
+            monkeypatch.setitem(sys.modules, f"gi.repository.{name}", None)
+        else:
+            setattr(repository, name, module)
+            monkeypatch.setitem(sys.modules, f"gi.repository.{name}", module)
 
 
 @pytest.mark.parametrize("element", _load_launcher().REQUIRED_GST_ELEMENTS)

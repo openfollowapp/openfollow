@@ -15,6 +15,12 @@ When a receiver of OSC Data moves to a new IP, change that one destination and e
   - **Length-prefix (OSC 1.0)** – each packet is preceded by a 32-bit big-endian length.
 - **Source Interface** – read-only here; the interface this destination's messages leave from, set under **General → Network Interface Assignment**. `Follows station default interface` is the default. In Simple network mode every destination follows the station interface and this row is not shown.
 
+## When a destination cannot be reached
+
+A destination whose sends keep failing while its interface is up, refused by a firewall or with no route to its host, gets a red row on the Operator Screen and in Statistics → Device, named after the destination (its address when it has no name). Only destinations an enabled transmitter or trigger zone sends to are shown. The row clears once sends to it have kept going through for a second.
+
+A **TCP** destination that is powered off, or not listening on its port, shows that red row for as long as it stays that way, a console switched off during a rehearsal included: every TCP send needs a connection, and none can be made. Start the receiver, or switch off the transmitters and zones that send to it, and the row clears. A destination taken out of use starts afresh when it is used again: its row comes back only if its sends fail again.
+
 ## Managing destinations
 
 - **+ New destination** – add a blank destination.

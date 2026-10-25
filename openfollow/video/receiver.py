@@ -140,6 +140,7 @@ class GstNativeSinkReceiver:
 
         # Source discovery and selection
         self._discovered_sources: list[str] = []
+        self._discovered_labels: list[str] = []
         self._selected_source_index: int = 0
         self._discovery_thread: threading.Thread | None = None
         self._discovery_lock = threading.Lock()
@@ -148,7 +149,7 @@ class GstNativeSinkReceiver:
         self._awaited_source = ""
         # Listed passes to let by before returning to it; a pass that does not list it clears them.
         self._passes_before_return = 0
-        # Why the last build was refused under the interface pin, if it was.
+        # Why the input's preflight refused the last build, if it did.
         self._pin_refusal: PinRefusal | None = None
         # How a refusal names the pinned interface: "Lighting (eth1)" when labelled.
         self._iface_name: Callable[[str], str] = iface_name or str
@@ -362,6 +363,12 @@ class GstNativeSinkReceiver:
             return list(self._discovered_sources)
 
     @property
+    def discovered_source_labels(self) -> list[str]:
+        """What the picker shows for each of :attr:`discovered_sources`, in the same order."""
+        with self._discovery_lock:
+            return list(self._discovered_labels)
+
+    @property
     def selected_source_index(self) -> int:
         with self._discovery_lock:
             return self._selected_source_index
@@ -573,6 +580,7 @@ class GstNativeSinkReceiver:
         # re-set by ``play()`` if the new plugin needs a placeholder).
         with self._discovery_lock:
             self._discovered_sources = []
+            self._discovered_labels = []
             self._selected_source_index = 0
         self._awaited_source = ""
         self._state.set_placeholder_pipeline(False)
@@ -684,8 +692,8 @@ class GstNativeSinkReceiver:
             logger.exception("%s interface check failed", self._input.display_name)
             refusal = PinRefusal(VideoFailure.UNKNOWN, f"the interface pin could not be checked: {e}")
         if refusal is not None:
-            # Nothing is built, so nothing leaves on another interface; the
-            # caller schedules the retry.
+            # Nothing is built, so nothing leaves on another interface and no
+            # other device is opened; the caller schedules the retry.
             logger.warning("%s not started: %s", self._input.display_name, self._refusal_text(refusal))
             self._pin_refusal = refusal
             self._status_marker.set_disconnected(
@@ -910,8 +918,11 @@ class GstNativeSinkReceiver:
         self._cancel_discovery()
         self._status_marker.set_connecting(source_label)
 
-        if self._pipeline is None:
+        if self._pipeline is None and self._pin_refusal is None:
             self.create_pipeline()
+        if self._pin_refusal is not None:
+            self._schedule_reconnect(self._refusal_text(self._pin_refusal), failure=self._pin_refusal.failure)
+            return
         if self._pipeline is not None:
             result = self._pipeline.set_state(Gst.State.PLAYING)
             if result == Gst.StateChangeReturn.FAILURE:
@@ -925,6 +936,10 @@ class GstNativeSinkReceiver:
                     if timeout > 0:
                         self._start_connection_timeout()
                     logger.info("Native sink pipeline started – waiting for first frame.")
+
+    def update_input_fields(self, values: dict[str, Any]) -> None:
+        """Store input fields that do not rebuild the input; the running pipeline is left alone."""
+        self._input_config.update(values)
 
     def set_source(self, source_name: str) -> None:
         """Change the source and attempt to connect."""
@@ -1017,6 +1032,7 @@ class GstNativeSinkReceiver:
         with self._discovery_lock:
             self._selected_source_index = 0
             self._discovered_sources = []
+            self._discovered_labels = []
         self._schedule_discovery()
 
     def exit_source_selection(self) -> None:
@@ -1419,7 +1435,7 @@ class GstNativeSinkReceiver:
     # -- Silent-stall watchdog -------------------------------------------------
 
     def _start_watchdog(self, *, reseed: bool = True) -> None:
-        """Arm watchdog to detect silently stalled network feeds.
+        """Arm watchdog to detect a silently stalled feed, from any input.
 
         reseed=True sets last-frame clock to now (skip false positives on
         fresh connect); reseed=False preserves timestamp (live config changes).
@@ -1519,6 +1535,14 @@ class GstNativeSinkReceiver:
             except Exception as e:
                 logger.warning("Source discovery failed: %s", e)
                 return
+            try:
+                labels = list(self._input.source_labels(sources))
+            except Exception:
+                logger.warning("Naming %s sources failed", self._input.display_name, exc_info=True)
+                labels = []
+            # A label list that does not line up would name the wrong source.
+            if len(labels) != len(sources):
+                labels = list(sources)
 
             with self._discovery_lock:
                 old_sources = self._discovered_sources
@@ -1533,6 +1557,7 @@ class GstNativeSinkReceiver:
                         new_idx = min(old_idx, len(sources) - 1)
 
                 self._discovered_sources = sources
+                self._discovered_labels = labels
                 self._selected_source_index = new_idx
 
             if sources:

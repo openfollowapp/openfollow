@@ -317,9 +317,11 @@ attributes, so it spells the token's value.
   menu opened with brings its own step (`action=` beside `banner=`) or none;
   the video failure's step stands only under the video failure.
 - A fault's sentence is a top-right status row, whatever raised it (a video
-  failure, a missing controller, an output whose interface has no address, a
-  marker another station controls too).
-  The bottom-left panel only turns red; it never carries the sentence.
+  failure, a missing controller, an output whose interface has no address or
+  whose sends keep failing, a marker another station controls too). The
+  bottom-left panel only turns red; it never carries the sentence. Live
+  Statistics shows the same network rows as error boxes in its Device panel,
+  each with its next step.
 - A status row takes its level's chip colours from `STATUS_LEVEL_COLORS`,
   led by its level's off-white sign (`draw_level_sign`): the warning sign for
   an error, the "i" for caution and info, the off-white check for a success
@@ -337,9 +339,17 @@ attributes, so it spells the token's value.
   address, so its error row appears on the first poll that finds no address.
   Only stopping the output waits out the gap an Apply or Renew leaves. A
   rebind or stop that fails names the interface and the failure in that row
-  instead, until a later outage of that interface takes the row back. No
-  status row is caution today: the HUD shows faults, progress and results, and
-  a limitation worth knowing lives on the web UI and the on-screen Network
+  instead, until a later outage of that interface takes the row back. A
+  sender whose sends keep failing while its interface is up (each OSC
+  destination in use is one) gets its own row once a failure lands a second
+  after the first, and keeps it until sends have gone out for a second
+  (`send_health.py`); on macOS every sender refused the way a denied Local
+  Network permission refuses them shares one row, saying macOS refuses the
+  station's sends, with the permission in its next step. The HUD shows no
+  next step and its operator is at that station, so its row names the
+  permission itself ("macOS refuses network sends – check Local Network").
+  No status row is caution today: the HUD shows faults, progress and results,
+  and a limitation worth knowing lives on the web UI and the on-screen Network
   screen.
 - The markers this station controls that another station controls too are
   one error row for all of them: "Control conflict: Marker 3 (Lead)" for one,

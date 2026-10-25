@@ -613,7 +613,7 @@ def build_marker_visual_state(
         )
     )
     state.source_selection_active = video_receiver.source_selection_active
-    state.discovered_sources = video_receiver.discovered_sources
+    state.discovered_sources = video_receiver.discovered_source_labels
     state.selected_source_index = video_receiver.selected_source_index
     state.source_selection_title = video_receiver.source_selection_title
     state.source_type_selection_active = app._source_type_selection_active

@@ -1,6 +1,6 @@
 # Marker outputs
 
-Covers `psn/`, `otp/`, `rttrpm/`, the OSC transmitter, `packet_chunking.py`. The rules that apply everywhere are in [CLAUDE.md](../../CLAUDE.md).
+Covers `psn/`, `otp/`, `rttrpm/`, the OSC transmitter, `packet_chunking.py`, `send_health.py`, `retry_backoff.py`. The rules that apply everywhere are in [CLAUDE.md](../../CLAUDE.md).
 
 ## The one canonical frame
 
@@ -62,6 +62,14 @@ Every marker-carrying output grows its datagram with the marker count, and **147
 `PsnReceiver` needs no reassembly buffer: it reads 65535 and applies each packet's trackers independently, so a peer's split frame accumulates naturally. The `MAX_OTP_MESSAGE_OCTETS` (§6.3.1) and RTTrPM `_MAX_MODULES` / `_MAX_PACKET_BYTES` checks stay as structural backstops behind the split – they guard what the wire format can *express*, which is a different question from what the network can carry.
 
 `tests/test_output_packet_splitting.py` pins the cross-protocol invariant (no stream emits a datagram past 1472 at any marker count) plus each protocol's grouping; `scripts/hw_validation/output_datagram_size_probe.py` re-checks it on the DUT against the deployed send paths.
+
+## Send health (`send_health.py`, shared by every sender)
+
+The network observer sees interfaces, not refused sends: macOS with OpenFollow's Local Network permission off fails every LAN send with `EHOSTUNREACH` while address, route and socket all look healthy. PSN, OTP, RTTrPM, the discovery beacon, marker sync and every cached OSC output client (`OscService`, one per target, so a healthy destination never clears a dead one's streak) each record every send in a `SendHealth`, which owns their send-failure logging: a streak's first failure is logged at most once a minute per sender (the next such line counts the brief streaks held back), and a streak that reaches failing is logged when it does, once a minute while it lasts, and when it ends. A TCP send dropped inside its backoff window (`TcpBackoffError`) and a message that will not encode are not network failures and are not recorded.
+
+**A socket that will not open.** A send PSN, OTP, RTTrPM, the beacon or marker sync skips for want of a socket is `record_skipped`, handed the `FailureCause` of the open that last failed (in the three outputs `_open_error`: stored only by the live generation, cleared once an open succeeds, and never the exception, whose traceback holds a half-opened socket). Inside a streak it is one more failure carrying the streak's error, so a socket rebuild that outlasts `FAILING_AFTER_S` becomes a row (PSN and OTP wait `_SOCKET_RETRY_DELAY`, 2 s, before their first reopen, so one transient send error there shows briefly); outside one that error starts a streak, logged as "socket not open" outside the once-a-minute slot. So a socket that will not open is a row as soon as skipped sends have kept arriving for `FAILING_AFTER_S`, while its retry is still running: about a second after `start` for an output sending markers (OTP with none: its next advertisement, 10 s), at the second failed open for the beacon (2 s) and marker sync (5 s). PSN and OTP retry the open on their socket thread through `retry_with_backoff` (`retry_backoff.py`: 2 s doubling to 60 s, the network observer's backoff) until it opens or the generation stops; RTTrPM retries it in its send loop. A rebind, restart or live enable calls `start(retry_open=False)` instead, which raises before any thread starts (RTTrPM: for a pinned socket), so a generation torn down at once records and logs no send. PSN and RTTrPM with no marker to send reset the streak, behind the generation guard; OTP does not, as its advertisement keeps sending. A send skipped once its generation has stopped records nothing.
+
+**A streak is failing once a failure lands `FAILING_AFTER_S` after its first**, so a burst at one instant never becomes a row by itself. **It ends only on a success `RECOVERY_HOLD_S` after the first success that followed its last failure**: with Local Network denied, the first send on a fresh socket returns success and nothing leaves, so a socket reopen or a single good send must never be logged or shown as a recovery. `start` / `stop` / a repoint reset the streak. How a failing streak becomes a status row is in [network](network.md#network-alert-rows-network_alert_rows).
 
 ## PsnServer (`psn/server.py`)
 - Sends PSN multicast at `data_fps` (default 60 Hz)

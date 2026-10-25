@@ -38,6 +38,7 @@ from openfollow.net_utils import (
     bind_multicast_send_iface,
     join_multicast_group_on_iface,
 )
+from openfollow.send_health import FailureCause, SendHealth
 
 logger = logging.getLogger(__name__)
 
@@ -320,6 +321,7 @@ class MarkerCatalogSync:
         # forever. ``web/discovery.py`` has the same shape for the same reason.
         self._tx_reopen = threading.Event()
         self._rx_reopen = threading.Event()
+        self._send_health = SendHealth("Marker sync")
         self._send_thread: threading.Thread | None = None
         self._recv_thread: threading.Thread | None = None
 
@@ -381,8 +383,13 @@ class MarkerCatalogSync:
         membership and the egress route, and getting the identical address back
         does not restore either.
         """
+        self._send_health.reset()
         self._tx_reopen.set()
         self._rx_reopen.set()
+
+    @property
+    def send_health(self) -> SendHealth:
+        return self._send_health
 
     def start(self) -> None:
         if self._send_thread is not None:
@@ -524,6 +531,7 @@ class MarkerCatalogSync:
                 try:
                     sock = self._open_tx_socket()
                 except InterfaceUnavailable as exc:
+                    self._send_health.record_skipped(FailureCause.from_exception(exc), CATALOG_MCAST_GROUP)
                     # Expected while the station interface is down, and it
                     # retries every heartbeat - a traceback per attempt would
                     # bury the journal for as long as the cable is out.
@@ -533,7 +541,8 @@ class MarkerCatalogSync:
                         logger.warning("MarkerCatalogSync: %s", exc)
                     self._wait_before_reopen(HEARTBEAT_INTERVAL)
                     continue
-                except Exception:
+                except Exception as exc:
+                    self._send_health.record_skipped(FailureCause.from_exception(exc), CATALOG_MCAST_GROUP)
                     logger.exception("MarkerCatalogSync: TX socket open failed")
                     self._wait_before_reopen(HEARTBEAT_INTERVAL)
                     continue
@@ -661,6 +670,7 @@ class MarkerCatalogSync:
             chunks = [[]]
         for chunk in chunks:
             sock.sendto(build(chunk), (CATALOG_MCAST_GROUP, CATALOG_PORT))
+            self._send_health.record_success()
         if kind == "heartbeat" and chunks[-1]:
             # Only after the whole burst lands, so a mid-burst failure retries
             # these entries next beat instead of skipping past them.
@@ -685,17 +695,15 @@ class MarkerCatalogSync:
         sock: socket.socket,
         exc: OSError,
     ) -> socket.socket | None:
+        # SendHealth logs the outage; the rebuild itself is routine.
+        self._send_health.record_failure(exc, CATALOG_MCAST_GROUP)
         if exc.errno in _TRANSIENT_SEND_ERRNOS:
-            logger.warning(
-                "MarkerCatalogSync: transient send error %s; rebuilding socket.",
-                exc,
-            )
+            logger.debug("MarkerCatalogSync: transient send error %s; rebuilding socket.", exc)
             try:
                 sock.close()
             except OSError:
                 pass
             return None
-        logger.warning("MarkerCatalogSync: send failed: %s", exc)
         return sock
 
     # -- Receive path ---------------------------------------------------------

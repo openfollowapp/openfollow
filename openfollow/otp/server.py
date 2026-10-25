@@ -20,6 +20,8 @@ import multicast_expert
 
 from openfollow.packet_chunking import MAX_DATAGRAM_BYTES, chunk_to_datagrams
 from openfollow.psn.marker import Marker, marker_age_s
+from openfollow.retry_backoff import retry_with_backoff
+from openfollow.send_health import FailureCause, SendHealth
 
 logger = logging.getLogger(__name__)
 
@@ -92,8 +94,9 @@ def transform_mcast_ip(system_number: int) -> str:
 DEFAULT_MCAST_IP = "239.159.1.1"
 DEFAULT_PORT = OTP_PORT
 
-_MAX_SOCKET_RETRIES = 3
 _SOCKET_RETRY_DELAY = 2.0  # seconds
+# A socket thread's waits end on the stop event; this bounds an open it is in the middle of.
+_SOCKET_THREAD_JOIN_TIMEOUT_S = 3.0
 
 
 # ---------------------------------------------------------------------------
@@ -606,13 +609,13 @@ class OtpServer:
         self._transform_thread: threading.Thread | None = None
         self._adv_thread: threading.Thread | None = None
         self._socket_thread: threading.Thread | None = None
-        self._send_errors: int = 0
-        self._send_total: int = 0
+        self._send_health = SendHealth("OTP output")
+        # What kept the multicast socket from opening last; names a streak a skipped send starts.
+        self._open_error: FailureCause | None = None
         # Counter for dropped folios: one needing more pages than Last Page
         # can number, or one whose pages will not encode. Neither is reachable
         # by configuration, but without throttling either would flood the log
-        # at the transform fps. Same first-5-then-every-100 pattern ``_send``
-        # uses for OSError logging.
+        # at the transform fps, so it logs the first 5, then every 100th.
         self._oversize_drops: int = 0
 
     def _resolve_destinations(self) -> tuple[str, str]:
@@ -643,16 +646,32 @@ class OtpServer:
         with self._lock:
             return self._markers.get(marker_id)
 
+    @property
+    def send_health(self) -> SendHealth:
+        """Whether this server's sends are leaving, every stream together."""
+        return self._send_health
+
     # -- Lifecycle ------------------------------------------------------------
 
-    def start(self) -> None:
-        """Open the network socket and start transform + advertisement threads."""
+    def start(self, *, retry_open: bool = True) -> None:
+        """Open the network socket and start transform + advertisement threads.
+
+        ``retry_open`` as for ``PsnServer.start()``.
+        """
+        self._send_health.reset()
         # One stop signal per generation – see ``PsnServer.start()``.
         stop_event = threading.Event()
         self._stop_event = stop_event
         self._exit_stack = contextlib.ExitStack()
         if self._is_multicast_mode():
             if not self._try_open_multicast_socket_once(attempt=1):
+                if not retry_open:
+                    raise OSError(
+                        f"OTP failed to open multicast socket for system_number="
+                        f"{self._system_number} (transform={self._transform_dest!r}, "
+                        f"advertisement={self._advertisement_dest!r}, "
+                        f"source_ip={self._source_ip!r})",
+                    )
                 self._socket_thread = threading.Thread(
                     target=self._retry_multicast_socket_background,
                     args=(stop_event,),
@@ -690,7 +709,7 @@ class OtpServer:
         """Signal threads to stop, wait for them, then close the socket."""
         self._stop_event.set()
         if self._socket_thread is not None:
-            self._socket_thread.join(timeout=_SOCKET_RETRY_DELAY + 1.0)
+            self._socket_thread.join(timeout=_SOCKET_THREAD_JOIN_TIMEOUT_S)
             if self._socket_thread.is_alive():
                 logger.warning("OTP socket-retry thread did not stop within timeout")
             self._socket_thread = None
@@ -711,6 +730,7 @@ class OtpServer:
             self._socket = None
             stack = self._exit_stack
         stack.close()
+        self._send_health.reset()
 
     def restart(
         self,
@@ -727,13 +747,11 @@ class OtpServer:
         Marker registrations survive – only the UDP socket and worker
         threads recycle. Used by ``apply_otp_output_change`` to apply ``otp_output.*`` edits without a process restart.
 
-        Raises ``OSError`` when the multicast socket can't be opened
-        synchronously on the new interface – ``start()`` itself spawns a
-        daemon retry thread instead, which is the right behaviour at boot
-        but the wrong one for live-apply, where the dispatcher needs a
-        hard signal to revert ``app._config.otp_output``. We tear back
-        down before raising so the retry thread doesn't keep poking at a
-        stale config.
+        Raises ``OSError`` before any thread starts when the multicast
+        socket can't be opened synchronously on the new interface.
+        At boot ``start()`` retries it in the background instead, the wrong
+        behaviour for a live apply, where the dispatcher needs a hard signal
+        to revert ``app._config.otp_output``.
         """
         self.stop()
         # Locked because stop() logs and continues past a send thread that
@@ -749,15 +767,7 @@ class OtpServer:
             self._transform_dest, self._advertisement_dest = self._resolve_destinations()
             if self._mcast_ip_override is None:
                 self._mcast_ip = self._transform_dest
-        self.start()
-        if self._is_multicast_mode() and self._socket is None:
-            self.stop()
-            raise OSError(
-                f"OTP failed to open multicast socket for system_number="
-                f"{self._system_number} (transform={self._transform_dest!r}, "
-                f"advertisement={self._advertisement_dest!r}, "
-                f"source_ip={self._source_ip!r})",
-            )
+        self.start(retry_open=False)
 
     def update_system_name(self, name: str) -> None:
         """Update the human-readable system name carried in OTP Layer's
@@ -819,17 +829,15 @@ class OtpServer:
                 )
             opened = staging.enter_context(sock)
         except Exception as exc:
-            logger.warning(
-                "OTP multicast socket failed (attempt %d/%d): %s",
-                attempt,
-                _MAX_SOCKET_RETRIES,
-                exc,
-            )
+            logger.warning("OTP multicast socket failed (attempt %d): %s", attempt, exc)
+            if not self._resolve_stop(stop_event).is_set():
+                self._open_error = FailureCause.from_exception(exc)
             return False
         # Locked hand-over only, off-lock open. See PsnServer for the rationale.
         with self._lock:
             if not self._resolve_stop(stop_event).is_set():
                 self._socket = opened
+                self._open_error = None
                 self._exit_stack.push(staging.pop_all())
                 return True
             stale = staging.pop_all()
@@ -837,23 +845,13 @@ class OtpServer:
         return False
 
     def _retry_multicast_socket_background(self, stop_event: threading.Event | None = None) -> None:
-        """Retry multicast socket creation in the background (bounded)."""
+        """Retry the socket start() could not open, on a backoff, until it opens or the generation stops."""
         stop = self._resolve_stop(stop_event)
-        for attempt in range(2, _MAX_SOCKET_RETRIES + 1):
-            stop.wait(_SOCKET_RETRY_DELAY)
-            if stop.is_set():
-                return
-            if self._try_open_multicast_socket_once(attempt=attempt, stop_event=stop):
-                logger.info(
-                    "OTP multicast socket connected on retry %d/%d.",
-                    attempt,
-                    _MAX_SOCKET_RETRIES,
-                )
-                return
-        logger.error(
-            "OTP multicast socket failed after %d attempts. OTP output disabled – check your network interface IP.",
-            _MAX_SOCKET_RETRIES,
+        attempt = retry_with_backoff(
+            lambda number: self._try_open_multicast_socket_once(attempt=number, stop_event=stop), stop, first=2
         )
+        if attempt is not None:
+            logger.info("OTP multicast socket connected on retry %d.", attempt)
 
     def _recover_multicast_socket_background(self, stop_event: threading.Event | None = None) -> None:
         """Re-open the multicast socket indefinitely after a transient
@@ -868,7 +866,7 @@ class OtpServer:
             if stop.is_set():
                 return
             if self._try_open_multicast_socket_once(attempt=attempt, stop_event=stop):
-                logger.info("OTP multicast socket recovered on attempt %d.", attempt)
+                logger.debug("OTP multicast socket reopened on attempt %d.", attempt)
                 return
 
     def _handle_send_error(self, exc: OSError, stop_event: threading.Event | None = None) -> None:
@@ -1097,21 +1095,15 @@ class OtpServer:
         # the socket hand-over. A send racing teardown sends, returns, or fails.
         sock = self._socket
         if sock is None:
+            if not self._resolve_stop(stop_event).is_set():
+                self._send_health.record_skipped(self._open_error, dest_ip)
             return
-        with self._lock:
-            self._send_total += 1
         try:
             sock.sendto(data, (dest_ip, self._port))
         except OSError as exc:
-            with self._lock:
-                self._send_errors += 1
-                errors = self._send_errors
-                total = self._send_total
-            if errors <= 5 or errors % 100 == 0:
-                logger.warning(
-                    "OTP send failed (%d/%d errors): %s",
-                    errors,
-                    total,
-                    exc,
-                )
+            if self._resolve_stop(stop_event).is_set():
+                return
+            self._send_health.record_failure(exc, dest_ip)
             self._handle_send_error(exc, stop_event)
+            return
+        self._send_health.record_success()

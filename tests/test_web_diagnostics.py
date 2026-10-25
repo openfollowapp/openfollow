@@ -4514,6 +4514,76 @@ def test_collect_runtime_state_says_when_no_marker_conflicts() -> None:
     )
 
 
+def test_collect_runtime_state_says_whether_each_sender_is_getting_out() -> None:
+    stats = _stats()
+    stats["network"] = {
+        "alerts": [{"text": "macOS refuses this station's network sends", "action": "Turn it on."}],
+        "senders": [
+            {
+                "label": "PSN",
+                "state": "failing",
+                "failing_for_s": 42.4,
+                "failed": 21,
+                "error": "No route to host",
+                "errno": 65,
+                "local_network": True,
+                "sent_total": 7,
+                "failed_total": 21,
+            },
+            {
+                "label": "Marker sync",
+                "state": "retrying",
+                "failing_for_s": 0.4,
+                "failed": 1,
+                "error": "Network is unreachable",
+                "errno": 51,
+                "local_network": False,
+                "sent_total": 0,
+                "failed_total": 1,
+            },
+            {
+                "label": "OTP output",
+                "state": "ok",
+                "failing_for_s": None,
+                "failed": 0,
+                "error": "",
+                "errno": None,
+                "local_network": False,
+                "sent_total": 900,
+                "failed_total": 0,
+            },
+        ],
+    }
+    rows = diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats))
+    start = rows.index("  Senders:")
+    assert rows[start + 1 :] == [
+        "    PSN           failing   7 sent, 21 failed",
+        "      21 failed for 42 s: No route to host [errno 65]",
+        "      reads as macOS Local Network access being off for this app",
+        "    Marker sync   retrying  0 sent, 1 failed",
+        "      1 failed for 0 s: Network is unreachable [errno 51]",
+        "    OTP output    ok        900 sent, 0 failed",
+        "    on screen: macOS refuses this station's network sends",
+    ]
+
+
+def test_a_sender_named_past_the_column_keeps_its_state_apart() -> None:
+    stats = _stats()
+    stats["network"] = {
+        "senders": [
+            {"label": "OSC to Lighting desk", "state": "ok", "sent_total": 12, "failed_total": 0},
+        ]
+    }
+    rows = diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats))
+    assert "    OSC to Lighting desk ok        12 sent, 0 failed" in rows
+
+
+def test_collect_runtime_state_with_no_sender_says_so() -> None:
+    rows = diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=_stats))
+    start = rows.index("  Senders:")
+    assert rows[start + 1 :] == ["    (none running)"]
+
+
 def test_collect_runtime_state_reports_not_wired() -> None:
     assert "not wired" in diag.collect_runtime_state(diag.DiagnosticsProviders())[0]
 

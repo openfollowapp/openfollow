@@ -231,8 +231,8 @@ def test_server_send_is_noop_when_socket_none() -> None:
     server = PsnServer(mcast_ip=None)
     assert server._socket is None
     server._send(b"any")  # Must not raise.
-    # send counters stay at zero.
-    assert server._send_total == 0
+    status = server.send_health.status()
+    assert (status.sent_total, status.failed_total) == (0, 0)
 
 
 def test_server_send_data_packet_is_noop_with_no_markers(monkeypatch) -> None:
@@ -266,8 +266,7 @@ def test_server_send_info_packet_is_noop_with_no_markers(monkeypatch) -> None:
     assert prepared == []
 
 
-def test_server_send_counts_errors_and_suppresses_spam(monkeypatch) -> None:
-    """First 5 errors log, subsequent ones are aggregated (every 100th)."""
+def test_server_send_counts_errors(monkeypatch) -> None:
     import errno
 
     server = PsnServer(mcast_ip=None, target_ip="127.0.0.1")
@@ -279,8 +278,9 @@ def test_server_send_counts_errors_and_suppresses_spam(monkeypatch) -> None:
     server._socket = _BadSocket()
     for _ in range(3):
         server._send(b"ping")
-    assert server._send_total == 3
-    assert server._send_errors == 3
+    status = server.send_health.status()
+    assert (status.sent_total, status.failed_total, status.failed) == (0, 3, 3)
+    assert status.errno == errno.EACCES
 
 
 def test_server_stop_without_start_is_silent() -> None:

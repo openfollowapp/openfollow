@@ -18,7 +18,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -59,6 +59,7 @@ from openfollow.runtime.services_marker_visuals import (
 )
 from openfollow.runtime_metrics import FrameMetrics
 from openfollow.scene.camera import Camera
+from openfollow.send_health import OSC_SEND_FAILING_ACTION, SendAlert, SendHealth, SendHealthStatus, send_alerts
 from openfollow.system_stats import SystemStatsCollector
 from openfollow.video.failure import ConnectionPhase, VideoFailure, failure_action, failure_sentence
 from openfollow.video.hud_render import HudRenderThread
@@ -74,6 +75,7 @@ if TYPE_CHECKING:
         AppConfig,
         DetectionConfig,
         MidiPatch,
+        OscDestinationConfig,
         OscDestinationsConfig,
         OscTransmittersConfig,
         OtpOutputConfig,
@@ -1541,9 +1543,87 @@ class AppRuntimeServices:
             sync.update_iface_ip(address, iface=self._app._config.psn_source_iface, force=recovered)
 
     def network_alerts(self) -> list[str]:
-        """Planes not sending: an interface without an address, or a rebind or suspend that failed."""
+        """Outputs not sending (no address, a failed rebind or stop, refused sends), worded for the HUD."""
+        return [alert.hud_text for alert in self.network_alert_rows()]
+
+    def network_alert_rows(self) -> list[SendAlert]:
+        """``network_alerts`` with the next step the web shows under each."""
+        return self._alert_rows(self._fixed_sender_statuses(), self._osc_sender_statuses())
+
+    def _alert_rows(
+        self,
+        fixed: list[tuple[str, SendHealthStatus]],
+        osc: list[tuple[str, SendHealthStatus]],
+    ) -> list[SendAlert]:
         observer = self._network_observer
-        return observer.alerts() if observer is not None else []
+        planes = observer.alert_rows() if observer is not None else []
+        rows = [SendAlert(plane.text, plane.action) for plane in planes]
+        # A plane already reported down explains its senders' failures.
+        explained = {plane.key for plane in planes}
+        statuses = [status for key, status in [*fixed, *osc] if key not in explained]
+        rows.extend(send_alerts(statuses, actions={status.label: OSC_SEND_FAILING_ACTION for _key, status in osc}))
+        return rows
+
+    def _fixed_sender_statuses(self) -> list[tuple[str, SendHealthStatus]]:
+        """PSN, OTP, RTTrPM, the discovery beacon and marker sync.
+
+        The beacon and marker sync follow the station interface, which is PSN's.
+        """
+        app = self._app
+        web = getattr(app, "_web_server", None)
+        senders = [
+            ("PSN", getattr(app, "_server", None)),
+            ("OTP output", getattr(app, "_otp_server", None)),
+            ("RTTrPM output", getattr(app, "_rttrpm_server", None)),
+            ("PSN", getattr(web, "beacon_sender", None)),
+            ("PSN", getattr(app, "_marker_catalog_sync", None)),
+        ]
+        out = []
+        for key, sender in senders:
+            health = getattr(sender, "send_health", None)
+            if isinstance(health, SendHealth):
+                out.append((key, health.status()))
+        return out
+
+    def _osc_sender_statuses(self) -> list[tuple[str, SendHealthStatus]]:
+        """One record per OSC target a destination in use sends to, named after its destinations.
+
+        Read through the config, not the client cache: a cached client outlives
+        the row that used it and the destination's previous address, and its
+        last streak would otherwise stay on screen for good.
+        """
+        named: dict[int, tuple[str, SendHealth, list[str]]] = {}
+        for dest in self._osc_destinations_in_use():
+            egress = self._osc_egress.for_destination(dest)
+            health = self._osc_service.send_health_for(dest.host, dest.port, dest.protocol, dest.framing, egress)
+            if health is None:
+                continue
+            key = f"osc_out:{egress.iface}" if egress is not None else ""
+            names = named.setdefault(id(health), (key, health, []))[2]
+            names.append(dest.name or f"{dest.host}:{dest.port}")
+        return [
+            (key, replace(health.status(), label=f"OSC to {', '.join(names)}")) for key, health, names in named.values()
+        ]
+
+    def forget_idle_osc_send_records(self) -> None:
+        """Clear the streak of every OSC target nothing sends to now. Called on each OSC routing or zones change.
+
+        A cached client outlives the row that used it, so its last streak
+        would otherwise come back on screen with the row, unsent and stale.
+        """
+        self._osc_service.reset_send_health_except(
+            (dest.host, dest.port, dest.protocol, dest.framing, self._osc_egress.for_destination(dest))
+            for dest in self._osc_destinations_in_use()
+        )
+
+    def _network_stats(self) -> dict[str, Any]:
+        """The ``network`` block of the runtime stats: the rows, and every sender's record."""
+        # Each record is read once, so the rows and the senders describe the same moment.
+        fixed, osc = self._fixed_sender_statuses(), self._osc_sender_statuses()
+        return {
+            "alerts": [{"text": alert.text, "action": alert.action} for alert in self._alert_rows(fixed, osc)],
+            "senders": [status.to_dict() for _key, status in [*fixed, *osc]],
+        }
 
     def network_plane_status(self) -> list[dict[str, Any]]:
         """Every network plane as the observer last left it, for the diagnostics bundle."""
@@ -1748,7 +1828,7 @@ class AppRuntimeServices:
             return None
         return resolved
 
-    def init_otp(self) -> None:
+    def init_otp(self, *, retry_open: bool = True) -> None:
         cfg = self._app._config.otp_output
         if not cfg.enabled:
             return
@@ -1775,7 +1855,7 @@ class AppRuntimeServices:
                 marker = server.get_marker(marker_id)
                 if marker is not None:
                     self._app._otp_server.register_marker(marker)
-        self._app._otp_server.start()
+        self._app._otp_server.start(retry_open=retry_open)
 
     def _rttrpm_egress(self, cfg: RttrpmOutputConfig) -> Egress | None:
         """RTTrPM's egress: None leaves the route to the OS, ``.down`` means its interface has no address."""
@@ -1807,7 +1887,7 @@ class AppRuntimeServices:
         """``trigger_zones`` as the engine runs it: off while the Zones feature is off."""
         return feature_gated(self._app._config.trigger_zones, self._app._config, "zones")
 
-    def init_rttrpm(self) -> None:
+    def init_rttrpm(self, *, retry_open: bool = True) -> None:
         cfg = self.rttrpm_config()
         if not cfg.enabled:
             return
@@ -1828,7 +1908,7 @@ class AppRuntimeServices:
                 marker = server.get_marker(marker_id)
                 if marker is not None:
                     self._app._rttrpm_server.register_marker(marker)
-        self._app._rttrpm_server.start()
+        self._app._rttrpm_server.start(retry_open=retry_open)
 
     def init_psn_receiver(self) -> None:
         # Same resolution as ``init_psn`` so input and output land on the same
@@ -2204,23 +2284,12 @@ class AppRuntimeServices:
             server.stop()
             self._app._otp_server = None
         elif server is None and new_cfg.enabled:
-            self.init_otp()
-            # ``init_otp`` → ``OtpServer.start()`` swallows multicast-bind
-            # failures and spawns a daemon retry thread. Fine at startup,
-            # wrong here: the dispatcher needs a hard signal so
-            # ``_apply_with_fallback`` can revert ``otp_output``. Mirror
-            # ``OtpServer.restart``'s post-start guard so off→on isn't
-            # silently a no-op.
-            new_server = self._app._otp_server
-            if new_server is not None and new_server._is_multicast_mode() and new_server._socket is None:
-                new_server.stop()
+            # A live enable must raise: the dispatcher reverts on it, the observer shows its row and backs off.
+            try:
+                self.init_otp(retry_open=False)
+            except OSError:
                 self._app._otp_server = None
-                raise OSError(
-                    f"OTP off→on init failed to open multicast socket "
-                    f"(transform={new_server._transform_dest!r}, "
-                    f"advertisement={new_server._advertisement_dest!r}, "
-                    f"source_ip={new_server._source_ip!r})",
-                )
+                raise
         # else: off → off, no-op
 
     def apply_rttrpm_output_change(self, new_cfg: RttrpmOutputConfig) -> None:
@@ -2273,14 +2342,12 @@ class AppRuntimeServices:
             server.stop()
             self._app._rttrpm_server = None
         elif server is None and new_cfg.enabled:
-            self.init_rttrpm()
-            # ``start()`` leaves a refused pin to the send loop's retry; a live
-            # apply needs the failure to revert on, as ``restart()`` gives it.
-            new_server = self._app._rttrpm_server
-            if new_server is not None and new_server._egress is not None and new_server._socket is None:
-                new_server.stop()
+            # A live enable must raise: the dispatcher reverts on it, the observer shows its row and backs off.
+            try:
+                self.init_rttrpm(retry_open=False)
+            except OSError:
                 self._app._rttrpm_server = None
-                raise OSError(f"RTTrPM could not open a socket pinned to {new_server._egress.iface}")
+                raise
         # else: off → off, no-op
 
     def apply_osc_transmitters_change(
@@ -2381,15 +2448,10 @@ class AppRuntimeServices:
         from openfollow.net_utils import resolve_plane_source_ip
 
         cfg = self._app._config
-        ids = {row.destination_id for row in cfg.osc_transmitters.transmitters if row.enabled}
-        if self.zones_config().enabled:
-            ids |= {zone.destination_id for zone in cfg.trigger_zones.zones if zone.enabled}
-        by_id = cfg.osc_destinations.by_id()
-        in_use = [by_id[dest_id] for dest_id in ids if dest_id in by_id]
         ifaces = sorted(
             {
                 plane_source_iface(dest.source_iface, cfg.psn_source_iface)
-                for dest in in_use
+                for dest in self._osc_destinations_in_use()
                 if not is_loopback_host(dest.host)
             }
             - {""}
@@ -2411,6 +2473,14 @@ class AppRuntimeServices:
             )
 
         return [_plane(iface) for iface in ifaces]
+
+    def _osc_destinations_in_use(self) -> list[OscDestinationConfig]:
+        """Destinations an enabled transmitter row or an armed, enabled zone sends to, in config order."""
+        cfg = self._app._config
+        ids = {row.destination_id for row in cfg.osc_transmitters.transmitters if row.enabled}
+        if self.zones_config().enabled:
+            ids |= {zone.destination_id for zone in cfg.trigger_zones.zones if zone.enabled}
+        return [dest for dest in cfg.osc_destinations.destinations if dest.id in ids]
 
     def _follow_station_osc_input(self) -> None:
         # The OSC membership inherits the station pin the same way, and the
@@ -4055,6 +4125,7 @@ class AppRuntimeServices:
                 "items": [],
             },
             "mouse3d": idle_mouse3d_status(cfg.mouse3d.enabled).to_dict(),
+            "network": {"alerts": [], "senders": []},
             "playback": self._frame_metrics.snapshot(),
             "tracking": {
                 "enabled": bool(self.detection_config().enabled),
@@ -4301,6 +4372,7 @@ class AppRuntimeServices:
                 "items": controller_items,
             },
             "mouse3d": mouse3d_status.to_dict(),
+            "network": self._network_stats(),
             "playback": playback_snapshot,
             "tracking": detection_snapshot,
             "hud": self._hud_render.stats() if self._hud_render is not None else None,

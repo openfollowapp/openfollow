@@ -1682,13 +1682,17 @@ def test_handle_key_press_settings_menu_arrows_and_enter() -> None:
 
 
 def test_handle_key_press_source_selection_arrows_enter_escape() -> None:
+    """Enter while the picker is still scanning confirms nothing. The
+    receiver's label is a USB camera's display name ("FaceTime HD Camera
+    (1920x1080@30)"), not its stored ID: set as the source, it would make a
+    connected camera read as not found."""
     from openfollow.configuration import AppConfig
 
     log: list[str] = []
 
     class _Receiver:
         source_selection_active = True
-        source_name = "Cam-A"
+        source_name = "FaceTime HD Camera (1920x1080@30)"
 
         def select_source_up(self):
             log.append("up")
@@ -1698,7 +1702,7 @@ def test_handle_key_press_source_selection_arrows_enter_escape() -> None:
 
         def confirm_source_selection(self):
             log.append("confirm")
-            return False  # Forces the set_source fallback.
+            return False  # Nothing listed yet.
 
         def set_source(self, label):
             log.append(f"set:{label}")
@@ -1722,7 +1726,6 @@ def test_handle_key_press_source_selection_arrows_enter_escape() -> None:
         "up",
         "down",
         "confirm",
-        "set:Cam-A",
         "exit",
         "back-to-settings",
     ]

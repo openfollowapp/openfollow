@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -83,9 +85,13 @@ class _DummyRuntimeServices:
         self.video_swaps: list[AppConfig] = []
         self.station_fqdn_changes: list[str] = []
         self.psn_input_changes = 0
+        self.osc_record_sweeps = 0
 
     def apply_psn_input_change(self) -> None:
         self.psn_input_changes += 1
+
+    def forget_idle_osc_send_records(self) -> None:
+        self.osc_record_sweeps += 1
 
     def apply_station_fqdn_change(self, fqdn: str) -> None:
         self.station_fqdn_changes.append(fqdn)
@@ -369,6 +375,109 @@ def test_stream_credentials_coerce_non_string_to_blank(field: str, bad: object) 
 
 def test_rtsp_user_is_stripped_on_load() -> None:
     assert AppConfig(rtsp_user="  operator  ").rtsp_user == "operator"
+
+
+@pytest.mark.parametrize("bad", [5, True, None, ["Capture Card"], {"a": 1}, 3.5])
+def test_avf_device_name_coerces_non_string_to_blank(bad: object) -> None:
+    """The name is rendered on the HUD and in the web UI; a hand-edited
+    non-string would reach the label as ``5`` or ``['Capture Card']``."""
+    assert AppConfig(avf_device_name=bad).avf_device_name == ""  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("Capture Card", "Capture Card"),
+        ("  Capture Card \n", "Capture Card"),
+        ("Capture\x00\x07 Card", "Capture Card"),
+        ("Capture ‮Card⁦", "Capture Card"),
+        ("‎", ""),
+    ],
+    ids=["plain", "whitespace", "control", "bidi", "only-direction-marks"],
+)
+def test_avf_device_name_is_cleaned_on_load(raw: str, expected: str) -> None:
+    assert AppConfig(avf_device_name=raw).avf_device_name == expected
+
+
+def test_avf_device_name_is_capped() -> None:
+    from openfollow.configuration import AVF_DEVICE_NAME_MAX_LEN
+
+    assert AppConfig(avf_device_name="C" * 1000).avf_device_name == "C" * AVF_DEVICE_NAME_MAX_LEN
+
+
+def test_avf_device_name_survives_a_toml_round_trip(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    save_config(AppConfig(avf_unique_id="0x14100000", avf_device_name="Capture Card"), str(path))
+
+    cfg = load_config(str(path))
+
+    assert (cfg.avf_unique_id, cfg.avf_device_name) == ("0x14100000", "Capture Card")
+
+
+def test_a_hand_edited_avf_device_name_is_cleaned_on_load(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('avf_unique_id = "0x14100000"\navf_device_name = 42\n')
+
+    assert load_config(str(path)).avf_device_name == ""
+
+
+@pytest.mark.parametrize("bad", [336592896, True, None, ["0x14100000"], {"a": 1}, 3.5])
+def test_avf_unique_id_coerces_non_string_to_blank(bad: object) -> None:
+    """A non-string matches no camera, so it would refuse every build as not found."""
+    assert AppConfig(avf_unique_id=bad).avf_unique_id == ""  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(" 0x14100000", "0x14100000"), ("0x14100000 \n", "0x14100000"), ("   ", "")],
+    ids=["leading", "trailing", "only-whitespace"],
+)
+def test_avf_unique_id_is_stripped_on_load(raw: str, expected: str) -> None:
+    assert AppConfig(avf_unique_id=raw).avf_unique_id == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("0x1410\x00\x070000", "0x14100000"),
+        ("0x1410\u202e0000\u2066", "0x14100000"),
+        ("\u200e", ""),
+    ],
+    ids=["control", "bidi", "only-direction-marks"],
+)
+def test_avf_unique_id_is_cleaned_on_load(raw: str, expected: str) -> None:
+    """A camera not listed this run and stored without a name shows its ID on the HUD."""
+    assert AppConfig(avf_unique_id=raw).avf_unique_id == expected
+
+
+@pytest.mark.parametrize("bad", ["abc", "1.5", None, True, [1], {"a": 1}])
+def test_avf_device_index_coerces_wrong_type_to_default(bad: object) -> None:
+    assert AppConfig(avf_device_index=bad).avf_device_index == -1  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(("raw", "expected"), [(-5, -1), (-1, -1), (0, 0), (2, 2), ("3", 3)])
+def test_avf_device_index_keeps_the_unset_sentinel_as_its_floor(raw: object, expected: int) -> None:
+    assert AppConfig(avf_device_index=raw).avf_device_index == expected  # type: ignore[arg-type]
+
+
+def test_a_hand_edited_avf_camera_loads_clean(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('video_source_type = "avf"\navf_unique_id = " 0x14100000 "\navf_device_index = "abc"\n')
+
+    cfg = load_config(str(path))
+
+    assert (cfg.avf_unique_id, cfg.avf_device_index) == ("0x14100000", -1)
+
+
+def test_a_hand_edited_avf_device_index_renders_the_video_source_page(tmp_path: Path) -> None:
+    from openfollow.video.inputs.avf import AvfInput
+
+    path = tmp_path / "config.toml"
+    path.write_text('video_source_type = "avf"\navf_device_index = "abc"\n')
+
+    html = AvfInput.web_ui_html(AvfInput.get_config_field_values(load_config(str(path))))
+
+    assert re.search(r'name="avf_device_index"\s+value="-1"', html)
 
 
 @pytest.mark.parametrize("field", ["rtsp_password", "srt_passphrase"])
@@ -2585,6 +2694,53 @@ def test_apply_runtime_swaps_video_on_plugin_field_change() -> None:
     assert app._config.srt_host == "srt://192.168.0.10:1600"
     assert app._web_commands.restart_requested is False
     assert app._runtime_services.video_swaps == [new_config]
+
+
+def test_recording_a_usb_cameras_name_swaps_no_video() -> None:
+    """The first save of an older config records the name; that must not black the video out."""
+    app = _DummyApp(AppConfig(video_source_type="avf", avf_unique_id="0x14100000"))
+
+    apply_runtime_config_changes(
+        app, AppConfig(video_source_type="avf", avf_unique_id="0x14100000", avf_device_name="Capture Card")
+    )
+
+    assert app._runtime_services.video_swaps == []
+    # Committed all the same: a later wholesale ``save_config(app._config)`` would write the blank back.
+    assert app._config.avf_device_name == "Capture Card"
+
+
+def test_a_recorded_camera_name_reaches_the_running_input() -> None:
+    """It names the camera on screen while that camera is not connected."""
+    app = _DummyApp(AppConfig(video_source_type="avf", avf_unique_id="0x14100000"))
+    noted: list[dict[str, object]] = []
+    app._video_receiver = SimpleNamespace(update_input_fields=noted.append)
+
+    apply_runtime_config_changes(
+        app, AppConfig(video_source_type="avf", avf_unique_id="0x14100000", avf_device_name="Capture Card")
+    )
+
+    assert noted == [{"avf_device_name": "Capture Card"}]
+
+
+def test_an_unchanged_save_hands_the_running_input_nothing() -> None:
+    cfg = AppConfig(video_source_type="avf", avf_unique_id="0x14100000", avf_device_name="Capture Card")
+    app = _DummyApp(cfg)
+    noted: list[dict[str, object]] = []
+    app._video_receiver = SimpleNamespace(update_input_fields=noted.append)
+
+    apply_runtime_config_changes(app, AppConfig(**{**cfg.__dict__}))
+
+    assert noted == []
+
+
+def test_choosing_another_usb_camera_still_swaps_video() -> None:
+    app = _DummyApp(AppConfig(video_source_type="avf", avf_unique_id="0x14100000", avf_device_name="Capture Card"))
+    new_config = AppConfig(video_source_type="avf", avf_unique_id="47B4B64B", avf_device_name="FaceTime HD Camera")
+
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._runtime_services.video_swaps == [new_config]
+    assert app._config.avf_device_name == "FaceTime HD Camera"
 
 
 @pytest.mark.parametrize("station", ["eth1", ""], ids=["moved", "auto-detect"])
@@ -6314,6 +6470,45 @@ def test_apply_runtime_reloads_trigger_zones() -> None:
 
     assert zone_engine.reloaded == [new_zones]
     assert app._config.trigger_zones == new_zones
+
+
+@pytest.mark.parametrize(
+    ("change", "sweeps"),
+    [
+        ("transmitters", 1),
+        ("destinations", 1),
+        ("zones", 1),
+        ("transmitters+zones", 1),
+        ("unrelated", 0),
+    ],
+)
+def test_an_osc_routing_change_forgets_the_records_nothing_sends_to(change: str, sweeps: int) -> None:
+    """A cached OSC client outlives its row, so its last streak must not come back when the row does."""
+    from openfollow.configuration import (
+        OscDestinationConfig,
+        OscDestinationsConfig,
+        OscTransmitterConfig,
+        OscTransmittersConfig,
+        TriggerZonesConfig,
+    )
+
+    app = _app_with()
+    app._runtime_services._zone_engine = _DummyZoneEngine()  # type: ignore[attr-defined]
+    overrides: dict[str, object] = {}
+    if "transmitters" in change:
+        overrides["osc_transmitters"] = OscTransmittersConfig(transmitters=[OscTransmitterConfig(id="row1")])
+    if "destinations" in change:
+        overrides["osc_destinations"] = OscDestinationsConfig(
+            destinations=[OscDestinationConfig(id="default", name="Default", host="192.0.2.40")]
+        )
+    if "zones" in change:
+        overrides["trigger_zones"] = TriggerZonesConfig(enabled=True)
+    if change == "unrelated":
+        overrides["psn_system_name"] = "Stage left"
+
+    apply_runtime_config_changes(app, AppConfig(**overrides))
+
+    assert app._runtime_services.osc_record_sweeps == sweeps
 
 
 def test_apply_runtime_osc_destinations_change_reapplies_both_consumers() -> None:

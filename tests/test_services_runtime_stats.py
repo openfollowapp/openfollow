@@ -197,12 +197,14 @@ class TestDefaultRuntimeStatsSnapshot:
             "video",
             "controllers",
             "mouse3d",
+            "network",
             "playback",
             "tracking",
             "hud",
             "marker_conflicts",
         }
         assert snap["marker_conflicts"] == []
+        assert snap["network"] == {"alerts": [], "senders": []}
         assert snap["system"]["cpu_percent"] == 0.0
         assert snap["video"]["connected"] is False
         assert snap["controllers"]["items"] == []
@@ -391,6 +393,34 @@ class TestPublishRuntimeStats:
             False,
             [],
         )
+
+    def test_the_network_block_carries_the_rows_and_every_senders_record(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import errno
+
+        import openfollow.send_health as send_health_module
+        import openfollow.video.detection as det
+        from openfollow.send_health import SendHealth
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+        monkeypatch.setattr(send_health_module, "FAILING_AFTER_S", 0.0)
+        psn = SendHealth("PSN", platform="darwin")
+        psn.record_failure(OSError(errno.EHOSTUNREACH, "No route to host"), "236.10.10.10")
+        psn.record_failure(OSError(errno.EHOSTUNREACH, "No route to host"), "236.10.10.10")
+        services._app._server = SimpleNamespace(send_health=psn)
+        services._app._otp_server = SimpleNamespace(send_health=SendHealth("OTP output"))
+        self._prime(services)
+
+        services.publish_runtime_stats(force=True)
+        network = services.get_runtime_stats_snapshot()["network"]
+        assert network["alerts"] == [
+            {"text": send_health_module.LOCAL_NETWORK_TEXT, "action": send_health_module.LOCAL_NETWORK_ACTION}
+        ]
+        assert [(s["label"], s["state"], s["local_network"]) for s in network["senders"]] == [
+            ("PSN", "failing", True),
+            ("OTP output", "ok", False),
+        ]
 
     def test_force_bypasses_throttle(self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch) -> None:
         self._prime(services)

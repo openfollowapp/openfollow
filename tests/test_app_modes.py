@@ -3228,3 +3228,59 @@ class TestSourcePickSave:
         assert banners == [
             ("The NDI® source is live but could not be saved.", "Check the station's storage, then pick it again.")
         ]
+
+
+class TestCameraPickSave:
+    """A USB camera picked on screen is saved with the name it was listed under."""
+
+    def _station(self, tmp_path, monkeypatch):  # noqa: ANN001, ANN202
+        from openfollow.configuration import AppConfig, load_config, save_config
+        from openfollow.video.inputs import avf as avf_module
+
+        monkeypatch.setattr(avf_module, "_camera_names", {"0xA": "Old Cam", "0xB": "Stage Cam"})
+        path = tmp_path / "config.toml"
+        for _ in range(2):  # the second save leaves the first as the backup
+            save_config(AppConfig(video_source_type="avf", avf_unique_id="0xA", avf_device_name="Old Cam"), str(path))
+        handed: list[dict[str, Any]] = []
+        app = SimpleNamespace(
+            _config=load_config(str(path), strict=True),
+            _config_path=str(path),
+            _video_receiver=SimpleNamespace(update_input_fields=handed.append),
+            _enter_settings_menu=lambda banner="", action="": None,
+        )
+        return app, path, handed
+
+    @pytest.mark.parametrize(
+        ("picked", "name"),
+        [("0xB", "Stage Cam"), ("0xC", "")],
+        ids=["listed", "not-listed"],
+    )
+    def test_the_camera_is_saved_with_its_name_and_the_reload_has_nothing_to_reconnect(
+        self, tmp_path, monkeypatch, picked: str, name: str
+    ) -> None:  # noqa: ANN001
+        from openfollow.configuration import load_config
+        from openfollow.runtime.app_modes import save_source_pick
+        from openfollow.video.inputs import get_input_class
+
+        app, path, handed = self._station(tmp_path, monkeypatch)
+
+        save_source_pick(app, "avf_unique_id", picked)
+
+        on_disk = load_config(str(path), strict=True)
+        assert (on_disk.avf_unique_id, on_disk.avf_device_name) == (picked, name)
+        assert (app._config.avf_unique_id, app._config.avf_device_name) == (picked, name)
+        assert handed == [{"avf_device_name": name}]
+        avf = get_input_class("avf")
+        assert avf is not None
+        assert not avf.config_changed(app._config, on_disk)
+
+    def test_a_source_with_nothing_beside_it_hands_the_receiver_nothing(self, tmp_path, monkeypatch) -> None:  # noqa: ANN001
+        from openfollow.runtime.app_modes import save_source_pick
+
+        app, _path, handed = self._station(tmp_path, monkeypatch)
+        app._config.video_source_type = "ndi"
+
+        save_source_pick(app, "ndi_source_name", "NEW (B)")
+
+        assert app._config.ndi_source_name == "NEW (B)"
+        assert handed == []

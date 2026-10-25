@@ -20,7 +20,7 @@ Three cards across the top of the section. Each card shows a status chip and a s
 Health of the outgoing peer-discovery beacon. If this card is unhealthy, other stations on the network won't see this one.
 
 - **Last sent** – timestamp of the most recent outgoing beacon.
-- **Errors** – running count of send errors since the process started.
+- **Errors** – failed sends and socket opens since beacons last kept going out. It returns to 0 only once sends have kept succeeding for a second, so a socket that takes one beacon and then fails again does not read as healthy.
 - **Sent count** – total beacons sent since the process started.
 
 ### Beacon receiver

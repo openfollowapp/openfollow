@@ -7,6 +7,8 @@ and state providers, privilege-broker wiring, and the network apply/renew handle
 
 from __future__ import annotations
 
+import errno
+import os
 import threading
 import time
 from types import SimpleNamespace
@@ -3125,6 +3127,315 @@ def test_an_outage_alert_names_the_adapter_by_its_label(monkeypatch) -> None:
 
     services.observe_network_planes()
     assert "OTP output: Lighting backup (enx00e04c68a1f2) is not connected" in services.network_alerts()
+
+
+def _failing_sender(label: str, err: int, dest: str, *, platform: str = "linux") -> SimpleNamespace:
+    """A sender whose sends have kept failing, exposed the way every real sender is."""
+    from openfollow.send_health import FAILING_AFTER_S, SendHealth
+
+    now = [100.0]
+    health = SendHealth(label, clock=lambda: now[0], platform=platform)
+    health.record_failure(OSError(err, os.strerror(err)), dest)
+    now[0] += FAILING_AFTER_S
+    health.record_failure(OSError(err, os.strerror(err)), dest)
+    return SimpleNamespace(send_health=health)
+
+
+def test_a_sender_whose_sends_keep_failing_is_a_network_row(monkeypatch) -> None:
+    from openfollow.send_health import SEND_FAILING_ACTION, SendAlert
+
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._rttrpm_server = _failing_sender("RTTrPM output", errno.EACCES, "192.0.2.20")
+
+    row = SendAlert(f"RTTrPM output: sends keep failing ({os.strerror(errno.EACCES)})", SEND_FAILING_ACTION)
+    assert services.network_alert_rows() == [row]
+    assert services.network_alerts() == [row.text]
+
+
+def test_macos_refusing_every_sender_is_one_row_naming_local_network(monkeypatch) -> None:
+    from openfollow.send_health import LOCAL_NETWORK_ACTION, LOCAL_NETWORK_HUD_TEXT, LOCAL_NETWORK_TEXT
+
+    services = _build_services_with_psutil_backend(monkeypatch)
+    refused = (errno.EHOSTUNREACH, "236.10.10.10")
+    services._app._server = _failing_sender("PSN", *refused, platform="darwin")
+    services._app._web_server = SimpleNamespace(beacon_sender=_failing_sender("Discovery", *refused, platform="darwin"))
+    services._app._marker_catalog_sync = _failing_sender("Marker sync", *refused, platform="darwin")
+
+    # The Operator Screen names the permission; the web states the observation, the permission under it.
+    assert services.network_alerts() == [LOCAL_NETWORK_HUD_TEXT]
+    assert services._network_stats()["alerts"] == [{"text": LOCAL_NETWORK_TEXT, "action": LOCAL_NETWORK_ACTION}]
+
+
+def test_linux_refusing_the_same_way_never_names_local_network(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._server = _failing_sender("PSN", errno.EHOSTUNREACH, "236.10.10.10", platform="linux")
+
+    assert services.network_alerts() == [f"PSN: sends keep failing ({os.strerror(errno.EHOSTUNREACH)})"]
+    assert "Local Network" not in repr(services._network_stats())
+
+
+def test_a_sender_on_a_plane_reported_down_is_not_reported_again(monkeypatch) -> None:
+    """The observer's row already says why: the interface has no address."""
+    from openfollow.runtime.network_observer import NetworkPlaneObserver, Plane
+
+    services = _build_services_with_psutil_backend(monkeypatch)
+    plane = Plane(
+        label="PSN",
+        resolve=lambda: ("", "down", "eth0"),
+        current=lambda: None,
+        apply=lambda _address: None,
+        suspend=lambda: None,
+    )
+    services._network_observer = NetworkPlaneObserver(planes=[plane], clock=lambda: 0.0)
+    services._network_observer.poll()
+    services._app._server = _failing_sender("PSN", errno.ENETUNREACH, "236.10.10.10")
+    beacon = _failing_sender("Discovery", errno.ENETUNREACH, "239.255.50.50")
+    services._app._web_server = SimpleNamespace(beacon_sender=beacon)
+    services._app._rttrpm_server = _failing_sender("RTTrPM output", errno.ENETUNREACH, "192.0.2.20")
+
+    assert services.network_alerts() == [
+        "PSN: eth0 is down",
+        f"RTTrPM output: sends keep failing ({os.strerror(errno.ENETUNREACH)})",
+    ]
+
+
+def test_a_plane_row_carries_its_next_step_to_the_web(monkeypatch) -> None:
+    from openfollow.runtime.network_observer import PLANE_DOWN_ACTION, NetworkPlaneObserver, Plane
+
+    services = _build_services_with_psutil_backend(monkeypatch)
+    plane = Plane(
+        label="PSN",
+        resolve=lambda: ("", "down", "eth0"),
+        current=lambda: None,
+        apply=lambda _address: None,
+        suspend=lambda: None,
+    )
+    services._network_observer = NetworkPlaneObserver(planes=[plane], clock=lambda: 0.0)
+    services._network_observer.poll()
+    assert services._network_stats()["alerts"] == [{"text": "PSN: eth0 is down", "action": PLANE_DOWN_ACTION}]
+
+
+def test_one_stats_snapshot_reads_each_record_once(monkeypatch) -> None:
+    """A streak that ends between two reads must not leave a row beside a sender reading ok."""
+    from openfollow.send_health import SendHealth
+
+    class _Recovering(SendHealth):
+        def status(self):  # type: ignore[no-untyped-def]
+            status = super().status()
+            # Every later read finds the streak over.
+            self.reset()
+            return status
+
+    from openfollow.send_health import FAILING_AFTER_S
+
+    now = [100.0]
+    health = _Recovering("RTTrPM output", clock=lambda: now[0])
+    health.record_failure(OSError(errno.EACCES, os.strerror(errno.EACCES)), "192.0.2.20")
+    now[0] += FAILING_AFTER_S
+    health.record_failure(OSError(errno.EACCES, os.strerror(errno.EACCES)), "192.0.2.20")
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._rttrpm_server = SimpleNamespace(send_health=health)
+
+    stats = services._network_stats()
+    assert [sender["state"] for sender in stats["senders"]] == ["failing"]
+    assert len(stats["alerts"]) == 1
+
+
+def test_only_real_send_records_are_read(monkeypatch) -> None:
+    """A sender object that exposes no record, or something else under the name, is skipped."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._server = SimpleNamespace()
+    services._app._otp_server = SimpleNamespace(send_health=object())
+    services._app._web_server = None
+    assert services.network_alerts() == []
+    assert services._network_stats() == {"alerts": [], "senders": []}
+
+
+class _OscClient:
+    """A UDP OSC client whose sends to the hosts in ``refusing`` raise ``send_errno``."""
+
+    refusing: set[str] = set()
+    send_errno = errno.ENETUNREACH
+
+    def __init__(self, host: str, port: int, allow_broadcast: bool = False) -> None:  # noqa: ARG002
+        self.host = host
+        self._sock = SimpleNamespace(setsockopt=lambda *_a: None, close=lambda: None)
+
+    def send_message(self, _address: str, _args: list) -> None:
+        if self.host in self.refusing:
+            raise OSError(self.send_errno, os.strerror(self.send_errno))
+
+
+@pytest.fixture
+def osc_services(monkeypatch):
+    """Services whose OSC output reaches fake clients, failing on the second failure of a streak."""
+    import openfollow.osc.service as osc_service_module
+    import openfollow.send_health as send_health_module
+    from openfollow.configuration import OscDestinationConfig, OscTransmitterConfig
+
+    monkeypatch.setattr(osc_service_module, "SimpleUDPClient", _OscClient)
+    monkeypatch.setattr(osc_service_module, "_resolve_host", lambda host: host)
+    monkeypatch.setattr(osc_service_module, "pin_socket_egress", lambda *_a, **_k: None)
+    monkeypatch.setattr(send_health_module, "FAILING_AFTER_S", 0.0)
+    monkeypatch.setattr(_OscClient, "refusing", set())
+    monkeypatch.setattr(_OscClient, "send_errno", errno.ENETUNREACH)
+    services = _build_services_with_psutil_backend(monkeypatch)
+    cfg = services._app._config
+    cfg.osc_destinations.destinations = [
+        OscDestinationConfig(id="desk", name="Lighting desk", host="192.0.2.40", port=8000),
+        OscDestinationConfig(id="media", name="", host="192.0.2.41", port=53000),
+    ]
+    cfg.osc_transmitters.transmitters = [
+        OscTransmitterConfig(id="row1", enabled=True, destination_id="desk"),
+        OscTransmitterConfig(id="row2", enabled=True, destination_id="media"),
+    ]
+    return services
+
+
+def _send_osc(services, dest_id: str, times: int = 2) -> None:
+    dest = services._app._config.osc_destinations.get(dest_id)
+    egress = services._osc_egress.for_destination(dest)
+    for _ in range(times):
+        services._osc_service.send(
+            "/x", host=dest.host, port=dest.port, protocol=dest.protocol, framing=dest.framing, egress=egress
+        )
+
+
+def test_an_osc_destination_whose_sends_keep_failing_is_a_row_named_after_it(osc_services) -> None:
+    from openfollow.send_health import OSC_SEND_FAILING_ACTION, SendAlert
+
+    _OscClient.refusing.add("192.0.2.40")
+    _send_osc(osc_services, "desk")
+    _send_osc(osc_services, "media")
+
+    unreachable = os.strerror(errno.ENETUNREACH)
+    assert osc_services.network_alert_rows() == [
+        SendAlert(f"OSC to Lighting desk: sends keep failing ({unreachable})", OSC_SEND_FAILING_ACTION)
+    ]
+    senders = {sender["label"]: sender["state"] for sender in osc_services._network_stats()["senders"]}
+    assert senders == {"OSC to Lighting desk": "failing", "OSC to 192.0.2.41:53000": "ok"}
+
+
+def test_an_unnamed_osc_destination_is_named_by_its_address(osc_services) -> None:
+    _OscClient.refusing.add("192.0.2.41")
+    _send_osc(osc_services, "media")
+    assert osc_services.network_alerts() == [
+        f"OSC to 192.0.2.41:53000: sends keep failing ({os.strerror(errno.ENETUNREACH)})"
+    ]
+
+
+@pytest.mark.parametrize("unused", ["row-disabled", "destination-repointed"])
+def test_an_osc_record_nothing_sends_through_any_more_raises_no_row(osc_services, unused: str) -> None:
+    """Cached clients outlive their rows and repoints, and a dead one would otherwise stay up for good."""
+    _OscClient.refusing.add("192.0.2.40")
+    _send_osc(osc_services, "desk")
+    cfg = osc_services._app._config
+    if unused == "row-disabled":
+        cfg.osc_transmitters.transmitters[0].enabled = False
+    else:
+        cfg.osc_destinations.destinations[0].host = "192.0.2.50"
+    assert osc_services.network_alerts() == []
+
+
+@pytest.mark.parametrize("leave", ["row-disabled", "zones-disarmed", "destination-repointed"])
+def test_an_osc_target_back_in_use_starts_with_a_clean_record(osc_services, leave: str) -> None:
+    """Its cached client outlived the row, and the target may well be reachable by the time it returns."""
+    from openfollow.configuration import TriggerZoneConfig
+
+    cfg = osc_services._app._config
+    if leave == "zones-disarmed":
+        cfg.osc_transmitters.transmitters = []
+        cfg.trigger_zones.zones = [TriggerZoneConfig(destination_id="desk")]
+        cfg.trigger_zones.enabled = True
+    _OscClient.refusing.add("192.0.2.40")
+    _send_osc(osc_services, "desk")
+    assert len(osc_services.network_alerts()) == 1
+
+    if leave == "row-disabled":
+        cfg.osc_transmitters.transmitters[0].enabled = False
+    elif leave == "zones-disarmed":
+        cfg.trigger_zones.enabled = False
+    else:
+        cfg.osc_destinations.destinations[0].host = "192.0.2.50"
+    osc_services.forget_idle_osc_send_records()
+    _OscClient.refusing.clear()
+    if leave == "row-disabled":
+        cfg.osc_transmitters.transmitters[0].enabled = True
+    elif leave == "zones-disarmed":
+        cfg.trigger_zones.enabled = True
+    else:
+        cfg.osc_destinations.destinations[0].host = "192.0.2.40"
+
+    assert osc_services.network_alerts() == []
+
+
+def test_forgetting_idle_osc_records_keeps_a_streak_still_in_use(osc_services) -> None:
+    _OscClient.refusing.add("192.0.2.40")
+    _send_osc(osc_services, "desk")
+    osc_services._app._config.osc_transmitters.transmitters[1].enabled = False
+    osc_services.forget_idle_osc_send_records()
+    assert [row.split(":")[0] for row in osc_services.network_alerts()] == ["OSC to Lighting desk"]
+
+
+def test_a_trigger_zone_destination_is_in_use_while_zones_are_armed(osc_services) -> None:
+    from openfollow.configuration import TriggerZoneConfig
+
+    cfg = osc_services._app._config
+    cfg.osc_transmitters.transmitters = []
+    cfg.trigger_zones.zones = [TriggerZoneConfig(destination_id="desk")]
+    _OscClient.refusing.add("192.0.2.40")
+    _send_osc(osc_services, "desk")
+    assert osc_services.network_alerts() == []
+    cfg.trigger_zones.enabled = True
+    assert [row.split(":")[0] for row in osc_services.network_alerts()] == ["OSC to Lighting desk"]
+
+
+def test_two_destinations_sharing_one_target_are_one_row(osc_services) -> None:
+    from openfollow.configuration import OscDestinationConfig, OscTransmitterConfig
+
+    cfg = osc_services._app._config
+    cfg.osc_destinations.destinations.append(
+        OscDestinationConfig(id="desk2", name="Desk backup", host="192.0.2.40", port=8000)
+    )
+    cfg.osc_transmitters.transmitters.append(OscTransmitterConfig(id="row3", enabled=True, destination_id="desk2"))
+    _OscClient.refusing.add("192.0.2.40")
+    _send_osc(osc_services, "desk")
+    assert osc_services.network_alerts() == [
+        f"OSC to Lighting desk, Desk backup: sends keep failing ({os.strerror(errno.ENETUNREACH)})"
+    ]
+
+
+def test_an_osc_destination_on_a_plane_reported_down_is_not_reported_again(osc_services) -> None:
+    from openfollow.runtime.network_observer import NetworkPlaneObserver, Plane
+
+    cfg = osc_services._app._config
+    cfg.osc_destinations.destinations[0].source_iface = "eth1"
+    osc_services._osc_egress.restage("", cfg.osc_destinations.destinations, resolve=lambda _iface: "192.0.2.5")
+    _OscClient.refusing.add("192.0.2.40")
+    _send_osc(osc_services, "desk")
+    assert len(osc_services.network_alerts()) == 1
+
+    plane = Plane(
+        label="OSC output",
+        key="osc_out:eth1",
+        resolve=lambda: ("", "down", "eth1"),
+        current=lambda: "192.0.2.5",
+        apply=lambda _address: None,
+        suspend=lambda: None,
+    )
+    osc_services._network_observer = NetworkPlaneObserver(planes=[plane], clock=lambda: 0.0)
+    osc_services._network_observer.poll()
+    assert osc_services.network_alerts() == ["OSC output: eth1 is down"]
+
+
+def test_macos_refusing_osc_too_stays_one_row(osc_services) -> None:
+    from openfollow.send_health import LOCAL_NETWORK_HUD_TEXT
+
+    osc_services._app._server = _failing_sender("PSN", errno.EHOSTUNREACH, "236.10.10.10", platform="darwin")
+    _OscClient.refusing.add("192.0.2.40")
+    _OscClient.send_errno = errno.EHOSTUNREACH
+    _send_osc(osc_services, "desk")
+    assert osc_services.network_alerts() == [LOCAL_NETWORK_HUD_TEXT]
 
 
 class _FqdnAdapter:

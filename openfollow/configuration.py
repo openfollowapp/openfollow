@@ -2702,6 +2702,23 @@ _DEFAULT_PSN_MCAST_IP = "236.10.10.10"
 # default and the ``__post_init__`` fallback.
 _DEFAULT_SELECTED_MEDIA = "default:stage"
 
+# A camera's name as macOS reports it; anything longer is not one.
+AVF_DEVICE_NAME_MAX_LEN = 128
+
+
+def clean_avf_device_name(raw: object) -> str:
+    """A stored camera name: text only, no control or direction characters, at most ``AVF_DEVICE_NAME_MAX_LEN``."""
+    if not isinstance(raw, str):
+        return ""
+    return CONTROL_CHARS_RE.sub("", raw).strip()[:AVF_DEVICE_NAME_MAX_LEN].strip()
+
+
+def clean_avf_unique_id(raw: object) -> str:
+    """A stored camera ID: text only, trimmed, no control or direction characters."""
+    if not isinstance(raw, str):
+        return ""
+    return CONTROL_CHARS_RE.sub("", raw).strip()
+
 
 @dataclass
 class NetworkConfig:
@@ -2939,6 +2956,8 @@ class AppConfig:
     v4l2_render_resolution: str = "1080p"
     v4l2_framerate: int = 30
     avf_unique_id: str = ""
+    # That camera's name when it was chosen; names it while it is not connected.
+    avf_device_name: str = ""
     avf_device_index: int = -1
     avf_width: int = 1920
     avf_height: int = 1080
@@ -2946,10 +2965,10 @@ class AppConfig:
     # Media Gallery selection; see ``_DEFAULT_SELECTED_MEDIA`` above.
     testpattern_selected_media: str = _DEFAULT_SELECTED_MEDIA
 
-    # Video recovery (network inputs: RTSP/SRT/RTP). ``stall_timeout`` is the
-    # silent-stall watchdog – seconds an established stream may deliver no
-    # frames before it's torn down and reconnected (0 = off). ``heal_interval``
-    # is how often a feed parked on the no-signal placeholder re-probes its URL
+    # Video recovery. ``stall_timeout`` is the silent-stall watchdog of every
+    # input – seconds an established stream may deliver no frames before it's
+    # torn down and reconnected (0 = off). ``heal_interval`` is how often an
+    # RTSP/SRT/RTP feed parked on the no-signal placeholder re-probes its URL
     # so it recovers on its own after the source/network returns (0 = off).
     stall_timeout: float = 3.0
     heal_interval: float = 5.0
@@ -3119,6 +3138,11 @@ class AppConfig:
             self.rtsp_password = ""
         if not isinstance(self.srt_passphrase, str):
             self.srt_passphrase = ""
+        # The build refuses an ID no listed camera matches, and an unnamed camera shows its ID on
+        # the HUD; the USB camera's web-save path cleans both fields the same way.
+        self.avf_unique_id = clean_avf_unique_id(self.avf_unique_id)
+        self.avf_device_name = clean_avf_device_name(self.avf_device_name)
+        self.avf_device_index = _coerce_int(self.avf_device_index, -1, lo=-1)
         self.normalise_startup_settings()
         # TOML produces ``dict[str, Any]``; the runtime contract is
         # ``dict[int, float]`` keyed by marker_id. Drop pairs with a non-int
@@ -4145,6 +4169,20 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
             app._config.video_source_type = old_video_source_type
             for name, value in old_field_values.items():
                 setattr(app._config, name, value)
+    else:
+        # A field that does not rebuild the input is committed without a swap.
+        input_cls = get_input_class(app._config.video_source_type)
+        quiet = {
+            f.name: getattr(new_config, f.name, f.default)
+            for f in (input_cls.config_fields() if input_cls is not None else [])
+            if not f.rebuilds and getattr(app._config, f.name, f.default) != getattr(new_config, f.name, f.default)
+        }
+        if quiet:
+            for name, value in quiet.items():
+                setattr(app._config, name, value)
+            receiver = getattr(app, "_video_receiver", None)
+            if receiver is not None:
+                receiver.update_input_fields(quiet)
     # The swap commits the video pin only for an input it rebuilds; a pin Simple cleared may need
     # no rebuild, and must not stay in the running config for a whole-config save to write back.
     if not getattr(app, "_video_swap_owed", False) and new_config.video_input_iface != app._config.video_input_iface:
@@ -4504,6 +4542,10 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         # in place – they're reused if a future row targets the same
         # destination and can't be safely evicted without per-caller
         # ownership tracking.
+
+    if osc_transmitters_changed or osc_destinations_changed or trigger_zones_changed:
+        # Against the committed config, so a reverted routing apply keeps its records.
+        app._runtime_services.forget_idle_osc_send_records()
 
     paths_changed = new_config.paths != app._config.paths
     if paths_changed:

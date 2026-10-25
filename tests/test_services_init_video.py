@@ -201,6 +201,10 @@ class _FakeInputCls:
     """Minimal stand-in for a :class:`VideoInputBase` subclass."""
 
     @classmethod
+    def config_fields(cls) -> list[Any]:
+        return []
+
+    @classmethod
     def get_config_field_values(cls, cfg: Any) -> dict[str, Any]:  # noqa: ARG003
         return {"kind": "fake"}
 

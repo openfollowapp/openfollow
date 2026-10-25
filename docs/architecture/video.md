@@ -36,6 +36,7 @@ Each plugin declares:
 - `is_available()` → `(bool, reason)`; defaults to `(True, "")`. Override when the plugin needs an OS or GStreamer element that isn't universally present (e.g. `v4l2src` on Linux, `avfvideosrc` on macOS, the `ndisrc` plugin from gst-plugin-ndi).
 - `source_element_name` → the **instance name** of the element that first produces bytes from the source (`"rtspsrc"`, `"udpsrc"`, `"media_source"`, …), or `None` for an input with no such boundary. The receiver probes it for the first buffer → `DATA_ARRIVING`. `TestSourceElementDeclaration` in [`tests/test_video_input_plugins.py`](../../tests/test_video_input_plugins.py) builds each plugin's pipeline and asserts the name resolves, so a rename inside `create_pipeline` can't silently detach the probe
 - `source_kind` → `SourceKind.REMOTE` (dials a host: rtsp, srt), `NAMED` (finds a source by name: ndi), `LISTENER` (waits at an address: rtp) or `LOCAL` (hardware or a file on this box). It picks the **wording** of the sentence and the action, so an NDI source is not told to check an address and port it does not have, and a USB camera is not told to check a sender. It also decides how a `NOT_AUTHORIZED` error is classified (`LOCAL`: `ACCESS_DENIED`, any other kind: `UNAUTHORIZED`), so a network plugin left on the `LOCAL` default would read an RTSP 401 as "Access denied" with the macOS camera instruction. Every plugin must therefore declare it (`test_every_plugin_declares_its_source_kind`)
+- `source_labels(sources)` → optional; what the on-screen picker shows for each discovered source, in order. Defaults to the sources themselves; the macOS USB camera names each camera while its unique ID stays the stored key. Side-effect free (no device listing)
 - `on_bus_error(error)` → optional; the failed attempt's `BusError`, handed over in `_schedule_reconnect` before the next attempt is built. RTSP reads it to change the transport the retry asks for
 - `observe_progress(pipeline, report)` → optional; report protocol progress only that plugin can see. RTSP wires `rtspsrc::on-sdp` → `TRANSPORT_UP` + `STREAM_DESCRIBED`. The receiver keeps the furthest phase reported, so a duplicate or out-of-order report is harmless
 
@@ -203,6 +204,11 @@ video input pin's preflight produces them, before anything is dialled, so
 even the placeholder, and retries on the input's own backoff; the placeholder
 appears only once the reconnects run out, as for any failure. `error_message`
 carries the interfaces the sentence cannot name.
+
+**The macOS USB camera's preflight refuses a remembered camera it does not
+find** as `STREAM_NOT_FOUND`, with the same backoff and the same hand-over to
+the picker, so a missing camera is never replaced by another. A camera list it
+cannot read refuses as `UNKNOWN` with that reason, never as "not found".
 
 **`REFUSED` has no observed producer.** `rtspsrc` reports a refused connection
 as `Failed to connect. (Generic error)`, the errno discarded inside GStreamer's

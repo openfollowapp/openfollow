@@ -54,11 +54,13 @@ from openfollow.video.failure import (
     SourceKind,
     VideoFailure,
 )
+from openfollow.video.inputs import get_registry
 from openfollow.video.inputs._base import (
     ConfigField,
     InputCapabilities,
     ReconnectPolicy,
     SourceEndpoint,
+    VideoInputBase,
 )
 from openfollow.video.inputs._pin import PinRefusal
 from openfollow.video.inputs.rtsp import RtspInput
@@ -368,6 +370,13 @@ class FakeInput:
     @classmethod
     def get_source_label(cls, config: dict[str, Any]) -> str:
         return str(config.get("fake_source", "") or "")
+
+    @classmethod
+    def source_labels(cls, sources: list[str]) -> list[str]:
+        return list(sources)
+
+    # The base's field-apply, as a real input inherits it.
+    apply_config_fields = VideoInputBase.__dict__["apply_config_fields"]
 
     @classmethod
     def web_ui_html(cls, config: dict[str, Any]) -> str:  # pragma: no cover
@@ -1401,6 +1410,32 @@ class TestSourceSelectionNavigation:
 # --------------------------------------------------------------------------- #
 # set_source
 # --------------------------------------------------------------------------- #
+
+
+class TestUpdateInputFields:
+    def test_a_field_that_does_not_rebuild_is_stored_without_a_build(self, fake_gst, fake_glib, monkeypatch) -> None:
+        from openfollow.video.inputs import avf
+
+        monkeypatch.setattr(avf, "_camera_names", {})
+        # Connected and available on every platform, so a rebuild would reach the build.
+        monkeypatch.setattr(
+            avf, "_list_avf_devices", lambda: [{"unique_id": "0x14100000", "name": "USB Capture", "index": "0"}]
+        )
+        monkeypatch.setattr(avf.AvfInput, "is_available", classmethod(lambda _cls: (True, "")))
+        monkeypatch.setattr(receiver_mod, "get_input_class", lambda _input_id: avf.AvfInput)
+        builds: list[object] = []
+        monkeypatch.setattr(
+            avf.AvfInput, "create_pipeline", lambda *args, **kwargs: builds.append(args) or FakePipeline()
+        )
+        r = receiver_mod.GstNativeSinkReceiver(source_type="avf", input_config={"avf_unique_id": "0x14100000"})
+        assert not {f.name: f for f in avf.AvfInput.config_fields()}["avf_device_name"].rebuilds
+
+        r.update_input_fields({"avf_device_name": "Capture Card"})
+
+        assert r.source_name.startswith("Capture Card (")
+        assert builds == []
+        assert r._pipeline is None
+        assert not fake_glib.timers
 
 
 class TestSetSource:
@@ -2723,6 +2758,107 @@ class TestDiscovery:
         # selection wins; it must not snap back to index 0.
         assert discovery_receiver.selected_source_index == 1
         assert discovery_receiver.discovered_sources == ["cam-a", "cam-b"]
+
+
+class TestThePickerNamesWhatItLists:
+    """A source stored by an opaque key (a camera's unique ID) is listed by name;
+    confirming still selects the key."""
+
+    @pytest.fixture
+    def picker(self, fake_gst, fake_glib, fake_input_cls, monkeypatch):
+        monkeypatch.setattr(
+            FakeInput,
+            "_capabilities",
+            InputCapabilities(has_source_selection=True, has_source_discovery=True, discovery_interval=1.0),
+        )
+        monkeypatch.setattr(threading, "Thread", _SyncSwapThread)
+        r = _make_receiver()
+        r._state.activate_source_selection()
+        r._input.discover_results = [["0x14100000", "47B4B64B"]]
+        return r
+
+    def _names(self, monkeypatch, names) -> None:  # noqa: ANN001
+        monkeypatch.setattr(FakeInput, "source_labels", classmethod(names))
+
+    def test_the_picker_lists_names_and_confirms_the_key(self, picker, monkeypatch) -> None:
+        names = {"0x14100000": "Capture Card", "47B4B64B": "FaceTime HD Camera"}
+        self._names(monkeypatch, lambda _cls, sources: [names[s] for s in sources])
+
+        picker._do_discovery()
+
+        assert picker.discovered_source_labels == ["Capture Card", "FaceTime HD Camera"]
+        assert picker.discovered_sources == ["0x14100000", "47B4B64B"]
+        picker.select_source_down()
+        assert picker.confirm_source_selection() is True
+        assert picker._input_config["fake_source"] == "47B4B64B"
+
+    def test_an_input_that_names_nothing_lists_its_sources(self, picker) -> None:
+        picker._do_discovery()
+
+        assert picker.discovered_source_labels == ["0x14100000", "47B4B64B"]
+
+    def test_a_naming_that_fails_lists_the_sources(self, picker, monkeypatch, caplog) -> None:
+        def _boom(_cls, _sources):  # noqa: ANN001, ANN202
+            raise RuntimeError("no names")
+
+        self._names(monkeypatch, _boom)
+        with caplog.at_level(logging.WARNING):
+            picker._do_discovery()
+
+        assert picker.discovered_source_labels == ["0x14100000", "47B4B64B"]
+        assert "Naming Fake sources failed" in caplog.text
+
+    def test_names_that_do_not_line_up_are_not_shown(self, picker, monkeypatch) -> None:
+        """One name short would put every later name beside the wrong source."""
+        self._names(monkeypatch, lambda _cls, _sources: ["FaceTime HD Camera"])
+
+        picker._do_discovery()
+
+        assert picker.discovered_source_labels == ["0x14100000", "47B4B64B"]
+
+    def test_a_new_scan_starts_without_the_old_names(self, picker) -> None:
+        picker._do_discovery()
+        # Hold the next scan back, so only the reopened picker can have cleared them.
+        picker._discovery_running = True
+
+        picker.enter_source_selection()
+
+        assert picker.discovered_source_labels == []
+
+    def test_another_input_forgets_the_old_names(self, picker, fake_input_pair) -> None:
+        picker._do_discovery()
+        FakeInputAlt.create_pipeline_result = FakePipeline()
+
+        picker.swap_input("fake_alt", {"alt_url": "test://x"})
+
+        assert picker.discovered_source_labels == []
+
+    def test_enter_while_the_picker_still_scans_never_stores_the_label(self, picker, monkeypatch) -> None:
+        """The label names the camera; storing it as the ID made a connected camera read as not found."""
+        from openfollow.configuration import AppConfig
+        from openfollow.runtime import app_modes
+
+        monkeypatch.setattr(
+            FakeInput, "get_source_label", classmethod(lambda _cls, _cfg: "FaceTime HD Camera (1920x1080@30)")
+        )
+        picker._input_config["fake_source"] = "47B4B64B"
+        app = SimpleNamespace(
+            _config=AppConfig(), _button_detection=None, _settings_menu_active=False, _video_receiver=picker
+        )
+
+        app_modes.handle_key_press(app, "Enter")
+
+        assert picker._input_config["fake_source"] == "47B4B64B"
+        assert picker.source_selection_active is True
+
+    def test_a_source_chosen_elsewhere_closes_the_picker(self, picker) -> None:
+        """The web UI choosing a camera must not leave a stale picker over the Operator Screen."""
+        FakeInput.create_pipeline_result = FakePipeline()
+
+        picker.swap_input("fake", {"fake_source": "47B4B64B"})
+
+        assert picker.source_selection_active is False
+        assert picker._pipeline is FakeInput.create_pipeline_result
 
 
 # ---------------------------------------------------------------------------
@@ -4999,6 +5135,137 @@ class TestRecoveryTimerOverrides:
         assert r._do_watchdog() is False
         assert r._state.reconnect_source_id is not None
 
+    def test_a_watchdog_switched_on_from_off_starts_with_the_next_connection(
+        self, fake_gst, fake_glib, fake_input_cls
+    ) -> None:
+        """As the Video Source help says: the save itself arms nothing."""
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._state.connected = True
+        r._start_watchdog()
+
+        r.set_recovery_timers(stall_timeout=3.0)
+        assert r._watchdog_source_id is None
+
+        r._handle_video_connected()
+        assert r._watchdog_source_id is not None
+
+    def test_a_heal_interval_set_while_parked_with_healing_off_wakes_nothing(
+        self, fake_gst, fake_glib, fake_input_cls
+    ) -> None:
+        """As the Video Source help says: nothing retries it on a timer, and setting a
+        Heal Interval again does not wake it."""
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+        r._state.reconnect_attempt = 2  # hit max_attempts
+        r._do_reconnect()
+        assert r._state.is_placeholder_pipeline is True
+
+        r.set_recovery_timers(heal_interval=5.0)
+
+        assert r._heal_source_id is None
+        assert r._state.reconnect_source_id is None
+
+    def test_a_rebuild_of_the_source_wakes_a_feed_parked_with_healing_off(
+        self, fake_gst, fake_glib, fake_input_cls
+    ) -> None:
+        """A detection change that swaps the detector rebuilds the source, as a change to it does."""
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+        r._state.reconnect_attempt = 2  # hit max_attempts
+        r._do_reconnect()
+        built = FakePipeline()
+        FakeInput.create_pipeline_result = built
+
+        r.swap_detection_branch(None)
+
+        assert r._pipeline is built
+        assert FakeState.PLAYING in built.state_changes
+
+    def test_a_new_heal_interval_takes_over_once_the_waiting_retry_has_run(
+        self, fake_gst, fake_glib, fake_input_cls
+    ) -> None:
+        r = receiver_mod.GstNativeSinkReceiver(
+            source_type="fake",
+            input_config={"fake_source": "cam-1"},
+            heal_interval=5.0,
+        )
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+        r._state.reconnect_attempt = 2  # hit max_attempts
+        r._do_reconnect()
+        waiting = r._heal_source_id
+        assert waiting is not None
+
+        r.set_recovery_timers(heal_interval=2.0)
+
+        assert r._heal_source_id == waiting
+        assert fake_glib.timers[waiting][0] == 5000
+        # The waiting retry runs, the source is still gone, and the feed parks again.
+        FakeInput.create_pipeline_raises = RuntimeError("still gone")
+        r._do_heal()
+        r._state.reconnect_attempt = 2
+        r._do_reconnect()
+        assert r._heal_source_id not in (None, waiting)
+        assert fake_glib.timers[r._heal_source_id][0] == 2000
+
+
+# What each input does once its retries run out; a new input is added here and to the help.
+_AFTER_THE_RETRIES = {
+    "rtsp": "heal",
+    "srt": "heal",
+    "rtp": "heal",
+    "avf": "picker",
+    "ndi": "picker",
+    "picam": "picker",
+    "v4l2": "picker",
+    "testpattern": "build again",
+}
+
+
+def _real_input_receiver(monkeypatch: pytest.MonkeyPatch, input_id: str) -> receiver_mod.GstNativeSinkReceiver:
+    """A receiver on the real *input_id* plugin with the default recovery timers and its source set."""
+    input_cls = get_registry()[input_id]
+    monkeypatch.setattr(receiver_mod, "get_input_class", lambda _input_id: input_cls)
+    return receiver_mod.GstNativeSinkReceiver(
+        source_type=input_id,
+        input_config={input_cls.config_fields()[0].name: "source-1"},
+        stall_timeout=3.0,
+        heal_interval=5.0,
+    )
+
+
+class TestRecoveryTimersByInput:
+    """Which inputs each recovery timer covers, as the Video Source help states it."""
+
+    @pytest.mark.parametrize("input_id", sorted(get_registry()))
+    def test_the_stall_watchdog_watches_every_input(self, fake_gst, fake_glib, monkeypatch, input_id: str) -> None:
+        r = _real_input_receiver(monkeypatch, input_id)
+
+        r._handle_video_connected()
+
+        assert r._watchdog_source_id is not None
+
+    @pytest.mark.parametrize("input_id", sorted(get_registry()))
+    def test_only_rtsp_srt_and_rtp_heal_once_their_retries_run_out(
+        self, fake_gst, fake_glib, monkeypatch, input_id: str
+    ) -> None:
+        r = _real_input_receiver(monkeypatch, input_id)
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+        builds: list[bool] = []
+        monkeypatch.setattr(r, "_schedule_discovery", lambda: None)
+        monkeypatch.setattr(r, "create_pipeline", lambda: builds.append(True))
+        monkeypatch.setattr(r, "play", lambda: None)
+        r._state.reconnect_attempt = r._reconnect_policy.max_attempts
+
+        r._do_reconnect()
+
+        if r._heal_source_id is not None:
+            outcome = "heal"
+        elif r.source_selection_active:
+            outcome = "picker"
+        else:
+            outcome = "build again" if builds else "nothing"
+        assert outcome == _AFTER_THE_RETRIES[input_id]
+
 
 # --------------------------------------------------------------------------- #
 # Failure diagnosis: how far it got decides what the operator is told
@@ -6079,3 +6346,153 @@ class TestReturningSource:
         fake_glib.run_idles()
         assert FakeInput.create_pipeline_call_count == builds
         assert lost._input_config["fake_source"] == ""
+
+
+class TestARememberedDeviceThatIsAbsent:
+    """An input with a picker whose remembered device is absent builds nothing
+    and retries, like a refused pin, rather than standing still or opening another."""
+
+    _ABSENT = PinRefusal(VideoFailure.STREAM_NOT_FOUND, "no camera with unique ID 0x14100000 is connected")
+
+    @pytest.fixture
+    def absent(self, fake_gst, fake_glib, fake_input_cls, monkeypatch) -> receiver_mod.GstNativeSinkReceiver:
+        monkeypatch.setattr(
+            FakeInput,
+            "_capabilities",
+            InputCapabilities(has_source_selection=True, has_source_discovery=True, discovery_interval=5.0),
+        )
+        monkeypatch.setattr(FakeInput, "_refusal", self._ABSENT)
+        monkeypatch.setattr(threading, "Thread", _SyncSwapThread)
+        r = _make_receiver(input_config={"fake_source": "Capture Card (1920x1080@30)"})
+        r._pipeline_assembler.create_placeholder_pipeline = FakePipeline
+        return r
+
+    def test_play_builds_nothing_and_retries(self, absent, fake_glib) -> None:
+        absent.play()
+
+        assert FakeInput.create_pipeline_call_count == 0
+        assert absent._pipeline is None
+        assert [cb.__name__ for _delay, cb in fake_glib.timers.values()] == ["_do_reconnect"]
+        assert absent.status_marker.failure is VideoFailure.STREAM_NOT_FOUND
+        assert absent.status_marker.source_name == "Capture Card (1920x1080@30)"
+        assert absent.source_selection_active is False
+
+    def test_a_start_checks_once(self, absent, fake_glib, monkeypatch) -> None:
+        monkeypatch.setattr(FakeInput, "preflight_calls", 0)
+
+        absent.create_pipeline()
+        absent.start()
+
+        assert FakeInput.preflight_calls == 1
+        assert [cb.__name__ for _delay, cb in fake_glib.timers.values()] == ["_do_reconnect"]
+
+    def test_the_device_returning_is_picked_up(self, absent, monkeypatch) -> None:
+        absent.play()
+        built = FakePipeline()
+        FakeInput.create_pipeline_result = built
+        monkeypatch.setattr(FakeInput, "_refusal", None)
+
+        absent._do_reconnect()
+
+        assert absent._pipeline is built
+        assert FakeState.PLAYING in built.state_changes
+
+    def test_retries_that_run_out_hand_over_to_the_picker(self, absent, fake_glib) -> None:
+        absent.play()
+        for _ in range(FakeInput._reconnect_policy.max_attempts):
+            fake_glib.timers.clear()
+            absent._do_reconnect()
+
+        assert absent.source_selection_active is True
+        assert absent.status_marker.failure is VideoFailure.STREAM_NOT_FOUND
+        assert FakeInput.create_pipeline_call_count == 0
+
+    def _usb_camera(self, monkeypatch, listing) -> tuple[receiver_mod.GstNativeSinkReceiver, list[Any]]:  # noqa: ANN001
+        """The real macOS USB camera input, built from a config that remembers a capture card."""
+        from openfollow.configuration import AppConfig
+        from openfollow.video.inputs import avf
+
+        monkeypatch.setattr(avf.AvfInput, "is_available", classmethod(lambda _cls: (True, "")))
+        monkeypatch.setattr(avf, "_list_avf_devices", listing)
+        monkeypatch.setattr(avf, "_camera_names", {})
+        monkeypatch.setattr(receiver_mod, "get_input_class", lambda _input_id: avf.AvfInput)
+        built: list[Any] = []
+        monkeypatch.setattr(avf.AvfInput, "create_pipeline", lambda *args, **kwargs: built.append(args))
+        cfg = AppConfig(video_source_type="avf", avf_unique_id="0x14100000", avf_device_name="Capture Card")
+        r = receiver_mod.GstNativeSinkReceiver(source_type="avf", input_config=avf.AvfInput.runtime_config(cfg))
+        return r, built
+
+    def test_a_usb_camera_missing_since_startup_is_reported_by_name_not_replaced(
+        self, fake_gst, fake_glib, monkeypatch
+    ) -> None:
+        """The capture card is named as not found; the laptop camera is never opened in its place."""
+        from openfollow.runtime.overlay_layout import format_source_text
+        from openfollow.video.failure import SourceKind, failure_sentence
+
+        r, built = self._usb_camera(
+            monkeypatch, lambda: [{"unique_id": "47B4B64B", "name": "FaceTime HD Camera", "index": "0"}]
+        )
+
+        r.create_pipeline()
+        r.start()
+
+        assert built == []
+        status = r.status_marker.snapshot()
+        assert status.failure is VideoFailure.STREAM_NOT_FOUND
+        assert failure_sentence(status.failure, where=status.source_name, kind=SourceKind.LOCAL) == (
+            "Capture Card (1920x1080@30) was not found."
+        )
+        assert format_source_text("avf", r.source_name) == "AVF: Capture Card (1920x1080@30)"
+
+    def test_a_camera_list_that_cannot_be_read_is_not_reported_as_a_missing_camera(
+        self, fake_gst, fake_glib, monkeypatch, caplog
+    ) -> None:
+        def _broken() -> list[dict[str, str]]:
+            raise RuntimeError("the device monitor did not start")
+
+        r, built = self._usb_camera(monkeypatch, _broken)
+
+        with caplog.at_level(logging.WARNING):
+            r.create_pipeline()
+            r.start()
+
+        assert built == []
+        status = r.status_marker.snapshot()
+        assert status.failure is VideoFailure.UNKNOWN
+        assert status.error_message == "the camera list could not be read: the device monitor did not start"
+        assert "the camera list could not be read" in caplog.text
+        assert [cb.__name__ for _delay, cb in fake_glib.timers.values()] == ["_do_reconnect"]
+
+    def test_a_connected_camera_the_system_denies_reads_as_access_by_name(
+        self, fake_gst, fake_glib, monkeypatch
+    ) -> None:
+        """Listing works while camera access is denied, so the build goes ahead
+        and the element's refusal names the camera, not "not found"."""
+        from openfollow.video.failure import SourceKind, failure_sentence
+        from openfollow.video.inputs import avf
+
+        class _Err:
+            message = "Device video access permission has been explicitly denied before"
+            domain = RESOURCE_DOMAIN
+            code = RESOURCE_NOT_AUTHORIZED
+
+        class _Msg:
+            def parse_error(self) -> tuple[_Err, str]:
+                return _Err(), "Authorization status: 2"
+
+        r, _built = self._usb_camera(
+            monkeypatch, lambda: [{"unique_id": "0x14100000", "name": "Capture Card", "index": "0"}]
+        )
+        refusing = FakePipeline(
+            set_state_returns={FakeState.PLAYING: FakeStateChangeReturn.FAILURE}, bus=FakeBus(pop_message=_Msg())
+        )
+        monkeypatch.setattr(avf.AvfInput, "create_pipeline", lambda *args, **kwargs: refusing)
+
+        r.create_pipeline()
+        r.start()
+
+        status = r.status_marker.snapshot()
+        assert status.failure is VideoFailure.ACCESS_DENIED
+        assert failure_sentence(status.failure, where=status.source_name, kind=SourceKind.LOCAL) == (
+            "This station was denied access to Capture Card (1920x1080@30)."
+        )

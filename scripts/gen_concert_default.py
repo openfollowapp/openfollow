@@ -566,6 +566,11 @@ def mid_truss(out: list[str]) -> None:
     y0, y1 = MID_TRUSS_Y - TRUSS_BOX / 2, MID_TRUSS_Y + TRUSS_BOX / 2
     z0, z1 = MID_TRUSS_Z, MID_TRUSS_Z + TRUSS_BOX
     span = TRUSS_HALF_SPAN
+    # Moving lights between the legs, drawn before the truss that hangs over them, alternating wash, spot, ...:
+    # the spots on the downstage bottom chord first, further from the camera, then the washes on the upstage one.
+    for spot, y in ((True, y0), (False, y1)):
+        for k in range(1 if spot else 0, 11, 2):
+            moving_light(out, -6.0 + 1.2 * k, y, MID_TRUSS_Z, spot=spot)
     for x in (-9.0, -3.0, 3.0, 9.0):  # hoist chains
         out.append(line((x, MID_TRUSS_Y, z1), (x, MID_TRUSS_Y, 14.0), "#55575d", 2.0))
     xs = np.arange(-span, span + 1e-6, TRUSS_BOX)
@@ -576,11 +581,6 @@ def mid_truss(out: list[str]) -> None:
             out.append(line((xa, a[0], a[1]), (xb, b[0], b[1]), C_TRUSS_LACING, 2.4))
     for y, z in ((y0, z0), (y0, z1), (y1, z0), (y1, z1)):  # chords
         out.append(line((-span, y, z), (span, y, z), C_TRUSS, 5.0))
-    # Moving lights between the legs, alternating wash, spot, wash, ...: the spots on the downstage bottom chord,
-    # drawn first as they lie further from the camera, the washes on the upstage one.
-    for spot, y in ((True, y0), (False, y1)):
-        for k in range(1 if spot else 0, 11, 2):
-            moving_light(out, -6.0 + 1.2 * k, y, MID_TRUSS_Z, spot=spot)
 
 
 # Moving lights hung upside down, in metres: base length x width x height, width across the yoke, head

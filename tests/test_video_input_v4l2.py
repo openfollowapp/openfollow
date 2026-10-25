@@ -676,7 +676,24 @@ class TestChooseMode:
         table = {"MJPG": {(640, 480): [(1, 30)]}, "YUYV": {(640, 480): [(1, 30)]}}
         assert _pick(table, (1920, 1080), 30, USB2) == "YUYV 640x480@30"
 
-    @pytest.mark.parametrize(("fourcc", "bytes_per_pixel"), [("YUYV", 2), ("NV12", 1.5), ("GREY", 1), ("RGB3", 3)])
+    def test_covering_needs_both_width_and_height(self) -> None:
+        table = {"YUYV": {(1024, 768): [(1, 30)]}, "MJPG": {(1280, 720): [(1, 30)]}}
+        assert _pick(table, (1280, 720), 30, USB3) == "MJPG 1280x720@30"
+
+    @pytest.mark.parametrize(
+        ("fourcc", "bytes_per_pixel"),
+        [
+            ("YUYV", 2),
+            ("UYVY", 2),
+            ("YVYU", 2),
+            ("NV12", 1.5),
+            ("YU12", 1.5),
+            ("YV12", 1.5),
+            ("GREY", 1),
+            ("RGB3", 3),
+            ("BGR3", 3),
+        ],
+    )
     def test_the_link_budget_counts_the_format_bytes(self, fourcc: str, bytes_per_pixel: float) -> None:
         mode = _CaptureMode(fourcc, 640, 480, Fraction(30))
         exact = 640 * 480 * bytes_per_pixel * 30

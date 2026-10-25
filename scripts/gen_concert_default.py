@@ -57,7 +57,7 @@ LEG_TOP, LEG_KNOT = 11.0, 1.5  # leg height and tie-back height
 # Two tied-back legs per side: plane (y), outer and inner edge at the top, the tie (x, this side), and
 # whether the cloth falls straight from the top and curves only toward the tie (the downstage pair).
 LEGS = (
-    (LIP_Y - 0.4, STAGE_X + 2.5, STAGE_X - 1.2, STAGE_X + 0.5, True),
+    (LIP_Y + 0.3, STAGE_X + 2.5, STAGE_X - 1.2, STAGE_X + 0.5, True),
     (4.6, STAGE_X + 4.5, STAGE_X - 0.4, STAGE_X + 0.3, False),
 )
 GRID_W, GRID_D, GRID_SPACING = 12.0, 6.0, 2.0  # grid lines on every second deck seam, lip to riser

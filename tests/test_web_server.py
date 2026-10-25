@@ -7624,6 +7624,16 @@ def test_the_camera_tab_shows_the_camera_and_edits_nothing(video_server, path: s
     assert "onclick=\"broadcastSection('camera', this.form)\"" in section
 
 
+def test_a_value_that_rounds_to_zero_reads_without_a_sign(video_server) -> None:
+    server, base, _ = video_server
+    cfg = load_config(server.config_path)
+    cfg.camera.roll, cfg.camera.lens_k2 = -0.001, -0.0003
+    save_config(cfg, server.config_path)
+    _, body = _get(base, "/section/camera")
+    readout = _readout(_camera_section(body))
+    assert (readout["Roll"], readout["Corner correction"]) == ("0.00°", "0.000")
+
+
 def test_the_camera_tab_shows_lengths_in_the_station_s_units(video_server) -> None:
     server, base, _ = video_server
     cfg = load_config(server.config_path)

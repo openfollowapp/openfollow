@@ -9,6 +9,8 @@
 % # Whole pixels within the Setup Wizard's bound, which a centre at the bound can round past.
 % _cmax = math.floor(C_BOUND * _hd)
 % _cpx = lambda v: max(-_cmax, min(_cmax, round(v * _hd)))
+% # A rounded value of -0 reads as 0.
+% _fix = lambda v, n: "%.*f" % (n, round(v, n) + 0.0)
 <form id="camera-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="camera" data-help="camera"
       data-template-form="1">
     <div class="section-head">
@@ -27,22 +29,22 @@
                 <dt>Position Z</dt>
                 <dd>{{format_length(_cam.pos_z, _us)}}</dd>
                 <dt>Pitch</dt>
-                <dd>{{"%.2f°" % _cam.pitch}}</dd>
+                <dd>{{_fix(_cam.pitch, 2)}}°</dd>
                 <dt>Yaw</dt>
-                <dd>{{"%.2f°" % _cam.yaw}}</dd>
+                <dd>{{_fix(_cam.yaw, 2)}}°</dd>
                 <dt>Roll</dt>
-                <dd>{{"%.2f°" % _cam.roll}}</dd>
+                <dd>{{_fix(_cam.roll, 2)}}°</dd>
             </dl>
         </div>
         <div class="group">
             <h3 class="group-title">Lens</h3>
             <dl class="network-state-grid" id="camera-lens">
                 <dt>Horizontal Field of View</dt>
-                <dd>{{"%.2f°" % _cam.fov}}</dd>
+                <dd>{{_fix(_cam.fov, 2)}}°</dd>
                 <dt>Barrel / fisheye</dt>
-                <dd>{{"%.3f" % _cam.lens_k1}}</dd>
+                <dd>{{_fix(_cam.lens_k1, 3)}}</dd>
                 <dt>Corner correction</dt>
-                <dd>{{"%.3f" % _cam.lens_k2}}</dd>
+                <dd>{{_fix(_cam.lens_k2, 3)}}</dd>
                 <dt>Right of the picture centre</dt>
                 <dd>{{"%d px" % _cpx(_cam.lens_cx) if _vs else "No video"}}</dd>
                 <dt>Above the picture centre</dt>

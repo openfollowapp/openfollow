@@ -558,8 +558,9 @@ class TestWizardHelpCopy:
         assert "only warns" not in plan and "A missing height never blocks Save and finish." in plan
 
     def test_the_camera_tab_help_explains_the_fixed_camera_height(self) -> None:
-        assert "**Camera height: Fixed at …** under the list is the exact height of the camera's lens" in self._help(
-            "camera"
+        assert (
+            "**Camera height: Fixed at …** in the Calibration column is the exact height of the camera's lens"
+            in self._help("camera")
         )
 
     @pytest.mark.parametrize(

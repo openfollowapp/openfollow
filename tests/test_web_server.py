@@ -2252,20 +2252,18 @@ def test_an_import_applies_the_grid_before_the_camera(live_server, camera, grid,
 
 
 def _calibration_rows(camera_html: str) -> tuple[str, list[list[str]]]:
-    start = camera_html.index('<div class="group" id="camera-calibration-marks">')
+    start = camera_html.index('<details class="inline-advanced" id="camera-calibration-marks">')
     group = camera_html[start : camera_html.index("</table>", start)]
     assert "<input" not in group and "<select" not in group
-    title = re.search(r'<h3 class="group-title">(.*?)</h3>', group)
+    title = re.search(r"<summary>(.*?)</summary>", group)
     assert title is not None
     body = group[group.index("<tbody>") :]
     rows = [re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", row) for row in re.findall(r"<tr>(.*?)</tr>", body, re.S)]
     return title.group(1), rows
 
 
-@pytest.mark.parametrize(
-    ("mode", "title"), [("simple", "Calibration (Simple)"), ("advanced", "Calibration (Advanced)")]
-)
-def test_the_camera_tab_lists_the_calibration_marks_read_only(live_server, mode: str, title: str) -> None:
+@pytest.mark.parametrize(("mode", "kind"), [("simple", "Simple"), ("advanced", "Advanced")])
+def test_the_camera_tab_lists_the_calibration_marks_read_only(live_server, mode: str, kind: str) -> None:
     server, base = live_server
     camera = _held_camera(mode)
     camera.calibration_marks[1].pin = []
@@ -2275,7 +2273,8 @@ def test_the_camera_tab_lists_the_calibration_marks_read_only(live_server, mode:
     status, html_text = _get(base, "/section/camera")
     assert status == 200
     shown_title, rows = _calibration_rows(html_text)
-    assert shown_title == title
+    assert shown_title == "Calibration points"
+    assert _readout(_camera_section(html_text))["Type"] == kind
     assert rows[0] == ["DSL", "Known point", "X = 5.000 m<br>Y = 0.000 m<br>Z = 0.000 m", "–", "Yes"]
     assert rows[1] == ["DSR", "Known point", "X = -5.000 m<br>Y = 0.000 m<br>Z = 0.000 m", "–", "No"]
     assert len(rows) == (4 if mode == "simple" else 5)
@@ -2299,9 +2298,9 @@ def test_the_camera_tab_shows_a_distance_point_no_solve_placed_without_a_positio
 @pytest.mark.parametrize(
     ("units", "height", "shown"),
     [
-        ("metric", 9.8, "Camera height: Fixed at 9.800 m"),
-        ("metric", 12.0, "Camera height: Fixed at 12.000 m"),
-        ("imperial", 9.8, "Camera height: Fixed at 32 ft 1.83 in"),
+        ("metric", 9.8, "Fixed at 9.800 m"),
+        ("metric", 12.0, "Fixed at 12.000 m"),
+        ("imperial", 9.8, "Fixed at 32 ft 1.83 in"),
         ("metric", None, None),
     ],
     ids=["metric", "whole metres", "imperial", "not entered"],
@@ -2314,15 +2313,7 @@ def test_the_camera_tab_shows_the_calibrations_camera_height_read_only(live_serv
     cfg.ui.unit_system = units
     save_config(cfg, server.config_path)
     html_text = _get(base, "/section/camera")[1]
-    group = html_text[html_text.index('id="camera-calibration-marks"') :]
-    group = group[: group.index("</div>")]
-    # In the precision and the size of the table above it.
-    found = re.search(
-        r'<p id="camera-calibration-height" style="margin:0;padding:0.4rem 0.6rem;font-size:var\(--btn-font-sm\);">'
-        r"(.*?)</p>",
-        group,
-    )
-    assert (found.group(1) if found else None) == shown
+    assert _readout(_camera_section(html_text)).get("Camera height") == shown
 
 
 def test_without_marks_the_camera_tab_has_no_calibration_group(live_server) -> None:
@@ -2330,6 +2321,7 @@ def test_without_marks_the_camera_tab_has_no_calibration_group(live_server) -> N
     status, html_text = _get(base, "/section/camera")
     assert status == 200
     assert "camera-calibration-marks" not in html_text
+    assert _readout(_camera_section(html_text))["Type"] == "None"
 
 
 def test_form_post_osc_renders_saved_partial(live_server) -> None:
@@ -7620,6 +7612,7 @@ def test_the_camera_tab_shows_the_camera_and_edits_nothing(video_server, path: s
         # Up is positive on the screen, y runs down in the config.
         "Right of the picture centre": "28 px",
         "Above the picture centre": "16 px",
+        "Type": "None",
     }
     assert "onclick=\"broadcastSection('camera', this.form)\"" in section
 

@@ -41,7 +41,7 @@ The one limit on the lens is that the overlay must follow the picture out to eve
 
 ## Calibration
 
-The calibration the **Setup Wizard** applied last is listed read-only under **Calibration (Simple)** or **Calibration (Advanced)**, and the next run of the Setup Wizard starts from it. One row per point:
+The **Calibration** column says which calibration the **Setup Wizard** applied last: **Simple**, **Advanced**, or **None**. The next run of the Setup Wizard starts from it. **Calibration points** opens its points, read-only, one row per point:
 
 - **Point** – its name. In Simple the points are the rectangle's corners, DSL, DSR, USR and USL.
 - **Kind** – **Known point** for a typed position, **Distance point** for a point measured by its distances to two other points plus its height.
@@ -49,7 +49,7 @@ The calibration the **Setup Wizard** applied last is listed read-only under **Ca
 - **Measured from** – a distance point's two points and the distance to each.
 - **Pinned** – whether it is placed on the picture.
 
-**Camera height: Fixed at …** under the list is the exact height of the camera's lens, entered in the Setup Wizard for a camera that looks almost straight down. From straight above, the height and the field of view cannot be told apart, so the calculation kept the camera at this height. The line is missing when no height was entered.
+**Camera height: Fixed at …** in the Calibration column is the exact height of the camera's lens, entered in the Setup Wizard for a camera that looks almost straight down. From straight above, the height and the field of view cannot be told apart, so the calculation kept the camera at this height. The line is missing when no height was entered.
 
 In Simple the rectangle is the grid: a change to the grid's width, depth or offsets, on the Grid tab, from another station or by an import, moves the corners with it and unpins them, since they were pinned on the old grid. Advanced points stay as they are.
 

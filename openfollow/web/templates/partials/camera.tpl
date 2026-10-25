@@ -51,16 +51,27 @@
                 <dd>{{"%d px" % _cpx(-_cam.lens_cy) if _vs else "No video"}}</dd>
             </dl>
         </div>
+        <div class="group">
+            <h3 class="group-title">Calibration</h3>
+            <dl class="network-state-grid" id="camera-calibration">
+                <dt>Type</dt>
+                <dd>{{("Simple" if _cam.calibration_mode == "simple" else "Advanced") if _cam.calibration_marks else "None"}}</dd>
+                % if _cam.calibration_marks and _cam.calibration_height is not None:
+                <dt>Camera height</dt>
+                <dd>Fixed at {{format_length(_cam.calibration_height, _us)}}</dd>
+                % end
+            </dl>
+        </div>
     </div>
     <style>
-    .camera-readout { display: grid; grid-template-columns: 1fr 1fr; gap: 0 1.5rem; }
+    .camera-readout { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0 1.5rem; }
     @media (max-width: 680px) { .camera-readout { grid-template-columns: 1fr; } }
     </style>
 
     % if config.camera.calibration_marks:
     % _marks = {m.id: m for m in config.camera.calibration_marks}
-    <div class="group" id="camera-calibration-marks">
-        <h3 class="group-title">Calibration ({{"Simple" if config.camera.calibration_mode == "simple" else "Advanced"}})</h3>
+    <details class="inline-advanced" id="camera-calibration-marks">
+        <summary>Calibration points</summary>
         <table class="data-table">
             <thead>
                 <tr>
@@ -92,11 +103,7 @@
             % end
             </tbody>
         </table>
-        % if config.camera.calibration_height is not None:
-        % _h = config.camera.calibration_height
-        <p id="camera-calibration-height" style="margin:0;padding:0.4rem 0.6rem;font-size:var(--btn-font-sm);">Camera height: Fixed at {{format_length(_h, _us)}}</p>
-        % end
-    </div>
+    </details>
     % end
 
     <div class="actions">

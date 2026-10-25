@@ -72,6 +72,7 @@ from openfollow.configuration import (
     VALID_BUTTON_NAMES,
     AppConfig,
     CalibrationMarkConfig,
+    CameraConfig,
     ConfigFileEmptyError,
     ConfigFileUnreadableError,
     DetectionMaskConfig,
@@ -1676,14 +1677,28 @@ def _interface_assignment_rows(
     return rows
 
 
+# What the Setup Wizard's calibration solves; its marks describe these values only.
+_SOLVED_CAMERA_FIELDS = ("pos_x", "pos_y", "pos_z", "pitch", "yaw", "roll", "fov")
+
+
+def _solved_camera(cfg: AppConfig) -> tuple[float, ...]:
+    return tuple(getattr(cfg.camera, name) for name in _SOLVED_CAMERA_FIELDS)
+
+
 def apply_section_data(cfg: AppConfig, section: str, data: Mapping[str, Any]) -> bool:
     """Apply section updates in-place. Returns False for unknown sections.
 
     A station in Simple keeps no per-plane pin, whichever section a POST names. Simple's corner marks
     follow the grid, and one the grid moved loses its pin, so a write that brings pins for the new grid
-    applies the grid first.
+    applies the grid first. A camera write that changes the pose or FOV without bringing calibration
+    marks clears the calibration, so the next Setup Wizard run cannot solve the old pose back.
     """
+    solved = _solved_camera(cfg) if section == "camera" else None
     applied = _apply_section(cfg, section, data)
+    if solved is not None and not isinstance(data.get("calibration_marks"), list) and _solved_camera(cfg) != solved:
+        cfg.camera.calibration_mode = CameraConfig().calibration_mode
+        cfg.camera.calibration_marks = []
+        cfg.camera.calibration_height = None
     enforce_network_mode(cfg)
     reconcile_simple_corners(cfg)
     return applied
@@ -10292,6 +10307,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # Local apply is an operator saving their own form, so overlay the
             # live per-marker speeds like the other section-save flows.
             cfg = _load_config_for_edit()
+            if section == "camera":
+                # The Camera tab only shows the camera: send the saved one, calibration included, as one copy.
+                data = asdict(cfg.camera)
             if not apply_section_data(cfg, section, data):
                 response.status = 404
                 return json.dumps({"error": "Unknown section"})

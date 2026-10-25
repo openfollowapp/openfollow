@@ -26,9 +26,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# The fields ``Camera.to_config`` fills in.
-_CAMERA_POSE_FIELDS = ("pos_x", "pos_y", "pos_z", "pitch", "yaw", "roll", "fov")
-
 
 def on_screen_mode_active(app: OpenFollowApp) -> bool:
     """True while any on-screen mode is up, i.e. the operator is not on the HUD.
@@ -867,9 +864,8 @@ def handle_key_press(app: OpenFollowApp, key: str) -> None:
 def on_key_down(app: OpenFollowApp, event: dict[str, Any]) -> None:
     """Handle GTK key down events (fallback mode only for polled keys).
 
-    Also handles edge-triggered shortcuts that don't belong in the polled
-    movement loop: digit keys pick a marker directly, and Ctrl/Cmd+S writes
-    the current config to disk.
+    Also handles an edge-triggered shortcut that doesn't belong in the polled
+    movement loop: digit keys pick a marker directly.
     """
     key = app._normalize_key(event.get("key", ""))
 
@@ -907,16 +903,15 @@ def on_key_down(app: OpenFollowApp, event: dict[str, Any]) -> None:
 
     # Field-choice picker also owns input exclusively. ArrowUp/Down/
     # Enter/Escape are handled on the polled path; the early-return
-    # here keeps the digit-marker shortcut and Ctrl/Cmd+S save from
-    # firing while the operator is choosing a value.
+    # here keeps the digit-marker shortcut from firing while the
+    # operator is choosing a value.
     if app._field_choice_active:
         return
 
     # Browser overlay: the WebView's own ``key-press-event`` handler
     # interprets keys for the rendered page and intercepts Esc to
-    # dismiss. Skip the digit-marker shortcut and Ctrl/Cmd+S save
-    # below so typing into a form field can't fire a side-effect on
-    # the underlying app.
+    # dismiss. Skip the digit-marker shortcut below so typing into a
+    # form field can't fire a side-effect on the underlying app.
     if app._browser_active:
         return
 
@@ -925,9 +920,9 @@ def on_key_down(app: OpenFollowApp, event: dict[str, Any]) -> None:
 
     # A modal / picker owns the screen (settings menu, about, iface /
     # source-type / Pi-network pickers, source selection). The forward above
-    # keeps in-modal navigation working, but the digit-marker reselect and
-    # Ctrl/Cmd+S save below must not fire underneath it – mirror the gate the
-    # polled handle_key_press path already applies.
+    # keeps in-modal navigation working, but the digit-marker reselect below
+    # must not fire underneath it – mirror the gate the polled
+    # handle_key_press path already applies.
     if _exclusive_mode_active(app):
         return
 
@@ -935,17 +930,6 @@ def on_key_down(app: OpenFollowApp, event: dict[str, Any]) -> None:
         idx = int(key) - 1
         if idx < len(app._controlled_ids):
             app._selected_id = app._controlled_ids[idx]
-
-    modifier_keys = app._input_manager.keyboard_handler.keys if app._input_manager is not None else set()
-    if key == "s" and ("Control" in modifier_keys or "Meta" in modifier_keys) and app._camera is not None:
-        # The pose only: the lens pair and the calibration points are the Setup Wizard's.
-        pose = app._camera.to_config()
-        app._config.camera = replace(app._config.camera, **{f: getattr(pose, f) for f in _CAMERA_POSE_FIELDS})
-        # Route through _persist_config so a save failure (read-only fs, disk
-        # full) is logged and swallowed like every other persist site, instead
-        # of raising out of the GTK key handler.
-        if _persist_config(app, *(f"camera.{name}" for name in _CAMERA_POSE_FIELDS)):
-            logger.info("Config saved.")
 
 
 def on_key_up(app: OpenFollowApp, event: dict[str, Any]) -> None:

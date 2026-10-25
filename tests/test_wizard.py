@@ -1664,8 +1664,8 @@ class TestWizardLensStepPage:
             assert text in page, text
         assert "edge fit" not in page.lower()
         _, camera = _get(base, "/section/camera")
-        assert "<label>Barrel / fisheye</label>" in camera and "<label>Corner correction</label>" in camera
-        assert 'aria-label="Corner correction slider"' in camera and "edge fit" not in camera.lower()
+        assert "<dt>Barrel / fisheye</dt>" in camera and "<dt>Corner correction</dt>" in camera
+        assert "edge fit" not in camera.lower()
         assert "(k1)" not in camera and "(k2)" not in camera
 
     def test_the_lens_step_speaks_to_a_screen_reader(self, live_server_lens) -> None:

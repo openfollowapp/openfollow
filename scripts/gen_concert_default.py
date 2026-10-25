@@ -377,7 +377,7 @@ def riser(out: list[str]) -> None:
         out.append(poly(strip, "#f4f4f2"))
     for xa in (-4.3, -2.4, 2.4, 4.3):  # backline amps
         box(out, xa - 0.4, xa + 0.4, y1 - 0.8, y1 - 0.2, h, h + 1.2, "#3e4148", "#2b2d32")
-    drum = (0.0, y0 + 2.2)
+    drum = (0.0, y0 + 1.3)
     for dx, dy, r, z in (
         (0.0, 0.2, 0.28, 0.55),
         (-0.3, -0.2, 0.12, 0.75),

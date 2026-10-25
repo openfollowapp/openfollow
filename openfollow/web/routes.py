@@ -1693,9 +1693,9 @@ def apply_section_data(cfg: AppConfig, section: str, data: Mapping[str, Any]) ->
     applies the grid first. A camera write that changes the pose or FOV without bringing calibration
     marks clears the calibration, so the next Setup Wizard run cannot solve the old pose back.
     """
-    solved = _solved_camera(cfg) if section == "camera" else None
+    solved = _solved_camera(cfg)
     applied = _apply_section(cfg, section, data)
-    if solved is not None and not isinstance(data.get("calibration_marks"), list) and _solved_camera(cfg) != solved:
+    if _solved_camera(cfg) != solved and not isinstance(data.get("calibration_marks"), list):
         cfg.camera.calibration_mode = CameraConfig().calibration_mode
         cfg.camera.calibration_marks = []
         cfg.camera.calibration_height = None

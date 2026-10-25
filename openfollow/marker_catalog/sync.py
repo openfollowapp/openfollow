@@ -37,7 +37,7 @@ from openfollow.net_utils import (
     bind_multicast_send_iface,
     join_multicast_group_on_iface,
 )
-from openfollow.send_health import SendHealth
+from openfollow.send_health import FailureCause, SendHealth
 
 logger = logging.getLogger(__name__)
 
@@ -530,6 +530,7 @@ class MarkerCatalogSync:
                 try:
                     sock = self._open_tx_socket()
                 except InterfaceUnavailable as exc:
+                    self._send_health.record_skipped(FailureCause.from_exception(exc), CATALOG_MCAST_GROUP)
                     # Expected while the station interface is down, and it
                     # retries every heartbeat - a traceback per attempt would
                     # bury the journal for as long as the cable is out.
@@ -539,7 +540,8 @@ class MarkerCatalogSync:
                         logger.warning("MarkerCatalogSync: %s", exc)
                     self._wait_before_reopen(HEARTBEAT_INTERVAL)
                     continue
-                except Exception:
+                except Exception as exc:
+                    self._send_health.record_skipped(FailureCause.from_exception(exc), CATALOG_MCAST_GROUP)
                     logger.exception("MarkerCatalogSync: TX socket open failed")
                     self._wait_before_reopen(HEARTBEAT_INTERVAL)
                     continue

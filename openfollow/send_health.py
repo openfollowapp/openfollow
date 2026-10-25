@@ -22,8 +22,9 @@ rebuild looks like a recovery. A streak ends only on a success at least
 ``RECOVERY_HOLD_S`` after the first success that followed its last failure.
 
 A streak's first failure is logged at most once a minute per sender, and the
-next such line counts the brief streaks held back. A streak that reaches
-failing is always logged when it does and when it ends, or is reset.
+next such line counts the brief streaks held back. A streak a skipped send
+starts is logged as the socket not being open, outside that limit. A streak
+that reaches failing is always logged when it does and when it ends, or is reset.
 """
 
 from __future__ import annotations
@@ -106,6 +107,24 @@ class SendAlert:
         return self.hud or self.text
 
 
+@dataclass(frozen=True)
+class FailureCause:
+    """What a failed call's exception says, kept without the exception and the frames its traceback holds."""
+
+    # The full text the log quotes ("[Errno 65] No route to host").
+    reason: str
+    # The OS wording a row shows ("No route to host"), else the full text.
+    error: str
+    errno: int | None
+
+    @classmethod
+    def from_exception(cls, exc: BaseException) -> FailureCause:
+        reason = str(exc) or exc.__class__.__name__
+        if isinstance(exc, OSError):
+            return cls(reason, exc.strerror or reason, exc.errno)
+        return cls(reason, reason, None)
+
+
 class SendHealth:
     """The outcome of one sender's sends. Thread-safe; every method is cheap."""
 
@@ -157,13 +176,14 @@ class SendHealth:
 
     def record_failure(self, exc: OSError, dest: str) -> None:
         """Count a send to *dest* that raised *exc*. Logs once per streak, then as a reminder."""
+        cause = FailureCause.from_exception(exc)
         with self._lock:
-            self._note_error(exc, dest)
+            self._note_error(cause, dest)
             entry = self._count_failure()
         if entry is not None:
             logger.log(entry[0], "%s", entry[1])
 
-    def record_skipped(self, cause: Exception | None, dest: str) -> None:
+    def record_skipped(self, cause: FailureCause | None, dest: str) -> None:
         """Count a send to *dest* skipped for want of a socket; *cause* kept the socket from opening.
 
         Inside a streak it is one more failure of that streak's error, so a
@@ -171,23 +191,40 @@ class SendHealth:
         starts a streak, so a socket that never opened, or stayed down past a
         reset, becomes a row too. With no *cause* it records nothing.
         """
+        entry: tuple[int, str] | None
         with self._lock:
             if self._streak_start is None:
                 if cause is None:
                     return
                 self._note_error(cause, dest)
-            entry = self._count_failure()
+                entry = self._start_skipped_streak()
+            else:
+                entry = self._count_failure()
         if entry is not None:
             logger.log(entry[0], "%s", entry[1])
 
-    def _note_error(self, exc: Exception, dest: str) -> None:
-        """Make *exc*, met sending to *dest*, the error the next failure counts. Caller holds the lock."""
-        reason = str(exc) or exc.__class__.__name__
-        strerror, err = (exc.strerror, exc.errno) if isinstance(exc, OSError) else (None, None)
-        self._error = strerror or reason
-        self._errno = err
+    def _note_error(self, cause: FailureCause, dest: str) -> None:
+        """Make *cause*, met sending to *dest*, the error the next failure counts. Caller holds the lock."""
+        self._error = cause.error
+        self._errno = cause.errno
         self._multicast = is_multicast_host(dest)
-        self._reason = reason
+        self._reason = cause.reason
+
+    def _start_skipped_streak(self) -> tuple[int, str]:
+        """Open a streak on a skipped send. Caller holds the lock.
+
+        Always logged, and outside the once-a-minute slot: no send failed, so it
+        is no brief send failure to hold back, and it must not hold one back.
+        """
+        self._failed_total += 1
+        self._open_streak(self._clock())
+        self._start_logged = True
+        return logging.WARNING, f"{self.label}: socket not open: {self._reason}"
+
+    def _open_streak(self, now: float) -> None:
+        self._streak_start = now
+        self._streak_failures = 1
+        self._last_log = now
 
     def _count_failure(self) -> tuple[int, str] | None:
         """Count one failure of the last recorded error; the log line it earns, if any. Caller holds the lock."""
@@ -196,9 +233,7 @@ class SendHealth:
         self._failed_total += 1
         self._first_ok = None
         if self._streak_start is None:
-            self._streak_start = now
-            self._streak_failures = 1
-            self._last_log = now
+            self._open_streak(now)
             message = f"{self.label}: send failed: {reason}"
             self._start_logged = now >= self._quiet_until
             if self._start_logged:

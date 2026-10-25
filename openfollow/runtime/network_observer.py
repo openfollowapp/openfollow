@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from typing import NamedTuple
 
 from openfollow.net_utils import ResolveStatus
+from openfollow.retry_backoff import RETRY_BACKOFF_MAX_S, RETRY_BACKOFF_S
 from openfollow.uri_redaction import redact_uris_in_text
 
 logger = logging.getLogger(__name__)
@@ -54,12 +55,6 @@ POLL_INTERVAL_S = 1.0
 # leaves a gap of ~1 s for a static apply and up to ~5 s for a DHCP handshake,
 # so a missing sample is reported at once but is no reason to stop the plane.
 DOWN_POLLS_BEFORE_SUSPEND = 8
-
-# Backoff after a failed apply/suspend, so a plane whose backend keeps raising
-# doesn't retry once a second for the length of a show. Each failure doubles
-# the wait, up to the cap.
-_RETRY_BACKOFF_S = 2.0
-_RETRY_BACKOFF_MAX_S = 60.0
 
 
 def _always_enabled() -> bool:
@@ -114,7 +109,8 @@ class _PlaneState:
     # An outage that began after the failure leads instead, until it ends.
     superseded: bool = False
     retry_at: float = 0.0
-    backoff: float = _RETRY_BACKOFF_S
+    # After a failed apply/suspend, so a backend that keeps raising isn't retried once a second.
+    backoff: float = RETRY_BACKOFF_S
     # Interface name from the last resolve, so ``alerts()`` can name it without
     # re-resolving. ``alerts()`` runs on the render path.
     iface: str = ""
@@ -280,7 +276,7 @@ class NetworkPlaneObserver:
         state.failure = redact_uris_in_text(str(exc) or exc.__class__.__name__)
         state.superseded = False
         state.retry_at = now + state.backoff
-        state.backoff = min(state.backoff * 2, _RETRY_BACKOFF_MAX_S)
+        state.backoff = min(state.backoff * 2, RETRY_BACKOFF_MAX_S)
         logger.exception("Network observer: %s failed", plane.label)
 
     @staticmethod
@@ -288,7 +284,7 @@ class NetworkPlaneObserver:
         state.failure = ""
         state.superseded = False
         state.retry_at = 0.0
-        state.backoff = _RETRY_BACKOFF_S
+        state.backoff = RETRY_BACKOFF_S
 
     def _poll_one(self, plane: Plane, now: float) -> None:
         if not plane.enabled():

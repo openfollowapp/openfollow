@@ -13,6 +13,7 @@ openfollow/              # Single unified package
 ├── station_dir.py       # Config file's directory: home of the device-local stores
 ├── packet_chunking.py   # MTU-budgeted datagram split shared by every output
 ├── send_health.py       # Whether each sender's datagrams are leaving; refused-send status rows
+├── retry_backoff.py     # 2 s doubling to 60 s retry for failed network opens and rebinds
 ├── mdns_host.py         # The host name mDNS publishes (macOS: LocalHostName via scutil)
 ├── window.py            # GTK native sink window wrapper
 ├── psn/                 # PSN protocol subpackage

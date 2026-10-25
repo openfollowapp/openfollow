@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 import errno
+import gc
 import logging
 import threading
+import weakref
 
 import pytest
 
@@ -18,6 +20,7 @@ from openfollow.send_health import (
     OSC_SEND_FAILING_ACTION,
     RECOVERY_HOLD_S,
     SEND_FAILING_ACTION,
+    FailureCause,
     SendAlert,
     SendHealth,
     SendHealthStatus,
@@ -148,7 +151,7 @@ class TestRecovery:
         assert health.status().state == "ok"
 
 
-_NO_FDS = OSError(errno.EMFILE, "Too many open files")
+_NO_FDS = FailureCause.from_exception(OSError(errno.EMFILE, "Too many open files"))
 
 
 class TestSkippedSends:
@@ -179,7 +182,7 @@ class TestSkippedSends:
 
     def test_an_open_error_that_is_not_an_os_error_reads_as_its_text(self) -> None:
         health, clock = _health()
-        missing = RuntimeError("Interface eth9 not found")
+        missing = FailureCause.from_exception(RuntimeError("Interface eth9 not found"))
         health.record_skipped(missing, _GROUP)
         clock.now += FAILING_AFTER_S
         health.record_skipped(missing, _GROUP)
@@ -230,6 +233,88 @@ class TestSkippedSends:
         assert send_alerts([health.status()]) == [
             SendAlert(LOCAL_NETWORK_TEXT, LOCAL_NETWORK_ACTION, LOCAL_NETWORK_HUD_TEXT)
         ]
+
+    def test_a_streak_one_starts_says_the_socket_is_not_open(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Nothing was sent, so the log must not report a send that failed."""
+        health, _clock = _health()
+        with caplog.at_level(logging.DEBUG, logger="openfollow.send_health"):
+            health.record_skipped(_NO_FDS, _GROUP)
+        assert [(record.levelno, record.getMessage()) for record in caplog.records] == [
+            (logging.WARNING, f"PSN: socket not open: [Errno {errno.EMFILE}] Too many open files")
+        ]
+
+    def test_a_streak_one_starts_leaves_the_next_send_failure_its_report(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        health, clock = _health()
+        health.record_skipped(_NO_FDS, _GROUP)
+        health.record_success()
+        clock.now += RECOVERY_HOLD_S
+        health.record_success()
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG, logger="openfollow.send_health"):
+            clock.now += 10.0
+            health.record_failure(_REFUSED, _GROUP)
+        assert [(record.levelno, record.getMessage()) for record in caplog.records] == [
+            (logging.WARNING, f"PSN: send failed: [Errno {errno.EHOSTUNREACH}] No route to host")
+        ]
+
+    def test_a_streak_one_starts_that_goes_on_to_fail_is_not_counted_as_held_back(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        health, clock = _health()
+        health.record_failure(_REFUSED, _GROUP)
+        health.record_success()
+        clock.now += RECOVERY_HOLD_S
+        health.record_success()
+        clock.now += 5.0
+        health.record_skipped(_NO_FDS, _GROUP)
+        clock.now += FAILING_AFTER_S
+        health.record_skipped(_NO_FDS, _GROUP)
+        health.record_success()
+        clock.now += RECOVERY_HOLD_S
+        health.record_success()
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="openfollow.send_health"):
+            clock.now += 60.0
+            health.record_failure(_REFUSED, _GROUP)
+        assert _messages(caplog) == [f"PSN: send failed: [Errno {errno.EHOSTUNREACH}] No route to host"]
+
+
+class TestFailureCause:
+    def test_an_os_error_keeps_its_wording_and_number(self) -> None:
+        cause = FailureCause.from_exception(OSError(errno.EMFILE, "Too many open files"))
+        assert cause == FailureCause(f"[Errno {errno.EMFILE}] Too many open files", "Too many open files", errno.EMFILE)
+
+    @pytest.mark.parametrize(
+        ("exc", "text"),
+        [(OSError("socket went away"), "socket went away"), (KeyError(), "KeyError")],
+        ids=["os-error-without-wording", "no-text"],
+    )
+    def test_an_error_without_os_wording_reads_as_its_text(self, exc: Exception, text: str) -> None:
+        cause = FailureCause.from_exception(exc)
+        assert (cause.reason, cause.error, cause.errno) == (text, text, None)
+
+    def test_it_keeps_nothing_the_failed_call_held_alive(self) -> None:
+        """A stored exception keeps its traceback, and with it a half-opened socket."""
+
+        class _HalfOpened:
+            pass
+
+        refs: list[weakref.ref[_HalfOpened]] = []
+
+        def _open() -> None:
+            sock = _HalfOpened()
+            refs.append(weakref.ref(sock))
+            raise OSError(errno.EADDRNOTAVAIL, "Can't assign requested address")
+
+        try:
+            _open()
+        except OSError as exc:
+            cause = FailureCause.from_exception(exc)
+        gc.collect()
+        assert refs[0]() is None
+        assert cause.error == "Can't assign requested address"
 
 
 class TestLogging:

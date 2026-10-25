@@ -3,8 +3,8 @@
 """Sends PSN marker data via multicast or unicast UDP.
 
 ``PsnServer`` registers markers and broadcasts PSN data and info packets
-from two background threads, with bounded socket-open retry and transient
-send-error recovery.
+from two background threads, retrying a socket that will not open on a
+backoff and rebuilding one a transient send error broke.
 """
 
 import contextlib
@@ -21,14 +21,14 @@ import pypsn
 from openfollow.packet_chunking import MAX_DATAGRAM_BYTES, chunk_to_datagrams
 from openfollow.psn.clock import psn_timestamp_usec
 from openfollow.psn.marker import Marker, is_marker_stale
-from openfollow.send_health import SendHealth
+from openfollow.retry_backoff import retry_with_backoff
+from openfollow.send_health import FailureCause, SendHealth
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MCAST_IP = "236.10.10.10"
 DEFAULT_PORT = 56565
 
-_MAX_SOCKET_RETRIES = 3
 _SOCKET_RETRY_DELAY = 2.0  # seconds
 _FRAME_ID_WRAP = 256  # frame_id is a uint8 on the wire
 _MAX_FRAME_PACKETS = 255  # frame_packet_count is a uint8 on the wire
@@ -100,7 +100,7 @@ class PsnServer:
         self._socket_thread: threading.Thread | None = None
         self._send_health = SendHealth("PSN")
         # What kept the multicast socket from opening last; names a streak a skipped send starts.
-        self._open_error: Exception | None = None
+        self._open_error: FailureCause | None = None
         self._oversize_drops: int = 0
 
     def add_marker(self, marker_id: int, name: str) -> Marker:
@@ -284,14 +284,9 @@ class PsnServer:
                 )
             opened = staging.enter_context(sock)
         except Exception as exc:
-            logger.warning(
-                "PSN multicast socket failed (attempt %d/%d): %s",
-                attempt,
-                _MAX_SOCKET_RETRIES,
-                exc,
-            )
+            logger.warning("PSN multicast socket failed (attempt %d): %s", attempt, exc)
             if not self._resolve_stop(stop_event).is_set():
-                self._open_error = exc
+                self._open_error = FailureCause.from_exception(exc)
             return False
         # The open runs off the lock so a retry on a flapping NIC can't stall the
         # send loops or stop(); only the hand-over is locked, which is what pairs
@@ -300,6 +295,7 @@ class PsnServer:
         with self._lock:
             if not self._resolve_stop(stop_event).is_set():
                 self._socket = opened
+                self._open_error = None
                 self._exit_stack.push(staging.pop_all())
                 return True
             stale = staging.pop_all()
@@ -307,23 +303,13 @@ class PsnServer:
         return False
 
     def _retry_multicast_socket_background(self, stop_event: threading.Event | None = None) -> None:
-        """Retry multicast socket creation bounded by _MAX_SOCKET_RETRIES."""
+        """Retry the socket start() could not open, on a backoff, until it opens or the generation stops."""
         stop = self._resolve_stop(stop_event)
-        for attempt in range(2, _MAX_SOCKET_RETRIES + 1):
-            stop.wait(_SOCKET_RETRY_DELAY)
-            if stop.is_set():
-                return
-            if self._try_open_multicast_socket_once(attempt=attempt, stop_event=stop):
-                logger.info(
-                    "PSN multicast socket connected on retry %d/%d.",
-                    attempt,
-                    _MAX_SOCKET_RETRIES,
-                )
-                return
-        logger.error(
-            "PSN multicast socket failed after %d attempts – PSN output disabled.",
-            _MAX_SOCKET_RETRIES,
+        attempt = retry_with_backoff(
+            lambda number: self._try_open_multicast_socket_once(attempt=number, stop_event=stop), stop, first=2
         )
+        if attempt is not None:
+            logger.info("PSN multicast socket connected on retry %d.", attempt)
 
     def _recover_multicast_socket_background(self, stop_event: threading.Event | None = None) -> None:
         """Recover multicast socket after transient send failure (unbounded until stop_event)."""
@@ -479,6 +465,9 @@ class PsnServer:
     def _send_data_packet(self, stop_event: threading.Event | None = None) -> None:
         markers = self._snapshot_markers()
         if not markers:
+            # Nothing is sent, so no send can end a failing streak.
+            if not self._resolve_stop(stop_event).is_set():
+                self._send_health.reset()
             return
         # PSN spec uses "trackers" field name; internally called markers.
         # Snapshot the trackers before stamping the header: a marker written in

@@ -59,7 +59,7 @@ from typing import TYPE_CHECKING, NamedTuple
 from openfollow.net_egress import Egress, is_multicast_host, pin_socket_egress
 from openfollow.packet_chunking import MAX_DATAGRAM_BYTES, chunk_to_datagrams
 from openfollow.psn.marker import is_marker_stale
-from openfollow.send_health import SendHealth
+from openfollow.send_health import FailureCause, SendHealth
 
 if TYPE_CHECKING:
     from openfollow.psn.marker import Marker
@@ -264,7 +264,7 @@ class RttrpmServer:
         self._send_thread: threading.Thread | None = None
         self._send_health = SendHealth("RTTrPM output")
         # What kept the socket from opening last; names a streak a skipped send starts.
-        self._open_error: OSError | None = None
+        self._open_error: FailureCause | None = None
         self._next_rebuild_at: float = 0.0
         self._stale_warned = False
         # Warn-once-per-episode guard: True while a run of capped frames is
@@ -309,11 +309,12 @@ class RttrpmServer:
         self._cap_warned = False
         try:
             self._socket = self._open_socket()
+            self._open_error = None
         except OSError as exc:
             # The send loop retries it; it never sends unpinned meanwhile.
             logger.warning("RTTrPM: %s", exc)
             self._socket = None
-            self._open_error = exc
+            self._open_error = FailureCause.from_exception(exc)
         self._send_thread = threading.Thread(
             target=self._send_loop, args=(stop_event,), daemon=True, name="RTTrPM-Send"
         )
@@ -405,7 +406,8 @@ class RttrpmServer:
         markers = live
         if not markers:
             # Nothing is sent, so no send can end a failing streak.
-            self._send_health.reset()
+            if not self._resolve_stop(stop_event).is_set():
+                self._send_health.reset()
             return
         # A prior socket rebuild that failed leaves _socket None; retry it
         # (throttled) here so the loop can recover instead of spinning on a
@@ -532,10 +534,11 @@ class RttrpmServer:
             old_sock = self._socket
             try:
                 self._socket = self._open_socket()
+                self._open_error = None
             except OSError as exc:
                 logger.warning("RTTrPM: socket rebuild failed: %s", exc)
                 self._socket = None
-                self._open_error = exc
+                self._open_error = FailureCause.from_exception(exc)
         if old_sock is not None:
             try:
                 old_sock.close()

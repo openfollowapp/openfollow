@@ -20,7 +20,8 @@ import multicast_expert
 
 from openfollow.packet_chunking import MAX_DATAGRAM_BYTES, chunk_to_datagrams
 from openfollow.psn.marker import Marker, marker_age_s
-from openfollow.send_health import SendHealth
+from openfollow.retry_backoff import retry_with_backoff
+from openfollow.send_health import FailureCause, SendHealth
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +94,6 @@ def transform_mcast_ip(system_number: int) -> str:
 DEFAULT_MCAST_IP = "239.159.1.1"
 DEFAULT_PORT = OTP_PORT
 
-_MAX_SOCKET_RETRIES = 3
 _SOCKET_RETRY_DELAY = 2.0  # seconds
 
 
@@ -609,7 +609,7 @@ class OtpServer:
         self._socket_thread: threading.Thread | None = None
         self._send_health = SendHealth("OTP output")
         # What kept the multicast socket from opening last; names a streak a skipped send starts.
-        self._open_error: Exception | None = None
+        self._open_error: FailureCause | None = None
         # Counter for dropped folios: one needing more pages than Last Page
         # can number, or one whose pages will not encode. Neither is reachable
         # by configuration, but without throttling either would flood the log
@@ -827,19 +827,15 @@ class OtpServer:
                 )
             opened = staging.enter_context(sock)
         except Exception as exc:
-            logger.warning(
-                "OTP multicast socket failed (attempt %d/%d): %s",
-                attempt,
-                _MAX_SOCKET_RETRIES,
-                exc,
-            )
+            logger.warning("OTP multicast socket failed (attempt %d): %s", attempt, exc)
             if not self._resolve_stop(stop_event).is_set():
-                self._open_error = exc
+                self._open_error = FailureCause.from_exception(exc)
             return False
         # Locked hand-over only, off-lock open. See PsnServer for the rationale.
         with self._lock:
             if not self._resolve_stop(stop_event).is_set():
                 self._socket = opened
+                self._open_error = None
                 self._exit_stack.push(staging.pop_all())
                 return True
             stale = staging.pop_all()
@@ -847,23 +843,13 @@ class OtpServer:
         return False
 
     def _retry_multicast_socket_background(self, stop_event: threading.Event | None = None) -> None:
-        """Retry multicast socket creation in the background (bounded)."""
+        """Retry the socket start() could not open, on a backoff, until it opens or the generation stops."""
         stop = self._resolve_stop(stop_event)
-        for attempt in range(2, _MAX_SOCKET_RETRIES + 1):
-            stop.wait(_SOCKET_RETRY_DELAY)
-            if stop.is_set():
-                return
-            if self._try_open_multicast_socket_once(attempt=attempt, stop_event=stop):
-                logger.info(
-                    "OTP multicast socket connected on retry %d/%d.",
-                    attempt,
-                    _MAX_SOCKET_RETRIES,
-                )
-                return
-        logger.error(
-            "OTP multicast socket failed after %d attempts. OTP output disabled – check your network interface IP.",
-            _MAX_SOCKET_RETRIES,
+        attempt = retry_with_backoff(
+            lambda number: self._try_open_multicast_socket_once(attempt=number, stop_event=stop), stop, first=2
         )
+        if attempt is not None:
+            logger.info("OTP multicast socket connected on retry %d.", attempt)
 
     def _recover_multicast_socket_background(self, stop_event: threading.Event | None = None) -> None:
         """Re-open the multicast socket indefinitely after a transient

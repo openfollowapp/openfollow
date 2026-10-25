@@ -25,7 +25,7 @@ from openfollow.net_utils import (
     get_local_ipv4_addresses,
     join_multicast_group_on_iface,
 )
-from openfollow.send_health import SendHealth
+from openfollow.send_health import FailureCause, SendHealth
 
 logger = logging.getLogger(__name__)
 
@@ -243,6 +243,7 @@ class BeaconSender:
                     try:
                         sock = self._open_socket()
                     except Exception as exc:
+                        self._send_health.record_skipped(FailureCause.from_exception(exc), BEACON_MCAST_GROUP)
                         self._open_errors += 1
                         now = time.monotonic()
                         if self._open_errors <= 3 or (now - last_error_log) >= 30.0:
@@ -304,7 +305,7 @@ class BeaconSender:
         Zero again only once sends keep succeeding (see ``SendHealth``);
         non-zero in the bundle is the strongest signal that beacons
         aren't going out right now."""
-        return self._open_errors + self._send_health.status().failed
+        return self._send_health.status().failed
 
     @property
     def send_health(self) -> SendHealth:

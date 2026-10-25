@@ -1268,38 +1268,65 @@ def test_a_socket_that_takes_one_beacon_then_refuses_never_reads_as_recovered(
     assert not [r for r in caplog.records if "again" in r.getMessage() or "recovered" in r.getMessage()]
 
 
-@pytest.mark.parametrize(("send_fails", "expected"), [(True, 4), (False, 0)])
-def test_beacon_open_failures_count_until_a_beacon_leaves(send_fails: bool, expected: int) -> None:
-    """A socket that opens and then cannot send has not ended the outage its failed opens began."""
+class _BeaconSocket:
+    def __init__(self, send_fails: bool = False) -> None:
+        self._send_fails = send_fails
 
-    class _Socket:
-        def sendto(self, data: bytes, addr: tuple) -> int:  # noqa: ARG002
-            if send_fails:
-                raise OSError(errno.EACCES, "Permission denied")
-            return len(data)
+    def sendto(self, data: bytes, addr: tuple) -> int:  # noqa: ARG002
+        if self._send_fails:
+            raise OSError(errno.EACCES, "Permission denied")
+        return len(data)
 
-        def close(self) -> None:
-            pass
+    def close(self) -> None:
+        pass
 
+
+def _run_beacon_opening_late(sender: BeaconSender, failed_opens: int, sock: object, sends: int) -> None:
+    """Run the loop over *failed_opens* refused opens, then *sends* beacons on *sock*."""
     opens = {"n": 0}
 
-    def _open() -> _Socket:
+    def _open() -> object:
         opens["n"] += 1
-        if opens["n"] <= 3:
+        if opens["n"] <= failed_opens:
             raise OSError(errno.EADDRNOTAVAIL, "Can't assign requested address")
-        return _Socket()
+        return sock
 
-    sender = BeaconSender(name="X", web_port=80)
     sender._open_socket = _open  # type: ignore[assignment]
+    waits = {"n": 0}
 
-    def _stop_after_fourth_open(_t: float) -> bool:
-        if opens["n"] >= 4:
+    def _stop_after_the_sends(_t: float) -> bool:
+        waits["n"] += 1
+        if waits["n"] >= failed_opens + sends:
             sender._stop_event.set()
         return False
 
-    sender._stop_event.wait = _stop_after_fourth_open  # type: ignore[assignment]
+    sender._stop_event.wait = _stop_after_the_sends  # type: ignore[assignment]
     sender._run()
+
+
+@pytest.mark.parametrize(("send_fails", "expected"), [(True, 4), (False, 3)])
+def test_beacon_open_failures_count_until_beacons_keep_leaving(send_fails: bool, expected: int) -> None:
+    """A failed open is a beacon that did not leave; a socket that then sends once has not ended that."""
+    sender = BeaconSender(name="X", web_port=80)
+    _run_beacon_opening_late(sender, failed_opens=3, sock=_BeaconSocket(send_fails), sends=1)
     assert sender.consecutive_errors == expected
+
+
+def test_beacon_open_failures_clear_once_sends_keep_succeeding(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("openfollow.send_health.RECOVERY_HOLD_S", 0.0)
+    sender = BeaconSender(name="X", web_port=80)
+    _run_beacon_opening_late(sender, failed_opens=3, sock=_BeaconSocket(), sends=2)
+    assert sender.consecutive_errors == 0
+    assert sender.send_health.status().state == "ok"
+
+
+def test_a_beacon_socket_that_never_opens_raises_a_row_named_by_its_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Other stations stop seeing this one, though no beacon send ever failed."""
+    monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+    sender = BeaconSender(name="X", web_port=80)
+    _run_beacon_opening_late(sender, failed_opens=2, sock=_BeaconSocket(), sends=0)
+    status = sender.send_health.status()
+    assert (status.state, status.error, status.failed) == ("failing", "Can't assign requested address", 2)
 
 
 def test_beacon_reopen_starts_a_new_record() -> None:

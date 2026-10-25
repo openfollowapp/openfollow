@@ -1977,7 +1977,37 @@ class TestADarkInterfaceStaysQuiet:
                 sync._send_loop()
 
         assert len(attempts) == 3, "the send loop stopped retrying while the interface was out"
-        assert len(caplog.records) == 1, "every retry reported itself instead of only the first"
+        own = [r for r in caplog.records if r.name == marker_sync.logger.name]
+        assert len(own) == 1, "every retry reported itself instead of only the first"
+
+    @pytest.mark.parametrize(
+        "refusal",
+        [
+            marker_sync.InterfaceUnavailable("the configured interface has no address"),
+            RuntimeError("no multicast route"),
+        ],
+        ids=["interface-down", "open-failed"],
+    )
+    def test_a_send_socket_that_will_not_open_raises_a_row_named_by_its_error(
+        self, monkeypatch, refusal: Exception
+    ) -> None:
+        """No heartbeat leaves while the socket is down, though no send ever failed."""
+        monkeypatch.setattr(marker_sync, "HEARTBEAT_INTERVAL", 0.0)
+        monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
+        sync = self._sync()
+        attempts: list[int] = []
+
+        def open_refused():
+            attempts.append(1)
+            if len(attempts) >= 2:
+                sync._stop_event.set()
+            raise refusal
+
+        with patch.object(sync, "_open_tx_socket", side_effect=open_refused):
+            sync._send_loop()
+
+        status = sync.send_health.status()
+        assert (status.state, status.error) == ("failing", str(refusal))
 
     def test_the_receive_loop_keeps_retrying_and_logs_once(self, monkeypatch, caplog) -> None:
         monkeypatch.setattr(marker_sync, "_RX_OPEN_RETRY_S", 0.0)

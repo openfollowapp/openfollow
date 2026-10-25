@@ -575,3 +575,76 @@ class TestConfigAndLabels:
         html = MediaGalleryInput.web_ui_html({"testpattern_selected_media": "default:grey"})
         assert "res.ok" in html
         assert "node.id!=='gallery-grid'" in html
+
+
+# --------------------------------------------------------------------------- #
+# Frames on a real GStreamer pipeline
+# --------------------------------------------------------------------------- #
+
+
+def _real_gst() -> Any:
+    try:
+        import gi
+
+        gi.require_version("Gst", "1.0")
+        from gi.repository import Gst
+    except (ImportError, ValueError):
+        pytest.skip("PyGObject / GStreamer is not importable")
+    Gst.init(None)
+    return Gst
+
+
+def _run_to_eos(gst: Any, description: str) -> None:
+    pipeline = gst.parse_launch(description)
+    pipeline.set_state(gst.State.PLAYING)
+    try:
+        msg = pipeline.get_bus().timed_pop_filtered(10 * gst.SECOND, gst.MessageType.EOS | gst.MessageType.ERROR)
+        assert msg is not None and msg.type == gst.MessageType.EOS
+    finally:
+        pipeline.set_state(gst.State.NULL)
+
+
+def _white_four_three_media(gst: Any, tmp_path: Path, kind: str) -> Path:
+    src = "videotestsrc pattern=white num-buffers={n} ! video/x-raw,width=640,height=480,framerate=30/1"
+    if kind == "image":
+        path = tmp_path / "four_three.jpg"
+        _run_to_eos(gst, f"{src.format(n=1)} ! jpegenc ! filesink location={path}")
+    else:
+        path = tmp_path / "four_three.webm"
+        _run_to_eos(gst, f"{src.format(n=15)} ! vp8enc ! webmmux ! filesink location={path}")
+    return path
+
+
+class TestFramesOnRealGstreamer:
+    @pytest.mark.parametrize("kind", ["image", "video"])
+    def test_four_three_media_is_pillarboxed_in_square_pixel_frames(
+        self, kind: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        gst = _real_gst()
+        path = _white_four_three_media(gst, tmp_path, kind)
+        monkeypatch.setattr(media_store, "resolve", lambda _mid: _user_item("0123456789abcdef", kind, path))
+        sink = gst.ElementFactory.make("appsink", "frames")
+        sink.set_property("caps", gst.Caps.from_string("video/x-raw,format=GRAY8"))
+        sink.set_property("sync", False)
+        pipeline = MediaGalleryInput().create_pipeline(
+            config={"testpattern_selected_media": "0123456789abcdef"},
+            sink=sink,
+            build_overlay_tail=lambda _pipeline, head, prepared: head.link(prepared),
+            prepare_sink=lambda: sink,
+        )
+        pipeline.set_state(gst.State.PLAYING)
+        try:
+            sample = sink.emit("try-pull-sample", 10 * gst.SECOND)
+            assert sample is not None
+            caps = sample.get_caps().get_structure(0)
+            frame = sample.get_buffer().extract_dup(0, sample.get_buffer().get_size())
+        finally:
+            pipeline.set_state(gst.State.NULL)
+
+        assert (caps.get_value("width"), caps.get_value("height")) == (1920, 1080)
+        assert caps.get_fraction("pixel-aspect-ratio")[1:] == (1, 1)
+        # At 1080 rows a 4:3 picture is 1440 columns wide, centred between black bars.
+        middle_row = frame[540 * 1920 : 541 * 1920]
+        lit = [x for x, value in enumerate(middle_row) if value > 128]
+        assert abs(lit[0] - 240) <= 2
+        assert abs(lit[-1] - 1679) <= 2

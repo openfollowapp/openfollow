@@ -33,12 +33,13 @@ logger = logging.getLogger(__name__)
 # Fixed output resolution for the Grey pattern, images, and clips. It must be a
 # fixed size, not a range: with a range, videoscale defers to the gtksink's
 # preferred size (a tiny default), so the picture renders at that size and looks
-# soft on the HDMI display. videoscale runs with add-borders so non-16:9 media
-# letterboxes (preserving aspect) instead of stretching.
+# soft on the HDMI display. Non-16:9 media letterboxes through videoscale's
+# add-borders only while the pixel aspect is pinned: left open, videoscale keeps
+# the shape by changing the pixel aspect, and the frames carry the media stretched.
 _OUTPUT_WIDTH = 1920
 _OUTPUT_HEIGHT = 1080
 _FRAMERATE = "30/1"
-_OUTPUT_CAPS = f"video/x-raw,width={_OUTPUT_WIDTH},height={_OUTPUT_HEIGHT}"
+_OUTPUT_CAPS = f"video/x-raw,width={_OUTPUT_WIDTH},height={_OUTPUT_HEIGHT},pixel-aspect-ratio=1/1"
 
 # Maps the Stage asset's file type to its GStreamer decoder. The asset path and
 # the JPG-preferred-over-SVG ordering live in ``media_store`` (single source).

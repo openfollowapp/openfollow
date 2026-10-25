@@ -14,6 +14,7 @@ from openfollow.scene.edge_chains import find_edge_candidates
 from openfollow.scene.solver import apply_overlay_distortion, invert_overlay_distortion
 from tests._lens_band import scaled_luma
 from tests._lens_scene import FLOOR, H, Scene, Strip, W, calibrate, deck_scene, render, riser_scene, stage_scene
+from tests.test_lens_fit import frame_error_px, inner_error_px
 
 pytestmark = pytest.mark.unit
 
@@ -184,3 +185,42 @@ def test_a_single_bowed_edge_measures_barrel_and_asks_for_a_corner() -> None:
     assert cal.fit.k1 < -0.4
     assert cal.fit.lines[0].rms_px < 0.5
     assert cal.fit.hint == "Add a second line in another part of the picture."
+
+
+def _gallery_calibration(picture, keep=None):
+    cv2 = pytest.importorskip("cv2", reason="decoding the picture needs the detection extra")
+    return calibrate(cv2.imread(str(picture), cv2.IMREAD_GRAYSCALE).astype(np.float64), keep=keep)
+
+
+CONCERT_LENS = (-0.37, -0.17)
+
+
+def _off_straight(points) -> float:
+    """How far a suggestion's polyline, undistorted with the lens the Concert was made through, strays from a line."""
+    pinhole = invert_overlay_distortion(np.asarray(points, dtype=np.float64), W, H, *CONCERT_LENS, 0.0, 0.0)
+    rel = pinhole - pinhole.mean(axis=0)
+    return float(np.max(np.abs(rel @ np.linalg.svd(rel)[2][1])))
+
+
+def straight_on_the_stage(points) -> bool:
+    """Whether a suggestion runs along an edge that is straight on the stage. A rendering keeps its seams, riser
+    edges and truss chords within a few pixels of straight; a curtain's edge bows far more."""
+    return _off_straight(points) < 6.0
+
+
+def test_the_concert_default_gives_back_the_lens_it_was_made_through() -> None:
+    """The Media Gallery's Concert demonstrates the Lens step; the help drawer names the pair it was made with."""
+    from openfollow.video import media_store
+
+    # The operator rejects the suggestions along the curtains' edges and uses the deck, riser and truss edges.
+    cal = _gallery_calibration(media_store.CONCERT_ASSET_JPG, keep=straight_on_the_stage)
+    assert cal.rejected == 3
+    assert len(cal.lines) >= 8
+    fit = cal.fit
+    lens = (fit.k1, fit.k2, fit.cx, fit.cy)
+    assert frame_error_px(lens, (*CONCERT_LENS, 0.0, 0.0)) < 12.0
+    assert inner_error_px(lens, (*CONCERT_LENS, 0.0, 0.0)) < 3.0
+    assert fit.k2_fitted
+    assert (fit.cx, fit.cy) == (0.0, 0.0)
+    assert fit.rating in ("good", "excellent")
+    assert not any(line.misfit for line in fit.lines)

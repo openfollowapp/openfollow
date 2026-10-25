@@ -39,17 +39,17 @@ Which network interface SRT, RTSP and RTP use is set under **Network Interface A
   | Cross aisle, stage right | 27.461 m | 24.781 m |
   | Centre aisle, back | 31.697 m | 31.697 m |
 
-  **Concert** is a concert stage seen from a camera on the upstage back truss, looking down over the stage into the crowd through a wide barrel lens. It was drawn with this camera, which puts the grid on the deck seams. The tape on the stage marks a 12 × 6 m grid with the Reference Point at the middle of its downstage edge; the stage decks are 1 m across and 2 m deep.
+  **Concert** is a concert stage seen from a camera on the upstage back truss, looking down over the stage into the crowd through a 2.8 mm lens. It was drawn with this camera, which puts the grid on the deck seams. The tape on the stage marks a 12 × 6 m grid with the Reference Point at the middle of its downstage edge; the stage decks are 1 m across and 2 m deep.
 
   | Camera setting | Value |
   |---|---|
-  | Position X / Y / Z | 0 / 13 / 12 m |
+  | Position X / Y / Z | 0 / 10 / 9 m |
   | Pitch | -48° |
   | Yaw | 180° |
   | Roll | 0° |
-  | Horizontal Field of View | 70° |
-  | Barrel / fisheye | -0.2 |
-  | Corner correction | -0.07 |
+  | Horizontal Field of View | 82.5° |
+  | Barrel / fisheye | -0.37 |
+  | Corner correction | -0.17 |
 
   **Festival** is a festival stage seen from a camera on the front truss over the crowd barrier, looking steeply down onto the stage through a 2.8 mm lens whose centre sits off the centre of the picture. It was drawn with this camera, which puts the grid on the tape; its lens centre is typed in, under Lens centre on the Camera tab or under User input in the Lens step. The tape on the stage marks a 12 × 6 m grid with the Reference Point at the middle of its downstage edge; the stage decks are 2 m across and 1 m deep.
 

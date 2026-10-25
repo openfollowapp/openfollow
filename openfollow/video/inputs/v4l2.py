@@ -4,12 +4,15 @@
 
 from __future__ import annotations
 
+import errno
 import glob
 import logging
 import os
 import struct
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
+from fractions import Fraction
 from typing import Any
 
 from openfollow.video.failure import SourceKind
@@ -111,6 +114,166 @@ def _node_supports_video_capture(path: str) -> bool:
     capabilities, device_caps = struct.unpack_from("=II", buf, _V4L2_CAP_FLAGS_OFFSET)
     effective = device_caps if capabilities & _V4L2_CAP_DEVICE_CAPS else capabilities
     return bool(effective & _V4L2_CAP_VIDEO_CAPTURE)
+
+
+# The camera's mode list, so the source is pinned to a mode the camera can
+# deliver. A UVC camera may list raw modes its USB link cannot carry: those
+# frames arrive cut short. Structs from linux/videodev2.h, generic _IOWR.
+def _iowr(nr: int, size: int) -> int:
+    return (3 << 30) | (size << 16) | (ord("V") << 8) | nr
+
+
+_FMTDESC = struct.Struct("=III32sII12x")  # index, type, flags, description, pixelformat, mbus_code
+_FRMSIZE = struct.Struct("=IIIII16x8x")  # index, pixel_format, type, discrete width/height
+_FRMIVAL = struct.Struct("=IIIIIII16x8x")  # index, pixel_format, width, height, type, discrete interval
+_VIDIOC_ENUM_FMT = _iowr(2, _FMTDESC.size)
+_VIDIOC_ENUM_FRAMESIZES = _iowr(74, _FRMSIZE.size)
+_VIDIOC_ENUM_FRAMEINTERVALS = _iowr(75, _FRMIVAL.size)
+_V4L2_BUF_TYPE_VIDEO_CAPTURE = 1
+_V4L2_DISCRETE = 1
+_MAX_ENUM_ENTRIES = 256
+
+# V4L2 fourcc -> (GStreamer raw format, bytes per pixel).
+_RAW_FORMATS = {
+    "YUYV": ("YUY2", 2.0),
+    "UYVY": ("UYVY", 2.0),
+    "YVYU": ("YVYU", 2.0),
+    "NV12": ("NV12", 1.5),
+    "YU12": ("I420", 1.5),
+    "YV12": ("YV12", 1.5),
+    "GREY": ("GRAY8", 1.0),
+    "RGB3": ("RGB", 3.0),
+    "BGR3": ("BGR", 3.0),
+}
+_MJPEG_FOURCCS = frozenset({"MJPG", "JPEG"})
+
+# USB 2.0 high speed carries three 1024-byte isochronous packets per 125 µs microframe.
+_USB2_VIDEO_BYTES_S = 3 * 1024 * 8000
+_USB1_VIDEO_BYTES_S = 1023 * 1000
+
+
+@dataclass(frozen=True)
+class _CaptureMode:
+    fourcc: str
+    width: int
+    height: int
+    rate: Fraction
+
+    @property
+    def area(self) -> int:
+        return self.width * self.height
+
+    def describe(self) -> str:
+        return f"{self.fourcc} {self.width}x{self.height}@{float(self.rate):g}"
+
+
+class _UnlistedModes(Exception):
+    """The node gives sizes or rates as ranges, so its modes cannot be listed."""
+
+
+def _enumerate(
+    ioctl: Callable[[int, bytearray], Any], request: int, layout: struct.Struct, *fields: Any
+) -> Iterator[tuple[Any, ...]]:
+    """Each entry of a V4L2 enumeration, unpacked; EINVAL ends the list, any other error propagates."""
+    for index in range(_MAX_ENUM_ENTRIES):
+        buf = bytearray(layout.pack(index, *fields))
+        try:
+            ioctl(request, buf)
+        except OSError as exc:
+            if exc.errno == errno.EINVAL:
+                return
+            raise
+        yield layout.unpack(buf)
+    raise _UnlistedModes(f"more than {_MAX_ENUM_ENTRIES} entries")
+
+
+def _list_modes(ioctl: Callable[[int, bytearray], Any]) -> list[_CaptureMode]:
+    modes: list[_CaptureMode] = []
+    for fmt in _enumerate(ioctl, _VIDIOC_ENUM_FMT, _FMTDESC, _V4L2_BUF_TYPE_VIDEO_CAPTURE, 0, b"", 0, 0):
+        pixelformat = fmt[4]
+        fourcc = struct.pack("<I", pixelformat).decode("ascii", "replace")
+        for size in _enumerate(ioctl, _VIDIOC_ENUM_FRAMESIZES, _FRMSIZE, pixelformat, 0, 0, 0):
+            _, _, size_type, width, height = size
+            if size_type != _V4L2_DISCRETE:
+                raise _UnlistedModes(f"{fourcc} sizes are a range")
+            for ival in _enumerate(ioctl, _VIDIOC_ENUM_FRAMEINTERVALS, _FRMIVAL, pixelformat, width, height, 0, 0, 0):
+                *_, ival_type, num, den = ival
+                if ival_type != _V4L2_DISCRETE:
+                    raise _UnlistedModes(f"{fourcc} {width}x{height} rates are a range")
+                if num and den:
+                    modes.append(_CaptureMode(fourcc, width, height, Fraction(den, num)))
+    return modes
+
+
+def _read_capture_modes(device: str) -> list[_CaptureMode] | None:
+    """Every mode the capture node lists, or ``None`` when the list cannot be read in full."""
+    import fcntl
+
+    try:
+        fd = os.open(device, os.O_RDWR | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        return _list_modes(lambda request, buf: fcntl.ioctl(fd, request, buf, True))
+    except (OSError, _UnlistedModes) as exc:
+        logger.info("V4L2 %s: camera modes not listed (%s); the source negotiates its own", device, exc)
+        return None
+    finally:
+        os.close(fd)
+
+
+def _usb_link_budget(device: str, sysfs_root: str = "/sys") -> float | None:
+    """Video bytes per second the camera's USB link carries, or ``None`` off USB or when unreadable."""
+    path = os.path.realpath(os.path.join(sysfs_root, "class/video4linux", os.path.basename(device), "device"))
+    devices = os.path.realpath(os.path.join(sysfs_root, "devices"))
+    while path.startswith(devices + os.sep):
+        try:
+            with open(os.path.join(path, "speed")) as f:
+                mbps = float(f.read().strip())
+        except FileNotFoundError:
+            path = os.path.dirname(path)
+            continue
+        except (OSError, ValueError):
+            return None
+        if mbps >= 5000:
+            return mbps * 1e6 / 10  # SuperSpeed line rate after 8b/10b coding
+        return _USB2_VIDEO_BYTES_S if mbps >= 480 else _USB1_VIDEO_BYTES_S
+    return None
+
+
+def _fits_link(mode: _CaptureMode, budget: float | None) -> bool:
+    bytes_per_pixel = _RAW_FORMATS[mode.fourcc][1]
+    return budget is None or mode.area * bytes_per_pixel * float(mode.rate) <= budget
+
+
+def _choose_mode(
+    modes: list[_CaptureMode], dims: tuple[int, int] | None, framerate: int, budget: float | None
+) -> _CaptureMode | None:
+    """The mode to pin: raw when the link carries it at the render size, else MJPEG, else the largest left.
+
+    ``dims`` ``None`` (native) asks for the largest size listed at the rate. ``None``
+    when nothing reaches the rate: the source then negotiates as it would unpinned.
+    """
+    at_rate = [m for m in modes if m.rate >= framerate - Fraction(1, 2)]
+    raw = [m for m in at_rate if m.fourcc in _RAW_FORMATS and _fits_link(m, budget)]
+    mjpeg = [m for m in at_rate if m.fourcc in _MJPEG_FOURCCS]
+    usable = raw + mjpeg
+    if not usable:
+        return None
+    width, height = dims or max(((m.width, m.height) for m in usable), key=lambda wh: wh[0] * wh[1])
+    for candidates in (raw, mjpeg):
+        covering = [m for m in candidates if m.width >= width and m.height >= height]
+        if covering:
+            return min(covering, key=lambda m: (m.area, abs(m.rate - framerate)))
+    return max(usable, key=lambda m: (m.area, m.fourcc in _RAW_FORMATS))
+
+
+def _mode_caps(mode: _CaptureMode) -> str:
+    size = f"width=(int){mode.width},height=(int){mode.height}"
+    rate = f"framerate=(fraction){mode.rate.numerator}/{mode.rate.denominator}"
+    if mode.fourcc in _MJPEG_FOURCCS:
+        return f"image/jpeg,{size},{rate}"
+    return f"video/x-raw,format=(string){_RAW_FORMATS[mode.fourcc][0]},{size},{rate}"
 
 
 def _discover_v4l2_devices() -> list[dict[str, str]]:
@@ -235,12 +398,12 @@ class V4l2Input(VideoInputBase):
     ) -> Any:
         """Build a V4L2 capture pipeline.
 
-        ``v4l2src -> queue -> [videoscale] -> videorate -> capsfilter
-        -> videoconvert -> [overlay tail] -> sink``
+        ``v4l2src -> [src_caps] -> queue -> [jpegdec] -> [videoscale]
+        -> videorate -> capsfilter -> videoconvert -> [overlay tail] -> sink``
 
-        The source is left unconstrained so it negotiates the device's native
-        format/resolution/rate – a capture card only advertises the incoming
-        signal's resolution, so pinning a fixed size here fails negotiation. A
+        ``src_caps`` pins a mode from the camera's own list (``_choose_mode``),
+        never a fixed size: a capture card only lists the incoming signal's
+        resolution. With no list to choose from the source stays open. A
         render-resolution preset adds videoscale + a size-pinning capsfilter to
         scale the stream down; ``native`` omits videoscale so the device's own
         resolution flows through (the sink scales it for the widget).
@@ -278,16 +441,31 @@ class V4l2Input(VideoInputBase):
         caps_str = ",".join(caps_parts)
         capsfilter.set_property("caps", Gst.Caps.from_string(caps_str))
         convert = make("videoconvert", "convert")
-        logger.info("V4L2 source: %s, render: %s", device, caps_str)
+
+        modes = _read_capture_modes(device)
+        mode = _choose_mode(modes, dims, framerate, _usb_link_budget(device)) if modes else None
+        logger.info(
+            "V4L2 source: %s, camera mode: %s, render: %s",
+            device,
+            mode.describe() if mode else "negotiated",
+            caps_str,
+        )
 
         sink = prepare_sink()
         if sink is None:
             raise RuntimeError("No video sink available for V4L2 pipeline")
 
+        chain = [src]
+        if mode is not None:
+            src_caps = make("capsfilter", "src_caps")
+            src_caps.set_property("caps", Gst.Caps.from_string(_mode_caps(mode)))
+            chain.append(src_caps)
+        chain.append(queue)
+        if mode is not None and mode.fourcc in _MJPEG_FOURCCS:
+            chain.append(make("jpegdec", "jpegdec"))
         # videoscale only for a fixed render size; with native, a downstream
         # scaler would let the sink's widget size shrink the buffer below the
         # device resolution.
-        chain = [src, queue]
         if dims is not None:
             chain.append(make("videoscale", "videoscale"))
         chain += [rate, capsfilter, convert]

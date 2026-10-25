@@ -30,12 +30,10 @@ from openfollow.video.inputs._base import (
 
 logger = logging.getLogger(__name__)
 
-# Fixed output resolution for the Grey pattern, images, and clips. It must be a
-# fixed size, not a range: with a range, videoscale defers to the gtksink's
-# preferred size (a tiny default), so the picture renders at that size and looks
-# soft on the HDMI display. Non-16:9 media letterboxes through videoscale's
-# add-borders only while the pixel aspect is pinned: left open, videoscale keeps
-# the shape by changing the pixel aspect, and the frames carry the media stretched.
+# Fixed output size for every item: a range lets videoscale defer to the
+# gtksink's tiny preferred size, which looks soft on HDMI. add-borders letterboxes
+# non-16:9 media only while the caps pin pixel-aspect-ratio=1/1; left open,
+# videoscale changes the pixel aspect instead and the frames carry the media stretched.
 _OUTPUT_WIDTH = 1920
 _OUTPUT_HEIGHT = 1080
 _FRAMERATE = "30/1"

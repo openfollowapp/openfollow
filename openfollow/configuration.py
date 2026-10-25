@@ -3143,6 +3143,15 @@ def _filter_known(cls: type, data: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in data.items() if k in known}
 
 
+# Former camera settings a Camera & Grid template saved by an earlier build may carry.
+_FORMER_CAMERA_KEYS = frozenset({"sensor_width_mm", "focal_length_mm"})
+
+
+def without_former_camera_keys(camera: dict[str, Any]) -> dict[str, Any]:
+    """*camera* without its former settings; any other unknown key still fails the dataclass."""
+    return {k: v for k, v in camera.items() if k not in _FORMER_CAMERA_KEYS}
+
+
 _SUB_CONFIG_MAP: dict[str, type] = {
     "camera": CameraConfig,
     "grid": GridConfig,

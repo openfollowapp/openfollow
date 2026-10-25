@@ -612,12 +612,22 @@ class TestCameraGridPayload:
                 {"camera": {}, "grid": []},
             )
 
-    @pytest.mark.parametrize("section", ["camera", "grid", "ground_grid"])
-    def test_a_field_this_build_lacks_is_dropped(self, section: str) -> None:
-        # As in config.toml: a template saved by another version may carry fields this one has not.
-        payload: dict = {"camera": {}, "grid": {}}
-        payload[section] = {"bogus_field": 1}
-        validate_payload("camera_grid", payload)
+    def test_unknown_camera_field_rejected(self) -> None:
+        # Unknown keys raise ``TypeError`` at the dataclass constructor;
+        # the validator re-raises as ``TemplateValidationError`` to keep
+        # the loader's error surface uniform.
+        with pytest.raises(TemplateValidationError, match="'camera' invalid"):
+            validate_payload(
+                "camera_grid",
+                {"camera": {"bogus_field": 1}, "grid": {}},
+            )
+
+    def test_unknown_grid_field_rejected(self) -> None:
+        with pytest.raises(TemplateValidationError, match="'grid' invalid"):
+            validate_payload(
+                "camera_grid",
+                {"camera": {}, "grid": {"bogus_field": 1}},
+            )
 
 
 class TestZonesPayload:
@@ -1365,13 +1375,13 @@ class TestBackwardCompat:
         cam = CameraConfig(**tpl.payload["camera"])
         assert cam.fov == CameraConfig().fov
 
-    def test_old_payload_with_a_field_this_build_lacks_loads(self) -> None:
+    def test_old_payload_with_former_camera_settings_loads(self) -> None:
         # A camera_grid template saved with the camera's sensor width and focal length.
         from dataclasses import asdict
 
         from openfollow.configuration import CameraConfig, GridConfig
 
-        camera = {**asdict(CameraConfig()), "sensor_width_mm": None, "focal_length_mm": None}
+        camera = {**asdict(CameraConfig()), "sensor_width_mm": None, "focal_length_mm": 4.0}
         tpl = parse_envelope(
             {
                 "version": TEMPLATE_VERSION,
@@ -1380,7 +1390,7 @@ class TestBackwardCompat:
                 "payload": {"camera": camera, "grid": asdict(GridConfig())},
             }
         )
-        assert tpl.payload["camera"]["sensor_width_mm"] is None
+        assert tpl.payload["camera"]["focal_length_mm"] == 4.0
 
 
 class TestPathsPayload:
@@ -1405,7 +1415,7 @@ class TestPathsPayload:
         )
 
 
-@pytest.mark.parametrize("ground", ["pit", []], ids=["string", "list"])
+@pytest.mark.parametrize("ground", ["pit", [], {"no_such_field": 1}], ids=["string", "list", "unknown-field"])
 def test_a_camera_grid_template_s_ground_grid_must_be_a_ground_grid(ground: object) -> None:
     from openfollow.templates.schema import TemplateValidationError, validate_payload
 

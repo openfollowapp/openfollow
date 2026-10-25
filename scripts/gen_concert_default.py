@@ -381,58 +381,89 @@ def riser(out: list[str]) -> None:
     drum_kit(out, 0.0, y0 + 1.3, h)
 
 
-# A right-handed metal kit about its centre, in metres; +x is the drummer's left (stage left),
-# -y is toward the audience. Drums: (x, y, radius, height of the head). Cymbals: (x, y, radius, height).
-KICKS = ((0.33, -0.25), (-0.33, -0.25))  # two 24" bass drums on their sides, batter heads toward the seat
-KICK_R, KICK_DEPTH = 0.3, 0.45
+# A right-handed metal kit about its centre, in metres; +x is the drummer's left (stage left), -y is toward
+# the audience. Drums and cymbals: (x, y, radius, height, held by the rack rather than a stand of its own).
+KICKS = ((0.3, -0.25), (-0.3, -0.25))  # two 22" bass drums on their sides, batter heads toward the seat
+KICK_R, KICK_DEPTH = 0.28, 0.45
 DRUMS = (
-    (0.12, 0.15, 0.18, 0.66),  # snare, between the knees, a little left
-    (0.3, -0.12, 0.13, 0.88),  # rack toms, 10", 12" and 13", in an arc above the kicks
-    (0.0, -0.18, 0.15, 0.92),
-    (-0.3, -0.12, 0.165, 0.9),
-    (-0.55, 0.3, 0.2, 0.62),  # floor toms, 16" and 18", on the right beside the seat
-    (-0.78, -0.08, 0.23, 0.64),
+    (0.12, 0.15, 0.18, 0.66, False),  # snare, between the knees, a little left
+    (0.17, -0.14, 0.13, 0.88, True),  # rack toms, 10" and 12", above the kicks
+    (-0.16, -0.16, 0.15, 0.9, True),
+    (-0.52, 0.28, 0.2, 0.62, False),  # floor tom, 16", on the right beside the seat
 )
 CYMBALS = (
-    (0.5, 0.18, 0.18, 0.95),  # hi-hat, left of the snare
-    (0.15, -0.5, 0.13, 1.28),  # splash over the toms
-    (0.6, -0.42, 0.23, 1.42),  # crashes, 18" and 19"
-    (-0.25, -0.6, 0.24, 1.48),
-    (-0.68, -0.4, 0.28, 1.08),  # ride, 22", on the right
-    (0.98, -0.12, 0.23, 1.55),  # chinas at the outer edges, 18" and 20"
-    (-1.02, -0.3, 0.25, 1.6),
+    (0.48, 0.18, 0.18, 0.95, False),  # hi-hat, left of the snare
+    (0.55, -0.42, 0.23, 1.4, True),  # crashes, 18" and 19"
+    (-0.22, -0.56, 0.24, 1.46, True),
+    (-0.62, -0.32, 0.28, 1.12, False),  # ride, 22", on the right
+    (0.9, -0.1, 0.23, 1.52, True),  # china, 18", at the left edge
 )
+SPD = (-0.82, 0.12, 0.9)  # Roland SPD-SX PRO sampling pad on its stand, right of the floor tom: x, y, height
+SPD_W, SPD_D, SPD_H = 0.36, 0.33, 0.093
 SEAT = (0.0, 0.5, 0.2, 0.58)
 
 
 def drum_kit(out: list[str], cx: float, cy: float, h: float) -> None:
-    """The kit about ``(cx, cy)`` on the riser at ``h``: rack, kicks, stands, then drums and cymbals, each
-    drawn after what lies further from the camera."""
+    """The kit about ``(cx, cy)`` on the riser at ``h``: rack, kicks, stands, then drums, cymbals and the
+    sampling pad, each drawn after what lies further from the camera."""
     at = lambda dx, dy, z: (cx + dx, cy + dy, h + z)  # noqa: E731
-    # The chrome rack: a curved bar in front of the kit on four legs, an arm out to each rack tom and cymbal.
-    arc = [at(1.05 * math.sin(t), -0.72 * math.cos(t) - 0.05, 1.0) for t in np.linspace(-1.35, 1.35, 25)]
+    # The chrome rack: a curved bar in front of the kit on three legs, an arm out to each piece it holds.
+    arc = [at(0.85 * math.sin(t), -0.62 * math.cos(t) - 0.05, 1.0) for t in np.linspace(-1.3, 1.3, 21)]
     for p0, p1 in pairwise(arc):
         out.append(line(p0, p1, C_SILVER, 3.2))
-    for p in arc[::8]:
+    for p in arc[::10]:
         out.append(line((p[0], p[1], h), p, C_SILVER, 2.6))
-    for x, y, _r, z in (*DRUMS[1:4], *CYMBALS[1:4], CYMBALS[5], CYMBALS[6]):
-        near = min(arc, key=lambda q: (q[0] - cx - x) ** 2 + (q[1] - cy - y) ** 2)
-        out.append(line(near, at(x, y, z - 0.02), C_SILVER, 2.2))
+    pieces = [(*d, "drum") for d in DRUMS] + [(*c, "cymbal") for c in CYMBALS]
+    for x, y, _r, z, racked, _kind in pieces:
+        if racked:
+            near = min(arc, key=lambda q: (q[0] - cx - x) ** 2 + (q[1] - cy - y) ** 2)
+            out.append(line(near, at(x, y, z - 0.02), C_SILVER, 2.2))
     for x, y in KICKS:  # shell from above, then the batter head facing the seat
         box(out, cx + x - KICK_R, cx + x + KICK_R, cy + y - KICK_DEPTH, cy + y, h, h + 2 * KICK_R, "#2c2c33", "#1d1d22")
         head = [at(x + KICK_R * math.cos(t), y, KICK_R + KICK_R * math.sin(t)) for t in np.linspace(0, 2 * math.pi, 28)]
         out.append(poly(head, "#e9e4dc", "#7a756c", 1.2))
-    for x, y, _r, z in (*DRUMS[:1], *DRUMS[4:], CYMBALS[0], CYMBALS[4], SEAT):  # stand-mounted pieces
-        stand(out, cx + x, cy + y, h, h + z - 0.02)
-    pieces = [(x, y, r, z, False) for x, y, r, z in DRUMS] + [(x, y, r, z, True) for x, y, r, z in CYMBALS]
+    for x, y, _r, z, racked, _kind in pieces:
+        if not racked:
+            stand(out, cx + x, cy + y, h, h + z - 0.02)
+    stand(out, cx + SPD[0], cy + SPD[1], h, h + SPD[2] - SPD_H)
+    stand(out, cx + SEAT[0], cy + SEAT[1], h, h + SEAT[3] - 0.02)
+    pieces.append((SPD[0], SPD[1], 0.0, SPD[2], False, "spd"))
     eye = CAMERA[:3]
-    for x, y, r, z, cymbal in sorted(pieces, key=lambda q: -math.dist(eye, at(q[0], q[1], q[3]))):
-        if cymbal:
+    for x, y, r, z, _racked, kind in sorted(pieces, key=lambda q: -math.dist(eye, at(q[0], q[1], q[3]))):
+        if kind == "cymbal":
             out.append(poly(disc(cx + x, cy + y, h + z, r, 24), "#b98a3e", "#6a4a1a", 1.0))
             out.append(poly(disc(cx + x, cy + y, h + z + 0.001, r * 0.35, 12), "#d6aa5a"))
-        else:
+        elif kind == "drum":
             out.append(poly(disc(cx + x, cy + y, h + z, r, 20), "#e9e4dc", "#7a756c", 1.2))
+        else:
+            sampling_pad(out, cx + x, cy + y, h + z)
     out.append(poly(disc(cx + SEAT[0], cy + SEAT[1], h + SEAT[3], SEAT[2], 20), "#34343a", "#6a6b72", 1.8))
+
+
+def sampling_pad(out: list[str], x: float, y: float, z: float) -> None:
+    """A Roland SPD-SX PRO, its top at ``z``, the pads toward the seat (+y): six large pads in two rows,
+    three shoulder pads across the top, LED strips between them and the screen and controls along the far edge."""
+    x0, x1, y0, y1 = x - SPD_W / 2, x + SPD_W / 2, y - SPD_D / 2, y + SPD_D / 2
+    box(out, x0, x1, y0, y1, z - SPD_H, z, "#1c1d21", "#121316")
+    top = z + 0.001
+    pad_w, gap = 0.1, 0.015
+    xs = [x - 1.5 * pad_w - gap + k * (pad_w + gap) for k in range(3)]
+    rows = (
+        (y1 - 0.02 - 0.085, y1 - 0.02),
+        (y1 - 0.035 - 0.17, y1 - 0.035 - 0.085),
+        (y1 - 0.05 - 0.215, y1 - 0.05 - 0.17),
+    )
+    for ya, yb in rows:  # two rows of large pads nearest the seat, then the narrow shoulder pads
+        for xa in xs:
+            out.append(poly([(xa, ya, top), (xa + pad_w, ya, top), (xa + pad_w, yb, top), (xa, yb, top)], "#3a3c43"))
+    for k, colour in enumerate(("#3fa9f5", "#e8445a", "#5ee08a", "#f5b43f")):  # LED strips between the pads
+        xl = xs[0] + pad_w + gap / 2 if k < 2 else xs[1] + pad_w + gap / 2
+        ya, yb = rows[k % 2]
+        out.append(line((xl, ya, top + 0.001), (xl, yb, top + 0.001), colour, 1.6))
+    out.append(poly([(x - 0.06, y0 + 0.015, top), (x + 0.06, y0 + 0.015, top), (x + 0.06, y0 + 0.075, top),
+                     (x - 0.06, y0 + 0.075, top)], "#2a5d8f"))  # fmt: skip
+    for xk in (x0 + 0.04, x0 + 0.08, x1 - 0.08, x1 - 0.04):  # backlit function buttons beside the screen
+        out.append(poly(disc(xk, y0 + 0.045, top, 0.012, 8), "#c9d2dc"))
 
 
 def stand(out: list[str], x: float, y: float, z0: float, z1: float) -> None:

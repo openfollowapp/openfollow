@@ -1096,6 +1096,57 @@ def test_wizard_camera_params_raises_valueerror_on_non_numeric() -> None:
 
 
 # ---------------------------------------------------------------------------
+# The macOS USB camera's stored name travels exactly as its unique ID does
+# ---------------------------------------------------------------------------
+
+
+class TestTheCameraNameTravelsWithItsId:
+    """Not device-local, like ``avf_unique_id``: a camera chosen on one station
+    names the same camera on a peer, and neither is a secret."""
+
+    _CAMERA = {"avf_unique_id": "0x14100000", "avf_device_name": "Capture Card"}
+
+    def test_export_carries_both(self) -> None:
+        exported = _config_dict_redacted(AppConfig(video_source_type="avf", **self._CAMERA))
+
+        assert {key: exported[key] for key in self._CAMERA} == self._CAMERA
+
+    def test_import_applies_both(self) -> None:
+        from openfollow.web.routes import _apply_import_data
+
+        # Already on the USB camera: an import only switches to an input this
+        # platform offers, and off macOS that is never this one.
+        imported = _apply_import_data(AppConfig(video_source_type="avf"), {"video_source_type": "avf", **self._CAMERA})
+
+        assert (imported.avf_unique_id, imported.avf_device_name) == ("0x14100000", "Capture Card")
+
+    def test_a_section_broadcast_sends_and_applies_both(self) -> None:
+        sent = strip_device_local_fields(
+            "video_source", get_section_data(AppConfig(video_source_type="avf", **self._CAMERA), "video_source") or {}
+        )
+        peer = AppConfig(video_source_type="avf")
+
+        apply_section_data(peer, "video_source", sent)
+
+        assert {key: sent[key] for key in self._CAMERA} == self._CAMERA
+        assert (peer.avf_unique_id, peer.avf_device_name) == ("0x14100000", "Capture Card")
+
+    def test_restore_defaults_clears_both(self) -> None:
+        from openfollow.web.routes import reset_config_to_defaults
+
+        fresh = reset_config_to_defaults(AppConfig(video_source_type="avf", **self._CAMERA))
+
+        assert (fresh.avf_unique_id, fresh.avf_device_name) == ("", "")
+
+    def test_the_diagnostics_dump_keeps_both(self) -> None:
+        from openfollow.web.diagnostics import redact_config_secrets
+
+        dump = 'avf_unique_id = "0x14100000"\navf_device_name = "Capture Card"'
+
+        assert redact_config_secrets(dump) == dump
+
+
+# ---------------------------------------------------------------------------
 # _apply_import_data / _import_needs_restart
 # ---------------------------------------------------------------------------
 

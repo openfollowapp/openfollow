@@ -283,8 +283,10 @@ class TestConfigRoundTrip:
                 setattr(new, field.name, not bool(field.default))
             else:
                 continue
-            assert plugin.config_changed(old, new) is True, (
-                f"{plugin.__name__}.config_changed missed mutation of {field.name}"
+            # A field that never takes part in the build must not reconnect the input.
+            assert plugin.config_changed(old, new) is field.rebuilds, (
+                f"{plugin.__name__}.config_changed {'missed' if field.rebuilds else 'rebuilds on'} "
+                f"a mutation of {field.name}"
             )
 
 
@@ -328,6 +330,15 @@ class TestOptionalHooks:
                 "tests cover those cases hermetically."
             )
         assert isinstance(plugin.discover_sources(timeout=0.0), list)
+
+    def test_the_picker_shows_one_label_per_source(self, plugin: type[VideoInputBase]) -> None:
+        """One short and every later label sits beside the wrong source; an
+        input that names nothing shows each source as stored."""
+        sources = ["source-a", "source-b"]
+        labels = plugin.source_labels(sources)
+        assert len(labels) == len(sources)
+        if "source_labels" not in plugin.__dict__:
+            assert labels == sources
 
     def test_cleanup_and_lifecycle_hooks_are_no_op_by_default(self, plugin: type[VideoInputBase]) -> None:
         instance = plugin()

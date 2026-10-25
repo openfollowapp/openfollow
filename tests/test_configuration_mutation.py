@@ -222,6 +222,7 @@ class TestApplyRuntimeConfigChanges:
         apply_runtime_config_changes(app, new_cfg)
 
         assert receiver.calls == [{"stall_timeout": 2.0, "heal_interval": 7.0}]
+        assert app._runtime_services.video_swaps == []
         assert app._config.stall_timeout == 2.0
         assert app._config.heal_interval == 7.0
 

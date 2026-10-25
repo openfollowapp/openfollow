@@ -30,17 +30,17 @@ Which network interface SRT, RTSP and RTP use is set under **Network Interface A
 - **Change** (Pi Camera) – names the **Camera module** and **Connector** in the Pi's boot configuration. **Automatic** leaves it to the Pi, which recognises Raspberry Pi camera modules on a regular Pi but never on a Compute Module. Raspberry Pi's own modules are listed first by name, other sensors below. A camera named while none was loaded at boot starts at once and is checked again a few seconds later; one the station booted with changes at the next restart, shown as **Takes effect after the next restart** beside what runs now, with a **Restart now** button. A camera line added to `config.txt` by hand is replaced (kept, commented out) when another camera is applied here. **No camera found on this station** opens this choice by itself.
 - **Media Gallery** – a device-local library of images and looping clips, managed entirely from the browser (the on-display menu can select this source but not change its content). Click a tile to make it the source; the selected tile has an amber border. The bundled **Stage**, **Concert**, **Festival** and **Grey** items can't be deleted; per-tile buttons download or delete your own media. **Upload** accepts JPEG/PNG/WebP images (normalised to ≤1080p JPEG) and **VP8 WebM** clips (≤1080p, ≤30 fps, ≤60 s, audio ignored); other codecs are rejected. Every other source shows a **Capture frame** button that saves the current clean frame into the gallery at its native resolution. A selection that no longer resolves (deleted media, an imported config from another station) falls back to Stage.
 
-  **Concert** is a concert stage seen from a camera on the upstage back truss, looking down over the stage into the crowd through a wide barrel lens. It was drawn with this camera, which puts the grid on the deck seams. The tape on the stage marks a 12 × 6 m grid with the Reference Point at the middle of its downstage edge; the stage decks are 1 m across and 2 m deep.
+  **Concert** is a concert stage seen from a camera on the upstage back truss, looking down over the stage into the crowd through a 2.8 mm lens. It was drawn with this camera, which puts the grid on the deck seams. The tape on the stage marks a 12 × 6 m grid with the Reference Point at the middle of its downstage edge; the stage decks are 1 m across and 2 m deep.
 
   | Camera setting | Value |
   |---|---|
-  | Position X / Y / Z | 0 / 13 / 12 m |
+  | Position X / Y / Z | 0 / 10 / 9 m |
   | Pitch | -48° |
   | Yaw | 180° |
   | Roll | 0° |
-  | Horizontal Field of View | 70° |
-  | Barrel / fisheye | -0.2 |
-  | Corner correction | -0.07 |
+  | Horizontal Field of View | 82.5° |
+  | Barrel / fisheye | -0.37 |
+  | Corner correction | -0.17 |
 
   **Festival** is a festival stage seen from a camera on the front truss over the crowd barrier, looking steeply down onto the stage through a 2.8 mm lens whose centre sits off the centre of the picture. It was drawn with this camera, which puts the grid on the tape; its lens centre is typed in, under Lens centre on the Camera tab or under User input in the Lens step. The tape on the stage marks a 12 × 6 m grid with the Reference Point at the middle of its downstage edge; the stage decks are 2 m across and 1 m deep.
 

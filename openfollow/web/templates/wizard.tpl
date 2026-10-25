@@ -3878,7 +3878,7 @@
     if (S.lensTouched) return 'User input';
     return lensMeasured() ? 'The station\'s lens' : 'Not measured';
   }
-  // The lens rating Save and finish records, by the case the Lens row of the review shows.
+  // The lens rating Save and finish records: the fit's while the lens is the fit's, else that of the lens in use.
   var LENS_RATING_RECORD = { medium: 'poor', okay: 'fair', good: 'good', excellent: 'excellent' };
   function lensRatingRecord(l) {
     if (lensHasCurrent() && S.lensChoice === 'keep') return SAVED.lens_rating;

@@ -9778,9 +9778,20 @@ def test_a_calibration_time_of_the_wrong_type_reads_as_none(raw: object) -> None
         ("SRT srt://192.0.2.1:5000?passphrase=secret123", "SRT srt://192.0.2.1:5000?passphrase=***"),
         ("NDI®: Stage\x00 \x1b[31mLeft\u202e", "NDI®: Stage [31mLeft"),
         ("SRT srt://192.0.2.1:5000?pass\x00phrase=secret123", "SRT srt://192.0.2.1:5000?passphrase=***"),
+        ("9\x00rtsp://user:secret@cam/s", "9rtsp://cam/s"),
+        ("_\u200ertsp://user:secret@cam/s", "_rtsp://cam/s"),
         ("  Media Gallery (Clip)  ", "Media Gallery (Clip)"),
     ],
-    ids=["plain", "credentials", "passphrase", "control characters", "split passphrase", "pad"],
+    ids=[
+        "plain",
+        "credentials",
+        "passphrase",
+        "control characters",
+        "split passphrase",
+        "joined digit",
+        "joined underscore",
+        "pad",
+    ],
 )
 def test_a_calibration_source_is_kept_without_credentials_or_control_characters(raw: str, expected: str) -> None:
     assert CameraConfig(calibration_source=raw).calibration_source == expected

@@ -1976,7 +1976,12 @@ class TestWizardLensTemplateBubbles:
 def test_no_page_or_help_text_names_the_old_lens_and_point_labels() -> None:
     """The pair is Barrel / fisheye and Corner correction, the kinds Known point and Triangulated point, everywhere."""
     web = WIZARD_TEMPLATE.parent.parent
-    files = [*web.glob("templates/**/*.tpl"), *web.glob("help/*.md"), *web.glob("static/js/*.js")]
+    files = [
+        *web.glob("templates/**/*.tpl"),
+        *web.glob("help/*.md"),
+        *web.glob("static/js/*.js"),
+        *web.glob("whatsnew/*.md"),
+    ]
     assert len(files) > 20
     for path in files:
         text = path.read_text(encoding="utf-8")

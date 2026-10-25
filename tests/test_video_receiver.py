@@ -38,6 +38,7 @@ from typing import Any
 
 import pytest
 
+from openfollow.runtime.overlay_layout import PictureGeometry, VideoRect, scene_view
 from openfollow.runtime.receiver_bus import BusError
 from openfollow.video import receiver as receiver_mod
 from openfollow.video.connection_status import ConnectionStatus
@@ -1883,12 +1884,21 @@ class TestPadEvent:
         fps_num: int = 30,
         fps_den: int = 1,
         fraction_returns: tuple[bool, int, int] = None,
+        par: tuple[int, int] | None = None,
     ):
+        fractions = {
+            "framerate": fraction_returns if fraction_returns is not None else (True, fps_num, fps_den),
+            # A field the caps do not carry reads as GStreamer reports it: not found.
+            "pixel-aspect-ratio": (True, *par) if par is not None else (False, 0, 0),
+        }
         structure = SimpleNamespace(
             get_value=lambda key: {"width": width, "height": height}.get(key),
-            get_fraction=lambda key: fraction_returns if fraction_returns is not None else (True, fps_num, fps_den),
+            get_fraction=lambda key: fractions[key],
         )
-        caps = SimpleNamespace(get_structure=lambda _idx: structure)
+        caps = SimpleNamespace(
+            get_structure=lambda _idx: structure,
+            to_string=lambda: _caps_string(width, height, par),
+        )
         event = SimpleNamespace(
             type=FakeEventType.CAPS,
             parse_caps=lambda: caps,
@@ -1935,7 +1945,7 @@ class TestPadEvent:
             get_value=lambda key: {"width": 800, "height": 600}.get(key),
             get_fraction=lambda _k: (_ for _ in ()).throw(RuntimeError("bad")),
         )
-        caps = SimpleNamespace(get_structure=lambda _i: structure)
+        caps = SimpleNamespace(get_structure=lambda _i: structure, to_string=lambda: _caps_string(800, 600))
         event = SimpleNamespace(type=FakeEventType.CAPS, parse_caps=lambda: caps)
         info = SimpleNamespace(get_event=lambda: event)
         r._on_pad_event(object(), info)  # must not raise
@@ -1981,6 +1991,158 @@ class TestPadEvent:
 
         assert r.resolution == (1024, 768)
         assert r.source_framerate == 25.0
+
+    def test_caps_without_a_pixel_aspect_ratio_are_square(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._on_pad_event(object(), self._make_caps_event(1280, 720)[0])
+        assert r.picture_geometry.par == (1, 1)
+
+    @pytest.mark.parametrize(
+        ("par", "expected"),
+        [((12, 11), (12, 11)), ((24, 22), (12, 11)), ((1, 1), (1, 1))],
+        ids=["d1", "unreduced", "square"],
+    )
+    def test_caps_publish_the_pixel_aspect_ratio_in_lowest_terms(
+        self, fake_gst, fake_glib, fake_input_cls, par: tuple[int, int], expected: tuple[int, int]
+    ) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._on_pad_event(object(), self._make_caps_event(704, 576, par=par)[0])
+        assert r.resolution == (704, 576)
+        assert r.picture_geometry == PictureGeometry(704, 576, expected)
+
+    @pytest.mark.parametrize("par", [(0, 1), (1, 0), (-12, 11)], ids=["zero", "zero-den", "negative"])
+    def test_an_invalid_pixel_aspect_ratio_reads_as_square(
+        self, fake_gst, fake_glib, fake_input_cls, par: tuple[int, int]
+    ) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._on_pad_event(object(), self._make_caps_event(704, 576, par=par)[0])
+        assert r.picture_geometry.par == (1, 1)
+
+    def test_the_pixel_aspect_ratio_is_read_from_the_caps_string(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        """The structure getters are what GStreamer 1.26.2 broke, so a getter
+        that cannot answer must not turn a non-square picture square."""
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+
+        def _get_fraction(key: str) -> tuple[bool, int, int]:
+            if key == "pixel-aspect-ratio":
+                raise RuntimeError("bad")
+            return (True, 25, 1)
+
+        structure = SimpleNamespace(
+            get_value=lambda key: {"width": 704, "height": 576}.get(key), get_fraction=_get_fraction
+        )
+        caps = SimpleNamespace(get_structure=lambda _i: structure, to_string=lambda: _caps_string(704, 576, (12, 11)))
+        event = SimpleNamespace(type=FakeEventType.CAPS, parse_caps=lambda: caps)
+        r._on_pad_event(object(), SimpleNamespace(get_event=lambda: event))
+        assert r.picture_geometry == PictureGeometry(704, 576, (12, 11))
+
+    def test_a_pixel_aspect_range_reads_as_square(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        info, event = self._make_caps_event(704, 576)
+        caps = event.parse_caps()
+        ranged = (
+            "video/x-raw, width=(int)704, height=(int)576, pixel-aspect-ratio=(fraction)[ 1/2147483647, 2147483647/1 ]"
+        )
+        event.parse_caps = lambda: SimpleNamespace(get_structure=caps.get_structure, to_string=lambda: ranged)
+        r._on_pad_event(object(), info)
+        assert r.resolution == (704, 576)
+        assert r.picture_geometry.par == (1, 1)
+
+    def test_a_pixel_aspect_change_alone_is_a_new_shape(self, fake_gst, fake_glib, fake_input_cls, caplog) -> None:
+        import logging as _logging
+
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._on_pad_event(object(), self._make_caps_event(720, 576, par=(16, 15))[0])
+        with caplog.at_level(_logging.INFO, logger="openfollow.video.receiver"):
+            r._on_pad_event(object(), self._make_caps_event(720, 576, par=(64, 45))[0])
+        assert r.picture_geometry.par == (64, 45)
+        assert [rec.message for rec in caplog.records if "Video resolution" in rec.message] == [
+            "Video resolution: 720x576, pixel aspect ratio 64:45"
+        ]
+
+    def test_placeholder_caps_leave_the_picture_alone(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        # Its black frame is no picture: the scene keeps the last source's box.
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._on_pad_event(object(), self._make_caps_event(704, 576, par=(12, 11))[0])
+        r._state.set_placeholder_pipeline(True)
+        r._on_pad_event(object(), self._make_caps_event(1920, 1080, par=(4, 3))[0])
+        assert r.picture_geometry == PictureGeometry(704, 576, (12, 11))
+
+
+def _caps_string(width: int, height: int, par: tuple[int, int] | None = None) -> str:
+    """Caps in the form ``Gst.Caps.to_string`` prints them."""
+    fields = f"video/x-raw, format=(string)I420, width=(int){width}, height=(int){height}"
+    if par is not None:
+        fields += f", pixel-aspect-ratio=(fraction){par[0]}/{par[1]}"
+    return fields + ", framerate=(fraction)30/1"
+
+
+def _caps_info(width: int, height: int) -> Any:
+    """A sink-pad probe info carrying square-pixel caps of ``width`` x ``height``."""
+    structure = SimpleNamespace(
+        get_value=lambda key: {"width": width, "height": height}.get(key),
+        get_fraction=lambda key: (True, 30, 1) if key == "framerate" else (False, 0, 0),
+    )
+    caps = SimpleNamespace(get_structure=lambda _i: structure, to_string=lambda: _caps_string(width, height))
+    event = SimpleNamespace(type=FakeEventType.CAPS, parse_caps=lambda: caps)
+    return SimpleNamespace(get_event=lambda: event)
+
+
+class TestTheHudKeepsTheBoxOfTheFrozenPicture:
+    """A rebuild stops the pipeline, but gtksink keeps its last frame up in the
+    box it was drawn in until new caps arrive. The HUD must stay on it: the
+    whole canvas, for a 4:3 camera on a 16:9 screen, draws the scene and reads
+    the mouse a third wider than the picture under it."""
+
+    _CANVAS = (1920, 1080)
+    _PILLARBOX_4_3 = VideoRect(240, 0, 1440, 1080)
+
+    def _box(self, r: receiver_mod.GstNativeSinkReceiver) -> VideoRect:
+        """The rectangle the renderer boxes the scene into, from what the overlay is fed."""
+        picture = r.picture_geometry
+        return scene_view(*self._CANVAS, picture.width, picture.height, picture.par).rect
+
+    @pytest.mark.parametrize(
+        "rebuild",
+        ["reconnect", "swap_input", "swap_detection_branch", "release_source", "placeholder"],
+    )
+    def test_a_rebuild_keeps_the_box_until_new_caps_arrive(
+        self, fake_gst, fake_glib, fake_input_pair, monkeypatch, rebuild: str
+    ) -> None:
+        monkeypatch.setattr(threading, "Thread", _SyncSwapThread)
+        fake_input, fake_input_alt = fake_input_pair
+        fake_input.create_pipeline_result = FakePipeline()
+        fake_input_alt.create_pipeline_result = FakePipeline()
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._pipeline = FakePipeline()
+        r._on_pad_event(object(), _caps_info(1024, 768))
+        assert self._box(r) == self._PILLARBOX_4_3
+
+        if rebuild == "reconnect":
+            r._schedule_reconnect("lost link")
+        elif rebuild == "swap_input":
+            r.swap_input("fake_alt", {"alt_url": "test://x"})
+        elif rebuild == "swap_detection_branch":
+            r.swap_detection_branch(None)
+        elif rebuild == "release_source":
+            r.release_source()
+        else:
+            r._pipeline_assembler.create_placeholder_pipeline = FakePipeline
+            r._create_placeholder_pipeline()
+            r._on_pad_event(object(), _caps_info(1920, 1080))
+
+        # The source's own figures are gone; the picture on screen is not.
+        assert r.resolution == (0, 0)
+        assert self._box(r) == self._PILLARBOX_4_3
+
+        r._state.set_placeholder_pipeline(False)
+        r._on_pad_event(object(), _caps_info(1920, 1080))
+        assert self._box(r) == VideoRect(0, 0, *self._CANVAS)
+
+    def test_before_any_picture_the_scene_fills_the_canvas(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        assert r.picture_geometry == PictureGeometry()
+        assert self._box(r) == VideoRect(0, 0, *self._CANVAS)
 
 
 # --------------------------------------------------------------------------- #
@@ -2737,9 +2899,9 @@ class TestVideoFlowTransitionBranches:
     def _caps(width: int, height: int):
         structure = SimpleNamespace(
             get_value=lambda key: {"width": width, "height": height}.get(key),
-            get_fraction=lambda _k: (True, 30, 1),
+            get_fraction=lambda key: (True, 30, 1) if key == "framerate" else (False, 0, 0),
         )
-        caps = SimpleNamespace(get_structure=lambda _i: structure)
+        caps = SimpleNamespace(get_structure=lambda _i: structure, to_string=lambda: _caps_string(width, height))
         event = SimpleNamespace(type=FakeEventType.CAPS, parse_caps=lambda: caps)
         return SimpleNamespace(get_event=lambda: event), event
 

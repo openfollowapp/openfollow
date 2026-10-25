@@ -1385,9 +1385,16 @@ class TestUpdateInputFields:
         from openfollow.video.inputs import avf
 
         monkeypatch.setattr(avf, "_camera_names", {})
+        # Connected and available on every platform, so a rebuild would reach the build.
+        monkeypatch.setattr(
+            avf, "_list_avf_devices", lambda: [{"unique_id": "0x14100000", "name": "USB Capture", "index": "0"}]
+        )
+        monkeypatch.setattr(avf.AvfInput, "is_available", classmethod(lambda _cls: (True, "")))
         monkeypatch.setattr(receiver_mod, "get_input_class", lambda _input_id: avf.AvfInput)
         builds: list[object] = []
-        monkeypatch.setattr(avf.AvfInput, "create_pipeline", lambda *args, **kwargs: builds.append(args))
+        monkeypatch.setattr(
+            avf.AvfInput, "create_pipeline", lambda *args, **kwargs: builds.append(args) or FakePipeline()
+        )
         r = receiver_mod.GstNativeSinkReceiver(source_type="avf", input_config={"avf_unique_id": "0x14100000"})
         assert not {f.name: f for f in avf.AvfInput.config_fields()}["avf_device_name"].rebuilds
 
@@ -1396,6 +1403,7 @@ class TestUpdateInputFields:
         assert r.source_name.startswith("Capture Card (")
         assert builds == []
         assert r._pipeline is None
+        assert not fake_glib.timers
 
 
 class TestSetSource:
@@ -4950,7 +4958,7 @@ class TestRecoveryTimersByInput:
         assert r._watchdog_source_id is not None
 
     @pytest.mark.parametrize("input_id", sorted(get_registry()))
-    def test_only_the_network_inputs_heal_once_their_retries_run_out(
+    def test_only_rtsp_srt_and_rtp_heal_once_their_retries_run_out(
         self, fake_gst, fake_glib, monkeypatch, input_id: str
     ) -> None:
         r = _real_input_receiver(monkeypatch, input_id)

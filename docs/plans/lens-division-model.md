@@ -665,8 +665,8 @@ group; proposal, no mockup):
   picture centre (px)** and **Above the picture centre (px)**, whole pixels of
   the station's current video (`receiver.resolution`, handed to the page like
   the other live values), step 1, `min`/`max` from that size.
-- They are helper fields without a `name`: each writes its hidden `lens_cx` / `lens_cy` through the
-  size the page was rendered with. The px fields carry the validate markup
+- They are helper fields without a `name`: each writes its hidden `lens_cx` /
+  `lens_cy` through the size the page was rendered with. The px fields carry the validate markup
   for their hidden field (`hx-get="/api/validate/camera/lens_cx"`,
   `hx-include="closest form"`, the error span), so the cross-field limit
   error shows under them; FIELD_RULES and `apply_section_data` check the

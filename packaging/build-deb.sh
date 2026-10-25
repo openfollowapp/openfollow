@@ -314,8 +314,10 @@ install -m 0644 "$REPO_ROOT/THIRD_PARTY_NOTICES.md"              "$SHARE/THIRD_P
 install -m 0644 "$REPO_ROOT/WRITTEN_OFFER.md"                    "$SHARE/WRITTEN_OFFER.md"
 install -m 0644 "$DEBIAN_DIR/openfollow.service"                 "$UNIT_DIR/openfollow.service"
 install -m 0644 "$DEBIAN_DIR/openfollow-splash.service"          "$UNIT_DIR/openfollow-splash.service"
-# Vendor drop-in bounding NetworkManager-wait-online so a slow/network-less boot
-# doesn't hold the kiosk GUI behind the splash for ~60s (see the .conf header).
+# Vendor drop-in replacing NetworkManager-wait-online's wait, so a LAN without
+# DHCP or a network-less boot doesn't hold the kiosk GUI behind the splash or
+# fail the unit (see the .conf header).
+install -m 0755 "$DEBIAN_DIR/nm-wait-online.sh"                   "$SHARE/nm-wait-online.sh"
 install -d -m 0755 "$UNIT_DIR/NetworkManager-wait-online.service.d"
 install -m 0644 "$DEBIAN_DIR/nm-wait-online-timeout.conf" \
   "$UNIT_DIR/NetworkManager-wait-online.service.d/10-openfollow-timeout.conf"

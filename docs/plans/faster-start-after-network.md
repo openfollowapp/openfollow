@@ -10,8 +10,9 @@ polls. This plan removes the fixed waits and polls the network faster.
 - **Splash:** the splash is stopped once it has been up 1.5 s, counted from the start of `openfollow-splash.service`
   (its `ActiveEnterTimestampMonotonic` against the system's monotonic clock). On a boot the network takes longer
   than that, so the step waits 0 s. A restart of the unit starts the splash again (the unit wants it), so a restart
-  shows it for 1.5 s instead of today's 3 s plus 2 s of black. Whether the logo can also fill the black gap while
-  Cage and the app start, and the 1.5 s go, is decided on the station measurements.
+  shows it for 1.5 s instead of today's 3 s plus 2 s of black. The black gap that remains while Cage and the app
+  start (about 1.7 s on a restart, 4.8 s on a cold boot) is left to a follow-up that starts the session while the
+  network wait runs; the splash cannot stay on under Cage, which needs the display.
 - **USB:** `sleep 2` goes. The unit is already ordered after `systemd-udev-settle.service`, gamepads are picked up
   on hotplug and by the retry while none is open, and 3D mice are enumerated again every 1.5 s. If a gamepad or a 3D
   mouse present at boot does not reach its saved controller slot without a replug, a bounded wait comes back.
@@ -32,7 +33,20 @@ polls. This plan removes the fixed waits and polls the network faster.
 - [x] `build-deb.sh` installs the new script; `docs/PACKAGING.md` describes the start steps and the polling.
 - [x] Before, from a `.deb` of main on pi66: critical chain, `systemctl is-system-running`, time to
       `Network ready for startup`, with and without DHCP (+15.5 s and +18.1 s from the start of the network wait).
-- [ ] After, from a `.deb` of the branch on pi66: the same measurements; the splash on a cold boot; a restart
+- [x] After, from a `.deb` of the branch on pi66: the same measurements; the splash on a cold boot; a restart
       showing the splash 1.5 s; screenshots every 0.25 s of how long the screen stays black; the 8BitDo pad and the
       SpaceNavigator in their slots without a replug; `nm-online --timeout=0` while the network is not ready yet.
 - [ ] Mutation check of the new tests, three review rounds, `make ci-remote`, draft PR.
+
+## Results (pi66, Pi 5, two wired adapters)
+
+From the start of the network wait:
+
+| Step | DHCP before | DHCP after | No DHCP before | No DHCP after |
+|---|---|---|---|---|
+| Network wait finished | +4.3 s | +4.5 s | +8.2 s | +7.4 s |
+| `openfollow.service` started | +9.4 s | +4.7 s | +13.4 s | +7.5 s |
+| `Network ready for startup` | +15.5 s | +9.4 s | +18.1 s | +12.2 s |
+
+A restart shows the splash 1.6 s (was 3.1 s) and 1.7 s of black (was 3.7 s); the picture is back after 3.3 s
+(was 6.8 s). The gamepad and the 3D mouse present at boot are in their saved slots without a replug.

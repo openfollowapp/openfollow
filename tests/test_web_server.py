@@ -2277,7 +2277,7 @@ def test_the_camera_tab_lists_the_calibration_marks_read_only(live_server, mode:
     readout = _readout(_camera_section(html_text))
     assert readout["Type"] == kind
     # Each kind counts its pinned points; Simple's points are its corners.
-    assert readout["Pinned"] == ("3 of 4 corners" if mode == "simple" else "3 of 4 known points, 1 distance point")
+    assert readout["Pinned"] == ("3 of 4 corners" if mode == "simple" else "3 of 4 known points, 1 triangulated point")
     # Without video there is no picture to count an error in.
     assert rows[0] == ["DSL", "Known point", "X = 5.000 m<br>Y = 0.000 m<br>Z = 0.000 m", "–", "Yes", "–"]
     assert rows[1] == ["DSR", "Known point", "X = -5.000 m<br>Y = 0.000 m<br>Z = 0.000 m", "–", "No", "–"]
@@ -2285,7 +2285,7 @@ def test_the_camera_tab_lists_the_calibration_marks_read_only(live_server, mode:
     if mode == "advanced":
         assert rows[4] == [
             "P5",
-            "Distance point",
+            "Triangulated point",
             "X = 2.500 m<br>Y = 9.000 m<br>Z = 0.000 m",
             "DSL 21.400 m<br>DSR 23.900 m",
             "Yes",

@@ -603,7 +603,7 @@ def plausibility(
 def pin_errors(cam: CameraConfig, width: float, height: float) -> dict[int, float]:
     """Each pinned mark's distance in px from where *cam*, lens included, sees it in a *width* x *height* picture.
 
-    A distance point counts once its solve placed it; a mark behind the camera has none.
+    A triangulated point counts once its solve placed it; a mark behind the camera has none.
     """
     pinned = [(m, [m.x, m.y, m.z] if m.kind == "known" else m.position) for m in cam.calibration_marks if m.pin]
     pinned = [(m, at) for m, at in pinned if at]

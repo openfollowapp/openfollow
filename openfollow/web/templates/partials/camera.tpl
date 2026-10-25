@@ -21,7 +21,7 @@
 %   _on = sum(1 for _m in _all if _m.pin)
 %   return ("%d" % _on if _on == len(_all) else "%d of %d" % (_on, len(_all))) + " " + (one if len(_all) == 1 else many) if _all else ""
 % end
-% _pinned_text = _pinned_of("known", "corner", "corners") if _cam.calibration_mode == "simple" else ", ".join(t for t in (_pinned_of("known", "known point", "known points"), _pinned_of("triangulated", "distance point", "distance points")) if t)
+% _pinned_text = _pinned_of("known", "corner", "corners") if _cam.calibration_mode == "simple" else ", ".join(t for t in (_pinned_of("known", "known point", "known points"), _pinned_of("triangulated", "triangulated point", "triangulated points")) if t)
 % # Pins are fractions of the snapshot, counted in pixels of the live video.
 % _errors = pin_errors(_cam, *_vs) if _vs else {}
 % _ratings = {"excellent": "Excellent", "good": "Good", "fair": "Fair", "poor": "Poor", "not_usable": "Not usable", "user_input": "User input", "loaded": "Loaded"}
@@ -122,7 +122,7 @@
                 % _at = [_m.x, _m.y, _m.z] if _m.kind == "known" else _m.position
                 <tr>
                     <th scope="row">{{_m.name}}</th>
-                    <td>{{"Known point" if _m.kind == "known" else "Distance point"}}</td>
+                    <td>{{"Known point" if _m.kind == "known" else "Triangulated point"}}</td>
                     % if _at:
                     <td>X = {{format_length(_at[0], _us)}}<br>Y = {{format_length(_at[1], _us)}}<br>Z = {{format_length(_at[2], _us)}}</td>
                     % else:

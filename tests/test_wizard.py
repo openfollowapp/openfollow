@@ -518,7 +518,7 @@ class TestWizardHelpCopy:
 
     def test_the_advanced_caution_list_names_the_distances(self) -> None:
         caution = self._help("wizard-calibration-advanced").split("## Something might be wrong")[1]
-        assert "a distance point whose distances disagree with the picture" in caution
+        assert "a triangulated point whose distances disagree with the picture" in caution
 
     def test_review_says_apply_waits_for_incomplete_points(self) -> None:
         assert "stays off while a point is not complete" in self._help("wizard-review")
@@ -1974,14 +1974,14 @@ class TestWizardLensTemplateBubbles:
 
 @unit
 def test_no_page_or_help_text_names_the_old_lens_and_point_labels() -> None:
-    """The pair is Barrel / fisheye and Corner correction, the kinds Known point and Distance point, everywhere."""
+    """The pair is Barrel / fisheye and Corner correction, the kinds Known point and Triangulated point, everywhere."""
     web = WIZARD_TEMPLATE.parent.parent
     files = [*web.glob("templates/**/*.tpl"), *web.glob("help/*.md"), *web.glob("static/js/*.js")]
     assert len(files) > 20
     for path in files:
         text = path.read_text(encoding="utf-8")
-        for old in ("Edge fit", "edge fit", "Triangulated", "triangulated point", "New triangulated"):
-            assert old not in text, (path.name, old)
+        for old in ("Edge fit", "edge fit", "distance point", "laser point"):
+            assert old not in text.lower(), (path.name, old)
 
 
 @integration

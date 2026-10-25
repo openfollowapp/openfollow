@@ -2,7 +2,7 @@
 
 Where the real camera sits in the venue and which lens it uses. OpenFollow uses these to project tracked points into stage coordinates, so they must match the physical rig.
 
-The **Setup Wizard** (**Open Setup Wizard**) calculates position, orientation and field of view from marks on the stage pinned on the picture: the four corners of a measured rectangle (**Simple**), or known points and distance points (**Advanced**). Its Lens step measures the lens. This section shows the values the station uses and edits none of them.
+The **Setup Wizard** (**Open Setup Wizard**) calculates position, orientation and field of view from marks on the stage pinned on the picture: the four corners of a measured rectangle (**Simple**), or known points and triangulated points (**Advanced**). Its Lens step measures the lens. This section shows the values the station uses and edits none of them.
 
 Positions are lengths in the station's units, relative to the **Reference Point** – the single physical point on stage that is the (0, 0, 0) of your show (see Core Concepts). Orientation is in **degrees**.
 
@@ -46,15 +46,15 @@ The **Calibration** column says which calibration the **Setup Wizard** applied l
 - **Calibrated** – when it was saved, by the clock of the browser that saved it, in that browser's time zone.
 - **Video source** – the video source the station showed when it was saved, without any password in its address. The calibration fits that camera; another source, or the same camera moved or zoomed, needs a new one.
 - **Lens rating** – the Lens step's rating of the lens it was saved with (**Excellent**, **Good**, **Fair**, **Poor**), **User input** for values typed or changed by hand, or **Loaded** for a lens calibration loaded unchanged. A lens kept from before, by the Setup Wizard or because a fit was not applied, keeps its rating; a lens changed outside the Setup Wizard has none.
-- **Pinned** – how many of its points are placed on the picture: the corners in Simple, the known points and distance points in Advanced.
+- **Pinned** – how many of its points are placed on the picture: the corners in Simple, the known points and triangulated points in Advanced.
 - **Accuracy** – the largest distance, in pixels of the live video, between a pinned point and where the saved camera sees it, lens included. Fractions of a pixel to a few pixels is a close fit; a large value means a point was pinned or measured wrong, or the camera has moved since. **No video** without a picture to count in.
 
 A row is missing when the calibration did not record it. **Calibration points** opens its points, read-only, one row per point:
 
 - **Point** – its name. In Simple the points are the rectangle's corners, DSL, DSR, USR and USL.
-- **Kind** – **Known point** for a typed position, **Distance point** for a point measured by its distances to two other points plus its height.
-- **Position** – X, Y and Z. A distance point's is where the calculation of the saved pose put it, or `–` when none did.
-- **Measured from** – a distance point's two points and the distance to each.
+- **Kind** – **Known point** for a typed position, **Triangulated point** for a point measured by its distances to two other points plus its height.
+- **Position** – X, Y and Z. A triangulated point's is where the calculation of the saved pose put it, or `–` when none did.
+- **Measured from** – a triangulated point's two points and the distance to each.
 - **Pinned** – whether it is placed on the picture.
 - **Error** – for a pinned point, its distance in pixels from where the saved camera sees it.
 

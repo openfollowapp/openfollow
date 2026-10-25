@@ -90,7 +90,7 @@ for the picture, each ending with "**?** Show or hide this help":
 |---|---|---|
 | Lens | With suggestions on the picture: "Check each dashed suggested line: the check mark uses it, the cross removes it. Or click the start and the end of a straight edge. Click a line to select it. Drag a point to correct it."; without: "Click the start and the end of a straight edge. Click a line to select it. Drag a point to correct it." | Tab: Next suggestion bubble or line. With a point selected: the next point on its line, after the last the first again · Shift + Tab: The previous point on its line, before the first the last again · Arrows: Move the selected point 1 px, with Shift 10 px · Enter: Confirm the point and end the selection · Delete or Backspace: Remove the selected line, or cancel a line you started · Esc: End full screen (also cancels the selection) |
 | Calibration, Simple | "Drag each corner onto its tape mark. The loupe shows the picture 4× larger. Click a corner to select it." | Tab: Select the next corner · Arrows: Move the selected corner 1 px · Enter: Place the corner where the crosshair is · Esc: End full screen (also cancels the selection) |
-| Calibration, Advanced | "Click the picture where a point is, and choose the point from the menu. Or create a New known point or a New distance point there. Click a pin to remove the pin or delete the point. Drag a pin to correct it." | Arrows: Menu open: move the spot 1 px. Pin selected: move the pin 1 px · Tab: Next menu item, field or pin · Enter: Choose the menu item, or place the new point · Esc: End full screen (also cancels the selection) |
+| Calibration, Advanced | "Click the picture where a point is, and choose the point from the menu. Or create a New known point or a New triangulated point there. Click a pin to remove the pin or delete the point. Drag a pin to correct it." | Arrows: Menu open: move the spot 1 px. Pin selected: move the pin 1 px · Tab: Next menu item, field or pin · Enter: Choose the menu item, or place the new point · Esc: End full screen (also cancels the selection) |
 | Review | "The picture shows the calculated grid, the points and 0/0/0, as the Operator Screen will draw them. You cannot change anything here." | Esc: End full screen |
 
 On the page (not in full screen) Esc keeps its order: close an open menu, end
@@ -159,7 +159,7 @@ to Imperial** / **Metric** (small, left of the **?**), **?**.
 
 | Topic | Decision |
 |---|---|
-| Mode switch | Labelled **Calibration**, the segmented switch (`.seg-toggle`): **Simple** "Four corners of a rectangle", **Advanced** "Known points and distance points" |
+| Mode switch | Labelled **Calibration**, the segmented switch (`.seg-toggle`): **Simple** "Four corners of a rectangle", **Advanced** "Known points and triangulated points" |
 | Hint box | One blue `.notice` that always names the next thing to do, moved above the part of the page it is about |
 | Per mode | The subtitle, the hint, the tip under the picture and the help drawer |
 | Units | **Switch units** changes the station's unit system (the setting in General) and converts every length already entered. Imperial reads ft / in text (`26' 3"`, `26 ft 3 in`, a bare number as feet) with the "Stored:" metric echo under each field, left out while the field shows an error |
@@ -242,20 +242,20 @@ never touches the grid.
 |---|---|
 | Camera position | Required and first: "**Where is your camera?** Enter the position of its lens, measured from the point of origin, in m: X = stage left, Y = upstage, Z = up. An estimate within about 2.0 m per axis is good enough." (6.6 ft in Imperial) Partly filled: "Enter all three values." |
 | Partly filled, both modes | Next shows the error under the fields (an alert), which then describes all three; the ones without a usable value are marked invalid and the first of them takes the focus. Completing or clearing the values removes it; a value typed again shows no error until the next Next |
-| Kinds | **Known point**: X / Y / Z typed. **Distance point** (stored as kind `triangulated`): found from its distances to two other points (known points or distance points) and its Z, default 0 |
-| Rules | The camera position, at least two known points, at least four pinned points. A known point may stay unpinned (a point outside the picture still counts as one to measure from); a distance point must be pinned (two distances leave two places mirrored across the line between its points). No point measured from itself through others. **Add distance point** and **New distance point** appear once two known points read |
-| Picture | Over the picture the loupe follows the pointer. A click opens **Which point is here?** at that spot (a dashed ring marks it; with the menu as a panel, a ring with a crosshair), on the click, not the press: on a phone a menu opened by the press would sit under the finger and take the same tap. A press that moved between press and release opens nothing (3 CSS px for a mouse, 8 for a finger or a pen; the same on every picture and pin): the unpinned points (name, Known point / Distance point), a separator, **New known point** (X/Y/Z), **New distance point** (disabled with "Needs two known points" until then). Choosing a point pins it there |
+| Kinds | **Known point**: X / Y / Z typed. **Triangulated point** (stored as kind `triangulated`): found from its distances to two other points (known points or triangulated points) and its Z, default 0 |
+| Rules | The camera position, at least two known points, at least four pinned points. A known point may stay unpinned (a point outside the picture still counts as one to measure from); a triangulated point must be pinned (two distances leave two places mirrored across the line between its points). No point measured from itself through others. **Add triangulated point** and **New triangulated point** appear once two known points read |
+| Picture | Over the picture the loupe follows the pointer. A click opens **Which point is here?** at that spot (a dashed ring marks it; with the menu as a panel, a ring with a crosshair), on the click, not the press: on a phone a menu opened by the press would sit under the finger and take the same tap. A press that moved between press and release opens nothing (3 CSS px for a mouse, 8 for a finger or a pen; the same on every picture and pin): the unpinned points (name, Known point / Triangulated point), a separator, **New known point** (X/Y/Z), **New triangulated point** (disabled with "Needs two known points" until then). Choosing a point pins it there |
 | The menu | A labelled group of buttons, not an ARIA menu (the arrow keys move the spot, not between items). It ignores the clicks of the press or key that opened it, and the second click of a double-click (the page may have scrolled under it). Placed 12 px right of and below the spot, flipped to stay inside the picture and scrolled into view (nearest) as it opens or changes; its first item takes the focus. **×**, Esc or a press outside the menu and the picture close it. While it is open the loupe stays on the spot (clear of the menu) and the arrow keys move the spot 1 px (Shift 10) unless a field has the focus |
 | Menu on a phone | Where the picture is under 480 × 360 CSS px (a phone; a 1024 × 768 tablet and a desktop keep the popup), the same menu is a full-width panel directly under the picture, before Refresh Image: not clipped, no scrolling of its own, scrolled into view (nearest) as it opens or changes. Decided again on a resize or a turn of the phone, which moves an open menu and keeps its focus. In full screen it is a sheet at the bottom of the shell (at most half its height, scrolling inside), and the picture fits above it. Same items, forms, keys, focus and gesture rule as the popup; a click outside the panel and the picture closes it once the clicked control has acted, a press or the focus it gives does not (a swipe that scrolls the page down to it starts with one). A pin's menu shows its pin selected |
 | New known point | The menu becomes a form: **Point** (prefilled P<n>), X / Y / Z (Z prefilled 0), **Back**, **Place point** (disabled until X / Y / Z read) |
-| New distance point | **Point**, two pairs of **Measured from** + **Distance**, **Z** (empty means 0); **Place point** once both Measured from choices differ and both distances are above 0. Each Measured from list leaves out the point chosen in the other |
+| New triangulated point | **Point**, two pairs of **Measured from** + **Distance**, **Z** (empty means 0); **Place point** once both Measured from choices differ and both distances are above 0. Each Measured from list leaves out the point chosen in the other |
 | While a form is open | A click on the picture moves the spot |
 | A pin | Dragging moves it. A click on it opens its menu (on the click, as on the picture), titled "P1 · Known point": **Remove pin** ("Keeps the point") and **Delete point** (error colour). The menu itself takes the focus, so the arrow keys move the pin and Enter closes the menu with the pin where it is; Tab reaches the items |
-| Point list | Below the picture. Each row: name, kind chip, status chip, for a distance point its X / Y / Z, **Remove pin** (when pinned), **Delete**. Fields: **Point** (never labelled "Name": browsers and password managers fill in the operator's own name; `autocomplete="off"` and the ignore attributes), then X / Y / Z, or Z and Measured from / Distance / Measured from / Distance. A reason line under a row with a problem. "No points yet." while empty. **Add known point** (for a point outside the picture) and **Add distance point** under the list |
+| Point list | Below the picture. Each row: name, kind chip, status chip, for a triangulated point its X / Y / Z, **Remove pin** (when pinned), **Delete**. Fields: **Point** (never labelled "Name": browsers and password managers fill in the operator's own name; `autocomplete="off"` and the ignore attributes), then X / Y / Z, or Z and Measured from / Distance / Measured from / Distance. A reason line under a row with a problem. "No points yet." while empty. **Add known point** (for a point outside the picture) and **Add triangulated point** under the list |
 | Status chips | Not placed (a problem), Not pinned, Pinned, then "0.4 px" or "0.4 px · 3 cm" (warning when over the caution limits), or "Behind the camera" (warning) for a pin the solved camera puts behind itself, its pin drawn flagged like one far off |
-| Distance point X / Y / Z | Shown before any solve, by trilateration, once its two points have positions and it and both of them are pinned. Of the two mirrored places, the pin's side of the line between its two points' pins picks one (the image's y runs down, so seen from above the floor the sides swap). The solve then refines it. Dashes until then |
+| Triangulated point X / Y / Z | Shown before any solve, by trilateration, once its two points have positions and it and both of them are pinned. Of the two mirrored places, the pin's side of the line between its two points' pins picks one (the image's y runs down, so seen from above the floor the sides swap). The solve then refines it. Dashes until then |
 | Deleting | Removes the point from every Measured from that named it |
-| Tip | "Click the picture where a point is, and choose the point from the menu. Or create a New known point or a New distance point there. Click a pin to remove the pin or delete the point. While a menu is open, the loupe stays on the spot, and the arrow keys move the spot by one pixel. Drag a pin to correct it." |
+| Tip | "Click the picture where a point is, and choose the point from the menu. Or create a New known point or a New triangulated point there. Click a pin to remove the pin or delete the point. While a menu is open, the loupe stays on the spot, and the arrow keys move the spot by one pixel. Drag a pin to correct it." |
 | Missing for the solve | Named as "the camera position", "N more known point(s)", "N more pinned point(s)", joined with "and" |
 
 The Advanced hint, first match wins:
@@ -265,9 +265,9 @@ The Advanced hint, first match wins:
 | No camera position | Camera Position | Enter the rough camera position first. | An estimate within about 2.0 m per axis is good enough. (6.6 ft in Imperial) |
 | Camera position partly filled, once Next showed the error or the focus left the camera fields (as in Simple) | Camera Position | Enter all three values of the camera position. | as above |
 | Fewer than two known points | the picture | Enter two known points that are far apart, such as the DSL and DSR corners. | Click where one of them is on the picture, choose New known point and type its X/Y/Z. N of 2 entered. |
-| Fewer than four points | the picture | Enter one more / two more known points or distance points. | Click where it is on the picture and choose New known point or New distance point. |
-| A point to pin (a distance point always, a known point until four are pinned) | the picture | Pin P3 on the picture. | Click where it is on the picture, then choose it from the menu. N of at least 4 pinned. |
-| Solved | the picture | Check the result. | Check the grid on the picture and the Distances to check. Then press Next. More known points or distance points give a better result. |
+| Fewer than four points | the picture | Enter one more / two more known points or triangulated points. | Click where it is on the picture and choose New known point or New triangulated point. |
+| A point to pin (a triangulated point always, a known point until four are pinned) | the picture | Pin P3 on the picture. | Click where it is on the picture, then choose it from the menu. N of at least 4 pinned. |
+| Solved | the picture | Check the result. | Check the grid on the picture and the Distances to check. Then press Next. More known points or triangulated points give a better result. |
 | No solve | the picture | The camera cannot be calculated from these points. | Check the pins and the measurements. |
 | No solve at an entered camera height | the picture | The camera cannot be calculated at this camera height. | Check the camera height, the pins and the measurements. |
 
@@ -290,7 +290,7 @@ A point's reason line, as the first problem found:
 
 **Distances to check:** "Measure these distances between the marks on the
 stage. If a distance is different, a typed or measured value is wrong. The
-distances from a distance point to the two points it is measured from are not listed." A table (Points, Distance) of every pair of
+distances from a triangulated point to the two points it is measured from are not listed." A table (Points, Distance) of every pair of
 placed points except those, computed from the typed and solved positions in
 the active units. A click, Enter or Space on a row draws that pair on the picture as
 a labelled line through the solved camera; the row keeps the focus and is
@@ -308,10 +308,10 @@ measured value.
 
 | Topic | Decision |
 |---|---|
-| One fit | Both modes go through one Levenberg-Marquardt fit: the 7 camera values plus each distance point's X / Y, against the pins (`PIXEL_SIGMA` 1 px) and the distance points' distances (`DISTANCE_SIGMA` 0.04 m). Pins are undistorted with the lens pair first. Every pin counts the same, and no point is left out automatically: one that disagrees is named in the caution |
-| Needs | Four pinned points: 7 camera unknowns, 2 equations per pin; a distance point's two distances fix its own X / Y |
+| One fit | Both modes go through one Levenberg-Marquardt fit: the 7 camera values plus each triangulated point's X / Y, against the pins (`PIXEL_SIGMA` 1 px) and the triangulated points' distances (`DISTANCE_SIGMA` 0.04 m). Pins are undistorted with the lens pair first. Every pin counts the same, and no point is left out automatically: one that disagrees is named in the caution |
+| Needs | Four pinned points: 7 camera unknowns, 2 equations per pin; a triangulated point's two distances fix its own X / Y |
 | Seeds | With a camera position: that position looking at 0/0/0, roll 0, at the saved FOV, 40° and 90°. With four pinned known points at one height (within 1 cm, no three in a line): the homography decomposition. Simple has the second unless its decomposition gives none; Advanced always has the first. Without a camera position, when that decomposition gives none or a camera steeper than -82.5°, the camera is also seeded above the pinned known points' centre (at the entered camera height, else as high as the pins' spread says at the saved FOV), looking down at -89° at four bearings. A hint seed steeper than -60° is also tried turned by a quarter, a half and three quarters |
-| Distance points | Start at their trilateration, chained after the points they are measured from, the mirror place picked by the pin as seen from the seed. Two distances that miss by up to `3 √2 · DISTANCE_SIGMA` meet halfway; more leaves the point unplaced with its reason |
+| Triangulated points | Start at their trilateration, chained after the points they are measured from, the mirror place picked by the pin as seen from the seed. Two distances that miss by up to `3 √2 · DISTANCE_SIGMA` meet halfway; more leaves the point unplaced with its reason |
 | Mirror sides | Every seed is fitted twice, with the pin-picked places and with all of them flipped. An upright camera (at or above the lowest point, pitch ≤ 0) beats one that is not, then the lowest cost wins |
 | Answer | Camera, per point: status, reason, pixel error, distance error, position; largest error; the caution reasons |
 | Unsolvable | No finite fit or a FOV outside 10-170°: "No camera fits these points. Check the pins and the measurements." (Simple: "No camera fits these corners. Check the corners and the measurements."). With a camera height at or below the lowest pinned point, or one no camera fits: "No camera fits at this camera height. Check the camera height and the measurements." |
@@ -357,7 +357,7 @@ corners again." (Simple) / "… then pin the points again." (Advanced). It block
 | Point disagrees | A pin's error over 5 px | P2 disagrees with the other points by N px. |
 | Point far off | A pin's error over 20 px (`APPLY_MAX_PX`), or a pinned point the camera puts behind itself: **Save and finish** is disabled, as 0.4.3 refused such a solve; the closing line reads "Save and finish stays off while a point is more than 20 px off or behind the camera. Check the measurements, then pin the points again." | P2 disagrees with the other points by N px. / P2 lies behind the calculated camera. |
 | Floor reach | Four or more pinned known points at one height and another point: across the picture, within reach of the points, the fit puts the floor more than twice as far or as near (`FLOOR_REACH` 2) as those points' homography alone. Skipped when the fit or that homography camera is steeper than -82.5°, where the reference is noise and the camera height prompt takes over | The calculated camera puts the far floor more than twice as far, or as near, as the floor points alone do. |
-| Distances | A distance point's distance error over 3 σ (12 cm) | P4's distances disagree with the picture by N cm (in in Imperial). |
+| Distances | A triangulated point's distance error over 3 σ (12 cm) | P4's distances disagree with the picture by N cm (in in Imperial). |
 
 ## Review
 
@@ -393,7 +393,7 @@ One `openfollow/web/help/` file per text, matching the mockup:
   its check; Units; Refresh Image; Something might be wrong (and why a
   missing lens hides behind four corners); Full screen; Switching to Advanced.
 - **Camera Calibration (Advanced):** the camera estimate and its per-axis
-  check; known points and distance points (two known points far apart solve
+  check; known points and triangulated points (two known points far apart solve
   about as well as four, close together two to three times worse); placing
   points on the picture; Calculation; Units; Refresh Image; Distances to check
   (they check the shape, not where it sits); Something might be wrong; Full
@@ -430,10 +430,10 @@ thresholds above; the Python tests pin them again.
 | Simple, exact pins, true lens | Exact camera, with a good, 5 m-off, wrong-side or no camera position |
 | Simple, lens fitted from the suggestions (-0.197 / 0.026) | Camera within 1 cm |
 | Simple, lens ignored | Camera 2.4 m off, pin error 0 px: only the position check and the lens caution catch it |
-| Advanced example (Reference Point, DSL, DSR known; riser corners and USR as distance points) | Camera within 2 cm, distance points within 6 mm; pre-solve X / Y / Z match the solve |
-| Advanced, DSL and DSR (12 m apart) plus two distance points, tape right within 5 cm | Worst point median 7 cm, p95 12 cm; four known points 6 / 10 cm |
-| Advanced, Reference Point and DSL (6 m apart) | 16 / 35 cm; a 6 m-off estimate flips both distance points to the mirror side until both sides are tried (the camera below the floor loses) |
-| Advanced, one distance of a distance point 46 cm long | Two distance points flagged (27 cm, 15 cm) |
+| Advanced example (Reference Point, DSL, DSR known; riser corners and USR as triangulated points) | Camera within 2 cm, triangulated points within 6 mm; pre-solve X / Y / Z match the solve |
+| Advanced, DSL and DSR (12 m apart) plus two triangulated points, tape right within 5 cm | Worst point median 7 cm, p95 12 cm; four known points 6 / 10 cm |
+| Advanced, Reference Point and DSL (6 m apart) | 16 / 35 cm; a 6 m-off estimate flips both triangulated points to the mirror side until both sides are tried (the camera below the floor loses) |
+| Advanced, one distance of a triangulated point 46 cm long | Two triangulated points flagged (27 cm, 15 cm) |
 | Advanced, a known X mistyped by 0.5 m | Camera 3.9 m off the position: flagged |
 | Pin noise σ 1 / 2 / 3 px (earlier Concert picture) | Camera off by median 0.14 / 0.26 / 0.38 m, p95 0.27 / 0.51 / 0.78 m |
 | Upstage corners pinned 5 / 10 / 20 px low (earlier picture) | Camera 0.3 / 0.6 / 1.2 m off |
@@ -463,7 +463,7 @@ version first needs one; until then the files only record the version.
       `_forget_corner_pins_off_grid`); Advanced marks are left alone.
 - [x] `FIELD_RULES` for every editable field, matching the server bounds.
 - [x] Tests (`tests/test_configuration.py`): valid lists, wrong type, range,
-      enum, dangling / self / looping From, distance point unpinned, fewer than
+      enum, dangling / self / looping From, triangulated point unpinned, fewer than
       two known, more than the cap, TOML round trip, the release
       candidate's keys dropped as unknown.
 - [x] Tests for the lens store (`tests/test_lens_calibrations.py`): save and
@@ -474,11 +474,11 @@ version first needs one; until then the files only record the version.
 
 ### 2. Solver (`scene/calibration_points.py`)
 - [x] Generalise `solve_with_points` to marks: known points fixed,
-      distance points free in X / Y at their Z, chained trilateration
+      triangulated points free in X / Y at their Z, chained trilateration
       with `_pick_by_pin`, both mirror sides per seed, upright before cost.
 - [x] Seeds: the camera position at three FOVs and the coplanar homography;
       Simple goes through the same entry point.
-- [x] Pre-solve placement of distance points from their pins (the
+- [x] Pre-solve placement of triangulated points from their pins (the
       image-side rule), for the rows.
 - [x] Per-mark answer: status, reason, pixel error, distance error, position.
 - [x] `plausibility(solve, hint, mode, lens_measured, origin_custom)`
@@ -486,7 +486,7 @@ version first needs one; until then the files only record the version.
 - [ ] Tests (`tests/test_calibration_points.py`, `tests/test_solver.py`):
       the Concert picture's camera and a front-of-house camera through known
       poses with absolute pose asserts, the mirror case, an off-picture known
-      point, chained distance points, the pre-solve side rule, the
+      point, chained triangulated points, the pre-solve side rule, the
       lens-ignored case, a mistyped point flagged, each caution reason firing
       and not firing, the axis wording; mutation-check every regression test.
 
@@ -515,7 +515,7 @@ version first needs one; until then the files only record the version.
       starting rectangle, corner drag and selection, the "all four placed"
       gate, the corner list, the 0/0/0 mark, the hints.
 - [x] Camera Calibration, Advanced: camera position first, the picture
-      menus and forms, the point list, pre-solve distance point positions, the
+      menus and forms, the point list, pre-solve triangulated point positions, the
       hints and the "To calculate the camera, add …" line, Distances to check.
 - [x] Unit switch converting every entered length; the status line, the
       caution, the solved values with Lens.

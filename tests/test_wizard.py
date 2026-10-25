@@ -1304,6 +1304,18 @@ class TestWizardLensEdgesEndpoint:
         assert status == 403
         assert data == {"error": "Lens line suggestions are switched off on this station."}
 
+    def test_refuses_a_malformed_body_while_lens_line_suggestions_are_off(self, live_server) -> None:
+        _, base = live_server
+        req = urllib.request.Request(
+            f"{base}/api/wizard/lens/edges",
+            data=b"{not json",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(req, timeout=5)
+        assert exc.value.code == 403
+
     def test_suggests_the_stripe_with_five_sample_points(self, live_server_suggest) -> None:
         _, base = live_server_suggest
         status, data = _post_json(base, "/api/wizard/lens/edges", self._body())

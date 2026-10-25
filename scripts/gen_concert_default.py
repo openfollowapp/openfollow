@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""Render the Media Gallery's Concert default: a concert stage seen from a camera on the back truss.
+"""Draw the scene of the Media Gallery's Concert default: a concert stage seen from a camera on the back truss.
 
 The camera hangs on the upstage back truss over the back of the band riser and looks down over the stage
 into the crowd: dark brown 1 x 2 m stage decks under a white wash, running on, darker, into the wings;
@@ -10,14 +10,16 @@ deck with moving heads on each side of it; white tape along the lip, the mic sta
 setlists at the stage edge; two sheer white legs tied back on each side, at the downstage corner and
 mid-stage, where they hang from a box truss across the stage that carries five spot and six wash moving
 lights; sidefills, amp racks, a monitor desk, a guitar world and cases in the wings; front fills in the
-pit before the crowd barrier, and the crowd. The picture is bowed by a 2.8 mm M12 lens through the
+pit before the crowd barrier, and the crowd. The drawing is bowed by a 2.8 mm M12 lens through the
 overlay's own model, so a station set to the printed camera and lens draws its grid on the deck seams.
-Tape marks the grid's corners and the Reference Point.
+Tape marks the grid's corners and the Reference Point. ``concert_default.jpg`` is a photorealistic
+rendering of this drawing with every line where the drawing puts it, so the calibration the script
+writes beside it holds for it; the drawing itself is written only to a path given on the command line.
 
-Needs ``rsvg-convert`` (librsvg) and Pillow. Prints the camera, the lens pair, the grid and the
-corners' pixels.
+The drawing needs ``rsvg-convert`` (librsvg) and Pillow. Prints the camera, the lens pair, the grid and
+the corners' pixels.
 
-    poetry run python scripts/gen_concert_default.py
+    poetry run python scripts/gen_concert_default.py [drawing.jpg]
 """
 
 from __future__ import annotations
@@ -730,8 +732,12 @@ def picture() -> Image.Image:
 
 
 def main() -> None:
+    """Write the calibration beside ``concert_default.jpg``, and the drawing to the path given, if any."""
     assert pull_back_to_valid(K1, K2, 0.0, 0.0) == (K1, K2, 0.0, 0.0), "lens pair cannot reach the corners"
-    picture().save(ASSET, quality=90, optimize=True)
+    if len(sys.argv) > 1:
+        drawing = Path(sys.argv[1])
+        picture().save(drawing, quality=90, optimize=True)
+        print(f"Wrote: {drawing} ({drawing.stat().st_size // 1024} kB)")
     pos = ", ".join(f"{v:g}" for v in CAMERA[:3])
     print(f"Camera: pos=({pos}) pitch={CAMERA[3]:g} yaw={CAMERA[4]:g} roll={CAMERA[5]:g} hfov={CAMERA[6]:g}")
     print(f"Lens:   barrel / fisheye {K1:g}, corner correction {K2:g}")
@@ -739,7 +745,6 @@ def main() -> None:
     for name, corner in CORNERS.items():
         x, y = lens(pinhole([corner]))[0]
         print(f"  {name}: ({x:.1f}, {y:.1f})")
-    print(f"Wrote: {ASSET.relative_to(ROOT)} ({ASSET.stat().st_size // 1024} kB)")
     grid = {"width": GRID_W, "depth": GRID_D, "spacing": GRID_SPACING}
     grid |= {"x_offset": 0.0, "y_offset": GRID_D / 2, "z_offset": 0.0}
     cal = write_calibration(ASSET, "scripts/gen_concert_default.py", camera_from(CAMERA, K1, K2), grid)

@@ -4671,6 +4671,35 @@ class TestRecoveryTimerOverrides:
         assert r._do_watchdog() is False
         assert r._state.reconnect_source_id is not None
 
+    def test_a_watchdog_switched_on_from_off_starts_with_the_next_connection(
+        self, fake_gst, fake_glib, fake_input_cls
+    ) -> None:
+        """As the Video Source help says: the save itself arms nothing."""
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._state.connected = True
+        r._start_watchdog()
+
+        r.set_recovery_timers(stall_timeout=3.0)
+        assert r._watchdog_source_id is None
+
+        r._handle_video_connected()
+        assert r._watchdog_source_id is not None
+
+    def test_a_heal_interval_set_while_parked_with_healing_off_wakes_nothing(
+        self, fake_gst, fake_glib, fake_input_cls
+    ) -> None:
+        """As the Video Source help says: only a change to the source, a confirm or a restart retries it."""
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+        r._state.reconnect_attempt = 2  # hit max_attempts
+        r._do_reconnect()
+        assert r._state.is_placeholder_pipeline is True
+
+        r.set_recovery_timers(heal_interval=5.0)
+
+        assert r._heal_source_id is None
+        assert r._state.reconnect_source_id is None
+
 
 # --------------------------------------------------------------------------- #
 # Failure diagnosis: how far it got decides what the operator is told

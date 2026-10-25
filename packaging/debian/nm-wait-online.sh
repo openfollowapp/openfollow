@@ -4,8 +4,8 @@
 # NetworkManager-wait-online for a station: succeeds once NetworkManager's
 # startup is complete (nm-online -s), or once every device it is still
 # activating holds an IPv4 address: a lease at once, the link-local fallback
-# once held for 3 s. Checks every $step seconds and gives up after $1 seconds
-# (default 20), both counted on the time since boot.
+# once held for 3 s. Checks about every $step seconds and gives up after $1
+# seconds (default 20); the grace and the cap count on the time since boot.
 #
 # nm-online -s alone never succeeds on a LAN without DHCP: the infinite
 # dhcp-timeout (10-openfollow-dhcp-fallback.conf) keeps that activation running

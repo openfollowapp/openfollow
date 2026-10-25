@@ -16,8 +16,9 @@ polls. This plan removes the fixed waits and polls the network faster.
 - **USB:** `sleep 2` goes. The unit is already ordered after `systemd-udev-settle.service`, gamepads are picked up
   on hotplug and by the retry while none is open, and 3D mice are enumerated again every 1.5 s. If a gamepad or a 3D
   mouse present at boot does not reach its saved controller slot without a replug, a bounded wait comes back.
-- **Network wait:** `nm-wait-online.sh` checks every 0.25 s (`nm-online --timeout=0`). The grace stays 3 s and the
-  cap 20 s, both measured in seconds on the time since boot instead of counted in polls.
+- **Network wait:** `nm-wait-online.sh` checks about every 0.25 s (`nm-online --timeout=0`). The grace stays 3 s and
+  the cap 20 s, both measured on the time since boot; a poll count at twice the cap's polls only ends a wait whose
+  clock does not move.
 - **Kept as is:** the 3 s grace that lets a DHCP lease beat the link-local fallback, and waiting for every device
   NetworkManager is still activating.
 - No What's new entry: nothing here asks anything of the operator.

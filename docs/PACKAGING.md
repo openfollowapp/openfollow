@@ -43,7 +43,7 @@ is Pi-only).
 | `packaging/debian/control.in` | Package metadata; `@VERSION@/@ARCH@/@PYTHON_DEP@/@ALSA_DEP@` are filled in by the build from the build host. |
 | `packaging/debian/openfollow.service` | Main systemd unit (Cage Wayland kiosk, runs the bundled venv). |
 | `packaging/debian/openfollow-splash.service` + `splash.sh` | Boot splash unit + KMS launcher. |
-| `packaging/debian/stop-splash.sh` | `openfollow.service`'s one start step: stops the splash so DRM is free for Cage, once it has been up 1.5 s: on a boot at once, on a restart of the unit, which starts the splash again with it, after 1.5 s. The unit waits for nothing else: it starts after udev settles, and the inputs pick up later USB devices on hotplug. |
+| `packaging/debian/stop-splash.sh` | `openfollow.service`'s one start step. It stops the splash so DRM is free for Cage once the splash has been up 1.5 s, which on a boot is at once; a restart of the unit starts the splash again, so a restart shows it 1.5 s. No fixed sleep for USB devices: the unit starts after udev settles, and the inputs pick up later devices on hotplug. |
 | `packaging/debian/render-splash.sh` | Pre-renders the splash PNG at build time. |
 | `packaging/debian/{postinst,prerm,postrm}` | Create the `openfollow` user + linger, enable/disable the units. |
 | `packaging/debian/preinst.in` + `render-preinst.sh` | On upgrade, back up the station's settings before the new files unpack (see [Settings backups](#settings-backups)). |
@@ -338,7 +338,7 @@ activated connection, and that profile stays activating.
 
 The `.deb`'s drop-in
 (`/usr/lib/systemd/system/NetworkManager-wait-online.service.d/10-openfollow-timeout.conf`)
-runs `/usr/share/openfollow/nm-wait-online.sh 20` instead. Four times a second
+runs `/usr/share/openfollow/nm-wait-online.sh 20` instead. About four times a second
 (`nm-online -s --timeout=0` answers at once) it succeeds when that does, or when
 at least one device is activating and every activating device (loopback aside)
 holds an IPv4 address. A lease counts at once. A device holding only its 169.254

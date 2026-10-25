@@ -459,6 +459,6 @@ def test_wait_online_checks_four_times_a_second_without_waiting_in_nm_online(tmp
     assert (tmp_path / "sleeps").read_text(encoding="utf-8").split() == ["0.25"] * _POLLS_PER_S
 
 
-def test_wait_online_ends_on_a_clock_that_does_not_move(tmp_path: Path) -> None:
-    """An unreadable or frozen clock never runs the cap out; the wait still ends, at twice the polls it allows."""
-    assert _run_wait(tmp_path, [_ON_FALLBACK], cap=1, clock_runs=False) == (1, 2 * _POLLS_PER_S)
+def test_wait_online_ends_on_a_clock_that_does_not_move(tmp_path: Path, shell: str) -> None:
+    """A frozen clock never runs the cap out; the wait still ends, at twice the polls the cap allows."""
+    assert _run_wait(tmp_path, [_ON_FALLBACK], cap=1, shell=shell, clock_runs=False) == (1, 2 * _POLLS_PER_S)

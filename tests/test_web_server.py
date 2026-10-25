@@ -8630,7 +8630,7 @@ def test_gallery_list_shows_defaults(gallery_server) -> None:
     assert status == 200
     assert 'id="gallery-grid"' in body
     titles = re.findall(r'class="gallery-select" type="button" title="([^"]+)"', body)
-    assert titles == ["Stage", "Arena", "Concert", "Festival", "Grey"]
+    assert titles == ["Stage", "Concert", "Festival", "Grey"]
     assert "gallery-label" not in body  # no visible per-tile labels
     assert 'title="Stage"' in body  # name kept as hover/aria name only
 
@@ -8738,7 +8738,6 @@ def test_gallery_thumb_stage_serves_asset(gallery_server) -> None:
 @pytest.mark.parametrize(
     ("media_id", "asset"),
     [
-        ("default:arena", "ARENA_ASSET_JPG"),
         ("default:concert", "CONCERT_ASSET_JPG"),
         ("default:festival", "FESTIVAL_ASSET_JPG"),
     ],
@@ -8760,7 +8759,7 @@ def test_gallery_thumb_grey_has_none(gallery_server) -> None:
 
 @pytest.mark.parametrize(
     ("media_id", "label"),
-    [("default:arena", "Arena"), ("default:concert", "Concert"), ("default:festival", "Festival")],
+    [("default:concert", "Concert"), ("default:festival", "Festival")],
 )
 def test_gallery_select_a_bundled_picture_persists(gallery_server, media_id: str, label: str) -> None:
     server, base, _ = gallery_server

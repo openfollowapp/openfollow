@@ -130,7 +130,6 @@ class TestImageChain:
     @pytest.mark.parametrize(
         ("media_id", "asset"),
         [
-            (media_store.DEFAULT_ARENA_ID, "ARENA_ASSET_JPG"),
             (media_store.DEFAULT_CONCERT_ID, "CONCERT_ASSET_JPG"),
             (media_store.DEFAULT_FESTIVAL_ID, "FESTIVAL_ASSET_JPG"),
         ],
@@ -145,7 +144,6 @@ class TestImageChain:
     @pytest.mark.parametrize(
         ("media_id", "asset"),
         [
-            (media_store.DEFAULT_ARENA_ID, "ARENA_ASSET_JPG"),
             (media_store.DEFAULT_CONCERT_ID, "CONCERT_ASSET_JPG"),
             (media_store.DEFAULT_FESTIVAL_ID, "FESTIVAL_ASSET_JPG"),
         ],
@@ -221,6 +219,19 @@ class TestImageChain:
         pipeline = _build({"testpattern_selected_media": "ffffffffffffffff"})
         # Rendered the Stage default image chain, not a blank/error pipeline.
         assert pipeline.get_by_name("media_source").properties["location"] == str(jpg)
+
+    def test_a_default_this_version_does_not_ship_plays_stage(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A reserved id this version offers no default for, as a config from another version may hold.
+        jpg = tmp_path / "stage_default.jpg"
+        jpg.write_bytes(b"fake")
+        monkeypatch.setattr(media_store, "STAGE_ASSET_JPG", jpg)
+        pipeline = _build({"testpattern_selected_media": "default:arena"})
+        assert pipeline.get_by_name("media_source").properties["location"] == str(jpg)
+        assert MediaGalleryInput.get_source_label({"testpattern_selected_media": "default:arena"}) == (
+            "Media Gallery (Stage)"
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -487,7 +498,7 @@ class TestConfigAndLabels:
         ("media_id", "expected"),
         [
             (media_store.DEFAULT_STAGE_ID, "Media Gallery (Stage)"),
-            (media_store.DEFAULT_ARENA_ID, "Media Gallery (Arena)"),
+            (media_store.DEFAULT_CONCERT_ID, "Media Gallery (Concert)"),
             (media_store.DEFAULT_FESTIVAL_ID, "Media Gallery (Festival)"),
             (media_store.DEFAULT_GREY_ID, "Media Gallery (Grey)"),
         ],

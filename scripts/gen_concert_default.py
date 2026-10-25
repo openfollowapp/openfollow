@@ -199,6 +199,20 @@ def house(out: list[str], rng: random.Random) -> None:
             out.append(poly(disc(x + 0.15, y + 0.1, z + 0.35, 0.06, 6), "#e8f0ff"))
 
 
+def crew_member(out: list[str], x: float, y: float) -> None:
+    """A crew member in black standing on the pit floor, facing the crowd: legs, torso, arms, neck and head."""
+    z = FLOOR_Z
+    for dx in (-0.15, 0.03):  # legs
+        box(out, x + dx, x + dx + 0.12, y - 0.07, y + 0.07, z, z + 0.85, "#121216", "#0a0a0d")
+    box(out, x - 0.21, x + 0.21, y - 0.12, y + 0.12, z + 0.8, z + 1.42, "#141418", "#0d0d11")  # torso
+    for x0 in (x - 0.3, x + 0.21):  # arms down at the sides
+        box(out, x0, x0 + 0.09, y - 0.06, y + 0.06, z + 0.72, z + 1.38, "#121216", "#0a0a0d")
+    out.append(poly(disc(x, y, z + 1.45, 0.24, 10), "#101014"))  # shoulders
+    box(out, x - 0.05, x + 0.05, y - 0.05, y + 0.05, z + 1.45, z + 1.55, "#3e3028", "#33271f")  # neck
+    box(out, x - 0.09, x + 0.09, y - 0.11, y + 0.07, z + 1.52, z + 1.7, "#4a3a30", "#2e241d")  # head, hair at the back
+    out.append(poly(disc(x, y - 0.02, z + 1.72, 0.11, 8), "#4a3a30"))
+
+
 def pit(out: list[str], rng: random.Random) -> None:
     out.append(
         poly(
@@ -225,9 +239,7 @@ def pit(out: list[str], rng: random.Random) -> None:
             )
         )
     for x in (-7.5, -4.0, -0.8, 2.6, 6.2):  # security and camera ops in the pit
-        y = PIT_Y + 1.0 + rng.uniform(-0.3, 0.3)
-        out.append(poly(disc(x, y, FLOOR_Z + 1.45, 0.24, 10), "#101014"))
-        out.append(poly(disc(x, y - 0.02, FLOOR_Z + 1.68, 0.11, 8), "#4a3a30"))
+        crew_member(out, x, PIT_Y + 1.0 + rng.uniform(-0.3, 0.3))
     for x0 in np.arange(-6.6, 6.6, 2.2):  # front fills on the pit floor, along the stage front
         box(out, x0 + 0.1, x0 + 1.0, LIP_Y - 1.4, LIP_Y - 0.8, FLOOR_Z, FLOOR_Z + 0.5, "#16161a", "#0b0b0e")
 

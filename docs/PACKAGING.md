@@ -87,7 +87,7 @@ Wayland session. The unit binds web port 80 via `AmbientCapabilities=CAP_NET_BIN
 `openfollow/privilege/media_writer.py`, run by root as `python3 -I` so it never
 imports from the venv. The `media.write` grant in the sudoers drop-in (rendered
 from the capability registry) admits exactly one form:
-`write-to-media write ^/dev/sd[a-z]+[0-9]*$` – USB mass storage, card readers
+`write-to-media ^write /dev/sd[a-z]+[0-9]*$` – USB mass storage, card readers
 included – with the file name and bytes on stdin. The helper checks the drive
 again itself (USB, not a disk carrying `/`, `/boot/firmware` or `/mnt/nvme`,
 unmounted, FAT32 / exFAT / NTFS / ext4), mounts it `nosuid,nodev,noexec` under

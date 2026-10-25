@@ -39,6 +39,7 @@ REQUIRED_TYPELIBS = (
     ("Gst", "1.0"),
     ("GstApp", "1.0"),
     ("GstPbutils", "1.0"),
+    ("GstVideo", "1.0"),
     ("Rsvg", "2.0"),
 )
 

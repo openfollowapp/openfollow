@@ -73,6 +73,7 @@ SIDE_RISER = (5.3, 9.3, 8.4, 9.4, 2.0)  # each side of the riser: inner x, outer
 C_BG, C_HOUSE, C_DECK, C_SEAM = "#050507", "#0d0b10", "#3a332d", "#c9c0b5"
 C_OFF, C_WING_DECK, C_RISER_TOP, C_RISER_FACE = "#0c0c0f", "#1f1b18", "#070708", "#0e0f12"
 C_DRAPE, C_DRAPE_DARK, C_BARR = "#e4e2df", "#9a9692", "#b8bcc4"
+C_SILVER = "#c6cad1"  # drum hardware
 GAMMA = 1.55  # darkens the scene and keeps the tape white
 TAPE = "#ffffff"
 
@@ -378,28 +379,37 @@ def riser(out: list[str]) -> None:
     for xa in (-4.3, -2.4, 2.4, 4.3):  # backline amps
         box(out, xa - 0.4, xa + 0.4, y1 - 0.8, y1 - 0.2, h, h + 1.2, "#3e4148", "#2b2d32")
     drum = (0.0, y0 + 1.3)
-    for dx, dy, r, z in (
+    drums = (
         (0.0, 0.2, 0.28, 0.55),
         (-0.3, -0.2, 0.12, 0.75),
         (0.3, -0.22, 0.13, 0.75),
         (0.55, 0.2, 0.2, 0.6),
         (-0.55, 0.1, 0.17, 0.7),
-    ):
-        out.append(poly(disc(drum[0] + dx, drum[1] + dy, h + z, r, 20), "#e9e4dc", "#7a756c", 1.2))
-    for dx, dy, r, z in (
+    )
+    cymbals = (
         (-0.75, -0.45, 0.23, 1.3),
         (0.8, -0.4, 0.26, 1.35),
         (0.25, -0.6, 0.2, 1.15),
         (-0.35, 0.55, 0.24, 1.45),
-    ):
+    )
+    seat = (drum[0] + 0.05, drum[1] + 0.85)  # the drum throne behind the kit
+    for dx, dy, _r, z in (*drums, *cymbals):  # every stand under the kit, so no drum hides behind one
+        stand(out, drum[0] + dx, drum[1] + dy, h, h + z)
+    stand(out, *seat, h, h + 0.52)
+    for dx, dy, r, z in drums:
+        out.append(poly(disc(drum[0] + dx, drum[1] + dy, h + z, r, 20), "#e9e4dc", "#7a756c", 1.2))
+    for dx, dy, r, z in cymbals:
         out.append(poly(disc(drum[0] + dx, drum[1] + dy, h + z, r, 24), "#b98a3e", "#6a4a1a", 1.0))
         out.append(poly(disc(drum[0] + dx, drum[1] + dy, h + z + 0.001, r * 0.35, 12), "#d6aa5a"))
-    seat = (drum[0] + 0.05, drum[1] + 0.85)  # the drum throne behind the kit: three feet, a post and the seat
-    for t in (0.5, 2.6, 4.7):
-        foot = (seat[0] + 0.3 * math.cos(t), seat[1] + 0.3 * math.sin(t), h)
-        out.append(line(foot, (seat[0], seat[1], h + 0.12), "#4a4b51", 2.5))
-    out.append(line((seat[0], seat[1], h + 0.12), (seat[0], seat[1], h + 0.52), "#55565c", 3))
     out.append(poly(disc(seat[0], seat[1], h + 0.55, 0.2, 20), "#34343a", "#6a6b72", 1.8))
+
+
+def stand(out: list[str], x: float, y: float, z0: float, z1: float) -> None:
+    """A silver stand from the floor at ``z0`` up to ``z1``: three feet spread around a post."""
+    hub = (x, y, z0 + 0.12)
+    for t in (0.5, 2.6, 4.7):
+        out.append(line((x + 0.25 * math.cos(t), y + 0.25 * math.sin(t), z0), hub, C_SILVER, 2.2))
+    out.append(line(hub, (x, y, z1), C_SILVER, 2.6))
 
 
 def side_risers(out: list[str]) -> None:

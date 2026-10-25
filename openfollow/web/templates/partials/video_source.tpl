@@ -73,8 +73,8 @@
             var saveError = window.OpenFollow.saveError;
             saveError.show(saveError.boxFor(fb), {error: d.error || 'Capture failed.', action: d.action || '', href: ''}, 'Not captured.', fb);
         };
-        // Source Type drives which controls apply: capture (live sources only),
-        // connection recovery (network sources only), preview (not the gallery).
+        // Source Type drives which controls show: capture (live sources only),
+        // the recovery timers (with the network sources), preview (not the gallery).
         window.ofVideoSourceToggle = function(value){
             document.querySelectorAll('[data-input-type]').forEach(function(el){
                 el.style.display = el.dataset.inputType === value ? '' : 'none';

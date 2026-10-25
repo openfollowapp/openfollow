@@ -1353,7 +1353,7 @@ class GstNativeSinkReceiver:
     # -- Silent-stall watchdog -------------------------------------------------
 
     def _start_watchdog(self, *, reseed: bool = True) -> None:
-        """Arm watchdog to detect silently stalled network feeds.
+        """Arm watchdog to detect a silently stalled feed, from any input.
 
         reseed=True sets last-frame clock to now (skip false positives on
         fresh connect); reseed=False preserves timestamp (live config changes).

@@ -8,7 +8,7 @@
 <form id="camera-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="camera" data-help="camera"
       data-template-form="1">
     <div class="section-head">
-        <h2>Camera</h2>
+        <h2>Camera &amp; Lens Calibration</h2>
         <span class="section-note">Set by the Setup Wizard</span>
     </div>
 

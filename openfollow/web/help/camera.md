@@ -1,4 +1,4 @@
-# Camera
+# Camera & Lens Calibration
 
 Where the real camera sits in the venue and which lens it uses. OpenFollow uses these to project tracked points into stage coordinates, so they must match the physical rig.
 

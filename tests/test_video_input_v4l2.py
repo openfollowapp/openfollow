@@ -553,6 +553,17 @@ class TestListModes:
         with pytest.raises(OSError):
             _list_modes(node)
 
+    def test_the_fields_sit_at_their_videodev2_offsets(self) -> None:
+        fmt = bytearray(64)
+        struct.pack_into("=I", fmt, 44, _fourcc("MJPG"))  # v4l2_fmtdesc.pixelformat
+        assert v4l2_module._FMTDESC.unpack(fmt)[4] == _fourcc("MJPG")
+        size = bytearray(44)
+        struct.pack_into("=III", size, 8, 1, 1920, 1080)  # type, discrete.width, discrete.height
+        assert v4l2_module._FRMSIZE.unpack(size)[2:] == (1, 1920, 1080)
+        ival = bytearray(52)
+        struct.pack_into("=III", ival, 16, 1, 1, 30)  # type, discrete.numerator, discrete.denominator
+        assert v4l2_module._FRMIVAL.unpack(ival)[4:] == (1, 1, 30)
+
     def test_the_structs_and_requests_match_videodev2(self) -> None:
         # Sizes and request numbers of v4l2_fmtdesc, v4l2_frmsizeenum and v4l2_frmivalenum.
         assert (v4l2_module._FMTDESC.size, v4l2_module._FRMSIZE.size, v4l2_module._FRMIVAL.size) == (64, 44, 52)
@@ -1019,6 +1030,40 @@ class TestV4l2PinFallback:
             source.on_bus_error(BusError("Internal data stream error."))
             assert self._build(source, webcam).get_by_name("src_caps") is None
         assert "camera mode: negotiated after the pinned mode failed" in caplog.text
+        assert self._build(source, webcam).get_by_name("src_caps") is not None
+
+    @staticmethod
+    def _show_video(pipeline: FakePipeline) -> None:
+        ((probe_type, callback),) = pipeline.get_by_name("convert").get_static_pad("sink").probes
+        assert probe_type == "buffer"
+        assert callback(None, None) == "remove"
+
+    def test_a_pin_that_showed_a_picture_keeps_its_pin_after_an_error(self, webcam: str) -> None:
+        source = V4l2Input()
+        self._show_video(self._build(source, webcam))
+        source.on_bus_error(BusError("Could not read from resource."))
+        assert self._build(source, webcam).get_by_name("src_caps") is not None
+
+    def test_each_attempt_must_show_its_own_picture(self, webcam: str) -> None:
+        source = V4l2Input()
+        self._show_video(self._build(source, webcam))
+        source.on_bus_error(BusError("Could not read from resource."))
+        self._build(source, webcam)  # pinned again, fails before a picture
+        source.on_bus_error(BusError("Internal data stream error."))
+        assert self._build(source, webcam).get_by_name("src_caps") is None
+
+    def test_an_open_build_watches_for_no_picture(self, webcam: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(v4l2_module, "_read_capture_modes", lambda path: None)
+        pipeline = self._build(V4l2Input(), webcam)
+        assert pipeline.get_by_name("convert").get_static_pad("sink").probes == []
+
+    def test_the_open_retry_belongs_to_the_device_that_failed(self, webcam: str, tmp_path: Path) -> None:
+        other = tmp_path / "video2"
+        other.touch()
+        source = V4l2Input()
+        self._build(source, webcam)
+        source.on_bus_error(BusError("Internal data stream error."))
+        assert self._build(source, str(other)).get_by_name("src_caps") is not None
         assert self._build(source, webcam).get_by_name("src_caps") is not None
 
     def test_a_camera_that_went_away_keeps_its_pin(self, webcam: str) -> None:

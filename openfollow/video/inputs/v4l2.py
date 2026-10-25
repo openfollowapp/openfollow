@@ -331,9 +331,11 @@ class V4l2Input(VideoInputBase):
 
     def __init__(self) -> None:
         super().__init__()
-        # The device the last build pinned to a mode, and whether the next build leaves it open.
+        # The device the last build pinned to a mode, whether that pin showed a
+        # picture, and the device whose next build is left open.
         self._pinned_device = ""
-        self._unpin_next = False
+        self._pin_showed_video = False
+        self._unpin_device = ""
 
     # -- Declarations ---------------------------------------------------
 
@@ -458,10 +460,11 @@ class V4l2Input(VideoInputBase):
         capsfilter.set_property("caps", Gst.Caps.from_string(caps_str))
         convert = make("videoconvert", "convert")
 
-        unpinned, self._unpin_next = self._unpin_next, False
+        unpinned, self._unpin_device = device == self._unpin_device, ""
         modes = None if unpinned else _read_capture_modes(device)
         mode = _choose_mode(modes, dims, framerate, _usb_link_budget(device)) if modes else None
         self._pinned_device = device if mode else ""
+        self._pin_showed_video = False
         logger.info(
             "V4L2 source: %s, camera mode: %s, render: %s",
             device,
@@ -497,15 +500,27 @@ class V4l2Input(VideoInputBase):
                 raise RuntimeError(f"Failed to link {prev.get_name()} -> {elem.get_name()}")
             prev = elem
 
+        if mode is not None:
+
+            def _showed_video(_pad: Any, _info: Any) -> Any:
+                self._pin_showed_video = True
+                return Gst.PadProbeReturn.REMOVE
+
+            convert.get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, _showed_video)
+
         build_overlay_tail(pipeline, convert, sink)
         return pipeline
 
     # -- Lifecycle hooks ------------------------------------------------
 
     def on_bus_error(self, error: BusError) -> None:
-        """Leave the next attempt open after a pinned mode failed on a camera still present."""
-        if os.path.exists(self._pinned_device):  # "" when the last build was open
-            self._unpin_next = True
+        """Leave the next attempt open after a pinned mode that never showed a picture failed.
+
+        A pin that showed a picture failed for another reason (a read error, an
+        unplug), and a camera whose node is gone keeps its pin for its return.
+        """
+        if not self._pin_showed_video and os.path.exists(self._pinned_device):  # "" when the last build was open
+            self._unpin_device = self._pinned_device
             logger.warning(
                 "V4L2 %s: the pinned camera mode failed; the next attempt negotiates its own", self._pinned_device
             )

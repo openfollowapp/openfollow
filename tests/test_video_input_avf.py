@@ -362,6 +362,24 @@ class TestDiscoverAvfDevices:
         assert names == ["Capture Card", "C" * AVF_DEVICE_NAME_MAX_LEN, "C"]
         assert avf_module._camera_names == dict(zip("ABC", names, strict=True))
 
+    @pytest.mark.parametrize(
+        "listed",
+        ["0x1410\x00\x070000", "0x1410‮0000⁦", " 0x14100000\n"],
+        ids=["control", "bidi", "whitespace"],
+    )
+    def test_a_listed_id_is_cleaned_as_a_stored_one_is(self, monkeypatch: pytest.MonkeyPatch, listed: str) -> None:
+        """The preflight and the names compare it with the stored (cleaned) ID."""
+        from openfollow.configuration import AppConfig
+
+        monkeypatch.setattr(sys, "platform", "darwin")
+        camera = _FakeDevice(props={"device.api": "avf", "avf.unique_id": listed}, display_name="Capture Card")
+        stored = AvfInput.runtime_config(AppConfig(video_source_type="avf", avf_unique_id=listed))
+        with patch("gi.repository.Gst", _make_fake_gst_with_devices([camera])):
+            refusal = AvfInput.preflight(stored)
+
+        assert refusal is None
+        assert avf_module._camera_names == {"0x14100000": "Capture Card"}
+
     def test_a_listing_that_cannot_be_read_says_so(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The build must not read a broken listing as "no camera"; the lists an
         operator reads still show none."""

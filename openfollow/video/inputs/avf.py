@@ -71,7 +71,7 @@ def _list_avf_devices() -> list[dict[str, str]]:
         return []
     from gi.repository import Gst
 
-    from openfollow.configuration import clean_avf_device_name
+    from openfollow.configuration import clean_avf_device_name, clean_avf_unique_id
 
     Gst.init(None)
     monitor = Gst.DeviceMonitor.new()
@@ -92,7 +92,7 @@ def _list_avf_devices() -> list[dict[str, str]]:
         api = props.get_string("device.api") or ""
         if api != "avf":
             continue
-        unique_id = props.get_string("avf.unique_id") or ""
+        unique_id = clean_avf_unique_id(props.get_string("avf.unique_id"))
         name = clean_avf_device_name(dev.get_display_name()) or unique_id or f"avf{avf_index}"
         result.append(
             {

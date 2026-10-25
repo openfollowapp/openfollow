@@ -77,6 +77,7 @@ C_BG, C_HOUSE, C_DECK, C_SEAM = "#050507", "#0d0b10", "#3a332d", "#c9c0b5"
 C_OFF, C_WING_DECK, C_RISER_TOP, C_RISER_FACE = "#0c0c0f", "#1f1b18", "#070708", "#0e0f12"
 C_DRAPE, C_DRAPE_DARK, C_BARR = "#e4e2df", "#9a9692", "#b8bcc4"
 C_SILVER = "#c6cad1"  # drum hardware
+C_TRUSS, C_TRUSS_LACING = "#8e9299", "#72767d"  # aluminium truss chords and lacing, in shadow
 GAMMA = 1.55  # darkens the scene and keeps the tape white
 TAPE = "#ffffff"
 
@@ -552,9 +553,9 @@ def mid_truss(out: list[str]) -> None:
     for (ya, za), (yb, zb) in faces:
         for k, (xa, xb) in enumerate(pairwise(xs)):
             a, b = ((ya, za), (yb, zb)) if k % 2 == 0 else ((yb, zb), (ya, za))
-            out.append(line((xa, a[0], a[1]), (xb, b[0], b[1]), "#a9adb4", 2.4))
+            out.append(line((xa, a[0], a[1]), (xb, b[0], b[1]), C_TRUSS_LACING, 2.4))
     for y, z in ((y0, z0), (y0, z1), (y1, z0), (y1, z1)):  # chords
-        out.append(line((-span, y, z), (span, y, z), C_SILVER, 5.0))
+        out.append(line((-span, y, z), (span, y, z), C_TRUSS, 5.0))
 
 
 def side_lights(out: list[str]) -> None:

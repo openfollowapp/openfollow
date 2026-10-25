@@ -37,7 +37,7 @@ polls. This plan removes the fixed waits and polls the network faster.
 - [x] After, from a `.deb` of the branch on pi66: the same measurements; the splash on a cold boot; a restart
       showing the splash 1.5 s; screenshots every 0.25 s of how long the screen stays black; the 8BitDo pad and the
       SpaceNavigator in their slots without a replug; `nm-online --timeout=0` while the network is not ready yet.
-- [ ] Mutation check of the new tests, three review rounds, `make ci-remote`, draft PR.
+- [x] Mutation check of the new tests, three review rounds, `make ci-remote`, draft PR.
 
 ## Results (pi66, Pi 5, two wired adapters)
 

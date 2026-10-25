@@ -9,7 +9,7 @@ the wings; the band riser with black treads and a white safety edge, and a highe
 heads on each side of it; white tape along the lip, the mic stand, pedalboards and setlists at the
 stage edge; two sheer white legs tied back on each side, at the downstage corner and mid-stage;
 sidefills, amp racks, a monitor desk, a guitar world and cases in the wings; front fills in the pit
-before the crowd barrier, and the crowd. The picture is bowed by a barrel lens through the overlay's
+before the crowd barrier, and the crowd. The picture is bowed by a 2.8 mm M12 lens through the overlay's
 own model, so a station set to the printed camera and lens draws its grid on the deck seams. Tape
 marks the grid's corners and the Reference Point.
 
@@ -42,10 +42,10 @@ from openfollow.scene.solver import apply_overlay_distortion, project_points  # 
 ASSET = ROOT / "openfollow" / "video" / "inputs" / "assets" / "concert_default.jpg"
 W, H = 1920.0, 1080.0
 # Back truss upstage of the riser: pos_x, pos_y, pos_z, pitch, yaw, roll, horizontal fov.
-CAMERA = np.array([0.0, 13.0, 12.0, -48.0, 180.0, 0.0, 70.0])
-K1, K2 = -0.2, -0.07  # barrel / fisheye, corner correction
+CAMERA = np.array([0.0, 10.0, 9.0, -50.0, 180.0, 0.0, 82.5])
+K1, K2 = -0.37, -0.17  # barrel / fisheye, corner correction: a 2.8 mm M12 lens
 # Pinhole geometry is cut to this box before the lens bows it, which keeps the SVG small.
-CLIP = (-0.25 * W, -0.25 * H, 1.25 * W, 1.25 * H)
+CLIP = (-1.5 * W, -1.5 * H, 2.5 * W, 2.5 * H)
 STEP_PX = 6.0  # edges are split this finely, so a straight edge bows like the lens bows it
 
 STAGE_X, LIP_Y, STAGE_BACK = 7.0, 0.0, 11.0  # the deck: 14 m across, from the lip back past the riser

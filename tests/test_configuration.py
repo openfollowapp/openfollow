@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -395,6 +396,51 @@ def test_a_hand_edited_avf_device_name_is_cleaned_on_load(tmp_path: Path) -> Non
     path.write_text('avf_unique_id = "0x14100000"\navf_device_name = 42\n')
 
     assert load_config(str(path)).avf_device_name == ""
+
+
+@pytest.mark.parametrize("bad", [336592896, True, None, ["0x14100000"], {"a": 1}, 3.5])
+def test_avf_unique_id_coerces_non_string_to_blank(bad: object) -> None:
+    """A non-string matches no camera, so it would refuse every build as not found."""
+    assert AppConfig(avf_unique_id=bad).avf_unique_id == ""  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(" 0x14100000", "0x14100000"), ("0x14100000 \n", "0x14100000"), ("   ", "")],
+    ids=["leading", "trailing", "only-whitespace"],
+)
+def test_avf_unique_id_is_stripped_on_load(raw: str, expected: str) -> None:
+    assert AppConfig(avf_unique_id=raw).avf_unique_id == expected
+
+
+@pytest.mark.parametrize("bad", ["abc", "1.5", None, True, [1], {"a": 1}])
+def test_avf_device_index_coerces_wrong_type_to_default(bad: object) -> None:
+    assert AppConfig(avf_device_index=bad).avf_device_index == -1  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(("raw", "expected"), [(-5, -1), (-1, -1), (0, 0), (2, 2), ("3", 3)])
+def test_avf_device_index_keeps_the_unset_sentinel_as_its_floor(raw: object, expected: int) -> None:
+    assert AppConfig(avf_device_index=raw).avf_device_index == expected  # type: ignore[arg-type]
+
+
+def test_a_hand_edited_avf_camera_loads_clean(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('video_source_type = "avf"\navf_unique_id = " 0x14100000 "\navf_device_index = "abc"\n')
+
+    cfg = load_config(str(path))
+
+    assert (cfg.avf_unique_id, cfg.avf_device_index) == ("0x14100000", -1)
+
+
+def test_a_hand_edited_avf_device_index_renders_the_video_source_page(tmp_path: Path) -> None:
+    from openfollow.video.inputs.avf import AvfInput
+
+    path = tmp_path / "config.toml"
+    path.write_text('video_source_type = "avf"\navf_device_index = "abc"\n')
+
+    html = AvfInput.web_ui_html(AvfInput.get_config_field_values(load_config(str(path))))
+
+    assert re.search(r'name="avf_device_index"\s+value="-1"', html)
 
 
 @pytest.mark.parametrize("field", ["rtsp_password", "srt_passphrase"])

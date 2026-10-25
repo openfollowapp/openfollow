@@ -630,6 +630,15 @@ class TestAvfPreflight:
 
         assert AvfInput.preflight({"avf_unique_id": "0x14100000"}) is None
 
+    def test_a_hand_edited_id_finds_its_connected_camera(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+        from openfollow.configuration import load_config
+
+        _cameras(monkeypatch, ("0x14100000", "Capture Card"))
+        path = tmp_path / "config.toml"
+        path.write_text('video_source_type = "avf"\navf_unique_id = " 0x14100000"\n')
+
+        assert AvfInput.preflight(AvfInput.runtime_config(load_config(str(path)))) is None
+
     @pytest.mark.parametrize("config", [{}, {"avf_unique_id": ""}, {"avf_unique_id": None}])
     def test_no_stored_camera_lists_nothing(self, monkeypatch: pytest.MonkeyPatch, config: dict[str, Any]) -> None:
         listings = _cameras(monkeypatch)

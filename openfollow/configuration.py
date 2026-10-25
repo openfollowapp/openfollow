@@ -2486,8 +2486,11 @@ class AppConfig:
             self.rtsp_password = ""
         if not isinstance(self.srt_passphrase, str):
             self.srt_passphrase = ""
+        # The build refuses an ID no listed camera matches, so edge whitespace would read as "not found".
+        self.avf_unique_id = _coerce_str(self.avf_unique_id, "").strip()
         # Rendered on the HUD and in the web UI; the USB camera's web-save path cleans it the same way.
         self.avf_device_name = clean_avf_device_name(self.avf_device_name)
+        self.avf_device_index = _coerce_int(self.avf_device_index, -1, lo=-1)
         # Auto online-sync knobs: normalise so a hand-edited TOML can't feed a
         # non-bool / non-string into the worker.
         self.update_include_prereleases = _coerce_bool(self.update_include_prereleases, False)

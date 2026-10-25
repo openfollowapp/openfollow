@@ -1380,14 +1380,20 @@ class TestSourceSelectionNavigation:
 
 
 class TestUpdateInputFields:
-    def test_a_field_that_does_not_rebuild_is_stored_without_a_build(self, fake_gst, fake_glib, fake_input_cls) -> None:
-        r = _make_receiver(input_config={"fake_source": "cam-1"})
-        builds = FakeInput.create_pipeline_call_count
+    def test_a_field_that_does_not_rebuild_is_stored_without_a_build(self, fake_gst, fake_glib, monkeypatch) -> None:
+        from openfollow.video.inputs import avf
 
-        r.update_input_fields({"fake_source": "Capture Card"})
+        monkeypatch.setattr(avf, "_camera_names", {})
+        monkeypatch.setattr(receiver_mod, "get_input_class", lambda _input_id: avf.AvfInput)
+        builds: list[object] = []
+        monkeypatch.setattr(avf.AvfInput, "create_pipeline", lambda *args, **kwargs: builds.append(args))
+        r = receiver_mod.GstNativeSinkReceiver(source_type="avf", input_config={"avf_unique_id": "0x14100000"})
+        assert not {f.name: f for f in avf.AvfInput.config_fields()}["avf_device_name"].rebuilds
 
-        assert r.source_name == "Capture Card"
-        assert FakeInput.create_pipeline_call_count == builds
+        r.update_input_fields({"avf_device_name": "Capture Card"})
+
+        assert r.source_name.startswith("Capture Card (")
+        assert builds == []
         assert r._pipeline is None
 
 

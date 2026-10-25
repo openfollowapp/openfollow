@@ -420,6 +420,26 @@ def test_minimum_from_load_commands(checker, listing, expected) -> None:
 _MACHO = b"\xcf\xfa\xed\xfe" + bytes(28)
 
 
+@pytest.mark.parametrize(
+    "magic",
+    [
+        pytest.param(b"\xfe\xed\xfa\xce", id="thin-32-big-endian"),
+        pytest.param(b"\xce\xfa\xed\xfe", id="thin-32-little-endian"),
+        pytest.param(b"\xfe\xed\xfa\xcf", id="thin-64-big-endian"),
+        pytest.param(b"\xcf\xfa\xed\xfe", id="thin-64-little-endian"),
+        pytest.param(b"\xca\xfe\xba\xbe", id="fat-big-endian"),
+        pytest.param(b"\xbe\xba\xfe\xca", id="fat-little-endian"),
+        pytest.param(b"\xca\xfe\xba\xbf", id="fat-64-big-endian"),
+        pytest.param(b"\xbf\xba\xfe\xca", id="fat-64-little-endian"),
+    ],
+)
+def test_every_mach_o_header_is_checked(checker, tmp_path, magic) -> None:
+    (tmp_path / "lib.dylib").write_bytes(magic + bytes(28))
+    (tmp_path / "LICENSE").write_text("not a Mach-O")
+
+    assert list(checker.macho_files(tmp_path)) == [tmp_path / "lib.dylib"]
+
+
 def _fake_app(root: Path, plist: dict) -> Path:
     app = root / "OpenFollow.app"
     frameworks = app / "Contents" / "Frameworks"

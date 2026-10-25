@@ -19,7 +19,7 @@ import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
-# Thin 32- / 64-bit and universal headers, in either byte order.
+# Thin and universal headers, 32- and 64-bit, in either byte order.
 _MACHO_MAGICS = frozenset(
     {
         b"\xfe\xed\xfa\xce",
@@ -28,6 +28,8 @@ _MACHO_MAGICS = frozenset(
         b"\xcf\xfa\xed\xfe",
         b"\xca\xfe\xba\xbe",
         b"\xbe\xba\xfe\xca",
+        b"\xca\xfe\xba\xbf",
+        b"\xbf\xba\xfe\xca",
     }
 )
 

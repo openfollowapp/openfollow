@@ -81,6 +81,7 @@ C_SILVER = "#c6cad1"  # drum hardware
 C_TRUSS, C_TRUSS_LACING = "#8e9299", "#72767d"  # aluminium truss chords and lacing, in shadow
 GAMMA = 1.55  # darkens the scene and keeps the tape white
 TAPE = "#ffffff"
+C_EDGE = "#a9a9a6"  # the safety line along the wings' edges, dimmer than the tape
 
 
 def pinhole(pts) -> np.ndarray:
@@ -261,6 +262,10 @@ def offstage(out: list[str], rng: random.Random) -> None:
             out.append(line((x, LIP_Y, 0.01), (x, 16.0, 0.01), C_SEAM, 1.6, 0.22))
         for y in np.arange(LIP_Y, 16.0 + 1e-6, DECK_D):
             out.append(line((w0, y, 0.01), (w1, y, 0.01), C_SEAM, 1.6, 0.22))
+        e, outer = 0.06, sgn * WING_X  # a dimmer safety line along the wing's lip and its outer edge
+        out.append(poly([(w0, LIP_Y, 0.01), (w1, LIP_Y, 0.01), (w1, LIP_Y + e, 0.01), (w0, LIP_Y + e, 0.01)], C_EDGE))
+        xe = sorted((outer, outer - sgn * e))
+        out.append(poly([(xe[0], LIP_Y, 0.01), (xe[1], LIP_Y, 0.01), (xe[1], 16.0, 0.01), (xe[0], 16.0, 0.01)], C_EDGE))
         for y0 in (1.0, 3.2, 7.5, 9.8):  # road cases
             xa = sgn * (STAGE_X + 2.2 + rng.uniform(0.0, 0.8))
             xs = sorted((xa, xa + sgn * 1.2))
@@ -571,8 +576,11 @@ def mid_truss(out: list[str]) -> None:
             out.append(line((xa, a[0], a[1]), (xb, b[0], b[1]), C_TRUSS_LACING, 2.4))
     for y, z in ((y0, z0), (y0, z1), (y1, z0), (y1, z1)):  # chords
         out.append(line((-span, y, z), (span, y, z), C_TRUSS, 5.0))
-    for k in range(11):  # moving lights under the bottom chord between the legs: wash, spot, wash, ...
-        moving_light(out, -6.0 + 1.2 * k, MID_TRUSS_Y, MID_TRUSS_Z, spot=k % 2 == 1)
+    # Moving lights between the legs, alternating wash, spot, wash, ...: the spots on the downstage bottom chord,
+    # drawn first as they lie further from the camera, the washes on the upstage one.
+    for spot, y in ((True, y0), (False, y1)):
+        for k in range(1 if spot else 0, 11, 2):
+            moving_light(out, -6.0 + 1.2 * k, y, MID_TRUSS_Z, spot=spot)
 
 
 # Moving lights hung upside down, in metres: base length x width x height, width across the yoke, head

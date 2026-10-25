@@ -91,8 +91,9 @@ Mac). Requires the dev setup above plus `brew install librsvg create-dmg`:
 make dmg    # -> dist/OpenFollow-<version>-<arch>.dmg
 ```
 
-The output is single-arch and large (~2-2.5 GB, torch is bundled). The app is
-ad-hoc signed, not notarized, so clear Gatekeeper's quarantine flag on first run:
+The app runs on Apple Silicon only, needs macOS 15.0 or later, and is large
+(~2-2.5 GB, torch is bundled). It is ad-hoc signed, not notarized, so clear
+Gatekeeper's quarantine flag on first run:
 
 ```bash
 xattr -dr com.apple.quarantine "/Applications/OpenFollow.app"   # or right-click -> Open

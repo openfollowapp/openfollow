@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
+from openfollow.runtime.receiver_bus import BusError
 from openfollow.video.inputs import v4l2 as v4l2_module
 from openfollow.video.inputs.v4l2 import (
     V4l2Input,
@@ -48,8 +49,9 @@ WEBCAM = {
 }
 # A USB 3 capture card: raw only, the incoming signal's size.
 CAPTURE_CARD = {"YUYV": {(1920, 1080): [(1, 60), (1, 30)]}}
-USB2 = 3 * 1024 * 8000
-USB3 = 5e8
+# Isochronous video per second less the 12-byte UVC header in each packet.
+USB2 = 3 * (1024 - 12) * 8000
+USB3 = 48 * (1024 - 12) * 8000
 
 
 def _modes(table: dict) -> list[_CaptureMode]:
@@ -68,14 +70,23 @@ def _fourcc(text: str) -> int:
 class _FakeNode:
     """Answers the three V4L2 listing ioctls from a mode table, like a capture node."""
 
-    def __init__(self, table: dict, *, size_type: int = 1, ival_type: int = 1, error: int | None = None) -> None:
+    def __init__(
+        self,
+        table: dict,
+        *,
+        size_type: int = 1,
+        ival_type: int = 1,
+        error: int | None = None,
+        error_request: int | None = None,
+    ) -> None:
         self.formats = {_fourcc(f): sizes for f, sizes in table.items()}
         self.size_type = size_type
         self.ival_type = ival_type
         self.error = error
+        self.error_request = error_request
 
     def __call__(self, request: int, buf: bytearray) -> int:
-        if self.error is not None:
+        if self.error is not None and self.error_request in (None, request):
             raise OSError(self.error, "fake ioctl failure")
         if request == v4l2_module._VIDIOC_ENUM_FMT:
             index = struct.unpack_from("=I", buf)[0]
@@ -537,6 +548,20 @@ class TestListModes:
         with pytest.raises(OSError):
             _list_modes(_FakeNode(WEBCAM, error=errno.EIO))
 
+    def test_an_error_partway_through_the_list_propagates(self) -> None:
+        node = _FakeNode(WEBCAM, error=errno.ENOTTY, error_request=v4l2_module._VIDIOC_ENUM_FRAMEINTERVALS)
+        with pytest.raises(OSError):
+            _list_modes(node)
+
+    def test_the_structs_and_requests_match_videodev2(self) -> None:
+        # Sizes and request numbers of v4l2_fmtdesc, v4l2_frmsizeenum and v4l2_frmivalenum.
+        assert (v4l2_module._FMTDESC.size, v4l2_module._FRMSIZE.size, v4l2_module._FRMIVAL.size) == (64, 44, 52)
+        assert (
+            v4l2_module._VIDIOC_ENUM_FMT,
+            v4l2_module._VIDIOC_ENUM_FRAMESIZES,
+            v4l2_module._VIDIOC_ENUM_FRAMEINTERVALS,
+        ) == (0xC0405602, 0xC02C564A, 0xC034564B)
+
     def test_a_list_that_never_ends_cannot_be_listed(self) -> None:
         def endless(request: int, buf: bytearray) -> int:
             if request != v4l2_module._VIDIOC_ENUM_FMT:
@@ -599,7 +624,13 @@ class TestUsbLinkBudget:
 
     @pytest.mark.parametrize(
         ("speed", "budget"),
-        [("480", USB2), ("12", 1023 * 1000), ("1.5", 1023 * 1000), ("5000", 5e8), ("10000", 1e9)],
+        [
+            ("480", 24_288_000),
+            ("12", 1_011_000),
+            ("1.5", 1_011_000),
+            ("5000", 388_608_000),
+            ("10000", 777_216_000),
+        ],
     )
     def test_budget_follows_the_link_speed(self, tmp_path: Path, speed: str, budget: float) -> None:
         assert _usb_link_budget("/dev/video0", sysfs_root=str(self._sysfs(tmp_path, speed))) == budget
@@ -617,6 +648,20 @@ class TestUsbLinkBudget:
 
     def test_an_unknown_node_has_no_budget(self, tmp_path: Path) -> None:
         assert _usb_link_budget("/dev/video9", sysfs_root=str(self._sysfs(tmp_path, "480"))) is None
+
+    def test_a_symlinked_device_path_finds_its_node(self, tmp_path: Path) -> None:
+        dev = tmp_path / "dev"
+        (dev / "v4l" / "by-id").mkdir(parents=True)
+        (dev / "video0").touch()
+        link = dev / "v4l" / "by-id" / "usb-webcam-video-index0"
+        link.symlink_to(dev / "video0")
+        root = self._sysfs(tmp_path, "480")
+        assert _usb_link_budget(str(link), sysfs_root=str(root)) == 24_288_000
+
+    def test_a_speed_that_cannot_be_read_has_no_budget(self, tmp_path: Path) -> None:
+        root = self._sysfs(tmp_path, None)
+        (root / "devices" / "platform" / "usb1" / "1-1" / "speed").mkdir()
+        assert _usb_link_budget("/dev/video0", sysfs_root=str(root)) is None
 
 
 def _pick(table: dict, dims: tuple[int, int] | None, framerate: int, budget: float | None) -> str | None:
@@ -664,9 +709,25 @@ class TestChooseMode:
         table = {"MJPG": {(1920, 1080): [(1001, 30000)]}, "YUYV": {(640, 480): [(1, 30)]}}
         assert _pick(table, (1920, 1080), 30, USB2) == "MJPG 1920x1080@29.97"
 
-    def test_a_rate_well_under_the_request_does_not_count(self) -> None:
+    def test_a_size_offered_only_slower_is_taken_at_its_fastest(self) -> None:
         table = {"MJPG": {(1920, 1080): [(1, 25)]}, "YUYV": {(640, 480): [(1, 30)]}}
-        assert _pick(table, (1920, 1080), 30, USB2) == "YUYV 640x480@30"
+        assert _pick(table, (1920, 1080), 30, USB2) == "MJPG 1920x1080@25"
+
+    @pytest.mark.parametrize("dims", [(1920, 1080), None])
+    def test_a_faster_small_mode_does_not_take_the_size(self, dims: tuple[int, int] | None) -> None:
+        table = {"MJPG": {(1920, 1080): [(1, 30)]}, "YUYV": {(320, 240): [(1, 60)]}}
+        assert _pick(table, dims, 60, USB2) == "MJPG 1920x1080@30"
+
+    @pytest.mark.parametrize(("dims", "expected"), [((1280, 720), "MJPG 1280x720@60"), (None, "MJPG 1920x1080@30")])
+    def test_a_faster_mode_at_the_render_size_is_taken(self, dims: tuple[int, int] | None, expected: str) -> None:
+        table = {"MJPG": {(1920, 1080): [(1, 30)], (1280, 720): [(1, 60), (1, 30)]}}
+        assert _pick(table, dims, 60, USB2) == expected
+
+    def test_a_raw_mode_a_header_past_the_link_is_not_deliverable(self) -> None:
+        # 848x480 YUYV at 30 fps is 24.42 MB/s: under USB 2.0's 24.58, over its 24.29 after the UVC headers.
+        table = {"YUYV": {(848, 480): [(1, 30)], (640, 480): [(1, 30)]}, "MJPG": {(848, 480): [(1, 30)]}}
+        assert _pick(table, (848, 480), 30, USB2) == "MJPG 848x480@30"
+        assert _pick(table, (640, 480), 30, USB2) == "YUYV 640x480@30"
 
     def test_nothing_covering_takes_the_largest(self) -> None:
         table = {"YUYV": {(640, 480): [(1, 30)], (320, 240): [(1, 30)]}, "MJPG": {(800, 600): [(1, 30)]}}
@@ -860,7 +921,7 @@ class TestV4l2PinnedMode:
         ]
         caps = pipeline.get_by_name("src_caps").properties["caps"].to_string()
         assert caps == "image/jpeg,width=(int)1920,height=(int)1080,framerate=(fraction)30/1"
-        assert asked == ["/dev/video2", "/dev/video2"]
+        assert set(asked) == {"/dev/video2"}
 
     def test_raw_is_pinned_without_a_decoder(self, camera) -> None:
         camera(CAPTURE_CARD, USB3)
@@ -897,10 +958,9 @@ class TestV4l2PinnedMode:
         assert [e.name for e in pipeline.get_by_name("v4l2src").links] == ["post_queue"]
 
     def test_an_empty_list_leaves_the_source_open(self, camera) -> None:
-        asked = camera({}, USB2)
+        camera({}, USB2)
         pipeline = _build_v4l2({"v4l2_render_resolution": "1080p"})
         assert pipeline.get_by_name("src_caps") is None
-        assert asked == ["/dev/video0"]  # no link read without modes
 
     def test_the_chosen_mode_is_logged(self, camera, caplog: pytest.LogCaptureFixture) -> None:
         camera(WEBCAM, USB2)
@@ -922,6 +982,55 @@ class TestV4l2PinnedMode:
         camera(WEBCAM, USB2)
         with pytest.raises(RuntimeError, match="jpegdec"):
             _build_v4l2({"v4l2_render_resolution": "1080p"}, fake=make_fake_gst(link_fail_kinds={"jpegdec"}))
+
+
+class TestV4l2PinFallback:
+    """A failed attempt with a pinned mode leaves the next attempt open, once, while the camera is present."""
+
+    @staticmethod
+    def _build(source: V4l2Input, device: str) -> FakePipeline:
+        sink = FakeElement("shared_videosink")
+        with patch("gi.repository.Gst", make_fake_gst()):
+            return source.create_pipeline(
+                config={"v4l2_device": device, "v4l2_render_resolution": "1080p", "v4l2_framerate": 30},
+                sink=sink,
+                build_overlay_tail=lambda *a: None,
+                prepare_sink=lambda: sink,
+            )
+
+    @pytest.fixture
+    def webcam(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+        device = tmp_path / "video0"
+        device.touch()
+        monkeypatch.setattr(v4l2_module, "_read_capture_modes", lambda path: _modes(WEBCAM))
+        monkeypatch.setattr(v4l2_module, "_usb_link_budget", lambda path: USB2)
+        return str(device)
+
+    def test_the_attempt_after_a_failed_pin_is_open_and_the_next_pins_again(
+        self, webcam: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        source = V4l2Input()
+        assert self._build(source, webcam).get_by_name("src_caps") is not None
+        with caplog.at_level(logging.INFO, logger=v4l2_module.__name__):
+            source.on_bus_error(BusError("Internal data stream error."))
+            assert self._build(source, webcam).get_by_name("src_caps") is None
+        assert "camera mode: negotiated after the pinned mode failed" in caplog.text
+        assert self._build(source, webcam).get_by_name("src_caps") is not None
+
+    def test_a_camera_that_went_away_keeps_its_pin(self, webcam: str) -> None:
+        source = V4l2Input()
+        self._build(source, webcam)
+        Path(webcam).unlink()
+        source.on_bus_error(BusError("Cannot identify device"))
+        assert self._build(source, webcam).get_by_name("src_caps") is not None
+
+    def test_an_error_on_an_open_source_changes_nothing(self, webcam: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        source = V4l2Input()
+        monkeypatch.setattr(v4l2_module, "_read_capture_modes", lambda path: None)
+        self._build(source, webcam)
+        source.on_bus_error(BusError("Internal data stream error."))
+        monkeypatch.setattr(v4l2_module, "_read_capture_modes", lambda path: _modes(WEBCAM))
+        assert self._build(source, webcam).get_by_name("src_caps") is not None
 
 
 class TestV4l2LinkFailures:

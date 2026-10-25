@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 from typing import Any
 
+from openfollow.runtime.receiver_bus import BusError
 from openfollow.video.failure import SourceKind
 from openfollow.video.inputs._base import (
     ConfigField,
@@ -147,9 +148,13 @@ _RAW_FORMATS = {
 }
 _MJPEG_FOURCCS = frozenset({"MJPG", "JPEG"})
 
-# USB 2.0 high speed carries three 1024-byte isochronous packets per 125 µs microframe.
-_USB2_VIDEO_BYTES_S = 3 * 1024 * 8000
-_USB1_VIDEO_BYTES_S = 1023 * 1000
+# Isochronous video per second, less the 12-byte UVC header in every packet:
+# USB 2.0 high speed carries three 1024-byte packets per 125 µs microframe,
+# SuperSpeed 48 (96 from 10 Gb/s), full speed one 1023-byte packet per ms.
+_UVC_HEADER_BYTES = 12
+_USB2_VIDEO_BYTES_S = 3 * (1024 - _UVC_HEADER_BYTES) * 8000
+_USB3_VIDEO_BYTES_S = 48 * (1024 - _UVC_HEADER_BYTES) * 8000
+_USB1_VIDEO_BYTES_S = (1023 - _UVC_HEADER_BYTES) * 1000
 
 
 @dataclass(frozen=True)
@@ -224,7 +229,8 @@ def _read_capture_modes(device: str) -> list[_CaptureMode] | None:
 
 def _usb_link_budget(device: str, sysfs_root: str = "/sys") -> float | None:
     """Video bytes per second the camera's USB link carries, or ``None`` off USB or when unreadable."""
-    path = os.path.realpath(os.path.join(sysfs_root, "class/video4linux", os.path.basename(device), "device"))
+    node = os.path.basename(os.path.realpath(device))
+    path = os.path.realpath(os.path.join(sysfs_root, "class/video4linux", node, "device"))
     devices = os.path.realpath(os.path.join(sysfs_root, "devices"))
     while path.startswith(devices + os.sep):
         try:
@@ -236,7 +242,7 @@ def _usb_link_budget(device: str, sysfs_root: str = "/sys") -> float | None:
         except (OSError, ValueError):
             return None
         if mbps >= 5000:
-            return mbps * 1e6 / 10  # SuperSpeed line rate after 8b/10b coding
+            return _USB3_VIDEO_BYTES_S * (2 if mbps >= 10000 else 1)
         return _USB2_VIDEO_BYTES_S if mbps >= 480 else _USB1_VIDEO_BYTES_S
     return None
 
@@ -251,25 +257,24 @@ def _choose_mode(
 ) -> _CaptureMode | None:
     """The mode to pin: raw when the link carries it at the render size, else MJPEG, else the largest left.
 
-    A rate above the camera's fastest asks for its fastest; videorate repeats frames
-    up to the request. ``dims`` ``None`` (native) asks for the largest size listed.
-    ``None`` when no raw mode fits the link and there is no MJPEG: the source then
-    negotiates as it would unpinned.
+    The size comes first: ``dims`` ``None`` (native) asks for the largest size
+    listed. Among the modes covering it, a rate above their fastest asks for that
+    fastest; videorate repeats frames up to the request. ``None`` when no raw mode
+    fits the link and there is no MJPEG: the source then negotiates its own.
     """
     deliverable = [
         m for m in modes if m.fourcc in _MJPEG_FOURCCS or (m.fourcc in _RAW_FORMATS and _fits_link(m, budget))
     ]
     if not deliverable:
         return None
-    rate = min(Fraction(framerate), max(m.rate for m in deliverable))
-    usable = [m for m in deliverable if m.rate >= rate - Fraction(1, 2)]
-    raw = [m for m in usable if m.fourcc in _RAW_FORMATS]
-    mjpeg = [m for m in usable if m.fourcc in _MJPEG_FOURCCS]
-    width, height = dims or max(((m.width, m.height) for m in usable), key=lambda wh: wh[0] * wh[1])
-    for candidates in (raw, mjpeg):
-        covering = [m for m in candidates if m.width >= width and m.height >= height]
-        if covering:
-            return min(covering, key=lambda m: (m.area, abs(m.rate - rate)))
+    width, height = dims or max(((m.width, m.height) for m in deliverable), key=lambda wh: wh[0] * wh[1])
+    covering = [m for m in deliverable if m.width >= width and m.height >= height]
+    pool = covering or deliverable
+    rate = min(Fraction(framerate), max(m.rate for m in pool))
+    usable = [m for m in pool if m.rate >= rate - Fraction(1, 2)]
+    if covering:
+        candidates = [m for m in usable if m.fourcc in _RAW_FORMATS] or usable
+        return min(candidates, key=lambda m: (m.area, abs(m.rate - rate)))
     return max(usable, key=lambda m: (m.area, m.fourcc in _RAW_FORMATS))
 
 
@@ -323,6 +328,12 @@ class V4l2Input(VideoInputBase):
     display_name = "USB Camera"
     source_element_name = "v4l2src"
     source_kind = SourceKind.LOCAL
+
+    def __init__(self) -> None:
+        super().__init__()
+        # The device the last build pinned to a mode, and whether the next build leaves it open.
+        self._pinned_device = ""
+        self._unpin_next = False
 
     # -- Declarations ---------------------------------------------------
 
@@ -447,12 +458,14 @@ class V4l2Input(VideoInputBase):
         capsfilter.set_property("caps", Gst.Caps.from_string(caps_str))
         convert = make("videoconvert", "convert")
 
-        modes = _read_capture_modes(device)
+        unpinned, self._unpin_next = self._unpin_next, False
+        modes = None if unpinned else _read_capture_modes(device)
         mode = _choose_mode(modes, dims, framerate, _usb_link_budget(device)) if modes else None
+        self._pinned_device = device if mode else ""
         logger.info(
             "V4L2 source: %s, camera mode: %s, render: %s",
             device,
-            mode.describe() if mode else "negotiated",
+            mode.describe() if mode else "negotiated after the pinned mode failed" if unpinned else "negotiated",
             caps_str,
         )
 
@@ -488,6 +501,14 @@ class V4l2Input(VideoInputBase):
         return pipeline
 
     # -- Lifecycle hooks ------------------------------------------------
+
+    def on_bus_error(self, error: BusError) -> None:
+        """Leave the next attempt open after a pinned mode failed on a camera still present."""
+        if self._pinned_device and os.path.exists(self._pinned_device):
+            self._unpin_next = True
+            logger.warning(
+                "V4L2 %s: the pinned camera mode failed; the next attempt negotiates its own", self._pinned_device
+            )
 
     def on_bus_async_done(self, pipeline: Any) -> None:
         """V4L2: force zero latency – local device."""

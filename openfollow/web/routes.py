@@ -10891,9 +10891,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def api_wizard_lens_edges() -> Any:
         """Suggest the snapshot's edges a Lens line could be traced along, from its scaled luma."""
         response.content_type = "application/json"
+        # Read before refusing: a client still sending its snapshot would get a reset, not the answer.
+        data = _load_json_body()
         if not _request_config(server).ui.feature_on("lens_suggestions"):
             return _json_error(403, "Lens line suggestions are switched off on this station.")
-        data = _load_json_body()
         if data is None:
             return json.dumps({"error": "Invalid JSON"})
         try:

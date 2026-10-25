@@ -253,6 +253,7 @@ install -d -m 0755 "$STAGE/lib/udev/rules.d"
 install -m 0644 "$REPO_ROOT/packaging/udev/99-openfollow-3dmouse.rules" \
   "$STAGE/lib/udev/rules.d/99-openfollow-3dmouse.rules"
 install -m 0755 "$DEBIAN_DIR/splash.sh"                           "$SHARE/splash.sh"
+install -m 0755 "$DEBIAN_DIR/stop-splash.sh"                      "$SHARE/stop-splash.sh"
 install -m 0755 "$DEBIAN_DIR/session.sh"                          "$SHARE/session.sh"
 install -m 0755 "$DEBIAN_DIR/apply-update.sh"                     "$SHARE/apply-update.sh"
 # Root helper for the web Pi camera setup (sudoers: camera.* capabilities): a

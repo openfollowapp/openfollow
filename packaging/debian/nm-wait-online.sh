@@ -4,7 +4,8 @@
 # NetworkManager-wait-online for a station: succeeds once NetworkManager's
 # startup is complete (nm-online -s), or once every device it is still
 # activating holds an IPv4 address: a lease at once, the link-local fallback
-# once held for $grace seconds. Gives up after $1 seconds (default 20).
+# once held for 3 s. Checks about every $step seconds and gives up after $1
+# seconds (default 20); the grace and the cap count on the time since boot.
 #
 # nm-online -s alone never succeeds on a LAN without DHCP: the infinite
 # dhcp-timeout (10-openfollow-dhcp-fallback.conf) keeps that activation running
@@ -13,21 +14,27 @@
 # waits for startup as before instead of racing the lease.
 set -u
 export LC_ALL=C
-cap="${1:-20}"
+cap_ms=$((${1:-20} * 1000))
 # A lease arriving this soon after the 169.254 fallback still wins.
-grace=3
+grace_ms=3000
+step=0.25
+# Seconds since boot; the tests point this at a clock of their own.
+uptime="${OPENFOLLOW_UPTIME:-/proc/uptime}"
 
-# Each poll lasts about a second (nm-online's --timeout=1), so the cap and the
-# grace count polls. $held lists "device:polls" for each activating device seen
-# holding only its fallback on consecutive polls; a device missing from a poll
-# starts over.
+now_ms() {
+    awk '{ printf "%d", $1 * 1000 }' "$uptime"
+}
+
+# $held lists "device:ms" for each activating device seen holding only its
+# fallback on consecutive polls, with the time it was first seen so; a device
+# missing from a poll starts over.
 held=""
 
-held_polls() {
+held_since() {
     for entry in $held; do
         [ "${entry%:*}" = "$1" ] && echo "${entry##*:}" && return
     done
-    echo -1
+    echo "$now"
 }
 
 activating_devices_addressed() {
@@ -44,9 +51,9 @@ activating_devices_addressed() {
             END { print lease ? "lease" : any ? "fallback" : "none" }')" in
         lease) ;;
         fallback)
-            polls_held=$(($(held_polls "$dev") + 1))
-            now_held="$now_held $dev:$polls_held"
-            [ "$polls_held" -ge "$grace" ] || waiting=1
+            since=$(held_since "$dev")
+            now_held="$now_held $dev:$since"
+            [ $((now - since)) -ge "$grace_ms" ] || waiting=1
             ;;
         *) waiting=1 ;;
         esac
@@ -56,11 +63,17 @@ activating_devices_addressed() {
     return 1
 }
 
+start=$(now_ms)
+now=$start
+# A clock that does not move still ends the wait, at twice the polls the cap allows.
 polls=0
-while [ "$polls" -lt "$cap" ]; do
-    nm-online -s -q --timeout=1 && exit 0
+max_polls=$((cap_ms / 125))
+while [ $((now - start)) -lt "$cap_ms" ] && [ "$polls" -lt "$max_polls" ]; do
+    nm-online -s -q --timeout=0 && exit 0
     activating_devices_addressed && exit 0
+    sleep "$step"
     polls=$((polls + 1))
+    now=$(now_ms)
 done
-echo "a device NetworkManager is activating has no settled IPv4 address after ${cap} s" >&2
+echo "a device NetworkManager is activating has no settled IPv4 address after $((cap_ms / 1000)) s" >&2
 exit 1

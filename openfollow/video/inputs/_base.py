@@ -58,6 +58,9 @@ class ConfigField:
     # the secret and is invisible in a password field, so trimming one fails
     # authentication with nothing on screen to explain why.
     strip: bool = True
+    # False = stored with the source but never part of the build: a change to it
+    # alone does not reconnect the input.
+    rebuilds: bool = True
 
 
 @dataclass
@@ -257,6 +260,15 @@ class VideoInputBase(ABC):
         return []
 
     @classmethod
+    def source_labels(cls, sources: list[str]) -> list[str]:
+        """What the on-screen picker shows for each of *sources*, in order.
+
+        Side-effect free: it runs on every discovery pass. The default shows
+        each source as stored.
+        """
+        return list(sources)
+
+    @classmethod
     def web_routes(cls) -> list[WebRoute]:
         """Declare additional HTTP endpoints this input needs."""
         return []
@@ -267,10 +279,11 @@ class VideoInputBase(ABC):
 
     @classmethod
     def preflight(cls, config: dict[str, Any]) -> PinRefusal | None:
-        """Why this connection may not be made under the interface pin, or None.
+        """Why this input may not be built now, or None: a connection the
+        interface pin forbids, or a remembered device that is absent.
 
         Runs before every build, on the main loop; keep it to a routing-table
-        lookup.
+        lookup or a device listing.
         """
         return None
 
@@ -357,8 +370,14 @@ class VideoInputBase(ABC):
 
     @classmethod
     def config_changed(cls, old_cfg: Any, new_cfg: Any) -> bool:
-        """Whether config relevant to this input changed, including the station interface a blank pin follows."""
-        return cls.runtime_config(old_cfg) != cls.runtime_config(new_cfg)
+        """Whether config relevant to this input changed, including the station interface a blank pin follows.
+
+        A field declared ``rebuilds=False`` is left out.
+        """
+        quiet = {f.name for f in cls.config_fields() if not f.rebuilds}
+        old = {key: value for key, value in cls.runtime_config(old_cfg).items() if key not in quiet}
+        new = {key: value for key, value in cls.runtime_config(new_cfg).items() if key not in quiet}
+        return old != new
 
     @classmethod
     def route_target(cls, config: dict[str, Any]) -> str:

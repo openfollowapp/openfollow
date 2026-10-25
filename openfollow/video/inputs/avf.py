@@ -14,7 +14,7 @@ import sys
 from collections.abc import Callable
 from typing import Any
 
-from openfollow.video.failure import SourceKind
+from openfollow.video.failure import SourceKind, VideoFailure
 from openfollow.video.inputs._base import (
     ConfigField,
     InputCapabilities,
@@ -23,11 +23,39 @@ from openfollow.video.inputs._base import (
     WebRoute,
     coerce_positive_int,
 )
+from openfollow.video.inputs._pin import PinRefusal
 
 logger = logging.getLogger(__name__)
 
+# Every camera listed this run, by unique ID in the order first listed, kept
+# after an unplug. Labels read it because a listing stalls and can prompt for
+# camera access.
+_camera_names: dict[str, str] = {}
 
-def _discover_avf_devices() -> list[dict[str, str]]:
+# The index the last preflight found, for the build that follows it on the main
+# loop: one listing per build, so the camera cannot move between two.
+_checked_index: dict[str, int] = {}
+
+
+def _camera_name(unique_id: str, stored: object = "") -> str:
+    """The camera's name, told apart from any listed camera that shares it.
+
+    As listed this run, numbered from 1 in listing order where two share a
+    name; else as stored with its ID, followed by the ID where a listed camera
+    has that name; else the ID itself.
+    """
+    names = tuple(_camera_names.items())
+    listed = dict(names).get(unique_id)
+    if listed:
+        twins = [uid for uid, name in names if name == listed]
+        return listed if len(twins) == 1 else f"{listed} ({twins.index(unique_id) + 1})"
+    name = stored if isinstance(stored, str) else ""
+    if not name:
+        return unique_id
+    return f"{name} ({unique_id})" if any(listed_name == name for _uid, listed_name in names) else name
+
+
+def _list_avf_devices() -> list[dict[str, str]]:
     """Enumerate AVFoundation video sources via ``Gst.DeviceMonitor``.
 
     Returns a list of dicts with keys: ``unique_id``, ``name``, ``index``.
@@ -36,49 +64,52 @@ def _discover_avf_devices() -> list[dict[str, str]]:
     GStreamer's AVF provider iterates ``AVCaptureDevice.devices`` in the
     same order.
 
-    Short-circuits to an empty list off macOS so generic plugin contract
-    tests on Linux CI don't invoke a real ``Gst.DeviceMonitor`` scan via
-    ``get_source_label`` / ``handle_list_devices``.
-
-    Gst.init/DeviceMonitor calls can raise on broken GStreamer; wrapped in try/except for non-fatal contract.
+    Raises when the cameras cannot be listed, so that is never read as "no
+    camera". Empty off macOS, so contract tests on Linux never scan.
     """
     if sys.platform != "darwin":
         return []
-    try:
-        from gi.repository import Gst
-    except Exception:
-        return []
-    try:
-        Gst.init(None)
-        monitor = Gst.DeviceMonitor.new()
-        monitor.add_filter("Video/Source", None)
-        if not monitor.start():
-            return []
-        try:
-            devices = monitor.get_devices() or []
-        finally:
-            monitor.stop()
+    from gi.repository import Gst
 
-        result: list[dict[str, str]] = []
-        avf_index = 0
-        for dev in devices:
-            props = dev.get_properties()
-            if props is None:
-                continue
-            api = props.get_string("device.api") or ""
-            if api != "avf":
-                continue
-            unique_id = props.get_string("avf.unique_id") or ""
-            name = dev.get_display_name() or unique_id or f"avf{avf_index}"
-            result.append(
-                {
-                    "unique_id": unique_id,
-                    "name": name,
-                    "index": str(avf_index),
-                }
-            )
-            avf_index += 1
-        return result
+    from openfollow.configuration import clean_avf_device_name, clean_avf_unique_id
+
+    Gst.init(None)
+    monitor = Gst.DeviceMonitor.new()
+    monitor.add_filter("Video/Source", None)
+    if not monitor.start():
+        raise RuntimeError("the device monitor did not start")
+    try:
+        devices = monitor.get_devices() or []
+    finally:
+        monitor.stop()
+
+    result: list[dict[str, str]] = []
+    avf_index = 0
+    for dev in devices:
+        props = dev.get_properties()
+        if props is None:
+            continue
+        api = props.get_string("device.api") or ""
+        if api != "avf":
+            continue
+        unique_id = clean_avf_unique_id(props.get_string("avf.unique_id"))
+        name = clean_avf_device_name(dev.get_display_name()) or unique_id or f"avf{avf_index}"
+        result.append(
+            {
+                "unique_id": unique_id,
+                "name": name,
+                "index": str(avf_index),
+            }
+        )
+        avf_index += 1
+    _camera_names.update({dev["unique_id"]: dev["name"] for dev in result if dev["unique_id"]})
+    return result
+
+
+def _discover_avf_devices() -> list[dict[str, str]]:
+    """The cameras for a list an operator reads, or none when they cannot be listed."""
+    try:
+        return _list_avf_devices()
     except Exception as exc:
         logger.debug("AVFoundation device discovery failed: %s", exc)
         return []
@@ -87,29 +118,23 @@ def _discover_avf_devices() -> list[dict[str, str]]:
 def _resolve_device_index(
     unique_id: str,
     fallback_index: int,
-) -> int:
+) -> int | None:
     """Map a stored ``unique_id`` to a live ``avfvideosrc`` device-index.
 
     Indices shift when devices are plugged or unplugged, so we persist
     ``avf.unique_id`` and resolve to an index at pipeline-build time.
 
-    If ``unique_id`` is empty, returns ``fallback_index``.  If the
-    ``unique_id`` is not currently connected, returns ``fallback_index``
-    (or 0 when ``fallback_index`` is negative) and logs a warning so the
-    user notices their camera is missing.
+    An empty ``unique_id`` returns ``fallback_index``; such a build is never
+    played, because with no camera chosen the receiver opens the picker. A
+    ``unique_id`` that is not connected returns ``None``: another camera's
+    index would open the wrong device and report it connected.
     """
     if not unique_id:
         return fallback_index
-    devices = _discover_avf_devices()
-    for dev in devices:
+    for dev in _discover_avf_devices():
         if dev["unique_id"] == unique_id:
             return int(dev["index"])
-    logger.warning(
-        "AVF device with unique_id=%s not found; falling back to device-index=%d",
-        unique_id,
-        max(fallback_index, 0),
-    )
-    return fallback_index if fallback_index >= 0 else 0
+    return None
 
 
 class AvfInput(VideoInputBase):
@@ -126,6 +151,9 @@ class AvfInput(VideoInputBase):
     def config_fields(cls) -> list[ConfigField]:
         return [
             ConfigField("avf_unique_id", str, "", "Device"),
+            # Recorded on the first save of an older config, or when macOS
+            # reports another name; neither may black the video out.
+            ConfigField("avf_device_name", str, "", "Device name", device_editable=False, rebuilds=False),
             ConfigField(
                 "avf_device_index",
                 int,
@@ -174,6 +202,24 @@ class AvfInput(VideoInputBase):
             fallback_to_selection=True,
         )
 
+    @classmethod
+    def preflight(cls, config: dict[str, Any]) -> PinRefusal | None:
+        """Refuse to build for a remembered camera that is not connected, or
+        that cannot be looked for; the build uses the index found here."""
+        _checked_index.clear()
+        unique_id = str(config.get("avf_unique_id", "") or "")
+        if not unique_id:
+            return None
+        try:
+            devices = _list_avf_devices()
+        except Exception as exc:
+            return PinRefusal(VideoFailure.UNKNOWN, f"the camera list could not be read: {exc}")
+        for dev in devices:
+            if dev["unique_id"] == unique_id:
+                _checked_index[unique_id] = int(dev["index"])
+                return None
+        return PinRefusal(VideoFailure.STREAM_NOT_FOUND, f"no camera with unique ID {unique_id} is connected")
+
     # -- Pipeline -------------------------------------------------------
 
     def create_pipeline(
@@ -205,7 +251,11 @@ class AvfInput(VideoInputBase):
         height = coerce_positive_int(config.get("avf_height", 1080), 1080)
         framerate = coerce_positive_int(config.get("avf_framerate", 30), 30)
 
-        device_index = _resolve_device_index(unique_id, fallback_index)
+        device_index = _checked_index.pop(unique_id, None) if unique_id else None
+        if device_index is None:
+            device_index = _resolve_device_index(unique_id, fallback_index)
+        if device_index is None:
+            raise RuntimeError(f"No camera with unique ID {unique_id} is connected")
 
         def make(kind: str, name: str) -> Any:
             elem = Gst.ElementFactory.make(kind, name)
@@ -272,15 +322,20 @@ class AvfInput(VideoInputBase):
         """Return AVF camera ``unique_id``s (stable across reboots)."""
         return [d["unique_id"] for d in _discover_avf_devices()]
 
+    @classmethod
+    def source_labels(cls, sources: list[str]) -> list[str]:
+        """Each camera's name, numbered where two cameras share one."""
+        return [_camera_name(uid) for uid in sources]
+
     # -- Web UI ---------------------------------------------------------
 
     @classmethod
     def web_ui_html(cls, config: dict[str, Any]) -> str:
-        unique_id = cls._esc(config.get("avf_unique_id", ""))
-        # ``avf_device_index`` is an internal fallback (used when the
-        # stored ``unique_id`` no longer matches a connected device);
-        # surface it as a hidden input so the form roundtrips its value
-        # without exposing it as a user-facing control.
+        stored = str(config.get("avf_unique_id", "") or "")
+        unique_id = cls._esc(stored)
+        shown = _camera_name(stored, config.get("avf_device_name")) if stored else ""
+        # ``avf_device_index`` drives nothing (with no camera chosen no pipeline
+        # plays); a hidden input keeps its stored value through a save.
         device_index = int(config.get("avf_device_index", -1))
         width = config.get("avf_width", 1920)
         height = config.get("avf_height", 1080)
@@ -296,7 +351,7 @@ class AvfInput(VideoInputBase):
             '                hx-target="this"'
             '                hx-swap="innerHTML">'
             f'            <option value="{unique_id}">'
-            f"              {unique_id or '-- Loading... --'}"
+            f"              {cls._esc(shown) or '-- Loading... --'}"
             "            </option>"
             "        </select>"
             "    </div>"
@@ -346,18 +401,34 @@ class AvfInput(VideoInputBase):
         config: dict[str, Any],
     ) -> str:
         """Return ``<option>`` elements for the device dropdown."""
-        devices = _discover_avf_devices()
+        try:
+            devices = _list_avf_devices()
+            listed = True
+        except Exception as exc:
+            logger.debug("AVFoundation device discovery failed: %s", exc)
+            devices, listed = [], False
         current = config.get("avf_unique_id", "")
 
         options: list[str] = []
-        if not devices:
-            options.append('<option value="">-- No devices found --</option>')
+        # A remembered camera that is not listed stays selected, so saving the
+        # section never silently replaces it with the first one listed. Only a
+        # list that was read can say it is not connected.
+        if current and current not in {dev["unique_id"] for dev in devices}:
+            cur = self._esc(current)
+            name = self._esc(_camera_name(current, config.get("avf_device_name")))
+            suffix = " (unavailable)" if listed else ""
+            options.append(f'<option value="{cur}" selected>{name}{suffix}</option>')
         for dev in devices:
             uid = self._esc(dev["unique_id"])
-            name = self._esc(dev["name"])
+            label = self._esc(_camera_name(dev["unique_id"]) if dev["unique_id"] else dev["name"])
             sel = " selected" if dev["unique_id"] == current else ""
-            label = f"{name} ({dev['index']})"
             options.append(f'<option value="{uid}"{sel}>{label}</option>')
+        if not listed:
+            # Disabled beside a remembered camera, so a save keeps that camera.
+            disabled = " disabled" if options else ""
+            options.append(f'<option value=""{disabled}>-- Camera list could not be read --</option>')
+        elif not options:
+            options.append('<option value="">-- No devices found --</option>')
         return "\n".join(options)
 
     # -- Config ---------------------------------------------------------
@@ -368,9 +439,34 @@ class AvfInput(VideoInputBase):
         config: dict[str, Any],
     ) -> str:
         # Keep side-effect free: no Gst.DeviceMonitor scan here (stalls + re-prompts for permission on macOS).
-        unique_id = config.get("avf_unique_id", "")
+        unique_id = str(config.get("avf_unique_id", "") or "")
+        # No camera chosen reads as no source, so the receiver asks for one
+        # rather than opening whichever camera the system offers.
+        if not unique_id:
+            return ""
         width = config.get("avf_width", 1920)
         height = config.get("avf_height", 1080)
         framerate = config.get("avf_framerate", 30)
-        name = unique_id or "default"
-        return f"{name} ({width}x{height}@{framerate})"
+        return f"{_camera_name(unique_id, config.get('avf_device_name'))} ({width}x{height}@{framerate})"
+
+    @classmethod
+    def apply_config_fields(cls, cfg: Any, form_data: dict[str, Any]) -> None:
+        """Store the chosen camera's name with its unique ID.
+
+        A name listed this run wins; otherwise a name sent with the ID (an
+        import, a peer) is kept, and a camera left as it was keeps its name.
+        """
+        from openfollow.configuration import clean_avf_device_name, clean_avf_unique_id
+
+        stored_id = getattr(cfg, "avf_unique_id", "")
+        stored_name = getattr(cfg, "avf_device_name", "")
+        super().apply_config_fields(cfg, form_data)
+        unique_id = cfg.avf_unique_id = clean_avf_unique_id(getattr(cfg, "avf_unique_id", ""))
+        name: object = ""
+        if unique_id in _camera_names:
+            name = _camera_names[unique_id]
+        elif unique_id and "avf_device_name" in form_data:
+            name = form_data["avf_device_name"]
+        elif unique_id and unique_id == stored_id:
+            name = stored_name
+        cfg.avf_device_name = clean_avf_device_name(name)

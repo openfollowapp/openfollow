@@ -139,7 +139,8 @@ class _FakeVideoReceiver:
         self.resolution = (1920, 1080)
         self.picture_geometry = PictureGeometry(1920, 1080)
         self.source_selection_active = False
-        self.discovered_sources = ["CAM1", "CAM2"]
+        self.discovered_sources = ["cam-1-id", "cam-2-id"]
+        self.discovered_source_labels = ["CAM1", "CAM2"]
         self.selected_source_index = 1
         self.source_selection_title = "SELECT NDI"
 
@@ -514,6 +515,7 @@ class TestVideoAndMenuState:
         state = _build(app, pool)
         assert state.video_connected is True
         assert state.source_label == "NDI://CAM"
+        # The picker draws what each source is called, never its stored key.
         assert state.discovered_sources == ["CAM1", "CAM2"]
         assert state.source_selection_title == "SELECT NDI"
 

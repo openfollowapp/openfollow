@@ -7604,8 +7604,11 @@ def test_the_camera_tab_shows_the_camera_and_edits_nothing(video_server, path: s
     save_config(cfg, server.config_path)
     _, body = _get(base, path)
     section = _camera_section(body)
-    for editable in ("<input", "<select", "<textarea", 'type="submit"', "save-btn", "hx-post"):
+    for editable in ("<input", "<select", "<textarea", '<button type="submit"', "hx-post"):
         assert editable not in section, editable
+    # Its primary action opens the Setup Wizard, which sets everything shown.
+    assert re.findall(r'class="[^"]*save-btn[^"]*"', section) == ['class="btn-link save-btn"']
+    assert '<a href="/wizard" class="btn-link save-btn">Open Setup Wizard</a>' in section
     assert _readout(section) == {
         "Position X": "1.500 m",
         "Position Y": "-5.000 m",

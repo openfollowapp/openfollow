@@ -94,6 +94,7 @@
     % end
 
     <div class="actions">
+        <a href="/wizard" class="btn-link save-btn">Open Setup Wizard</a>
         <button type="button" class="broadcast-btn" onclick="broadcastSection('camera', this.form)">Apply to all stations</button>
         <!-- Save / Load template buttons. Camera and grid share one
              ``camera_grid`` template type (tuned together). Buttons bind to

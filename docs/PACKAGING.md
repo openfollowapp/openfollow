@@ -43,7 +43,7 @@ is Pi-only).
 | `packaging/debian/control.in` | Package metadata; `@VERSION@/@ARCH@/@PYTHON_DEP@/@ALSA_DEP@` are filled in by the build from the build host. |
 | `packaging/debian/openfollow.service` | Main systemd unit (Cage Wayland kiosk, runs the bundled venv). |
 | `packaging/debian/openfollow-splash.service` + `splash.sh` | Boot splash unit + KMS launcher. |
-| `packaging/debian/stop-splash.sh` | `openfollow.service`'s one start step: stops the splash so DRM is free for Cage, once it has been up 1.5 s since its unit started (on a normal boot at once; after a restart there is no splash and no wait). The unit waits for nothing else: it starts after udev settles, and the inputs pick up later USB devices on hotplug. |
+| `packaging/debian/stop-splash.sh` | `openfollow.service`'s one start step: stops the splash so DRM is free for Cage, once it has been up 1.5 s since its unit started: on a boot at once, on a restart of the unit, which starts the splash again with it, after 1.5 s. The unit waits for nothing else: it starts after udev settles, and the inputs pick up later USB devices on hotplug. |
 | `packaging/debian/render-splash.sh` | Pre-renders the splash PNG at build time. |
 | `packaging/debian/{postinst,prerm,postrm}` | Create the `openfollow` user + linger, enable/disable the units. |
 | `packaging/debian/preinst.in` + `render-preinst.sh` | On upgrade, back up the station's settings before the new files unpack (see [Settings backups](#settings-backups)). |

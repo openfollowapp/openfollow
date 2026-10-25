@@ -8,9 +8,10 @@ polls. This plan removes the fixed waits and polls the network faster.
 ## Decisions
 
 - **Splash:** the splash is stopped once it has been up 1.5 s, counted from the start of `openfollow-splash.service`
-  (its `ActiveEnterTimestampMonotonic` against the system's monotonic clock). On a normal boot the network takes
-  longer than that, so the step waits 0 s; with no splash running (a restart of the unit, no display) it stops
-  nothing and does not wait.
+  (its `ActiveEnterTimestampMonotonic` against the system's monotonic clock). On a boot the network takes longer
+  than that, so the step waits 0 s. A restart of the unit starts the splash again (the unit wants it), so a restart
+  shows it for 1.5 s instead of today's 3 s plus 2 s of black. Whether the logo can also fill the black gap while
+  Cage and the app start, and the 1.5 s go, is decided on the station measurements.
 - **USB:** `sleep 2` goes. The unit is already ordered after `systemd-udev-settle.service`, gamepads are picked up
   on hotplug and by the retry while none is open, and 3D mice are enumerated again every 1.5 s. If a gamepad or a 3D
   mouse present at boot does not reach its saved controller slot without a replug, a bounded wait comes back.
@@ -22,16 +23,16 @@ polls. This plan removes the fixed waits and polls the network faster.
 
 ## Steps
 
-- [ ] `packaging/debian/stop-splash.sh`: wait out the rest of the splash's 1.5 s, then stop it. Tested with a fake
+- [x] `packaging/debian/stop-splash.sh`: wait out the rest of the splash's 1.5 s, then stop it. Tested with a fake
       `systemctl` and a fake clock: a splash up long ago, one just started, one not running, unreadable output.
-- [ ] `openfollow.service`: both sleeps replaced by the one root step; a test pins that the unit sleeps nowhere.
-- [ ] `nm-wait-online.sh`: 0.25 s polls, grace and cap in seconds. `tests/test_dhcp_fallback_provisioning.py`
+- [x] `openfollow.service`: both sleeps replaced by the one root step; a test pins that the unit sleeps nowhere.
+- [x] `nm-wait-online.sh`: 0.25 s polls, grace and cap in seconds. `tests/test_dhcp_fallback_provisioning.py`
       covers a lease within the grace, the fallback accepted after 3 s, the 20 s cap, and a device that drops out
       of a poll starting its grace over.
-- [ ] `build-deb.sh` installs the new script; `docs/PACKAGING.md` describes the start steps and the polling.
-- [ ] Before, on today's install (pi66): critical chain, `systemctl is-system-running`, time to
-      `Network ready for startup`, with and without DHCP.
-- [ ] After, from a `.deb` of the branch on pi66: the same measurements; the splash on a cold boot; a restart of
-      the unit without waiting; the 8BitDo pad and the SpaceNavigator in their slots without a replug;
-      `nm-online --timeout=0` while the network is not ready yet.
+- [x] `build-deb.sh` installs the new script; `docs/PACKAGING.md` describes the start steps and the polling.
+- [x] Before, from a `.deb` of main on pi66: critical chain, `systemctl is-system-running`, time to
+      `Network ready for startup`, with and without DHCP (+15.5 s and +18.1 s from the start of the network wait).
+- [ ] After, from a `.deb` of the branch on pi66: the same measurements; the splash on a cold boot; a restart
+      showing the splash 1.5 s; screenshots every 0.25 s of how long the screen stays black; the 8BitDo pad and the
+      SpaceNavigator in their slots without a replug; `nm-online --timeout=0` while the network is not ready yet.
 - [ ] Mutation check of the new tests, three review rounds, `make ci-remote`, draft PR.

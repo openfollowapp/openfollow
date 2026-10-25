@@ -110,9 +110,10 @@ def test_the_splash_minimum_is_the_argument(tmp_path: Path, shell: str) -> None:
 @pytest.mark.parametrize(
     "state", ["inactive", "failed", "deactivating", ""], ids=["inactive", "failed", "stopping", "unknown"]
 )
-def test_a_splash_that_is_not_running_is_left_alone_without_waiting(tmp_path: Path, shell: str, state: str) -> None:
-    """A restart of the unit, or a station without a display: nothing to stop, nothing to wait for."""
-    assert _stop_splash(tmp_path, shell, state, _started(0.0), "1.5") == ([], [])
+def test_a_splash_that_is_not_active_is_stopped_without_waiting(tmp_path: Path, shell: str, state: str) -> None:
+    """A station without a display has no splash to wait for; ``systemctl stop`` still runs, so one that is still
+    stopping has let go of the display before Cage takes it."""
+    assert _stop_splash(tmp_path, shell, state, _started(0.0), "1.5") == ([], _STOP)
 
 
 @pytest.mark.parametrize("started_us", ["", "n/a", "12.5", "-3"], ids=["empty", "text", "fraction", "negative"])

@@ -38,7 +38,7 @@ Which interface the station takes its OSC **multicast** subscription on. Left bl
 
 Subscribing to a group is per-interface. Left to itself the system picks one, and it can pick differently from one restart to the next - so on a station with several networks, OSC sent to the group arrives after one restart and not after the next. Pinning the row is what makes it the same every time. On a station with one network there is nothing to pick and the row changes nothing.
 
-If the pinned interface has no address, the station holds no subscription at all rather than taking one on a different network, and the Address column says so. It subscribes again on its own when the interface comes back. While the row has an interface to follow, a listener that cannot start at all, for example because another program holds the OSC port, shows `OSC input` as a red row with the reason, and the station keeps trying to start it the same way.
+If the pinned interface has no address, the station holds no subscription at all rather than taking one on a different network, and the Address column says so. It subscribes again on its own when the interface comes back. A listener that cannot start at all, for example because another program holds the OSC port, shows `OSC input` as a red row with the reason, whether or not the row has an interface to follow, and the station keeps trying to start it.
 
 This row does **not** change which addresses OSC is accepted at. Ordinary OSC sent straight to the station, and OSC sent to the subnet broadcast address, arrive on every interface whatever this row is set to - that is how the listener has to be bound for multicast to work at all. To restrict who may send, use **Allowed sender IPs** under OSC Input.
 

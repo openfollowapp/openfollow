@@ -70,7 +70,7 @@ srtsrc → pre_queue → decodebin → post_queue → videoconvert → shared_vi
 - `pre_queue` (RTP's too, `configure_pre_decode_queue`) is leaky and bounded by **time**, 300 ms, never by a buffer count: its buffers are packet-sized, so a count holds milliseconds and a decoder hiccup drops compressed data, which breaks the picture into blocks until the next keyframe. A byte bound (8 MiB) holds it where buffer timestamps cannot (none, or a step back). It fills only while the decoder is behind, and the picture then runs up to 300 ms late until the decoder catches up, since the sink does not sync.
 - `srt_passphrase`, when set, drives the `passphrase` property and the URL's own `?passphrase=` is stripped first, so one field answers "which key is this stream encrypted with". Blank leaves the URL path untouched
 - Hardware decoder priority boosting (V4L2 > avdec > openh264)
-- HEVC stays off the Raspberry Pi hardware decoder (`v4l2slh265dec`, ranked out on every Pi): when a reference picture is missing (packet loss, a stream joined between keyframes) `rpi_hevc_dec` rejects the slice parameters, and stopping the pipeline after that error crashes the process (raspberrypi/linux #7612; still so on kernel 6.18.56 with GStreamer 1.26.2-3+rpt4). Kernels before 6.18.49 can instead block `VIDIOC_STREAMOFF` in D state until a reboot (raspberrypi/linux #7609). Only a Raspberry Pi (`/proc/device-tree/model`) is guarded: another board's stateless HEVC decoder is a different driver. `avdec_h265` decodes 1080p30 for about 0.6 of a Pi 5 core and conceals lost references. The rank change is process-wide and is applied before each SRT, RTSP and RTP decodebin (`inputs/_hevc_guard.py`); no other input decodes HEVC (NDI decodes in its SDK, USB and Pi Camera are raw, the Media Gallery plays VP8 only)
+- HEVC stays off the Raspberry Pi hardware decoder (`v4l2slh265dec`, ranked out on every Pi): when a reference picture is missing (packet loss, a stream joined between keyframes) `rpi_hevc_dec` rejects the slice parameters, and stopping the pipeline after that error crashes the process (raspberrypi/linux #7612; still so on kernel 6.18.56 with GStreamer 1.26.2-3+rpt4). Kernels before 6.18.49 can instead block `VIDIOC_STREAMOFF` in D state until a reboot (raspberrypi/linux #7609). Only a Raspberry Pi (`/proc/device-tree/model`) is guarded: another board's stateless HEVC decoder is a different driver. `avdec_h265` decodes 1080p30 for about 0.6 of a Pi 5 core and conceals lost references. The rank change is process-wide and is applied before each SRT, RTSP and RTP decodebin (`inputs/_hevc_guard.py`); no other input decodes HEVC (NDI decodes in its SDK, USB decodes at most MJPEG, the Pi Camera is raw, the Media Gallery plays VP8 only)
 - Preserves decoder latency on ASYNC_DONE (do NOT force 0)
 - `pad-added` on decodebin: **do NOT filter by pad name** (uses `src_0`, not `video_0`)
 - Reconnect: 3 retries with 8s first-frame timeout, then no-signal placeholder fallback
@@ -89,6 +89,14 @@ rtspsrc → decodebin → post_queue (leaky) → videoconvert → shared_videosi
   - **Up front:** `_pin.dials_ipv6` asks the bounded resolver (`_RESOLVE_WAIT_S`) and reads the family of its first answer, the one the system's address selection (RFC 6724, against its own routes) puts first and the connection dials, so a dual-stack camera reached over IPv4 keeps UDP and multicast; a name still resolving keeps every transport this attempt and the next attempt reads the answer. An address literal is not looked up
   - **After the fact:** the connection can land on the other family anyway (the first address refused or unreachable, the next one dialled; an IPv6 literal whose server describes IPv4). `on_bus_error` reads `Invalid address family` in the failed attempt's debug string and keeps that host on TCP interleaved for every later attempt and heal of this input; a changed URL host, or an input rebuilt by a saved change to the source's own settings or type, tries every transport again
 - `tcp-timeout` 10 s so the element gives up before the connection timeout, `latency` 0, `drop-on-latency`, `buffer-mode` none; only the video track is linked into `decodebin`, since an NVR may list its audio track first
+
+## USB Camera plugin (`video/inputs/v4l2.py`)
+```
+v4l2src → [src_caps] → post_queue → [jpegdec] → [videoscale] → videorate → capsfilter → videoconvert → shared_videosink
+```
+- `src_caps` pins a mode from the camera's own list (`VIDIOC_ENUM_FMT`, `_ENUM_FRAMESIZES`, `_ENUM_FRAMEINTERVALS`), never a fixed size: a capture card lists only the incoming signal's resolution. A UVC camera may list raw modes its USB link cannot carry; those frames arrive cut short and read as mostly green.
+- `_choose_mode` takes a raw mode when the link carries it at the render size and rate, else the camera's MJPEG mode, else the largest mode left; a rate above the camera's fastest asks for its fastest, and `videorate` repeats frames up to the request. The link budget comes from the USB device's sysfs `speed`: USB 2.0 carries 24.6 MB/s of video, a device off USB has no limit. `jpegdec` decodes MJPEG 1080p30 for about 0.43 of a Pi 5 core.
+- A list that cannot be read in full (an ioctl error, sizes or rates given as ranges) or holds no mode the station can play leaves the source open: it negotiates its own, as before the list was read.
 
 ## Stream credentials (RTSP / SRT)
 `rtsp_user` / `rtsp_password` / `srt_passphrase` are rendered as a login block under each plugin's URL (password inputs) and drive the element properties directly. The URL's own credential is **stripped before** `location` / `uri` is handed over – `rtspsrc` tries URL userinfo first and only then falls back to `user-id` / `user-pw`, so leaving it in would let a stale URL credential outrank the form. Blank fields leave the existing URL-userinfo path working untouched.
@@ -235,8 +243,8 @@ otherwise.
 the lowest-sorting fourcc it offers (raw Bayer or greyscale), not the camera's
 YUV420 default: on a CM5 with libcamera 0.7.1 that negotiated a raw stream and
 failed outright. Colorimetry is **not** pinned: a value the ISP adjusts can fail
-negotiation. `v4l2.py` is a different mechanism (driver-preference order) and
-is left open deliberately.
+negotiation. `v4l2.py` pins a mode from the camera's own list instead (see
+[USB Camera](#usb-camera-plugin-videoinputsv4l2py)).
 Cameras are listed through GStreamer's libcamera device provider (the
 `gstreamer1.0-libcamera` package the pipeline needs), which shares
 libcamerasrc's camera manager and so lists a camera that is already streaming.

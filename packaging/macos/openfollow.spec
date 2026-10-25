@@ -47,6 +47,7 @@ hiddenimports = [
     "gi.repository.GdkPixbuf",
     "gi.repository.Gst",
     "gi.repository.GstApp",
+    "gi.repository.GstPbutils",
     "gi.repository.GstVideo",
     "gi.repository.Rsvg",
     "cairo",
@@ -114,6 +115,10 @@ hiddenimports += ["rtmidi", *collect_submodules("mido.backends")]
 
 # Bundle the first-run config seed and every pre-shipped quality-tier model.
 datas += [(str(MACOS / "config.seed.toml"), ".")]
+# The About page reads these from the bundle root, offline, as the .deb does
+# from /usr/share/openfollow.
+_ABOUT_DOCS = ("LICENSE", "THIRD_PARTY_NOTICES.md", "WRITTEN_OFFER.md")
+datas += [(str(REPO / _doc), ".") for _doc in _ABOUT_DOCS]
 for _model in sorted((BUILD / "models").glob("*.onnx")):
     datas += [(str(_model), "models")]
 
@@ -171,7 +176,7 @@ _GST_PLUGIN_ALLOW = frozenset(
         "libgstgtk.dylib", "libgstapplemedia.dylib", "libgstosxaudio.dylib",
         # codecs / parsers / containers
         "libgstlibav.dylib", "libgstvideoparsersbad.dylib", "libgstaudioparsers.dylib",
-        "libgstjpeg.dylib", "libgstpng.dylib", "libgstpnm.dylib",
+        "libgstjpeg.dylib", "libgstpng.dylib", "libgstpnm.dylib", "libgstwebp.dylib",
         "libgstisomp4.dylib", "libgstmatroska.dylib", "libgstmpegtsdemux.dylib",
         "libgstmpegtsmux.dylib", "libgstmpegpsdemux.dylib", "libgstid3demux.dylib",
         "libgstid3tag.dylib", "libgsticydemux.dylib", "libgsttagdemux.dylib",
@@ -244,7 +249,7 @@ exe = EXE(  # noqa: F821
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
-    target_arch=None,
+    target_arch="arm64",
     codesign_identity=None,
     entitlements_file=None,
 )
@@ -272,7 +277,9 @@ app = BUNDLE(  # noqa: F821
         "CFBundleShortVersionString": VERSION,
         "CFBundleVersion": VERSION,
         "NSHighResolutionCapable": True,
-        "LSMinimumSystemVersion": "12.0",
+        # The oldest macOS the bundled Homebrew libraries run on; build-dmg.sh
+        # fails when one needs a newer one.
+        "LSMinimumSystemVersion": "15.0",
         "LSApplicationCategoryType": "public.app-category.video",
         "NSCameraUsageDescription": "OpenFollow uses connected cameras as a video source for tracking.",
         "NSMicrophoneUsageDescription": "OpenFollow may receive audio alongside NDI / AV video sources.",

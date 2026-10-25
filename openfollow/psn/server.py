@@ -30,6 +30,8 @@ DEFAULT_MCAST_IP = "236.10.10.10"
 DEFAULT_PORT = 56565
 
 _SOCKET_RETRY_DELAY = 2.0  # seconds
+# A socket thread's waits end on the stop event; this bounds an open it is in the middle of.
+_SOCKET_THREAD_JOIN_TIMEOUT_S = 3.0
 _FRAME_ID_WRAP = 256  # frame_id is a uint8 on the wire
 _MAX_FRAME_PACKETS = 255  # frame_packet_count is a uint8 on the wire
 
@@ -134,8 +136,14 @@ class PsnServer:
         """Whether this server's sends are leaving, data and info packets together."""
         return self._send_health
 
-    def start(self) -> None:
-        """Open the network socket and start send threads."""
+    def start(self, *, retry_open: bool = True) -> None:
+        """Open the network socket and start send threads.
+
+        A multicast socket that will not open is retried in the background.
+        With ``retry_open=False`` it raises ``OSError`` instead, before any
+        thread starts: a live apply needs a failure to roll back on, and a
+        generation it tears down at once must record and log no send.
+        """
         self._send_health.reset()
         # One stop signal per generation. A thread that outlived its join in
         # stop() keeps the previous, permanently-set one and exits on its next
@@ -145,6 +153,12 @@ class PsnServer:
         self._exit_stack = contextlib.ExitStack()
         if self._mcast_ip:
             if not self._try_open_multicast_socket_once(attempt=1):
+                if not retry_open:
+                    self.stop()
+                    raise OSError(
+                        f"PSN server failed to open multicast socket on "
+                        f"mcast_ip={self._mcast_ip!r}, source_ip={self._source_ip!r}",
+                    )
                 self._socket_thread = threading.Thread(
                     target=self._retry_multicast_socket_background,
                     args=(stop_event,),
@@ -176,7 +190,7 @@ class PsnServer:
         self._stop_event.set()
         # Stop retry thread first so it can't mutate _socket/_exit_stack after close.
         if self._socket_thread is not None:
-            self._socket_thread.join(timeout=_SOCKET_RETRY_DELAY + 1.0)
+            self._socket_thread.join(timeout=_SOCKET_THREAD_JOIN_TIMEOUT_S)
             if self._socket_thread.is_alive():
                 logger.warning("PSN socket-retry thread did not stop within timeout")
             self._socket_thread = None
@@ -219,13 +233,7 @@ class PsnServer:
             if isinstance(mcast_ip, str):
                 mcast_ip = mcast_ip.strip()
             self._mcast_ip = mcast_ip
-        self.start()
-        if self._mcast_ip and self._socket is None:
-            self.stop()
-            raise OSError(
-                f"PSN server failed to open multicast socket on "
-                f"mcast_ip={self._mcast_ip!r}, source_ip={self._source_ip!r}",
-            )
+        self.start(retry_open=False)
 
     def rebind_mcast_ip(self, mcast_ip: str | None) -> None:
         """Recreate multicast socket on new multicast group (preserves source_ip)."""

@@ -95,6 +95,8 @@ DEFAULT_MCAST_IP = "239.159.1.1"
 DEFAULT_PORT = OTP_PORT
 
 _SOCKET_RETRY_DELAY = 2.0  # seconds
+# A socket thread's waits end on the stop event; this bounds an open it is in the middle of.
+_SOCKET_THREAD_JOIN_TIMEOUT_S = 3.0
 
 
 # ---------------------------------------------------------------------------
@@ -651,8 +653,11 @@ class OtpServer:
 
     # -- Lifecycle ------------------------------------------------------------
 
-    def start(self) -> None:
-        """Open the network socket and start transform + advertisement threads."""
+    def start(self, *, retry_open: bool = True) -> None:
+        """Open the network socket and start transform + advertisement threads.
+
+        ``retry_open`` as for ``PsnServer.start()``.
+        """
         self._send_health.reset()
         # One stop signal per generation – see ``PsnServer.start()``.
         stop_event = threading.Event()
@@ -660,6 +665,14 @@ class OtpServer:
         self._exit_stack = contextlib.ExitStack()
         if self._is_multicast_mode():
             if not self._try_open_multicast_socket_once(attempt=1):
+                if not retry_open:
+                    self.stop()
+                    raise OSError(
+                        f"OTP failed to open multicast socket for system_number="
+                        f"{self._system_number} (transform={self._transform_dest!r}, "
+                        f"advertisement={self._advertisement_dest!r}, "
+                        f"source_ip={self._source_ip!r})",
+                    )
                 self._socket_thread = threading.Thread(
                     target=self._retry_multicast_socket_background,
                     args=(stop_event,),
@@ -697,7 +710,7 @@ class OtpServer:
         """Signal threads to stop, wait for them, then close the socket."""
         self._stop_event.set()
         if self._socket_thread is not None:
-            self._socket_thread.join(timeout=_SOCKET_RETRY_DELAY + 1.0)
+            self._socket_thread.join(timeout=_SOCKET_THREAD_JOIN_TIMEOUT_S)
             if self._socket_thread.is_alive():
                 logger.warning("OTP socket-retry thread did not stop within timeout")
             self._socket_thread = None
@@ -735,13 +748,11 @@ class OtpServer:
         Marker registrations survive – only the UDP socket and worker
         threads recycle. Used by ``apply_otp_output_change`` to apply ``otp_output.*`` edits without a process restart.
 
-        Raises ``OSError`` when the multicast socket can't be opened
-        synchronously on the new interface – ``start()`` itself spawns a
-        daemon retry thread instead, which is the right behaviour at boot
-        but the wrong one for live-apply, where the dispatcher needs a
-        hard signal to revert ``app._config.otp_output``. We tear back
-        down before raising so the retry thread doesn't keep poking at a
-        stale config.
+        Raises ``OSError``, stopped and before any thread starts, when the
+        multicast socket can't be opened synchronously on the new interface.
+        At boot ``start()`` retries it in the background instead, the wrong
+        behaviour for a live apply, where the dispatcher needs a hard signal
+        to revert ``app._config.otp_output``.
         """
         self.stop()
         # Locked because stop() logs and continues past a send thread that
@@ -757,15 +768,7 @@ class OtpServer:
             self._transform_dest, self._advertisement_dest = self._resolve_destinations()
             if self._mcast_ip_override is None:
                 self._mcast_ip = self._transform_dest
-        self.start()
-        if self._is_multicast_mode() and self._socket is None:
-            self.stop()
-            raise OSError(
-                f"OTP failed to open multicast socket for system_number="
-                f"{self._system_number} (transform={self._transform_dest!r}, "
-                f"advertisement={self._advertisement_dest!r}, "
-                f"source_ip={self._source_ip!r})",
-            )
+        self.start(retry_open=False)
 
     def update_system_name(self, name: str) -> None:
         """Update the human-readable system name carried in OTP Layer's

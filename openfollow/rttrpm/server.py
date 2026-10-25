@@ -300,8 +300,14 @@ class RttrpmServer:
 
     # -- Lifecycle ------------------------------------------------------------
 
-    def start(self) -> None:
-        """Open the UDP socket and start the send thread."""
+    def start(self, *, retry_open: bool = True) -> None:
+        """Open the UDP socket and start the send thread.
+
+        A socket that will not open is retried by the send loop. With
+        ``retry_open=False`` a pinned one raises ``OSError`` instead, before the
+        thread starts, as ``PsnServer.start()`` does; an unpinned one is still
+        left to the send loop.
+        """
         self._send_health.reset()
         # One stop signal per generation – see ``PsnServer.start()``.
         stop_event = threading.Event()
@@ -315,6 +321,10 @@ class RttrpmServer:
             logger.warning("RTTrPM: %s", exc)
             self._socket = None
             self._open_error = FailureCause.from_exception(exc)
+        egress = self._egress
+        if self._socket is None and not retry_open and egress is not None:
+            self.stop()
+            raise OSError(f"RTTrPM could not open a socket pinned to {egress.iface} ({egress.address or 'no address'})")
         self._send_thread = threading.Thread(
             target=self._send_loop, args=(stop_event,), daemon=True, name="RTTrPM-Send"
         )
@@ -338,8 +348,8 @@ class RttrpmServer:
     def restart(self, *, host: str, port: int, fps: float, context: int, egress: Egress | None) -> None:
         """Stop, reconfigure, and restart; marker registrations survive.
 
-        Raises ``OSError`` when a pinned socket cannot be opened. ``start()``
-        leaves that to the send loop's retry, which suits boot but gives a live
+        Raises ``OSError`` when a pinned socket cannot be opened. At boot
+        ``start()`` leaves that to the send loop's retry, which gives a live
         apply nothing to roll back on.
         """
         self.stop()
@@ -348,10 +358,7 @@ class RttrpmServer:
         self._fps = fps
         self._context = context
         self._egress = egress
-        self.start()
-        if egress is not None and self._socket is None:
-            self.stop()
-            raise OSError(f"RTTrPM could not open a socket pinned to {egress.iface} ({egress.address or 'no address'})")
+        self.start(retry_open=False)
 
     def bound_source_ip(self) -> str | None:
         """Address this server sends from: "" when unpinned, None when stopped or its pin failed."""

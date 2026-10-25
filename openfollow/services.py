@@ -1670,7 +1670,7 @@ class AppRuntimeServices:
             return None
         return resolved
 
-    def init_otp(self) -> None:
+    def init_otp(self, *, retry_open: bool = True) -> None:
         cfg = self._app._config.otp_output
         if not cfg.enabled:
             return
@@ -1697,7 +1697,7 @@ class AppRuntimeServices:
                 marker = server.get_marker(marker_id)
                 if marker is not None:
                     self._app._otp_server.register_marker(marker)
-        self._app._otp_server.start()
+        self._app._otp_server.start(retry_open=retry_open)
 
     def _rttrpm_egress(self, cfg: RttrpmOutputConfig) -> Egress | None:
         """RTTrPM's egress: None leaves the route to the OS, ``.down`` means its interface has no address."""
@@ -1713,7 +1713,7 @@ class AppRuntimeServices:
             )
         return egress
 
-    def init_rttrpm(self) -> None:
+    def init_rttrpm(self, *, retry_open: bool = True) -> None:
         cfg = self._app._config.rttrpm_output
         if not cfg.enabled:
             return
@@ -1734,7 +1734,7 @@ class AppRuntimeServices:
                 marker = server.get_marker(marker_id)
                 if marker is not None:
                     self._app._rttrpm_server.register_marker(marker)
-        self._app._rttrpm_server.start()
+        self._app._rttrpm_server.start(retry_open=retry_open)
 
     def init_psn_receiver(self) -> None:
         # Same resolution as ``init_psn`` so input and output land on the same
@@ -2093,23 +2093,15 @@ class AppRuntimeServices:
             server.stop()
             self._app._otp_server = None
         elif server is None and new_cfg.enabled:
-            self.init_otp()
-            # ``init_otp`` → ``OtpServer.start()`` swallows multicast-bind
-            # failures and spawns a daemon retry thread. Fine at startup,
-            # wrong here: the dispatcher needs a hard signal so
-            # ``_apply_with_fallback`` can revert ``otp_output``. Mirror
-            # ``OtpServer.restart``'s post-start guard so off→on isn't
-            # silently a no-op.
-            new_server = self._app._otp_server
-            if new_server is not None and new_server._is_multicast_mode() and new_server._socket is None:
-                new_server.stop()
+            # At startup a multicast socket that will not open is retried in
+            # the background; here the dispatcher needs a hard signal so
+            # ``_apply_with_fallback`` can revert ``otp_output``, as
+            # ``OtpServer.restart`` gives it.
+            try:
+                self.init_otp(retry_open=False)
+            except OSError:
                 self._app._otp_server = None
-                raise OSError(
-                    f"OTP off→on init failed to open multicast socket "
-                    f"(transform={new_server._transform_dest!r}, "
-                    f"advertisement={new_server._advertisement_dest!r}, "
-                    f"source_ip={new_server._source_ip!r})",
-                )
+                raise
         # else: off → off, no-op
 
     def apply_rttrpm_output_change(self, new_cfg: RttrpmOutputConfig) -> None:
@@ -2162,14 +2154,13 @@ class AppRuntimeServices:
             server.stop()
             self._app._rttrpm_server = None
         elif server is None and new_cfg.enabled:
-            self.init_rttrpm()
-            # ``start()`` leaves a refused pin to the send loop's retry; a live
+            # At startup a refused pin is left to the send loop's retry; a live
             # apply needs the failure to revert on, as ``restart()`` gives it.
-            new_server = self._app._rttrpm_server
-            if new_server is not None and new_server._egress is not None and new_server._socket is None:
-                new_server.stop()
+            try:
+                self.init_rttrpm(retry_open=False)
+            except OSError:
                 self._app._rttrpm_server = None
-                raise OSError(f"RTTrPM could not open a socket pinned to {new_server._egress.iface}")
+                raise
         # else: off → off, no-op
 
     def apply_osc_transmitters_change(

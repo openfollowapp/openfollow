@@ -699,6 +699,52 @@ class TestRttrpmEgressPin:
             assert srv._send_thread is None
             assert srv.bound_source_ip() is None
 
+    def test_a_restart_refused_its_pin_logs_only_the_refusal(self, monkeypatch, caplog) -> None:
+        """Its generation is torn down at once, so a rebuild or a skipped send would only add to the log."""
+        import logging as _logging
+
+        class _OnePass(Exception):
+            pass
+
+        class _RunsOnePassThread:
+            """A send thread scheduled the moment it starts: its loop runs one pass, up to its first wait."""
+
+            def __init__(self, *, target: object, args: tuple[threading.Event], daemon: bool, name: str) -> None:
+                self._target = target
+                self._args = args
+
+            def start(self) -> None:
+                def wait(_timeout: float | None = None) -> bool:
+                    raise _OnePass
+
+                self._args[0].wait = wait  # type: ignore[method-assign]
+                try:
+                    self._target(*self._args)  # type: ignore[operator]
+                except _OnePass:
+                    pass
+
+            def join(self, timeout: float | None = None) -> None:
+                pass
+
+            def is_alive(self) -> bool:
+                return False
+
+        monkeypatch.setattr("openfollow.rttrpm.server.threading.Thread", _RunsOnePassThread)
+        _calls, pin = self._pins(fail=True)
+        srv = RttrpmServer(host="198.51.100.20")
+        srv.register_marker(_marker(1))
+        with (
+            patch("openfollow.rttrpm.server.socket.socket"),
+            patch("openfollow.rttrpm.server.pin_socket_egress", pin),
+            caplog.at_level(_logging.DEBUG),
+            pytest.raises(OSError, match="pinned to eth1"),
+        ):
+            srv.restart(host="198.51.100.20", port=36700, fps=60.0, context=0, egress=self._EGRESS)
+        assert [(r.levelno, r.getMessage()) for r in caplog.records if r.name.startswith("openfollow")] == [
+            (_logging.WARNING, "RTTrPM: cannot send via eth1")
+        ]
+        assert srv.send_health.status().failed_total == 0
+
     def test_bound_source_ip_is_none_until_started_and_after_stop(self) -> None:
         with patch("openfollow.rttrpm.server.socket.socket"):
             srv = RttrpmServer(host="198.51.100.20")

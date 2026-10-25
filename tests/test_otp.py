@@ -1148,11 +1148,67 @@ def _record_waits(srv: OtpServer, waits: int | None = None) -> list[float]:
     return timeouts
 
 
+class _OnePass(Exception):
+    """Ends a loop at its first wait."""
+
+
+class _RunsOnePassThread:
+    """A thread scheduled the moment it starts: its loop runs one pass, up to its first wait."""
+
+    def __init__(self, *, target: Any, args: tuple[Any, ...] = (), daemon: bool = False, name: str = "") -> None:
+        self._target = target
+        self._args = args
+        self.name = name
+
+    def start(self) -> None:
+        stop = self._args[0]
+
+        def wait(_timeout: float | None = None) -> bool:
+            raise _OnePass
+
+        stop.wait = wait
+        try:
+            self._target(*self._args)
+        except _OnePass:
+            pass
+
+    def join(self, timeout: float | None = None) -> None:
+        pass
+
+    def is_alive(self) -> bool:
+        return False
+
+
 class TestOtpStartFailsAndSpawnsRetryThread:
     """When the initial multicast socket open fails (``McastTxSocket``
     raises), ``start()`` spawns a daemon retry thread. Production: the
     operator's network interface comes up later and the retry succeeds.
     """
+
+    def test_a_start_told_not_to_retry_raises_before_any_thread_starts(self, monkeypatch, caplog) -> None:
+        """A live apply tears the generation down at once; a send it skipped would only add to the log."""
+        import logging as _logging
+
+        monkeypatch.setattr("openfollow.otp.server.threading.Thread", _RunsOnePassThread)
+        with patch("openfollow.otp.server.multicast_expert.McastTxSocket", side_effect=_not_assignable()):
+            srv = OtpServer(system_number=1)
+            with (
+                caplog.at_level(_logging.DEBUG),
+                pytest.raises(OSError, match="failed to open multicast socket"),
+            ):
+                srv.restart(system_name="X", system_number=2, port=OTP_PORT, source_ip="", priority=100)
+        assert [(r.levelno, r.getMessage()) for r in caplog.records if r.name.startswith("openfollow")] == [
+            (_logging.WARNING, f"OTP multicast socket failed (attempt 1): {_not_assignable()}")
+        ]
+        assert srv.send_health.status().failed_total == 0
+        assert srv.bound_source_ip() is None
+
+    def test_a_start_at_boot_still_raises_its_row(self, monkeypatch) -> None:
+        monkeypatch.setattr("openfollow.otp.server.threading.Thread", _RunsOnePassThread)
+        with patch("openfollow.otp.server.multicast_expert.McastTxSocket", side_effect=_not_assignable()):
+            srv = OtpServer(system_number=1)
+            srv.start()
+        assert srv.send_health.status().failed_total > 0
 
     def test_initial_failure_spawns_retry_thread(self) -> None:
         with patch("openfollow.otp.server.multicast_expert.McastTxSocket") as mcls:

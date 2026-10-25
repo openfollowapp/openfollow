@@ -55,7 +55,7 @@ FLOOR_Z = -1.8  # house floor below the deck
 PIT_Y = LIP_Y - 2.7  # barricade
 LEG_KNOT = 1.5  # tie-back height
 # The mid truss across the stage: plane (y), bottom chord height, box size and half span, all in metres.
-MID_TRUSS_Y, MID_TRUSS_Z, TRUSS_BOX, TRUSS_HALF_SPAN = 4.6, 6.9, 0.34, 12.5
+MID_TRUSS_Y, MID_TRUSS_Z, TRUSS_BOX, TRUSS_HALF_SPAN = 4.6, 7.1, 0.34, 12.5
 # Two tied-back legs per side: plane (y), outer and inner edge at the top, the tie (x, this side), the height
 # they hang from, and whether the cloth falls straight from the top and curves only toward the tie (the
 # downstage pair, from the grid out of the picture; the mid-stage pair hangs from the mid truss).

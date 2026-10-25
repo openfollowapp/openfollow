@@ -241,6 +241,13 @@ def make_fake_gst(
         SEGMENT_DONE = "segment-done"
         STATE_CHANGED = "state-changed"
 
+    class FakePadProbeType:
+        BUFFER = "buffer"
+
+    class FakePadProbeReturn:
+        OK = "ok"
+        REMOVE = "remove"
+
     class FakeGst:
         Pipeline = FakePipelineNs
         ElementFactory = FakeElementFactory
@@ -251,6 +258,8 @@ def make_fake_gst(
         SeekFlags = FakeSeekFlags
         SeekType = FakeSeekType
         MessageType = FakeMessageType
+        PadProbeType = FakePadProbeType
+        PadProbeReturn = FakePadProbeReturn
         Rank = _Rank
 
         @staticmethod

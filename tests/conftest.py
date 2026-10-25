@@ -144,6 +144,12 @@ def _no_host_keyboard(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.
 
 
 @pytest.fixture(autouse=True)
+def _no_host_camera_modes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test may read the mode list of a camera on the host; one that cares installs its own."""
+    monkeypatch.setattr("openfollow.video.inputs.v4l2._read_capture_modes", lambda device: None)
+
+
+@pytest.fixture(autouse=True)
 def _no_host_cgroup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """No test may resolve the unit the test process itself runs under.
 

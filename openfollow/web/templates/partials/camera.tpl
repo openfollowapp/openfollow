@@ -12,45 +12,44 @@
         <span class="section-note">Set by the Setup Wizard</span>
     </div>
 
-    <div class="group">
-        <h3 class="group-title">Position</h3>
-        <dl class="network-state-grid" id="camera-position">
-            <dt>Position X</dt>
-            <dd>{{format_length(_cam.pos_x, _us)}}</dd>
-            <dt>Position Y</dt>
-            <dd>{{format_length(_cam.pos_y, _us)}}</dd>
-            <dt>Position Z</dt>
-            <dd>{{format_length(_cam.pos_z, _us)}}</dd>
-        </dl>
+    <div class="camera-readout">
+        <div class="group">
+            <h3 class="group-title">Position and orientation</h3>
+            <dl class="network-state-grid" id="camera-position">
+                <dt>Position X</dt>
+                <dd>{{format_length(_cam.pos_x, _us)}}</dd>
+                <dt>Position Y</dt>
+                <dd>{{format_length(_cam.pos_y, _us)}}</dd>
+                <dt>Position Z</dt>
+                <dd>{{format_length(_cam.pos_z, _us)}}</dd>
+                <dt>Pitch</dt>
+                <dd>{{"%.2f°" % _cam.pitch}}</dd>
+                <dt>Yaw</dt>
+                <dd>{{"%.2f°" % _cam.yaw}}</dd>
+                <dt>Roll</dt>
+                <dd>{{"%.2f°" % _cam.roll}}</dd>
+            </dl>
+        </div>
+        <div class="group">
+            <h3 class="group-title">Lens</h3>
+            <dl class="network-state-grid" id="camera-lens">
+                <dt>Horizontal Field of View</dt>
+                <dd>{{"%.2f°" % _cam.fov}}</dd>
+                <dt>Barrel / fisheye</dt>
+                <dd>{{"%.3f" % _cam.lens_k1}}</dd>
+                <dt>Corner correction</dt>
+                <dd>{{"%.3f" % _cam.lens_k2}}</dd>
+                <dt>Right of the picture centre</dt>
+                <dd>{{"%d px" % round(_cam.lens_cx * _hd) if _vs else "No video"}}</dd>
+                <dt>Above the picture centre</dt>
+                <dd>{{"%d px" % round(-_cam.lens_cy * _hd) if _vs else "No video"}}</dd>
+            </dl>
+        </div>
     </div>
-
-    <div class="group">
-        <h3 class="group-title">Orientation</h3>
-        <dl class="network-state-grid" id="camera-orientation">
-            <dt>Pitch</dt>
-            <dd>{{"%.2f°" % _cam.pitch}}</dd>
-            <dt>Yaw</dt>
-            <dd>{{"%.2f°" % _cam.yaw}}</dd>
-            <dt>Roll</dt>
-            <dd>{{"%.2f°" % _cam.roll}}</dd>
-        </dl>
-    </div>
-
-    <div class="group">
-        <h3 class="group-title">Lens</h3>
-        <dl class="network-state-grid" id="camera-lens">
-            <dt>Horizontal Field of View</dt>
-            <dd>{{"%.2f°" % _cam.fov}}</dd>
-            <dt>Barrel / fisheye</dt>
-            <dd>{{"%.3f" % _cam.lens_k1}}</dd>
-            <dt>Corner correction</dt>
-            <dd>{{"%.3f" % _cam.lens_k2}}</dd>
-            <dt>Right of the picture centre</dt>
-            <dd>{{"%d px" % round(_cam.lens_cx * _hd) if _vs else "No video"}}</dd>
-            <dt>Above the picture centre</dt>
-            <dd>{{"%d px" % round(-_cam.lens_cy * _hd) if _vs else "No video"}}</dd>
-        </dl>
-    </div>
+    <style>
+    .camera-readout { display: grid; grid-template-columns: 1fr 1fr; gap: 0 1.5rem; }
+    @media (max-width: 680px) { .camera-readout { grid-template-columns: 1fr; } }
+    </style>
 
     % if config.camera.calibration_marks:
     % _marks = {m.id: m for m in config.camera.calibration_marks}

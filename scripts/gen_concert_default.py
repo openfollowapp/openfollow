@@ -394,6 +394,12 @@ def riser(out: list[str]) -> None:
     ):
         out.append(poly(disc(drum[0] + dx, drum[1] + dy, h + z, r, 24), "#b98a3e", "#6a4a1a", 1.0))
         out.append(poly(disc(drum[0] + dx, drum[1] + dy, h + z + 0.001, r * 0.35, 12), "#d6aa5a"))
+    seat = (drum[0] + 0.05, drum[1] + 0.85)  # the drum throne behind the kit: three feet, a post and the seat
+    for t in (0.5, 2.6, 4.7):
+        foot = (seat[0] + 0.3 * math.cos(t), seat[1] + 0.3 * math.sin(t), h)
+        out.append(line(foot, (seat[0], seat[1], h + 0.12), "#4a4b51", 2.5))
+    out.append(line((seat[0], seat[1], h + 0.12), (seat[0], seat[1], h + 0.52), "#55565c", 3))
+    out.append(poly(disc(seat[0], seat[1], h + 0.55, 0.2, 20), "#34343a", "#6a6b72", 1.8))
 
 
 def side_risers(out: list[str]) -> None:

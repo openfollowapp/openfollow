@@ -105,8 +105,7 @@ def _coerce_int(
         out = int(value)
     except (TypeError, ValueError, OverflowError):
         return default
-    # pragma: no branch – every current caller passes ``lo=…``; ``lo`` stays
-    # optional for symmetry with ``_coerce_float``.
+    # Every current caller passes ``lo``.
     if lo is not None:  # pragma: no branch
         out = max(lo, out)
     if hi is not None:

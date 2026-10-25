@@ -24,7 +24,7 @@ If the overlay doesn't sit on the video on a camera whose yaw isn't `0`, re-run 
 
 ## Lens
 
-- **Horizontal Field of View** – the angular width the camera sees, in degrees. The **Setup Wizard** calculates it from the pinned marks.
+**Horizontal Field of View** is the angular width the camera sees, in degrees.
 
 ## Lens distortion
 

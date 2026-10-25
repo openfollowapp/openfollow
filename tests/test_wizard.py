@@ -518,7 +518,7 @@ class TestWizardHelpCopy:
 
     def test_the_advanced_caution_list_names_the_distances(self) -> None:
         caution = self._help("wizard-calibration-advanced").split("## Something might be wrong")[1]
-        assert "a distance point whose distances disagree with the picture" in caution
+        assert "a triangulated point whose distances disagree with the picture" in caution
 
     def test_review_says_apply_waits_for_incomplete_points(self) -> None:
         assert "stays off while a point is not complete" in self._help("wizard-review")
@@ -558,8 +558,9 @@ class TestWizardHelpCopy:
         assert "only warns" not in plan and "A missing height never blocks Save and finish." in plan
 
     def test_the_camera_tab_help_explains_the_fixed_camera_height(self) -> None:
-        assert "**Camera height: Fixed at …** under the list is the exact height of the camera's lens" in self._help(
-            "camera"
+        assert (
+            "**Camera height: Fixed at …** in the Calibration column is the exact height of the camera's lens"
+            in self._help("camera")
         )
 
     @pytest.mark.parametrize(
@@ -762,6 +763,9 @@ function fetch(url, opts) {
 function wizLensValid() { return pairValid; }
 function wizLensProblem() { return { kind: problem, off: [false, problem === 'range'], max: 183 }; }
 function wizReadLensCoeff(id) { return id === 'wiz_lens_k1' ? -0.21 : 0.03; }
+function wizLens() { return [-0.21, 0.03, S.lensCentre[0], S.lensCentre[1]]; }
+function lensRatingRecord(l) { return 'rated ' + l.join(' '); }
+function localIsoNow() { return '2026-10-25T11:04:05+01:00'; }
 function calibGrid() { return RECT; }
 """
 
@@ -819,6 +823,16 @@ class TestWizardApply:
             )
         ]
         assert (out["shown"], out["removed"], out["href"]) == ([], ["openfollow:wizard"], "/")
+
+    @pytest.mark.parametrize("state", [_SIMPLE_STATE, _ADVANCED_STATE], ids=["simple", "advanced"])
+    def test_the_calibration_is_saved_with_its_lens_rating_and_this_browser_s_time(self, state: dict) -> None:
+        camera = _apply(state)["calls"][-1][1]
+        assert (camera["calibration_lens_rating"], camera["calibration_time"]) == (
+            "rated -0.21 0.03 0.02 -0.01",
+            "2026-10-25T11:04:05+01:00",
+        )
+        # The station records the video source it shows itself.
+        assert "calibration_source" not in camera
 
     @pytest.mark.parametrize("height", [9.8, None])
     @pytest.mark.parametrize("state", [_SIMPLE_STATE, _ADVANCED_STATE], ids=["simple", "advanced"])
@@ -1664,8 +1678,8 @@ class TestWizardLensStepPage:
             assert text in page, text
         assert "edge fit" not in page.lower()
         _, camera = _get(base, "/section/camera")
-        assert "<label>Barrel / fisheye</label>" in camera and "<label>Corner correction</label>" in camera
-        assert 'aria-label="Corner correction slider"' in camera and "edge fit" not in camera.lower()
+        assert "<dt>Barrel / fisheye</dt>" in camera and "<dt>Corner correction</dt>" in camera
+        assert "edge fit" not in camera.lower()
         assert "(k1)" not in camera and "(k2)" not in camera
 
     def test_the_lens_step_speaks_to_a_screen_reader(self, live_server_lens) -> None:
@@ -1960,14 +1974,19 @@ class TestWizardLensTemplateBubbles:
 
 @unit
 def test_no_page_or_help_text_names_the_old_lens_and_point_labels() -> None:
-    """The pair is Barrel / fisheye and Corner correction, the kinds Known point and Distance point, everywhere."""
+    """The pair is Barrel / fisheye and Corner correction, the kinds Known point and Triangulated point, everywhere."""
     web = WIZARD_TEMPLATE.parent.parent
-    files = [*web.glob("templates/**/*.tpl"), *web.glob("help/*.md"), *web.glob("static/js/*.js")]
+    files = [
+        *web.glob("templates/**/*.tpl"),
+        *web.glob("help/*.md"),
+        *web.glob("static/js/*.js"),
+        *web.glob("whatsnew/*.md"),
+    ]
     assert len(files) > 20
     for path in files:
         text = path.read_text(encoding="utf-8")
-        for old in ("Edge fit", "edge fit", "Triangulated", "triangulated point", "New triangulated"):
-            assert old not in text, (path.name, old)
+        for old in ("Edge fit", "edge fit", "distance point", "laser point"):
+            assert old not in text.lower(), (path.name, old)
 
 
 @integration
@@ -2005,3 +2024,117 @@ def test_the_served_wizard_has_one_point_menu_and_its_panel_slot_under_the_pictu
     between = page[start:slot]
     assert between.count("<div") == between.count("</div>")
     assert slot < page.index('id="cal-refresh"')
+
+
+# The lens rating Save and finish records, one case per Lens row of the review
+
+_RATING_PAGE = """
+function lensHasCurrent() { return page.current; }
+function lensIsTheFits(l) { return page.isTheFits; }
+function lensShownRating(fit) { return fit.shown; }
+function lensFitApplies(fit) { return fit.applies; }
+function lensHandTuned() { return page.tuned; }
+function lensMeasured() { return page.measured; }
+function lensSame(a, b) { return a.every(function(v, i) { return v === b[i]; }); }
+var SAVED = { lens_rating: 'excellent' };
+"""
+
+
+def _rating(page: dict, S: dict, lens_fit=None, lens=(-0.2, 0.03, 0.0, 0.0)) -> str:
+    return run_wizard_js(
+        "lensRatingRecord(L)",
+        prelude=_RATING_PAGE,
+        functions=("lensRatingRecord",),
+        variables=("LENS_RATING_RECORD",),
+        page={"current": False, "isTheFits": False, "tuned": False, "measured": False, **page},
+        S={"lensChoice": "", "lensLoaded": None, "lensTouched": False, **S},
+        lensFit=lens_fit,
+        L=list(lens),
+    )
+
+
+@needs_node
+@unit
+class TestLensRatingRecord:
+    def test_a_kept_lens_keeps_the_rating_it_was_saved_with(self) -> None:
+        assert _rating({"current": True}, {"lensChoice": "keep"}) == "excellent"
+
+    @pytest.mark.parametrize(
+        ("shown", "recorded"),
+        [("medium", "poor"), ("okay", "fair"), ("good", "good"), ("excellent", "excellent")],
+    )
+    def test_the_fit_s_lens_records_the_rating_the_review_shows(self, shown: str, recorded: str) -> None:
+        assert _rating({"isTheFits": True}, {}, {"shown": shown, "applies": True}) == recorded
+
+    @pytest.mark.parametrize(("applies", "tuned"), [(True, False), (True, True), (False, True)])
+    def test_a_lens_changed_after_its_fit_is_user_input(self, applies: bool, tuned: bool) -> None:
+        assert _rating({"tuned": tuned}, {}, {"shown": "good", "applies": applies}) == "user_input"
+
+    @pytest.mark.parametrize(("kept", "recorded"), [("good", "good"), ("user_input", "user_input"), (None, "")])
+    def test_a_fit_not_applied_records_the_rating_of_the_lens_it_kept(self, kept, recorded: str) -> None:
+        fit = {"shown": "low", "applies": False, **({"keptRating": kept} if kept else {})}
+        assert _rating({"measured": True}, {}, fit) == recorded
+
+    def test_a_loaded_lens_as_loaded_is_loaded(self) -> None:
+        loaded = {"k1": -0.2, "k2": 0.03, "cx": 0.0, "cy": 0.0, "name": "Wide"}
+        assert _rating({}, {"lensLoaded": loaded}) == "loaded"
+
+    def test_a_loaded_lens_changed_by_hand_is_user_input(self) -> None:
+        loaded = {"k1": -0.25, "k2": 0.03, "cx": 0.0, "cy": 0.0, "name": "Wide"}
+        assert _rating({}, {"lensLoaded": loaded}) == "user_input"
+
+    def test_a_lens_typed_by_hand_is_user_input(self) -> None:
+        assert _rating({}, {"lensTouched": True}) == "user_input"
+
+    def test_the_station_s_lens_used_as_it_is_keeps_its_rating(self) -> None:
+        assert _rating({"current": True, "measured": True}, {"lensChoice": "load"}) == "excellent"
+
+    def test_a_lens_not_measured_rates_nothing(self) -> None:
+        assert _rating({}, {}) == ""
+
+
+@needs_node
+@unit
+@pytest.mark.parametrize(
+    ("zone", "expected"),
+    [
+        ("UTC", "2026-10-25T10:04:05+00:00"),
+        ("Asia/Kolkata", "2026-10-25T15:34:05+05:30"),
+        ("America/St_Johns", "2026-10-25T07:34:05-02:30"),
+        ("Pacific/Kiritimati", "2026-10-26T00:04:05+14:00"),
+    ],
+)
+def test_the_calibration_time_is_this_browser_s_local_time_with_its_offset(zone: str, expected: str) -> None:
+    # A fixed instant read in the browser's zone: 10:04:05 UTC on 25 October 2026.
+    page = (
+        f"process.env.TZ = {json.dumps(zone)}; var RealDate = Date;"
+        " globalThis.Date = function() { return new RealDate(RealDate.UTC(2026, 9, 25, 10, 4, 5)); };"
+    )
+    assert run_wizard_js("localIsoNow()", prelude=page, functions=("localIsoNow",)) == expected
+
+
+_TAKE_FIT_PAGE = """
+var lensFit = null, S = { lensChoice: '', lensLoaded: null, lensTouched: false }, SAVED = { lens_rating: '' };
+function wizLens() { return [-0.2, 0.03, 0.0, 0.0]; }
+function lensHasCurrent() { return false; }
+function lensFitApplies(fit) { return fit.rating !== 'low'; }
+function lensIsTheFits(l) { return !!lensFit && lensFitApplies(lensFit); }
+function lensShownRating(fit) { return fit.rating; }
+function lensHandTuned() { return false; }
+function lensMeasured() { return false; }
+"""
+
+
+@needs_node
+@unit
+def test_a_fit_not_applied_after_an_applied_one_keeps_that_fit_s_rating() -> None:
+    """Good, then a line that makes the next fit Not usable: the Good pair stays, and Save and finish rates it Good."""
+    out = run_wizard_js(
+        "(function() { lensTakeFit({ rating: 'good' }, [0, 0]); var first = lensRatingRecord(wizLens());"
+        " lensTakeFit({ rating: 'low' }, [0, 0]);"
+        " return [first, lensRatingRecord(wizLens()), lensFit.kept]; })()",
+        prelude=_TAKE_FIT_PAGE,
+        functions=("lensTakeFit", "lensRatingRecord"),
+        variables=("LENS_RATING_RECORD",),
+    )
+    assert out == ["good", "good", [-0.2, 0.03, 0.0, 0.0]]

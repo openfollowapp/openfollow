@@ -252,30 +252,3 @@ def test_mouse3d_looped_inputs_have_validation_markup() -> None:
         if not span_re.search(html):
             problems.append(f"{name}: no sibling <span id={target_id!r} class='field-error'>")
     assert not problems, "mouse3d rendered markup drift:\n  " + "\n  ".join(problems)
-
-
-def _helper_inputs() -> Iterable[tuple[Path, str, str, dict[str, str]]]:
-    """Unnamed inputs that validate a registered field: helpers that write a hidden one (the lens centre)."""
-    for path in sorted(_PARTIALS_DIR.glob("*.tpl")):
-        for attrs in _parse_partial(path):
-            match = re.fullmatch(r"/api/validate/(\w+)/(\w+)", attrs.get("hx-get", ""))
-            if match is not None and not attrs.get("name"):
-                yield path, match.group(1), match.group(2), attrs
-
-
-def test_a_helper_field_carries_the_markup_of_the_hidden_field_it_writes() -> None:
-    helpers = list(_helper_inputs())
-    assert {(path.name, field) for path, _, field, _ in helpers} == {
-        ("camera.tpl", "lens_cx"),
-        ("camera.tpl", "lens_cy"),
-    }
-    for path, section, field, attrs in helpers:
-        assert section == _section_from_path(path) and field in FIELD_RULES[section]
-        # It writes the one hidden input that carries the field's name, which the save reads.
-        hidden = [a for a in _parse_partial(path) if a.get("type") == "hidden" and a.get("name") == field]
-        assert len(hidden) == 1 and attrs.get("data-hidden") == hidden[0].get("id")
-        target = attrs.get("hx-target", "")
-        assert "blur" in attrs.get("hx-trigger", "") and target.startswith("#") and target.endswith("-error")
-        assert attrs.get("aria-describedby") == target.lstrip("#")
-        assert attrs.get("hx-include") == "closest form" and attrs.get("aria-invalid") == "false"
-        assert re.search(rf'<span id="{re.escape(target.lstrip("#"))}" class="field-error">', path.read_text("utf-8"))

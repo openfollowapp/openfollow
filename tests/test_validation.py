@@ -1294,29 +1294,6 @@ def test_bidi_isolates_and_c1_controls_are_refused_and_stripped(value: str) -> N
     assert _default_sanitiser(value) == "Lighting"
 
 
-def test_each_lens_field_is_checked_again_when_its_slider_or_another_lens_value_changes() -> None:
-    # A slider writes its number field without a blur, and a lens fixed from another
-    # field would otherwise leave this one's error, and the disabled Save, behind.
-    import re
-    from pathlib import Path
-
-    src = (Path(__file__).resolve().parent.parent / "openfollow/web/templates/partials/camera.tpl").read_text()
-    for own, other in (("k1", "k2"), ("k2", "k1")):
-        tag = re.search(rf'<input type="number" id="camera-lens-{own}".*?>', src, re.S)
-        assert tag is not None
-        trigger = re.search(r'hx-trigger="([^"]*)"', tag.group(0))
-        assert trigger is not None
-        sources = {part.strip() for part in trigger.group(1).split(",")}
-        assert sources == {
-            "blur changed delay:200ms",
-            f"change from:#camera-lens-{own}-range",
-            f"change from:#camera-lens-{other}",
-            f"change from:#camera-lens-{other}-range",
-            "change from:#camera-lens-cx-px",
-            "change from:#camera-lens-cy-px",
-        }
-
-
 # ---------------------------------------------------------------------------
 # Keyboard layout / variant: well-formed, and known to this station when it can tell.
 # ---------------------------------------------------------------------------

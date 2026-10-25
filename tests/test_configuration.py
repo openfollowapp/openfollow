@@ -14,6 +14,7 @@ import pytest
 import tomllib
 
 from openfollow.configuration import (
+    CALIBRATION_SOURCE_MAX_LEN,
     DEFAULT_UPDATE_SERVICE_NAME,
     FEATURE_KEYS,
     MOUSE3D_AXES,
@@ -9713,6 +9714,132 @@ def test_a_hand_edited_calibration_height_is_read_through_load_config(tmp_path, 
     assert load_config(str(path)).camera.calibration_height is None
     path.write_text("[camera]\ncalibration_height = 7.25\n", encoding="utf-8")
     assert load_config(str(path)).camera.calibration_height == 7.25
+
+
+# CameraConfig's calibration record: the lens rating, time and video source of the Setup Wizard's save
+
+
+@pytest.mark.parametrize("rating", ["excellent", "good", "fair", "poor", "user_input", "loaded", ""])
+def test_a_calibration_lens_rating_on_the_list_is_kept(rating: str) -> None:
+    assert CameraConfig(calibration_lens_rating=rating).calibration_lens_rating == rating
+
+
+# A fit rated Not usable is never applied, so no saved lens carries that rating.
+@pytest.mark.parametrize(
+    "raw",
+    ["Good", "okay", "medium", "low", "not_usable", " good"],
+    ids=["case", "okay", "medium", "low", "not usable", "pad"],
+)
+def test_a_calibration_lens_rating_off_the_list_reads_as_none(raw: str) -> None:
+    assert CameraConfig(calibration_lens_rating=raw).calibration_lens_rating == ""
+
+
+@pytest.mark.parametrize("raw", [None, 3, True, ["good"]], ids=["none", "number", "bool", "list"])
+def test_a_calibration_lens_rating_of_the_wrong_type_reads_as_none(raw: object) -> None:
+    assert CameraConfig(calibration_lens_rating=raw).calibration_lens_rating == ""  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("2026-10-25T11:04:00+01:00", "2026-10-25T11:04:00+01:00"),
+        ("2026-10-26T09:30:00-02:30", "2026-10-26T09:30:00-02:30"),
+        ("2026-10-25T10:04:00Z", "2026-10-25T10:04:00+00:00"),
+        ("2026-10-25T11:04:05.678+01:00", "2026-10-25T11:04:05+01:00"),
+        (" 2026-10-25 11:04+01:00 ", "2026-10-25T11:04:00+01:00"),
+    ],
+    ids=["offset", "negative half hour", "z", "fraction", "space"],
+)
+def test_a_calibration_time_with_its_offset_is_kept_to_the_second(raw: str, expected: str) -> None:
+    assert CameraConfig(calibration_time=raw).calibration_time == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["2026-10-25T11:04:00", "2026-10-25", "2026-13-01T00:00:00+00:00", "yesterday", ""],
+    ids=["no offset", "date only", "no such month", "text", "empty"],
+)
+def test_a_calibration_time_without_an_offset_or_unreadable_reads_as_none(raw: str) -> None:
+    assert CameraConfig(calibration_time=raw).calibration_time == ""
+
+
+@pytest.mark.parametrize(
+    "raw", [None, 1761386640, True, ["2026-10-25T11:04:00+01:00"]], ids=["none", "number", "bool", "list"]
+)
+def test_a_calibration_time_of_the_wrong_type_reads_as_none(raw: object) -> None:
+    assert CameraConfig(calibration_time=raw).calibration_time == ""  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("RTSP: rtsp://192.0.2.10/stream", "RTSP: rtsp://192.0.2.10/stream"),
+        ("RTSP: rtsp://user:pw@192.0.2.10/stream", "RTSP: rtsp://192.0.2.10/stream"),
+        ("SRT srt://192.0.2.1:5000?passphrase=secret123", "SRT srt://192.0.2.1:5000?passphrase=***"),
+        ("NDI®: Stage\x00 \x1b[31mLeft\u202e", "NDI®: Stage [31mLeft"),
+        ("SRT srt://192.0.2.1:5000?pass\x00phrase=secret123", "SRT srt://192.0.2.1:5000?passphrase=***"),
+        ("9\x00rtsp://user:secret@cam/s", "9rtsp://cam/s"),
+        ("_\u200ertsp://user:secret@cam/s", "_rtsp://cam/s"),
+        ("  Media Gallery (Clip)  ", "Media Gallery (Clip)"),
+    ],
+    ids=[
+        "plain",
+        "credentials",
+        "passphrase",
+        "control characters",
+        "split passphrase",
+        "joined digit",
+        "joined underscore",
+        "pad",
+    ],
+)
+def test_a_calibration_source_is_kept_without_credentials_or_control_characters(raw: str, expected: str) -> None:
+    assert CameraConfig(calibration_source=raw).calibration_source == expected
+
+
+def test_a_calibration_source_past_its_length_is_cut() -> None:
+    source = CameraConfig(calibration_source="NDI®: " + "x" * 400).calibration_source
+    assert source == ("NDI®: " + "x" * 400)[:CALIBRATION_SOURCE_MAX_LEN]
+
+
+@pytest.mark.parametrize("raw", [None, 3, True, ["NDI®: Stage"]], ids=["none", "number", "bool", "list"])
+def test_a_calibration_source_of_the_wrong_type_reads_as_none(raw: object) -> None:
+    assert CameraConfig(calibration_source=raw).calibration_source == ""  # type: ignore[arg-type]
+
+
+def test_a_calibration_record_survives_a_toml_round_trip(tmp_path) -> None:
+    path = tmp_path / "config.toml"
+    record = {
+        "calibration_lens_rating": "poor",
+        "calibration_time": "2026-10-26T09:30:00-02:30",
+        "calibration_source": "USB Camera: Webcam (1280x720@30)",
+    }
+    camera = CameraConfig(calibration_mode="advanced", calibration_marks=[_DSL, _DSR], **record)  # type: ignore[arg-type]
+    save_config(AppConfig(camera=camera), path)
+    loaded = load_config(str(path)).camera
+    assert {name: getattr(loaded, name) for name in record} == record
+
+
+def test_an_unquoted_calibration_time_in_a_hand_edited_file_is_read(tmp_path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text("[camera]\ncalibration_time = 2026-10-25T11:04:00+01:00\n", encoding="utf-8")
+    assert load_config(str(path)).camera.calibration_time == "2026-10-25T11:04:00+01:00"
+    path.write_text("[camera]\ncalibration_time = 2026-10-25T11:04:00\n", encoding="utf-8")
+    assert load_config(str(path)).camera.calibration_time == ""
+
+
+def test_a_hand_edited_calibration_record_is_read_through_load_config(tmp_path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[camera]\ncalibration_lens_rating = "Good"\ncalibration_time = 3\ncalibration_source = "rtsp://u:p@192.0.2.1/s"\n',
+        encoding="utf-8",
+    )
+    camera = load_config(str(path)).camera
+    assert (camera.calibration_lens_rating, camera.calibration_time, camera.calibration_source) == (
+        "",
+        "",
+        "rtsp://192.0.2.1/s",
+    )
 
 
 _FILE_GRID = "[grid]\nwidth = 12.0\ndepth = 6.0\nx_offset = 1.0\ny_offset = 4.0\nz_offset = 0.5\n"

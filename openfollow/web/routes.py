@@ -72,6 +72,7 @@ from openfollow.configuration import (
     VALID_BUTTON_NAMES,
     AppConfig,
     CalibrationMarkConfig,
+    CameraConfig,
     ConfigFileEmptyError,
     ConfigFileUnreadableError,
     DetectionMaskConfig,
@@ -1676,14 +1677,40 @@ def _interface_assignment_rows(
     return rows
 
 
+# What the Setup Wizard's calibration solves; its marks describe these values only.
+_SOLVED_CAMERA_FIELDS = ("pos_x", "pos_y", "pos_z", "pitch", "yaw", "roll", "fov")
+# What describes one calibration's marks: never kept for marks it did not come with.
+_CALIBRATION_RECORD = ("calibration_lens_rating", "calibration_time", "calibration_source")
+_CALIBRATION_FIELDS = ("calibration_mode", "calibration_marks", "calibration_height", *_CALIBRATION_RECORD)
+
+
+def _solved_camera(cfg: AppConfig) -> tuple[float, ...]:
+    return tuple(getattr(cfg.camera, name) for name in _SOLVED_CAMERA_FIELDS)
+
+
 def apply_section_data(cfg: AppConfig, section: str, data: Mapping[str, Any]) -> bool:
     """Apply section updates in-place. Returns False for unknown sections.
 
     A station in Simple keeps no per-plane pin, whichever section a POST names. Simple's corner marks
     follow the grid, and one the grid moved loses its pin, so a write that brings pins for the new grid
-    applies the grid first.
+    applies the grid first. A camera write that changes the pose or FOV without bringing calibration
+    marks clears the calibration, so the next Setup Wizard run cannot solve the old pose back. One that
+    brings marks clears what describes a calibration and it does not bring; a lens changed without its
+    rating clears the rating.
     """
+    solved, lens = _solved_camera(cfg), effective_lens(cfg)
     applied = _apply_section(cfg, section, data)
+    if isinstance(data.get("calibration_marks"), list):
+        stale: Sequence[str] = [name for name in _CALIBRATION_RECORD if not isinstance(data.get(name), str)]
+    elif _solved_camera(cfg) != solved:
+        stale = _CALIBRATION_FIELDS
+    elif effective_lens(cfg) != lens and not isinstance(data.get("calibration_lens_rating"), str):
+        stale = ("calibration_lens_rating",)
+    else:
+        stale = ()
+    blank = CameraConfig()
+    for name in stale:
+        setattr(cfg.camera, name, getattr(blank, name))
     enforce_network_mode(cfg)
     reconcile_simple_corners(cfg)
     return applied
@@ -2217,6 +2244,9 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "calibration_mode": _as_str,
         "calibration_marks": _as_json_list,
         "calibration_height": _as_optional_measured,
+        "calibration_lens_rating": _as_str,
+        "calibration_time": _as_str,
+        "calibration_source": _as_str,
     },
     "grid": {
         "visible": _as_bool,
@@ -2705,6 +2735,19 @@ def _camera_video_size(server: ConfigWebServer) -> tuple[int, int] | None:
     if isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0:
         return width, height
     return None
+
+
+def _shown_source_text(server: ConfigWebServer) -> str:
+    """The video source the station shows, by input name and its credential-free label; "" before any."""
+    from openfollow.video.inputs import get_input_class
+
+    video = server.get_runtime_stats().get("video") or {}
+    label = str(video.get("source_label") or "")
+    input_cls = get_input_class(str(video.get("source_type") or ""))
+    if input_cls is None or not label:
+        return label
+    name = input_cls.display_name
+    return label if label.startswith(name) else f"{name}: {label}"
 
 
 def _mouse3d_status_view(server: ConfigWebServer) -> dict[str, Any]:
@@ -10239,6 +10282,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
         pushed_by = _pushed_by()
         scrubbed = strip_device_local_fields(section, data)
+        if section == "camera" and pushed_by is None and "calibration_time" in scrubbed:
+            scrubbed.setdefault("calibration_source", _shown_source_text(server))
         backup: dict[str, str] = {}
         if pushed_by is not None:
             scrubbed = _without_station_name(scrubbed)
@@ -10292,6 +10337,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # Local apply is an operator saving their own form, so overlay the
             # live per-marker speeds like the other section-save flows.
             cfg = _load_config_for_edit()
+            if section == "camera":
+                # The Camera tab only shows the camera: send the saved one, calibration included, as one copy.
+                data = asdict(cfg.camera)
             if not apply_section_data(cfg, section, data):
                 response.status = 404
                 return json.dumps({"error": "Unknown section"})

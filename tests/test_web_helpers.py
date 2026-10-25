@@ -4163,13 +4163,113 @@ def test_calibration_marks_arrive_through_the_camera_section() -> None:
     assert [(m.id, m.kind) for m in cfg.camera.calibration_marks] == [(1, "known"), (2, "known"), (3, "triangulated")]
 
 
+_SOLVED = ("pos_x", "pos_y", "pos_z", "pitch", "yaw", "roll", "fov")
+
+
+_RECORD = {
+    "calibration_lens_rating": "good",
+    "calibration_time": "2026-10-25T11:04:00+01:00",
+    "calibration_source": "RTSP: rtsp://192.0.2.10/stream",
+}
+
+
+def _calibrated() -> AppConfig:
+    cfg = AppConfig()
+    apply_section_data(cfg, "camera", {"calibration_mode": "advanced", "calibration_marks": _GOOD_MARKS, **_RECORD})
+    cfg.camera.calibration_height = 9.8
+    return cfg
+
+
+def _record(camera) -> dict[str, str]:
+    return {name: getattr(camera, name) for name in _RECORD}
+
+
+@pytest.mark.parametrize("name", _SOLVED)
+def test_a_pose_or_fov_changed_without_marks_clears_the_calibration(name: str) -> None:
+    cfg = _calibrated()
+    assert apply_section_data(cfg, "camera", {name: getattr(cfg.camera, name) + 1.0})
+    camera = cfg.camera
+    assert (camera.calibration_mode, camera.calibration_marks, camera.calibration_height) == ("simple", [], None)
+    assert _record(camera) == dict.fromkeys(_RECORD, "")
+
+
+@pytest.mark.parametrize("name", ["lens_k1", "lens_k2", "lens_cx", "lens_cy"])
+def test_a_lens_changed_without_its_rating_clears_only_the_rating(name: str) -> None:
+    """The rating describes the lens it was measured for; the points still describe the pose."""
+    cfg = _calibrated()
+    apply_section_data(cfg, "camera", {name: 0.01})
+    assert (len(cfg.camera.calibration_marks), _record(cfg.camera)) == (3, {**_RECORD, "calibration_lens_rating": ""})
+
+
+def test_a_lens_written_with_its_rating_keeps_it() -> None:
+    cfg = _calibrated()
+    apply_section_data(cfg, "camera", {"lens_k1": -0.1, "calibration_lens_rating": "loaded"})
+    assert _record(cfg.camera) == {**_RECORD, "calibration_lens_rating": "loaded"}
+
+
+def test_marks_written_with_their_record_keep_it() -> None:
+    cfg = _calibrated()
+    record = {"calibration_lens_rating": "user_input", "calibration_time": "2026-10-26T09:30:00-02:30"}
+    apply_section_data(
+        cfg, "camera", {"pos_x": 2.0, "calibration_marks": _GOOD_MARKS, **record, "calibration_source": "NDI®: Stage"}
+    )
+    assert _record(cfg.camera) == {**record, "calibration_source": "NDI®: Stage"}
+
+
+@pytest.mark.parametrize("name", list(_RECORD))
+@pytest.mark.parametrize("raw", ["missing", None, 3, ["good"]], ids=["missing", "none", "number", "list"])
+def test_marks_written_without_one_of_their_record_clear_it(name: str, raw: object) -> None:
+    """The record describes the marks it came with, never ones another write brought."""
+    cfg = _calibrated()
+    data = {"calibration_marks": _GOOD_MARKS, **_RECORD}
+    if raw == "missing":
+        del data[name]
+    else:
+        data[name] = raw
+    apply_section_data(cfg, "camera", data)
+    assert _record(cfg.camera) == {**_RECORD, name: ""}
+
+
+@pytest.mark.parametrize("raw", ["DSL", None, {"id": 1}])
+def test_a_pose_changed_with_marks_that_are_not_a_list_clears_the_calibration(raw: object) -> None:
+    cfg = _calibrated()
+    apply_section_data(cfg, "camera", {"pos_x": 1.0, "calibration_marks": raw})
+    assert cfg.camera.calibration_marks == []
+
+
+@pytest.mark.parametrize(
+    "data",
+    [{}, {"pos_x": 0.0}, {"lens_k1": 0.0, "calibration_height": 9.8}],
+    ids=["nothing", "same pose", "same lens"],
+)
+def test_a_camera_write_that_keeps_the_pose_keeps_the_calibration(data: dict) -> None:
+    cfg = _calibrated()
+    apply_section_data(cfg, "camera", data)
+    camera = cfg.camera
+    assert (camera.calibration_mode, len(camera.calibration_marks), camera.calibration_height) == ("advanced", 3, 9.8)
+    assert _record(camera) == _RECORD
+
+
+def test_a_pose_written_with_its_marks_keeps_them() -> None:
+    cfg = _calibrated()
+    apply_section_data(cfg, "camera", {"pos_x": 2.0, "yaw": 15.0, "calibration_marks": _GOOD_MARKS[:2]})
+    assert (cfg.camera.pos_x, [m.id for m in cfg.camera.calibration_marks]) == (2.0, [1, 2])
+
+
+def test_another_section_never_touches_the_calibration() -> None:
+    cfg = _calibrated()
+    apply_section_data(cfg, "grid", {"spacing": 0.5})
+    assert len(cfg.camera.calibration_marks) == 3
+    assert _record(cfg.camera) == _RECORD
+
+
 @pytest.mark.parametrize("raw", ["DSL", 3, None, {"id": 1}])
 def test_calibration_marks_that_are_not_a_list_keep_the_saved_ones(raw: object) -> None:
-    cfg = AppConfig()
-    apply_section_data(cfg, "camera", {"calibration_mode": "advanced", "calibration_marks": _GOOD_MARKS})
-    apply_section_data(cfg, "camera", {"calibration_marks": raw, "pos_x": 1.0})
+    cfg = _calibrated()
+    apply_section_data(cfg, "camera", {"calibration_marks": raw, "lens_k1": -0.1})
     assert [m.id for m in cfg.camera.calibration_marks] == [1, 2, 3]
-    assert cfg.camera.pos_x == 1.0
+    # The lens changed without its rating.
+    assert (cfg.camera.lens_k1, _record(cfg.camera)) == (-0.1, {**_RECORD, "calibration_lens_rating": ""})
 
 
 def test_a_calibration_mode_of_none_keeps_the_saved_one() -> None:
@@ -4208,8 +4308,8 @@ def test_a_calibration_height_of_none_clears_the_saved_one() -> None:
 def test_a_calibration_height_that_is_no_number_keeps_the_saved_one(raw: object) -> None:
     cfg = AppConfig()
     apply_section_data(cfg, "camera", {"calibration_height": 9.8})
-    apply_section_data(cfg, "camera", {"calibration_height": raw, "pos_x": 1.0})
-    assert (cfg.camera.calibration_height, cfg.camera.pos_x) == (9.8, 1.0)
+    apply_section_data(cfg, "camera", {"calibration_height": raw, "lens_k1": -0.1})
+    assert (cfg.camera.calibration_height, cfg.camera.lens_k1) == (9.8, -0.1)
 
 
 @pytest.mark.parametrize("raw", [10_000.5, -10_000.5, float("nan"), float("inf")], ids=["above", "below", "nan", "inf"])
@@ -4313,13 +4413,13 @@ def test_unknown_camera_calibration_keys_are_dropped_by_a_write(how: str) -> Non
     station = _station()
     station.camera.calibration_height = 9.5
     point = {"corner_a": "DSL", "corner_b": "DSR", "distance_a": 21.4, "distance_b": 23.9, "pin_x": 0.4, "pin_y": 0.2}
-    sent = {"pos_x": 1.0, "corner_pins": _CORNER_PINS, "calibration_points": [point]}
+    sent = {"lens_k1": -0.1, "corner_pins": _CORNER_PINS, "calibration_points": [point]}
     if how == "import":
         station = _apply_import_data(station, {"camera": sent})
     else:
         assert apply_section_data(station, "camera", sent)
     camera = station.camera
-    assert (camera.pos_x, camera.calibration_mode, camera.calibration_marks) == (1.0, "simple", [])
+    assert (camera.lens_k1, camera.calibration_mode, camera.calibration_marks) == (-0.1, "simple", [])
     assert camera.calibration_height == 9.5
     exported = _config_dict_redacted(station)
     assert "corner_pins" not in exported["camera"]

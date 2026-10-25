@@ -18,6 +18,7 @@
 %   'grid': {'width': _g.width, 'depth': _g.depth, 'spacing': _g.spacing, 'x_offset': _g.x_offset, 'y_offset': _g.y_offset, 'z_offset': _g.z_offset},
 %   'fov': config.camera.fov,
 %   'height': config.camera.calibration_height,
+%   'lens_rating': config.camera.calibration_lens_rating,
 %   'lens': [_lens_k1, _lens_k2, _lens_cx, _lens_cy],
 %   'max_marks': MAX_CALIBRATION_MARKS,
 % }
@@ -581,7 +582,7 @@
         </label>
         <label class="seg-option">
           <input type="radio" name="cal_mode" value="advanced">
-          <span><strong>Advanced</strong><small>Known points and distance points</small></span>
+          <span><strong>Advanced</strong><small>Known points and triangulated points</small></span>
         </label>
       </div>
     </div>
@@ -691,7 +692,7 @@
     <div id="adv-need" class="wizard-status waiting" role="status" hidden style="margin-top:0.72rem;"></div>
     <div id="cal-refreshed" class="notice success" role="status" hidden style="margin-top:0.72rem;">New snapshot loaded. The <span class="only-simple">corners stay</span><span class="only-advanced">pins stay</span> where they are.</div>
     <p class="wizard-tip only-simple">Drag each corner onto its tape mark. The loupe shows the picture 4× larger. Click a corner or press <strong>Tab</strong> to select it. The loupe stays on it, and the <strong>arrow keys</strong> move it by one pixel. Press <strong>Enter</strong> when the crosshair is in the right place. <strong>Esc</strong> or a click somewhere else ends the selection.</p>
-    <p class="wizard-tip only-advanced">Click the picture where a point is, and choose the point from the menu. Or create a <strong>New known point</strong> or a <strong>New distance point</strong> there. Click a pin to remove the pin or delete the point. While a menu is open, the loupe stays on the spot, and the <strong>arrow keys</strong> move the spot by one pixel. Drag a pin to correct it.</p>
+    <p class="wizard-tip only-advanced">Click the picture where a point is, and choose the point from the menu. Or create a <strong>New known point</strong> or a <strong>New triangulated point</strong> there. Click a pin to remove the pin or delete the point. While a menu is open, the loupe stays on the spot, and the <strong>arrow keys</strong> move the spot by one pixel. Drag a pin to correct it.</p>
 
     <div id="cal-advanced-points" hidden>
       <div class="group">
@@ -699,7 +700,7 @@
         <div id="adv-rows"></div>
         <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.6rem;">
           <button type="button" class="secondary" id="adv-add-known" onclick="calibAddPoint('known')">Add known point</button>
-          <button type="button" class="secondary" id="adv-add-tri" onclick="calibAddPoint('triangulated')" hidden>Add distance point</button>
+          <button type="button" class="secondary" id="adv-add-tri" onclick="calibAddPoint('triangulated')" hidden>Add triangulated point</button>
         </div>
       </div>
     </div>
@@ -728,7 +729,7 @@
 
     <div class="group" id="cal-dist-group" hidden style="margin-top:0.9rem;">
       <div class="group-title">Distances to check</div>
-      <p class="wizard-help">Measure these distances between the marks on the stage. If a distance is different, a typed or measured value is wrong. The distances from a distance point to the two points it is measured from are not listed.</p>
+      <p class="wizard-help">Measure these distances between the marks on the stage. If a distance is different, a typed or measured value is wrong. The distances from a triangulated point to the two points it is measured from are not listed.</p>
       <div class="dist-wrap"><table class="data-table dist-table" id="cal-dist-table"></table></div>
     </div>
 
@@ -1228,7 +1229,7 @@
       return m;
     });
   }
-  // Distance points after the points they are measured from; a loop or a broken one leaves a point out.
+  // Triangulated points after the points they are measured from; a loop or a broken one leaves a point out.
   function orderMarks(marks) {
     var byId = {}, order = [], state = {};
     marks.forEach(function(m) { byId[m.id] = m; });
@@ -1254,7 +1255,7 @@
   function hintPos() { var c = S.cam; return c ? [c.x, c.y, c.z] : null; }
 
   // ---------------------------------------------------------------
-  // Distance points placed from their measurements alone, before the camera solves
+  // Triangulated points placed from their measurements alone, before the camera solves
   // ---------------------------------------------------------------
   // The two places at height z at the measured distances from A and B: c1 on the right of A to B seen from above.
   function wizTrilaterate(A, dA, B, dB, z) {
@@ -2408,6 +2409,12 @@
     clearTimeout(lensFitTimer);
     lensFitTimer = setTimeout(runLensFit, LENS_FIT_DEBOUNCE_MS);
   }
+  // A fit not applied keeps the lens in the fields, and the rating that lens had.
+  function lensTakeFit(fit, centre) {
+    fit.centre = centre;
+    if (!lensFitApplies(fit)) { fit.kept = wizLens(); fit.keptRating = lensRatingRecord(fit.kept); }
+    lensFit = fit;
+  }
   function runLensFit() {
     var seq = ++lensFitSeq;
     var lines = lensLines.filter(lensLineCounts), centre = S.lensCentre.slice();
@@ -2444,9 +2451,7 @@
         return;
       }
       lensShowStatus('', true);
-      lensFit = res.data;
-      lensFit.centre = centre;
-      if (!lensFitApplies(lensFit)) lensFit.kept = wizLens();
+      lensTakeFit(res.data, centre);
       lensClearMisfit();
       lines.forEach(function(l, i) {
         var r = res.data.lines[i];
@@ -3076,7 +3081,7 @@
       return '<option value="' + p.id + '"' + (String(sel) === String(p.id) ? ' selected' : '') + '>' + esc(p.name || ('P' + p.id)) + '</option>';
     }).join('');
   }
-  // A distance point's position: as the solve placed it, else from its measurements; dashes until either.
+  // A triangulated point's position: as the solve placed it, else from its measurements; dashes until either.
   function triXYZ(id, pre) {
     var P = S.solve && S.solve.cam && S.solve.positions && S.solve.positions[id] || pre[id];
     return P ? 'X ' + lenText(P[0], 2) + ' · Y ' + lenText(P[1], 2) + ' · Z ' + lenText(P[2], 2) : 'X – · Y – · Z –';
@@ -3089,7 +3094,7 @@
     var focused = document.activeElement && $('adv-rows').contains(document.activeElement) ? document.activeElement.id : '';
     $('adv-rows').innerHTML = S.points.length ? S.points.map(function(p) {
       var m = byId[p.id], id = p.id, name = esc(p.name || ('P' + id));
-      var head = '<div class="calib-row-head"><strong id="pn-' + id + '">' + name + '</strong><span class="stat-chip">' + (p.kind === 'known' ? 'Known point' : 'Distance point') + '</span><span id="chip-' + id + '">' + chipFor(m, solve) + '</span>' +
+      var head = '<div class="calib-row-head"><strong id="pn-' + id + '">' + name + '</strong><span class="stat-chip">' + (p.kind === 'known' ? 'Known point' : 'Triangulated point') + '</span><span id="chip-' + id + '">' + chipFor(m, solve) + '</span>' +
         (p.kind === 'known' ? '' : '<span class="corner-xyz" id="xyz-' + id + '">' + triXYZ(id, pre) + '</span>') +
         '<span style="margin-left:' + (p.kind === 'known' ? 'auto' : '0.6rem') + ';display:flex;gap:0.4rem;flex-wrap:wrap;">' +
         (p.pin ? '<button type="button" class="secondary small" data-unpin="' + id + '" aria-label="Remove pin of ' + name + '">Remove pin</button>' : '') +
@@ -3180,23 +3185,23 @@
     var points = known.concat(tri), pinned = points.filter(function(m) { return m.pin; }).length;
     $('adv-add-tri').hidden = known.length < 2;
     $('adv-add-tri').disabled = S.points.length >= SAVED.max_marks;
-    // A distance point always needs its pin; a known point only until four points are pinned.
+    // A triangulated point always needs its pin; a known point only until four points are pinned.
     var toPin = points.filter(function(m) { return !m.pin && (m.kind === 'triangulated' || pinned < 4); })[0];
     var h, sub, area = 'image';
     if (!S.cam) { h = camPartialNamed() ? 'Enter all three values of the camera position.' : 'Enter the rough camera position first.'; sub = 'An estimate within about ' + lenRough(2) + ' per axis is good enough.'; area = 'cam'; }
     else if (known.length < 2) { h = 'Enter two known points that are far apart, such as the DSL and DSR corners.'; sub = 'Click where one of them is on the picture, choose New known point and type its X/Y/Z. ' + known.length + ' of 2 entered.'; }
     else if (points.length < 4) {
-      h = points.length === 3 ? 'Enter one more known point or distance point.' : 'Enter two more known points or distance points.';
-      sub = 'Click where it is on the picture and choose New known point or New distance point.';
+      h = points.length === 3 ? 'Enter one more known point or triangulated point.' : 'Enter two more known points or triangulated points.';
+      sub = 'Click where it is on the picture and choose New known point or New triangulated point.';
     }
     else if (toPin) { h = 'Pin ' + toPin.name + ' on the picture.'; sub = 'Click where it is on the picture, then choose it from the menu. ' + pinned + ' of at least 4 pinned.'; }
-    else if (solved) { h = 'Check the result.'; sub = 'Check the grid on the picture and the Distances to check. Then press Next. More known points or distance points give a better result.'; }
+    else if (solved) { h = 'Check the result.'; sub = 'Check the grid on the picture and the Distances to check. Then press Next. More known points or triangulated points give a better result.'; }
     else if (S.solve && S.solve.withHeight) { h = 'The camera cannot be calculated at this camera height.'; sub = 'Check the camera height, the pins and the measurements.'; }
     else { h = 'The camera cannot be calculated from these points.'; sub = 'Check the pins and the measurements.'; }
     showHint(area, h, sub);
   }
 
-  // Every pair of placed points but the ones a distance point is measured from (Advanced only).
+  // Every pair of placed points but the ones a triangulated point is measured from (Advanced only).
   function pairsFor(solve) {
     if (!solve || !solve.cam || S.mode === 'simple') return [];
     var marks = solve.marks.filter(function(m) { return solve.positions[m.id]; }), out = [], measured = {};
@@ -3426,10 +3431,10 @@
     var m = $('pin-menu');
     m.classList.remove('form');
     m.innerHTML = pinMenuHead('Which point is here?') + open.map(function(q) {
-      return '<button type="button" class="pm-item" data-place="' + q.id + '"><span>' + esc(q.name || ('P' + q.id)) + '</span><span class="kind">' + (q.kind === 'known' ? 'Known point' : 'Distance point') + '</span></button>';
+      return '<button type="button" class="pm-item" data-place="' + q.id + '"><span>' + esc(q.name || ('P' + q.id)) + '</span><span class="kind">' + (q.kind === 'known' ? 'Known point' : 'Triangulated point') + '</span></button>';
     }).join('') + (open.length ? '<hr>' : '') +
       '<button type="button" class="pm-item" data-place="new-known"' + (full ? ' disabled' : '') + '><span>New known point</span><span class="kind">X/Y/Z</span></button>' +
-      '<button type="button" class="pm-item" data-place="new-tri"' + (knownN < 2 || full ? ' disabled' : '') + '><span>New distance point</span>' + (knownN < 2 ? '<span class="kind">Needs two known points</span>' : '') + '</button>';
+      '<button type="button" class="pm-item" data-place="new-tri"' + (knownN < 2 || full ? ' disabled' : '') + '><span>New triangulated point</span>' + (knownN < 2 ? '<span class="kind">Needs two known points</span>' : '') + '</button>';
     m.hidden = false;
     positionPinMenu(true);
     renderCalibOverlay();
@@ -3441,7 +3446,7 @@
     S.pinMenu = { p: q.pin, form: null, pin: id }; S.selPin = id; menuGesture = gestureSeq;
     var m = $('pin-menu');
     m.classList.remove('form');
-    m.innerHTML = pinMenuHead((q.name || ('P' + id)) + (q.kind === 'known' ? ' · Known point' : ' · Distance point')) +
+    m.innerHTML = pinMenuHead((q.name || ('P' + id)) + (q.kind === 'known' ? ' · Known point' : ' · Triangulated point')) +
       '<button type="button" class="pm-item" data-pm="unpin"><span>Remove pin</span><span class="kind">Keeps the point</span></button>' +
       '<button type="button" class="pm-item danger" data-pm="delete"><span>Delete point</span></button>';
     m.hidden = false;
@@ -3505,7 +3510,7 @@
       }).join('') + '<div class="field"><label for="pm-z">Z (' + u + ')' + AXIS_NOTE.z + '</label>' + lenInput('pm-z', 'z', 'new', '', 0) + '</div>';
     }
     m.classList.add('form');
-    m.innerHTML = pinMenuHead(kind === 'known' ? 'New known point' : 'New distance point') +
+    m.innerHTML = pinMenuHead(kind === 'known' ? 'New known point' : 'New triangulated point') +
       '<form class="pm-form" novalidate><div class="field"><label for="pm-point">Point</label><input type="text" id="pm-point" maxlength="60" autocomplete="off" data-1p-ignore data-lpignore="true" value="' + esc(name) + '"></div>' + f +
       '<div class="pm-actions"><button type="button" class="secondary small" data-pm="back">Back</button><button type="submit" class="btn-primary small" id="pm-ok" disabled>Place point</button></div></form>';
     positionPinMenu(true);
@@ -3873,6 +3878,22 @@
     if (S.lensTouched) return 'User input';
     return lensMeasured() ? 'The station\'s lens' : 'Not measured';
   }
+  // The lens rating Save and finish records: the fit's while the lens is the fit's, else that of the lens in use.
+  var LENS_RATING_RECORD = { medium: 'poor', okay: 'fair', good: 'good', excellent: 'excellent' };
+  function lensRatingRecord(l) {
+    if (lensHasCurrent() && S.lensChoice === 'keep') return SAVED.lens_rating;
+    if (lensIsTheFits(l)) return LENS_RATING_RECORD[lensShownRating(lensFit)] || '';
+    if (lensFit) return lensFitApplies(lensFit) || lensHandTuned() ? 'user_input' : lensFit.keptRating || '';
+    if (S.lensLoaded) return lensSame(l, [S.lensLoaded.k1, S.lensLoaded.k2, S.lensLoaded.cx, S.lensLoaded.cy]) ? 'loaded' : 'user_input';
+    if (S.lensTouched) return 'user_input';
+    return lensMeasured() ? SAVED.lens_rating : '';
+  }
+  // Now by this browser's clock, as ISO 8601 with its UTC offset.
+  function localIsoNow() {
+    var d = new Date(), off = -d.getTimezoneOffset(), p = function(n) { return String(Math.floor(Math.abs(n))).padStart(2, '0'); };
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds())
+      + (off < 0 ? '-' : '+') + p(off / 60) + ':' + p(off % 60);
+  }
   // Why Save and finish refuses a lens that cannot be saved, named by what is wrong with it.
   function wizLensSaveError(p) {
     if (p.kind === 'range') return { error: 'A lens centre field does not hold a whole number from −' + p.max + ' to ' + p.max + '.', action: 'Correct it in the Lens step before you finish.' };
@@ -3897,6 +3918,7 @@
     });
     var camera = { pos_x: s.cam.pos_x, pos_y: s.cam.pos_y, pos_z: s.cam.pos_z, pitch: s.cam.pitch, yaw: s.cam.yaw, roll: s.cam.roll, fov: s.cam.fov,
       calibration_mode: S.mode, calibration_marks: marks, calibration_height: S.height,
+      calibration_lens_rating: lensRatingRecord(wizLens()), calibration_time: localIsoNow(),
       lens_k1: wizReadLensCoeff('wiz_lens_k1'), lens_k2: wizReadLensCoeff('wiz_lens_k2'), lens_cx: S.lensCentre[0], lens_cy: S.lensCentre[1] };
     var g = calibGrid();
     var gridWrite = S.mode === 'simple'
@@ -4051,7 +4073,7 @@
       intro = '<strong>Drag each corner</strong> onto its tape mark. The loupe shows the picture 4&times; larger. Click a corner to select it.';
       rows = [[['Tab'], 'Select the next corner'], [ARROWS, 'Move the selected corner 1&nbsp;px'], [['Enter'], 'Place the corner where the crosshair is'], FS_ESC];
     } else if (k === 'cal') {
-      intro = '<strong>Click the picture</strong> where a point is, and choose the point from the menu. Or create a <strong>New known point</strong> or a <strong>New distance point</strong> there. Click a pin to remove the pin or delete the point. Drag a pin to correct it.';
+      intro = '<strong>Click the picture</strong> where a point is, and choose the point from the menu. Or create a <strong>New known point</strong> or a <strong>New triangulated point</strong> there. Click a pin to remove the pin or delete the point. Drag a pin to correct it.';
       rows = [[ARROWS, 'Menu open: move the spot 1&nbsp;px. Pin selected: move the pin 1&nbsp;px'], [['Tab'], 'Next menu item, field or pin'], [['Enter'], 'Keep the moved pin, choose the menu item, or place the new point'], FS_ESC];
     } else {
       intro = 'The picture shows the calculated grid, the points and 0/0/0, as the Operator Screen will draw them. You cannot change anything here.';

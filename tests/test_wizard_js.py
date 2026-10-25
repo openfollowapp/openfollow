@@ -251,6 +251,7 @@ def test_a_fit_measures_the_pair_about_the_lens_centre_in_use_and_keeps_it() -> 
             "lensFitApplies",
             "lensFitMisfit",
             "lensClearMisfit",
+            "lensTakeFit",
             "runLensFit",
         ),
         prelude=_ANSWER_FETCH + _FIT_PAGE + " var sent = null, written = {}, S = { lensCentre: [0.0254, -0.0145] };"
@@ -285,6 +286,7 @@ def test_a_fit_takes_a_centre_the_last_pair_could_not(answer: str, taken: bool) 
             "wizWriteLensCoeff",
             "wizSyncLensRange",
             "wizTakeLensCentre",
+            "lensTakeFit",
             "runLensFit",
         ),
         prelude=_LIMIT_PAGE
@@ -315,6 +317,7 @@ def test_a_fit_that_leaves_the_corner_correction_open_applies_its_estimate() -> 
             "lensFitApplies",
             "lensFitMisfit",
             "lensClearMisfit",
+            "lensTakeFit",
             "runLensFit",
         ),
         prelude=fetch + _FIT_PAGE + " var sent = null, written = {}, S = { lensCentre: [0, 0] };"
@@ -518,7 +521,7 @@ _SYNC_FETCH = (
 def test_a_failed_fit_leaves_no_earlier_fit_standing() -> None:
     out = run_wizard_js(
         "(function() { runLensFit(); return [lensFit, shown, status]; })()",
-        functions=("runLensFit", "lensFitFailed", "lensClearMisfit"),
+        functions=("lensTakeFit", "runLensFit", "lensFitFailed", "lensClearMisfit"),
         prelude=_SYNC_FETCH
         + " var lensFitSeq = 0, imageWidth = 1920, imageHeight = 1080, shown = 'unset', status = null;"
         " var S = { lensCentre: [0, 0] };"
@@ -532,6 +535,7 @@ def test_a_failed_fit_leaves_no_earlier_fit_standing() -> None:
 
 
 _FIT_PAGE = (
+    " function lensRatingRecord() { return 'kept'; }"
     " var lensFitSeq = 0, imageWidth = 1920, imageHeight = 1080, drawn = 0, saved = 0, S = { lensCentre: [0, 0] };"
     " var lensFit = { k1: -0.2, k2: 0, rating: 'good' };"
     " var lensLines = [{ points: 5 }, { points: 5 }];"
@@ -550,7 +554,7 @@ _FAILED_FETCH = (
 def test_a_failed_fit_redraws_and_stores_no_fit(fetch_stub: str) -> None:
     out = run_wizard_js(
         "(function() { runLensFit(); return [lensFit, drawn, saved]; })()",
-        functions=("runLensFit", "lensFitFailed", "lensClearMisfit"),
+        functions=("lensTakeFit", "runLensFit", "lensFitFailed", "lensClearMisfit"),
         prelude=fetch_stub + _FIT_PAGE,
     )
     assert out[0] is None
@@ -3005,6 +3009,7 @@ _MISFIT_FIT_PAGE = (
     _LINES_PAGE
     + r"""
 var S = { lensCentre: [0, 0], lensLoaded: null }, imageWidth = 1920, imageHeight = 1080, lensFitSeq = 0;
+function lensRatingRecord() { return 'kept'; }
 var lensFit = { rating: 'good', hint: '', lines: [{ misfit: false }, { misfit: true }, { misfit: false }] };
 var lensHold = false, lensPress = false, lensHintText = '', sent = null;
 var lensHintLines = null, lensFitAsk = null;
@@ -3033,6 +3038,7 @@ _MISFIT_FIT_FUNCTIONS = (
     "lensLinesHint",
     "renderLensHint",
     "lensHasCurrent",
+    "lensTakeFit",
     "runLensFit",
 )
 _MISFIT_FIT_VARS = ("LENS_MIN_SPAN_PX", "LENS_MIDDLE")
@@ -6799,7 +6805,7 @@ def test_the_simple_hint_names_the_camera_height_when_no_camera_fits_at_it(solve
             [
                 "Check the result.",
                 "Check the grid on the picture and the Distances to check. Then press Next. More known points or"
-                " distance points give a better result.",
+                " triangulated points give a better result.",
             ],
         ),
     ],
@@ -7658,6 +7664,7 @@ def test_the_lens_is_fitted_from_two_lines(lines: int, fitted: bool) -> None:
             "lensFitApplies",
             "lensFitMisfit",
             "lensClearMisfit",
+            "lensTakeFit",
             "runLensFit",
         ),
         prelude=_ANSWER_FETCH + _FIT_PAGE + " var sent = null;"
@@ -7921,6 +7928,7 @@ def test_a_fit_with_a_line_that_does_not_fit_keeps_the_lens_as_it_was(misfit: bo
             "lensFitApplies",
             "lensFitMisfit",
             "lensClearMisfit",
+            "lensTakeFit",
             "runLensFit",
         ),
         prelude=_ANSWER_FETCH.replace("misfit: false }]", f"misfit: {json.dumps(misfit)} }}]")

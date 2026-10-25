@@ -17,6 +17,7 @@ import threading
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field, fields
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
@@ -29,7 +30,9 @@ from openfollow.keyboard_layout import VARIANT_RE as XKB_VARIANT_RE
 from openfollow.lens_model import C_BOUND, pull_back_to_valid
 from openfollow.net_adapters import normalize_labels
 from openfollow.station_fqdn import normalize_fqdn
+from openfollow.text_hygiene import CONTROL_CHARS_RE
 from openfollow.units import UnitSystem
+from openfollow.uri_redaction import redact_uris_in_text
 
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp
@@ -383,6 +386,9 @@ def _coerce_bool(value: Any, default: bool) -> bool:
 
 CALIBRATION_CORNERS = ("DSL", "DSR", "USR", "USL")
 CALIBRATION_MODES = ("simple", "advanced")
+# The Setup Wizard's verdict on the lens it saved with a calibration.
+CALIBRATION_LENS_RATINGS = ("excellent", "good", "fair", "poor", "user_input", "loaded")
+CALIBRATION_SOURCE_MAX_LEN = 200
 MARK_KINDS = ("known", "triangulated")
 MAX_CALIBRATION_MARKS = 12
 MAX_MARK_ID = 999
@@ -497,6 +503,9 @@ class CameraConfig:
     calibration_mode: str = "simple"
     calibration_marks: list[CalibrationMarkConfig] = field(default_factory=list)
     calibration_height: float | None = None  # m: the camera's exact height the solve held; None when not entered
+    calibration_lens_rating: str = ""  # one of CALIBRATION_LENS_RATINGS, "" when none was saved
+    calibration_time: str = ""  # ISO 8601 with offset, by the clock of the browser that saved it; "" when none
+    calibration_source: str = ""  # the video source the station showed when the calibration was saved
 
     def __post_init__(self) -> None:
         # These feed ``project_points`` via a numpy float array. Clamp fov out
@@ -526,6 +535,30 @@ class CameraConfig:
         self.calibration_mode = _coerce_choice(self.calibration_mode, CALIBRATION_MODES, "simple")
         self.calibration_marks = _coerce_calibration_marks(self.calibration_marks, self.calibration_mode)
         self.calibration_height = _coerce_calibration_height(self.calibration_height)
+        self.calibration_lens_rating = _coerce_choice(self.calibration_lens_rating, CALIBRATION_LENS_RATINGS, "")
+        self.calibration_time = _coerce_calibration_time(self.calibration_time)
+        self.calibration_source = _coerce_calibration_source(self.calibration_source)
+
+
+def _coerce_calibration_time(value: Any) -> str:
+    """An ISO 8601 time with its UTC offset, to the second, else \"\". TOML reads one unquoted as a datetime."""
+    if isinstance(value, datetime):
+        moment = value
+    elif isinstance(value, str):
+        try:
+            moment = datetime.fromisoformat(value.strip())
+        except ValueError:
+            return ""
+    else:
+        return ""
+    return moment.isoformat(timespec="seconds") if moment.tzinfo is not None else ""
+
+
+def _coerce_calibration_source(value: Any) -> str:
+    """Display text without stream credentials or control characters, at most CALIBRATION_SOURCE_MAX_LEN."""
+    if not isinstance(value, str):
+        return ""
+    return redact_uris_in_text(CONTROL_CHARS_RE.sub("", value)).strip()[:CALIBRATION_SOURCE_MAX_LEN].strip()
 
 
 def _coerce_calibration_height(value: Any) -> float | None:

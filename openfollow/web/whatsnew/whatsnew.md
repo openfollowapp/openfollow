@@ -27,4 +27,8 @@ Under **Markers & Zones → Marker Movement**, **Invert control direction** is n
 
 ## The Setup Wizard has four steps
 
-The **Setup Wizard** now runs Video Source, Lens, **Camera Calibration** and Review, and calculates the camera from marks pinned on the picture: **Simple** uses the four corners of a measured rectangle, **Advanced** known points and distance points. In Simple, **Save and finish** also saves the rectangle as the grid, with the point of origin you choose: centred between DSL and DSR, or **Custom**. Check that it matches the console's origin before saving. For a camera that looks almost straight down, the Setup Wizard asks for the exact height of the camera's lens.
+The **Setup Wizard** now runs Video Source, Lens, **Camera Calibration** and Review, and calculates the camera from marks pinned on the picture: **Simple** uses the four corners of a measured rectangle, **Advanced** known points and triangulated points. In Simple, **Save and finish** also saves the rectangle as the grid, with the point of origin you choose: centred between DSL and DSR, or **Custom**. Check that it matches the console's origin before saving. For a camera that looks almost straight down, the Setup Wizard asks for the exact height of the camera's lens.
+
+## The camera is set in the Setup Wizard only
+
+The **Camera & Lens Calibration** section of the Camera & Grid tab now shows position, orientation, field of view and lens read-only: to change them, run the **Setup Wizard** again. **Apply to all stations** copies the camera with its calibration. Ctrl/Cmd+S on the Operator Screen no longer saves the camera. Its **Calibration** column shows when the calibration was saved, from which video source, the lens rating and how closely the pinned points fit the saved camera.

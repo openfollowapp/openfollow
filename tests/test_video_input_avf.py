@@ -548,8 +548,8 @@ class TestAvfSourceLabel:
         assert label.startswith("USB Capture (0x14100000) (")
 
     def test_no_camera_chosen_reads_as_no_source(self) -> None:
-        """An empty label makes the receiver ask for a camera; "default" opened
-        whichever camera the system offered, the built-in one on a laptop."""
+        """An empty label makes the receiver ask for a camera rather than open
+        whichever camera the system offers, the built-in one on a laptop."""
         label = AvfInput.get_source_label(
             {
                 "avf_unique_id": "",
@@ -560,12 +560,8 @@ class TestAvfSourceLabel:
         )
         assert label == ""
 
-    def test_label_does_not_invoke_device_discovery(self, monkeypatch: pytest.MonkeyPatch) -> None:
-
-        def _boom() -> list[dict[str, str]]:
-            raise AssertionError("get_source_label must not call discovery")
-
-        monkeypatch.setattr(avf_module, "_discover_avf_devices", _boom)
+    def test_label_never_lists_cameras(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        listings = _cameras(monkeypatch, ("ABCD-1234", "Capture Card"))
 
         label = AvfInput.get_source_label(
             {
@@ -576,6 +572,7 @@ class TestAvfSourceLabel:
             }
         )
         assert label == "ABCD-1234 (1280x720@60)"
+        assert listings == []
 
 
 class TestAvfResolveDeviceIndex:
@@ -605,7 +602,7 @@ class TestAvfResolveDeviceIndex:
         self, monkeypatch: pytest.MonkeyPatch, fallback: int
     ) -> None:
         """Any index would open another camera and report it connected: on a
-        laptop, a capture card that dropped out came back as the built-in one."""
+        laptop, a capture card that dropped out would open as the built-in one."""
         monkeypatch.setattr(
             avf_module,
             "_discover_avf_devices",
@@ -1143,9 +1140,7 @@ class TestTheNameIsStoredWithTheCamera:
         assert AvfInput.source_labels(["47B4B64B"]) == ["47B4B64B"]
 
     def test_naming_never_lists_cameras(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def _boom() -> list[dict[str, str]]:
-            raise AssertionError("source_labels must not list cameras")
-
-        monkeypatch.setattr(avf_module, "_discover_avf_devices", _boom)
+        listings = _cameras(monkeypatch, ("47B4B64B", "FaceTime HD Camera"))
 
         assert AvfInput.source_labels(["47B4B64B"]) == ["47B4B64B"]
+        assert listings == []

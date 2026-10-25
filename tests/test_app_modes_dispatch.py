@@ -1740,10 +1740,10 @@ def test_handle_key_press_settings_menu_arrows_and_enter() -> None:
 
 
 def test_handle_key_press_source_selection_arrows_enter_escape() -> None:
-    """Enter while the picker is still scanning confirms nothing. It used to
-    set the source to the receiver's label, which for a USB camera is its
-    display name ("FaceTime HD Camera (1920x1080@30)"), not the stored ID, so a
-    connected camera then read as not found."""
+    """Enter while the picker is still scanning confirms nothing. The
+    receiver's label is a USB camera's display name ("FaceTime HD Camera
+    (1920x1080@30)"), not its stored ID: set as the source, it would make a
+    connected camera read as not found."""
     from openfollow.configuration import AppConfig
 
     log: list[str] = []

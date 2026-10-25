@@ -1052,7 +1052,7 @@ class TestV4l2PinFallback:
         source.on_bus_error(BusError("Internal data stream error."))
         assert self._build(source, webcam).get_by_name("src_caps") is None
 
-    def test_an_open_build_watches_for_no_picture(self, webcam: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_an_open_build_adds_no_picture_probe(self, webcam: str, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(v4l2_module, "_read_capture_modes", lambda path: None)
         pipeline = self._build(V4l2Input(), webcam)
         assert pipeline.get_by_name("convert").get_static_pad("sink").probes == []

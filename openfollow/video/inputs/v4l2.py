@@ -173,7 +173,7 @@ class _CaptureMode:
 
 
 class _UnlistedModes(Exception):
-    """The node gives sizes or rates as ranges, so its modes cannot be listed."""
+    """The node gives sizes or rates as ranges, or more entries than a list holds, so its modes cannot be listed."""
 
 
 def _enumerate(
@@ -460,7 +460,7 @@ class V4l2Input(VideoInputBase):
         capsfilter.set_property("caps", Gst.Caps.from_string(caps_str))
         convert = make("videoconvert", "convert")
 
-        unpinned, self._unpin_device = device == self._unpin_device, ""
+        unpinned, self._unpin_device = bool(device) and device == self._unpin_device, ""
         modes = None if unpinned else _read_capture_modes(device)
         mode = _choose_mode(modes, dims, framerate, _usb_link_budget(device)) if modes else None
         self._pinned_device = device if mode else ""

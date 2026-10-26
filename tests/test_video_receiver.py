@@ -4785,6 +4785,104 @@ class TestRecoveryTimerOverrides:
         assert r._state.reconnect_source_id is not None
 
 
+class TestRecoveryTimersActOnTheFeed:
+    """A saved timer acts on the feed as it is now, not only from its next connection."""
+
+    @staticmethod
+    def _parked(**receiver) -> receiver_mod.GstNativeSinkReceiver:
+        """A fixed-URL feed that used up its reconnects with healing off: on the placeholder, nothing pending."""
+        r = receiver_mod.GstNativeSinkReceiver(
+            source_type="fake", input_config={"fake_source": "cam-1"}, heal_interval=0.0, **receiver
+        )
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+        r._state.reconnect_attempt = 2  # FakeInput's max_attempts
+        r._do_reconnect()
+        assert r._state.is_placeholder_pipeline and r._heal_source_id is None
+        return r
+
+    def test_a_heal_interval_set_while_parked_starts_healing_at_it(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = self._parked()
+        r.set_recovery_timers(heal_interval=5.0)
+        delay_ms, cb = fake_glib.timers[r._heal_source_id]
+        assert (delay_ms, cb.__name__) == (5000, "_do_heal")
+
+    def test_a_pending_heal_moves_to_the_new_interval(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = self._parked()
+        r.set_recovery_timers(heal_interval=60.0)
+        old = r._heal_source_id
+        r.set_recovery_timers(heal_interval=5.0)
+        assert old in fake_glib.removed
+        assert fake_glib.timers[r._heal_source_id][0] == 5000
+
+    def test_a_heal_interval_of_zero_stops_healing(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = self._parked()
+        r.set_recovery_timers(heal_interval=5.0)
+        pending = r._heal_source_id
+        r.set_recovery_timers(heal_interval=0.0)
+        assert pending in fake_glib.removed
+        assert r._heal_source_id is None
+
+    def test_a_stall_timeout_alone_leaves_a_parked_feed_as_it_is(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = self._parked()
+        r.set_recovery_timers(stall_timeout=3.0)
+        assert r._heal_source_id is None and r._watchdog_source_id is None
+
+    @pytest.mark.parametrize("pending", ["reconnect", "connection timeout"])
+    def test_a_feed_still_reconnecting_is_not_parked(self, fake_gst, fake_glib, fake_input_cls, pending) -> None:
+        """Its own timer brings it back; a heal would cancel that timer."""
+        r = self._parked()
+        if pending == "reconnect":
+            r._schedule_reconnect("lost link")
+            timer = r._state.reconnect_source_id
+        else:
+            r._start_connection_timeout()
+            timer = r._state.connection_timeout_id
+        r.set_recovery_timers(heal_interval=5.0)
+        assert r._heal_source_id is None
+        assert timer in fake_glib.timers
+
+    def test_a_feed_with_nothing_to_dial_is_not_healed(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = self._parked()
+        r._input_config["fake_source"] = ""
+        r.set_recovery_timers(heal_interval=5.0)
+        assert r._heal_source_id is None
+
+    def test_a_source_found_by_discovery_is_not_healed(self, fake_gst, fake_glib, fake_input_cls, monkeypatch) -> None:
+        """Discovery brings it back when it is announced again."""
+        monkeypatch.setattr(FakeInput, "_capabilities", replace(FakeInput._capabilities, has_source_discovery=True))
+        r = receiver_mod.GstNativeSinkReceiver(
+            source_type="fake", input_config={"fake_source": "cam-1"}, heal_interval=0.0
+        )
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+        r._state.reconnect_attempt = 2
+        r._do_reconnect()
+        r.set_recovery_timers(heal_interval=5.0)
+        assert r._heal_source_id is None
+
+    def test_a_stall_timeout_switched_on_arms_the_running_feed(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        """Judged by the frame clock every buffer stamps, so a feed that already stalled is caught."""
+        r = receiver_mod.GstNativeSinkReceiver(
+            source_type="fake", input_config={"fake_source": "cam-1"}, stall_timeout=0.0
+        )
+        r._state.connected = True
+        r._start_watchdog()
+        assert r._watchdog_source_id is None
+        r._last_frame_monotonic = time.monotonic() - 100
+
+        r.set_recovery_timers(stall_timeout=3.0)
+
+        assert fake_glib.timers[r._watchdog_source_id][0] == 1000
+        assert r._do_watchdog() is False
+        assert r._state.reconnect_source_id is not None
+
+    def test_a_feed_that_is_not_running_gets_no_watchdog(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = receiver_mod.GstNativeSinkReceiver(
+            source_type="fake", input_config={"fake_source": "cam-1"}, stall_timeout=0.0
+        )
+        r.set_recovery_timers(stall_timeout=3.0)
+        assert r._watchdog_source_id is None
+
+
 # --------------------------------------------------------------------------- #
 # Failure diagnosis: how far it got decides what the operator is told
 # --------------------------------------------------------------------------- #

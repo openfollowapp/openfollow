@@ -8898,9 +8898,10 @@ def test_video_source_section_hides_capture_for_gallery(live_server) -> None:
     status, body = _get(base, "/section/video_source")
     assert status == 200
     assert 'id="gallery-grid"' in body  # grid container loads via HTMX
-    # Capture, connection recovery, and preview don't apply to the gallery.
+    # Capture, healing and preview don't apply to the gallery; a clip can still stall.
     assert 'id="capture-frame-row" style="margin-top:0.5rem;display:none"' in body
-    assert 'id="recovery-row" style="display:none"' in body
+    assert '<div class="row" id="recovery-row">' in body and 'name="stall_timeout"' in body
+    assert 'id="heal-field" style="display:none"' in body
     assert 'id="preview-row" style="margin-top:0.5rem;display:none"' in body
 
 
@@ -8914,20 +8915,21 @@ def test_video_source_section_shows_capture_for_live_source(live_server) -> None
     assert status == 200
     assert "Capture frame to gallery" in body  # live sources offer capture
     assert 'id="capture-frame-row" style="margin-top:0.5rem;display:"' in body  # shown
-    assert 'id="recovery-row" style="display:"' in body  # network source -> recovery shown
+    assert 'id="heal-field" style="display:"' in body  # network source -> healing shown
     assert 'id="preview-row" style="margin-top:0.5rem;display:"' in body  # preview shown
 
 
-def test_video_source_section_camera_hides_recovery_keeps_preview(live_server) -> None:
-    # A non-network, non-gallery source (NDI uses its own reconnect): recovery
-    # hidden, but capture + preview still apply.
+def test_video_source_section_camera_hides_healing_keeps_stall_and_preview(live_server) -> None:
+    # A non-network, non-gallery source (NDI uses its own reconnect): healing
+    # hidden, but the stall timeout, capture and preview still apply.
     server, base = live_server
     cfg = load_config(server.config_path)
     cfg.video_source_type = "ndi"
     save_config(cfg, server.config_path)
     status, body = _get(base, "/section/video_source")
     assert status == 200
-    assert 'id="recovery-row" style="display:none"' in body
+    assert 'id="heal-field" style="display:none"' in body
+    assert '<div class="row" id="recovery-row">' in body
     assert 'id="preview-row" style="margin-top:0.5rem;display:"' in body
     assert 'id="capture-frame-row" style="margin-top:0.5rem;display:"' in body
 

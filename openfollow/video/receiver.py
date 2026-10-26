@@ -1390,15 +1390,33 @@ class GstNativeSinkReceiver:
         stall_timeout: float | None = None,
         heal_interval: float | None = None,
     ) -> None:
-        """Live-update stall_timeout and heal_interval without pipeline rebuild."""
+        """Live-update stall_timeout and heal_interval without pipeline rebuild.
+
+        Acts on the feed as it is now: a running feed is watched at the new
+        timeout, armed if it was off, and a parked one heals at the new interval.
+        """
         if stall_timeout is not None:
             self._stall_timeout_override = stall_timeout
             self._reconnect_policy.stall_timeout = stall_timeout
         if heal_interval is not None:
             self._heal_interval_override = heal_interval
             self._reconnect_policy.heal_interval = heal_interval
-        if self._watchdog_source_id is not None and self._state.connected:
+        if self._state.connected and not self._state.is_placeholder_pipeline:
+            # Every buffer stamps the frame clock, so a watchdog armed now judges the feed as it is.
             self._start_watchdog(reseed=False)
+        elif heal_interval is not None and self._parked():
+            self._cancel_heal()
+            self._schedule_heal()
+
+    def _parked(self) -> bool:
+        """On the placeholder with nothing pending to bring it back: only a heal can, as after the fallback."""
+        return (
+            self._state.is_placeholder_pipeline
+            and self._state.reconnect_source_id is None
+            and self._state.connection_timeout_id is None
+            and not self._input_caps.has_source_discovery
+            and self._has_configured_source()
+        )
 
     # -- Silent-stall watchdog -------------------------------------------------
 

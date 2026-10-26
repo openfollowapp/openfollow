@@ -465,6 +465,17 @@ class TestInitMarkers:
             assert t is not None
             assert t.pos_calls == [(1.5, 2.5, 0.75)]
 
+    def test_a_restart_keeps_the_parked_markers_and_selects_the_first_unparked(
+        self, services: AppRuntimeServices
+    ) -> None:
+        services._app._config = replace(
+            services._app._config, controlled_marker_ids=[1, 2, 3], parked_marker_ids=[1, 3]
+        )
+        services._app._server = _FakePsnServer()
+        services.init_markers()
+        assert services._app._parked_ids == {1, 3}
+        assert services._app._selected_id == 2
+
     def test_empty_controlled_list_leaves_selected_id_none(self, services: AppRuntimeServices) -> None:
         cfg = replace(services._app._config, controlled_marker_ids=[])
         services._app._config = cfg

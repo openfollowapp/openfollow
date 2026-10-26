@@ -266,6 +266,8 @@ class OpenFollowApp:
         self._controlled_ids: list[int] = []
         self._viewer_ids: list[int] = []
         self._selected_id: int | None = None
+        # Controlled markers no relative input moves (``input/parking.py``).
+        self._parked_ids: frozenset[int] = frozenset()
         # Assist-mode manual anchor markers, keyed by the pinned marker id.
         # These are operator-steered "ghosts" that are never registered with
         # ``_server`` (so never broadcast) – the detection pin reads them as the

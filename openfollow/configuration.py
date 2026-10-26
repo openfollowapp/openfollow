@@ -3011,6 +3011,8 @@ class AppConfig:
     # the default selection is empty (operator picks via the catalog UI).
     controlled_marker_ids: list[int] = field(default_factory=list)
     viewer_marker_ids: list[int] = field(default_factory=list)
+    # Controlled markers no relative input moves; they keep transmitting.
+    parked_marker_ids: list[int] = field(default_factory=list)
     # Per-marker move-speed overrides; ``MarkerConfig.move_speed`` is the
     # fallback for a marker with no entry.
     marker_move_speeds: dict[int, float] = field(default_factory=dict)
@@ -3120,6 +3122,7 @@ class AppConfig:
         if not isinstance(self.srt_passphrase, str):
             self.srt_passphrase = ""
         self.normalise_startup_settings()
+        self.parked_marker_ids = parked_within(self.controlled_marker_ids, self.parked_marker_ids)
         # TOML produces ``dict[str, Any]``; the runtime contract is
         # ``dict[int, float]`` keyed by marker_id. Drop pairs with a non-int
         # key or non-finite/negative value.
@@ -3334,6 +3337,21 @@ def marker_id_list(raw: Any, *, path: str, field_name: str) -> list[int]:
             continue
         if value not in kept:
             kept.append(value)
+    return kept
+
+
+def parked_within(controlled: Any, parked: Any) -> list[int]:
+    """The parked markers as kept: marker ids of *controlled*, each once, in first-seen order.
+
+    Anything but a list reads as ``[]``, and so does a *controlled* that is not one.
+    """
+    if not isinstance(parked, list) or not isinstance(controlled, list):
+        return []
+    allowed = {mid for mid in controlled if isinstance(mid, int) and not isinstance(mid, bool) and mid >= 1}
+    kept: list[int] = []
+    for mid in parked:
+        if isinstance(mid, int) and not isinstance(mid, bool) and mid in allowed and mid not in kept:
+            kept.append(mid)
     return kept
 
 
@@ -4194,7 +4212,8 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
     if new_config.network != app._config.network:
         app._config.network = new_config.network
 
-    if new_config.controlled_marker_ids != app._config.controlled_marker_ids:
+    controlled_changed = new_config.controlled_marker_ids != app._config.controlled_marker_ids
+    if controlled_changed:
         # Defense-in-depth: filter ``< 1`` ids again (this path can bypass
         # ``load_config``'s filter via programmatic apply). ``Marker.__init__``
         # raises for id < 1 and id 0 is the reserved "ignored" wire value.
@@ -4297,6 +4316,14 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         ]
         app._viewer_ids = list(filtered_viewer)
         app._config.viewer_marker_ids = filtered_viewer
+
+    # Against the committed controlled set, which may also have moved the selection onto a parked marker.
+    parked = parked_within(app._config.controlled_marker_ids, new_config.parked_marker_ids)
+    if controlled_changed or parked != app._config.parked_marker_ids:
+        from openfollow.input.parking import set_parked
+
+        app._config.parked_marker_ids = parked
+        set_parked(app, parked)
 
     if new_config.controller != app._config.controller:
         mouse_was_enabled = app._config.controller.mouse_enabled

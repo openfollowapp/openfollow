@@ -30,10 +30,12 @@ from openfollow.configuration import (
     effective_lens,
     feature_gated,
     is_simple_mode,
+    parked_within,
     viewed_with_controlled,
 )
 from openfollow.input import InputManager
 from openfollow.input.mouse3d import idle_mouse3d_status
+from openfollow.input.parking import set_parked
 from openfollow.marker_catalog.control_conflicts import ControlConflict, find_control_conflicts
 from openfollow.net_adapters import display_name
 from openfollow.net_egress import Egress, is_loopback_host, resolve_egress
@@ -1734,6 +1736,7 @@ class AppRuntimeServices:
             marker = server.add_marker(marker_id, name)
             marker.set_pos(*default_pos)
         self._app._selected_id = self._app._controlled_ids[0] if self._app._controlled_ids else None
+        set_parked(self._app, parked_within(self._app._controlled_ids, self._app._config.parked_marker_ids))
 
     def _resolved_plane_source_ip(self, pin: str, *, label: str) -> str | None:
         """Resolve one plane's configured interface to a concrete bind IP.

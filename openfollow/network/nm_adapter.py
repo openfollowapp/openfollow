@@ -812,7 +812,7 @@ class NetworkManagerAdapter(NetworkAdapter):
         return ApplyResult(ok=True, message="Lease renewed.")
 
     def forget_interface(self, name: str) -> ApplyResult:
-        """Delete every saved profile of ``name`` and of the VLANs on it, by UUID.
+        """Delete, by UUID, every inactive ethernet, Wi-Fi or VLAN profile bound to ``name`` and to the VLANs on it.
 
         Refused while NetworkManager lists ``name`` or cannot say: ``con delete``
         is a wildcarded grant, so it only ever names inactive profiles of an

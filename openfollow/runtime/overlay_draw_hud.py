@@ -684,7 +684,7 @@ def draw_settings_menu(renderer: Any, cr: Any, state: OverlayState, w: int, h: i
         else:
             items.append(f"{label} ({reason or 'unavailable'})")
 
-    # Modal shell; recovery context (banner/error_message) in red-bordered box below for prominence.
+    # Modal shell; notice boxes (the error, then unbound controllers) below the station card.
     panel_w = panel_width(w)
     panel_h = screen_height(h)
     panel_x, panel_y, panel_w, panel_h = draw_modal_shell(

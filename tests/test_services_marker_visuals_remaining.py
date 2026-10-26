@@ -1250,7 +1250,9 @@ class TestControllerBindingOnMarkerCard:
         assert state.markers[0].is_controlled is False
         assert state.markers[0].controller_idx is None
 
-    def test_unbound_controller_indices_collected(self) -> None:
+    @pytest.mark.parametrize("backend", ["pygame", "mouse3d"])
+    def test_unbound_controller_indices_collected(self, backend: str) -> None:
+        """A 3D mouse with no marker is as unbound as a gamepad."""
         app = _build_app(
             controlled=[1],
             viewer=[1],
@@ -1271,7 +1273,7 @@ class TestControllerBindingOnMarkerCard:
                         "name": "Y",
                         "controller_index": 2,
                         "effective_speed": 1.0,
-                        "backend": "pygame",
+                        "backend": backend,
                     },
                 ]
             ),

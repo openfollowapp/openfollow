@@ -1911,6 +1911,8 @@ class TestSettingsUnboundControllersBox:
 
         assert line in texts
         assert self._y(cr, "INFO") > self._y(cr, "Station:")
+        # The list starts below the box, never under it.
+        assert self._y(cr, "Network") > self._y(cr, line.split(" ")[0])
         assert ("rgba", *COLOR_INFO_FILL) in cr.calls
         assert ("rgb", *COLOR_INFO_BORDER) in cr.calls
         # The "i" sign's cut-out in the info background.

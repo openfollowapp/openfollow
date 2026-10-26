@@ -855,9 +855,9 @@ def build_marker_visual_state(
     state.controller_connected = cfg.controller.enabled and any(
         bool(info["connected"]) for info in controller_info if info.get("backend") != "mouse3d"
     )
-    # Connected pads that map to no marker (more pads than
+    # Connected controllers that map to no marker (more than
     # ``controlled_marker_ids``) are surfaced in the Settings menu's info
-    # card; there is no bottom-center status panel.
+    # box; there is no bottom-center status panel.
     state.unbound_controller_indices = [
         int(info["controller_index"])
         for info in controller_info

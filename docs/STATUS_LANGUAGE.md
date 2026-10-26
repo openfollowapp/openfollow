@@ -59,10 +59,11 @@ surface colours vanish at dot size on the dark page.
 Caution is an orange of its own, never the gold `--accent`: the accent marks the
 one commit button, and a warning must read apart from it. Its box is stronger
 than the other levels', a 38% fill with a solid border, so it does not read
-muted on the dark page or over video. Text on a solid caution fill is the
-off-white `--text`, as the luminance rule of the HUD's message title bars picks
-for it. [`tests/test_status_language.py`](../tests/test_status_language.py)
-keeps `--caution-line` apart from `--accent`.
+muted on the dark page or over video. Text on a solid caution fill is the dark
+`--bg-deep`, chosen for contrast (see Contrast); text on the caution box and
+chip stays off-white.
+[`tests/test_status_language.py`](../tests/test_status_language.py) keeps
+`--caution-line` apart from `--accent`.
 
 The HUD carries the error level as `COLOR_WARNING_FILL` and
 `COLOR_WARNING_BORDER` in
@@ -201,7 +202,7 @@ holds the line.
 
 | Element | Look |
 |---|---|
-| A traced Lens line that does not fit the others (Setup Wizard) | `--caution-line` stroke over a 16 px `--caution-line` glow at 40%, its number a `--caution-line` pill reading `! N` in `--text`; a fitting one is the accent with no glow and a plain number, its predicted curve `--success-line` |
+| A traced Lens line that does not fit the others (Setup Wizard) | `--caution-line` stroke over a 16 px `--caution-line` glow at 40%, its number a `--caution-line` pill reading `! N` in `--bg-deep`; a fitting one is the accent with no glow and a plain number, its predicted curve `--success-line` |
 | A pin that disagrees with the other points (Setup Wizard) | `--caution-line` stroke on its dot; where the solved camera sees each point, a `--success-mark` ring |
 | Failed / successful save | 2px ring for 0.55 s in `--error-line` / `--success-line` |
 | Invalid field, a control marked unresolved, or a binding another field took | `--error-line` border plus a 1px `--error-line` shadow |
@@ -349,10 +350,11 @@ attributes, so it spells the token's value.
   address, so its error row appears on the first poll that finds no address.
   Only stopping the output waits out the gap an Apply or Renew leaves. A
   rebind or stop that fails names the interface and the failure in that row
-  instead, until a later outage of that interface takes the row back. No
-  status row is caution today: the HUD shows faults, progress and results, and
-  a limitation worth knowing lives on the web UI and the on-screen Network
-  screen.
+  instead, until a later outage of that interface takes the row back.
+- Status rows show faults, progress and results. The one caution row is the
+  Web remote's ("Web remote holds marker 2"), shown while a touch remote holds
+  markers, which other input then leaves alone. Any other limitation worth
+  knowing lives on the web UI and the on-screen Network screen.
 - The markers this station controls that another station controls too are
   one error row for all of them: "Control conflict: Marker 3 (Lead)" for one,
   "Control conflict: Markers 3, 4, 5" for several, cut with "…" so it stays on
@@ -427,6 +429,11 @@ with whatever is under it. Two numbers that set the tokens:
   the page, so the error text is `#f44848` (4.6 to 4.9 : 1), not the dot's
   `#e04848` (4.1 : 1).
 - Text on a red fill is off-white (15 : 1), not red (4.7 : 1).
+- Caution text `#ff6600` reaches 5.4 to 6.6 : 1 on the page, the low end under
+  the gold glow at its top. Off-white text reads 7.8 to 9.7 : 1 on the caution
+  box and 7.5 to 8.1 : 1 on the caution chip.
+- Text on a solid caution fill is the dark `--bg-deep` (6.6 : 1); off-white
+  reaches only 2.7 : 1 there.
 
 ## Adding or changing an element
 

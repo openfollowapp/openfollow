@@ -217,7 +217,7 @@
   .lens-label { fill: var(--text); font-weight: 600; pointer-events: none; }
   .lens-tag { pointer-events: none; }
   .lens-tag rect { fill: var(--caution-line); }
-  .lens-tag text { fill: var(--text); font-weight: 700; }
+  .lens-tag text { fill: var(--bg-deep); font-weight: 700; }
   .wizard-grid-line { fill: none; stroke: var(--accent); stroke-opacity: 0.4; stroke-width: 1; vector-effect: non-scaling-stroke; pointer-events: none; }
   #review-grid .wizard-grid-line { stroke: var(--success-mark); stroke-opacity: 0.5; }
   .wizard-loupe {

@@ -469,6 +469,56 @@ def test_a_keyboard_whose_read_raises_is_dropped_once_and_the_others_keep_their_
 
 
 @pytest.mark.parametrize("error", _LOST_DEVICE_ERRORS)
+def test_a_keyboard_whose_reads_keep_raising_is_skipped_once_until_replugged(
+    error: Exception, fake_evdev: _FakeEvdev, input_dir: Path, clock: _Clock, caplog: pytest.LogCaptureFixture
+) -> None:
+    fake_evdev.add("event0", held=_codes("KEY_W"), keys_raises=error)
+    fake_evdev.add("event1", held=_codes("KEY_A"))
+    path = str(input_dir / "event0")
+    with caplog.at_level(logging.INFO, logger=keyboard_module.__name__):
+        poller = _poller(input_dir, clock)
+        for _ in range(4):
+            assert poller.get_pressed_keys(["w", "a"]) == {"a"}
+            clock.t += 1.0
+    assert fake_evdev.opened.count(path) == 1
+    assert caplog.text.count(f"evdev keyboard poller drops {path}") == 1
+    assert caplog.text.count(f"evdev keyboard poller skips {path}") == 1
+    fake_evdev.replace("event0", KEYBOARD_KEYS).held = _codes("KEY_W")
+    clock.t += 1.0
+    assert poller.get_pressed_keys(["w", "a"]) == {"w", "a"}
+    assert fake_evdev.opened.count(path) == 2
+
+
+def test_a_keyboard_replugged_before_the_rescan_after_a_failed_read_is_opened(
+    fake_evdev: _FakeEvdev, input_dir: Path, clock: _Clock
+) -> None:
+    gone = fake_evdev.add("event0", keys_raises=SystemError("gone"))
+    poller = _poller(input_dir, clock)
+    assert poller.is_key_pressed("w") is False
+    fake_evdev.replace("event0", KEYBOARD_KEYS).held = _codes("KEY_W")
+    clock.t += 1.0
+    assert poller.is_key_pressed("w") is True
+    assert gone.closed == 1
+
+
+def test_a_failed_read_is_forgotten_once_its_node_leaves_the_listing(
+    fake_evdev: _FakeEvdev, input_dir: Path, clock: _Clock
+) -> None:
+    path = str(input_dir / "event0")
+    node = fake_evdev.add("event0", held=_codes("KEY_W"), keys_raises=SystemError("gone"))
+    poller = _poller(input_dir, clock)
+    assert poller.is_key_pressed("w") is False
+    del fake_evdev.nodes[path]
+    clock.t += 1.0
+    poller.device_count()
+    # devtmpfs may hand a new device the inode of the one that left.
+    node.keys_raises = None
+    fake_evdev.nodes[path] = node
+    clock.t += 1.0
+    assert poller.is_key_pressed("w") is True
+
+
+@pytest.mark.parametrize("error", _LOST_DEVICE_ERRORS)
 def test_a_keyboard_whose_read_raises_does_not_stop_the_frame(
     error: Exception, fake_evdev: _FakeEvdev, input_dir: Path, clock: _Clock, monkeypatch: pytest.MonkeyPatch
 ) -> None:

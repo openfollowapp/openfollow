@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from openfollow.configuration import effective_lens
+from openfollow.input.parking import is_parked
 from openfollow.input.touch_remote import holds
 from openfollow.runtime import paths_runtime
 from openfollow.runtime.services_detection_pin import (
@@ -107,6 +108,8 @@ class MouseHandler:
         self._smooth_world: tuple[float, float] | None = None
         # The floor the grabbed marker stood on: the cursor is read on it for the whole drag.
         self._drag_floor_z: float | None = None
+        # A parked marker the mouse grabbed: it steers that one and leaves the selection alone.
+        self._parked_grab: int | None = None
         # Last right-click for double-click (reset) detection:
         # (time, x, y, released_active) – the bool records whether that click
         # released an active mouse grab, so reset only arms after real control.
@@ -121,6 +124,15 @@ class MouseHandler:
     @property
     def active(self) -> bool:
         return self._active
+
+    def keep_grab(self, marker_id: int) -> None:
+        """Stay on ``marker_id`` when it is the mouse's marker and the selection is about to move off it."""
+        if self._target_id() == marker_id:
+            self._parked_grab = marker_id
+
+    def _target_id(self) -> int | None:
+        """The marker the mouse steers: a grabbed parked marker, else the selection."""
+        return self._parked_grab if self._parked_grab is not None else self._app._selected_id
 
     def deactivate(self) -> None:
         """Disarm mouse control without a right-click.
@@ -194,7 +206,7 @@ class MouseHandler:
         if marker is None:
             return False
         paths = getattr(self._app, "_paths", None)
-        if paths is not None and paths.is_locked(self._app._selected_id):
+        if paths is not None and paths.is_locked(self._target_id()):
             # A locked marker's height is its path's.
             return True
         clicks = self._take_wheel_clicks(abs(dy))
@@ -231,16 +243,17 @@ class MouseHandler:
         if not app._config.controller.mouse_enabled:
             return
         paths = getattr(app, "_paths", None)
-        if paths is not None and paths.is_locked(app._selected_id):
+        target = self._target_id()
+        if paths is not None and paths.is_locked(target):
             # Locked onto a path while held: the path has the marker now, so let go of it.
             self._active = False
-            logger.info("Mouse let go of marker %s: it is locked onto a path", app._selected_id)
+            logger.info("Mouse let go of marker %s: it is locked onto a path", target)
             return
-        if holds(app, app._selected_id):
+        if holds(app, target):
             # The touch remote took the marker: drop the drag so it never glides back on release.
             self._active = False
             self._reset_tracking()
-            logger.info("Mouse let go of marker %s: the touch remote holds it", app._selected_id)
+            logger.info("Mouse let go of marker %s: the touch remote holds it", target)
             return
         marker = self._get_selected_marker()
         if marker is None or self._target_world is None:
@@ -281,7 +294,11 @@ class MouseHandler:
             return False
         # The mouse moves markers freely: a grab takes the marker off its path where it stands.
         paths_runtime.release(self._app, marker_id)
-        self._app._selected_id = marker_id
+        if is_parked(self._app, marker_id):
+            self._parked_grab = marker_id
+        else:
+            self._parked_grab = None
+            self._app._selected_id = marker_id
         self._active = True
         grabbed = self._app._server.get_marker(marker_id) if self._app._server is not None else None
         self._drag_floor_z = floor_height(self._app._config, *grabbed.pos[:2]) if grabbed is not None else None
@@ -339,12 +356,13 @@ class MouseHandler:
         marker = self._get_selected_marker()
         if marker is None:
             return
-        paths_runtime.release(self._app, self._app._selected_id)
+        target = self._target_id()
+        paths_runtime.release(self._app, target)
         marker.set_pos(*self._app._get_default_marker_position())
         # Drop any pending glide so ``update`` doesn't drag it back.
         self._target_world = None
         self._smooth_world = None
-        logger.info("Mouse double-click reset marker %s to default", self._app._selected_id)
+        logger.info("Mouse double-click reset marker %s to default", target)
 
     def _get_selected_marker(self) -> Marker | None:
         """Return the marker mouse control should steer, or None.
@@ -354,13 +372,14 @@ class MouseHandler:
         as the AI-corrected output), so mouse drag + wheel-Z move the anchor.
         """
         app = self._app
-        if app._selected_id is None or holds(app, app._selected_id):
+        target = self._target_id()
+        if target is None or holds(app, target):
             return None
-        if is_assist_controlled(app, app._selected_id):
-            return get_or_create_manual_marker(app, app._selected_id)
+        if is_assist_controlled(app, target):
+            return get_or_create_manual_marker(app, target)
         if app._server is None:
             return None
-        return app._server.get_marker(app._selected_id)
+        return app._server.get_marker(target)
 
     def _view_inputs(self) -> tuple[npt.NDArray[np.float64], int, int] | None:
         """Build the 7-float camera buffer + canvas size, or None if unusable."""

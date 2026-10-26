@@ -15,6 +15,7 @@ from openfollow.input.controller_slots import NOTE_BUTTON_MAP_OTHER_MODEL, NOTE_
 from openfollow.input.gamepad import GamepadUpdate
 from openfollow.input.input_manager import InputManager
 from openfollow.input.mouse3d import Mouse3DDeviceInfo, Mouse3DUpdate
+from openfollow.input.parking import set_parked
 from openfollow.operator_messages import OperatorMessageStore
 from openfollow.psn import Marker
 
@@ -43,6 +44,7 @@ class _Pads:
         self.inputs: dict[int, float] = {}
         self.rumbles_ok: dict[int, bool] = {}
         self.identified: list[int] = []
+        self.next_update = GamepadUpdate()
 
     initial: dict[int, tuple[str | None, str]] = {}
 
@@ -51,7 +53,8 @@ class _Pads:
         return {idx: object() for idx in self.pads}
 
     def update(self, _dt: float) -> GamepadUpdate:
-        return GamepadUpdate()
+        update, self.next_update = self.next_update, GamepadUpdate()
+        return update
 
     def device_identities(self) -> dict[int, tuple[str | None, str, tuple[str, ...]]]:
         return {idx: (key, name, self.notes.get(idx, ())) for idx, (key, name) in self.pads.items()}
@@ -89,6 +92,7 @@ class _Pucks:
         self.leds_ok = True
         self.without_led: set[int] = set()
         self.identified: list[int] = []
+        self.next_frames: dict[int, Mouse3DUpdate] = {}
 
     def start(self) -> None:
         pass
@@ -116,7 +120,8 @@ class _Pucks:
         return self.leds_ok
 
     def update(self, _dt: float) -> dict[int, Mouse3DUpdate]:
-        return {}
+        frames, self.next_frames = self.next_frames, {}
+        return frames
 
 
 class _Server:
@@ -411,3 +416,74 @@ def test_slot_changes_are_logged_with_their_sockets(station, caplog) -> None:
     with caplog.at_level("INFO", logger=input_manager_module.__name__):
         manager.update(0.016)
     assert "Controller slots" not in caplog.text
+
+
+def _positions(app: _App) -> dict[int, tuple[float, float, float]]:
+    return {mid: marker.pos for mid, marker in app._server.markers.items()}
+
+
+def test_a_slot_whose_marker_is_parked_idles_and_moves_nobody_else(station) -> None:
+    manager, app = station({0: (_key("1"), "First"), 1: (_key("2"), "Second")})
+    set_parked(app, [10])
+    manager.gamepad_handler.next_update = GamepadUpdate(movements={0: (1.0, 0.0, 0.0), 1: (0.0, 1.0, 0.0)})
+    manager.update(0.5)
+    positions = _positions(app)
+    assert positions[10] == (0.0, 0.0, 0.0)
+    assert positions[11] != (0.0, 0.0, 0.0)
+    assert positions[12] == (0.0, 0.0, 0.0)
+    # Slot order is unchanged: the pad behind the parked slot keeps its own marker.
+    assert manager._gamepad_marker_id(1) == 11
+
+
+def test_a_parked_slot_resets_nothing_and_unparking_gives_control_back(station) -> None:
+    manager, app = station({0: (_key("1"), "First"), 1: (_key("2"), "Second")})
+    app._server.markers[10].set_pos(3.0, 4.0, 1.0)
+    set_parked(app, [10])
+    manager.gamepad_handler.next_update = GamepadUpdate(resets={0})
+    manager.update(0.016)
+    assert app._server.markers[10].pos == (3.0, 4.0, 1.0)
+    set_parked(app, [])
+    manager.gamepad_handler.next_update = GamepadUpdate(resets={0})
+    manager.update(0.016)
+    assert app._server.markers[10].pos == (0.0, 0.0, 0.0)
+
+
+def test_a_parked_slot_keeps_its_marker_in_the_slot_table_and_for_osc(station) -> None:
+    manager, app = station({0: (_key("1"), "First"), 1: (_key("2"), "Second")})
+    set_parked(app, [11])
+    info = manager.get_controller_info()
+    assert [(c["marker_id"], c["parked"]) for c in info] == [(10, False), (11, True)]
+    # OSC ``c2`` still resolves: the slot idles, its marker still sends.
+    assert manager.controller_marker_id(1) == 11
+    assert manager._gamepad_marker_id(1) is None
+
+
+def test_identify_flashes_the_card_of_a_parked_slot(station) -> None:
+    manager, app = station({0: (_key("1"), "First"), 1: (_key("2"), "Second")})
+    set_parked(app, [11])
+    manager._clock = _Clock()
+    manager.identify_slot(1)
+    assert manager.identify_flash_marker() == 11
+
+
+def test_a_puck_on_a_parked_slot_moves_and_resets_nothing(station, monkeypatch) -> None:
+    monkeypatch.setattr(_Pucks, "initial", {0: Mouse3DDeviceInfo(path="/dev/hidraw0", port_key=_key("3"))})
+    manager, app = station({0: (_key("1"), "First")}, mouse3d__enabled=True)
+    app._server.markers[11].set_pos(2.0, 2.0, 1.0)
+    set_parked(app, [11])
+    manager.mouse3d_manager.next_frames = {0: Mouse3DUpdate(velocity=(1.0, 1.0, 1.0), reset=True)}
+    manager.update(0.5)
+    assert app._server.markers[11].pos == (2.0, 2.0, 1.0)
+    set_parked(app, [])
+    manager.mouse3d_manager.next_frames = {0: Mouse3DUpdate(velocity=(1.0, 0.0, 0.0))}
+    manager.update(0.5)
+    assert app._server.markers[11].pos != (2.0, 2.0, 1.0)
+
+
+def test_a_lone_controller_never_moves_a_parked_marker(station) -> None:
+    manager, app = station({0: (_key("1"), "Only")})
+    set_parked(app, [10, 11, 12])
+    assert app._selected_id is None
+    manager.gamepad_handler.next_update = GamepadUpdate(movements={0: (1.0, 1.0, 0.0)}, resets={0})
+    manager.update(0.5)
+    assert set(_positions(app).values()) == {(0.0, 0.0, 0.0)}

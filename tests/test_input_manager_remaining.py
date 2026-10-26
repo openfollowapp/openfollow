@@ -131,6 +131,7 @@ class _FakeOscHandler:
 
     instances: list[_FakeOscHandler] = []
     next_updates: dict[int, tuple[float, float, float]] = {}
+    next_parks: dict[int, bool] = {}
 
     def __init__(
         self,
@@ -166,6 +167,10 @@ class _FakeOscHandler:
         snapshot = {marker_id: dict(axes) for marker_id, axes in _FakeOscHandler.next_updates.items()}
         _FakeOscHandler.next_updates = {}
         return snapshot
+
+    def flush_parks(self) -> dict[int, bool]:
+        parks, _FakeOscHandler.next_parks = _FakeOscHandler.next_parks, {}
+        return parks
 
 
 class _FakePathOscAdapter:
@@ -246,6 +251,7 @@ class _DummyApp:
 
         self._controlled_ids = [10, 11]
         self._selected_id = 10
+        self._config_path = "config.toml"
 
         self._server = _DummyServer()
         self._server.add_marker(10).set_pos(0.0, 0.0, 0.0)
@@ -277,6 +283,7 @@ def _patch_handlers(monkeypatch: pytest.MonkeyPatch) -> None:
     _FakePathOscAdapter.instances = []
     _FakeOscHandler.instances = []
     _FakeOscHandler.next_updates = {}
+    _FakeOscHandler.next_parks = {}
     _FakeOperatorMessageAdapter.instances = []
     _FakeKeyboardHandler.next_velocity = None
     _FakeGamepadHandler.next_update = GamepadUpdate()
@@ -382,6 +389,97 @@ class TestOscUpdateApplication:
         app._server.markers.pop(10)  # pretend it was never added
         manager = InputManager(app)
         manager.update(0.016)  # must not raise
+
+
+class TestOscPark:
+    @pytest.fixture
+    def saved(self, monkeypatch: pytest.MonkeyPatch) -> list[tuple[list[int], tuple[str, ...]]]:
+        writes: list[tuple[list[int], tuple[str, ...]]] = []
+
+        def _save(config: AppConfig, _path: str, names: tuple[str, ...]) -> None:
+            writes.append((list(config.parked_marker_ids), names))
+
+        monkeypatch.setattr(input_manager_module, "save_config_fields", _save)
+        return writes
+
+    def test_park_parks_live_and_in_the_file(self, saved) -> None:
+        app = _DummyApp(osc_enabled=True)
+        manager = InputManager(app)
+        _FakeOscHandler.next_parks = {10: True}
+        manager.update(0.016)
+        assert app._parked_ids == {10}
+        assert app._config.parked_marker_ids == [10]
+        assert saved == [([10], ("parked_marker_ids",))]
+        # The selection moves on to the next unparked marker.
+        assert app._selected_id == 11
+
+    def test_unpark_gives_the_marker_back(self, saved) -> None:
+        app = _DummyApp(osc_enabled=True)
+        manager = InputManager(app)
+        _FakeOscHandler.next_parks = {11: True}
+        manager.update(0.016)
+        _FakeOscHandler.next_parks = {11: False}
+        manager.update(0.016)
+        assert app._parked_ids == frozenset()
+        assert app._config.parked_marker_ids == []
+        assert saved[-1] == ([], ("parked_marker_ids",))
+
+    def test_a_park_for_a_marker_this_station_does_not_control_is_ignored(self, saved) -> None:
+        app = _DummyApp(osc_enabled=True)
+        manager = InputManager(app)
+        _FakeOscHandler.next_parks = {99: True}
+        manager.update(0.016)
+        assert app._config.parked_marker_ids == []
+        assert saved == []
+
+    def test_a_repeated_park_writes_nothing_more(self, saved) -> None:
+        app = _DummyApp(osc_enabled=True)
+        manager = InputManager(app)
+        _FakeOscHandler.next_parks = {10: True}
+        manager.update(0.016)
+        _FakeOscHandler.next_parks = {10: True}
+        manager.update(0.016)
+        assert len(saved) == 1
+
+    def test_osc_positions_still_move_a_parked_marker(self, saved) -> None:
+        app = _DummyApp(osc_enabled=True)
+        manager = InputManager(app)
+        _FakeOscHandler.next_parks = {10: True}
+        _FakeOscHandler.next_updates = {10: {"x": 1.0, "y": 2.0, "z": 3.0}}
+        manager.update(0.016)
+        assert app._server.get_marker(10).pos == pytest.approx((1.0, 2.0, 3.0))
+
+    def test_a_failed_save_keeps_the_park_live(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _fail(*_args: Any) -> None:
+            raise OSError("read-only")
+
+        monkeypatch.setattr(input_manager_module, "save_config_fields", _fail)
+        app = _DummyApp(osc_enabled=True)
+        manager = InputManager(app)
+        _FakeOscHandler.next_parks = {10: True}
+        manager.update(0.016)
+        assert app._parked_ids == {10}
+
+
+class TestParkedKeyboard:
+    def test_the_keyboard_never_moves_a_parked_marker(self) -> None:
+        _FakeKeyboardHandler.next_velocity = (1.0, 0.0, 0.0)
+        app = _DummyApp(osc_enabled=False)
+        app._parked_ids = frozenset({10})
+        manager = InputManager(app)
+        manager.update(1.0)
+        assert app._server.get_marker(10).pos == pytest.approx((0.0, 0.0, 0.0))
+
+    def test_pathfinder_skips_a_parked_marker(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[int] = []
+        monkeypatch.setattr(input_manager_module.paths_runtime, "pathfinder", lambda _app, mid, _m: calls.append(mid))
+        app = _DummyApp(osc_enabled=False)
+        app._paths = object()
+        app._parked_ids = frozenset({10})
+        manager = InputManager(app)
+        manager.pathfinder(10)
+        manager.pathfinder(11)
+        assert calls == [11]
 
 
 # --------------------------------------------------------------------------- #

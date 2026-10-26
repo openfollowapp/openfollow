@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from openfollow.configuration import config_file_problem, config_problem_words, is_simple_mode, save_config_fields
 from openfollow.input.keyboard import text_entry_owns_input
+from openfollow.input.parking import is_parked
 from openfollow.input.touch_remote import holds
 from openfollow.runtime import paths_runtime
 from openfollow.video.failure import SourceKind, VideoFailure, failure_action, failure_sentence
@@ -626,8 +627,9 @@ def normalize_key(key: str) -> str:
 
 
 def cycle_marker(app: OpenFollowApp, direction: int) -> None:
-    """Cycle controlled marker selection by *direction* (+1 next, -1 prev)."""
-    if not app._controlled_ids:
+    """Cycle controlled marker selection by *direction* (+1 next, -1 prev), stepping over parked markers."""
+    ids = app._controlled_ids
+    if not ids:
         return
     selected = app._selected_id
     if selected is None:
@@ -639,11 +641,15 @@ def cycle_marker(app: OpenFollowApp, direction: int) -> None:
         idx = -1 if direction > 0 else 0
     else:
         try:
-            idx = app._controlled_ids.index(selected)
+            idx = ids.index(selected)
         except ValueError:
             idx = -1 if direction > 0 else 0
     step = 1 if direction > 0 else -1
-    app._selected_id = app._controlled_ids[(idx + step) % len(app._controlled_ids)]
+    for k in range(1, len(ids) + 1):
+        candidate = ids[(idx + step * k) % len(ids)]
+        if not is_parked(app, candidate):
+            app._selected_id = candidate
+            return
 
 
 def adjust_move_speed(
@@ -838,7 +844,7 @@ def handle_key_press(app: OpenFollowApp, key: str) -> None:
     elif cc.key_prev_marker and key == cc.key_prev_marker:
         cycle_marker(app, -1)
     elif cc.key_reset and key == cc.key_reset and app._selected_id is not None and app._server is not None:
-        if holds(app, app._selected_id):
+        if holds(app, app._selected_id) or is_parked(app, app._selected_id):
             return
         marker = app._server.get_marker(app._selected_id)
         # pragma: no branch – _selected_id is set only when its marker
@@ -910,7 +916,7 @@ def on_key_down(app: OpenFollowApp, event: dict[str, Any]) -> None:
 
     if len(key) == 1 and key.isdigit() and key != "0":
         idx = int(key) - 1
-        if idx < len(app._controlled_ids):
+        if idx < len(app._controlled_ids) and not is_parked(app, app._controlled_ids[idx]):
             app._selected_id = app._controlled_ids[idx]
 
 

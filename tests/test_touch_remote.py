@@ -512,7 +512,7 @@ def test_other_inputs_leave_a_held_marker_alone(app: _App) -> None:
     _Keyboard.velocity = (1.0, 0.0, 0.0)
     _Gamepad.next_update = GamepadUpdate(movements={0: (1.0, 0.0, 0.0)}, resets={0})
     manager = InputManager(app)
-    manager.osc_handler = SimpleNamespace(flush_updates=lambda: {10: {"x": 4.0}})
+    manager.osc_handler = SimpleNamespace(flush_parks=dict, flush_updates=lambda: {10: {"x": 4.0}})
     manager.update(1.0)
     assert _pos(app) == pytest.approx((0.0, 0.0, 1.6))
 

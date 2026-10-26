@@ -15,7 +15,7 @@ import re
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
 from pathlib import Path
@@ -3837,6 +3837,30 @@ def save_config_fields(
         save_config(on_disk, path)
 
 
+def park_changes_applied(parked: list[int], changes: Mapping[int, bool]) -> list[int]:
+    """*parked* with each marker in *changes* parked (``True``) or unparked (``False``), order kept."""
+    kept = [mid for mid in parked if changes.get(mid, True)]
+    return kept + [mid for mid, on in changes.items() if on and mid not in kept]
+
+
+def save_park_changes(config: AppConfig, path: str, changes: Mapping[int, bool]) -> bool:
+    """Apply *changes* to the parked markers of the file at *path* in one read-modify-write under the lock.
+
+    The file's parked and controlled sets are the base, so a park another writer saved since *config*
+    was read survives. A missing file is written from a copy of *config* with the changes applied; an
+    empty or unreadable one raises. Returns whether the file was written.
+    """
+    with config_write_lock:
+        on_disk = read_config_whole(path)
+        target = copy.deepcopy(config) if on_disk is None else on_disk
+        parked = parked_within(target.controlled_marker_ids, park_changes_applied(target.parked_marker_ids, changes))
+        if on_disk is not None and parked == on_disk.parked_marker_ids:
+            return False
+        target.parked_marker_ids = parked
+        save_config(target, path)
+        return True
+
+
 # ---------------------------------------------------------------------------
 # Runtime Hot-Reload
 # ---------------------------------------------------------------------------
@@ -4279,7 +4303,9 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
                 # controlled_ids list and is only updated to a new value
                 # when removed; integration tests cover the True arm.
                 if app._selected_id not in new_ids:  # pragma: no branch
-                    app._selected_id = app._controlled_ids[0] if app._controlled_ids else None
+                    from openfollow.input.parking import is_parked
+
+                    app._selected_id = next((m for m in app._controlled_ids if not is_parked(app, m)), None)
                 receiver.set_ignore_ids(new_ids)
                 app._config.controlled_marker_ids = filtered_controlled
 

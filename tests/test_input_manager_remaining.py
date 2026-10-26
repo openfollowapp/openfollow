@@ -25,12 +25,14 @@ fills in:
 from __future__ import annotations
 
 import logging
+import os
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 import openfollow.input.input_manager as input_manager_module
-from openfollow.configuration import AppConfig
+from openfollow.configuration import AppConfig, load_config, save_config
 from openfollow.input.gamepad import GamepadUpdate
 from openfollow.input.input_manager import InputManager
 from openfollow.operator_messages import OperatorMessageStore
@@ -391,37 +393,31 @@ class TestOscUpdateApplication:
         manager.update(0.016)  # must not raise
 
 
-class _RaisingLog:
-    """Stands in for a throttled error log: a swallowed failure fails the test instead."""
-
-    def log(self) -> None:
-        raise AssertionError("an OSC step failed")
-
-
 class TestOscPark:
     @pytest.fixture
-    def saved(self, monkeypatch: pytest.MonkeyPatch) -> list[tuple[list[int], tuple[str, ...]]]:
-        writes: list[tuple[list[int], tuple[str, ...]]] = []
-
-        def _save(config: AppConfig, _path: str, names: tuple[str, ...]) -> None:
-            writes.append((list(config.parked_marker_ids), names))
-
-        monkeypatch.setattr(input_manager_module, "save_config_fields", _save)
-        return writes
-
-    def test_park_parks_live_and_in_the_file(self, saved) -> None:
+    def app(self, tmp_path) -> _DummyApp:  # noqa: ANN001
+        """The station's config file holds the same selection as the running config."""
         app = _DummyApp(osc_enabled=True)
+        app._config.controlled_marker_ids = [10, 11]
+        app._config_path = str(tmp_path / "config.toml")
+        save_config(app._config, app._config_path)
+        return app
+
+    @staticmethod
+    def _file(app: _DummyApp) -> list[int]:
+        return load_config(app._config_path).parked_marker_ids
+
+    def test_park_parks_live_and_in_the_file(self, app: _DummyApp) -> None:
         manager = InputManager(app)
         _FakeOscHandler.next_parks = {10: True}
         manager.update(0.016)
         assert app._parked_ids == {10}
         assert app._config.parked_marker_ids == [10]
-        assert saved == [([10], ("parked_marker_ids",))]
+        assert self._file(app) == [10]
         # The selection moves on to the next unparked marker.
         assert app._selected_id == 11
 
-    def test_unpark_gives_the_marker_back(self, saved) -> None:
-        app = _DummyApp(osc_enabled=True)
+    def test_unpark_gives_the_marker_back(self, app: _DummyApp) -> None:
         manager = InputManager(app)
         _FakeOscHandler.next_parks = {11: True}
         manager.update(0.016)
@@ -429,53 +425,63 @@ class TestOscPark:
         manager.update(0.016)
         assert app._parked_ids == frozenset()
         assert app._config.parked_marker_ids == []
-        assert saved[-1] == ([], ("parked_marker_ids",))
+        assert self._file(app) == []
 
-    def test_a_park_for_a_marker_this_station_does_not_control_is_ignored(self, saved) -> None:
-        app = _DummyApp(osc_enabled=True)
+    def test_a_park_saved_by_the_web_ui_the_running_config_has_not_seen_survives(self, app: _DummyApp) -> None:
+        """A P click lands in the file; the hot reload brings it here up to a poll later."""
+        on_disk = load_config(app._config_path)
+        on_disk.parked_marker_ids = [10]
+        save_config(on_disk, app._config_path)
+        manager = InputManager(app)
+        _FakeOscHandler.next_parks = {11: True}
+        manager.update(0.016)
+        assert app._config.parked_marker_ids == [11]
+        assert self._file(app) == [10, 11]
+
+    def test_a_park_for_a_marker_this_station_does_not_control_is_ignored(self, app: _DummyApp) -> None:
+        before = Path(app._config_path).read_bytes()
         manager = InputManager(app)
         _FakeOscHandler.next_parks = {99: True}
         manager.update(0.016)
         assert app._config.parked_marker_ids == []
-        assert saved == []
+        assert Path(app._config_path).read_bytes() == before
 
-    def test_a_repeated_park_writes_nothing_more(self, saved) -> None:
-        app = _DummyApp(osc_enabled=True)
+    def test_a_frame_without_a_park_command_saves_nothing(self, app: _DummyApp) -> None:
         manager = InputManager(app)
         _FakeOscHandler.next_parks = {10: True}
         manager.update(0.016)
+        Path(app._config_path).unlink()
+        manager.update(0.016)
+        assert not Path(app._config_path).exists()
+        assert app._parked_ids == {10}
+
+    def test_a_repeated_park_writes_nothing_more(self, app: _DummyApp) -> None:
+        manager = InputManager(app)
         _FakeOscHandler.next_parks = {10: True}
         manager.update(0.016)
-        assert len(saved) == 1
+        before = Path(app._config_path).read_bytes()
+        os.utime(app._config_path, (1.0, 1.0))
+        _FakeOscHandler.next_parks = {10: True}
+        manager.update(0.016)
+        assert os.stat(app._config_path).st_mtime == 1.0
+        assert Path(app._config_path).read_bytes() == before
 
-    def test_osc_positions_still_move_a_parked_marker(self, saved) -> None:
-        app = _DummyApp(osc_enabled=True)
+    def test_osc_positions_still_move_a_parked_marker(self, app: _DummyApp) -> None:
         manager = InputManager(app)
         _FakeOscHandler.next_parks = {10: True}
         _FakeOscHandler.next_updates = {10: {"x": 1.0, "y": 2.0, "z": 3.0}}
         manager.update(0.016)
         assert app._server.get_marker(10).pos == pytest.approx((1.0, 2.0, 3.0))
 
-    def test_a_frame_without_a_park_command_does_no_park_work(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def _boom(*_args: Any) -> list[int]:
-            raise AssertionError("parked set rebuilt with no park command")
-
-        monkeypatch.setattr(input_manager_module, "parked_within", _boom)
-        app = _DummyApp(osc_enabled=True)
-        manager = InputManager(app)
-        manager._osc_apply_err_log = _RaisingLog()
-        manager.update(0.016)
-
-    def test_a_failed_save_keeps_the_park_live(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def _fail(*_args: Any) -> None:
-            raise OSError("read-only")
-
-        monkeypatch.setattr(input_manager_module, "save_config_fields", _fail)
-        app = _DummyApp(osc_enabled=True)
+    def test_an_unreadable_file_keeps_the_park_live_and_is_left_alone(self, app: _DummyApp, caplog) -> None:  # noqa: ANN001
+        Path(app._config_path).write_text("not [[ toml", encoding="utf-8")
         manager = InputManager(app)
         _FakeOscHandler.next_parks = {10: True}
-        manager.update(0.016)
+        with caplog.at_level("ERROR"):
+            manager.update(0.016)
         assert app._parked_ids == {10}
+        assert Path(app._config_path).read_text(encoding="utf-8") == "not [[ toml"
+        assert "Failed to save the parked markers." in caplog.text
 
 
 class TestParkedKeyboard:

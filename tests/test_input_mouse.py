@@ -1466,6 +1466,17 @@ class TestParkedGrab:
         assert app._server.get_marker(1).pos == _DEFAULT_POS
         assert app._server.get_marker(2).pos == (4.0, 0.0, 0.0)
 
+    def test_a_grab_of_an_unparked_marker_is_an_operator_selection(self) -> None:
+        app = self._app()
+        set_parked(app, [1])
+        assert app._pin_waits_for_selection is True
+        handler = MouseHandler(app)
+        _grab(handler, app, marker_id=1)
+        assert app._pin_waits_for_selection is True  # a parked grab selects nothing
+        handler.on_pointer_down(5, 5, 3)
+        _grab(handler, app, marker_id=2)
+        assert app._pin_waits_for_selection is False
+
     def test_a_later_grab_of_an_unparked_marker_selects_it_again(self) -> None:
         app = self._app()
         set_parked(app, [2])

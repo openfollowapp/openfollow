@@ -458,6 +458,16 @@ def test_a_parked_slot_keeps_its_marker_in_the_slot_table_and_for_osc(station) -
     assert manager._gamepad_marker_id(1) is None
 
 
+def test_a_parked_pad_slot_reports_its_markers_speed(station) -> None:
+    """The pad's own reading resolves no marker for a parked slot; the slot still shows its marker's speed."""
+    manager, app = station({0: (_key("1"), "First"), 1: (_key("2"), "Second")})
+    app.get_marker_move_speed = lambda marker_id: {10: 0.7, 11: 0.9}[marker_id]
+    set_parked(app, [10])
+    speeds = [c["effective_speed"] for c in manager.get_controller_info()]
+    # The unparked pad keeps its own reading (1.5 in this fake).
+    assert speeds == [0.7, 1.5]
+
+
 def test_identify_flashes_the_card_of_a_parked_slot(station) -> None:
     manager, app = station({0: (_key("1"), "First"), 1: (_key("2"), "Second")})
     set_parked(app, [11])

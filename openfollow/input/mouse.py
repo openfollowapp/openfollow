@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from openfollow.configuration import effective_lens
-from openfollow.input.parking import is_parked
+from openfollow.input.parking import is_parked, select
 from openfollow.input.touch_remote import holds
 from openfollow.runtime import paths_runtime
 from openfollow.runtime.services_detection_pin import (
@@ -126,7 +126,11 @@ class MouseHandler:
         return self._active
 
     def keep_grab(self, marker_id: int) -> None:
-        """Stay on ``marker_id`` when it is the mouse's marker and the selection is about to move off it."""
+        """Stay on ``marker_id`` when it is the mouse's marker and the selection is about to move off it.
+
+        Sets ``_parked_grab`` even while nothing is dragged: then only a double right-click right after
+        releasing this marker reads it (and resets this marker, the one let go), and the next grab replaces it.
+        """
         if self._target_id() == marker_id:
             self._parked_grab = marker_id
 
@@ -298,7 +302,7 @@ class MouseHandler:
             self._parked_grab = marker_id
         else:
             self._parked_grab = None
-            self._app._selected_id = marker_id
+            select(self._app, marker_id)
         self._active = True
         grabbed = self._app._server.get_marker(marker_id) if self._app._server is not None else None
         self._drag_floor_z = floor_height(self._app._config, *grabbed.pos[:2]) if grabbed is not None else None

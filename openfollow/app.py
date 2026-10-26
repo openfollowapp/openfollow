@@ -269,6 +269,8 @@ class OpenFollowApp:
         self._selected_id: int | None = None
         # Controlled markers no relative input moves (``input/parking.py``).
         self._parked_ids: frozenset[int] = frozenset()
+        # The selection moved off a marker that parked; a pin following the selection waits for the operator.
+        self._pin_waits_for_selection = False
         # Assist-mode manual anchor markers, keyed by the pinned marker id.
         # These are operator-steered "ghosts" that are never registered with
         # ``_server`` (so never broadcast) – the detection pin reads them as the

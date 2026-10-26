@@ -3190,6 +3190,51 @@ def test_parked_markers_survive_a_save_and_a_restart(temp_config_path) -> None:
     assert load_config(str(temp_config_path)).parked_marker_ids == [5]
 
 
+@pytest.mark.parametrize(
+    ("parked", "changes", "expected"),
+    [
+        ([1, 2], {3: True}, [1, 2, 3]),
+        ([1, 2], {1: False}, [2]),
+        ([1, 2], {2: True, 3: False}, [1, 2]),
+        ([], {}, []),
+    ],
+)
+def test_park_changes_apply_to_the_parked_list(
+    parked: list[int], changes: dict[int, bool], expected: list[int]
+) -> None:
+    from openfollow.configuration import park_changes_applied
+
+    assert park_changes_applied(parked, changes) == expected
+
+
+def test_save_park_changes_builds_on_the_file_and_its_controlled_set(temp_config_path) -> None:
+    from openfollow.configuration import save_park_changes
+
+    save_config(AppConfig(controlled_marker_ids=[1, 2], parked_marker_ids=[1]), str(temp_config_path))
+    stale = AppConfig(controlled_marker_ids=[1, 2, 3])
+    assert save_park_changes(stale, str(temp_config_path), {2: True, 3: True}) is True
+    assert load_config(str(temp_config_path)).parked_marker_ids == [1, 2]
+    assert save_park_changes(stale, str(temp_config_path), {2: True}) is False
+
+
+def test_save_park_changes_writes_a_missing_file_from_the_running_config(temp_config_path) -> None:
+    from openfollow.configuration import save_park_changes
+
+    running = AppConfig(controlled_marker_ids=[1, 2])
+    assert save_park_changes(running, str(temp_config_path), {2: True}) is True
+    assert load_config(str(temp_config_path)).parked_marker_ids == [2]
+    assert running.parked_marker_ids == []
+
+
+def test_save_park_changes_leaves_an_unreadable_file_alone(temp_config_path) -> None:
+    from openfollow.configuration import ConfigFileUnreadableError, save_park_changes
+
+    temp_config_path.write_text("not [[ toml", encoding="utf-8")
+    with pytest.raises(ConfigFileUnreadableError):
+        save_park_changes(AppConfig(controlled_marker_ids=[1]), str(temp_config_path), {1: True})
+    assert temp_config_path.read_text(encoding="utf-8") == "not [[ toml"
+
+
 def test_apply_runtime_parks_live_and_moves_the_selection() -> None:
     app = _DummyApp(AppConfig(controlled_marker_ids=[1, 2, 3], viewer_marker_ids=[1, 2, 3]))
     apply_runtime_config_changes(
@@ -3244,6 +3289,8 @@ def test_apply_runtime_keeps_the_selection_off_a_parked_marker_when_the_selected
         app, AppConfig(controlled_marker_ids=[2, 3], viewer_marker_ids=[2, 3], parked_marker_ids=[2])
     )
     assert app._selected_id == 3
+    # The selected marker left the controlled set; nothing parked under it, so a following pin keeps following.
+    assert getattr(app, "_pin_waits_for_selection", False) is False
 
 
 def test_apply_runtime_seeds_a_live_added_marker_with_the_default_position() -> None:

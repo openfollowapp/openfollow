@@ -20,12 +20,24 @@ def is_parked(app: Any, marker_id: int | None) -> bool:
     return marker_id is not None and parked is not None and marker_id in parked
 
 
+def select(app: Any, marker_id: int) -> None:
+    """The operator selects ``marker_id``: a pin that follows the selection may drive it again."""
+    app._selected_id = marker_id
+    app._pin_waits_for_selection = False
+
+
 def rehome_selection(app: Any) -> None:
-    """Keep the selection on an unparked controlled marker: the next one after it, else none."""
+    """Keep the selection on an unparked controlled marker: the next one after it, else none.
+
+    Moving off a marker that parked is no choice of the operator's, so a pin that follows the
+    selection waits for one (``_pin_waits_for_selection``).
+    """
     ids = list(app._controlled_ids)
     selected = app._selected_id
     if selected in ids and not is_parked(app, selected):
         return
+    if selected in ids:
+        app._pin_waits_for_selection = True
     start = ids.index(selected) if selected in ids else -1
     rotated = ids[start + 1 :] + ids[: start + 1]
     app._selected_id = next((mid for mid in rotated if not is_parked(app, mid)), None)

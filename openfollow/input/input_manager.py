@@ -14,8 +14,10 @@ from openfollow.configuration import (
     _apply_with_fallback,
     feature_gated,
     feature_on,
+    park_changes_applied,
     parked_within,
     save_config_fields,
+    save_park_changes,
 )
 from openfollow.input.control_frame import ControlFrame
 from openfollow.input.controller_identity import port_label, usb_host_paths
@@ -519,21 +521,18 @@ class InputManager:
 
     def _apply_osc_parks(self, parks: dict[int, bool]) -> None:
         """Park or unpark controlled markers from OSC, live and in the file; others are ignored."""
+        parks = {mid: on for mid, on in parks.items() if mid in self.app._controlled_ids}
         if not parks:
             return
-        parked = list(self.app._config.parked_marker_ids)
-        for marker_id, park in parks.items():
-            if park and marker_id not in parked:
-                parked.append(marker_id)
-            elif not park and marker_id in parked:
-                parked.remove(marker_id)
-        parked = parked_within(self.app._controlled_ids, parked)
-        if parked == self.app._config.parked_marker_ids:
-            return
-        self.app._config.parked_marker_ids = parked
-        set_parked(self.app, parked)
+        parked = parked_within(
+            self.app._controlled_ids, park_changes_applied(self.app._config.parked_marker_ids, parks)
+        )
+        if parked != self.app._config.parked_marker_ids:
+            self.app._config.parked_marker_ids = parked
+            set_parked(self.app, parked)
+        # The file, not the running config, is the base: a web park may not have reached this thread yet.
         try:
-            save_config_fields(self.app._config, self.app._config_path, ("parked_marker_ids",))
+            save_park_changes(self.app._config, self.app._config_path, parks)
         except Exception:
             logger.exception("Failed to save the parked markers.")
 
@@ -781,12 +780,17 @@ class InputManager:
         out: list[dict[str, Any]] = []
         for unified_idx, slot in enumerate(slots):
             marker_id = self._slot_marker_id(unified_idx, slots)
+            parked = is_parked(self.app, marker_id)
             live = slot.state == CONNECTED
             used = last_input.get((slot.kind, slot.local_id)) if live and slot.local_id is not None else None
             if slot.kind == "gamepad":
                 pad = gamepad_info.get(slot.local_id, {}) if slot.local_id is not None else {}
                 backend = str(pad.get("backend", ""))
-                speed = float(pad.get("effective_speed", 0.0)) if live else 0.0
+                # The pad's own reading follows its routing, which a parked slot has none of.
+                if live and parked:
+                    speed = self.app.get_marker_move_speed(marker_id)
+                else:
+                    speed = float(pad.get("effective_speed", 0.0)) if live else 0.0
             else:
                 backend = "mouse3d"
                 speed = self.app.get_marker_move_speed(marker_id) if live and marker_id is not None else 0.0
@@ -797,7 +801,7 @@ class InputManager:
                 "state": slot.state,
                 "connected": live,
                 "marker_id": marker_id,
-                "parked": is_parked(self.app, marker_id),
+                "parked": parked,
                 "effective_speed": speed,
                 "backend": backend,
                 "port_key": slot.key,

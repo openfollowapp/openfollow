@@ -95,13 +95,20 @@ def test_a_conflict_the_runtime_withdraws_clears_at_the_next_poll() -> None:
 _PARK_PAGE = """
 window.OpenFollow.saveError = {clear: function () {}, boxFor: function () { return null; }, show: function () {}};
 station = function () { return {status: 200, body: {success: true}}; };
-function pollPark(parked) {
+function pollPark(parked, controlled) {
+    controlled = controlled || [3];
     document.body.dispatchEvent(makeEvent('htmx:afterRequest', {detail: {elt: root, xhr: {responseText: JSON.stringify({
         entries: [{id: 3, name: 'Lead', color: '#ff0000'}, {id: 4, name: 'Second', color: '#00ff00'}],
         peer_selections: [],
-        this_station: {station_id: 'me', station_name: 'FOH', controlled_ids: [3], viewer_ids: [3], parked_ids: parked},
+        this_station: {
+            station_id: 'me', station_name: 'FOH',
+            controlled_ids: controlled, viewer_ids: controlled, parked_ids: parked,
+        },
         next_free_id: 5,
     })}}}));
+}
+function radio(id, value) {
+    return root.querySelector('tr[data-marker-id="' + id + '"] input[data-this-station][value="' + value + '"]');
 }
 function park(id) { return root.querySelector('tr[data-marker-id="' + id + '"] button[data-park]'); }
 function parkState(id) { return {pressed: park(id).getAttribute('aria-pressed'), disabled: park(id).disabled}; }
@@ -170,3 +177,24 @@ def test_moving_a_parked_row_off_view_and_control_clears_its_park() -> None:
     )
     # The server drops the park of a marker that leaves View & Control; the save carries no change.
     assert out == {"state": {"pressed": "false", "disabled": True}, "posted": [{}]}
+
+
+def test_a_park_set_elsewhere_shows_while_focus_stays_on_p() -> None:
+    out = _run_async(
+        "pollPark([]); park(3).focus(); pollPark([3]); out.parked = parkState(3);"
+        " pollPark([]); out.unparked = parkState(3);"
+    )
+    assert out == {
+        "parked": {"pressed": "true", "disabled": False},
+        "unparked": {"pressed": "false", "disabled": False},
+    }
+
+
+def test_the_poll_never_moves_the_this_station_choice_under_focus() -> None:
+    out = _run_async(
+        "pollPark([]); radio(3, 'control').focus(); pollPark([], [4]);"
+        " out.control = radio(3, 'control').checked; out.hide = radio(3, 'hide').checked;"
+        " out.park = parkState(3);"
+    )
+    # The P follows the station (marker 3 no longer controlled) while the radios wait for focus to leave.
+    assert out == {"control": True, "hide": False, "park": {"pressed": "false", "disabled": True}}

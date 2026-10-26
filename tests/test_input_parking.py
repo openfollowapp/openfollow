@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from openfollow.configuration import AppConfig
-from openfollow.input.parking import is_parked, rehome_selection, set_parked
+from openfollow.input.parking import is_parked, rehome_selection, select, set_parked
 from openfollow.psn.marker import Marker
 from openfollow.runtime import app_modes
 
@@ -110,7 +110,9 @@ def _keyboard_app(selected: int, parked: list[int]) -> SimpleNamespace:
             pass
 
     app = SimpleNamespace(
-        _input_manager=SimpleNamespace(keyboard_handler=_KeyboardHandler()),
+        _input_manager=SimpleNamespace(
+            keyboard_handler=_KeyboardHandler(), mouse_handler=SimpleNamespace(keep_grab=lambda _marker_id: None)
+        ),
         _controlled_ids=[10, 20, 30],
         _selected_id=selected,
         _parked_ids=frozenset(parked),
@@ -152,3 +154,36 @@ def test_the_reset_key_never_reaches_a_parked_marker() -> None:
     app._get_default_marker_position = lambda: (5.0, 5.0, 5.0)
     app_modes.handle_key_press(app, "x")
     assert marker.pos == (1.0, 1.0, 1.0)
+
+
+def test_a_park_that_moves_the_selection_makes_a_following_pin_wait() -> None:
+    app = _app([1, 2, 3], 1)
+    set_parked(app, [1])
+    assert app._pin_waits_for_selection is True
+
+
+@pytest.mark.parametrize(
+    ("selected", "parked"),
+    [(None, [1]), (2, [1]), (1, [])],
+    ids=["no-selection-yet", "another-marker-parks", "nothing-parks"],
+)
+def test_a_park_that_leaves_the_selection_alone_never_makes_the_pin_wait(
+    selected: int | None, parked: list[int]
+) -> None:
+    app = _app([1, 2, 3], selected)
+    set_parked(app, parked)
+    assert getattr(app, "_pin_waits_for_selection", False) is False
+
+
+@pytest.mark.parametrize("how", ["cycle", "digit", "select"])
+def test_an_operator_selection_wakes_the_pin(how: str) -> None:
+    app = _keyboard_app(10, [])
+    set_parked(app, [10])
+    assert app._pin_waits_for_selection is True
+    if how == "cycle":
+        app_modes.cycle_marker(app, +1)
+    elif how == "digit":
+        app_modes.on_key_down(app, {"key": "3"})
+    else:
+        select(app, 30)
+    assert app._pin_waits_for_selection is False

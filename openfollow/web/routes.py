@@ -94,6 +94,7 @@ from openfollow.configuration import (
     load_config_for_save,
     marker_id_list,
     migrate_ui_keys,
+    park_changes_applied,
     parked_within,
     path_name_from,
     plane_pin_key,
@@ -4998,10 +4999,10 @@ def _register_marker_catalog_routes(
             cfg.viewer_marker_ids = viewed_with_controlled(
                 cfg.controlled_marker_ids, _keep_order(cfg.viewer_marker_ids, viewer)
             )
-            parked = [mid for mid in cfg.parked_marker_ids if park.get(mid, True)]
-            parked += [mid for mid, on in park.items() if on and mid not in parked]
             # Only a controlled marker can be parked: leaving View & Control clears it.
-            cfg.parked_marker_ids = parked_within(cfg.controlled_marker_ids, parked)
+            cfg.parked_marker_ids = parked_within(
+                cfg.controlled_marker_ids, park_changes_applied(cfg.parked_marker_ids, park)
+            )
             save_config(cfg, server.config_path)
         return json.dumps({"success": True})
 

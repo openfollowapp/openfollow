@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from openfollow.configuration import config_file_problem, config_problem_words, is_simple_mode, save_config_fields
 from openfollow.input.keyboard import text_entry_owns_input
-from openfollow.input.parking import is_parked
+from openfollow.input.parking import is_parked, select
 from openfollow.input.touch_remote import holds
 from openfollow.runtime import paths_runtime
 from openfollow.video.failure import SourceKind, VideoFailure, failure_action, failure_sentence
@@ -648,7 +648,7 @@ def cycle_marker(app: OpenFollowApp, direction: int) -> None:
     for k in range(1, len(ids) + 1):
         candidate = ids[(idx + step * k) % len(ids)]
         if not is_parked(app, candidate):
-            app._selected_id = candidate
+            select(app, candidate)
             return
 
 
@@ -917,7 +917,7 @@ def on_key_down(app: OpenFollowApp, event: dict[str, Any]) -> None:
     if len(key) == 1 and key.isdigit() and key != "0":
         idx = int(key) - 1
         if idx < len(app._controlled_ids) and not is_parked(app, app._controlled_ids[idx]):
-            app._selected_id = app._controlled_ids[idx]
+            select(app, app._controlled_ids[idx])
 
 
 def on_key_up(app: OpenFollowApp, event: dict[str, Any]) -> None:

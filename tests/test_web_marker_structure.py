@@ -424,7 +424,7 @@ class TestThisStationToggle:
     def test_the_poll_never_moves_a_toggle_mid_save(self) -> None:
         body = _render_marker()
         assert "const settled = selectionPending === 0 && Date.now() >= selectionSettleUntil;" in body
-        assert "if (!tr.dataset.synced || (settled && !cell.contains(document.activeElement))) {" in body
+        assert "if (!tr.dataset.synced || (settled && !toggle.contains(document.activeElement))) {" in body
 
     def test_a_save_flashes_its_row_background(self) -> None:
         body = _render_marker()

@@ -1808,3 +1808,52 @@ def test_a_fully_automatic_pin_on_a_parked_marker_waits_and_releases_its_status(
     app._parked_ids = frozenset()
     _run(app, _StubDetector(_tracked(0.6)), monkeypatch, unproject=_linear_unproject)
     assert marker_5.pos == pytest.approx(driven)
+
+
+def test_a_pin_following_the_selection_waits_after_the_selected_marker_parks(monkeypatch) -> None:
+    """Parking moves the selection on, but that is no choice of the operator's: the pin idles until one is made."""
+    from openfollow.input.parking import select, set_parked
+
+    marker_3, marker_5 = _StubMarker(3), _StubMarker(5)
+    app = _make_app(
+        detection_cfg=_status_cfg(pin_marker_id=-1),
+        server=_RecordingServer({3: marker_3, 5: marker_5}),
+        controlled_ids=[3, 5],
+        selected_id=3,
+        resolution=(1000, 1000),
+    )
+    _run(app, _StubDetector(_tracked(0.6)), monkeypatch, unproject=_linear_unproject)
+    assert marker_3.status == pytest.approx(0.75)
+
+    set_parked(app, [3])
+    assert app._selected_id == 5
+    _run(app, _StubDetector(_tracked(0.6)), monkeypatch, unproject=_linear_unproject)
+    assert marker_5.pos == (0.0, 0.0, 0.0)
+    assert marker_3.status == 1.0
+    assert app._detection_pin_states == {}
+
+    # Unparking is no selection either.
+    set_parked(app, [])
+    _run(app, _StubDetector(_tracked(0.6)), monkeypatch, unproject=_linear_unproject)
+    assert app._detection_pin_states == {}
+
+    select(app, 5)
+    _run(app, _StubDetector(_tracked(0.6)), monkeypatch, unproject=_linear_unproject)
+    assert marker_5.pos != (0.0, 0.0, 0.0)
+    assert marker_5.status == pytest.approx(0.75)
+
+
+def test_a_fixed_pin_is_not_held_back_by_a_park_driven_reselection(monkeypatch) -> None:
+    from openfollow.input.parking import set_parked
+
+    marker_3, marker_5 = _StubMarker(3), _StubMarker(5)
+    app = _make_app(
+        detection_cfg=_status_cfg(pin_marker_id=5),
+        server=_RecordingServer({3: marker_3, 5: marker_5}),
+        controlled_ids=[3, 5],
+        selected_id=3,
+        resolution=(1000, 1000),
+    )
+    set_parked(app, [3])
+    _run(app, _StubDetector(_tracked(0.6)), monkeypatch, unproject=_linear_unproject)
+    assert marker_5.status == pytest.approx(0.75)

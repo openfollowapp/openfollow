@@ -145,11 +145,15 @@ def get_or_create_manual_marker(app: Any, marker_id: int) -> Marker:
 def _resolve_pinned_marker(app: Any, cfg: Any) -> Any:
     """Resolve the marker the detection pin drives, or ``None`` to skip.
 
-    ``pin_marker_id`` defaults to -1 (follow the controller-selected marker);
-    a non-negative id pins that exact marker, but only when it's controlled.
+    ``pin_marker_id`` defaults to -1 (follow the controller-selected marker,
+    idle after the selection moved off a marker that parked until the operator
+    selects one); a non-negative id pins that exact marker, but only when it's
+    controlled.
     """
     configured_id = cfg.detection.pin_marker_id
     if configured_id < 0:
+        if getattr(app, "_pin_waits_for_selection", False):
+            return None
         selected_id = app._selected_id
     elif configured_id in app._controlled_ids:
         selected_id = configured_id

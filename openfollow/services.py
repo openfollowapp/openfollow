@@ -1735,7 +1735,8 @@ class AppRuntimeServices:
             name = entry.name if (entry is not None and entry.name) else f"Marker {marker_id}"
             marker = server.add_marker(marker_id, name)
             marker.set_pos(*default_pos)
-        self._app._selected_id = self._app._controlled_ids[0] if self._app._controlled_ids else None
+        # No selection yet, so the first unparked marker is chosen as a start, not as a park moving it.
+        self._app._selected_id = None
         set_parked(self._app, parked_within(self._app._controlled_ids, self._app._config.parked_marker_ids))
 
     def _resolved_plane_source_ip(self, pin: str, *, label: str) -> str | None:

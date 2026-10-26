@@ -21,7 +21,7 @@ import pytest
 import tomllib
 
 import openfollow.web.discovery as discovery_module
-from openfollow.configuration import load_config, save_config, save_config_fields
+from openfollow.configuration import load_config, save_config, save_config_fields, save_park_changes
 from openfollow.marker_catalog import MarkerCatalog
 from openfollow.marker_catalog.sync import PeerSelection
 from openfollow.web.server import ConfigWebServer
@@ -511,6 +511,16 @@ class TestParkedSelection:
         assert self._parked(cfg_path) == [2]
         assert self._post(base, {"controlled_ids": [1, 2, 3], "viewer_ids": [], "park": {"1": True}}) == 200
         assert self._parked(cfg_path) == [2, 1]
+
+    def test_a_p_click_survives_an_osc_park_saved_from_a_stale_running_config(self, live_server) -> None:
+        """The frame thread's config lags the file by up to a reload poll; its save must build on the file."""
+        _, base, cfg_path, catalog, _ = live_server
+        self._catalog(catalog)
+        self._post(base, {"controlled_ids": [1, 2, 3], "viewer_ids": []})
+        running = load_config(cfg_path)
+        assert self._post(base, {"controlled_ids": [1, 2, 3], "viewer_ids": [], "park": {"2": True}}) == 200
+        assert save_park_changes(running, cfg_path, {3: True}) is True
+        assert self._parked(cfg_path) == [2, 3]
 
     def test_only_a_controlled_marker_stays_parked(self, live_server) -> None:
         _, base, cfg_path, catalog, _ = live_server

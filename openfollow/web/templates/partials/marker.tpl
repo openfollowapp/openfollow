@@ -563,14 +563,17 @@
         const toggle = cell.querySelector('.seg-toggle');
         const park = cell.querySelector('button[data-park]');
         const settled = selectionPending === 0 && Date.now() >= selectionSettleUntil;
-        if (!tr.dataset.synced || (settled && !cell.contains(document.activeElement))) {
-            const state = thisStationState(entry.id, thisStation);
+        const state = thisStationState(entry.id, thisStation);
+        if (!tr.dataset.synced || (settled && !toggle.contains(document.activeElement))) {
             toggle.querySelectorAll('input[data-this-station]').forEach(function(radio) {
                 if (radio.checked !== (radio.value === state)) radio.checked = radio.value === state;
             });
-            setPark(park, state, (thisStation.parked_ids || []).indexOf(entry.id) !== -1);
-            tr.dataset.synced = 'true';
         }
+        // P follows the station even with focus on it: OSC parks and unparks too, and a click saves at once.
+        if (!tr.dataset.synced || settled) {
+            setPark(park, state, (thisStation.parked_ids || []).indexOf(entry.id) !== -1);
+        }
+        tr.dataset.synced = 'true';
         const markerName = entry.name || ('Marker ' + entry.id);
         const label = 'This station: ' + markerName;
         if (toggle.getAttribute('aria-label') !== label) toggle.setAttribute('aria-label', label);

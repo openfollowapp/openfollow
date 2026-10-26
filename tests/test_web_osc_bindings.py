@@ -1871,6 +1871,7 @@ def test_trigger_form_accepts_trigger_type_query_param(live_server) -> None:
         ("standard", ['<option value="A" >A</option>', '<option value="BACK" >Back</option>']),
         ("playstation", ['<option value="A" >Cross</option>', '<option value="BACK" >Create</option>']),
         ("xbox", ['<option value="BACK" >View</option>', '<option value="START" >Menu</option>']),
+        ("nintendo", ['<option value="BACK" >Minus</option>', '<option value="START" >Plus</option>']),
     ],
 )
 def test_controller_button_trigger_names_buttons_in_the_stations_style(live_server, style, options) -> None:
@@ -1882,6 +1883,23 @@ def test_controller_button_trigger_names_buttons_in_the_stations_style(live_serv
     assert status == 200
     assert all(option in body for option in options)
     assert "btn-symbol" not in body
+
+
+def test_the_osc_bindings_section_names_a_saved_trigger_button_in_the_stations_style(live_server) -> None:
+    """The section as the page loads it, not only the trigger form swapped in on a type change."""
+    _, base, cfg_path = live_server
+    _post_form(base, "/section/gamepad", {"enabled": "true", "deadzone": "0.15", "button_name_style": "nintendo"})
+    _post_form(base, "/section/osc_bindings/add", {})
+    row_id = load_config(cfg_path).osc_transmitters.transmitters[0].id
+    _post_form(
+        base,
+        f"/section/osc_binding/{row_id}",
+        {"trigger.type": "controller_button", "trigger.button": "BACK", "trigger.edge": "press"},
+    )
+    status, body = _get(base, "/section/osc_bindings")
+    assert status == 200
+    assert '<option value="BACK" selected>Minus</option>' in body
+    assert '<option value="START" >Plus</option>' in body
 
 
 def test_trigger_form_accepts_legacy_trigger_kind_query_param(live_server) -> None:

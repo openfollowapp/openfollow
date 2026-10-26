@@ -240,6 +240,11 @@ class TestGamepadButtonNameTable:
         symbol = button_symbol(button, style)
         if symbol is not None:
             assert cell == f"![](button:{symbol}) {word}"
+        elif (
+            spelled := button_label(button, style, short=style is not ButtonNameStyle.STANDARD, spelled=True)
+        ) != word:
+            # Nintendo's marks, spelled as the web shows them.
+            assert cell == f"{spelled} ({word})"
         elif style is ButtonNameStyle.STANDARD and button_label(button, style) != word:
             assert cell == f"{word} ({button_label(button, style)})"
         else:

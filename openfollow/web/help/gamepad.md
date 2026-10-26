@@ -14,7 +14,7 @@ Configure how a connected USB gamepad drives markers: stick sensitivity and resp
   - `Logarithmic` – finer movement at small deflections, faster at large ones. The default and usually best for live tracking.
   - `Quadratic` – like Logarithmic but with a steeper ramp-up.
   - `S-Law` – slow at both ends, fast through the middle; suits very dynamic shows.
-- **Button Names** – the pad family whose button names the station shows: on the Operator Screen (its help, key hints and the Button Detection Wizard) and in this section's selectors, detection table and notes. `Standard`, the default, shows the generic names (A, B, Back, Start, LB); `Xbox`, `PlayStation` and `Nintendo` show what those pads print (see Button Names below). Only the names change: every binding stays on its button. Like the Button Detection Map, it describes this station's pads: a settings file import restores it, and a push from another station leaves it as it is.
+- **Button Names** – the pad family whose button names the station shows: on the Operator Screen (its help, key hints and the Button Detection Wizard), in this section's selectors, detection table and notes, in the controller-button trigger of OSC Transmitters, and in the on-device footer. `Standard`, the default, shows the generic names (A, B, Back, Start, LB); `Xbox`, `PlayStation` and `Nintendo` show what those pads print (see Button Names below). Only the names change: every binding stays on its button. Like the Button Detection Map, it describes this station's pads: a settings file import restores it, and a push from another station leaves it as it is.
 
 ## Button Detection Map
 
@@ -41,8 +41,8 @@ The same buttons carry different names on different pads. **Button Names** picks
 | Right Bumper (RB) | RB | R1 | R |
 | Left Trigger (LT) | LT | L2 | ZL |
 | Right Trigger (RT) | RT | R2 | ZR |
-| Back | ![](button:view) View | Create | - |
-| Start | ![](button:menu) Menu | Options | + |
+| Back | ![](button:view) View | Create | Minus (-) |
+| Start | ![](button:menu) Menu | Options | Plus (+) |
 
 The Nintendo names assume the pad reports its face buttons by their printed letters, which is the default.
 

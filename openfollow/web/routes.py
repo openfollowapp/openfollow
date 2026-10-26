@@ -9992,7 +9992,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             if binding.note:
                 note_html = binding.note_html or html_mod.escape(binding.note, quote=True)
                 return f'<span class="field-note-msg" role="status" aria-live="polite">{note_html}</span>'
-
             return ""
         # An OSC trigger on a claimed input: a movement key is an error, an
         # input a gamepad or keyboard action also uses is a caution. OSC rows

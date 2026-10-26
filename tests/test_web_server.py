@@ -8030,6 +8030,22 @@ def test_validate_binding_notes_name_the_button_in_the_saved_style(live_server, 
     assert f'data-lost-text="{word} was taken"' in moved["html"]
 
 
+@pytest.mark.parametrize(("button", "word"), [("BACK", "Minus"), ("START", "Plus")])
+def test_a_nintendo_mark_in_a_binding_note_is_spelled_out(live_server, button: str, word: str) -> None:
+    """A lone "-" in the red note would read as the unbound option's dash."""
+    _, base = live_server
+    _post_form(base, "/section/gamepad", {"enabled": "true", "deadzone": "0.15", "button_name_style": "nintendo"})
+    body, event = _get_checked(
+        base,
+        "/api/validate/gamepad/btn_reset",
+        {"btn_reset": button, "btn_toggle_help": button, "btn_settings": "" if button == "BACK" else "BACK"},
+    )
+    [moved] = event["moved"]
+    assert f"{word} taken from Toggle Help" in body
+    assert f"{word} moved to Reset Marker" in moved["html"]
+    assert f'data-lost-text="{word} was taken"' in moved["html"]
+
+
 def test_validate_binding_takes_a_shared_button_and_names_both_fields(live_server) -> None:
     _, base = live_server
     body, event = _get_checked(

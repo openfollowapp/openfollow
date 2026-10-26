@@ -10,7 +10,7 @@ Click **Add new MIDI Patch** to create a slot, then fill in its row:
 
 - **ID** – read-only permanent integer key. Referenced by virtual fader sources and OSC Transmitters trigger forms.
 - **Alias** – optional friendly name (up to 64 characters), such as `FOH` or `X-Touch`. Shown alongside the ID in patch dropdowns.
-- **Device** – the MIDI input port bound to this patch. The dropdown lists currently connected ports; an unplugged device shows as `(not connected)`, and saving preserves the binding for when it reconnects. On Linux, a device that reports a USB serial number shows it after the port name, and the patch follows that unit: two controllers of the same model each keep their own patch, whichever is plugged in first.
+- **Device** – the MIDI input port bound to this patch. The dropdown lists currently connected ports; an unplugged device shows as `(not connected)`, and saving preserves the binding for when it reconnects. On Linux, a device that reports a USB serial number shows it after the port name, and the patch follows that unit: two controllers of the same model each keep their own patch, whichever is plugged in first. When a patch's own unit is absent, the patch shows as `(not connected)` and counts as missing, unless a unit of the same model that no other patch uses is connected: the patch then uses that unit.
 
 Each row has its own **Save** and **Delete** buttons.
 

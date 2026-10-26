@@ -244,7 +244,7 @@ class TestMidiSectionRender:
                     "serial": None,
                 },
                 {
-                    "identifier": "serial:ABC123",
+                    "identifier": "serial:ABC123|X-Touch",
                     "port_name": "X-Touch",
                     "product": "X-Touch Mini",
                     "serial": "ABC123",
@@ -262,7 +262,7 @@ class TestMidiSectionRender:
             # the patch row's Device select, keyed by identifier.
             assert 'name="device"' in body
             assert 'value="port:MIDI Mix|MIDI Mix"' in body
-            assert 'value="serial:ABC123"' in body
+            assert 'value="serial:ABC123|X-Touch"' in body
             assert "MIDI Mix" in body
             assert "X-Touch" in body
             # The serial annotation is appended to the option label.
@@ -277,8 +277,8 @@ _TWO_UNITS = [
 ]
 
 
-def _selected_device(body: str) -> list[str]:
-    select = re.search(r'<select form="patch-1-form" name="device">(.*?)</select>', body, re.S)
+def _selected_device(body: str, patch_id: int = 1) -> list[str]:
+    select = re.search(rf'<select form="patch-{patch_id}-form" name="device">(.*?)</select>', body, re.S)
     assert select is not None
     return re.findall(r'<option value="([^"]*)" selected>', select.group(1))
 
@@ -310,6 +310,26 @@ class TestPatchDeviceSelection:
             assert status == 200
             patch = load_config(cfg_path).midi.patches[0]
             assert (patch.serial, patch.port_name) == ("S1", "XTM")
+
+    def test_a_patch_whose_unit_is_absent_never_shows_the_other_unit(self, tmp_path, monkeypatch) -> None:
+        with _live_server_with_midi_providers(tmp_path, monkeypatch, discovered=_TWO_UNITS[1:]) as (_, base, cfg_path):
+            cfg = load_config(cfg_path)
+            cfg.midi = MidiConfig(
+                patches=[
+                    MidiPatch(id=1, alias="Left", serial="S1", port_name="XTM"),
+                    MidiPatch(id=2, alias="Right", serial="S2", port_name="XTM"),
+                ]
+            )
+            save_config(cfg, cfg_path)
+            _, body = _get(base, "/section/midi")
+            assert _selected_device(body, 1) == ["serial:S1|XTM"]
+            assert _selected_device(body, 2) == ["serial:S2|XTM"]
+            assert body.count("XTM (not connected)") == 1
+            # Saving only the alias re-submits the row's own unit, so it keeps S1.
+            status, _ = _post_form(base, "/section/midi/patches/1", {"alias": "Stage left", "device": "serial:S1|XTM"})
+            assert status == 200
+            patch = load_config(cfg_path).midi.patches[0]
+            assert (patch.alias, patch.serial) == ("Stage left", "S1")
 
     def test_a_patch_whose_unit_is_absent_shows_not_connected(self, tmp_path, monkeypatch) -> None:
         devices = [{"identifier": "port:Keys|Keys", "port_name": "Keys", "product": "Keys", "serial": None}]

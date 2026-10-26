@@ -6,6 +6,8 @@
 % # Provider data threaded from the route handler:
 % # - ``discovered_devices``: list[dict] of currently-connected MIDI
 % # ports (identifier / port_name / product / serial).
+% # - ``bound_devices``: per patch id, the identifier of the device
+% # its Device dropdown selects (the one ``apply_config`` opens).
 % # - ``valid_fader_midi_types``: the configuration's tuple constant
 % # used to populate the fader source-type dropdown.
 <div id="midi-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="midi" data-help="midi">
@@ -47,11 +49,8 @@
  % # disconnected binding can be shown (and preserved)
  % # rather than silently dropped on the next save.
  % connected_ids = set(d['identifier'] for d in discovered_devices)
- % from openfollow.input.midi import bound_identifier
  % for patch in config.midi.patches:
- % # The device the patch opens on, which a patch saved without a
- % # serial (or for a swapped unit) reaches through its port name.
- % bound = bound_identifier(patch, discovered_devices)
+ % bound = bound_devices.get(patch.id, patch.identifier)
  <tr>
  <td><span class="patch-id">{{patch.id}}</span></td>
  <td>

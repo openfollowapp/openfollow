@@ -42,7 +42,7 @@ import sys
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -391,8 +391,9 @@ class MidiSubsystem:
                     self._status_flags["midi_patch_missing"] = None
                 else:
                     missing: list[tuple[int, str]] = []
+                    claimed = _claimed_serials(self._patches)
                     for patch_id, patch in new_keys.items():
-                        target = self._match(patch, discovered)
+                        target = self._match(patch, discovered, claimed=claimed)
                         if target is None:
                             missing.append((patch_id, patch.label))
                             if patch_id in self._open_ports:
@@ -464,15 +465,20 @@ class MidiSubsystem:
     def _match(
         patch: MidiPatch,
         discovered: Sequence[DiscoveredDevice],
+        *,
+        claimed: Collection[str] = frozenset(),
     ) -> DiscoveredDevice | None:
         """Resolve a configured patch to a connected device.
 
         Serial wins when both sides have a non-empty value (the only way to
         disambiguate two identical models), and among the ports of that one
         device the patch's port name; otherwise fall through to the
-        (port_name, product) composite. Returns ``None`` when nothing matches
-        – the subsystem records the patch in ``midi_patch_missing`` rather
-        than opening a port for it.
+        (port_name, product) composite. The fall-through never takes a device
+        whose serial is in ``claimed`` (the serials the patch set names): that
+        unit belongs to its own patch, so a patch whose unit is absent stays
+        missing, while an unclaimed spare or a device without a serial still
+        matches. Returns ``None`` when nothing matches – the subsystem records
+        the patch in ``midi_patch_missing`` rather than opening a port for it.
         """
         if patch.serial:
             unit = [d for d in discovered if d.serial == patch.serial]
@@ -481,13 +487,14 @@ class MidiSubsystem:
                     return d
             if unit:
                 return unit[0]
-        for d in discovered:
+        free = [d for d in discovered if d.serial not in claimed]
+        for d in free:
             if d.port_name == patch.port_name and d.product == patch.product:
                 return d
         # Last-resort: patch assigned with only ``port_name`` set. Match on
         # port_name alone.
         if patch.port_name:
-            for d in discovered:
+            for d in free:
                 if d.port_name == patch.port_name:
                     return d
         return None
@@ -702,11 +709,15 @@ class MidiSubsystem:
         return None
 
 
-def bound_identifier(patch: MidiPatch, devices: Sequence[dict[str, Any]]) -> str:
-    """Identifier of the connected device ``patch`` opens on, as :meth:`MidiSubsystem._match`
-    picks it from the web layer's device dicts; the patch's own when none, ``""`` when unbound."""
-    if not patch.identifier:
-        return ""
+def _claimed_serials(patches: Sequence[MidiPatch]) -> frozenset[str]:
+    """The USB serials a patch set binds, each unit reserved for its own patch."""
+    return frozenset(p.serial for p in patches if p.serial)
+
+
+def bound_identifiers(patches: Sequence[MidiPatch], devices: Sequence[dict[str, Any]]) -> dict[int, str]:
+    """Per patch id, the identifier of the connected device it opens on, as
+    :meth:`MidiSubsystem.apply_config` picks it from the web layer's device
+    dicts; the patch's own when none, ``""`` when unbound."""
     discovered = [
         DiscoveredDevice(
             serial=d.get("serial") or None,
@@ -715,8 +726,15 @@ def bound_identifier(patch: MidiPatch, devices: Sequence[dict[str, Any]]) -> str
         )
         for d in devices
     ]
-    match = MidiSubsystem._match(patch, discovered)
-    for device, found in zip(devices, discovered, strict=True):
-        if found is match:
-            return str(device.get("identifier") or "")
-    return patch.identifier
+    claimed = _claimed_serials(patches)
+    bound: dict[int, str] = {}
+    for patch in patches:
+        bound[patch.id] = patch.identifier
+        if not patch.identifier:
+            continue
+        match = MidiSubsystem._match(patch, discovered, claimed=claimed)
+        for device, found in zip(devices, discovered, strict=True):
+            if found is match:
+                bound[patch.id] = str(device.get("identifier") or "")
+                break
+    return bound

@@ -101,6 +101,7 @@ from openfollow.configuration import (
     save_config,
     viewed_with_controlled,
 )
+from openfollow.input.midi import bound_identifiers
 from openfollow.input.mouse3d_status import status_key
 from openfollow.lens_model import pull_back_to_valid
 
@@ -2936,6 +2937,11 @@ def _midi_patches_for_form(cfg: AppConfig) -> list[dict[str, Any]]:
     it's named. The dropdown's value is the patch id; ``0`` is "any patch".
     """
     return [{"id": patch.id, "label": patch.label} for patch in cfg.midi.patches if patch.id >= 1]
+
+
+def _midi_device_context(cfg: AppConfig, devices: list[dict[str, Any]]) -> dict[str, Any]:
+    """The connected devices and, per patch id, the one its Device dropdown selects."""
+    return {"discovered_devices": devices, "bound_devices": bound_identifiers(cfg.midi.patches, devices)}
 
 
 def _osc_binding_form_sources(cfg: AppConfig) -> dict[str, Any]:
@@ -6231,7 +6237,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # MIDI Devices table needs the live discovered-devices list so
             # it renders connected ports at first paint, not after the first
             # HTMX refresh.
-            midi_discovered_devices=server.midi_discovered_devices(),
+            midi_devices=_midi_device_context(config, server.midi_discovered_devices()),
             # Per-controlled-marker fader snapshot so the MIDI page's
             # read-only Marker Faders strips render populated at first paint.
             marker_fader_values=server.marker_fader_values(),
@@ -7768,7 +7774,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             config=cfg,
             saved=saved,
             selected_fader=selected_fader,
-            discovered_devices=server.midi_discovered_devices(),
+            **_midi_device_context(cfg, server.midi_discovered_devices()),
             midi_patches=_midi_patches_for_form(cfg),
             valid_fader_midi_types=VALID_FADER_MIDI_TYPES,
             marker_fader_values=server.marker_fader_values(),

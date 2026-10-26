@@ -1109,6 +1109,7 @@
  keeps the pill's slot, hidden once picked up, so a pickup never changes the strip height. */
  .midi-fader-strip-not-picked-up {
  display: block; width: fit-content; max-width: 100%; margin: 2px auto 0;
+ /* 0.35rem, not 0.45rem: at 0.45rem "picked" breaks mid-word in the 50.8 px strip in Inter and Noto. */
  border-radius: 0.4rem; --pill-pad-y: 0.1rem; padding-inline: 0.35rem; font-size: 0.7rem; font-weight: 500;
  line-height: 1.2; overflow-wrap: anywhere;
  color: var(--text); background: var(--caution-chip); border: 1px solid var(--caution-line);

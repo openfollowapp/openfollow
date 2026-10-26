@@ -431,9 +431,9 @@ the header, where the page's gold glow is strongest, and the glow grows with
 the viewport's height. The figures are for viewports 768 to 2160 px tall and
 for a dialog (`--bg-soft`). The numbers that set the tokens:
 
-- Red text passes only near full saturation. Pure `#ff0000` reaches 4.14 : 1 on
-  the page, so the error text is `#f44848` (4.7 to 4.9 : 1 in a section up to
-  1080 px tall), not the dot's `#e04848` (4.1 : 1).
+- Red text passes only near full saturation. In a section on a viewport up to
+  1080 px tall, pure `#ff0000` reaches only 4.2 to 4.4 : 1, so the error text
+  is `#f44848` (4.7 to 4.9 : 1), not the dot's `#e04848` (4.1 to 4.3 : 1).
 - Text on a red fill is off-white (15 : 1), not red (4.7 : 1).
 - Caution text `#ff6600` reads 5.4 to 6.0 : 1. Off-white reads at least
   7.9 : 1 on the caution box and 7.5 : 1 on the caution chip. The caution box's

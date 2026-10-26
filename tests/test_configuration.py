@@ -8124,9 +8124,13 @@ class TestMidiPatch:
 
     def test_identifier_mirrors_subsystem_key(self) -> None:
         from openfollow.configuration import MidiPatch
+        from openfollow.input.midi import DiscoveredDevice
 
-        # Serial wins when present; else port|product; else empty.
-        assert MidiPatch(id=1, serial="ABC").identifier == "serial:ABC"
+        # Serial plus port when a serial is known; else port|product; else empty.
+        assert MidiPatch(id=1, serial="ABC").identifier == "serial:ABC|"
+        patch = MidiPatch(id=1, serial="ABC", port_name="MIDI Mix")
+        device = DiscoveredDevice(serial="ABC", port_name="MIDI Mix", product="MIDI Mix")
+        assert patch.identifier == device.identifier == "serial:ABC|MIDI Mix"
         assert MidiPatch(id=1, port_name="MIDI Mix", product="Mix").identifier == "port:MIDI Mix|Mix"
         assert MidiPatch(id=1).identifier == ""
 

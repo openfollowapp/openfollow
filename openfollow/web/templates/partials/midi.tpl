@@ -6,6 +6,8 @@
 % # Provider data threaded from the route handler:
 % # - ``discovered_devices``: list[dict] of currently-connected MIDI
 % # ports (identifier / port_name / product / serial).
+% # - ``bound_devices``: per patch id, the identifier of the device
+% # its Device dropdown selects (the one ``apply_config`` opens).
 % # - ``valid_fader_midi_types``: the configuration's tuple constant
 % # used to populate the fader source-type dropdown.
 <div id="midi-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="midi" data-help="midi">
@@ -48,6 +50,7 @@
  % # rather than silently dropped on the next save.
  % connected_ids = set(d['identifier'] for d in discovered_devices)
  % for patch in config.midi.patches:
+ % bound = bound_devices.get(patch.id, patch.identifier)
  <tr>
  <td><span class="patch-id">{{patch.id}}</span></td>
  <td>
@@ -55,15 +58,15 @@
  </td>
  <td>
  <select form="patch-{{patch.id}}-form" name="device">
- <option value="" {{'selected' if not patch.identifier else ''}}>– none –</option>
+ <option value="" {{'selected' if not bound else ''}}>– none –</option>
  % for device in discovered_devices:
- <option value="{{device['identifier']}}" {{'selected' if device['identifier'] == patch.identifier else ''}}>{{device['port_name']}}{{' – ' + device['serial'] if device['serial'] else ''}}</option>
+ <option value="{{device['identifier']}}" {{'selected' if device['identifier'] == bound else ''}}>{{device['port_name']}}{{' – ' + device['serial'] if device['serial'] else ''}}</option>
  % end
  % # Disconnected binding: the device this patch
  % # points at isn't currently connected. Offer a
  % # selected option carrying the patch's own
  % # identifier so a save round-trips the binding.
- % if patch.identifier and patch.identifier not in connected_ids:
+ % if bound and bound not in connected_ids:
  <option value="{{patch.identifier}}" selected>{{patch.port_name or patch.identifier}} (not connected)</option>
  % end
  </select>

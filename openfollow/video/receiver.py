@@ -1185,6 +1185,8 @@ class GstNativeSinkReceiver:
             finally:
                 self._pipeline = None
 
+        # Refreshed during the backoff, so the retry's pin check reads a current answer.
+        self._input.__class__.prefetch(self._input_config)
         schedule = self._state.build_reconnect_schedule(self._reconnect_policy)
         self._status_marker.set_reconnecting(schedule.attempt, error_message, failure=failure, phase=phase)
 

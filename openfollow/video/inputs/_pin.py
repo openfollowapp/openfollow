@@ -50,6 +50,17 @@ def _naming(failure: VideoFailure, template: str, pin: str) -> PinRefusal:
 _resolver = HOST_RESOLVER
 
 
+def prefetch(host: str) -> None:
+    """Start *host*'s lookup, so the check before a build finds its answer."""
+    if host:
+        _resolver.prefetch(host)
+
+
+def _known(host: str) -> HostLookup:
+    """*host*'s answer as known now; one not yet known starts its lookup and reads as pending."""
+    return _resolver.lookup(host, 0.0)
+
+
 def _own_addresses() -> dict[str, str]:
     """Every address of this station, both families, mapped to its interface."""
     owners: dict[str, str] = {}
@@ -140,11 +151,13 @@ def check_video_pin(
     any of them. With *forced_device* the element's socket is bound to the
     device, so a route through it must exist; libsrt binds only IPv4, so a name
     with an IPv6 address takes the routing table's own choice for every address.
+    A name is judged from the answer its lookup already left, never waited for:
+    one not yet answered is refused as pending, and the input retries it.
     """
     if not pin or (host and is_loopback_host(host)):
         return None
     owners = _own_addresses()
-    found = _resolver.lookup(host, _RESOLVE_WAIT_S) if host else HostLookup("failed")
+    found = _known(host) if host else HostLookup("failed")
     # Looked up before the interface is judged, so a name that resolves to this
     # station is never refused for an outage, whatever the cache held.
     if found.addresses and all(_is_local(address, owners) for address in found.addresses):
@@ -176,7 +189,7 @@ def check_video_pin(
 
 def check_listen_address(pin: str, address: str) -> PinRefusal | None:
     """None when every address *address* resolves to belongs to *pin*; otherwise why not."""
-    found = _resolver.lookup(address, _RESOLVE_WAIT_S)
+    found = _known(address)
     unresolved = _unresolved(found, address, pin)
     if unresolved is not None:
         return unresolved

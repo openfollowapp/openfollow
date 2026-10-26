@@ -16,9 +16,9 @@ from typing import Any
 import pytest
 
 from openfollow import net_egress, net_utils
-from openfollow.net_utils import BoundedResolver
+from openfollow.net_utils import BoundedResolver, HostLookup
 from openfollow.video.failure import VideoFailure
-from openfollow.video.inputs import _pin
+from openfollow.video.inputs import _pin, get_input_class
 from openfollow.video.inputs._pin import (
     PinRefusal,
     binds_device,
@@ -85,6 +85,17 @@ class _Clock:
         return self.now
 
 
+class _AtOnce:
+    """A lookup thread that answers before ``start`` returns, as a lookup started
+    when the source was saved has answered by the time it is built."""
+
+    def __init__(self, *, target: Any, args: tuple[Any, ...], name: str, daemon: bool) -> None:
+        self._run = lambda: target(*args)
+
+    def start(self) -> None:
+        self._run()
+
+
 @pytest.fixture()
 def net(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[SimpleNamespace]:
     """Interfaces from ``_V4`` / ``_V6``, a probe socket per check, a route
@@ -133,7 +144,7 @@ def net(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[SimpleNames
         _pin,
         "_resolver",
         # The lifetimes of the production resolver, on a clock the test turns.
-        BoundedResolver(ttl_s=30.0, failure_ttl_s=10.0, thread_name="test-pin-dns", clock=state.clock),
+        BoundedResolver(ttl_s=30.0, failure_ttl_s=10.0, clock=state.clock, thread_factory=_AtOnce),
     )
     # A lookup thread that dies prints a traceback for every unknown name.
     crashes: list[threading.ExceptHookArgs] = []
@@ -372,17 +383,50 @@ def test_a_malformed_name_neither_crashes_the_lookup_nor_sticks(
     assert calls == ["cam..example", "cam..example"]
 
 
+class _Unanswered:
+    """A resolver whose lookups have not answered yet; it records how long each caller would wait."""
+
+    def __init__(self) -> None:
+        self.waits: list[float] = []
+
+    def lookup(self, host: str, wait_s: float) -> HostLookup:
+        self.waits.append(wait_s)
+        return HostLookup("pending")
+
+    def cached(self, host: str) -> tuple[str, ...]:
+        return ()
+
+
+@pytest.mark.parametrize(
+    ("check", "host"),
+    [
+        (lambda: check_video_pin("eth1", "camera.example", 554, forced_device=False), "camera.example"),
+        (lambda: check_video_pin("eth1", "camera.example", 554, forced_device=True), "camera.example"),
+        (lambda: check_listen_address("eth1", "rx.example"), "rx.example"),
+    ],
+    ids=["routing-table", "forced-device", "listen-address"],
+)
+def test_a_check_never_waits_for_a_name_whose_answer_has_not_landed(
+    net: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, check: Any, host: str
+) -> None:
+    """The check runs on the main loop before every build: it reads what is known,
+    and a name still resolving is refused as pending for the input's own retry."""
+    resolver = _Unanswered()
+    monkeypatch.setattr(_pin, "_resolver", resolver)
+    assert check() == PinRefusal(VideoFailure.UNKNOWN, f"{host} did not resolve in time to check it against eth1")
+    assert resolver.waits == [0.0]
+
+
 def _join_lookups() -> None:
     for thread in threading.enumerate():
         if thread.name == "test-pin-dns":
             threading.Thread.join(thread, 5)
 
 
-def test_a_slow_lookup_holds_one_attempt_and_serves_a_later_one(
+def test_a_slow_lookup_refuses_each_attempt_and_serves_the_one_after_it_answers(
     net: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The check runs on the main loop: a retry after the wait has passed does
-    not wait again, and the one lookup's answer serves a later attempt."""
+    """Every retry while the one lookup runs is refused as pending, and its answer serves a later attempt."""
     release = threading.Event()
     calls: list[str] = []
 
@@ -392,16 +436,18 @@ def test_a_slow_lookup_holds_one_attempt_and_serves_a_later_one(
         return [(socket.AF_INET, socket.SOCK_DGRAM, 17, "", ("198.51.100.20", 0))]
 
     monkeypatch.setattr(_pin.socket, "getaddrinfo", _slow)
-    monkeypatch.setattr(_pin, "_RESOLVE_WAIT_S", 0.2)
+    monkeypatch.setattr(
+        _pin, "_resolver", BoundedResolver(ttl_s=30.0, failure_ttl_s=10.0, thread_name="test-pin-dns", clock=net.clock)
+    )
     net.local[socket.AF_INET] = _V4["eth1"]
     pending = PinRefusal(VideoFailure.UNKNOWN, "slow.example did not resolve in time to check it against eth1")
 
-    assert check_video_pin("eth1", "slow.example", 554, forced_device=False) == pending
-    net.clock.now += 2.0
-    # An answer while a second wait would still run tells a wait from none.
-    threading.Timer(0.05, release.set).start()
-    assert check_video_pin("eth1", "slow.example", 554, forced_device=False) == pending
-
+    try:
+        assert check_video_pin("eth1", "slow.example", 554, forced_device=False) == pending
+        net.clock.now += 2.0
+        assert check_video_pin("eth1", "slow.example", 554, forced_device=False) == pending
+    finally:
+        release.set()
     _join_lookups()
     assert check_video_pin("eth1", "slow.example", 554, forced_device=False) is None
     assert calls == ["slow.example"]
@@ -444,7 +490,7 @@ def test_a_lookup_that_cannot_start_a_thread_says_so_and_is_tried_again(
 
     def _factory(**kwargs: Any) -> Any:
         starts.append(1)
-        return _NoThread() if len(starts) == 1 else threading.Thread(**kwargs)
+        return _NoThread() if len(starts) == 1 else _AtOnce(**kwargs)
 
     monkeypatch.setattr(_pin, "_resolver", BoundedResolver(ttl_s=30.0, thread_factory=_factory))
     assert check_video_pin("eth1", "camera.example", 554) == PinRefusal(
@@ -454,6 +500,90 @@ def test_a_lookup_that_cannot_start_a_thread_says_so_and_is_tried_again(
     net.answers["camera.example"] = ["198.51.100.20"]
     net.local[socket.AF_INET] = _V4["eth1"]
     assert check_video_pin("eth1", "camera.example", 554, forced_device=False) is None
+
+
+# --------------------------------------------------------------------------- #
+# Lookups started ahead of the check
+# --------------------------------------------------------------------------- #
+
+_PINNED = {"video_input_iface": "eth1"}
+
+
+@pytest.mark.parametrize(
+    ("input_id", "config", "looked_up"),
+    [
+        ("rtsp", {**_PINNED, "rtsp_url": "rtsp://camera.example:554/stream"}, ["camera.example"]),
+        ("srt", {**_PINNED, "srt_host": "srt://camera.example:9000"}, ["camera.example"]),
+        ("rtp", {**_PINNED, "rtp_url": "rtp://rx.example:5004"}, ["rx.example"]),
+        ("rtsp", {"video_input_iface": "", "rtsp_url": "rtsp://camera.example:554/stream"}, []),
+        ("rtsp", {"rtsp_url": "rtsp://camera.example:554/stream"}, []),
+        ("rtsp", {**_PINNED, "rtsp_url": "rtsp://192.0.2.20:554/stream"}, []),
+        ("rtsp", {**_PINNED, "rtsp_url": ""}, []),
+        ("rtsp", {**_PINNED, "rtsp_url": "rtsp://[camera.example:554/stream"}, []),
+        ("rtp", {**_PINNED, "rtp_url": "rtp://0.0.0.0:5004"}, []),
+    ],
+    ids=[
+        "rtsp",
+        "srt",
+        "rtp-listen-address",
+        "unpinned",
+        "no-pin-field",
+        "literal",
+        "no-url",
+        "unreadable",
+        "wildcard",
+    ],
+)
+def test_an_input_starts_the_lookup_its_check_reads(
+    net: SimpleNamespace, input_id: str, config: dict[str, Any], looked_up: list[str]
+) -> None:
+    input_cls = get_input_class(input_id)
+    assert input_cls is not None
+    input_cls.prefetch(config)
+    assert net.lookups == looked_up
+
+
+class _Queued:
+    """Lookup threads that run only when the test lets them, as the network answers."""
+
+    def __init__(self) -> None:
+        self.waiting: list[Any] = []
+
+    def __call__(self, *, target: Any, args: tuple[Any, ...], name: str, daemon: bool) -> Any:
+        return SimpleNamespace(start=lambda: self.waiting.append(lambda: target(*args)))
+
+    def answer(self) -> None:
+        while self.waiting:
+            self.waiting.pop(0)()
+
+
+@pytest.mark.parametrize("prefetched", [True, False], ids=["prefetched", "not-prefetched"])
+def test_a_check_reads_the_answer_the_prefetch_left(
+    net: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, prefetched: bool
+) -> None:
+    """A lookup started at save time has answered by the build; one the build starts has not."""
+    lookups = _Queued()
+    monkeypatch.setattr(_pin, "_resolver", BoundedResolver(ttl_s=30.0, clock=net.clock, thread_factory=lookups))
+    net.answers["camera.example"] = ["198.51.100.20"]
+    net.local[socket.AF_INET] = _V4["eth1"]
+    config = {**_PINNED, "rtsp_url": "rtsp://camera.example:554/stream"}
+    rtsp = get_input_class("rtsp")
+    assert rtsp is not None
+
+    if prefetched:
+        rtsp.prefetch(config)
+    lookups.answer()
+
+    if prefetched:
+        assert rtsp.preflight(config) is None
+        assert net.probes[0].connected == ("198.51.100.20", 554)
+    else:
+        assert rtsp.preflight(config) == PinRefusal(
+            VideoFailure.UNKNOWN, "camera.example did not resolve in time to check it against eth1"
+        )
+        lookups.answer()
+        assert rtsp.preflight(config) is None
+    assert net.lookups == ["camera.example"]
 
 
 # --------------------------------------------------------------------------- #
@@ -487,12 +617,13 @@ def test_a_local_name_is_not_refused_when_the_pin_is_down(net: SimpleNamespace) 
 
 def test_the_pin_remembers_a_name_it_checked(net: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
     """The SRT build asks whether its camera is this station without a lookup,
-    right after the check resolved the name; the answer has to outlive the check."""
+    right after the check read the name's answer; the answer has to outlive the check."""
     monkeypatch.setattr(_pin, "_resolver", _PRODUCTION_RESOLVER)
     _PRODUCTION_RESOLVER.clear()
     try:
         net.answers["relay.example"] = ["192.0.2.10"]
-        check_video_pin("eth1", "relay.example", 9000)
+        _PRODUCTION_RESOLVER.lookup("relay.example", 5.0)
+        assert check_video_pin("eth1", "relay.example", 9000) is None
         assert is_local_destination("relay.example") is True
     finally:
         # Shared with every other test in the session.

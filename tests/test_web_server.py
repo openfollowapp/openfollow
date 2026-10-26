@@ -5507,6 +5507,48 @@ def test_update_video_source_post_renders_video_source_partial(live_server) -> N
     assert saved.video_source_type == "rtsp"
 
 
+class _LookupsStarted:
+    """A resolver that records each lookup started and has answered none."""
+
+    def __init__(self) -> None:
+        self.started: list[str] = []
+
+    def prefetch(self, host: str) -> None:
+        self.started.append(host)
+
+    def lookup(self, host: str, wait_s: float) -> Any:
+        from openfollow.net_utils import HostLookup
+
+        return HostLookup("pending")
+
+    def cached(self, host: str) -> tuple[str, ...]:
+        return ()
+
+
+@pytest.mark.parametrize(("pin", "started"), [("eth1", ["camera.example"]), ("", [])], ids=["pinned", "unpinned"])
+def test_saving_a_source_starts_the_lookup_its_pin_check_reads(
+    live_server, monkeypatch: pytest.MonkeyPatch, pin: str, started: list[str]
+) -> None:
+    """The name resolves before the saved source is applied, so its first build reads the answer."""
+    from openfollow.video.inputs import _pin
+
+    resolver = _LookupsStarted()
+    monkeypatch.setattr(_pin, "_resolver", resolver)
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
+    cfg.psn_source_iface = ""
+    cfg.video_input_iface = pin
+    save_config(cfg, server.config_path)
+
+    status, _body = _post_form(
+        base, "/section/video_source", {"video_source_type": "rtsp", "rtsp_url": "rtsp://camera.example:554/stream"}
+    )
+
+    assert status == 200
+    assert resolver.started == started
+
+
 def test_deb_update_dispatches_request(live_server, monkeypatch) -> None:
     """POST /section/general/deb-update queues a deb update when idle."""
     from openfollow.web import server as server_module

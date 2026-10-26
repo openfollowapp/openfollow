@@ -208,6 +208,13 @@ class _FakeInputCls:
     def runtime_config(cls, cfg: Any) -> dict[str, Any]:
         return cls.get_config_field_values(cfg)
 
+    # Every config whose name lookup startup started.
+    prefetched: list[dict[str, Any]] = []
+
+    @classmethod
+    def prefetch(cls, config: dict[str, Any]) -> None:
+        cls.prefetched.append(dict(config))
+
 
 # --------------------------------------------------------------------------- #
 # Helpers
@@ -288,6 +295,7 @@ def _reset_fake_instances() -> None:
     _FakePreviewProvider.instances = []
     _FakeSnapshotProvider.instances = []
     _FakePersonDetector.instances = []
+    _FakeInputCls.prefetched = []
 
 
 @pytest.fixture
@@ -312,6 +320,18 @@ def patched_subsystems(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestInitVideoDetectionDisabled:
+    def test_startup_starts_the_lookup_of_the_source_it_builds(
+        self,
+        services: AppRuntimeServices,
+        recv_factory: _RecordingReceiverFactory,
+        patched_subsystems: None,
+    ) -> None:
+        """The name resolves while video comes up, so the first build's pin check reads the answer."""
+        services.init_video()
+
+        assert recv_factory.last is not None
+        assert _FakeInputCls.prefetched == [recv_factory.last.input_config]
+
     def test_wires_renderer_stats_preview_receiver_and_starts(
         self,
         services: AppRuntimeServices,

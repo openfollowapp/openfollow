@@ -7344,6 +7344,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             apply_section_data(cfg, "video_source", form_data)
             save_config(cfg, server.config_path)
 
+        from openfollow.video.inputs import get_input_class
+
+        # Resolves before the saved source is applied, so its build reads the answer.
+        input_cls = get_input_class(cfg.video_source_type)
+        if input_cls is not None:
+            input_cls.prefetch(input_cls.runtime_config(cfg))
         return _render_video_source(cfg, saved=True)
 
     @app.post("/section/general")

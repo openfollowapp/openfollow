@@ -204,6 +204,14 @@ even the placeholder, and retries on the input's own backoff; the placeholder
 appears only once the reconnects run out, as for any failure. `error_message`
 carries the interfaces the sentence cannot name.
 
+**The preflight never waits for DNS.** It runs on the main loop before every
+build, so it reads only the answer `HOST_RESOLVER` already holds for the source's
+name. `VideoInputBase.prefetch` starts that lookup ahead of the build: when the
+Video Source is saved, at startup before detection and the display come up, and
+whenever the receiver schedules a retry, so an answer past its lifetime is
+current again by the attempt. A name whose answer has not landed is an `UNKNOWN`
+refusal ("did not resolve in time"), retried on the backoff like any other.
+
 **`REFUSED` has no observed producer.** `rtspsrc` reports a refused connection
 as `Failed to connect. (Generic error)`, the errno discarded inside GStreamer's
 RTSP stack, confirmed against a socket probe raising `ECONNREFUSED` for the same

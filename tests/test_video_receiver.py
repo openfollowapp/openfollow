@@ -363,6 +363,13 @@ class FakeInput:
             raise cls._refusal
         return cls._refusal
 
+    # Every config whose name lookup the receiver started.
+    prefetched: tuple[dict[str, Any], ...] = ()
+
+    @classmethod
+    def prefetch(cls, config: dict[str, Any]) -> None:
+        cls.prefetched = (*cls.prefetched, dict(config))
+
     @classmethod
     def get_source_label(cls, config: dict[str, Any]) -> str:
         return str(config.get("fake_source", "") or "")
@@ -491,6 +498,10 @@ class FakeInputAlt:
         return None
 
     @classmethod
+    def prefetch(cls, config: dict[str, Any]) -> None:
+        pass
+
+    @classmethod
     def get_source_label(cls, config: dict[str, Any]) -> str:
         return str(config.get("alt_url", "") or "")
 
@@ -570,6 +581,7 @@ def fake_input_cls(monkeypatch):
             "create_pipeline_result",
             "create_pipeline_call_count",
             "preflight_calls",
+            "prefetched",
         )
     }
     monkeypatch.setattr(
@@ -600,6 +612,7 @@ def fake_input_pair(monkeypatch):
                 "create_pipeline_result",
                 "create_pipeline_call_count",
                 "preflight_calls",
+                "prefetched",
             )
             if hasattr(cls, name)
         }
@@ -5526,6 +5539,25 @@ class TestTheInterfacePinRefusesABuild:
         assert callbacks == ["_do_reconnect"]
         assert r.status_marker.failure is VideoFailure.WRONG_INTERFACE
         assert r.status_marker.reconnect_attempt == 1
+
+    def test_a_refused_build_starts_the_lookup_its_retry_reads(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        """A name still resolving is refused, and the retry finds its answer instead of waiting for it."""
+        r = self._refused(monkeypatch)
+
+        r.play()
+
+        assert FakeInput.prefetched == ({"fake_source": "cam-1", "video_input_iface": "eth1"},)
+
+    def test_a_dropped_feed_refreshes_the_lookup_before_its_retry(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        """An answer older than its lifetime is looked up again during the backoff, not on the retry."""
+        r = _make_receiver(input_config={"fake_source": "cam-1", "video_input_iface": "eth1"})
+
+        r._handle_bus_error(BusError("Could not open resource for reading", RESOURCE_DOMAIN, RESOURCE_OPEN_READ))
+
+        assert FakeInput.prefetched == ({"fake_source": "cam-1", "video_input_iface": "eth1"},)
+        assert [cb.__name__ for _delay, cb in fake_glib.timers.values()] == ["_do_reconnect"]
 
     def test_a_retry_that_is_still_refused_keeps_the_verdict(
         self, fake_gst, fake_glib, fake_input_cls, monkeypatch

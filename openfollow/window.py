@@ -216,6 +216,11 @@ class GtkNativeSinkWindow:
         self.stop_hud_tick()
         self._Gtk.main_quit()
 
+    def request_quit(self) -> None:
+        """Quit as the close button and Cmd+Q do, unless the window is already closing."""
+        if not self._closing:
+            self._on_delete(None, None)
+
     @property
     def is_closing(self) -> bool:
         """True once the window is tearing down, before ``Gtk.main()`` returns.

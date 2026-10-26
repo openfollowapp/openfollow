@@ -22,6 +22,7 @@ openfollow/              # Single unified package
 ├── lens_model.py        # The division lens model's validity rule and pull-back (stdlib-only; config, web and solver read it)
 ├── keyboard_layout.py   # Kiosk session keyboard layout resolver (stdlib-only; also the .deb helper)
 ├── window.py            # GTK native sink window wrapper
+├── macos_quit.py        # macOS: answers the quit Apple Event (Dock, logout, restart, shutdown)
 ├── psn/                 # PSN protocol subpackage
 │   ├── clock.py         # Shared microsecond time base (headers + trackers)
 │   ├── marker.py       # Marker state

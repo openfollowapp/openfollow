@@ -6439,6 +6439,16 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 }
                 for name in net["interfaces"]
             ]
+        present = {str(row.get("name", "")) for row in rows}
+        saved = [row for row in server.get_network_saved() if str(row.get("name", "")) not in present]
+        opened = next((row for row in saved if iface and row.get("name") == iface), None)
+        if opened is not None:
+            net.update(
+                active_interface=iface,
+                method=_network_method_value(str(opened.get("method", "dhcp"))),
+                **{key: opened.get(key) for key in ("address", "prefix", "subnet_mask", "router", "lease_display")},
+                dns=list(opened.get("dns", [])),
+            )
         # A VLAN row carries its tag so the operator can tell eth0.10 apart
         # from a physical NIC that happens to be named with a dot, and so the
         # delete control renders only where deleting is meaningful.
@@ -6485,6 +6495,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # Only what the backend lists as a VLAN: that is what Advanced can remove.
             vlan_names = set(vlan_ids) if net["supports_vlans"] else set()
             _narrow_to_station(net, mode_cfg.psn_source_iface, vlan_names, labels)
+        else:
+            net["iface_rows"] += _saved_rows(saved, labels)
         _add_adapter_fields(net, labels, label_result)
         if simple:
             # The card lists the station interface alone, so every other labelled adapter is absent from it.
@@ -6557,6 +6569,27 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         net["iface_rows"] = [row for row in rows if str(row.get("name", "")) == resolved]
         net["vlan_parents"] = []
 
+    def _saved_rows(saved: list[dict[str, Any]], labels: Mapping[str, str]) -> list[dict[str, Any]]:
+        """The adapters that are not plugged in but have saved settings, each VLAN under its parent."""
+        from openfollow.net_adapters import display_name
+
+        rows = []
+        for row in sorted(
+            saved, key=lambda r: (str(r.get("vlan_parent") or r.get("name", "")), r.get("vlan_id") or -1)
+        ):
+            name = str(row.get("name", ""))
+            rows.append(
+                {
+                    **row,
+                    "absent": True,
+                    "method_label": _NETWORK_METHOD_LABELS.get(str(row.get("method", "")), ""),
+                    "forget_vlans": [
+                        display_name(str(r.get("name", "")), labels) for r in saved if r.get("vlan_parent") == name
+                    ],
+                }
+            )
+        return rows
+
     def _add_adapter_fields(
         net: dict[str, Any], labels: Mapping[str, str], label_result: dict[str, str] | None
     ) -> None:
@@ -6567,6 +6600,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         names = [str(row.get("name", "")) for row in net["iface_rows"]]
         for row, name in zip(net["iface_rows"], names, strict=True):
             row.update(adapter_fields(name, labels))
+            if row.get("absent") and row.get("vlan_parent"):
+                row["vlan_on"] = display_name(str(row["vlan_parent"]), labels)
             if name and name == result.get("iface"):
                 row["label_error"] = result.get("error", "")
                 row["label_entered"] = result.get("entered", row["label"])
@@ -6577,7 +6612,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         ]
         net["display_names"] = {name: display_name(name, labels) for name in names}
 
-    def _resolve_network_iface(iface: str) -> tuple[str | None, str]:
+    def _resolve_network_iface(iface: str, *, saved_ok: bool = False) -> tuple[str | None, str]:
         """Validate the posted interface against the interfaces the backend reports.
 
         A privileged adapter write must never receive a raw/forged POST value.
@@ -6587,8 +6622,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         would rewrite and bounce the one the operator is connected over, and the
         page that posted it had simply gone stale behind an unplugged adapter.
 
+        With ``saved_ok`` an interface that is not present but has saved
+        settings resolves to itself: an apply only saves to it.
+
         Returns ``(iface, "")``, or ``(None, message)`` naming what to do.
         """
+        if saved_ok and iface and iface in _saved_names():
+            return (iface, "")
         cfg = server.get_network_config(iface or None)
         if not cfg or not cfg.get("interfaces"):
             return (None, "Network interface not available on this host.")
@@ -6600,6 +6640,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         if resolved is None:
             return (None, "Network interface not available on this host.")
         return (resolved, "")
+
+    def _saved_names() -> set[str]:
+        return {str(row.get("name", "")) for row in server.get_network_saved()} - {""}
 
     def _network_vlan_response(
         *,
@@ -6677,14 +6720,14 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         rows = server.get_network_interfaces() or []
         snapshot = server.get_network_config(None) or {}
         names = {str(row.get("name", "")) for row in rows} | {str(n) for n in snapshot.get("interfaces", [])}
-        return {name for name in names if name}
+        return {name for name in names if name} | _saved_names()
 
     def _card_in_progress() -> dict[str, Any]:
         """The unsaved edit row and Add VLAN form a label request carried, for its re-render."""
         forms = request.forms
         kept: dict[str, Any] = {}
         editing = (forms.get("editing_iface") or "").strip()
-        if editing and _resolve_network_iface(editing)[0] == editing:
+        if editing and _resolve_network_iface(editing, saved_ok=True)[0] == editing:
             _label_iface, method, fields = _parse_network_form()
             kept.update(
                 iface=editing, editable=True, overrides={"active_interface": editing, "method": method, **fields}
@@ -6732,10 +6775,33 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             save_config(cfg, server.config_path)
         return _label_card(cfg.interface_labels, {})
 
+    @app.post("/section/network/forget")
+    def network_forget() -> Any:
+        """Delete the saved settings of an adapter that is not plugged in, with the VLANs on it, and their labels."""
+        iface = (request.forms.get("iface") or "").strip()
+        before = {str(row.get("name", "")): row for row in server.get_network_saved()}
+        if iface not in before:
+            abort(404, "No saved settings for that interface")
+        result = server.forget_network_interface(iface)
+        labels: dict[str, str] | None = None
+        if result.ok:
+            # What is still saved stays labelled: a VLAN profile the delete could not reach keeps its row.
+            left = _saved_names()
+            gone = {name for name, row in before.items() if iface in (name, row.get("vlan_parent"))} - left
+            with _config_write_lock:
+                cfg = _load_config_for_edit()
+                if gone & set(cfg.interface_labels):
+                    cfg.interface_labels = {n: label for n, label in cfg.interface_labels.items() if n not in gone}
+                    save_config(cfg, server.config_path)
+                labels = cfg.interface_labels
+        banner = {"kind": "ok" if result.ok else "error", "text": result.message}
+        net = _build_network_form_context(labels=labels, banner=banner, **_card_in_progress())
+        return template("partials/network", net=net)
+
     @app.post("/section/network/apply")
     def network_apply() -> Any:
         iface, method_value, fields = _parse_network_form()
-        resolved, resolve_error = _resolve_network_iface(iface)
+        resolved, resolve_error = _resolve_network_iface(iface, saved_ok=True)
         if resolved is None:
             return template(
                 "partials/network",

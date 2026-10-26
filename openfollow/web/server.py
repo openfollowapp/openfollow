@@ -224,6 +224,9 @@ class ConfigWebServer:
         network_vlan_provider: Callable[[], dict[str, Any]] | None = None,
         network_vlan_create_handler: Callable[[str, int], ApplyResult] | None = None,
         network_vlan_delete_handler: Callable[[str], ApplyResult] | None = None,
+        # Interfaces that are not present but have saved settings, and deleting those settings.
+        network_saved_provider: Callable[[], list[dict[str, Any]]] | None = None,
+        network_forget_handler: Callable[[str], ApplyResult] | None = None,
         # Scan: drop the network reading the sections share, so the next read asks the backend.
         network_rescan_handler: Callable[[], None] | None = None,
         # Privilege capability snapshot for the diagnostics bundle; optional for tests.
@@ -333,6 +336,8 @@ class ConfigWebServer:
         self._network_vlan_provider = network_vlan_provider
         self._network_vlan_create_handler = network_vlan_create_handler
         self._network_vlan_delete_handler = network_vlan_delete_handler
+        self._network_saved_provider = network_saved_provider
+        self._network_forget_handler = network_forget_handler
         self._network_rescan_handler = network_rescan_handler
         self._psn_source_advisory_provider = psn_source_advisory_provider
         self._web_bind_advisory_provider = web_bind_advisory_provider
@@ -646,6 +651,28 @@ class ConfigWebServer:
             return self._network_vlan_delete_handler(name)
         except Exception as exc:  # noqa: BLE001
             logger.exception("network_vlan_delete handler raised")
+            return ApplyResult(ok=False, message=str(exc))
+
+    def get_network_saved(self) -> list[dict[str, Any]]:
+        """Every interface that is not present but has saved settings; empty when unwired or unreadable."""
+        if self._network_saved_provider is None:
+            return []
+        try:
+            return self._network_saved_provider()
+        except Exception:  # noqa: BLE001
+            logger.exception("Network saved-settings provider raised")
+            return []
+
+    def forget_network_interface(self, name: str) -> ApplyResult:
+        """Delete the saved settings of the absent interface ``name``; always returns ApplyResult."""
+        from openfollow.network.adapter import ApplyResult
+
+        if self._network_forget_handler is None:
+            return ApplyResult(ok=False, message="Network writes are not available on this build.")
+        try:
+            return self._network_forget_handler(name)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("network_forget handler raised")
             return ApplyResult(ok=False, message=str(exc))
 
     def get_psn_source_advisory(self) -> dict[str, str]:

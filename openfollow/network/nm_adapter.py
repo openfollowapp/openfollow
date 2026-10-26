@@ -23,6 +23,7 @@ from openfollow.network.adapter import (
     NetworkInterface,
     NetworkReading,
     NetworkState,
+    SavedInterface,
     VlanInterface,
     address_source_of,
     is_loopback,
@@ -43,9 +44,11 @@ logger = logging.getLogger(__name__)
 _NMCLI_TIMEOUT = 8
 
 _PROFILE_LIST_FIELDS = "NAME,UUID,TYPE,DEVICE,AUTOCONNECT,AUTOCONNECT-PRIORITY,TIMESTAMP"
-# Every listed profile's interface, IPv4 method and VLAN link in one call; nmcli
+# Every listed profile's interface, IPv4 settings and VLAN link in one call; nmcli
 # leaves the vlan fields out for a profile that is not a VLAN.
-_PROFILE_FIELDS = "connection.uuid,connection.interface-name,ipv4.method,ipv4.addresses,vlan.parent,vlan.id"
+_PROFILE_FIELDS = (
+    "connection.uuid,connection.interface-name,ipv4.method,ipv4.addresses,ipv4.gateway,ipv4.dns,vlan.parent,vlan.id"
+)
 # Every device's state, active profile and address in one call.
 _SOURCE_FIELDS = "GENERAL.DEVICE,GENERAL.TYPE,GENERAL.STATE,GENERAL.CON-UUID,IP4.ADDRESS"
 # ... and everything the network card shows of it.
@@ -57,6 +60,8 @@ _NMCLI_NOT_FOUND = 10
 # The devices whose profiles carry the station's DHCP name. Bridges and tunnels
 # (docker0, a VPN) belong to whatever made them.
 _FQDN_DEVICE_KINDS = frozenset({"ethernet", "wifi", "vlan"})
+# The profiles that keep an adapter which is not plugged in on the card, as ``connection show`` types them.
+_SAVED_PROFILE_KINDS = frozenset({"802-3-ethernet", "802-11-wireless", "vlan"})
 
 _SYS_CLASS_NET = Path("/sys/class/net")
 
@@ -183,7 +188,11 @@ def _saved_profile(
     if not iface:
         return None
     bound = [p for p in profiles if details.get(p.uuid, {}).get("connection.interface-name") == iface]
-    return max(bound, key=lambda p: (p.rank, p.name)) if bound else None
+    return max(bound, key=_autoconnect_order) if bound else None
+
+
+def _autoconnect_order(profile: _Profile) -> tuple[tuple[bool, int, int], str]:
+    return (profile.rank, profile.name)
 
 
 def _device_by_uuid(profiles: Sequence[_Profile], details: Mapping[str, Mapping[str, str]]) -> dict[str, str]:
@@ -213,6 +222,56 @@ def _vlans(profiles: Sequence[_Profile], details: Mapping[str, Mapping[str, str]
             continue
         if (link := _vlan_link(details.get(profile.uuid, {}), device_by_uuid)) is not None:
             out.append(VlanInterface(name=profile.device, parent=link[0], vlan_id=link[1]))
+    return tuple(out)
+
+
+def _profile_ipv4(fields: Mapping[str, str]) -> Ipv4Config:
+    """The IPv4 settings a profile holds; its first address only, as the card edits one."""
+    address, prefix = _split_ipv4(fields.get("ipv4.addresses", "").split(",")[0].strip())
+    dns = [server.strip() for server in fields.get("ipv4.dns", "").split(",") if server.strip()]
+    return Ipv4Config(
+        method=_profile_method(fields) or Ipv4Method.DHCP,
+        address=address,
+        prefix=prefix,
+        router=fields.get("ipv4.gateway") or None,
+        dns=tuple(dns[:3]),
+    )
+
+
+def _bound_saved(profiles: Sequence[_Profile], details: Mapping[str, Mapping[str, str]], iface: str) -> list[_Profile]:
+    """The inactive ethernet, Wi-Fi and VLAN profiles bound to *iface*, and those of every VLAN on it."""
+    device_by_uuid = _device_by_uuid(profiles, details)
+    out: list[_Profile] = []
+    for profile in profiles:
+        if profile.device or profile.kind not in _SAVED_PROFILE_KINDS:
+            continue
+        fields = details.get(profile.uuid, {})
+        link = _vlan_link(fields, device_by_uuid) if profile.kind == "vlan" else None
+        if fields.get("connection.interface-name") == iface or (link is not None and link[0] == iface):
+            out.append(profile)
+    return out
+
+
+def _saved_interfaces(
+    profiles: Sequence[_Profile], details: Mapping[str, Mapping[str, str]], present: set[str]
+) -> tuple[SavedInterface, ...]:
+    """Each interface that is not present but an ethernet, Wi-Fi or VLAN profile is bound to.
+
+    A profile naming no interface is never claimed: it can come up on any adapter.
+    """
+    bound: dict[str, list[_Profile]] = {}
+    for profile in profiles:
+        name = details.get(profile.uuid, {}).get("connection.interface-name", "")
+        if name and name not in present and not profile.device and profile.kind in _SAVED_PROFILE_KINDS:
+            bound.setdefault(name, []).append(profile)
+    device_by_uuid = _device_by_uuid(profiles, details)
+    out: list[SavedInterface] = []
+    for name in sorted(bound):
+        profile = max(bound[name], key=_autoconnect_order)
+        fields = details.get(profile.uuid, {})
+        link = _vlan_link(fields, device_by_uuid) if profile.kind == "vlan" else None
+        parent, vlan_id = link if link is not None else ("", None)
+        out.append(SavedInterface(name, _profile_ipv4(fields), vlan_parent=parent, vlan_id=vlan_id))
     return tuple(out)
 
 
@@ -495,6 +554,7 @@ class NetworkManagerAdapter(NetworkAdapter):
             logger.warning("nmcli profile read failed: %s", exc)
             profiles, details = [], {}
         states: dict[str, NetworkState] = {}
+        present = {device.get("GENERAL.DEVICE", "") for device in devices}
         for device in devices:
             name = device.get("GENERAL.DEVICE", "")
             uuid = device.get("GENERAL.CON-UUID", "")
@@ -503,7 +563,12 @@ class NetworkManagerAdapter(NetworkAdapter):
             state = _reading_state(device, _profile_method(details.get(uuid, {})) or Ipv4Method.DHCP)
             if name and not is_loopback(state.interface):
                 states[name] = state
-        return NetworkReading(tuple(state.interface for state in states.values()), states, _vlans(profiles, details))
+        return NetworkReading(
+            tuple(state.interface for state in states.values()),
+            states,
+            _vlans(profiles, details),
+            _saved_interfaces(profiles, details, present),
+        )
 
     # ---- diagnostics ----------------------------------------------------
 
@@ -652,6 +717,11 @@ class NetworkManagerAdapter(NetworkAdapter):
                 else f"Could not save the settings to profile '{name}'; nothing was changed.",
             )
 
+        if not profile.device and self._device_state(iface) == "":
+            # Saved only: NetworkManager brings the profile up when the adapter appears.
+            return ApplyResult(
+                ok=True, pending=True, message=f"Saved; the settings take effect when {iface} is plugged in."
+            )
         if not self._has_carrier(iface):
             # Saved only: con down here leaves the profile blocked from
             # autoconnect, so it would not come up when the cable goes in.
@@ -718,6 +788,47 @@ class NetworkManagerAdapter(NetworkAdapter):
                 message=f"Could not renew {iface} ({up.detail})." if up.detail else f"Could not renew {iface}.",
             )
         return ApplyResult(ok=True, message="Lease renewed.")
+
+    def forget_interface(self, name: str) -> ApplyResult:
+        """Delete every saved profile of ``name`` and of the VLANs on it, by UUID.
+
+        Refused while NetworkManager lists ``name`` or cannot say: ``con delete``
+        is a wildcarded grant, so it only ever names inactive profiles of an
+        interface that is gone, read under the same lock as the delete.
+        """
+        state = self._device_state(name)
+        if state is None:
+            return ApplyResult(ok=False, message=f"Could not read {name} from NetworkManager; nothing was deleted.")
+        if state:
+            return ApplyResult(ok=False, message=f"{name} is plugged in; its settings were not deleted.")
+        try:
+            profiles = self._read_profiles()
+            targets = _bound_saved(profiles, self._profile_details(profiles), name)
+        except (RuntimeError, FileNotFoundError, subprocess.SubprocessError) as exc:
+            logger.warning("nmcli profile read failed: %s", exc)
+            return ApplyResult(ok=False, message=f"Could not read the profiles of {name}; nothing was deleted.")
+        if not targets:
+            return ApplyResult(ok=False, message=f"{name} has no saved settings.")
+        argv = ["/usr/bin/nmcli", "con", "delete"]
+        for profile in targets:
+            argv += ["uuid", profile.uuid]
+        ok, detail, returncode = self._run_privileged(
+            NETWORK_NM_CON_DELETE,
+            argv,
+            reason=f"Delete the saved settings of {name}",
+        )
+        # nmcli still deletes every UUID it finds when one is already gone.
+        if not ok and not (returncode == _NMCLI_NOT_FOUND and self._forgotten(name)):
+            return ApplyResult(ok=False, message=detail or f"Could not delete the saved settings of {name}.")
+        return ApplyResult(ok=True, message=f"Deleted the saved settings of {name}.")
+
+    def _forgotten(self, name: str) -> bool:
+        """No saved profile of ``name`` or a VLAN on it is left; False when that cannot be read."""
+        try:
+            profiles = self._read_profiles()
+            return not _bound_saved(profiles, self._profile_details(profiles), name)
+        except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
+            return False
 
     # ---- VLAN sub-interfaces --------------------------------------------
 

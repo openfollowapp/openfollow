@@ -1760,7 +1760,7 @@ def test_a_new_snapshot_keeps_the_corners_the_operator_dragged(
         functions=("pinsToSnapshot", "placeStartQuad", "showSnapshotOnCurrentStep"),
         variables=("CORNERS",),
         prelude=_DOM + "var imageWidth = 1920, imageHeight = 1080, snapshotCanvas = null, FS = false;"
-        " var WIZ = { calib: 3, review: 4 }, currentStep = WIZ.calib;"
+        " var WIZ = { calib: 2, review: 3 }, currentStep = WIZ.calib;"
         " document.createElement = function() {"
         " return { getContext: function() { return { drawImage: function() {} }; } }; };"
         " function setPreviewVisibility() {} function renderCalibOverlay() {} function runSolve() {}"

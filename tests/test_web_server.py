@@ -9845,7 +9845,7 @@ def test_the_idle_latency_row_turns_on_once_video_is_decoding_without_a_reload(l
     assert "video-source-latency" not in again
 
 
-def test_the_status_poll_leaves_a_running_row_and_the_setup_wizard_alone(live_server, monkeypatch) -> None:
+def test_the_status_poll_leaves_a_running_latency_row_and_the_setup_wizard_alone(live_server, monkeypatch) -> None:
     server, base = live_server
     _latency_stats(monkeypatch, server, _DECODING)
     # The Setup Wizard's poll sends no key.
@@ -9865,3 +9865,15 @@ def test_the_latency_key_is_never_saved_with_the_video_source_form(live_server, 
     # Owned by a form id that does not exist, so the form leaves it out.
     assert 'form="video-source-latency-unsaved"' in key[: key.index(">")]
     assert 'id="video-source-latency-unsaved"' not in body
+
+
+def test_a_latency_result_growing_older_does_not_swap_the_row(live_server, monkeypatch) -> None:
+    server, base = live_server
+    save_config(AppConfig(video_source_type="rtsp"), server.config_path)
+    _latency_stats(monkeypatch, server, _DECODING)
+    result = {"median_ms": 84.0, "min_ms": 70.0, "max_ms": 99.0, "samples": 10, "level": "success", "age_s": 1.0}
+    server._command_queue.set_latency_status({"state": "done", "measured": 10, "result": result})
+    _, section = _get(base, "/section/video_source")
+    server._command_queue.set_latency_status({"state": "done", "measured": 10, "result": {**result, "age_s": 9.0}})
+    _, body = _get(base, f"/section/video_source/failure?latency={_latency_key(section)}")
+    assert "video-source-latency" not in body

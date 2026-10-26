@@ -422,6 +422,18 @@
             '</div>';
     }
 
+    // Park: only a View & Control row can be parked; any other state clears it.
+    function parkToggle(markerId) {
+        return '<button type="button" class="park-toggle" data-park data-marker-id="' + markerId +
+            '" aria-pressed="false" aria-label="Park" disabled>P</button>';
+    }
+
+    function setPark(button, state, pressed) {
+        const parked = state === 'control' && pressed;
+        if (button.disabled !== (state !== 'control')) button.disabled = state !== 'control';
+        if (button.getAttribute('aria-pressed') !== String(parked)) button.setAttribute('aria-pressed', String(parked));
+    }
+
     function thisStationState(id, thisStation) {
         if (thisStation.controlled_ids.indexOf(id) !== -1) return 'control';
         return thisStation.viewer_ids.indexOf(id) !== -1 ? 'view' : 'hide';
@@ -453,6 +465,7 @@
     function saveSelection(root, row, extra) {
         const controlled = [];
         const viewer = [];
+        const parked = [];
         function add(id, state) {
             if (state === 'control') controlled.push(id);
             if (state !== 'hide') viewer.push(id);
@@ -460,12 +473,15 @@
         root.querySelectorAll('tr[data-marker-id] input[data-this-station]:checked').forEach(function(radio) {
             add(parseInt(radio.getAttribute('data-marker-id'), 10), radio.value);
         });
+        root.querySelectorAll('tr[data-marker-id] button[data-park][aria-pressed="true"]').forEach(function(button) {
+            parked.push(parseInt(button.getAttribute('data-marker-id'), 10));
+        });
         if (extra) add(extra.id, extra.state);
         const table = root.querySelector('.marker-catalog-table');
         return fetch('/api/markers/selection', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({controlled_ids: controlled, viewer_ids: viewer})
+            body: JSON.stringify({controlled_ids: controlled, viewer_ids: viewer, parked_ids: parked})
         }).then(writeResult(table)).then(function(ok) {
             flashRow(row, ok);
             const flash = root.querySelector('#selection-saved-flash');
@@ -492,7 +508,7 @@
             '<td><button type="button" class="color-swatch-trigger" data-field="color" ' +
                 'data-color-picker="full" aria-label="Marker colour"></button></td>' +
             '<td class="cell-soft" data-cell="controlled-by"></td>' +
-            '<td data-cell="this-station">' + thisStationToggle('this-station-' + id, id) + '</td>' +
+            '<td data-cell="this-station">' + thisStationToggle('this-station-' + id, id) + parkToggle(id) + '</td>' +
             '<td class="row-actions">' +
                 '<button type="button" class="save-btn small" data-action="save">Save</button>' +
                 '<button type="button" class="danger small" data-action="delete">Delete</button>' +
@@ -500,8 +516,17 @@
         window.OpenFollow.attachColorPicker(tr.querySelector('[data-field="color"]'), {
             mode: 'full',
         });
+        const park = tr.querySelector('button[data-park]');
         tr.querySelectorAll('input[data-this-station]').forEach(function(radio) {
-            radio.addEventListener('change', function() { postSelection(root, tr); });
+            radio.addEventListener('change', function() {
+                setPark(park, radio.value, park.getAttribute('aria-pressed') === 'true');
+                postSelection(root, tr);
+            });
+        });
+        park.addEventListener('click', function() {
+            if (park.disabled) return;
+            setPark(park, 'control', park.getAttribute('aria-pressed') !== 'true');
+            postSelection(root, tr);
         });
         tr.querySelector('[data-action="save"]').addEventListener('click', function() {
             const name = tr.querySelector('[data-field="name"]').value;
@@ -536,17 +561,22 @@
             (conflict ? ' <span class="stat-chip off conflict-flag">Conflict</span>' : '');
         setHTMLIfChanged(tr.querySelector('[data-cell="controlled-by"]'), ctrlHTML);
         // The poll never moves a toggle the operator is on, nor one a save hasn't settled; a new row syncs at once.
-        const toggle = tr.querySelector('[data-cell="this-station"] .seg-toggle');
+        const cell = tr.querySelector('[data-cell="this-station"]');
+        const toggle = cell.querySelector('.seg-toggle');
+        const park = cell.querySelector('button[data-park]');
         const settled = selectionPending === 0 && Date.now() >= selectionSettleUntil;
-        if (!tr.dataset.synced || (settled && !toggle.contains(document.activeElement))) {
+        if (!tr.dataset.synced || (settled && !cell.contains(document.activeElement))) {
             const state = thisStationState(entry.id, thisStation);
             toggle.querySelectorAll('input[data-this-station]').forEach(function(radio) {
                 if (radio.checked !== (radio.value === state)) radio.checked = radio.value === state;
             });
+            setPark(park, state, (thisStation.parked_ids || []).indexOf(entry.id) !== -1);
             tr.dataset.synced = 'true';
         }
-        const label = 'This station: ' + (entry.name || ('Marker ' + entry.id));
+        const markerName = entry.name || ('Marker ' + entry.id);
+        const label = 'This station: ' + markerName;
         if (toggle.getAttribute('aria-label') !== label) toggle.setAttribute('aria-label', label);
+        if (park.getAttribute('aria-label') !== 'Park ' + markerName) park.setAttribute('aria-label', 'Park ' + markerName);
     }
 
     function createAddRow() {
@@ -717,7 +747,7 @@
         ensureSkeleton(root);
         const entries = data.entries || [];
         const thisStation = data.this_station ||
-            {station_name: '', controlled_ids: [], viewer_ids: []};
+            {station_name: '', controlled_ids: [], viewer_ids: [], parked_ids: []};
         const peers = data.peer_selections || [];
         const conflicts = data.marker_conflicts || [];
 
@@ -752,6 +782,16 @@
 <style>
 .marker-catalog-table { margin-top: 0.5rem; }
 .marker-catalog-table td[data-cell="this-station"] { white-space: nowrap; }
+/* Park: grey while off, the info line while on, inert unless the row is View & Control. */
+.marker-catalog-table .park-toggle {
+    display: inline-flex; align-items: center; justify-content: center; vertical-align: middle;
+    width: 1.6rem; height: 1.6rem; margin-left: 0.4rem; padding: 0;
+    border: 1px solid var(--border-soft); border-radius: 0.4rem;
+    background: rgba(0, 0, 0, 0.22); color: var(--muted);
+    font-size: inherit; font-weight: 700;
+}
+.marker-catalog-table .park-toggle[aria-pressed="true"] { background: var(--info-line); border-color: var(--info-line); color: var(--text); }
+.marker-catalog-table .park-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* A This Station save flashes its row's background, green or red, fading back to the row's own. */
 .marker-catalog-table tr.row-saved { animation: row-flash-green 0.8s ease-out; }
 .marker-catalog-table tr.row-failed { animation: row-flash-red 0.8s ease-out; }

@@ -20,6 +20,8 @@ The receiver accepts two message shapes:
 
 In both shapes `{id}` is the integer marker ID (1 or higher). Coordinates follow OpenFollow's stage convention: X is stage left (positive) / stage right (negative); Y is upstage (positive) / downstage (negative); Z is height above the stage floor. All values are in **metres**, relative to the **Reference Point**.
 
+Two more addresses park and unpark a marker this station controls: `/marker/{id}/park` and `/marker/{id}/unpark`. Their arguments are ignored: a console button that sends `/marker/{id}/park` with 1 on press and 0 on release leaves the marker parked. A parked marker still follows the position messages above; only the keyboard, gamepads and 3D mice leave it alone. Messages for a marker this station does not control are ignored.
+
 ## Saving
 
 - **Save** – writes the current settings and restarts the OSC receiver if the port or enabled state changed. Changes take effect immediately after saving.

@@ -25,7 +25,7 @@ _STATUS_CLASS = re.compile(
     r"osc-binding-row|osc-binding-enabled-dot|osc-binding-nested-row|osc-pill|peer-item|peer-status|toast|"
     r"save-error|save-failed|field-error-msg|field-warn-msg|field-note-msg|conflict-flag|not-controlled|"
     r"add-feedback|saved-flash|wizard-status|wizard-preview-container|wizard-meter|awaiting-password|wizard-field-error|"
-    r"update-flag|danger|btn-danger|modal-list-item-delete|gallery-del|dme-row|ia-dot)(?![\w-])"
+    r"update-flag|danger|btn-danger|modal-list-item-delete|gallery-del|dme-row|ia-dot|park-toggle|park-badge)(?![\w-])"
 )
 _COLOUR = re.compile(r"#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\)")
 # Greys, whites and the off-white text: neutral, so a literal is fine.
@@ -135,7 +135,15 @@ def test_every_style_block_closes_each_brace_it_opens(path: Path) -> None:
 
 def test_the_status_rule_scan_finds_the_components() -> None:
     selectors = " ".join(selector for _, selector, _ in _status_rules())
-    for component in (".notice.error", ".stat-chip.ok", ".osc-pill", ".peer-item.offline", ".conflict-flag"):
+    for component in (
+        ".notice.error",
+        ".stat-chip.ok",
+        ".osc-pill",
+        ".peer-item.offline",
+        ".conflict-flag",
+        ".park-badge",
+        ".park-toggle",
+    ):
         assert component in selectors
 
 

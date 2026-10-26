@@ -14,6 +14,7 @@ A live table of every marker, synced to all stations within a few seconds of sav
   - **View & Control** – inputs routed to this station (gamepad, keyboard, mouse, OSC) drive the marker, it's in this station's PSN broadcast, and its card shows on the Operator Screen. A controlled marker is always shown.
   - **View** – the marker's card shows on the Operator Screen and it counts in the trigger zones, whichever station controls it.
   - **Hide** – this station neither drives nor shows the marker.
+  - **P** (park) – only on a View & Control row. A parked marker stays on every output at its position and keeps counting in the trigger zones, but the keyboard, gamepads and 3D mice skip it: next/previous marker steps over it, and a controller whose slot holds it idles. The mouse can still grab and move it without changing the selected marker, and OSC can still move it. Parking the selected marker selects the next unparked one. Person detection leaves a parked marker where it is. On the Operator Screen its card carries a blue **P**. Setting the row to View or Hide unparks it. A parked marker stays parked after a restart, and OSC can park and unpark it too (see the OSC help).
 - **Save** / **Delete** (per row) – commit a row's name/colour, or remove the marker from all stations (after a confirmation prompt).
 
 Add a marker via the bottom row (**ID**, **Name**, **Color**, **This Station** → **Add**); the ID pre-fills with the next free integer, and This Station starts at Hide.

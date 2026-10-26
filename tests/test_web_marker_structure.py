@@ -377,6 +377,21 @@ class TestThisStationToggle:
         assert "thisStationToggle('this-station-new', null)" in body
         assert "seg-toggle seg-toggle--3 seg-toggle--compact" in body
 
+    def test_each_catalog_row_has_a_p_toggle_right_of_this_station(self) -> None:
+        """A plain ``aria-pressed`` button, never a save control, inert until the row is View & Control."""
+        body = _render_marker()
+        assert "thisStationToggle('this-station-' + id, id) + parkToggle(id) + '</td>'" in body
+        assert '<button type="button" class="park-toggle" data-park data-marker-id="' in body
+        assert '" aria-pressed="false" aria-label="Park" disabled>P</button>' in body
+        assert "parkToggle(null)" not in body
+        assert "body: JSON.stringify({controlled_ids: controlled, viewer_ids: viewer, parked_ids: parked})" in body
+
+    def test_the_p_toggle_is_grey_off_and_the_info_line_on(self) -> None:
+        body = _render_marker()
+        on = body[body.index('.park-toggle[aria-pressed="true"] {') :].split("}", 1)[0]
+        assert "background: var(--info-line)" in on
+        assert "color: var(--text)" in on
+
     def test_the_save_reads_every_row_and_control_implies_view(self) -> None:
         body = _render_marker()
         assert "root.querySelectorAll('tr[data-marker-id] input[data-this-station]:checked')" in body
@@ -408,7 +423,7 @@ class TestThisStationToggle:
     def test_the_poll_never_moves_a_toggle_mid_save(self) -> None:
         body = _render_marker()
         assert "const settled = selectionPending === 0 && Date.now() >= selectionSettleUntil;" in body
-        assert "if (!tr.dataset.synced || (settled && !toggle.contains(document.activeElement))) {" in body
+        assert "if (!tr.dataset.synced || (settled && !cell.contains(document.activeElement))) {" in body
 
     def test_a_save_flashes_its_row_background(self) -> None:
         body = _render_marker()

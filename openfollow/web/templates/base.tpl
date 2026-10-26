@@ -1351,6 +1351,12 @@
  .slot-marker { display: inline-flex; align-items: center; gap: 0.45rem; }
  /* The marker's own colour, as on its HUD card and catalog swatch. */
  .slot-marker-dot { flex: none; width: 0.7rem; height: 0.7rem; border-radius: 50%; background: var(--marker-color, var(--muted)); }
+ /* A parked marker: the info chip, square, as the P on its HUD card. */
+ .park-badge {
+ display: inline-flex; align-items: center; justify-content: center; flex: none; width: 1.1rem; height: 1.1rem;
+ border-radius: 0.4rem; font-size: 0.7rem; font-weight: 700;
+ color: var(--text); background: var(--info-chip); border: 1px solid var(--info-line);
+ }
  .peer-item.offline .peer-status {
  width: 8px; height: 8px;
  border: 3px solid var(--error-mark); background-color: var(--error-mark-muted);

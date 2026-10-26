@@ -19,7 +19,7 @@ With exactly one slot, that controller drives whichever marker is selected inste
   - **Missing** – the controller was unplugged or dropped out, or its kind (Gamepads or 3D Mouse) was switched off. Its slot and marker stay put, so nobody else changes marker. The marker card turns red on the Operator Screen, and the status corner and the Statistics panel name it.
   - **Reserved** – a missing slot that was forgotten. It keeps its place in the numbering but drives no marker and raises no warning.
   - The socket is the USB host controller's number and the port path: `on USB 2, port 1` is port 1 of host controller 2, and `port 1.4` is port 4 of a hub plugged into port 1. `on Bluetooth` for a wireless pad. `no stable port` for a controller whose socket the station cannot read; it keeps its slot for the session, but after a restart it is placed after every controller that has one.
-- **Marker** – the marker this slot drives right now, by its catalog name and ID, with a dot in its colour. A marker the catalog has no entry for reads `Marker 5`.
+- **Marker** – the marker this slot drives right now, by its catalog name and ID, with a dot in its colour. A marker the catalog has no entry for reads `Marker 5`. A blue **P** after it means the marker is parked: the controller stays connected, but it moves nothing, resets nothing and its marker-cycle buttons do nothing until the marker is unparked (Marker Control & Visibility). The other slots keep their markers.
 
 ## Actions
 

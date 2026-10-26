@@ -90,3 +90,71 @@ def test_two_controllers_the_runtime_has_not_flagged_are_no_conflict(conflicts: 
 def test_a_conflict_the_runtime_withdraws_clears_at_the_next_poll() -> None:
     out = _run(f"poll({_CONFLICT_3}); out.before = flags()['3']; poll([]); out.after = flags()['3'];")
     assert out == {"before": {"red": True, "chip": 1}, "after": {"red": False, "chip": 0}}
+
+
+_PARK_PAGE = """
+window.OpenFollow.saveError = {clear: function () {}, boxFor: function () { return null; }, show: function () {}};
+station = function () { return {status: 200, body: {success: true}}; };
+function pollPark(parked) {
+    document.body.dispatchEvent(makeEvent('htmx:afterRequest', {detail: {elt: root, xhr: {responseText: JSON.stringify({
+        entries: [{id: 3, name: 'Lead', color: '#ff0000'}, {id: 4, name: 'Second', color: '#00ff00'}],
+        peer_selections: [],
+        this_station: {station_id: 'me', station_name: 'FOH', controlled_ids: [3], viewer_ids: [3], parked_ids: parked},
+        next_free_id: 5,
+    })}}}));
+}
+function park(id) { return root.querySelector('tr[data-marker-id="' + id + '"] button[data-park]'); }
+function parkState(id) { return {pressed: park(id).getAttribute('aria-pressed'), disabled: park(id).disabled}; }
+function posted() {
+    return requests.filter(function (r) { return r.url === '/api/markers/selection'; })
+        .map(function (r) { return r.body.parked_ids; });
+}
+"""
+
+
+def _run_async(steps: str) -> Any:
+    """Like :func:`_run`, with ``await settle()`` available to let saves answer."""
+    source = "\n".join(
+        [
+            (_TESTS / "_fake_dom.js").read_text(encoding="utf-8"),
+            _PAGE,
+            _script(),
+            _PARK_PAGE,
+            "var out = {};",
+            "(async function () {",
+            steps,
+            "process.stdout.write(JSON.stringify(out));",
+            "})();",
+        ]
+    )
+    node = shutil.which("node")
+    assert node is not None
+    done = subprocess.run([node, "-e", source], capture_output=True, text=True, timeout=20)  # nosec B603
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+def test_the_park_toggle_shows_the_saved_park_and_only_a_controlled_row_can_take_one() -> None:
+    out = _run_async("pollPark([3]); out.lead = parkState(3); out.second = parkState(4);")
+    assert out == {"lead": {"pressed": "true", "disabled": False}, "second": {"pressed": "false", "disabled": True}}
+
+
+def test_a_click_on_p_saves_the_park_with_the_selection() -> None:
+    out = _run_async(
+        "pollPark([]); park(3).click(); await settle(); out.on = parkState(3);"
+        " park(3).click(); await settle(); out.off = parkState(3); out.posted = posted();"
+    )
+    assert out["on"] == {"pressed": "true", "disabled": False}
+    assert out["off"] == {"pressed": "false", "disabled": False}
+    assert out["posted"] == [[3], []]
+
+
+def test_moving_a_parked_row_off_view_and_control_clears_its_park() -> None:
+    out = _run_async(
+        "pollPark([3]);"
+        ' var view = root.querySelector(\'tr[data-marker-id="3"] input[data-this-station][value="view"]\');'
+        ' var ctrl = root.querySelector(\'tr[data-marker-id="3"] input[data-this-station][value="control"]\');'
+        " ctrl.checked = false; view.checked = true; view.dispatchEvent(makeEvent('change')); await settle();"
+        " out.state = parkState(3); out.posted = posted();"
+    )
+    assert out == {"state": {"pressed": "false", "disabled": True}, "posted": [[]]}

@@ -15,7 +15,7 @@ with the reasoning, before adding the variant.
 |---|---|---|
 | **Error** | It does not work, and will not until someone acts | Video unreachable, a refused save, a missing controller, an OSC binding that can never fire, a marker two stations control, detection or 3D Mouse support unavailable, a power supply under voltage now |
 | **Caution** | It works, with a limitation worth knowing | A feature marked experimental, a marker no station controls, a web UI pin that missed and serves on every interface, an under voltage or throttling since the Pi last started |
-| **Info** | Nothing is wrong; progress or a fact | Starting, idle, restarting, an update is available, a value Save will correct |
+| **Info** | Nothing is wrong; progress or a fact | Starting, idle, restarting, an update is available, a value Save will correct, a parked marker |
 | **Success** | Something just worked, or is healthy | Saved, connected, running, marker added |
 
 A feature that is switched off on purpose is **neutral**, not a level: the grey
@@ -130,6 +130,17 @@ recognised", "Button map is for another model"); "Can't identify" is a fact,
 not a fault, and is plain `--muted` text. An OSC binding whose trigger shares
 its input with a gamepad or keyboard action carries a caution row pill naming
 that action in its summary.
+
+### Park
+
+A parked marker is a fact, not a fault, so its **P** is the info level
+everywhere it appears. It is square, not a pill: one letter, centred by the box.
+
+| Element | Look |
+|---|---|
+| The P toggle in Marker Control & Visibility (`.park-toggle`, a `<button aria-pressed>`) | Off: the neutral grey of the This Station toggle beside it. On: `--info-line` fill and border, off-white `--text`. Dimmed and inert unless the row is View & Control |
+| The P after a parked slot's marker in Controller Slots (`.park-badge`) | The info chip: `--info-chip` fill, 1px `--info-line` border, off-white text, radius 0.4rem |
+| The P on a parked marker's card on the Operator Screen | `COLOR_INFO_FILL` and `COLOR_INFO_BORDER`, off-white text, `ROW_RADIUS`, right of the `C1` badge |
 
 ### OSC placeholder pills
 
@@ -365,6 +376,8 @@ attributes, so it spells the token's value.
   line (off-white, bold) and the one next step under it (muted), as the web's
   result box. Both wrap at a space and are cut only past two lines.
 - An offline marker shows an off-white disc with a cut-out cross.
+- A parked marker's card carries the info-level **P** beside its controller
+  badge (see Park above); the card is otherwise unchanged.
 - The online dot uses the success mark (`COLOR_OK`, `#5cc98c`). A
   confirmation drawn straight on a panel, such as "Detection Complete!",
   leads with the green success sign (`draw_success_sign`); one in a row of its

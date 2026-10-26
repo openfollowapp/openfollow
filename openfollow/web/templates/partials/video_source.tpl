@@ -80,10 +80,10 @@
             });
             htmx.ajax('GET', '/section/video_source/latency/dialog', {target: '#latency-dialog', swap: 'outerHTML'});
         };
-        // Whether an element of the dialog is on an open dialog, not one closed before its state arrived.
+        // Whether an element of the dialog is on the open dialog: closing removes it, and a state that
+        // arrives after its dialog closed lands nowhere in the page.
         window.ofLatencyWarningLive = function(el){
-            var root = document.getElementById('modal-root');
-            return !!(el && el.isConnected && root && !root.hidden);
+            return !!(el && el.isConnected);
         };
         // Each state of the dialog: locked while a run lasts; focus on the action that starts nothing, else the dialog.
         // A state meant for a dialog closed before it arrived (another one may be open by then) is ignored.
@@ -91,6 +91,12 @@
             var dialog = document.getElementById('latency-dialog');
             if(!ofLatencyWarningLive(dialog) || dialog.getAttribute('data-warning') !== warning) return;
             window.ofLatencyWarning = warning;
+            // The state's own actions take the modal's footer only now that the state is known to be this dialog's.
+            var actions = dialog.querySelector('[data-latency-footer]');
+            var footer = document.getElementById('modal-footer');
+            footer.replaceChildren.apply(footer, actions ? Array.from(actions.childNodes) : []);
+            if(actions) actions.remove();
+            htmx.process(footer);
             modalLock(running);
             var target = document.querySelector('#modal-footer [data-autofocus]') || dialog;
             target.focus();

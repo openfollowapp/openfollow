@@ -144,7 +144,7 @@ class TestDrawDispatch:
         cr = RecordingCairo()
         renderer.draw(cr, 1280, 720, state)
         assert cr.find_texts("WARNING") and cr.find_texts("Latency test about to start")
-        # The OSC cards stay out of the menu screen, as before.
+        # The OSC cards stay out of the menu screen.
         assert not cr.find_texts("Next cue")
 
     @pytest.mark.parametrize("level", [0.0, 1.0])

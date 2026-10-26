@@ -58,20 +58,33 @@ def _contrast_ink(rgb: tuple[float, float, float]) -> tuple[float, float, float]
 
 
 def draw_operator_messages(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
-    """Draw the operator-message stack onto ``cr``."""
-    _draw_stack(renderer, cr, state, state.operator_messages, state.operator_message_overflow, w, h)
+    """Draw the station's own cards nearest the edge, and the OSC stack beyond them."""
+    taken = draw_station_cards(renderer, cr, state, w, h)
+    others = [v for v in state.operator_messages if not v.headline]
+    _draw_stack(renderer, cr, state, others, state.operator_message_overflow, w, h, taken)
 
 
-def draw_station_cards(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
-    """Draw only the station's own headline cards, over a screen that hides the other messages."""
-    _draw_stack(renderer, cr, state, [v for v in state.operator_messages if v.headline], 0, w, h)
+def draw_station_cards(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> float:
+    """Draw the station's own headline cards nearest the edge, the same place over a menu screen as on the HUD.
+
+    Returns the height they take from the edge, with the gap to what follows.
+    """
+    return _draw_stack(renderer, cr, state, [v for v in state.operator_messages if v.headline], 0, w, h, 0.0)
 
 
 def _draw_stack(
-    renderer: Any, cr: Any, state: OverlayState, views: list[OperatorMessageView], overflow: int, w: int, h: int
-) -> None:
+    renderer: Any,
+    cr: Any,
+    state: OverlayState,
+    views: list[OperatorMessageView],
+    overflow: int,
+    w: int,
+    h: int,
+    offset: float,
+) -> float:
+    """A stack of cards ``offset`` in from the configured edge; the height it takes, with its gap."""
     if not views and overflow <= 0:
-        return
+        return 0.0
 
     # Uniform scale for the card window + text. The screen-overrun guard
     # (_CARD_W_FRACTION) and the edge gap (_MARGIN) stay unscaled.
@@ -83,7 +96,7 @@ def _draw_stack(
     text_w = card_w - 2 * pad
     if text_w <= 0:
         # Degenerate (zero/tiny) surface: skip layout.
-        return
+        return 0.0
     x = (w - card_w) / 2.0
 
     # Measure every card to anchor the stack with a known total height.
@@ -102,9 +115,9 @@ def _draw_stack(
     total_h = sum(element_heights) + gap * (len(element_heights) - 1)
 
     if state.operator_message_position == "top":
-        cur_y = _MARGIN
+        cur_y = _MARGIN + offset
     else:  # bottom: anchor above the bottom edge
-        cur_y = max(_MARGIN, h - _MARGIN - total_h)
+        cur_y = max(_MARGIN, h - _MARGIN - offset - total_h)
 
     for v, msg_lines, info_lines, card_h in cards:
         _draw_card(renderer, cr, v, msg_lines, info_lines, x, cur_y, card_w, card_h, scale)
@@ -112,6 +125,7 @@ def _draw_stack(
 
     if overflow > 0:
         _draw_overflow(renderer, cr, overflow, x, cur_y, card_w, scale)
+    return total_h + gap
 
 
 def _card_height(v: OperatorMessageView, msg_lines: list[str], info_lines: list[str], scale: float) -> float:

@@ -19,6 +19,7 @@ pytestmark = [pytest.mark.unit, pytest.mark.skipif(shutil.which("node") is None,
 _TESTS = Path(__file__).parent
 _TEMPLATES = _TESTS.parent / "openfollow" / "web" / "templates"
 _TOKEN = "Abc_DEF-123456789"
+_OTHER = "Xyz_GHI-987654321"
 
 # Stand-ins for base.tpl's modal and htmx: one modal, the GET the dialog asks for held until answered.
 _PAGE = """
@@ -38,22 +39,27 @@ function closeModal() {
 }
 function modalLock(on) { locked = on; }
 navigator.sendBeacon = function (url) { beacons.push(url); return true; };
-var htmx = { ajax: function (method, url, opts) {
-    asked.push({method: method, url: url, target: opts.target === '#latency-dialog'
-        ? document.getElementById('latency-dialog') : opts.target});
-    return Promise.resolve();
-} };
-// What htmx does with the dialog's answer: in place of the element asked for, the footer out of band, scripts run.
+var htmx = {
+    ajax: function (method, url, opts) {
+        asked.push({method: method, url: url, target: opts.target === '#latency-dialog'
+            ? document.getElementById('latency-dialog') : opts.target});
+        return Promise.resolve();
+    },
+    process: function () {},
+};
+// What htmx does with the dialog's answer: in place of the element asked for, scripts run. The worst case:
+// the script runs even when the element it was asked for has left the page.
 function answer(target, html) {
     var holder = document.createElement('div');
     parseHTML(html, holder);
     var dialog = holder.querySelector('#latency-dialog');
     if (target.parentNode) { target.after(dialog); target.remove(); }
-    var footer = holder.querySelector('#modal-footer'), shown = document.getElementById('modal-footer');
-    if (footer && shown) { shown.after(footer); shown.remove(); }
     var script = holder.querySelector('script');
     (0, eval)(script.textContent);
     return dialog;
+}
+function footer() {
+    return document.getElementById('modal-footer').children.map(function (b) { return b.textContent.trim(); });
 }
 """
 
@@ -85,6 +91,7 @@ def _run(steps: str) -> Any:
             _PAGE,
             _dialog_script(),
             f"var INTRO = {json.dumps(_render('intro', _TOKEN))};",
+            f"var INTRO_OTHER = {json.dumps(_render('intro', _OTHER))};",
             f"var RESULT = {json.dumps(_render('done', ''))};",
             "(async function () { var out = {};",
             steps,
@@ -118,19 +125,60 @@ def test_closing_the_dialog_takes_its_warnings_renewal_with_it_and_takes_the_car
     }
 
 
-@pytest.mark.parametrize("reopened", [False, True], ids=["closed", "another-open"])
-def test_warnings_that_arrive_after_the_dialog_closed_never_renew_the_card(reopened: bool) -> None:
+@pytest.mark.parametrize("then", ["nothing", "another-modal", "another-latency-dialog"])
+def test_warnings_that_arrive_after_the_dialog_closed_change_nothing(then: str) -> None:
+    opened = {
+        "nothing": "",
+        "another-modal": "openModal({bodyHTML: '<p>Other</p>'});"
+        "document.getElementById('modal-footer').innerHTML = '<button>Other</button>';",
+        "another-latency-dialog": "ofLatencyDialog();",
+    }[then]
     out = _run(
-        # Escape before the station answered: the warnings land in a dialog that is gone,
-        # while the modal stays shut or shows a dialog opened since.
+        # Escape before the station answered: the warnings land in a dialog that is gone.
         "ofLatencyDialog(); var asked_for = asked[0].target; closeModal(); await settle();"
-        + ("ofLatencyDialog();" if reopened else "")
+        + opened
         + "var dialog = answer(asked_for, INTRO);"
         "out.renews = ofLatencyWarningLive(dialog.querySelector('#latency-warning-renewal'));"
-        "out.token = window.ofLatencyWarning || ''; out.locked = locked;"
+        "out.token = window.ofLatencyWarning || ''; out.locked = locked; out.footer = footer();"
+    )
+    assert out == {
+        "renews": False,
+        "token": "",
+        "locked": None,
+        "footer": ["Other"] if then == "another-modal" else [],
+    }
+
+
+def test_a_reopened_dialog_keeps_its_own_token_when_the_first_answer_comes_last() -> None:
+    out = _run(
+        "ofLatencyDialog(); var first = asked[0].target; closeModal(); await settle();"
+        "ofLatencyDialog(); answer(asked[2].target, INTRO_OTHER); answer(first, INTRO);"
+        "out.token = window.ofLatencyWarning; out.footer = footer();"
+        "out.start = document.querySelector('#modal-footer .primary').getAttribute('hx-vals');"
         "closeModal(); out.beacons = beacons;"
     )
-    assert out == {"renews": False, "token": "", "locked": None, "beacons": []}
+    assert out == {
+        "token": _OTHER,
+        "footer": ["Cancel", "Start"],
+        "start": f'{{"token": "{_OTHER}"}}',
+        "beacons": [f"/section/video_source/latency/warning/close?token={_OTHER}"],
+    }
+
+
+@pytest.mark.parametrize("state", ["INTRO", "RESULT"])
+@pytest.mark.parametrize(("successful", "locked"), [(False, False), (True, True)])
+def test_a_start_locks_the_modal_on_the_click_and_a_refused_one_releases_it(
+    state: str, successful: bool, locked: bool
+) -> None:
+    out = _run(
+        f"ofLatencyDialog(); answer(asked[0].target, {state});"
+        "var start = document.querySelector('#modal-footer [hx-post]');"
+        "(function () { eval(start.getAttribute('hx-on::before-request')); })(); out.clicked = locked;"
+        f"(function (event) {{ eval(start.getAttribute('hx-on::after-request')); }})"
+        f"({{detail: {{successful: {'true' if successful else 'false'}}}}});"
+        "out.after = locked;"
+    )
+    assert out == {"clicked": True, "after": locked}
 
 
 def test_the_warnings_focus_cancel_so_one_enter_never_starts_a_run() -> None:

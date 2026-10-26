@@ -27,8 +27,8 @@ _MARKUP = (
 _REFUSED = json.dumps({"error": "No video is arriving.", "action": "Measure once the camera's picture shows."})
 
 
-def _failed(event: str, button: str) -> Any:
-    """What the page shows after ``button``'s request fails with ``event``: the line, its box, and which ring."""
+def _failed(event: str, button: str, then: str = "") -> Any:
+    """After ``button``'s request fails with ``event`` (and ``then``): the line, its box, the ring."""
     xhr = f"{{status: 409, responseText: {json.dumps(_REFUSED)}}}"
     detail = f"{{elt: document.getElementById('{button}'), requestConfig: {{verb: 'post'}}, xhr: {xhr}}}"
     source = "\n".join(
@@ -37,6 +37,7 @@ def _failed(event: str, button: str) -> Any:
             f"parseHTML({json.dumps(_MARKUP)}, document.body);",
             (_WEB / "static" / "js" / "save-feedback.js").read_text(encoding="utf-8"),
             f"document.dispatchEvent({{type: '{event}', bubbles: true, detail: {detail}}});",
+            then,
             "var line = document.querySelector('.save-error');",
             "var ringed = ['card', 'sec'].filter(function (id) {",
             "    return document.getElementById(id).classList.contains('save-failed'); });",
@@ -74,6 +75,21 @@ def test_a_save_outside_the_dialog_keeps_not_saved_and_the_form_ring() -> None:
 @pytest.mark.parametrize("event", ["htmx:responseError", "htmx:sendError"])
 def test_a_quiet_background_request_reports_nothing(event: str) -> None:
     assert _failed(event, "renewal") == {"line": None, "box": None, "ringed": []}
+
+
+def _request(elt: str) -> str:
+    """htmx about to send a POST from ``elt``."""
+    detail = f"{{elt: document.getElementById('{elt}'), requestConfig: {{verb: 'post'}}}}"
+    return f"document.dispatchEvent({{type: 'htmx:beforeRequest', bubbles: true, detail: {detail}}});"
+
+
+def test_a_refused_start_s_line_outlasts_the_renewals_posting_beside_it() -> None:
+    out = _failed("htmx:responseError", "start", _request("renewal") * 3)
+    assert out["line"] == "Not started. No video is arriving. Measure once the camera's picture shows."
+
+
+def test_another_start_clears_the_line() -> None:
+    assert _failed("htmx:responseError", "start", _request("start"))["line"] is None
 
 
 def test_an_unanswered_save_still_asks_to_save_again() -> None:

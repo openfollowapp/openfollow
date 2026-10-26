@@ -8,14 +8,16 @@ draw calls (text strings, rectangles, chip arcs) without real rendering.
 
 from __future__ import annotations
 
-import hashlib
+from typing import Any
 
+import cairo
 import pytest
 
 from openfollow.runtime import overlay_draw_style as style
 from openfollow.runtime.overlay_draw_messages import (
     _truncate,
     draw_operator_messages,
+    draw_station_cards,
 )
 from openfollow.runtime.overlay_state import OperatorMessageView, OverlayState
 from tests._fake_cairo import FakeCairo, FakeRenderer
@@ -121,8 +123,41 @@ def test_a_headline_card_is_as_tall_as_a_marker_card() -> None:
     assert [(t.text, t.y) for t in headline.texts] == [(t.text, t.y) for t in keyed.texts]
 
 
-def test_osc_cards_draw_exactly_as_before_headlines_existed() -> None:
-    # The recorded calls of a broadcast, a keyed and a timed keyed card, pinned from the pass before headlines.
+def _r(values: Any) -> tuple[Any, ...]:
+    return tuple(round(v, 2) for v in values)
+
+
+def _what_lands(calls: list[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
+    """Each fill and stroke with its path's bounds, each text and rectangle, with the colour and font they take."""
+    out: list[tuple[Any, ...]] = []
+    colour: tuple[Any, ...] = ()
+    font: tuple[Any, ...] = ()
+    at: tuple[Any, ...] = ()
+    points: list[tuple[Any, ...]] = []
+    for op, *args in calls:
+        if op in ("rgb", "rgba"):
+            colour = _r(args)
+        elif op == "set_font_face":
+            font = ("bold" if args[1] == cairo.FontWeight.BOLD else "normal",)
+        elif op == "font_size":
+            font = (*font[:1], args[0])
+        elif op in ("move_to", "line_to"):
+            at = _r(args)
+            points.append(at)
+        elif op == "show_text":
+            out.append(("text", args[0], at, colour, font))
+            points = []
+        elif op == "rectangle":
+            out.append(("rect", _r(args), colour))
+        elif op in ("fill", "stroke") and points:
+            xs, ys = [p[0] for p in points], [p[1] for p in points]
+            out.append((op, _r((min(xs), min(ys), max(xs), max(ys))), colour))
+            if op == "stroke":
+                points = []
+    return out
+
+
+def test_a_broadcast_a_keyed_and_a_timed_keyed_card_draw_their_layout() -> None:
     state = OverlayState()
     state.operator_messages = [
         OperatorMessageView("Next: SQ12", "Stand by", 0, "", "", False, 0.4),
@@ -132,8 +167,56 @@ def test_osc_cards_draw_exactly_as_before_headlines_existed() -> None:
     state.operator_message_overflow = 2
     cr = FakeCairo()
     draw_operator_messages(FakeRenderer(state=state), cr, state, 1920, 1080)
-    digest = hashlib.sha256(repr(cr.calls).encode()).hexdigest()
-    assert digest == "e3f4d64ea9e571c70dfd7b004fcb9756ed70f56cd3103ca5d4aad8cf57c67155"
+    card = (0.03, 0.07, 0.05, 0.9)
+    border = track = (1.0, 1.0, 1.0, 0.12)
+    ink = (0.97, 0.96, 0.91)
+    muted = (0.97, 0.96, 0.91, 0.68)
+    assert _what_lands(cr.calls) == [
+        ("fill", (730.0, 812.0, 1190.0, 877.0), card),
+        ("stroke", (730.0, 812.0, 1190.0, 877.0), border),
+        ("text", "Next: SQ12", (742.0, 835.0), ink, ("bold", 11.0)),
+        ("text", "Stand by", (742.0, 851.0), muted, ("normal", 11.0)),
+        ("rect", (742.0, 862.0, 436.0, 3.0), track),
+        ("rect", (742.0, 862.0, 174.4, 3.0), (1.0, 0.74, 0.0)),
+        ("fill", (730.0, 885.0, 1190.0, 957.0), card),
+        ("stroke", (730.0, 885.0, 1190.0, 957.0), border),
+        ("fill", (730.0, 885.0, 1190.0, 907.0), (0.02, 0.32, 0.87)),
+        ("text", "Spot 3", (742.0, 900.95), (1.0, 1.0, 1.0), ("bold", 11.0)),
+        ("text", "Hold", (742.0, 924.0), ink, ("bold", 11.0)),
+        ("text", "detail", (742.0, 940.0), muted, ("normal", 11.0)),
+        ("fill", (730.0, 965.0, 1190.0, 1030.0), card),
+        ("stroke", (730.0, 965.0, 1190.0, 1030.0), border),
+        ("fill", (730.0, 965.0, 1190.0, 987.0), (0.96, 0.96, 0.96)),
+        ("text", "M7", (742.0, 980.95), (0.08, 0.08, 0.08), ("bold", 11.0)),
+        ("text", "Go", (742.0, 1004.0), ink, ("bold", 11.0)),
+        ("rect", (742.0, 1015.0, 436.0, 3.0), track),
+        ("rect", (742.0, 1015.0, 392.4, 3.0), (0.96, 0.96, 0.96)),
+        ("text", "+2 more", (936.9, 1049.0), muted, ("normal", 11.0)),
+    ]
+
+
+@pytest.mark.parametrize("position", ["bottom", "top"])
+def test_the_station_s_card_keeps_its_place_at_the_edge_with_or_without_the_osc_cards(position: str) -> None:
+    station = _view(
+        message="Latency test about to start", is_forever=True, headline="WARNING", headline_level="caution"
+    )
+    osc = [_view(message="Next cue", is_forever=True), _view(message="Hold", is_forever=True)]
+    state = OverlayState()
+    state.operator_messages = [station, *osc]
+    state.operator_message_position = position
+    hud = FakeCairo()
+    draw_operator_messages(FakeRenderer(state=state), hud, state, 1280, 720)
+    menu = FakeCairo()
+    draw_station_cards(FakeRenderer(state=state), menu, state, 1280, 720)
+    assert hud.find_texts("WARNING")[0].y == menu.find_texts("WARNING")[0].y
+    # Nearest the edge; the OSC stack moves in by the card and the gap: 12 pad, 28 bar and gap, one 16 line, 8 gap.
+    alone = OverlayState()
+    alone.operator_messages = osc
+    alone.operator_message_position = position
+    without = FakeCairo()
+    draw_operator_messages(FakeRenderer(state=alone), without, alone, 1280, 720)
+    moved = [hud.find_texts(t)[0].y - without.find_texts(t)[0].y for t in ("Next cue", "Hold")]
+    assert moved == ([64.0, 64.0] if position == "top" else [-64.0, -64.0])
 
 
 def test_keyed_card_without_name_falls_back_to_m_id() -> None:

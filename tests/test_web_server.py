@@ -9685,8 +9685,8 @@ def _latency_row(body: str) -> str:
 
 
 def _footer(body: str) -> str:
-    """The dialog's footer, swapped in out of band."""
-    footer = body[body.index('id="modal-footer"') :]
+    """The dialog's actions, which the page moves into the modal's footer."""
+    footer = body[body.index("data-latency-footer") :]
     return footer[: footer.index("</div>")]
 
 
@@ -9765,7 +9765,7 @@ def test_the_dialog_opens_on_its_warnings_and_its_renewal_puts_the_card_up(live_
     assert hazard < show < body.index("The station flashes its Operator Screen")
     assert body.count('<div class="notice warning">') == 2
     footer = _footer(body)
-    assert 'hx-swap-oob="true"' in footer
+    assert "hx-swap-oob" not in body
     assert re.search(r'onclick="closeModal\(\)" data-autofocus>Cancel</button>', footer)
     assert re.search(r'class="primary" hx-post="/section/video_source/latency"', footer)
     assert 'data-error-lead="Not started."' in footer
@@ -9831,7 +9831,7 @@ def test_a_run_s_progress_answers_alone_while_it_lasts(live_server, monkeypatch)
     status, body, headers = _get_full(base, "/section/video_source/latency/dialog?poll=1")
     assert status == 200
     assert "Measuring: 7 of 10 changes seen." in body
-    assert "modal-footer" not in body
+    assert "data-latency-footer" not in body
     assert "HX-Retarget" not in headers
 
 

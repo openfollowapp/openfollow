@@ -1,5 +1,6 @@
 %# The Measure Camera Latency dialog, in the shared modal (#modal-root): its body
-%# here, its footer out of band, and the modal locked while a run lasts. A run
+%# here with its footer, which ofLatencyDialogShown moves into the modal's once
+%# this state is the open dialog's, and the modal locked while a run lasts. A run
 %# ends by itself (about 5 s, never past about 35 s), so it has no way out but its end.
 % d = dialog
 % running = d['state'] == 'running'
@@ -51,19 +52,24 @@
 %     end
     </div>
 % end
-</div>
-<div class="modal-footer" id="modal-footer" hx-swap-oob="true">
+%# A start locks the modal at once, so no close slips in before the run's answer; a refused one releases it.
+    <div hidden data-latency-footer>
 % if d['state'] == 'intro':
-    <button type="button" onclick="closeModal()" data-autofocus>Cancel</button>
-    <button type="button" class="primary" hx-post="/section/video_source/latency"
-            hx-target="#latency-dialog" hx-swap="outerHTML" hx-vals='{"token": "{{warning}}"}'
-            data-error-lead="Not started.">Start</button>
+        <button type="button" onclick="closeModal()" data-autofocus>Cancel</button>
+        <button type="button" class="primary" hx-post="/section/video_source/latency"
+                hx-target="#latency-dialog" hx-swap="outerHTML" hx-vals='{"token": "{{warning}}"}'
+                hx-on::before-request="modalLock(true)"
+                hx-on::after-request="if (!event.detail.successful) modalLock(false)"
+                data-error-lead="Not started.">Start</button>
 % elif not running:
-    <button type="button" hx-post="/section/video_source/latency"
-            hx-target="#latency-dialog" hx-swap="outerHTML"
-            data-error-lead="Not started.">{{'Measure again' if d['state'] == 'done' else 'Try again'}}</button>
-    <button type="button" class="primary" onclick="closeModal()" data-autofocus>Close</button>
+        <button type="button" hx-post="/section/video_source/latency"
+                hx-target="#latency-dialog" hx-swap="outerHTML"
+                hx-on::before-request="modalLock(true)"
+                hx-on::after-request="if (!event.detail.successful) modalLock(false)"
+                data-error-lead="Not started.">{{'Measure again' if d['state'] == 'done' else 'Try again'}}</button>
+        <button type="button" class="primary" onclick="closeModal()" data-autofocus>Close</button>
 % end
+    </div>
 </div>
 <script>ofLatencyDialogShown({{'true' if running else 'false'}}, '{{warning}}');</script>
 % end

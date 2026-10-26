@@ -9658,3 +9658,157 @@ def test_requests_share_one_parse_of_an_unchanged_config(live_server, monkeypatc
         status, _body = _get(base, "/api/info")
         assert status == 200
     assert parses == [server.config_path]
+
+
+# ---------------------------------------------------------------------------
+# Measure latency (Video Source)
+# ---------------------------------------------------------------------------
+
+_DECODING = {"video": {"source_type": "rtsp", "connected": True, "phase": "decoding"}, "hud": {"window_s": 2.0}}
+
+
+def _latency_stats(monkeypatch, server, stats: dict) -> None:
+    monkeypatch.setattr(server, "get_runtime_stats", lambda: stats)
+
+
+def _latency_row(body: str) -> str:
+    """The Measure latency row up to its button."""
+    row = body[body.index('id="video-source-latency"') :]
+    return row[: row.index("</button>")]
+
+
+def test_measure_latency_starts_a_run_and_polls_while_it_lasts(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    status, body = _post_form(base, "/section/video_source/latency", {})
+    assert status == 200
+    assert server._command_queue.consume_latency_command() == "start"
+    tag = body[: body.index(">", body.index('id="video-source-latency"'))]
+    assert 'hx-trigger="every 1s [!document.hidden], poll-shown from:body"' in tag
+    assert 'hx-target="this"' in tag
+    assert "modal-spinner" in body and "Measuring: 0 of 10 changes seen." in body
+    assert 'hx-post="/section/video_source/latency/stop"' in body
+    assert 'role="alert"' not in body
+
+
+@pytest.mark.parametrize(
+    ("stats", "reason"),
+    [
+        ({**_DECODING, "hud": None}, "No Operator Screen is showing on this station."),
+        ({**_DECODING, "video": {**_DECODING["video"], "connected": False}}, "No video is arriving."),
+        ({**_DECODING, "video": {**_DECODING["video"], "phase": "data_arriving"}}, "No video is arriving."),
+        ({**_DECODING, "video": {**_DECODING["video"], "source_type": "testpattern"}}, "The Media Gallery plays"),
+        ({}, "No Operator Screen is showing on this station."),
+    ],
+    ids=["no-display", "not-connected", "not-decoding", "gallery", "no-stats"],
+)
+def test_measure_latency_while_it_cannot_run_answers_409_with_the_reason(
+    live_server, monkeypatch, stats: dict, reason: str
+) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, stats)
+    status, body = _post_form(base, "/section/video_source/latency", {})
+    assert status == 409
+    answer = json.loads(body)
+    assert answer["error"].startswith(reason) and answer["action"]
+    assert server._command_queue.consume_latency_command() is None
+
+
+def test_stop_ends_the_poll_and_says_so_at_once(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    _post_form(base, "/section/video_source/latency", {})
+    status, body = _post_form(base, "/section/video_source/latency/stop", {})
+    assert status == 200
+    assert server._command_queue.consume_latency_command() == "stop"
+    assert "Measurement stopped." in body
+    assert "hx-trigger" not in body
+    assert '<div class="notice ">' in body, "a stop the operator asked for is not a fault"
+
+
+@pytest.mark.parametrize(
+    ("median", "level", "notice", "step"),
+    [
+        (84.0, "success", "notice success", False),
+        (180.0, "caution", "notice warning", True),
+        (420.0, "error", "notice error", True),
+    ],
+)
+def test_a_result_shows_the_median_and_spread_in_its_level(
+    live_server, monkeypatch, median: float, level: str, notice: str, step: bool
+) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    result = {"median_ms": median, "min_ms": median - 10, "max_ms": median + 12.4, "samples": 10, "level": level}
+    server._command_queue.set_latency_status({"state": "done", "measured": 10, "result": result})
+    status, body = _get(base, "/section/video_source/latency")
+    assert status == 200
+    assert f'<div class="{notice}">' in body
+    assert f"Round trip {median:.0f} ms ({median - 10:.0f} to {median + 12.4:.0f} ms)." in body
+    assert ("Lower the buffering" in body) is step
+    assert "hx-trigger" not in body
+    assert 'role="alert"' not in body
+
+
+def test_a_failed_run_shows_what_was_seen_and_one_next_step(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    failure = {"reason": "no_rise", "text": "No flash seen in the video within 3 s.", "action": "Point the camera."}
+    server._command_queue.set_latency_status({"state": "failed", "measured": 0, "failure": failure})
+    _, body = _get(base, "/section/video_source/latency")
+    assert '<div class="notice error">' in body
+    assert "No flash seen in the video within 3 s." in body and "Point the camera." in body
+    assert re.search(r'hx-params="none"\s*>Measure latency', body)
+
+
+def test_a_running_status_keeps_polling_and_counts_the_changes_seen(live_server, monkeypatch) -> None:
+    server, base = live_server
+    # A run going on is shown even when the stats say one could not start now.
+    _latency_stats(monkeypatch, server, {})
+    server._command_queue.set_latency_status({"state": "running", "measured": 6})
+    _, body = _get(base, "/section/video_source/latency")
+    assert "Measuring: 6 of 10 changes seen." in body
+    assert "every 1s [!document.hidden]" in body
+
+
+@pytest.mark.parametrize(
+    ("stats", "reason"),
+    [
+        ({**_DECODING, "hud": None}, "No Operator Screen is showing on this station."),
+        ({**_DECODING, "video": {**_DECODING["video"], "connected": False}}, "No video is arriving."),
+    ],
+    ids=["no-display", "no-video"],
+)
+def test_the_video_source_section_disables_measure_latency_and_says_why(
+    live_server, monkeypatch, stats: dict, reason: str
+) -> None:
+    server, base = live_server
+    save_config(AppConfig(video_source_type="rtsp"), server.config_path)
+    _latency_stats(monkeypatch, server, stats)
+    for path in ("/", "/section/video_source"):
+        _, body = _get(base, path)
+        row = _latency_row(body)
+        assert reason in row
+        assert re.search(r"<button[^>]*\sdisabled\s*>Measure latency", row)
+
+
+def test_the_video_source_section_offers_measure_latency_while_video_is_decoded(live_server, monkeypatch) -> None:
+    server, base = live_server
+    save_config(AppConfig(video_source_type="rtsp"), server.config_path)
+    _latency_stats(monkeypatch, server, _DECODING)
+    _, body = _get(base, "/section/video_source")
+    row = _latency_row(body)
+    assert re.search(r'hx-params="none"\s*>Measure latency', row)
+    assert 'hx-target="#video-source-latency"' in row
+    assert 'style="display:"' in row
+
+
+def test_the_video_source_section_hides_measure_latency_for_the_media_gallery(live_server, monkeypatch) -> None:
+    server, base = live_server
+    save_config(AppConfig(video_source_type="testpattern"), server.config_path)
+    _latency_stats(monkeypatch, server, _DECODING)
+    _, body = _get(base, "/section/video_source")
+    row = _latency_row(body)
+    assert 'style="display:none"' in row[: row.index(">")]
+    # Switching the source type on the page hides and shows it too.
+    assert "vis('video-source-latency', value !== 'testpattern');" in body

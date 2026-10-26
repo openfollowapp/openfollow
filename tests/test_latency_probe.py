@@ -320,4 +320,4 @@ def test_the_level_of_a_round_trip(median_ms: float, level: str) -> None:
 def test_every_failure_says_what_was_seen(reason: FailureReason) -> None:
     failure = lp.LatencyFailure(reason)
     assert failure.text.endswith(".")
-    assert "—" not in failure.text + failure.action
+    assert chr(0x2014) not in failure.text + failure.action

@@ -2278,7 +2278,7 @@
  background: var(--info-sign) no-repeat center / contain;
  }
  /* Progress: an info box led by the spinner in the sign's place. */
- .network-banner.network-banner-busy::before { content: none; }
+ .network-banner-busy::before { content: none; }
  .network-banner-busy .modal-spinner { position: absolute; left: 12px; top: 11px; width: 16px; height: 16px; box-sizing: border-box; }
  .notice.error, .update-notice.error, .modal-error, .diag-error, .gallery-error, .network-banner.network-banner-error {
  border-color: var(--error-border);

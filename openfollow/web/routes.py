@@ -134,6 +134,7 @@ from openfollow.palette import AUTO_PICK_ORDER
 from openfollow.privilege import settings_backup
 from openfollow.privilege.camera_config import AUTOMATIC
 from openfollow.runtime.diagnostics_export import WEB, ExportStatus, status_lines
+from openfollow.runtime.latency_probe import MEDIA_GALLERY, LatencyFailure
 from openfollow.scene.edge_snap import LumaBand, NearEdge
 from openfollow.station_fqdn import canonical_host, fqdn_problem
 from openfollow.templates import (
@@ -166,6 +167,7 @@ from openfollow.web.config_cache import ParsedConfigCache
 from openfollow.web.discovery import clean_peer_name
 from openfollow.web.keyboard_layout_view import build_keyboard_layout_view, station_catalog, variant_options
 from openfollow.web.labels import video_error_token
+from openfollow.web.latency_view import latency_unavailable, latency_view
 from openfollow.web.live_alerts import statistics_alerts
 from openfollow.web.login_throttle import LoginThrottle
 from openfollow.web.whats_new import load_backup_note, load_whats_new
@@ -6010,9 +6012,18 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         data: dict[str, Any] = {
             "config": cfg,
             "saved": saved,
+            "latency": _latency_view(cfg),
         }
         data.update(_build_input_template_data(cfg, video))
         return template("partials/video_source", **data)
+
+    def _latency_view(cfg: AppConfig) -> dict[str, Any]:
+        """The Measure latency row; hidden while the saved source is the Media Gallery."""
+        return latency_view(
+            server.get_runtime_stats(),
+            server.get_latency_status(),
+            gallery=cfg.video_source_type == MEDIA_GALLERY,
+        )
 
     def _load_config_for_edit() -> AppConfig:
         """Fresh disk load with the live per-marker move speeds overlaid.
@@ -6246,6 +6257,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             on_device=_is_on_device_request(),
             cancel_button=_cancel_button_label(config),
             psn_source_advisory=server.get_psn_source_advisory(),
+            latency=_latency_view(config),
             **_build_input_template_data(config, server.get_runtime_stats().get("video")),
         )
 
@@ -6320,6 +6332,26 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             scope="source",
             live="status",
         )
+
+    @app.get("/section/video_source/latency")
+    def get_video_source_latency() -> Any:
+        """The Measure latency row, polled while a run lasts."""
+        return template("partials/video_source_latency", latency=_latency_view(_request_scoped_config()))
+
+    @app.post("/section/video_source/latency")
+    def start_video_source_latency() -> Any:
+        """Start a camera latency run; 409 with the reason while one cannot run."""
+        refusal = latency_unavailable(server.get_runtime_stats())
+        if refusal is not None:
+            failure = LatencyFailure(refusal)
+            return _save_failed(409, failure.text, failure.action)
+        server.request_latency("start")
+        return template("partials/video_source_latency", latency=_latency_view(_request_scoped_config()))
+
+    @app.post("/section/video_source/latency/stop")
+    def stop_video_source_latency() -> Any:
+        server.request_latency("stop")
+        return template("partials/video_source_latency", latency=_latency_view(_request_scoped_config()))
 
     @app.get("/section/general/network_state")
     def get_general_network_state() -> Any:
@@ -7245,6 +7277,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             extra["psn_source_advisory"] = server.get_psn_source_advisory()
         elif name == "video_source":
             extra.update(_build_input_template_data(config, server.get_runtime_stats().get("video")))
+            extra["latency"] = _latency_view(config)
         elif name == "mouse3d":
             extra["mouse3d_status"] = _mouse3d_status_view(server)
         elif name in ("controller", "gamepad"):

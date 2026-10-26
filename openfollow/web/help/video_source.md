@@ -77,4 +77,16 @@ NDI and the cameras (USB, Pi Camera, macOS) recover differently. When their sour
 
 **Preview** – an inline snapshot of the current video input, refreshed every two seconds while the section is open and in view.
 
+## Camera Latency
+
+**Measure latency** times the round trip from this station's Operator Screen through the camera and back, with the camera pointed at the Operator Screen. While it runs, the Operator Screen shows plain black and then flashes white five times, for about 5 to 15 s depending on the latency; video and HUD are hidden until it ends. Only the overall brightness of the picture is read, so the screen does not need to fill the frame, and focus, stage light and the camera's auto exposure hardly matter. **Stop** ends a run at once.
+
+Each change of the screen, white and back to black, is timed from the display refresh that showed it to the first decoded frame in which the picture changed: ten changes in all. The result is the median of the ten, with the shortest and longest beside it. It includes everything between the screen and the decoded frame: the camera's exposure and processing, encoding, the network, buffering in the stream and in the station, decoding, and the delay of the screen itself, so the same camera can read differently on another monitor.
+
+The result is green below 120 ms, amber from 120 to 250 ms and red from 250 ms. At walking pace, about 1.5 m/s, a performer moves about 15 cm in 100 ms before the Operator Screen shows it.
+
+**No flash seen in the video within 3 s** means the picture never got brighter after the screen turned white: the camera does not see the Operator Screen, or the screen is too small a part of its picture to change the brightness. **The video did not go dark again within 3 s of the flash** means the picture stayed bright after the screen turned black. A run also ends when the video source changes or stops while it runs.
+
+The button is unavailable while no screen shows the Operator Screen or no video is decoded, and the row is hidden for the Media Gallery, which plays stored pictures. The last successful result is kept until the next one and is listed in the diagnostics bundle; a run that fails or is stopped keeps none.
+
 **Save** – write and apply the settings; the pipeline restarts with the new source within about a second.

@@ -6,8 +6,10 @@
  * station observed and one next step. The line stays until the next edit in
  * that form or the next save from it.
  *
- * HTMX saves (any non-GET request) are handled here on ``document``. A
- * script-driven save calls ``window.OpenFollow.saveError``:
+ * HTMX saves (any non-GET request) are handled here on ``document``; an
+ * element or ancestor with ``data-error-lead`` names the lead for an action
+ * that saves nothing ("Not started."). A script-driven save calls
+ * ``window.OpenFollow.saveError``:
  *
  *   show(box, info, lead, near) ring ``box``; write ``info`` after ``near``
  *                              (default: the box's last actions row)
@@ -129,6 +131,11 @@
         return elt.closest(BOX_SELECTOR) || elt.closest('form');
     }
 
+    function leadFor(elt) {
+        var host = elt && elt.closest ? elt.closest('[data-error-lead]') : null;
+        return host ? host.getAttribute('data-error-lead') : undefined;
+    }
+
     function isSave(evt) {
         var cfg = evt.detail && evt.detail.requestConfig;
         return !!(cfg && cfg.verb && String(cfg.verb).toLowerCase() !== 'get');
@@ -146,10 +153,10 @@
     document.addEventListener('htmx:responseError', function (evt) {
         if (!isSave(evt)) return;
         var xhr = evt.detail.xhr;
-        show(boxFor(evt.detail.elt), fromText(xhr.status, xhr.responseText));
+        show(boxFor(evt.detail.elt), fromText(xhr.status, xhr.responseText), leadFor(evt.detail.elt));
     });
     document.addEventListener('htmx:sendError', function (evt) {
-        if (isSave(evt)) show(boxFor(evt.detail.elt), UNREACHABLE);
+        if (isSave(evt)) show(boxFor(evt.detail.elt), UNREACHABLE, leadFor(evt.detail.elt));
     });
 
     window.OpenFollow = window.OpenFollow || {};

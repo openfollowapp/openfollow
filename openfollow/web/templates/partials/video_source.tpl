@@ -44,7 +44,7 @@
             fb.textContent = msg;
         };
         // Source Type drives which controls apply: capture (live sources only),
-        // connection recovery (network sources only), preview (not the gallery).
+        // connection recovery (network sources only), preview and latency (not the gallery).
         window.ofVideoSourceToggle = function(value){
             document.querySelectorAll('[data-input-type]').forEach(function(el){
                 el.style.display = el.dataset.inputType === value ? '' : 'none';
@@ -54,6 +54,7 @@
             vis('capture-frame-row', value !== 'testpattern');
             vis('recovery-row', net);
             vis('preview-row', value !== 'testpattern');
+            vis('video-source-latency', value !== 'testpattern');
         };
         </script>
         <!-- Connection recovery applies to network inputs only (RTSP/SRT/RTP). -->
@@ -129,6 +130,9 @@
             document.body.addEventListener('poll-shown', onShown);
         })();
         </script>
+% if defined('latency'):
+%     include('partials/video_source_latency.tpl')
+% end
     </div>
 
     <div class="actions">

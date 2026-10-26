@@ -852,6 +852,14 @@ class ConfigWebServer:
         """Queue a controller-slot action (``identify`` / ``forget``) for the main loop."""
         self._command_queue.request_slot_action(action, index, ref)
 
+    def request_latency(self, command: str) -> None:
+        """Queue ``start`` or ``stop`` of a camera latency run for the main loop."""
+        self._command_queue.request_latency(command)
+
+    def get_latency_status(self) -> dict[str, Any]:
+        """The camera latency run as the main loop last reported it."""
+        return self._command_queue.get_latency_status()
+
     def whats_new_pending(self) -> bool:
         """True when the page should open the updater's What's new step."""
         return self._command_queue.whats_new_pending()

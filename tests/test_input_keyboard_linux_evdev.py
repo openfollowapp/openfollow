@@ -118,7 +118,24 @@ class _Node:
     open_error: bool = False
     caps_error: bool = False
     close_error: bool = False
+    # What opening the node or reading its capabilities raises besides OSError.
+    open_raises: Exception | None = None
+    caps_raises: Exception | None = None
     closed: int = 0
+
+
+# A name python-evdev decodes as strict UTF-8.
+_BAD_NAME = UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+
+def _sysfs_bitmap(keys: list[int]) -> str:
+    """The kernel's ``capabilities/key`` text: hex longs, most significant first."""
+    mask = sum(1 << key for key in set(keys))
+    words = []
+    while mask:
+        words.append(f"{mask & (1 << 64) - 1:x}")
+        mask >>= 64
+    return " ".join(reversed(words)) or "0"
 
 
 class _FakeDevice:
@@ -128,6 +145,8 @@ class _FakeDevice:
     def capabilities(self) -> dict[int, list[int]]:
         if self._node.caps_error:
             raise OSError("capabilities")
+        if self._node.caps_raises is not None:
+            raise self._node.caps_raises
         return {0: [0, 1], EV_KEY: list(self._node.keys)}
 
     def active_keys(self) -> list[int]:
@@ -142,22 +161,31 @@ class _FakeDevice:
 
 
 class _FakeEvdev(types.ModuleType):
-    """The slice of python-evdev the poller uses, over real files standing in for the nodes."""
+    """The slice of python-evdev the poller uses, over real files standing in for the nodes and sysfs."""
 
-    def __init__(self, input_dir: Path) -> None:
+    def __init__(self, input_dir: Path, sysfs_dir: Path) -> None:
         super().__init__("evdev")
         self.input_dir = input_dir
+        self.sysfs_dir = sysfs_dir
         self.ecodes = SimpleNamespace(EV_KEY=EV_KEY, **KEY_CODES)
         self.nodes: dict[str, _Node] = {}
         self.opened: list[str] = []
         self.list_error = False
 
-    def add(self, name: str, keys: list[int] | None = None, **flags: Any) -> _Node:
+    def add(self, name: str, keys: list[int] | None = None, *, sysfs: bool = True, **flags: Any) -> _Node:
+        """A node; with ``sysfs=False`` sysfs cannot classify it and the poller must open it to tell."""
         path = self.input_dir / name
         path.touch()
         node = _Node(keys=KEYBOARD_KEYS if keys is None else keys, **flags)
         self.nodes[str(path)] = node
+        if sysfs:
+            self.write_sysfs(name, node.keys)
         return node
+
+    def write_sysfs(self, name: str, keys: list[int]) -> None:
+        caps = self.sysfs_dir / name / "device" / "capabilities"
+        caps.mkdir(parents=True, exist_ok=True)
+        (caps / "key").write_text(_sysfs_bitmap(keys) + "\n")
 
     def replace(self, name: str, keys: list[int]) -> _Node:
         """A new node at the same path (a different inode), as after an unplug and replug."""
@@ -179,6 +207,8 @@ class _FakeEvdev(types.ModuleType):
         node = self.nodes[path]
         if node.open_error:
             raise OSError(13, "Permission denied")
+        if node.open_raises is not None:
+            raise node.open_raises
         return _FakeDevice(node)
 
 
@@ -198,8 +228,15 @@ def input_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def fake_evdev(monkeypatch: pytest.MonkeyPatch, input_dir: Path) -> _FakeEvdev:
-    fake = _FakeEvdev(input_dir)
+def sysfs_dir(tmp_path: Path) -> Path:
+    path = tmp_path / "sysfs"
+    path.mkdir()
+    return path
+
+
+@pytest.fixture
+def fake_evdev(monkeypatch: pytest.MonkeyPatch, input_dir: Path, sysfs_dir: Path) -> _FakeEvdev:
+    fake = _FakeEvdev(input_dir, sysfs_dir)
     monkeypatch.setitem(sys.modules, "evdev", fake)
     return fake
 
@@ -210,7 +247,13 @@ def clock() -> _Clock:
 
 
 def _poller(input_dir: Path, clock: _Clock) -> LinuxEvdevKeyboardPoller:
-    return LinuxEvdevKeyboardPoller(input_dir=str(input_dir), clock=clock)
+    return LinuxEvdevKeyboardPoller(input_dir=str(input_dir), clock=clock, sysfs_dir=str(input_dir.parent / "sysfs"))
+
+
+def _deny(monkeypatch: pytest.MonkeyPatch, path: Path, mode: int = os.R_OK | os.W_OK) -> None:
+    """``path`` grants no access that needs any bit of ``mode``."""
+    real_access = os.access
+    monkeypatch.setattr(os, "access", lambda p, m, **kw: not (p == str(path) and m & mode) and real_access(p, m, **kw))
 
 
 def _codes(*names: str) -> set[int]:
@@ -237,15 +280,51 @@ def test_unavailable_when_the_input_directory_is_missing(
     assert fake_evdev.opened == []
 
 
-def test_unavailable_when_an_input_node_cannot_be_opened(
+def test_unavailable_when_a_keyboard_node_cannot_be_opened(
     fake_evdev: _FakeEvdev, input_dir: Path, clock: _Clock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake_evdev.add("event0")
     fake_evdev.add("event1")
-    denied = str(input_dir / "event1")
-    real_access = os.access
-    monkeypatch.setattr(os, "access", lambda path, mode, **kw: path != denied and real_access(path, mode, **kw))
+    _deny(monkeypatch, input_dir / "event1")
     assert _poller(input_dir, clock).is_available() is False
+
+
+def test_unavailable_when_a_keyboard_node_is_readable_but_not_writable(
+    fake_evdev: _FakeEvdev, input_dir: Path, clock: _Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # evdev.list_devices lists only nodes open both ways, so a read-only keyboard would never be read.
+    fake_evdev.add("event0")
+    _deny(monkeypatch, input_dir / "event0", mode=os.W_OK)
+    assert _poller(input_dir, clock).is_available() is False
+
+
+def test_unavailable_when_a_node_sysfs_cannot_classify_is_closed(
+    fake_evdev: _FakeEvdev, input_dir: Path, clock: _Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_evdev.add("event0", keys=MOUSE_KEYS, sysfs=False)
+    _deny(monkeypatch, input_dir / "event0")
+    assert _poller(input_dir, clock).is_available() is False
+
+
+def test_a_closed_node_that_is_not_a_keyboard_keeps_evdev(
+    fake_evdev: _FakeEvdev, input_dir: Path, clock: _Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_evdev.add("event0")
+    fake_evdev.add("event1", keys=MOUSE_KEYS)
+    _deny(monkeypatch, input_dir / "event1")
+    poller = _poller(input_dir, clock)
+    assert (poller.is_available(), poller.device_count()) == (True, 1)
+
+
+@pytest.mark.parametrize("text", ["", "zz\n", "\xff"])
+def test_an_unreadable_sysfs_bitmap_does_not_classify_the_node(
+    text: str, fake_evdev: _FakeEvdev, input_dir: Path, sysfs_dir: Path, clock: _Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_evdev.add("event0", keys=MOUSE_KEYS)
+    (sysfs_dir / "event0" / "device" / "capabilities" / "key").write_text(text, encoding="latin-1")
+    _deny(monkeypatch, input_dir / "event0")
+    # An empty bitmap lists no key; garbage tells nothing, so the closed node may be a keyboard.
+    assert _poller(input_dir, clock).is_available() is (text == "")
 
 
 def test_entries_other_than_event_nodes_do_not_decide_availability(
@@ -253,9 +332,7 @@ def test_entries_other_than_event_nodes_do_not_decide_availability(
 ) -> None:
     fake_evdev.add("event0")
     (input_dir / "mouse0").touch()
-    denied = str(input_dir / "mouse0")
-    real_access = os.access
-    monkeypatch.setattr(os, "access", lambda path, mode, **kw: path != denied and real_access(path, mode, **kw))
+    _deny(monkeypatch, input_dir / "mouse0")
     assert _poller(input_dir, clock).is_available() is True
 
 
@@ -366,15 +443,33 @@ def test_a_keyboard_plugged_in_later_is_read_after_the_rescan(
     assert poller.device_count() == 1
 
 
+def test_a_device_sysfs_lists_without_letter_keys_is_never_opened(
+    fake_evdev: _FakeEvdev, input_dir: Path, clock: _Clock
+) -> None:
+    fake_evdev.add("event0", keys=MOUSE_KEYS, held={BTN_LEFT})
+    poller = _poller(input_dir, clock)
+    clock.t += 1.0
+    assert poller.device_count() == 0
+    assert fake_evdev.opened == []
+
+
+def test_the_kernels_word_decides_not_the_sysfs_hint(fake_evdev: _FakeEvdev, input_dir: Path, clock: _Clock) -> None:
+    mouse = fake_evdev.add("event0", keys=MOUSE_KEYS)
+    fake_evdev.write_sysfs("event0", KEYBOARD_KEYS)
+    poller = _poller(input_dir, clock)
+    assert poller.device_count() == 0
+    assert mouse.closed == 1
+
+
 def test_a_device_without_letter_keys_is_not_read(fake_evdev: _FakeEvdev, input_dir: Path, clock: _Clock) -> None:
-    mouse = fake_evdev.add("event0", keys=MOUSE_KEYS, held={BTN_LEFT})
+    mouse = fake_evdev.add("event0", keys=MOUSE_KEYS, held={BTN_LEFT}, sysfs=False)
     poller = _poller(input_dir, clock)
     assert poller.device_count() == 0
     assert mouse.closed == 1
 
 
 def test_a_device_that_is_not_a_keyboard_is_opened_once(fake_evdev: _FakeEvdev, input_dir: Path, clock: _Clock) -> None:
-    fake_evdev.add("event0", keys=MOUSE_KEYS)
+    fake_evdev.add("event0", keys=MOUSE_KEYS, sysfs=False)
     poller = _poller(input_dir, clock)
     for _ in range(3):
         clock.t += 1.0
@@ -385,7 +480,7 @@ def test_a_device_that_is_not_a_keyboard_is_opened_once(fake_evdev: _FakeEvdev, 
 def test_a_keyboard_on_the_node_a_mouse_left_is_picked_up(
     fake_evdev: _FakeEvdev, input_dir: Path, clock: _Clock
 ) -> None:
-    fake_evdev.add("event0", keys=MOUSE_KEYS)
+    fake_evdev.add("event0", keys=MOUSE_KEYS, sysfs=False)
     poller = _poller(input_dir, clock)
     fake_evdev.replace("event0", KEYBOARD_KEYS)
     clock.t += 1.0
@@ -394,7 +489,7 @@ def test_a_keyboard_on_the_node_a_mouse_left_is_picked_up(
 
 def test_a_node_that_leaves_and_returns_is_opened_again(fake_evdev: _FakeEvdev, input_dir: Path, clock: _Clock) -> None:
     path = str(input_dir / "event0")
-    mouse = fake_evdev.add("event0", keys=MOUSE_KEYS)
+    mouse = fake_evdev.add("event0", keys=MOUSE_KEYS, sysfs=False)
     poller = _poller(input_dir, clock)
     del fake_evdev.nodes[path]
     clock.t += 1.0
@@ -463,6 +558,42 @@ def test_a_close_that_fails_still_drops_the_keyboard(fake_evdev: _FakeEvdev, inp
     assert poller.device_count() == 0
 
 
+def test_a_device_evdev_cannot_decode_is_skipped_once_and_the_rest_are_opened(
+    fake_evdev: _FakeEvdev, input_dir: Path, clock: _Clock, caplog: pytest.LogCaptureFixture
+) -> None:
+    fake_evdev.add("event0", open_raises=_BAD_NAME)
+    fake_evdev.add("event1", held=_codes("KEY_W"))
+    with caplog.at_level(logging.WARNING, logger=keyboard_module.__name__):
+        poller = _poller(input_dir, clock)
+        for _ in range(3):
+            clock.t += 1.0
+            assert poller.is_key_pressed("w") is True
+    assert poller.device_count() == 1
+    assert fake_evdev.opened.count(str(input_dir / "event0")) == 1
+    assert caplog.text.count("evdev keyboard poller skips") == 1
+
+
+def test_a_device_plugged_in_later_that_evdev_cannot_decode_does_not_stop_the_frame(
+    fake_evdev: _FakeEvdev, input_dir: Path, clock: _Clock
+) -> None:
+    fake_evdev.add("event1", held=_codes("KEY_W"))
+    poller = _poller(input_dir, clock)
+    fake_evdev.add("event0", open_raises=_BAD_NAME)
+    clock.t += 1.0
+    assert poller.is_key_pressed("w") is True
+
+
+def test_a_device_whose_capabilities_raise_is_closed_and_skipped_once(
+    fake_evdev: _FakeEvdev, input_dir: Path, clock: _Clock
+) -> None:
+    node = fake_evdev.add("event0", caps_raises=ValueError("bad capability table"))
+    poller = _poller(input_dir, clock)
+    clock.t += 1.0
+    assert poller.device_count() == 0
+    assert node.closed == 1
+    assert fake_evdev.opened == [str(input_dir / "event0")]
+
+
 # --------------------------------------------------------------------------- #
 # Factory and handler
 # --------------------------------------------------------------------------- #
@@ -493,6 +624,24 @@ def test_factory_falls_back_on_linux_without_evdev(
     assert isinstance(create_keyboard_poller(), FallbackKeyboardPoller)
 
 
+def test_factory_falls_back_when_the_evdev_poller_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _broken() -> LinuxEvdevKeyboardPoller:
+        raise RuntimeError("evdev blew up")
+
+    monkeypatch.setattr(keyboard_module.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(keyboard_module, "LinuxEvdevKeyboardPoller", _broken)
+    assert isinstance(create_keyboard_poller(), FallbackKeyboardPoller)
+
+
+def test_handler_starts_beside_a_device_evdev_cannot_decode(
+    fake_evdev: _FakeEvdev, input_dir: Path, clock: _Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_evdev.add("event0", open_raises=_BAD_NAME)
+    fake_evdev.add("event1")
+    _install_poller(monkeypatch, input_dir, clock)
+    assert KeyboardHandler(_App()).status() == {"poller": "evdev", "devices": 1}
+
+
 class _App:
     def __init__(self) -> None:
         self._config = AppConfig()
@@ -504,6 +653,16 @@ def test_handler_on_evdev_reports_the_poller_and_its_keyboards(
     fake_evdev.add("event0")
     _install_poller(monkeypatch, input_dir, clock)
     assert KeyboardHandler(_App()).status() == {"poller": "evdev", "devices": 1}
+
+
+def test_handler_on_quartz_reports_the_quartz_kind(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _NoQuartz:
+        def LoadLibrary(self, name: str) -> None:  # noqa: N802 - ctypes' name
+            raise OSError(name)
+
+    monkeypatch.setattr(keyboard_module.ctypes, "cdll", _NoQuartz())
+    monkeypatch.setattr(keyboard_module, "create_keyboard_poller", keyboard_module.MacOSKeyboardPoller)
+    assert KeyboardHandler(_App()).status() == {"poller": "quartz", "devices": None}
 
 
 def test_handler_on_the_fallback_reports_no_device_count(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -838,3 +997,25 @@ def test_a_keymap_without_polled_letters_keeps_us_positions(
         poller = _poller(input_dir, clock)
     assert _on_us_positions(poller, node, clock)
     assert "Could not resolve keyboard layout xx" in caplog.text
+
+
+# --------------------------------------------------------------------------- #
+# The real python-xkbcommon (Linux CI and the Pi gate)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(("layout", "z_key", "y_key"), [("de", "KEY_Y", "KEY_Z"), ("us", "KEY_Z", "KEY_Y")])
+def test_the_real_xkbcommon_places_z_and_y(
+    layout: str, z_key: str, y_key: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pins the binding's API the fakes assume; compiles a keymap from the host's xkb-data."""
+    monkeypatch.delitem(sys.modules, "xkbcommon")
+    try:
+        import xkbcommon.xkb  # noqa: F401
+    except ImportError:
+        pytest.skip("python-xkbcommon is not installed (Linux only)")
+    layout_map = keyboard_module._build_linux_layout_keycode_map(
+        {"layout": layout, "variant": "", "model": "", "options": ""}
+    )
+    assert layout_map is not None
+    assert (layout_map["z"], layout_map["y"]) == (KEY_CODES[z_key], KEY_CODES[y_key])

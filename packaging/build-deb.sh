@@ -201,6 +201,11 @@ import evdev  # noqa: F401
 from xkbcommon import xkb  # noqa: F401
 for module in (evdev, xkb):
     assert os.path.realpath(module.__file__).startswith(prefix + os.sep), f"not bundled in venv: {module.__file__}"
+# The binding's API as the poller calls it, against this host's xkb-data: QWERTZ
+# puts z on the key US prints Y. A mismatch would silently poll US positions.
+from openfollow.input.keyboard import _build_linux_layout_keycode_map
+qwertz = _build_linux_layout_keycode_map({"layout": "de", "variant": "", "model": "", "options": ""})
+assert qwertz and qwertz["z"] == evdev.ecodes.KEY_Y, f"xkb layout map broken: {qwertz}"
 
 # Detection backend must be bundled (import from the venv prefix); the AGPL
 # export toolchain (torch / ultralytics) must not be – the SBOM gate's boundary,

@@ -52,7 +52,7 @@ dependencies = [
     "evdev>=1.6; sys_platform == 'linux'",
     # Maps that poller's letters to the session's keyboard layout. cffi binding
     # built from sdist against ``libxkbcommon-dev``; loads ``libxkbcommon0``.
-    "xkbcommon>=1.0; sys_platform == 'linux'",
+    "xkbcommon>=1.0,<2; sys_platform == 'linux'",
 ]
 
 [project.optional-dependencies]
@@ -181,6 +181,7 @@ module = [
     "easyhid",
     "OpenGL",
     "evdev",
+    "evdev.*",
     "xkbcommon.*",
 ]
 ignore_missing_imports = true

@@ -185,6 +185,7 @@ _EVDEV_KEY_NAMES: dict[str, tuple[str, ...]] = {
 
 _POLLED_LETTERS = frozenset(key for key in POLLED_KEYS if len(key) == 1)
 _INPUT_DIR = "/dev/input"
+_SYSFS_INPUT_DIR = "/sys/class/input"
 # An xkb keycode is the evdev code plus 8.
 _XKB_EVDEV_OFFSET = 8
 _XKB_SESSION_ENV = (
@@ -472,14 +473,33 @@ def _layout_label(names: Mapping[str, str]) -> str:
     return f"{layout} ({names['variant']})" if names["variant"] else layout
 
 
-def _input_devices_accessible(input_dir: str) -> bool:
-    """Whether this user may open every evdev node in ``input_dir`` (the service user is in ``input``)."""
+def _sysfs_has_key(sysfs_dir: str, node: str, code: int) -> bool | None:
+    """Whether the kernel lists key ``code`` (< 32) for evdev ``node``; ``None`` when sysfs cannot tell.
+
+    The world-readable bitmap is hex words, most significant first, so the
+    lowest codes sit in the last word.
+    """
+    try:
+        with open(os.path.join(sysfs_dir, node, "device", "capabilities", "key"), encoding="ascii") as handle:
+            words = handle.read().split()
+        return bool(words) and bool(int(words[-1], 16) >> code & 1)
+    except (OSError, ValueError):
+        return None
+
+
+def _keyboards_accessible(input_dir: str, sysfs_dir: str, key_a: int) -> bool:
+    """Whether this user may open every node that is, or may be, a keyboard (the service user is in ``input``).
+
+    Read and write, as ``evdev.list_devices`` lists only nodes it may open both ways.
+    """
     try:
         names = os.listdir(input_dir)
     except OSError:
         return False
     return all(
-        os.access(os.path.join(input_dir, name), os.R_OK | os.W_OK) for name in names if name.startswith("event")
+        os.access(os.path.join(input_dir, name), os.R_OK | os.W_OK)
+        for name in names
+        if name.startswith("event") and _sysfs_has_key(sysfs_dir, name, key_a) is not False
     )
 
 
@@ -496,14 +516,20 @@ class LinuxEvdevKeyboardPoller(KeyboardPoller):
     _SNAPSHOT_TTL_S = 0.004
     _RESCAN_INTERVAL_S = 1.0
 
-    def __init__(self, input_dir: str = _INPUT_DIR, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self,
+        input_dir: str = _INPUT_DIR,
+        clock: Callable[[], float] = time.monotonic,
+        sysfs_dir: str = _SYSFS_INPUT_DIR,
+    ) -> None:
         self._input_dir = input_dir
+        self._sysfs_dir = sysfs_dir
         self._clock = clock
         self._available = False
         self._evdev: Any = None
         self._key_codes: dict[str, tuple[int, ...]] = {}
         self._devices: dict[str, Any] = {}
-        # Nodes that are not keyboards, by inode, so a rescan opens each node once.
+        # Nodes sysfs could not classify that are not keyboards, or failed to open, by inode.
         self._rejected: dict[str, int] = {}
         self._held: frozenset[int] = frozenset()
         self._held_at = -math.inf
@@ -514,14 +540,14 @@ class LinuxEvdevKeyboardPoller(KeyboardPoller):
         except ImportError as exc:
             logger.warning("evdev keyboard poller unavailable: %s", exc)
             return
-        if not _input_devices_accessible(input_dir):
-            logger.warning("evdev keyboard poller unavailable: cannot open the devices in %s", input_dir)
-            return
-        self._evdev = evdev
         ecodes = evdev.ecodes
-        self._key_codes = {key: tuple(getattr(ecodes, n) for n in names) for key, names in _EVDEV_KEY_NAMES.items()}
         self._key_a: int = ecodes.KEY_A
         self._ev_key: int = ecodes.EV_KEY
+        if not _keyboards_accessible(input_dir, sysfs_dir, self._key_a):
+            logger.warning("evdev keyboard poller unavailable: cannot open the keyboards in %s", input_dir)
+            return
+        self._evdev = evdev
+        self._key_codes = {key: tuple(getattr(ecodes, n) for n in names) for key, names in _EVDEV_KEY_NAMES.items()}
         self._available = True
         self._apply_layout()
         self._maybe_rescan(self._clock())
@@ -589,7 +615,7 @@ class LinuxEvdevKeyboardPoller(KeyboardPoller):
             self._drop(path)
         self._rejected = {path: inode for path, inode in self._rejected.items() if path in paths}
         for path in paths:
-            if path in self._devices:
+            if path in self._devices or _sysfs_has_key(self._sysfs_dir, os.path.basename(path), self._key_a) is False:
                 continue
             try:
                 inode = os.stat(path).st_ino
@@ -601,16 +627,28 @@ class LinuxEvdevKeyboardPoller(KeyboardPoller):
                 device = self._evdev.InputDevice(path)
             except OSError:
                 continue
+            except Exception as exc:
+                self._reject_broken(path, inode, exc)
+                continue
             try:
                 is_keyboard = self._key_a in device.capabilities().get(self._ev_key, ())
             except OSError:
                 _close_quietly(device)
+                continue
+            except Exception as exc:
+                _close_quietly(device)
+                self._reject_broken(path, inode, exc)
                 continue
             if is_keyboard:
                 self._devices[path] = device
             else:
                 self._rejected[path] = inode
                 _close_quietly(device)
+
+    def _reject_broken(self, path: str, inode: int, exc: Exception) -> None:
+        """Skip a node python-evdev cannot read (e.g. a name that is not UTF-8) until it is replaced."""
+        self._rejected[path] = inode
+        logger.warning("evdev keyboard poller skips %s: %r", path, exc)
 
     def _drop(self, path: str) -> None:
         _close_quietly(self._devices.pop(path))
@@ -659,10 +697,14 @@ def create_keyboard_poller() -> KeyboardPoller:
             return poller
         logger.warning("macOS native poller unavailable, using fallback")
     elif system == "Linux":
-        evdev_poller = LinuxEvdevKeyboardPoller()
-        if evdev_poller.is_available():
-            return evdev_poller
-        logger.warning("evdev keyboard poller unavailable, using fallback")
+        try:
+            evdev_poller = LinuxEvdevKeyboardPoller()
+        except Exception:
+            logger.exception("evdev keyboard poller failed to start, using fallback")
+        else:
+            if evdev_poller.is_available():
+                return evdev_poller
+            logger.warning("evdev keyboard poller unavailable, using fallback")
 
     return FallbackKeyboardPoller()
 

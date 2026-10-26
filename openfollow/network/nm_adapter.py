@@ -717,7 +717,7 @@ class NetworkManagerAdapter(NetworkAdapter):
                 else f"Could not save the settings to profile '{name}'; nothing was changed.",
             )
 
-        if not profile.device and self._device_state(iface) == "":
+        if not profile.device and self._waits_for_its_adapter(iface, profile):
             # Saved only: NetworkManager brings the profile up when the adapter appears.
             return ApplyResult(
                 ok=True, pending=True, message=f"Saved; the settings take effect when {iface} is plugged in."
@@ -762,6 +762,23 @@ class NetworkManagerAdapter(NetworkAdapter):
                 else f"Saved, but {iface} could not be brought up.",
             )
         return ApplyResult(ok=True, message="Applied.", partial_failures=tuple(partial))
+
+    def _waits_for_its_adapter(self, iface: str, profile: _Profile) -> bool:
+        """*iface* is not present, nor, for a VLAN, its parent: the profile comes up when the adapter does.
+
+        A VLAN whose parent is present waits for nothing, so it is brought up now.
+        """
+        if self._device_state(iface) != "":
+            return False
+        if profile.kind != "vlan":
+            return True
+        try:
+            profiles = self._read_profiles()
+            details = self._profile_details(profiles)
+        except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
+            return True
+        link = _vlan_link(details.get(profile.uuid, {}), _device_by_uuid(profiles, details))
+        return link is None or self._device_state(link[0]) == ""
 
     def renew_lease(self, iface: str) -> ApplyResult:
         profile = self._profile_for(iface)

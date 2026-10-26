@@ -29,13 +29,13 @@ In Advanced:
 One row per adapter:
 
 - **Name** – your label for the adapter when it has one, with the interface name and which adapter it is underneath: `USB 2, port 2 · ASIX AX88179B`, `Built-in Ethernet`, `VLAN 13 on Production (eth0)`. Without a label the interface name leads.
-- **Dot** – green: up with an address. Grey: no address.
+- **Dot** – green: up with an address. Grey: no address, or not plugged in.
 - **Address** – with its prefix, or `(no address)`.
 - **Method tag** – `DHCP`, `DHCP + manual` or `Static`.
 - **VLAN n** – a tagged VLAN sub-interface and its ID.
 - **This session** – the address answering your browser belongs to this adapter. Changing its addressing drops this page.
 
-An adapter that is not plugged in stays in the list as **Not connected** while the station keeps settings for it, labelled or not, with the address it comes up with. A VLAN on it is listed under it. A labelled adapter without saved settings stays too, so its label stays taken. These are listed in Advanced only; the station's own screen lists them too.
+An adapter that is not plugged in stays in the list as **Not connected** while the station keeps settings for it, labelled or not, with the address it comes up with. A VLAN on it is listed under it. A labelled adapter without saved settings stays too, so its label stays taken. Both are listed in Advanced and on the station's own screen.
 
 Open a row to see its settings. **Scan** re-reads the adapter list, for example after a USB adapter is plugged in.
 
@@ -65,7 +65,7 @@ In Advanced, **+ Add VLAN** creates a sub-interface for one 802.1Q tag: **Parent
 ## Buttons
 
 - **Edit** – unlocks one row's fields. Absent on a read-only station, which shows a **Read only** badge.
-- **Apply** – checks and saves the row. Without a cable, with no DHCP server answering yet, or on an adapter that is not plugged in, the settings are saved and the result says so; they take effect when it comes up.
+- **Apply** – checks and saves the row. Without a cable, with no DHCP server answering yet, or on an adapter that is not plugged in, the settings are saved and the result says so; they take effect when it comes up. `DHCP with manual address` needs the adapter plugged in, since its subnet comes from the lease.
 - **Renew DHCP lease** – asks for a fresh lease.
 - **Remove VLAN** – removes the station's interface for that VLAN; anything pinned to it stops sending. Refused for the interface answering your browser.
 - **Forget** – on an adapter that is not plugged in: deletes its saved settings, those of every VLAN on it, and their labels, after asking. Plugged in again, it gets the settings a new adapter gets. On a labelled adapter without saved settings it drops only the label, for example to give it to a replacement adapter.

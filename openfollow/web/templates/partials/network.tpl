@@ -295,7 +295,10 @@
                         <label for="net-method-{{_name}}">Method</label>
                         <select id="net-method-{{_name}}" class="net-method-select" name="method" {{_dis}}>
                             <option value="dhcp" {{'selected' if _rmethod == 'dhcp' else ''}}>DHCP (automatic)</option>
+                            %# Its subnet comes from a lease, which an adapter that is not plugged in has none of.
+                            % if not _absent or _rmethod == 'dhcp_manual':
                             <option value="dhcp_manual" {{'selected' if _rmethod == 'dhcp_manual' else ''}}>DHCP with manual address</option>
+                            % end
                             <option value="static" {{'selected' if _rmethod == 'static' else ''}}>Static</option>
                         </select>
                     </div>
@@ -402,7 +405,7 @@
                           data-confirm-title="Forget {{_label or _name}}?" data-confirm-label="Forget" data-confirm-danger
                           data-busy-text="Deleting the saved settings of {{_name}}…">
                         <input type="hidden" name="iface" value="{{_name}}">
-                        <button type="submit" class="danger">Forget</button>
+                        <button type="submit" class="secondary">Forget</button>
                     </form>
                 </div>
                 % end

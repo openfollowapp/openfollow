@@ -2198,6 +2198,48 @@ class TestAnUnpluggedAdapterKeepsItsSettings:
         assert result.message == "Saved; the settings take effect when enx001122334455 is plugged in."
         assert [call.argv[1:5] for call in a._broker.calls] == [["con", "mod", "uuid", "uuid-Wired connection 3"]]
 
+    def test_a_vlan_on_an_unplugged_parent_is_saved_for_it(self, station) -> None:
+        a, _ = self._station(station)
+        result = a.apply_ipv4("enx0011223344.2", Ipv4Config(method=Ipv4Method.DHCP))
+        assert (result.ok, result.pending) == (True, True)
+        assert [call.argv[2] for call in a._broker.calls] == ["mod"]
+
+    @pytest.mark.parametrize(
+        "vlan", [("eth0", "10"), ("uuid-Wired connection 1", "10")], ids=["parent-by-name", "parent-by-profile"]
+    )
+    def test_a_vlan_whose_parent_is_present_is_brought_up_now(self, station, vlan) -> None:
+        """Nothing is plugged in for it later: NetworkManager would leave it down."""
+        a, _ = station(
+            _Device("eth0", "192.0.2.10/24", "Wired connection 1"),
+            saved=(_Saved("eth0.10", "eth0.10", kind="vlan", vlan=vlan),),
+        )
+        a._broker.responses = [_OK, _NOT_ACTIVE, _OK]
+        result = a.apply_ipv4("eth0.10", Ipv4Config(method=Ipv4Method.DHCP))
+        assert (result.ok, result.pending, result.message) == (True, False, "Applied.")
+        assert [call.argv[2] for call in a._broker.calls] == ["mod", "down", "up"]
+
+    @pytest.mark.parametrize("case", ["unplaceable", "profiles-unreadable"])
+    def test_a_vlan_that_cannot_be_placed_waits_for_its_adapter(self, station, case) -> None:
+        """Bringing it up could only fail: it is saved, as for an absent adapter."""
+        vlan = ("eth0", "ten") if case == "unplaceable" else ("eth0", "10")
+        a, nmcli = station(
+            _Device("eth0", "192.0.2.10/24", "Wired connection 1"),
+            saved=(_Saved("eth0.10", "eth0.10", kind="vlan", vlan=vlan),),
+        )
+        if case == "profiles-unreadable":
+            _delete_then(a, nmcli, fail={_profile_list: _NOT_RUNNING})
+        result = a.apply_ipv4("eth0.10", Ipv4Config(method=Ipv4Method.DHCP))
+        assert (result.ok, result.pending) == (True, True)
+        assert [call.argv[2] for call in a._broker.calls] == ["mod"]
+
+    def test_an_unreadable_device_list_is_not_taken_for_an_unplugged_adapter(self, station) -> None:
+        """Bringing it up reports the failure; a reassuring pending would hide it."""
+        a, _ = self._station(station, fail={lambda argv: argv[3] == "DEVICE,STATE": _NOT_RUNNING})
+        a._broker.responses = [_OK, _NOT_ACTIVE, _NO_SUITABLE_DEVICE]
+        result = a.apply_ipv4("enx001122334455", Ipv4Config(method=Ipv4Method.DHCP))
+        assert (result.ok, result.pending) == (False, False)
+        assert "could not be brought up" in result.message
+
     def test_an_inactive_profile_on_a_present_adapter_is_still_brought_up(self, station) -> None:
         a, _ = station(
             _Device("eth1", profile="", state="30 (disconnected)"),

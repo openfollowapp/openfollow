@@ -3541,7 +3541,7 @@ def test_a_removal_brought_in_line_at_startup_is_named_as_one(fqdn_services, cap
     assert "Station FQDN removal brought in line with DHCP" in caplog.text
 
 
-def test_the_saved_interfaces_come_from_the_shared_reading(monkeypatch) -> None:
+def test_each_saved_interface_is_listed_as_the_card_shows_it(monkeypatch) -> None:
     from openfollow.network.adapter import (
         Ipv4Config,
         Ipv4Method,

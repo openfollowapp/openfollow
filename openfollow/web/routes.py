@@ -117,6 +117,7 @@ from openfollow.net_utils import (
 from openfollow.network.adapter import (
     LOOPBACK_NAMES,
     VLAN_UNSUPPORTED_MESSAGE,
+    ApplyResult,
     Ipv4Config,
     Ipv4Method,
 )
@@ -6343,6 +6344,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     # ----------------------------------------------------------------------
 
     _NETWORK_METHODS = ("dhcp", "dhcp_manual", "static")
+    _DHCP_MANUAL_ABSENT = "DHCP with manual address takes its subnet from a lease. Plug the adapter in, or use Static."
     _NETWORK_METHOD_LABELS = {
         "dhcp": "DHCP",
         "dhcp_manual": "DHCP + manual",
@@ -6781,8 +6783,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         iface = (request.forms.get("iface") or "").strip()
         before = {str(row.get("name", "")): row for row in server.get_network_saved()}
         if iface not in before:
-            abort(404, "No saved settings for that interface")
-        result = server.forget_network_interface(iface)
+            # A stale row: plugged in again, or forgotten from another browser. Truncated as it is echoed.
+            result = ApplyResult(ok=False, message=f"{iface[:_IFNAME_MAX]} has no saved settings.")
+        else:
+            result = server.forget_network_interface(iface)
         labels: dict[str, str] | None = None
         if result.ok:
             # What is still saved stays labelled: a VLAN profile the delete could not reach keeps its row.
@@ -6812,6 +6816,17 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             )
         iface = resolved
         method = Ipv4Method(method_value)
+        if method == Ipv4Method.DHCP_WITH_MANUAL_ADDRESS and iface in _saved_names():
+            # The subnet and router come from the lease, and an adapter that is not plugged in has none.
+            return template(
+                "partials/network",
+                net=_build_network_form_context(
+                    iface=iface,
+                    overrides={"active_interface": iface, "method": method_value, **fields},
+                    editable=True,
+                    banner={"kind": "error", "text": _DHCP_MANUAL_ABSENT},
+                ),
+            )
         address = fields["address"] or None
         # Router + prefix are operator-controlled (and validated) ONLY for a
         # static config. For dhcp_manual they come from the DHCP lease, and

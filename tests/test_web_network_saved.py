@@ -119,6 +119,8 @@ def test_each_offers_edit_and_a_confirmed_forget(unplugged) -> None:
     assert f'hx-get="/section/network/edit/{_USB}"' in parent
     assert 'hx-post="/section/network/forget"' in parent
     assert f'data-confirm-title="Forget {_USB}?"' in parent and "data-confirm-danger" in parent
+    # Only the dialog's own confirm is red: this button only asks.
+    assert '<button type="submit" class="secondary">Forget</button>' in parent
     assert f'hx-confirm="Its saved settings are deleted from this station. Its VLAN {_VLAN} goes with it."' in parent
     vlan = _after_row(body, _VLAN)
     assert 'hx-confirm="Its saved settings are deleted from this station."' in vlan
@@ -176,6 +178,8 @@ def test_edit_opens_it_with_its_own_saved_settings(unplugged) -> None:
     assert 'value="192.0.2.5"' in row and 'value="192.0.2.1"' in row
     assert "10.0.0.5" not in row  # not the active interface's
     assert ">Apply<" in row and "Renew DHCP lease" not in row
+    # Its subnet would come from a lease, and there is none.
+    assert 'value="dhcp_manual"' not in row
     assert "/section/network/forget" not in _after_row(body, _USB)
 
 
@@ -255,11 +259,14 @@ def test_a_failed_forget_keeps_the_labels_and_says_why(unplugged, tmp_path) -> N
 
 
 @pytest.mark.parametrize("iface", ["eth0", "enx665544332211", ""], ids=["present", "unknown", "blank"])
-def test_forget_refuses_an_interface_without_saved_settings(unplugged, iface) -> None:
+def test_forget_of_a_row_without_saved_settings_says_so(unplugged, iface) -> None:
+    """A stale row (plugged in again, or forgotten from another browser) answers on the card, never silently."""
     fake, base = unplugged
-    status, _body = _post(base, "/section/network/forget", {"iface": iface})
-    assert status == 404
+    status, body = _post(base, "/section/network/forget", {"iface": iface})
+    assert status == 200
     assert fake.forgotten == []
+    assert "network-banner-error" in body and f"{iface} has no saved settings." in body
+    assert f'data-adv-key="net-iface-{_USB}"' in body  # the card is current again
 
 
 def test_forget_carries_the_open_edit_row(unplugged) -> None:
@@ -271,3 +278,16 @@ def test_forget_carries_the_open_edit_row(unplugged) -> None:
     )
     row = _row(body, "eth0")
     assert 'data-mode="edit"' in row and 'value="10.0.0.77"' in row
+
+
+def test_dhcp_with_manual_address_is_refused_on_it(unplugged) -> None:
+    fake, base = unplugged
+    _status, body = _post(
+        base, "/section/network/apply", {"iface": _USB, "method": "dhcp_manual", "address": "192.0.2.9"}
+    )
+    assert fake.applied == []
+    assert "DHCP with manual address takes its subnet from a lease." in body
+    row = _row(body, _USB)
+    # What was entered stays, the choice included, so it can be corrected.
+    assert 'data-mode="edit"' in row and 'value="192.0.2.9"' in row
+    assert '<option value="dhcp_manual" selected>' in row

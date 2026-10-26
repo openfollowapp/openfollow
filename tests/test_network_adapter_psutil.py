@@ -387,3 +387,10 @@ def test_a_read_only_host_cannot_register_a_name_by_dhcp() -> None:
 
     result = PsutilReadOnlyAdapter().set_dhcp_fqdn("of-1.stage.example.com")
     assert (result.ok, result.message) == (False, DHCP_FQDN_UNSUPPORTED_MESSAGE)
+
+
+def test_forget_interface_is_unsupported() -> None:
+    from openfollow.network.adapter import FORGET_UNSUPPORTED_MESSAGE
+
+    result = PsutilReadOnlyAdapter().forget_interface("enx001122334455")
+    assert (result.ok, result.message) == (False, FORGET_UNSUPPORTED_MESSAGE)

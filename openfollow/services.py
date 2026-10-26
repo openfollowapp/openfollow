@@ -1737,7 +1737,9 @@ class AppRuntimeServices:
             marker.set_pos(*default_pos)
         # No selection yet, so the first unparked marker is chosen as a start, not as a park moving it.
         self._app._selected_id = None
-        set_parked(self._app, parked_within(self._app._controlled_ids, self._app._config.parked_marker_ids))
+        parked = parked_within(self._app._controlled_ids, self._app._config.parked_marker_ids)
+        self._app._config.parked_marker_ids = parked
+        set_parked(self._app, parked)
 
     def _resolved_plane_source_ip(self, pin: str, *, label: str) -> str | None:
         """Resolve one plane's configured interface to a concrete bind IP.

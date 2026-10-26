@@ -471,9 +471,12 @@ class TestInitMarkers:
         services._app._config = replace(
             services._app._config, controlled_marker_ids=[1, 2, 3], parked_marker_ids=[1, 3]
         )
+        services._app._config.parked_marker_ids = [1, 3, 7]  # as a programmatic edit could leave it
         services._app._server = _FakePsnServer()
         services.init_markers()
         assert services._app._parked_ids == {1, 3}
+        # The running config and the live set agree.
+        assert services._app._config.parked_marker_ids == [1, 3]
         assert services._app._selected_id == 2
         # A start chooses; it moves nothing off a parked marker, so a following pin is not held back.
         assert getattr(services._app, "_pin_waits_for_selection", False) is False

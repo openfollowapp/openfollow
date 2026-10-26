@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from openfollow.configuration import AppConfig
+from openfollow.configuration import AppConfig, DetectionConfig
 from openfollow.input.parking import is_parked, rehome_selection, select, set_parked
 from openfollow.psn.marker import Marker
 from openfollow.runtime import app_modes
@@ -156,10 +156,38 @@ def test_the_reset_key_never_reaches_a_parked_marker() -> None:
     assert marker.pos == (1.0, 1.0, 1.0)
 
 
+def _tracking(
+    enabled: bool = True, pin_mode: str = "replace", pin_marker_id: int = -1, *, feature: bool = True
+) -> AppConfig:
+    cfg = AppConfig(detection=DetectionConfig(enabled=enabled, pin_mode=pin_mode, pin_marker_id=pin_marker_id))
+    if feature:
+        cfg.ui.shown_features = [*cfg.ui.shown_features, "detection"]
+    return cfg
+
+
 def test_a_park_that_moves_the_selection_makes_a_following_pin_wait() -> None:
     app = _app([1, 2, 3], 1)
+    app._config = _tracking()
     set_parked(app, [1])
     assert app._pin_waits_for_selection is True
+
+
+@pytest.mark.parametrize(
+    "cfg",
+    [
+        _tracking(enabled=False),
+        _tracking(pin_mode="assist"),
+        _tracking(pin_marker_id=2),
+        _tracking(feature=False),
+    ],
+    ids=["tracking-off", "ai-assisted", "fixed-follow-marker", "feature-off"],
+)
+def test_a_park_move_holds_back_only_a_running_fully_automatic_pin_that_follows_the_selection(cfg: AppConfig) -> None:
+    app = _app([1, 2, 3], 1)
+    app._config = cfg
+    set_parked(app, [1])
+    assert app._selected_id == 2
+    assert getattr(app, "_pin_waits_for_selection", False) is False
 
 
 @pytest.mark.parametrize(
@@ -178,6 +206,7 @@ def test_a_park_that_leaves_the_selection_alone_never_makes_the_pin_wait(
 @pytest.mark.parametrize("how", ["cycle", "digit", "select"])
 def test_an_operator_selection_wakes_the_pin(how: str) -> None:
     app = _keyboard_app(10, [])
+    app._config = _tracking()
     set_parked(app, [10])
     assert app._pin_waits_for_selection is True
     if how == "cycle":

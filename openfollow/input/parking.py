@@ -11,6 +11,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from openfollow.configuration import feature_on
+
 logger = logging.getLogger(__name__)
 
 
@@ -26,17 +28,26 @@ def select(app: Any, marker_id: int) -> None:
     app._pin_waits_for_selection = False
 
 
+def _pin_follows_selection(app: Any) -> bool:
+    """Whether Fully Automatic detection runs with its pin following the selected marker."""
+    cfg = getattr(app, "_config", None)
+    if cfg is None:
+        return False
+    det = cfg.detection
+    return bool(det.enabled) and det.pin_mode == "replace" and det.pin_marker_id < 0 and feature_on(cfg, "detection")
+
+
 def rehome_selection(app: Any) -> None:
     """Keep the selection on an unparked controlled marker: the next one after it, else none.
 
-    Moving off a marker that parked is no choice of the operator's, so a pin that follows the
-    selection waits for one (``_pin_waits_for_selection``).
+    Moving off a marker that parked is no choice of the operator's, so a running Fully Automatic
+    pin that follows the selection waits for one (``_pin_waits_for_selection``).
     """
     ids = list(app._controlled_ids)
     selected = app._selected_id
     if selected in ids and not is_parked(app, selected):
         return
-    if selected in ids:
+    if selected in ids and _pin_follows_selection(app):
         app._pin_waits_for_selection = True
     start = ids.index(selected) if selected in ids else -1
     rotated = ids[start + 1 :] + ids[: start + 1]

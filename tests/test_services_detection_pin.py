@@ -1822,6 +1822,7 @@ def test_a_pin_following_the_selection_waits_after_the_selected_marker_parks(mon
         selected_id=3,
         resolution=(1000, 1000),
     )
+    app._config.ui = SimpleNamespace(shown_features=["detection"])
     _run(app, _StubDetector(_tracked(0.6)), monkeypatch, unproject=_linear_unproject)
     assert marker_3.status == pytest.approx(0.75)
 

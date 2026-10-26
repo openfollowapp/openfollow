@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 
 import pytest
@@ -6307,6 +6307,39 @@ def test_apply_runtime_applies_detection_change_live_when_already_enabled() -> N
     assert app._config.detection == new_det
     assert app._runtime_services.detection_changes == [new_det]
     assert app._web_commands.restart_requested is False
+
+
+@pytest.mark.parametrize(
+    ("change", "waits"),
+    [
+        ({"enabled": False}, False),
+        ({"pin_mode": "assist"}, False),
+        ({"pin_marker_id": 4}, False),
+        ({"confidence": 0.85}, True),
+    ],
+    ids=["tracking-off", "tracking-mode", "follow-marker", "other-field"],
+)
+def test_a_new_tracking_mode_or_follow_marker_stops_the_pin_waiting(change: dict, waits: bool) -> None:
+    current = DetectionConfig(enabled=True, pin_mode="replace", pin_marker_id=-1, confidence=0.40)
+    app = _app_with(detection=current)
+    app._pin_waits_for_selection = True
+    new_config = AppConfig(detection=replace(current, **change))
+
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._pin_waits_for_selection is waits
+
+
+def test_switching_the_detection_feature_stops_the_pin_waiting() -> None:
+    current = DetectionConfig(enabled=True, pin_mode="replace", pin_marker_id=-1)
+    app = _app_with(detection=current)
+    app._pin_waits_for_selection = True
+    new_config = AppConfig(detection=current)
+    new_config.ui.shown_features = [*new_config.ui.shown_features, "detection"]
+
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._pin_waits_for_selection is False
 
 
 def test_apply_runtime_applies_detection_disable_live() -> None:

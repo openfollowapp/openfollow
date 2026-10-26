@@ -4492,6 +4492,13 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
 
     if new_config.detection != app._config.detection or _flipped("detection"):
         old_detection = app._config.detection
+        # A new tracking mode or Follow marker is a fresh start for the pin: it no longer waits for a selection.
+        if _flipped("detection") or (old_detection.enabled, old_detection.pin_mode, old_detection.pin_marker_id) != (
+            new_config.detection.enabled,
+            new_config.detection.pin_mode,
+            new_config.detection.pin_marker_id,
+        ):
+            app._pin_waits_for_selection = False
         # What the detector runs: off while the Person detection feature is off.
         new_detection = feature_gated(new_config.detection, app._config, "detection")
         new_enabled = new_detection.enabled

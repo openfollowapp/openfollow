@@ -18,6 +18,7 @@ import pytest
 from openfollow.configuration import (
     AppConfig,
     CameraConfig,
+    DetectionConfig,
     GridConfig,
 )
 from openfollow.input.mouse import MouseHandler
@@ -1468,6 +1469,8 @@ class TestParkedGrab:
 
     def test_a_grab_of_an_unparked_marker_is_an_operator_selection(self) -> None:
         app = self._app()
+        app._config.detection = DetectionConfig(enabled=True, pin_mode="replace", pin_marker_id=-1)
+        app._config.ui.shown_features = [*app._config.ui.shown_features, "detection"]
         set_parked(app, [1])
         assert app._pin_waits_for_selection is True
         handler = MouseHandler(app)

@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import re
 
+import cairo
 import numpy as np
 import pytest
 
+from openfollow.runtime.overlay_layers import LayerContext
 from openfollow.runtime.overlay_state import (
     ButtonDetectionState,
     MarkerOverlayData,
@@ -125,6 +127,26 @@ class TestDrawDispatch:
         renderer.state.button_detection = ButtonDetectionState(active=True)
         renderer.draw(FakeCairo(), 1280, 720, renderer.state)
         assert patched_passes == ["draw_button_detection_overlay_pass"]
+
+    @pytest.mark.parametrize("level", [0.0, 1.0])
+    def test_a_latency_flash_covers_the_canvas_first_and_alone(self, patched_passes, level: float) -> None:
+        renderer = CairoOverlayRenderer()
+        state = OverlayState(latency_flash=level)
+        state.settings_menu_active = True
+        state.button_detection = ButtonDetectionState(active=True)
+        cr = RecordingCairo()
+        renderer.draw(cr, 1280, 720, state)
+        assert patched_passes == []
+        assert cr.calls == [("rgb", level, level, level), ("paint",)]
+
+    def test_on_a_layered_canvas_the_flash_is_one_kept_fill_of_the_whole_canvas(self) -> None:
+        cr = LayerContext(64, 36, (1.0, 1.0), cairo.ImageSurface(cairo.FORMAT_ARGB32, 1, 1).get_font_options())
+        CairoOverlayRenderer().draw(cr, 64, 36, OverlayState(latency_flash=1.0))
+        (sprite,) = cr.finish().sprites
+        assert (sprite.x, sprite.y, sprite.kept) == (0, 0, True)
+        picture = sprite.picture
+        assert (picture.get_width(), picture.get_height()) == (64, 36)
+        assert bytes(picture.get_data())[:4] == b"\xff\xff\xff\xff"
 
     def test_a_state_handed_to_draw_is_drawn_rather_than_the_latest(self, patched_passes) -> None:
         """The HUD render thread draws the state it was handed while the frame loop moves on."""

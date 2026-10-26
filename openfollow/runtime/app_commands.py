@@ -60,6 +60,17 @@ def check_controller_slot_actions(app: OpenFollowApp) -> None:
             logger.exception("Controller slot action %s on C%d failed.", action, index + 1)
 
 
+def check_latency_requests(app: OpenFollowApp) -> None:
+    """Run the Measure latency / Stop clicks and report the run back to the web UI."""
+    services = app._runtime_services
+    command = app._web_commands.consume_latency_command()
+    if command == "start":
+        services.start_latency_run()
+    elif command == "stop":
+        services.stop_latency_run()
+    app._web_commands.set_latency_status(services.latency_status())
+
+
 def check_camera_setup_requests(app: OpenFollowApp) -> None:
     """Stop, then rebuild, the Pi Camera pipeline around a live change from the web camera setup."""
     web_commands = app._web_commands

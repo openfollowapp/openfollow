@@ -278,6 +278,8 @@ class OverlayState:
     detection_attached_colors: dict[int, str] = field(default_factory=dict)
     # Button detection wizard
     button_detection: ButtonDetectionState | None = None
+    # The latency probe's screen level (0 black, 1 white) covering the whole canvas; None draws the HUD.
+    latency_flash: float | None = None
     # Configurable button labels for help overlay (action -> button name)
     button_labels: dict[str, str] = field(default_factory=dict)
     # Configurable keyboard labels for help overlay (action -> key name)

@@ -492,6 +492,7 @@ def build_marker_visual_state(
     dt: float,
     network_alerts: list[str] | None = None,
     control_conflicts: Sequence[ControlConflict] = (),
+    latency_flash: float | None = None,
 ) -> OverlayState:
     """Build a new OverlayState for the renderer; it is never changed once handed over.
 
@@ -537,7 +538,7 @@ def build_marker_visual_state(
     # The card an Identify has lit this frame, if any.
     flash_marker = app._input_manager.identify_flash_marker() if app._input_manager is not None else None
 
-    state = OverlayState()
+    state = OverlayState(latency_flash=latency_flash)
 
     # The actually-bound port from the running web server so the HUD reflects
     # reachability, not just configuration. Falls back to the configured port

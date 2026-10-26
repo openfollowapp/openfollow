@@ -111,6 +111,7 @@ def housekeeping(app: OpenFollowApp) -> bool:
         app._check_button_detection_request,
         app._check_controller_slot_actions,
         app._check_camera_setup_requests,
+        app._check_latency_requests,
         app._check_marker_speeds_persist,
         app._check_frame_loop_stall,
         app._observe_network_planes,

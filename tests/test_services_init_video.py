@@ -643,6 +643,25 @@ class TestInitVideoCanvasWithoutAttachHud:
         # Either Operator Screen counts the video frames reaching its sink.
         assert recv_factory.last.display_frame_listener == services._hud_render.video_frame
 
+    @pytest.mark.parametrize("blocker", [None, "no GL display on darwin"], ids=["gl", "cairo"])
+    def test_either_operator_screen_tells_the_latency_probe_when_its_flash_shows(
+        self,
+        services: AppRuntimeServices,
+        recv_factory: _RecordingReceiverFactory,
+        patched_subsystems: None,
+        monkeypatch: pytest.MonkeyPatch,
+        blocker: str | None,
+    ) -> None:
+        from openfollow.video import gl_display
+
+        self._gl_world(monkeypatch, services._app._canvas, blocker=blocker, probe=None)
+        services.init_video()
+
+        assert services._hud_render.on_flash_shown == services._latency_probe.presented
+        display = recv_factory.last.display
+        if blocker is None:
+            assert isinstance(display.flash, gl_display.ScreenFlash)
+
     def test_the_gl_display_can_fall_back_from_the_moment_its_area_is_embedded(
         self,
         services: AppRuntimeServices,

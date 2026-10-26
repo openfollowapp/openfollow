@@ -5549,6 +5549,34 @@ def test_saving_a_source_starts_the_lookup_its_pin_check_reads(
     assert resolver.started == started
 
 
+@pytest.mark.parametrize(("pin", "started"), [("eth1", ["camera.example"]), ("", [])], ids=["pinned", "unpinned"])
+def test_pinning_the_video_input_starts_the_lookup_its_pin_check_reads(
+    live_server, monkeypatch: pytest.MonkeyPatch, pin: str, started: list[str]
+) -> None:
+    """A pin saved in the Assignment panel resolves its camera before the input is rebuilt under it."""
+    from openfollow.video.inputs import _pin
+    from openfollow.web import routes as routes_module
+
+    resolver = _LookupsStarted()
+    monkeypatch.setattr(_pin, "_resolver", resolver)
+    # The panel's own Address column asks the shared resolver; it must not reach the network.
+    monkeypatch.setattr(routes_module, "HOST_RESOLVER", _LookupsStarted())
+    _patch_ifaces(monkeypatch, {"eth0": "192.0.2.10", "eth1": "198.51.100.10"})
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
+    cfg.psn_source_iface = ""
+    cfg.video_source_type = "rtsp"
+    cfg.rtsp_url = "rtsp://camera.example:554/stream"
+    save_config(cfg, server.config_path)
+
+    status, _body = _post_form(base, "/section/interface_assignment", {"video_input_iface": pin})
+
+    assert status == 200
+    assert load_config(server.config_path).video_input_iface == pin
+    assert resolver.started == started
+
+
 def test_deb_update_dispatches_request(live_server, monkeypatch) -> None:
     """POST /section/general/deb-update queues a deb update when idle."""
     from openfollow.web import server as server_module

@@ -21,8 +21,8 @@ from openfollow.video.failure import VideoFailure
 # the element's socket is unpinned, so the routing table's choice is what counts.
 FORCES_DEVICE = sys.platform.startswith("linux")
 
-# A connect attempt runs on the main loop: a name that does not resolve in time
-# is checked on a later attempt, from the answer the lookup leaves behind.
+# How long a name's lookup has to answer: a pin check before then reads as a
+# connect still starting, not a failure.
 _RESOLVE_WAIT_S = 0.3
 
 
@@ -31,13 +31,16 @@ class PinRefusal:
     """Why a pinned input may not dial; ``detail`` names the interfaces.
 
     ``template`` repeats it with ``{pin}`` where the pinned interface goes, so the
-    receiver can name that one the way the station labels it.
+    receiver can name that one the way the station labels it. A nonzero
+    ``retry_s`` is no failure yet: the name is still within its time to resolve,
+    and the check runs again after that long.
     """
 
     failure: VideoFailure
     detail: str
     pin: str = field(default="", compare=False)
     template: str = field(default="", compare=False)
+    retry_s: float = 0.0
 
     def text(self, pin_name: str) -> str:
         return self.template.replace("{pin}", pin_name) if self.template else self.detail
@@ -201,6 +204,11 @@ def check_listen_address(pin: str, address: str) -> PinRefusal | None:
 
 def _unresolved(found: HostLookup, host: str, pin: str) -> PinRefusal | None:
     if found.outcome == "pending":
+        # None: it answered since it was read, so the next check reads that answer.
+        running_for = _resolver.running_for(host)
+        if running_for is None or running_for < _RESOLVE_WAIT_S:
+            retry_s = _RESOLVE_WAIT_S - (running_for or 0.0)
+            return PinRefusal(VideoFailure.NONE, f"{host} is still resolving", pin, retry_s=retry_s)
         return _naming(VideoFailure.UNKNOWN, f"{host} did not resolve in time to check it against {{pin}}", pin)
     if found.outcome == "skipped":
         return _naming(

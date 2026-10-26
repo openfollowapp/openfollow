@@ -384,14 +384,18 @@ def test_a_malformed_name_neither_crashes_the_lookup_nor_sticks(
 
 
 class _Unanswered:
-    """A resolver whose lookups have not answered yet; it records how long each caller would wait."""
+    """A resolver whose lookups have run *age* seconds without an answer; it records how long each caller would wait."""
 
-    def __init__(self) -> None:
+    def __init__(self, age: float | None = 1.0) -> None:
+        self.age = age
         self.waits: list[float] = []
 
     def lookup(self, host: str, wait_s: float) -> HostLookup:
         self.waits.append(wait_s)
         return HostLookup("pending")
+
+    def running_for(self, host: str) -> float | None:
+        return self.age
 
     def cached(self, host: str) -> tuple[str, ...]:
         return ()
@@ -417,16 +421,45 @@ def test_a_check_never_waits_for_a_name_whose_answer_has_not_landed(
     assert resolver.waits == [0.0]
 
 
+@pytest.mark.parametrize(
+    ("age", "retry_s"),
+    [(0.0, 0.3), (0.2, 0.1), (None, 0.3)],
+    ids=["just-started", "within-its-time", "answered-since-read"],
+)
+def test_a_name_still_within_its_time_is_no_failure_yet(
+    net: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, age: float | None, retry_s: float
+) -> None:
+    """A resolver that answers in a few hundred ms reads as a connect starting, checked again once its time is up."""
+    monkeypatch.setattr(_pin, "_resolver", _Unanswered(age))
+    refusal = check_video_pin("eth1", "camera.example", 554)
+    assert refusal is not None
+    assert refusal.failure is VideoFailure.NONE
+    assert refusal.retry_s == pytest.approx(retry_s)
+    assert check_listen_address("eth1", "rx.example") == PinRefusal(
+        VideoFailure.NONE, "rx.example is still resolving", retry_s=refusal.retry_s
+    )
+
+
+@pytest.mark.parametrize("age", [0.3, 5.0], ids=["at-its-time", "long-past"])
+def test_a_name_unanswered_past_its_time_is_a_failure(
+    net: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, age: float
+) -> None:
+    monkeypatch.setattr(_pin, "_resolver", _Unanswered(age))
+    assert check_video_pin("eth1", "camera.example", 554) == PinRefusal(
+        VideoFailure.UNKNOWN, "camera.example did not resolve in time to check it against eth1"
+    )
+
+
 def _join_lookups() -> None:
     for thread in threading.enumerate():
         if thread.name == "test-pin-dns":
             threading.Thread.join(thread, 5)
 
 
-def test_a_slow_lookup_refuses_each_attempt_and_serves_the_one_after_it_answers(
+def test_a_slow_lookup_starts_then_fails_and_serves_the_attempt_after_it_answers(
     net: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Every retry while the one lookup runs is refused as pending, and its answer serves a later attempt."""
+    """One lookup reads as starting within its time, as a failure past it, and serves the attempt after it answers."""
     release = threading.Event()
     calls: list[str] = []
 
@@ -443,7 +476,9 @@ def test_a_slow_lookup_refuses_each_attempt_and_serves_the_one_after_it_answers(
     pending = PinRefusal(VideoFailure.UNKNOWN, "slow.example did not resolve in time to check it against eth1")
 
     try:
-        assert check_video_pin("eth1", "slow.example", 554, forced_device=False) == pending
+        assert check_video_pin("eth1", "slow.example", 554, forced_device=False) == PinRefusal(
+            VideoFailure.NONE, "slow.example is still resolving", retry_s=0.3
+        )
         net.clock.now += 2.0
         assert check_video_pin("eth1", "slow.example", 554, forced_device=False) == pending
     finally:
@@ -578,9 +613,7 @@ def test_a_check_reads_the_answer_the_prefetch_left(
         assert rtsp.preflight(config) is None
         assert net.probes[0].connected == ("198.51.100.20", 554)
     else:
-        assert rtsp.preflight(config) == PinRefusal(
-            VideoFailure.UNKNOWN, "camera.example did not resolve in time to check it against eth1"
-        )
+        assert rtsp.preflight(config) == PinRefusal(VideoFailure.NONE, "camera.example is still resolving", retry_s=0.3)
         lookups.answer()
         assert rtsp.preflight(config) is None
     assert net.lookups == ["camera.example"]

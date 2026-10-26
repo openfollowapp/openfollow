@@ -207,10 +207,14 @@ carries the interfaces the sentence cannot name.
 **The preflight never waits for DNS.** It runs on the main loop before every
 build, so it reads only the answer `HOST_RESOLVER` already holds for the source's
 name. `VideoInputBase.prefetch` starts that lookup ahead of the build: when the
-Video Source is saved, at startup before detection and the display come up, and
-whenever the receiver schedules a retry, so an answer past its lifetime is
-current again by the attempt. A name whose answer has not landed is an `UNKNOWN`
-refusal ("did not resolve in time"), retried on the backoff like any other.
+Video Source or a pin in the Interface Assignment panel is saved, at startup
+before detection and the display come up, and whenever the receiver schedules a
+retry, so an answer past its lifetime is current again by the attempt. A name
+whose lookup has run less than `_RESOLVE_WAIT_S` (0.3 s) is no failure yet: the
+refusal carries `retry_s`, the input reads as connecting (no verdict, no error
+text, a DEBUG log line) and is checked again once that time is up, without
+spending a backoff step. Unanswered past it, the name is an `UNKNOWN` refusal
+("did not resolve in time"), retried on the backoff like any other.
 
 **`REFUSED` has no observed producer.** `rtspsrc` reports a refused connection
 as `Failed to connect. (Generic error)`, the errno discarded inside GStreamer's

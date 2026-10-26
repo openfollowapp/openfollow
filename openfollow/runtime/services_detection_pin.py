@@ -11,6 +11,7 @@ import numpy as np
 import numpy.typing as npt
 
 from openfollow.configuration import effective_lens
+from openfollow.input.parking import is_parked
 from openfollow.input.touch_remote import holds
 from openfollow.runtime.frame_timing import NOMINAL_FRAME_DT, dt_steps, ema_factor
 from openfollow.runtime.state_maps import get_or_create, prune_to_keep
@@ -100,13 +101,13 @@ def is_assist_controlled(app: Any, marker_id: int | None) -> bool:
     """True when ``marker_id`` is under assist control this frame.
 
     Single source of truth for "is this id being driven by assist": assist
-    refines *every* controlled marker, so the input resolvers redirect operator
-    movement to a manual ghost for any controlled id, and the assist pin reads
+    refines every unparked controlled marker, so the input resolvers redirect
+    operator movement to a manual ghost for such an id, and the assist pin reads
     that ghost as the clip anchor.
     """
     if marker_id is None:
         return False
-    return assist_active(app) and marker_id in app._controlled_ids
+    return assist_active(app) and marker_id in app._controlled_ids and not is_parked(app, marker_id)
 
 
 def _get_pin_state(app: Any, marker_id: int) -> DetectionPinState:
@@ -144,11 +145,15 @@ def get_or_create_manual_marker(app: Any, marker_id: int) -> Marker:
 def _resolve_pinned_marker(app: Any, cfg: Any) -> Any:
     """Resolve the marker the detection pin drives, or ``None`` to skip.
 
-    ``pin_marker_id`` defaults to -1 (follow the controller-selected marker);
-    a non-negative id pins that exact marker, but only when it's controlled.
+    ``pin_marker_id`` defaults to -1 (follow the controller-selected marker,
+    idle after the selection moved off a marker that parked until the operator
+    selects one); a non-negative id pins that exact marker, but only when it's
+    controlled.
     """
     configured_id = cfg.detection.pin_marker_id
     if configured_id < 0:
+        if getattr(app, "_pin_waits_for_selection", False):
+            return None
         selected_id = app._selected_id
     elif configured_id in app._controlled_ids:
         selected_id = configured_id
@@ -312,8 +317,8 @@ def apply_detection_pin(
     # ghosts are unused here, so drop them all.
     _prune_manual_markers(app, keep=set())
     marker = _resolve_pinned_marker(app, cfg)
-    # A marker the touch remote holds is the remote's alone.
-    if marker is None or holds(app, marker.marker_id):
+    # A marker the touch remote holds is the remote's alone; a parked one waits until it is unparked.
+    if marker is None or holds(app, marker.marker_id) or is_parked(app, marker.marker_id):
         _prune_pin_states(app, keep=set())
         return
     _prune_pin_states(app, keep={marker.marker_id})
@@ -408,7 +413,8 @@ def _apply_assist_all(
     spots on one performer, and collisions self-resolve as the anchors diverge.
     """
     cfg = app._config
-    target_ids = set(app._controlled_ids)
+    # A parked marker keeps the position it was parked at; its anchor and glide re-seed there on unpark.
+    target_ids = {mid for mid in app._controlled_ids if not is_parked(app, mid)}
     _prune_manual_markers(app, keep=target_ids)
     _prune_pin_states(app, keep=target_ids)
     if not target_ids:

@@ -13,6 +13,7 @@ import openfollow.input.input_manager as input_manager_module
 from openfollow.configuration import AppConfig, PathConfig, PathPointConfig, PathsConfig, load_config, save_config
 from openfollow.input.gamepad import GamepadUpdate
 from openfollow.input.input_manager import InputManager
+from openfollow.input.parking import set_parked
 from openfollow.input.touch_remote import (
     DRIVE_STALE_S,
     GLIDE,
@@ -420,6 +421,21 @@ def test_the_stick_moves_the_held_marker_at_the_station_s_max_speed(app: _App) -
 
 
 @pytest.mark.integration
+def test_the_remote_moves_and_resets_a_parked_marker_it_holds(app: _App) -> None:
+    """A hold names one marker explicitly, like a mouse grab, so parking does not stop it."""
+    set_parked(app, [10])
+    token = _held(app)
+    app._touch_remote.drive(token, 10, (1.0, 0.0), 0)
+    manager = InputManager(app)
+    manager.update_touch_remote(0.5)
+    assert _pos(app) == pytest.approx((1.0, 0.0, 1.6))
+    app._touch_remote.drive(token, 10, (0.0, 0.0), 0)
+    app._touch_remote.act(token, 10, RemoteAction(RESET))
+    manager.update_touch_remote(0.02)
+    assert _pos(app) == pytest.approx((5.0, 6.0, 7.0))
+
+
+@pytest.mark.integration
 @pytest.mark.parametrize("frame", ["heading", "camera", "screen"])
 def test_the_stick_steers_in_stage_directions_whatever_the_control_frame(app: _App, frame: str) -> None:
     app._config.marker.control_frame = frame
@@ -512,7 +528,7 @@ def test_other_inputs_leave_a_held_marker_alone(app: _App) -> None:
     _Keyboard.velocity = (1.0, 0.0, 0.0)
     _Gamepad.next_update = GamepadUpdate(movements={0: (1.0, 0.0, 0.0)}, resets={0})
     manager = InputManager(app)
-    manager.osc_handler = SimpleNamespace(flush_updates=lambda: {10: {"x": 4.0}})
+    manager.osc_handler = SimpleNamespace(flush_parks=dict, flush_updates=lambda: {10: {"x": 4.0}})
     manager.update(1.0)
     assert _pos(app) == pytest.approx((0.0, 0.0, 1.6))
 

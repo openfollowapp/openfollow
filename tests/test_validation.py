@@ -123,6 +123,12 @@ def test_validate_int_list_type_error_via_parser() -> None:
     assert "Entry" in err  # custom validator surfaces specific entry
 
 
+@pytest.mark.parametrize(("value", "bad"), [("1, abc, 3", True), ("2, 5", False), ("", False)])
+def test_validate_parked_marker_ids_names_the_bad_entry(value: str, bad: bool) -> None:
+    err = validate("general", "parked_marker_ids", value)
+    assert (err is not None and "Entry 2" in err) if bad else err is None
+
+
 def test_validate_ip_list_per_entry_error() -> None:
     err = validate("osc", "allowed_sender_ips", "192.168.1.1, 999.0.0.1")
     assert err is not None

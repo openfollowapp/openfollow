@@ -93,6 +93,7 @@ class _DummyApp:
         self._web_server = None  # skips the web-server system-name update
         self._controlled_ids = list(cfg.controlled_marker_ids)
         self._viewer_ids = list(cfg.viewer_marker_ids)
+        self._selected_id = self._controlled_ids[0] if self._controlled_ids else None
         self._camera = None
         self._input_manager = None
         # ``controlled_marker_ids`` live-update is gated on both of

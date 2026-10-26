@@ -701,6 +701,7 @@ class _FakeWritableAdapter(NetworkAdapter):
         self.vlans: list = []
         self.vlans_created: list = []
         self.vlans_deleted: list = []
+        self.forgotten: list = []
         self.vlan_support = True
         self.vlan_list_raises = False
 
@@ -743,6 +744,12 @@ class _FakeWritableAdapter(NetworkAdapter):
         from openfollow.network.adapter import ApplyResult
 
         self.vlans_deleted.append(name)
+        return ApplyResult(ok=True)
+
+    def forget_interface(self, name):
+        from openfollow.network.adapter import ApplyResult
+
+        self.forgotten.append(name)
         return ApplyResult(ok=True)
 
 
@@ -1439,6 +1446,7 @@ def test_a_vlan_list_that_cannot_be_read_keeps_the_vlan_controls(counted) -> Non
         lambda s: s._handle_network_renew("eth0"),
         lambda s: s._handle_network_vlan_create("eth0", 10),
         lambda s: s._handle_network_vlan_delete("eth0.10"),
+        lambda s: s._handle_network_forget("enx001122334455"),
     ],
 )
 def test_a_change_from_the_web_ui_is_read_back_at_once(counted, change) -> None:
@@ -3531,3 +3539,79 @@ def test_a_removal_brought_in_line_at_startup_is_named_as_one(fqdn_services, cap
     with caplog.at_level("INFO", logger="openfollow.services"):
         services.reconcile_station_fqdn("").join(timeout=5)
     assert "Station FQDN removal brought in line with DHCP" in caplog.text
+
+
+def test_each_saved_interface_is_listed_as_the_card_shows_it(monkeypatch) -> None:
+    from openfollow.network.adapter import (
+        Ipv4Config,
+        Ipv4Method,
+        NetworkReading,
+        SavedInterface,
+    )
+
+    services = _build_services_with_psutil_backend(monkeypatch)
+    fake = _FakeWritableAdapter([_iface()], None)
+    fake.read_network = lambda: NetworkReading(
+        saved=(
+            SavedInterface(
+                "enx001122334455", Ipv4Config(Ipv4Method.STATIC, "192.0.2.5", 24, "192.0.2.1", ("192.0.2.53",))
+            ),
+            SavedInterface("enx001122334455.2", Ipv4Config(Ipv4Method.DHCP), "enx001122334455", 2),
+        )
+    )
+    services._network_adapter = fake
+    assert services._network_saved_provider() == [
+        {
+            "name": "enx001122334455",
+            "kind": None,
+            "address": "192.0.2.5",
+            "prefix": 24,
+            "subnet_mask": "255.255.255.0",
+            "method": "static",
+            "router": "192.0.2.1",
+            "dns": ["192.0.2.53"],
+            "lease_display": None,
+            "vlan_parent": "",
+            "vlan_id": None,
+        },
+        {
+            "name": "enx001122334455.2",
+            "kind": "vlan",
+            "address": "",
+            "prefix": None,
+            "subnet_mask": "",
+            "method": "dhcp",
+            "router": "",
+            "dns": [],
+            "lease_display": None,
+            "vlan_parent": "enx001122334455",
+            "vlan_id": 2,
+        },
+    ]
+
+
+def test_no_adapter_lists_no_saved_interfaces(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._network_adapter = None
+    assert services._network_saved_provider() == []
+
+
+def test_forget_calls_the_adapter(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    fake = _FakeWritableAdapter([_iface()], None)
+    services._network_adapter = fake
+    assert services._handle_network_forget("enx001122334455").ok is True
+    assert fake.forgotten == ["enx001122334455"]
+
+
+def test_forget_refused_on_a_read_only_host(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    result = services._handle_network_forget("enx001122334455")
+    assert result.ok is False and "Read-only" in result.message
+
+
+def test_forget_refused_without_adapter(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._network_adapter = None
+    result = services._handle_network_forget("enx001122334455")
+    assert result.ok is False and "No network adapter" in result.message

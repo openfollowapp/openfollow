@@ -16,6 +16,7 @@ from openfollow.input.controller_slots import NOTE_BUTTON_MAP_OTHER_MODEL, NOTE_
 from openfollow.input.gamepad import GamepadUpdate
 from openfollow.input.input_manager import InputManager
 from openfollow.input.mouse3d import Mouse3DDeviceInfo, Mouse3DUpdate
+from openfollow.input.parking import set_parked
 from openfollow.input.slot_pin_capture import CAPTURE_TIMEOUT_S, RELEASE_TIMEOUT_S, CaptureResult
 from openfollow.operator_messages import OperatorMessageStore
 from openfollow.psn import Marker
@@ -53,6 +54,7 @@ class _Pads:
         self.identified: list[int] = []
         self.held: dict[int, frozenset[int]] = {}
         self.resyncs = 0
+        self.next_update = GamepadUpdate()
 
     initial: dict[int, tuple[str | None, str]] = {}
 
@@ -67,7 +69,8 @@ class _Pads:
         return {idx: object() for idx in self.pads}
 
     def update(self, _dt: float) -> GamepadUpdate:
-        return GamepadUpdate()
+        update, self.next_update = self.next_update, GamepadUpdate()
+        return update
 
     def device_identities(self) -> dict[int, tuple[str | None, str, tuple[str, ...]]]:
         return {idx: (key, name, self.notes.get(idx, ())) for idx, (key, name) in self.pads.items()}
@@ -115,6 +118,7 @@ class _Pucks:
 
     def held_buttons(self) -> dict[int, frozenset[int]]:
         return {idx: self.held.get(idx, frozenset()) for idx in self.devices}
+        self.next_frames: dict[int, Mouse3DUpdate] = {}
 
     def start(self) -> None:
         pass
@@ -142,7 +146,8 @@ class _Pucks:
         return self.leds_ok
 
     def update(self, _dt: float) -> dict[int, Mouse3DUpdate]:
-        return {}
+        frames, self.next_frames = self.next_frames, {}
+        return frames
 
 
 class _Server:
@@ -848,3 +853,125 @@ def test_a_capture_armed_without_a_prompt_ends_cleanly(running) -> None:
     app_modes.exit_slot_pin_capture(app)
     assert manager.pin_capture_active is False
     assert _prompts(app) == [("from OSC", False)]
+
+
+def _positions(app: _App) -> dict[int, tuple[float, float, float]]:
+    return {mid: marker.pos for mid, marker in app._server.markers.items()}
+
+
+def test_a_slot_whose_marker_is_parked_idles_and_moves_nobody_else(station) -> None:
+    manager, app = station({0: (_key("1"), "First"), 1: (_key("2"), "Second")})
+    set_parked(app, [10])
+    manager.gamepad_handler.next_update = GamepadUpdate(movements={0: (1.0, 0.0, 0.0), 1: (0.0, 1.0, 0.0)})
+    manager.update(0.5)
+    positions = _positions(app)
+    assert positions[10] == (0.0, 0.0, 0.0)
+    assert positions[11] != (0.0, 0.0, 0.0)
+    assert positions[12] == (0.0, 0.0, 0.0)
+    # Slot order is unchanged: the pad behind the parked slot keeps its own marker.
+    assert manager._gamepad_marker_id(1) == 11
+
+
+def test_a_parked_slot_resets_nothing_and_unparking_gives_control_back(station) -> None:
+    manager, app = station({0: (_key("1"), "First"), 1: (_key("2"), "Second")})
+    app._server.markers[10].set_pos(3.0, 4.0, 1.0)
+    set_parked(app, [10])
+    manager.gamepad_handler.next_update = GamepadUpdate(resets={0})
+    manager.update(0.016)
+    assert app._server.markers[10].pos == (3.0, 4.0, 1.0)
+    set_parked(app, [])
+    manager.gamepad_handler.next_update = GamepadUpdate(resets={0})
+    manager.update(0.016)
+    assert app._server.markers[10].pos == (0.0, 0.0, 0.0)
+
+
+def test_a_parked_slot_keeps_its_marker_in_the_slot_table_and_for_osc(station) -> None:
+    manager, app = station({0: (_key("1"), "First"), 1: (_key("2"), "Second")})
+    set_parked(app, [11])
+    info = manager.get_controller_info()
+    assert [(c["marker_id"], c["parked"]) for c in info] == [(10, False), (11, True)]
+    # OSC ``c2`` still resolves: the slot idles, its marker still sends.
+    assert manager.controller_marker_id(1) == 11
+    assert manager._gamepad_marker_id(1) is None
+
+
+def test_a_parked_pad_slot_reports_its_markers_speed(station) -> None:
+    """The pad's own reading resolves no marker for a parked slot; the slot still shows its marker's speed."""
+    manager, app = station({0: (_key("1"), "First"), 1: (_key("2"), "Second")})
+    app.get_marker_move_speed = lambda marker_id: {10: 0.7, 11: 0.9}[marker_id]
+    set_parked(app, [10])
+    speeds = [c["effective_speed"] for c in manager.get_controller_info()]
+    # The unparked pad keeps its own reading (1.5 in this fake).
+    assert speeds == [0.7, 1.5]
+
+
+def test_identify_flashes_the_card_of_a_parked_slot(station) -> None:
+    manager, app = station({0: (_key("1"), "First"), 1: (_key("2"), "Second")})
+    set_parked(app, [11])
+    manager._clock = _Clock()
+    manager.identify_slot(1)
+    assert manager.identify_flash_marker() == 11
+
+
+def test_a_puck_on_a_parked_slot_moves_and_resets_nothing(station, monkeypatch) -> None:
+    monkeypatch.setattr(_Pucks, "initial", {0: Mouse3DDeviceInfo(path="/dev/hidraw0", port_key=_key("3"))})
+    manager, app = station({0: (_key("1"), "First")}, mouse3d__enabled=True)
+    app._server.markers[11].set_pos(2.0, 2.0, 1.0)
+    set_parked(app, [11])
+    manager.mouse3d_manager.next_frames = {0: Mouse3DUpdate(velocity=(1.0, 1.0, 1.0), reset=True)}
+    manager.update(0.5)
+    assert app._server.markers[11].pos == (2.0, 2.0, 1.0)
+    set_parked(app, [])
+    manager.mouse3d_manager.next_frames = {0: Mouse3DUpdate(velocity=(1.0, 0.0, 0.0))}
+    manager.update(0.5)
+    assert app._server.markers[11].pos != (2.0, 2.0, 1.0)
+
+
+@pytest.mark.parametrize(
+    ("device", "frame"),
+    [
+        ("gamepad", GamepadUpdate(pathfinder_presses={0, 1})),
+        ("mouse3d", Mouse3DUpdate(speed_steps=2)),
+        ("mouse3d", Mouse3DUpdate(pathfinder=True)),
+        ("mouse3d", Mouse3DUpdate(fader_signal=1.0)),
+    ],
+    ids=["gamepad-pathfinder", "puck-speed-steps", "puck-pathfinder", "puck-fader"],
+)
+def test_a_parked_slot_writes_nothing_while_the_other_slot_still_does(
+    station, monkeypatch, device: str, frame: object
+) -> None:
+    monkeypatch.setattr(_Pucks, "initial", {0: Mouse3DDeviceInfo(path="/dev/hidraw0", port_key=_key("3"))})
+    manager, app = station({0: (_key("1"), "First"), 1: (_key("2"), "Second")}, mouse3d__enabled=True)
+    # Slots: C1 pad 0 -> 10, C2 pad 1 -> 11, C3 puck -> 12.
+    writes: list[tuple[str, int]] = []
+    app._paths = object()
+    monkeypatch.setattr(
+        input_manager_module.paths_runtime, "pathfinder", lambda _app, mid, _m: writes.append(("pathfinder", mid))
+    )
+    app.adjust_move_speed = lambda _direction, marker_id=None: writes.append(("speed", marker_id))
+    manager._virtual_faders = SimpleNamespace(
+        set_marker_fader_from_velocity_delta=lambda mid, _delta: writes.append(("fader", mid))
+    )
+    if device == "gamepad":
+        set_parked(app, [10])
+        manager.gamepad_handler.next_update = frame
+        manager.update(0.016)
+        assert writes == [("pathfinder", 11)]
+    else:
+        set_parked(app, [12])
+        manager.mouse3d_manager.next_frames = {0: frame}
+        manager.update(0.016)
+        assert writes == []
+        set_parked(app, [])
+        manager.mouse3d_manager.next_frames = {0: frame}
+        manager.update(0.016)
+        assert writes and {mid for _kind, mid in writes} == {12}
+
+
+def test_a_lone_controller_never_moves_a_parked_marker(station) -> None:
+    manager, app = station({0: (_key("1"), "Only")})
+    set_parked(app, [10, 11, 12])
+    assert app._selected_id is None
+    manager.gamepad_handler.next_update = GamepadUpdate(movements={0: (1.0, 1.0, 0.0)}, resets={0})
+    manager.update(0.5)
+    assert set(_positions(app).values()) == {(0.0, 0.0, 0.0)}

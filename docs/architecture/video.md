@@ -209,12 +209,16 @@ build, so it reads only the answer `HOST_RESOLVER` already holds for the source'
 name. `VideoInputBase.prefetch` starts that lookup ahead of the build: when the
 Video Source or a pin in the Interface Assignment panel is saved, at startup
 before detection and the display come up, and whenever the receiver schedules a
-retry, so an answer past its lifetime is current again by the attempt. A name
-whose lookup has run less than `_RESOLVE_WAIT_S` (0.3 s) is no failure yet: the
-refusal carries `retry_s`, the input reads as connecting (no verdict, no error
-text, a DEBUG log line) and is checked again once that time is up, without
-spending a backoff step. Unanswered past it, the name is an `UNKNOWN` refusal
-("did not resolve in time"), retried on the backoff like any other.
+retry. A build that meets no answer (none yet, or one past its lifetime, as on a
+heal) starts the lookup itself. A name whose lookup has run less than
+`_RESOLVE_WAIT_S` (0.3 s) is no failure yet, and that is checked before the pin's
+interface is, so a name that may turn out to be this station is not refused for
+an outage: the refusal carries `retry_s`, the input reads as connecting (no
+verdict, no error text, DEBUG log lines only) and is checked again by
+`_recheck_name` once that time is up, without spending a backoff step.
+Unanswered past it, the name is judged as before: a down pin is
+`INTERFACE_DOWN`, otherwise an `UNKNOWN` refusal ("did not resolve in time"),
+retried on the backoff like any other.
 
 **`REFUSED` has no observed producer.** `rtspsrc` reports a refused connection
 as `Failed to connect. (Generic error)`, the errno discarded inside GStreamer's

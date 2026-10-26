@@ -1212,9 +1212,12 @@ class GstNativeSinkReceiver:
         if refusal.retry_s > 0:
             self._cancel_reconnect()
             delay_ms = max(1, math.ceil(refusal.retry_s * 1000))
-            self._state.reconnect_source_id = GLib.timeout_add(delay_ms, self._do_reconnect)
+            self._state.reconnect_source_id = GLib.timeout_add(delay_ms, self._recheck_name)
             return
         self._schedule_reconnect(self._refusal_text(refusal), failure=refusal.failure)
+
+    def _recheck_name(self) -> bool:
+        return self._do_reconnect(quiet=True)
 
     def _cancel_reconnect(self) -> None:
         if self._state.reconnect_source_id is not None:
@@ -1248,7 +1251,8 @@ class GstNativeSinkReceiver:
             self._schedule_reconnect("No video received (connection timeout)")
         return False  # one-shot
 
-    def _do_reconnect(self) -> bool:
+    def _do_reconnect(self, *, quiet: bool = False) -> bool:
+        """Build again; *quiet* for a check that only waited on the source's name, which is no reconnect."""
         self._state.clear_reconnect_source()
 
         if self._pipeline is not None:
@@ -1325,7 +1329,10 @@ class GstNativeSinkReceiver:
             self.play()  # play() will show placeholder
             return False
 
-        logger.info("Reconnecting pipeline (attempt %d)...", self._state.reconnect_attempt)
+        if quiet:
+            logger.debug("Checking the %s source's name again", self._input.display_name)
+        else:
+            logger.info("Reconnecting pipeline (attempt %d)...", self._state.reconnect_attempt)
         try:
             self.create_pipeline()
             # ``create_pipeline`` swallows a build failure and installs the

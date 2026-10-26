@@ -5577,6 +5577,25 @@ def test_pinning_the_video_input_starts_the_lookup_its_pin_check_reads(
     assert resolver.started == started
 
 
+def test_a_pin_saved_for_an_unregistered_source_type_starts_no_lookup(
+    live_server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openfollow.video.inputs import _pin
+
+    resolver = _LookupsStarted()
+    monkeypatch.setattr(_pin, "_resolver", resolver)
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
+    cfg.video_source_type = "not-an-input"
+    save_config(cfg, server.config_path)
+
+    status, _body = _post_form(base, "/section/interface_assignment", {"video_input_iface": "eth1"})
+
+    assert status == 200
+    assert resolver.started == []
+
+
 def test_deb_update_dispatches_request(live_server, monkeypatch) -> None:
     """POST /section/general/deb-update queues a deb update when idle."""
     from openfollow.web import server as server_module

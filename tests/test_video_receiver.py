@@ -5543,7 +5543,7 @@ class TestTheInterfacePinRefusesABuild:
     def test_a_refused_build_starts_the_lookup_its_retry_reads(
         self, fake_gst, fake_glib, fake_input_cls, monkeypatch
     ) -> None:
-        """A name still resolving is refused, and the retry finds its answer instead of waiting for it."""
+        """A refused build looks the name up again during its backoff, so the retry's check finds a current answer."""
         r = self._refused(monkeypatch)
 
         r.play()
@@ -5579,8 +5579,34 @@ class TestTheInterfacePinRefusesABuild:
         assert status.reconnect_attempt == 0
         assert [rec for rec in caplog.records if rec.levelno >= logging.WARNING] == []
         # Checked again once its time is up, without spending a backoff step.
-        assert [(delay, cb.__name__) for delay, cb in fake_glib.timers.values()] == [(200, "_do_reconnect")]
+        assert [(delay, cb.__name__) for delay, cb in fake_glib.timers.values()] == [(200, "_recheck_name")]
         assert r._state.reconnect_attempt == 0
+
+    def test_a_name_check_replaces_a_reconnect_already_pending(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        """Two timers would build twice; the later one would tear down the first one's pipeline."""
+        r = _make_receiver(input_config={"fake_source": "cam-1", "video_input_iface": "eth1"})
+        r._schedule_reconnect("Stream stalled (no frames received)")
+        assert [cb.__name__ for _delay, cb in fake_glib.timers.values()] == ["_do_reconnect"]
+        monkeypatch.setattr(FakeInput, "_refusal", self._RESOLVING)
+
+        r.play()
+
+        assert [(delay, cb.__name__) for delay, cb in fake_glib.timers.values()] == [(200, "_recheck_name")]
+
+    def test_a_name_check_is_logged_quietly(self, fake_gst, fake_glib, fake_input_cls, monkeypatch, caplog) -> None:
+        """It is no reconnect: the attempt count would read 0 at startup and repeat mid-sequence."""
+        monkeypatch.setattr(FakeInput, "_refusal", self._RESOLVING)
+        r = _make_receiver(input_config={"fake_source": "cam-1", "video_input_iface": "eth1"})
+        r.play()
+        (_delay, recheck), *_ = fake_glib.timers.values()
+
+        with caplog.at_level(logging.DEBUG, logger="openfollow.video.receiver"):
+            recheck()
+
+        assert [rec for rec in caplog.records if rec.levelno >= logging.INFO] == []
+        assert "Checking the Fake source's name again" in caplog.text
 
     def test_a_name_that_answers_in_its_time_builds_on_the_next_check(
         self, fake_gst, fake_glib, fake_input_cls, monkeypatch

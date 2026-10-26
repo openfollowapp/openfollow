@@ -423,7 +423,7 @@ def test_a_check_never_waits_for_a_name_whose_answer_has_not_landed(
 
 @pytest.mark.parametrize(
     ("age", "retry_s"),
-    [(0.0, 0.3), (0.2, 0.1), (None, 0.3)],
+    [(0.0, 0.3), (0.2, 0.1), (None, 0.001)],
     ids=["just-started", "within-its-time", "answered-since-read"],
 )
 def test_a_name_still_within_its_time_is_no_failure_yet(
@@ -617,6 +617,32 @@ def test_a_check_reads_the_answer_the_prefetch_left(
         lookups.answer()
         assert rtsp.preflight(config) is None
     assert net.lookups == ["camera.example"]
+
+
+def test_a_local_name_whose_answer_expired_is_rechecked_not_refused_for_a_down_pin(
+    net: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A heal or late reconnect meets the expired answer with its lookup running again: whether
+    the name is this station is not known yet, so the down pin is no verdict until the name has had its time."""
+    lookups = _Queued()
+    monkeypatch.setattr(_pin, "_resolver", BoundedResolver(ttl_s=30.0, clock=net.clock, thread_factory=lookups))
+    net.answers["relay.example"] = ["192.0.2.10"]
+    _pin.prefetch("relay.example")
+    lookups.answer()
+    assert check_video_pin("eth9", "relay.example", 9000) is None
+
+    net.clock.now += 31.0
+    refusal = check_video_pin("eth9", "relay.example", 9000)
+    assert refusal is not None
+    assert refusal.failure is VideoFailure.NONE
+    assert refusal.retry_s > 0
+
+    net.clock.now += 0.5
+    assert check_video_pin("eth9", "relay.example", 9000) == PinRefusal(
+        VideoFailure.INTERFACE_DOWN, "eth9 has no address"
+    )
+    lookups.answer()
+    assert check_video_pin("eth9", "relay.example", 9000) is None
 
 
 # --------------------------------------------------------------------------- #

@@ -5440,6 +5440,16 @@ def test_a_forwarded_for_header_does_not_decide_the_on_device_footer(live_server
     assert '<footer class="on-device-footer">' in body
 
 
+def test_the_on_device_footer_names_the_controller_button_and_esc(live_server) -> None:
+    """Both ways to close the embedded browser: the mapped cancel button on a controller, Esc on a keyboard."""
+    _, base = live_server
+    with urllib.request.urlopen(f"{base}/", timeout=5) as resp:
+        body = resp.read().decode()
+    footer = body[body.index('<footer class="on-device-footer">') :]
+    footer = footer[: footer.index("</footer>")]
+    assert "<kbd>B</kbd>on a controller or <kbd>Esc</kbd>on a keyboard closes the embedded browser" in footer
+
+
 def test_logout_clears_cookie_and_redirects_to_login(live_server) -> None:
     """POST /logout deletes the auth cookie and 303s to /login. Even on a
     PIN-less server the route must exist and behave. ``delete_cookie``

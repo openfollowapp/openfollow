@@ -2418,7 +2418,7 @@
  %# to any of A/B/X/Y/etc., and a stale hint here would tell
  %# operators to press a button that no longer dismisses the
  %# overlay.
- <span><kbd>{{cancel_button or 'Cancel'}}</kbd>Close embedded browser</span>
+ <span><kbd>{{cancel_button or 'Cancel'}}</kbd>on a controller or <kbd>Esc</kbd>on a keyboard closes the embedded browser</span>
  </footer>
  % end
  %# AGPLv3 §5(d) Appropriate Legal Notices. __version__ comes from

@@ -49,6 +49,7 @@ from openfollow.input.midi import (
     MidiSubsystem,
     _normalize_port_name,
     bound_identifiers,
+    match_patches,
 )
 
 # Fake mido harness shared with ``tests/test_midi_alias_hot_reload.py``.
@@ -879,6 +880,14 @@ class TestPollHotplug:
 # ---------------------------------------------------------------------------
 
 
+def _matched(patch: MidiPatch, discovered: list[DiscoveredDevice]) -> DiscoveredDevice | None:
+    return match_patches([patch], discovered).get(patch.id)
+
+
+def _xtm(serial: str | None, port: str = "XTM") -> DiscoveredDevice:
+    return DiscoveredDevice(serial=serial, port_name=port, product=port)
+
+
 class TestMatch:
     def test_serial_match_wins(self) -> None:
         patch = MidiPatch(id=1, alias="A", serial="ABC", port_name="X")
@@ -886,7 +895,7 @@ class TestMatch:
             DiscoveredDevice(serial="ABC", port_name="Y", product="Y"),
             DiscoveredDevice(serial=None, port_name="X", product="X"),
         ]
-        match = MidiSubsystem._match(patch, discovered)
+        match = _matched(patch, discovered)
         assert match is not None and match.port_name == "Y"
 
     def test_falls_through_to_composite_when_no_serial_match(self) -> None:
@@ -899,7 +908,7 @@ class TestMatch:
         discovered = [
             DiscoveredDevice(serial=None, port_name="MIDI Mix", product="MIDI Mix"),
         ]
-        match = MidiSubsystem._match(patch, discovered)
+        match = _matched(patch, discovered)
         assert match is not None
         assert match.port_name == "MIDI Mix"
 
@@ -917,7 +926,7 @@ class TestMatch:
                 product="MIDI Mix",
             ),
         ]
-        match = MidiSubsystem._match(patch, discovered)
+        match = _matched(patch, discovered)
         assert match is not None
         assert match.port_name == "MIDI Mix"
 
@@ -928,7 +937,7 @@ class TestMatch:
             port_name="X",
             product="Y",
         )
-        match = MidiSubsystem._match(patch, [])
+        match = _matched(patch, [])
         assert match is None
 
     def test_port_name_fallback_skipped_when_patch_has_none(self) -> None:
@@ -938,7 +947,7 @@ class TestMatch:
         discovered = [
             DiscoveredDevice(serial=None, port_name="X", product="X"),
         ]
-        match = MidiSubsystem._match(patch, discovered)
+        match = _matched(patch, discovered)
         assert match is None
 
     def test_port_name_fallback_loop_continues_on_mismatch(self) -> None:
@@ -955,33 +964,96 @@ class TestMatch:
             DiscoveredDevice(serial=None, port_name="Y", product="Y"),
             DiscoveredDevice(serial=None, port_name="Z", product="Z"),
         ]
-        match = MidiSubsystem._match(patch, discovered)
+        match = _matched(patch, discovered)
         assert match is None
 
     @pytest.mark.parametrize(
-        ("claimed", "matches"),
+        ("other_serial", "matches"),
         [
-            (frozenset({"OLD"}), True),  # an unclaimed spare of the same model
-            (frozenset({"OLD", "NEW"}), False),  # another patch's unit
+            ("ELSEWHERE", True),  # an unclaimed spare of the same model
+            ("NEW", False),  # another patch's unit
         ],
     )
-    def test_an_absent_serial_falls_through_only_to_an_unclaimed_unit(
-        self, claimed: frozenset[str], matches: bool
-    ) -> None:
-        patch = MidiPatch(id=1, alias="A", serial="OLD", port_name="MIDI Mix", product="MIDI Mix")
+    def test_an_absent_serial_falls_through_only_to_an_unclaimed_unit(self, other_serial: str, matches: bool) -> None:
+        patches = [
+            MidiPatch(id=1, alias="A", serial="OLD", port_name="MIDI Mix", product="MIDI Mix"),
+            MidiPatch(id=2, alias="B", serial=other_serial, port_name="MIDI Mix", product="MIDI Mix"),
+        ]
         discovered = [DiscoveredDevice(serial="NEW", port_name="MIDI Mix", product="MIDI Mix")]
-        match = MidiSubsystem._match(patch, discovered, claimed=claimed)
-        assert (match is not None) is matches
+        assert (1 in match_patches(patches, discovered)) is matches
 
     def test_the_port_name_only_fallback_skips_a_claimed_unit(self) -> None:
-        patch = MidiPatch(id=1, alias="A", serial="OLD", port_name="MIDI Mix", product="Other")
+        patches = [
+            MidiPatch(id=1, alias="A", serial="OLD", port_name="MIDI Mix", product="Other"),
+            MidiPatch(id=2, alias="B", serial="NEW", port_name="Elsewhere"),
+        ]
         discovered = [DiscoveredDevice(serial="NEW", port_name="MIDI Mix", product="MIDI Mix")]
-        assert MidiSubsystem._match(patch, discovered, claimed=frozenset({"OLD", "NEW"})) is None
+        assert 1 not in match_patches(patches, discovered)
 
-    def test_a_device_without_a_serial_is_never_claimed(self) -> None:
-        patch = MidiPatch(id=1, alias="A", serial="OLD", port_name="MIDI Mix", product="MIDI Mix")
-        discovered = [DiscoveredDevice(serial=None, port_name="MIDI Mix", product="MIDI Mix")]
-        assert MidiSubsystem._match(patch, discovered, claimed=frozenset({"OLD"})) is not None
+    def test_a_device_without_a_serial_is_shared(self) -> None:
+        patches = [
+            MidiPatch(id=1, alias="A", serial="OLD", port_name="MIDI Mix"),
+            MidiPatch(id=2, alias="B", serial="OTHER", port_name="MIDI Mix"),
+            MidiPatch(id=3, alias="C", port_name="MIDI Mix"),
+        ]
+        device = DiscoveredDevice(serial=None, port_name="MIDI Mix", product="MIDI Mix")
+        assert match_patches(patches, [device]) == {1: device, 2: device, 3: device}
+
+
+class TestMatchAllocation:
+    """A unit (by serial) stands in for at most one patch's unit."""
+
+    @pytest.mark.parametrize(("first", "second"), [("F1", "F2"), ("", "")])
+    def test_patches_from_another_station_spread_over_its_units(self, first: str, second: str) -> None:
+        # An imported config (serials F1 / F2), or one saved before serials existed.
+        patches = [MidiPatch(id=1, serial=first, port_name="XTM"), MidiPatch(id=2, serial=second, port_name="XTM")]
+        l1, l2 = _xtm("L1"), _xtm("L2")
+        assert match_patches(patches, [l1, l2]) == {1: l1, 2: l2}
+
+    def test_one_spare_serves_the_lower_patch_id_only(self) -> None:
+        patches = [MidiPatch(id=2, serial="F2", port_name="XTM"), MidiPatch(id=1, serial="F1", port_name="XTM")]
+        spare = _xtm("SPARE")
+        assert match_patches(patches, [spare]) == {1: spare}
+
+    def test_a_spare_serves_every_port_of_the_absent_unit(self) -> None:
+        patches = [
+            MidiPatch(id=1, serial="F", port_name="Pad MIDI 1"),
+            MidiPatch(id=2, serial="F", port_name="Pad MIDI 2"),
+            MidiPatch(id=3, serial="G", port_name="Pad MIDI 1"),
+        ]
+        one, two = _xtm("SPARE", "Pad MIDI 1"), _xtm("SPARE", "Pad MIDI 2")
+        assert match_patches(patches, [one, two]) == {1: one, 2: two}
+
+    def test_patches_saved_without_a_serial_share_a_unit_port_by_port(self) -> None:
+        patches = [
+            MidiPatch(id=1, port_name="Pad MIDI 1"),
+            MidiPatch(id=2, port_name="Pad MIDI 2"),
+            MidiPatch(id=3, port_name="Pad MIDI 1"),
+        ]
+        one, two = _xtm("U", "Pad MIDI 1"), _xtm("U", "Pad MIDI 2")
+        assert match_patches(patches, [one, two]) == {1: one, 2: two}
+
+    def test_a_unit_taken_port_by_port_is_no_spare(self) -> None:
+        patches = [MidiPatch(id=1, port_name="Pad MIDI 1"), MidiPatch(id=2, serial="F", port_name="Pad MIDI 2")]
+        one, two = _xtm("U", "Pad MIDI 1"), _xtm("U", "Pad MIDI 2")
+        assert match_patches(patches, [one, two]) == {1: one}
+
+    def test_a_patch_saved_without_a_serial_never_takes_a_claimed_unit(self) -> None:
+        patches = [MidiPatch(id=1, port_name="XTM"), MidiPatch(id=2, serial="S2", port_name="XTM")]
+        s2, s1 = _xtm("S2"), _xtm("S1")
+        assert match_patches(patches, [s2, s1]) == {1: s1, 2: s2}
+
+    def test_a_device_without_a_serial_stands_in_for_no_unit(self) -> None:
+        # The absent unit's next patch may still take a spare with a serial.
+        patches = [
+            MidiPatch(id=1, serial="F", port_name="Pad MIDI 1"),
+            MidiPatch(id=2, serial="F", port_name="Pad MIDI 2"),
+        ]
+        shared, spare = _xtm(None, "Pad MIDI 1"), _xtm("U", "Pad MIDI 2")
+        assert match_patches(patches, [shared, spare]) == {1: shared, 2: spare}
+
+    def test_a_patch_without_a_device_is_never_matched(self) -> None:
+        assert match_patches([MidiPatch(id=1, product="XTM")], [_xtm(None)]) == {}
 
 
 class TestMatchSerialPorts:
@@ -993,8 +1065,21 @@ class TestMatchSerialPorts:
             DiscoveredDevice(serial="S", port_name="Pad:Pad MIDI 1", product="Pad:Pad MIDI 1"),
             DiscoveredDevice(serial="S", port_name="Pad:Pad MIDI 2", product="Pad:Pad MIDI 2"),
         ]
-        match = MidiSubsystem._match(patch, discovered)
+        match = _matched(patch, discovered)
         assert match is not None and match.port_name == "Pad:Pad MIDI 2"
+
+    def test_a_renamed_port_never_takes_a_port_another_patch_names(self) -> None:
+        patches = [
+            MidiPatch(id=1, serial="S", port_name="Pad MIDI 1"),
+            MidiPatch(id=2, serial="S", port_name="Pad MIDI 2 (old name)"),
+        ]
+        one, two = _xtm("S", "Pad MIDI 1"), _xtm("S", "Pad MIDI 2")
+        assert match_patches(patches, [one, two]) == {1: one, 2: two}
+
+    def test_a_renamed_port_takes_the_first_when_every_port_is_named(self) -> None:
+        patches = [MidiPatch(id=1, serial="S", port_name="Pad MIDI 1"), MidiPatch(id=2, serial="S", port_name="Gone")]
+        one = _xtm("S", "Pad MIDI 1")
+        assert match_patches(patches, [one]) == {1: one, 2: one}
 
     def test_a_device_whose_port_is_renamed_still_matches_by_serial(self) -> None:
         patch = MidiPatch(id=1, serial="S", port_name="Old name")
@@ -1002,7 +1087,7 @@ class TestMatchSerialPorts:
             DiscoveredDevice(serial="T", port_name="Old name", product="Old name"),
             DiscoveredDevice(serial="S", port_name="New name", product="New name"),
         ]
-        match = MidiSubsystem._match(patch, discovered)
+        match = _matched(patch, discovered)
         assert match is not None and match.serial == "S"
 
 
@@ -1037,6 +1122,15 @@ class TestBoundIdentifiers:
     def test_a_patch_whose_unit_is_absent_selects_an_unclaimed_spare(self) -> None:
         patches = [MidiPatch(id=1, serial="S3", port_name="XTM"), MidiPatch(id=2, serial="S1", port_name="XTM")]
         assert bound_identifiers(patches, self._DEVICES)[1] == "serial:S2|XTM"
+
+    @pytest.mark.parametrize(("first", "second"), [("F1", "F2"), ("", "")])
+    def test_patches_from_another_station_select_one_unit_each(self, first: str, second: str) -> None:
+        patches = [MidiPatch(id=1, serial=first, port_name="XTM"), MidiPatch(id=2, serial=second, port_name="XTM")]
+        assert bound_identifiers(patches, self._DEVICES) == {1: "serial:S1|XTM", 2: "serial:S2|XTM"}
+
+    def test_one_spare_is_selected_by_the_lower_patch_id_only(self) -> None:
+        patches = [MidiPatch(id=1, serial="F1", port_name="XTM"), MidiPatch(id=2, serial="F2", port_name="XTM")]
+        assert bound_identifiers(patches, self._DEVICES[:1]) == {1: "serial:S1|XTM", 2: "serial:F2|XTM"}
 
 
 # ---------------------------------------------------------------------------
@@ -1143,6 +1237,40 @@ class TestDiscoverUsbSerial:
         assert sub._open_ports[1].port_name == f"{port} 32:0"
         assert sub._open_ports[2].port_name == f"{port} 28:0"
         assert sub._status_flags["midi_patch_missing"] is None
+
+    @pytest.mark.parametrize(("first", "second"), [("F1", "F2"), ("", "")])
+    def test_patches_from_another_station_open_one_unit_each(
+        self, fake_mido: _FakeMido, linux_sysfs: Path, first: str, second: str
+    ) -> None:
+        _usb_midi(linux_sysfs, "1-1", {2: "1.0"}, "L1")
+        _usb_midi(linux_sysfs, "1-2", {3: "1.0"}, "L2")
+        port = "X-TOUCH MINI:X-TOUCH MINI MIDI 1"
+        fake_mido.input_names = [f"{port} 24:0", f"{port} 28:0"]
+        sub = MidiSubsystem()
+        sub.apply_config(
+            [
+                MidiPatch(id=1, alias="Left", serial=first, port_name=port),
+                MidiPatch(id=2, alias="Right", serial=second, port_name=port),
+            ]
+        )
+        assert sub._open_ports[1].port_name == f"{port} 24:0"
+        assert sub._open_ports[2].port_name == f"{port} 28:0"
+        assert sub._status_flags["midi_patch_missing"] is None
+
+    def test_one_spare_opens_for_the_lower_patch_id_only(self, fake_mido: _FakeMido, linux_sysfs: Path) -> None:
+        _usb_midi(linux_sysfs, "1-3", {2: "1.0"}, "S3")
+        port = "X-TOUCH MINI:X-TOUCH MINI MIDI 1"
+        fake_mido.input_names = [f"{port} 24:0"]
+        sub = MidiSubsystem()
+        sub.apply_config(
+            [
+                MidiPatch(id=2, alias="Right", serial="S2", port_name=port),
+                MidiPatch(id=1, alias="Left", serial="S1", port_name=port),
+            ]
+        )
+        assert sub._open_ports[1].port_name == f"{port} 24:0"
+        assert 2 not in sub._open_ports
+        assert sub._status_flags["midi_patch_missing"] == "MIDI patch(es) without a connected device: 2 – Right"
 
     def test_a_patch_whose_unit_is_absent_opens_an_unclaimed_spare(
         self, fake_mido: _FakeMido, linux_sysfs: Path

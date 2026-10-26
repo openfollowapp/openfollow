@@ -331,6 +331,19 @@ class TestPatchDeviceSelection:
             patch = load_config(cfg_path).midi.patches[0]
             assert (patch.alias, patch.serial) == ("Stage left", "S1")
 
+    def test_saving_a_patch_that_uses_a_spare_moves_it_to_the_spare(self, tmp_path, monkeypatch) -> None:
+        with _live_server_with_midi_providers(tmp_path, monkeypatch, discovered=_TWO_UNITS[1:]) as (_, base, cfg_path):
+            cfg = load_config(cfg_path)
+            cfg.midi = MidiConfig(patches=[MidiPatch(id=1, alias="Left", serial="S1", port_name="XTM")])
+            save_config(cfg, cfg_path)
+            _, body = _get(base, "/section/midi")
+            assert _selected_device(body) == ["serial:S2|XTM"]
+            assert "(not connected)" not in body
+            status, _ = _post_form(base, "/section/midi/patches/1", {"alias": "Stage left", "device": "serial:S2|XTM"})
+            assert status == 200
+            patch = load_config(cfg_path).midi.patches[0]
+            assert (patch.alias, patch.serial, patch.port_name) == ("Stage left", "S2", "XTM")
+
     def test_a_patch_whose_unit_is_absent_shows_not_connected(self, tmp_path, monkeypatch) -> None:
         devices = [{"identifier": "port:Keys|Keys", "port_name": "Keys", "product": "Keys", "serial": None}]
         with _live_server_with_midi_providers(tmp_path, monkeypatch, discovered=devices) as (_, base, cfg_path):

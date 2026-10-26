@@ -2101,7 +2101,7 @@ class AppRuntimeServices:
 
         ``identifier`` is the substrate's stable matching key
         (serial-prefixed when present, port+product fallback otherwise) –
-        the alias-edit form posts it back so :meth:`MidiSubsystem._match`
+        the alias-edit form posts it back so :func:`~openfollow.input.midi.match_patches`
         can resolve the operator's choice to a port. Empty list while
         ``discover`` returns nothing (no devices, or broken backend)."""
         out: list[dict[str, Any]] = []

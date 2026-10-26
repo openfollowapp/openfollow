@@ -2120,7 +2120,7 @@ class TestWhichProfileAWriteAddresses:
         assert not a.renew_lease("").ok
         assert not a.delete_vlan("").ok
         # Every unbound profile would match: ``con delete`` is a wildcarded grant.
-        assert not a.forget_interface("").ok
+        assert a.forget_interface("").message == "No interface was named; nothing was deleted."
         assert a._broker.calls == []
 
 

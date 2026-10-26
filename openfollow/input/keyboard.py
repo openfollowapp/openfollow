@@ -520,8 +520,10 @@ class LinuxEvdevKeyboardPoller(KeyboardPoller):
         self,
         input_dir: str = _INPUT_DIR,
         clock: Callable[[], float] = time.monotonic,
-        sysfs_dir: str = _SYSFS_INPUT_DIR,
+        sysfs_dir: str | None = None,
     ) -> None:
+        # Resolved per call, so a test can point the default away from the host's /sys.
+        sysfs_dir = _SYSFS_INPUT_DIR if sysfs_dir is None else sysfs_dir
         self._input_dir = input_dir
         self._sysfs_dir = sysfs_dir
         self._clock = clock

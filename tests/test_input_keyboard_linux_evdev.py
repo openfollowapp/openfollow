@@ -246,8 +246,13 @@ def clock() -> _Clock:
     return _Clock()
 
 
+def _sysfs_of(input_dir: Path) -> str:
+    """The fake sysfs beside ``input_dir`` (the ``sysfs_dir`` fixture)."""
+    return str(input_dir.parent / "sysfs")
+
+
 def _poller(input_dir: Path, clock: _Clock) -> LinuxEvdevKeyboardPoller:
-    return LinuxEvdevKeyboardPoller(input_dir=str(input_dir), clock=clock, sysfs_dir=str(input_dir.parent / "sysfs"))
+    return LinuxEvdevKeyboardPoller(input_dir=str(input_dir), clock=clock, sysfs_dir=_sysfs_of(input_dir))
 
 
 def _deny(monkeypatch: pytest.MonkeyPatch, path: Path, mode: int = os.R_OK | os.W_OK) -> None:
@@ -604,10 +609,39 @@ def _install_poller(monkeypatch: pytest.MonkeyPatch, input_dir: Path, clock: _Cl
 
     class _Poller(LinuxEvdevKeyboardPoller):
         def __init__(self) -> None:
-            super().__init__(input_dir=str(input_dir), clock=clock)
+            super().__init__(input_dir=str(input_dir), clock=clock, sysfs_dir=_sysfs_of(input_dir))
 
     monkeypatch.setattr(keyboard_module.platform, "system", lambda: "Linux")
     monkeypatch.setattr(keyboard_module, "LinuxEvdevKeyboardPoller", _Poller)
+
+
+@pytest.fixture
+def host_sysfs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A host /sys where every event node is a mouse, set as the poller's default."""
+    root = tmp_path / "host-sysfs"
+    for n in range(4):
+        caps = root / f"event{n}" / "device" / "capabilities"
+        caps.mkdir(parents=True)
+        (caps / "key").write_text(_sysfs_bitmap(MOUSE_KEYS) + "\n")
+    monkeypatch.setattr(keyboard_module, "_SYSFS_INPUT_DIR", str(root))
+    return root
+
+
+def test_a_poller_without_a_sysfs_root_reads_the_default(
+    fake_evdev: _FakeEvdev, host_sysfs: Path, input_dir: Path, clock: _Clock
+) -> None:
+    fake_evdev.add("event0")
+    poller = LinuxEvdevKeyboardPoller(input_dir=str(input_dir), clock=clock)
+    assert poller.device_count() == 0
+    assert fake_evdev.opened == []
+
+
+def test_the_factory_path_poller_reads_the_tests_sysfs_not_the_hosts(
+    fake_evdev: _FakeEvdev, host_sysfs: Path, input_dir: Path, clock: _Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_evdev.add("event0")
+    _install_poller(monkeypatch, input_dir, clock)
+    assert KeyboardHandler(_App()).status() == {"poller": "evdev", "devices": 1}
 
 
 def test_factory_picks_evdev_on_linux_when_usable(

@@ -8897,6 +8897,38 @@ def test_a_slow_but_steady_upload_completes(live_server, monkeypatch) -> None:
     assert load_config(server.config_path).camera.pos_y == pytest.approx(2.0)
 
 
+def test_a_body_that_stops_arriving_is_answered_and_frees_its_slot(live_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_REQUEST_BODY_READ_TIMEOUT_S", 0.3)
+    _, base = live_server
+    body = json.dumps({"pos_x": 1.0, "pos_y": 2.0}).encode()
+    request = (
+        b"POST /api/config/camera HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+        b"Content-Length: %d\r\n\r\n%s" % (len(body), body[: len(body) // 2])
+    )
+    assert _slot_freed_after(base, monkeypatch, request, b"408 ")
+
+
+def test_a_large_answer_reaches_a_client_that_reads_late(live_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_REQUEST_HEAD_TIMEOUT_S", 0.3)
+    server, base = live_server
+    jpeg = b"x" * (12 * 1024 * 1024)
+    monkeypatch.setattr(server, "_full_snapshot_provider", lambda: jpeg)
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    with socket.create_connection((host, int(port)), timeout=5) as sock:
+        sock.sendall(b"GET /api/video/snapshot/full HTTP/1.0\r\n\r\n")
+        time.sleep(1.0)  # past the head timeout before reading any of the answer
+        answer = b""
+        while chunk := sock.recv(1 << 20):
+            answer += chunk
+    head, _, received = answer.partition(b"\r\n\r\n")
+    assert head.startswith(b"HTTP/1.0 200 ")
+    assert len(received) == len(jpeg)
+
+
 @pytest.mark.parametrize("declared", ["abc", "", "-5"])
 def test_a_refusal_with_a_missing_or_malformed_length_still_refuses(tmp_path, declared: str) -> None:
     assert _refused_login_post(tmp_path, declared, b"pin=sekret").startswith("403")

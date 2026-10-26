@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from openfollow.runtime.latency_warning import LatencyWarning
     from openfollow.runtime.removable_media import Media
 
-from bottle import TEMPLATE_PATH, Bottle
+from bottle import TEMPLATE_PATH, Bottle, HTTPError
 
 import openfollow
 from openfollow.net_utils import get_local_ipv4_addresses, get_primary_local_ipv4
@@ -105,12 +105,18 @@ class _RequestStream(socket.SocketIO):
         self.read_timeout: float | None = None
 
     def readinto(self, buffer: Any) -> int | None:
-        timeout = self.read_timeout if self.deadline is None else self.deadline - time.monotonic()
-        if timeout is not None and timeout <= 0:
-            raise TimeoutError("timed out")
+        timeout = self.read_timeout
+        if self.deadline is not None:
+            timeout = max(self.deadline - time.monotonic(), 1e-3)
         self._connection.settimeout(timeout)
         try:
             return super().readinto(buffer)
+        except TimeoutError:
+            if self.deadline is not None:
+                raise
+            # A body that stops arriving: Bottle answers this rather than a 500 with a traceback.
+            logger.info("Config web UI gave up on a request body that stopped arriving.")
+            raise HTTPError(408, "Request body timed out") from None
         finally:
             # Writes stay unbounded: a socket timeout would cap a whole sendall.
             self._connection.settimeout(None)

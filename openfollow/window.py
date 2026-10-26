@@ -139,8 +139,9 @@ class _NSPoint(ctypes.Structure):
 
 
 class _AppKitPointerProbe:
-    """macOS: whether a mouse-down at the pointer would land on one of this app's windows.
+    """macOS: whether a mouse-down at the pointer would land on the key window.
 
+    Asked only while the Operator Screen is key, so that is its own window.
     AppKit's hit-test sees every app's windows; GDK's sees only this app's.
     """
 
@@ -162,7 +163,8 @@ class _AppKitPointerProbe:
         self._number_at = self._message(
             b"windowNumberAtPoint:belowWindowWithWindowNumber:", ctypes.c_long, _NSPoint, ctypes.c_long
         )
-        self._window_with = self._message(b"windowWithWindowNumber:", ctypes.c_void_p, ctypes.c_long)
+        self._key_window = self._message(b"keyWindow", ctypes.c_void_p)
+        self._window_number = self._message(b"windowNumber", ctypes.c_long)
 
     def _message(self, selector: bytes, restype: Any, *argtypes: Any) -> Callable[..., Any]:
         # Indexing returns a new function object, so each message keeps its own C signature.
@@ -174,7 +176,8 @@ class _AppKitPointerProbe:
 
     def __call__(self) -> bool:
         number = self._number_at(self._ns_window, self._mouse_location(self._event), 0)
-        return bool(self._window_with(self._app, number))
+        # With no key window the message goes to nil and answers 0, no window's number.
+        return bool(number > 0 and number == self._window_number(self._key_window(self._app)))
 
 
 def _pointer_probe() -> Callable[[], bool]:
@@ -536,21 +539,12 @@ class GtkNativeSinkWindow:
         return seat.get_pointer() if seat is not None else None
 
     def poll_pointer(self) -> None:
-        """macOS: synthesise pointer events from a per-frame position/button poll.
+        """macOS: synthesise the GTK pointer events from a per-frame poll; a no-op on Linux/Pi.
 
-        No-op where GTK delivers pointer events (Linux/Pi). The emitted events go
-        through the same ``_emit`` path as the GTK signal handlers, so all
-        downstream gating and ``MouseHandler`` behaviour is unchanged.
-
-        Quartz reports the pointer and buttons for the whole screen, so nothing
-        is emitted unless this is the key window, and a press acts only if it
-        starts on the canvas where a mouse-down lands on this window, and not
-        on the frame the window became key; it keeps that owner until
-        released. A move counts while the pointer is over the window or a
-        press the window took is held, never while one it did not take is
-        held. Grab, release and reset happen on a press, so no release is
-        emitted; a move on the frame of a grab is dropped so the grab seeds
-        its baseline without yanking the marker.
+        Only presses this window takes act: one that starts on the canvas where a
+        mouse-down lands on this window, while it is key and not on the frame it
+        became key. Each keeps its owner until released, and moves follow that
+        owner (see the input guide).
         """
         if not self._pointer_poll:
             return
@@ -563,29 +557,27 @@ class GtkNativeSinkWindow:
         if gwin is None:
             return
         _w, x, y, mask = gwin.get_device_position(self._pointer_device)
-        Gdk = self._Gdk
-        down = {
-            button
-            for button, bit in ((1, Gdk.ModifierType.BUTTON1_MASK), (3, Gdk.ModifierType.BUTTON3_MASK))
-            if mask & bit
-        }
+        m = self._Gdk.ModifierType
+        bits = (m.BUTTON1_MASK, m.BUTTON2_MASK, m.BUTTON3_MASK, m.BUTTON4_MASK, m.BUTTON5_MASK)
+        down = [button for button, bit in enumerate(bits, 1) if mask & bit]
         cw, ch = self.get_canvas_size()
         within = 0 <= x < cw and 0 <= y < ch
         key = bool(self._window.has_toplevel_focus())
         regained = key and not self._poll_was_key
         self._poll_was_key = key
         held = {button: ours for button, ours in self._poll_held.items() if button in down}
-        pressed = [button for button in (1, 3) if button in down and button not in held]
+        pressed = [button for button in down if button not in held]
         moved = within and (x, y) != self._poll_last_pos
         self._poll_last_pos = (x, y)
-        # AppKit's hit-test is a WindowServer round trip: asked only when an event may follow.
-        over = key and within and bool(pressed or moved) and self._pointer_over_window()
+        # AppKit's hit-test is a WindowServer round trip: asked only when its answer decides an event.
+        over = key and within and bool(pressed or (moved and not held)) and self._pointer_over_window()
         for button in pressed:
             held[button] = over and not regained
         self._poll_held = held
         for button in pressed:
             if held[button]:
                 self._emit("pointer_down", x=x, y=y, button=button)
+        # A grab seeds its baseline from the press, so its own frame moves nothing.
         grabbed = held.get(1, False) and 1 in pressed
         steers = all(held.values()) if held else over
         if moved and key and steers and not grabbed:
@@ -724,6 +716,9 @@ class GtkNativeSinkWindow:
             return True
 
     def _on_scroll(self, widget: Any, event: Any) -> bool:
+        if self._pointer_poll and not self._window.has_toplevel_focus():
+            # macOS scrolls the window under the pointer even while another one is key.
+            return True
         Gdk = self._Gdk
         ok, _dx, dy = event.get_scroll_deltas()
         if ok:

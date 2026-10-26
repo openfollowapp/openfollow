@@ -67,7 +67,10 @@ class FakeGdkModifierType:
     MOD2_MASK = 1 << 4  # Command on Quartz (NumLock on X11)
     META_MASK = 1 << 28
     BUTTON1_MASK = 256  # GDK_BUTTON1_MASK
-    BUTTON3_MASK = 1024  # GDK_BUTTON3_MASK
+    BUTTON2_MASK = 512
+    BUTTON3_MASK = 1024
+    BUTTON4_MASK = 2048
+    BUTTON5_MASK = 4096
 
 
 # Lookup table consulted by the fake ``Gdk.keyval_name``. Tests can
@@ -1574,6 +1577,27 @@ class TestEventDispatch:
             )
         assert [r["dy"] for r in received] == [1.0, 1.0, -1.0, 3.0, 8.0]
 
+    @pytest.mark.parametrize(
+        ("polled", "key", "ticks"),
+        [
+            (True, True, [-1.0]),
+            (True, False, []),  # macOS: scrolled while another window is key
+            (False, True, [-1.0]),
+            (False, False, [-1.0]),  # Linux/Pi: GTK scrolls only this window, as before
+        ],
+    )
+    def test_scroll_needs_the_key_window_only_on_macos(self, window, polled: bool, key: bool, ticks) -> None:
+        window._pointer_poll = polled
+        window._scroll_is_batched = False
+        window._window.toplevel_focus = key
+        received = self._handler_list(window, "wheel")
+        handled = window._window.fire(
+            "scroll-event",
+            SimpleNamespace(get_scroll_deltas=lambda: (True, 0.0, 1.0), direction=FakeGdkScrollDirection.SMOOTH),
+        )
+        assert [r["dy"] for r in received] == ticks
+        assert handled is True
+
     def test_scroll_one_notch_pair_emits_single_tick(self, window) -> None:
         # Real devices emit a legacy discrete UP/DOWN event AND a smooth event
         # per wheel notch. Only the smooth one is processed; handling both would
@@ -1860,7 +1884,10 @@ class _PollSurface:
 
 
 _B1 = FakeGdkModifierType.BUTTON1_MASK
+_B2 = FakeGdkModifierType.BUTTON2_MASK
 _B3 = FakeGdkModifierType.BUTTON3_MASK
+_B4 = FakeGdkModifierType.BUTTON4_MASK
+_B5 = FakeGdkModifierType.BUTTON5_MASK
 
 
 class _PointerFrames:
@@ -1931,7 +1958,10 @@ class TestPointerPoll:
         frames = _PointerFrames(window)
         frames.poll(10, 10)
         frames.poll(30, 40)
-        assert frames.events[-1] == ("pointer_move", {"x": 30, "y": 40})
+        assert frames.events == [
+            ("pointer_move", {"x": 10, "y": 10}),
+            ("pointer_move", {"x": 30, "y": 40}),
+        ]
 
     def test_unchanged_position_emits_nothing(self, window) -> None:
         frames = _PointerFrames(window)
@@ -2075,6 +2105,42 @@ class TestPointerPoll:
         frames.events.clear()
         frames.poll(140, 260, _B1, key=False)
         assert frames.events == []
+
+    def test_press_the_window_did_not_take_stops_a_drag_it_took(self, window) -> None:
+        frames = _PointerFrames(window)
+        frames.poll(100, 200, _B1)
+        frames.events.clear()
+        frames.poll(140, 260, _B1 | _B3, over=False)
+        frames.poll(160, 280, _B1 | _B3)
+        assert frames.events == []
+        frames.poll(180, 300, _B1)
+        assert frames.events == [("pointer_move", {"x": 180, "y": 300})]
+
+    @pytest.mark.parametrize(("mask", "button"), [(_B2, 2), (_B4, 4), (_B5, 5)])
+    def test_every_button_keeps_its_owner(self, window, mask: int, button: int) -> None:
+        frames = _PointerFrames(window)
+        frames.poll(100, 200, _B1)
+        frames.poll(100, 200)
+        frames.events.clear()
+        frames.poll(120, 220, mask, over=False)
+        frames.poll(140, 260, mask)
+        assert frames.events == []
+        frames.poll(140, 260)
+        frames.poll(140, 260, mask)
+        assert frames.events == [("pointer_down", {"x": 140, "y": 260, "button": button})]
+
+    def test_drag_the_window_took_is_not_hit_tested(self, window) -> None:
+        frames = _PointerFrames(window)
+        frames.poll(100, 200, _B1)
+        asked = frames.probes
+        frames.poll(140, 260, _B1)
+        frames.poll(180, 300, _B1)
+        assert frames.probes == asked
+        assert frames.events == [
+            ("pointer_down", {"x": 100, "y": 200, "button": 1}),
+            ("pointer_move", {"x": 140, "y": 260}),
+            ("pointer_move", {"x": 180, "y": 300}),
+        ]
 
     def test_still_pointer_is_not_hit_tested(self, window) -> None:
         frames = _PointerFrames(window)
@@ -2249,19 +2315,24 @@ class _FakeObjc:
     def _send(self, fn: _FakeCFunction, receiver: Any, selector: bytes, *args: Any) -> Any:
         fn.selectors.append(selector)
         self.messages.append((receiver, selector, args))
+        if receiver is None:
+            return 0  # a message to nil answers 0
         return self._replies[selector](*args)
 
 
 _POINT = object()
 
 
-def _appkit(window_with: Any = 0x77, missing: frozenset[bytes] = frozenset()) -> _FakeObjc:
+def _appkit(
+    hit: int = 42, key_window: Any = "screen", key_number: int = 42, missing: frozenset[bytes] = frozenset()
+) -> _FakeObjc:
     return _FakeObjc(
         {
             b"sharedApplication": lambda: "app",
             b"mouseLocation": lambda: _POINT,
-            b"windowNumberAtPoint:belowWindowWithWindowNumber:": lambda _point, _below: 42,
-            b"windowWithWindowNumber:": lambda number: window_with if number == 42 else None,
+            b"windowNumberAtPoint:belowWindowWithWindowNumber:": lambda _point, _below: hit,
+            b"keyWindow": lambda: key_window,
+            b"windowNumber": lambda: key_number,
         },
         missing,
     )
@@ -2288,20 +2359,28 @@ class TestAppKitPointerProbe:
 
         return install
 
-    def test_true_when_the_window_at_the_pointer_is_this_apps(self, load) -> None:
+    def test_true_when_the_window_at_the_pointer_is_the_key_window(self, load) -> None:
         from openfollow.window import _AppKitPointerProbe
 
         objc = _appkit()
         load(objc)
         assert _AppKitPointerProbe()() is True
         assert (b"NSWindow", b"windowNumberAtPoint:belowWindowWithWindowNumber:", (_POINT, 0)) in objc.messages
-        assert ("app", b"windowWithWindowNumber:", (42,)) in objc.messages
+        assert ("app", b"keyWindow", ()) in objc.messages
+        assert ("screen", b"windowNumber", ()) in objc.messages
 
-    @pytest.mark.parametrize("window_with", [None, 0])
-    def test_false_when_it_is_another_apps(self, load, window_with: Any) -> None:
+    @pytest.mark.parametrize(
+        ("hit", "key_window", "key_number"),
+        [
+            (42, "screen", 7),  # another window is under the pointer
+            (42, None, 0),  # no key window
+            (0, None, 0),  # no window under the pointer, no key window
+        ],
+    )
+    def test_false_when_it_is_another_window(self, load, hit: int, key_window: Any, key_number: int) -> None:
         from openfollow.window import _AppKitPointerProbe
 
-        load(_appkit(window_with))
+        load(_appkit(hit, key_window, key_number))
         assert _AppKitPointerProbe()() is False
 
     def test_each_message_has_its_own_signature(self, load) -> None:
@@ -2318,7 +2397,8 @@ class TestAppKitPointerProbe:
             b"sharedApplication": (ctypes.c_void_p, receiver),
             b"mouseLocation": (_NSPoint, receiver),
             b"windowNumberAtPoint:belowWindowWithWindowNumber:": (ctypes.c_long, [*receiver, _NSPoint, ctypes.c_long]),
-            b"windowWithWindowNumber:": (ctypes.c_void_p, [*receiver, ctypes.c_long]),
+            b"keyWindow": (ctypes.c_void_p, receiver),
+            b"windowNumber": (ctypes.c_long, receiver),
         }
 
     def test_loads_appkit_with_the_runtime(self, load) -> None:

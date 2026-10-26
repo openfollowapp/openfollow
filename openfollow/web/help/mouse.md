@@ -4,7 +4,7 @@ Click-and-drag control for steering markers directly on the live video. Off by d
 
 **One mouse per station.** All mice plugged into a station share a single system cursor, so only one mouse steers one marker at a time – a second mouse just moves the same pointer. To control several markers at once, use one gamepad per operator instead.
 
-On a Mac, the mouse steers only while the Operator Screen is the active window, and a click counts only when it lands on the Operator Screen itself: clicks and pointer moves in another window lying over it leave the markers alone, and the click that brings the Operator Screen to the front only does that.
+On a Mac, the mouse and its scroll wheel act only while the Operator Screen is the active window, and a click counts only when it lands on the Operator Screen itself: clicks and pointer moves in another window lying over it leave the markers alone, and the click that brings the Operator Screen to the front only does that.
 
 ## Taking and releasing control
 

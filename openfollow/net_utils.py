@@ -9,6 +9,7 @@ auto-detect fallback. ``resolve_source_ip`` returns ``(ip, ResolveStatus)``.
 
 from __future__ import annotations
 
+import errno
 import ipaddress
 import socket
 import struct
@@ -259,6 +260,40 @@ WEB_BIND_ALL = "0.0.0.0"
 def serves_every_interface(bind_host: str) -> bool:
     """True when a web listener bound to ``bind_host`` answers on every interface."""
     return not bind_host or bind_host == WEB_BIND_ALL
+
+
+# macOS lets SO_REUSEADDR binds of one address and of the wildcard share a TCP
+# port, whichever came first; Linux refuses the second while the first listens.
+BINDS_SHARE_PORTS = sys.platform == "darwin"
+
+
+def tcp_port_shared(host: str, port: int) -> list[str]:
+    """Addresses overlapping ``host`` (``""`` = wildcard) where another socket holds TCP ``port``.
+
+    Empty where the kernel refuses such a bind itself. The wildcard overlaps
+    every address of this host, loopback included. A probe this process may
+    not bind (a single address below 1024 needs root on macOS) is not counted.
+    """
+    if not BINDS_SHARE_PORTS:
+        return []
+    if host:
+        overlapping = {""}
+    else:
+        try:
+            overlapping = get_local_ipv4_addresses() | {"127.0.0.1"}
+        except OSError:
+            overlapping = {"127.0.0.1"}
+    return sorted(addr or WEB_BIND_ALL for addr in overlapping if _tcp_bind_errno(addr, port) == errno.EADDRINUSE)
+
+
+def _tcp_bind_errno(host: str, port: int) -> int | None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((host, port))
+        except OSError as exc:
+            return exc.errno
+    return None
 
 
 def resolve_web_bind(web_bind: str, web_bind_iface: str) -> tuple[str, ResolveStatus]:

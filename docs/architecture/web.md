@@ -41,7 +41,7 @@ and "manage X under Y" pointers – goes in that section's **help drawer markdow
 | `/section/network/apply` | POST | Validate + write IPv4 config via the privileged adapter |
 | `/section/network/renew` | POST | Renew DHCP lease via the privileged adapter |
 | `/section/general/startup` | GET/POST | Start-at-boot switch; reads `systemctl is-enabled`, writes via the `service.enable` / `service.disable` grants |
-| `/api/info` | GET | JSON: name, ip, port, version, and `instance`, this process's id |
+| `/api/info` | GET | JSON: name, ip, port (the one served, `display_port`), version, and `instance`, this process's id |
 | `/api/peers` | GET | JSON: discovered peers |
 | `/api/config/export` | GET | Download full config as JSON file |
 | `/api/config/import` | POST | Import config JSON (preserves device identity); every section applies live |
@@ -191,7 +191,7 @@ Per-IP exponential-backoff lockout on PIN authentication. Without this, a 4-digi
 - **Coverage:** 100% line + branch in `tests/test_login_throttle.py` (mock-clock unit tests, including thread-safety stress) + integration tests in `tests/test_web_server.py` (live server, real `urllib`, both vectors). Module is in the `mypy --strict` batch.
 
 ## Broadcast target restriction
-`_send_config_to_peer` / `_send_config_import_to_peer` refuse to POST to non-private IPs – `ipaddress.IPv4Address.is_private` covers RFC 1918, link-local, and loopback, which is the set a legitimate peer can plausibly have. Closes the SSRF vector where a crafted beacon advertised an attacker-chosen endpoint (e.g. `web_port=22` or an internal service port).
+`_send_config_to_peer` / `_send_config_import_to_peer` refuse to POST to non-private IPs – `ipaddress.IPv4Address.is_private` covers RFC 1918, link-local, and loopback, which is the set a legitimate peer can plausibly have. Closes the SSRF vector where a crafted beacon advertised an attacker-chosen endpoint (e.g. `web_port=22` or an internal service port). The port must be this station's own, 80 or a fallback port (`_is_allowed_peer_port`), since a station advertises the port it serves ([network](network.md#web-ui-port)).
 
 ## Service name as an argument
 `_is_valid_service_name` rejects any value starting with `-` as well as anything outside its pattern, so `update_service_name` can never be parsed as a `systemctl` option; an invalid name falls back to the default unit (`_service_unit_name`).

@@ -53,6 +53,7 @@ jobs:
         # ``python-rtmidi``'s wheel build for Linux – only sdist ships
         # for the runner's CPython/glibc combo, and meson build
         # aborts with "Dependency 'alsa' not found" without headers.
+        # ``libxkbcommon-dev`` likewise for the Linux-only ``xkbcommon`` binding.
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -69,7 +70,8 @@ jobs:
             gstreamer1.0-plugins-base \
             gstreamer1.0-plugins-good \
             gstreamer1.0-plugins-bad \
-            libasound2-dev
+            libasound2-dev \
+            libxkbcommon-dev
 
       # Pinned to the version stamped in ``poetry.lock``'s header. Unpinned,
       # ``snok/install-poetry@v1`` installs whatever resolves as latest at run
@@ -214,7 +216,8 @@ jobs:
             gstreamer1.0-plugins-base \
             gstreamer1.0-plugins-good \
             gstreamer1.0-plugins-bad \
-            libasound2-dev
+            libasound2-dev \
+            libxkbcommon-dev
 
       - name: Install Poetry
         uses: snok/install-poetry@v1
@@ -314,7 +317,8 @@ jobs:
             gstreamer1.0-plugins-base \
             gstreamer1.0-plugins-good \
             gstreamer1.0-plugins-bad \
-            libasound2-dev
+            libasound2-dev \
+            libxkbcommon-dev
 
       - name: Install Poetry
         uses: snok/install-poetry@v1

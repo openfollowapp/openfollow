@@ -16,6 +16,7 @@
 # Build prerequisites (run scripts/install-system-deps.sh first, plus the -dev set):
 #   python3-venv python3-dev build-essential pkg-config dpkg-dev
 #   libgirepository-2.0-dev libcairo2-dev libasound2-dev   (compile PyGObject/rtmidi)
+#   libxkbcommon-dev                                        (compile xkbcommon; in install-system-deps.sh)
 #   librsvg2-bin                                            (render the splash)
 set -euo pipefail
 umask 022  # 755 dirs / 644 files in the staged tree (clean package perms)
@@ -194,9 +195,12 @@ assert origin and os.path.realpath(origin).startswith(prefix + os.sep), (
     f"PyOpenGL not bundled in venv: {origin}"
 )
 
-# The Operator Screen's keyboard poller; without it the Pi falls back to GTK key events.
+# The Operator Screen's keyboard poller and its layout map; without evdev the Pi
+# falls back to GTK key events, without xkbcommon it polls US letter positions.
 import evdev  # noqa: F401
-assert os.path.realpath(evdev.__file__).startswith(prefix + os.sep), f"evdev not bundled in venv: {evdev.__file__}"
+from xkbcommon import xkb  # noqa: F401
+for module in (evdev, xkb):
+    assert os.path.realpath(module.__file__).startswith(prefix + os.sep), f"not bundled in venv: {module.__file__}"
 
 # Detection backend must be bundled (import from the venv prefix); the AGPL
 # export toolchain (torch / ultralytics) must not be – the SBOM gate's boundary,

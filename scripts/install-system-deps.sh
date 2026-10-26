@@ -54,6 +54,10 @@ APT_PACKAGES=(
   # this at runtime via easyhid-ng; the udev rule (99-openfollow-3dmouse.rules)
   # grants the service user access to the device's /dev/hidraw node.
   libhidapi-hidraw0
+  # The keyboard poller's layout map: the xkbcommon cffi binding compiles
+  # against the -dev headers and loads the runtime library.
+  libxkbcommon0
+  libxkbcommon-dev
 )
 
 echo "[install-system-deps] Refreshing apt index..."

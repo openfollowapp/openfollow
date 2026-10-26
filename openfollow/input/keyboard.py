@@ -23,8 +23,10 @@ import os
 import platform
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
+
+from openfollow import keyboard_layout
 
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp
@@ -181,7 +183,22 @@ _EVDEV_KEY_NAMES: dict[str, tuple[str, ...]] = {
     **{f"Numpad{n}": (f"KEY_KP{n}",) for n in range(10)},
 }
 
+_POLLED_LETTERS = frozenset(key for key in POLLED_KEYS if len(key) == 1)
 _INPUT_DIR = "/dev/input"
+# An xkb keycode is the evdev code plus 8.
+_XKB_EVDEV_OFFSET = 8
+_XKB_SESSION_ENV = (
+    ("layout", "XKB_DEFAULT_LAYOUT"),
+    ("variant", "XKB_DEFAULT_VARIANT"),
+    ("model", "XKB_DEFAULT_MODEL"),
+    ("options", "XKB_DEFAULT_OPTIONS"),
+)
+_XKB_SYSTEM_KEYS = (
+    ("layout", "XKBLAYOUT"),
+    ("variant", "XKBVARIANT"),
+    ("model", "XKBMODEL"),
+    ("options", "XKBOPTIONS"),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -406,6 +423,55 @@ class MacOSKeyboardPoller(KeyboardPoller):
         return bool(result)
 
 
+def _linux_layout_names(environ: Mapping[str, str]) -> tuple[dict[str, str], str]:
+    """The RMLVO names the compositor compiled, and where they came from.
+
+    The kiosk session exports ``XKB_DEFAULT_*`` to Cage and the app alike, so
+    they come first; ``/etc/default/keyboard`` only stands in when the session
+    exported none, then ``us``. Never the station's ``keyboard_layout`` field:
+    a saved layout applies at the next restart, so it can differ from the one
+    GTK and the compositor are typing in.
+    """
+    session = {name: environ.get(var, "") for name, var in _XKB_SESSION_ENV}
+    if any(session.values()):
+        return session, "session"
+    system = keyboard_layout.read_system_keyboard()
+    names = {name: system.get(key, "") for name, key in _XKB_SYSTEM_KEYS}
+    if names["layout"]:
+        return names, "system"
+    return {**names, "layout": keyboard_layout.DEFAULT_LAYOUT, "variant": ""}, "default"
+
+
+def _build_linux_layout_keycode_map(names: Mapping[str, str]) -> dict[str, int] | None:
+    """``{polled letter: evdev code}`` for the keymap ``names`` compile to; ``None`` on any failure.
+
+    evdev reports physical positions: on QWERTZ the key printed ``Z`` is
+    ``KEY_Y``. Each key's level-0 keysym in the first layout names the letter
+    it types; the lowest keycode wins a letter reachable from several keys.
+    """
+    try:
+        from xkbcommon import xkb
+
+        context = xkb.Context(no_environment_names=True)
+        keymap = context.keymap_new_from_names(**{name: value or None for name, value in names.items()})
+        mapping: dict[str, int] = {}
+        for keycode in keymap:
+            syms = keymap.key_get_syms_by_level(keycode, 0, 0)
+            if len(syms) != 1:
+                continue
+            char = xkb.keysym_to_string(syms[0])
+            if char in _POLLED_LETTERS and char not in mapping:
+                mapping[char] = keycode - _XKB_EVDEV_OFFSET
+        return mapping or None
+    except Exception:
+        return None
+
+
+def _layout_label(names: Mapping[str, str]) -> str:
+    layout = names["layout"] or "(xkb default)"
+    return f"{layout} ({names['variant']})" if names["variant"] else layout
+
+
 def _input_devices_accessible(input_dir: str) -> bool:
     """Whether this user may open every evdev node in ``input_dir`` (the service user is in ``input``)."""
     try:
@@ -457,8 +523,28 @@ class LinuxEvdevKeyboardPoller(KeyboardPoller):
         self._key_a: int = ecodes.KEY_A
         self._ev_key: int = ecodes.EV_KEY
         self._available = True
+        self._apply_layout()
         self._maybe_rescan(self._clock())
         logger.info("evdev keyboard poller initialized (%d keyboard(s))", len(self._devices))
+
+    def _apply_layout(self) -> None:
+        """Move the letters to the keys the session's layout prints them on."""
+        names, source = _linux_layout_names(os.environ)
+        layout_map = _build_linux_layout_keycode_map(names)
+        if not layout_map:
+            logger.warning(
+                "Could not resolve keyboard layout %s (from %s); falling back to "
+                "US QWERTY keycodes (Z/Y may not match a QWERTZ layout).",
+                _layout_label(names),
+                source,
+            )
+            return
+        self._key_codes.update({char: (code,) for char, code in layout_map.items()})
+        logger.info(
+            "Keyboard layout %s (from %s); using layout-aware keycodes for letter polling.",
+            _layout_label(names),
+            source,
+        )
 
     def is_available(self) -> bool:
         return self._available
@@ -590,8 +676,8 @@ class KeyboardHandler:
     """Handles keyboard input for marker and camera control.
 
     Uses direct hardware polling (macOS Quartz, Linux evdev) or event-based
-    tracking (fallback) to get reliable keyboard state, bypassing GTK's event system which can
-    drop events under heavy GStreamer video load.
+    tracking (fallback) to get reliable keyboard state, bypassing GTK's event
+    system which can drop events under heavy GStreamer video load.
     """
 
     # Modal/navigation keys polled regardless of user mapping (used by

@@ -50,6 +50,9 @@ dependencies = [
     # The Operator Screen's keyboard state on Linux (``EVIOCGKEY``). C extension
     # built from sdist against the kernel's ``linux/input.h`` (``linux-libc-dev``).
     "evdev>=1.6; sys_platform == 'linux'",
+    # Maps that poller's letters to the session's keyboard layout. cffi binding
+    # built from sdist against ``libxkbcommon-dev``; loads ``libxkbcommon0``.
+    "xkbcommon>=1.0; sys_platform == 'linux'",
 ]
 
 [project.optional-dependencies]
@@ -178,6 +181,7 @@ module = [
     "easyhid",
     "OpenGL",
     "evdev",
+    "xkbcommon.*",
 ]
 ignore_missing_imports = true
 

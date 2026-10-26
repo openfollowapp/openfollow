@@ -4389,6 +4389,21 @@ packaging = ">=26.3"
 platformdirs = ">=4.4,<5"
 python-discovery = ">=1.6.1"
 
+[[package]]
+name = "xkbcommon"
+version = "1.5.1"
+description = "Bindings for libxkbcommon using cffi"
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+markers = "sys_platform == \"linux\""
+files = [
+    {file = "xkbcommon-1.5.1.tar.gz", hash = "sha256:ac174808dbf61d35d9da804bf33baac74bc6f2be0c108594ae93c79cd15ddc36"},
+]
+
+[package.dependencies]
+cffi = ">=1.5.0"
+
 [extras]
 detection = ["onnxruntime", "opencv-python"]
 export = ["ultralytics"]
@@ -4396,4 +4411,4 @@ export = ["ultralytics"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13,<3.14"
-content-hash = "453406b1b0f1f26fad1fa6b37711b4f603f793cf7690c6bf10619515b27fabd7"
+content-hash = "c98d7631b6f222cdc5c0c6fe51ef0c84a09a0ae1ae081da95dbcf3606b3495d2"

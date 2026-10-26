@@ -146,8 +146,9 @@ def _no_host_keyboard(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.
 
 @pytest.fixture(autouse=True)
 def _no_host_input_devices(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No test may open the host's evdev devices; one that cares installs a fake ``evdev``."""
+    """No test may open the host's evdev devices or compile its xkb keymap; one that cares installs fakes."""
     monkeypatch.setitem(sys.modules, "evdev", None)
+    monkeypatch.setitem(sys.modules, "xkbcommon", None)
 
 
 @pytest.fixture(autouse=True)

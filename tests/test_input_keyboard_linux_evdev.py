@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 import openfollow.input.keyboard as keyboard_module
+from openfollow import keyboard_layout
 from openfollow.configuration import AppConfig
 from openfollow.input.keyboard import (
     POLLED_KEYS,
@@ -330,9 +331,9 @@ def test_one_frame_shares_one_read_of_the_devices(fake_evdev: _FakeEvdev, input_
     poller = _poller(input_dir, clock)
     assert poller.is_key_pressed("w") is True
     node.held = set()
-    clock.t += 0.003
+    clock.t += 0.002
     assert poller.is_key_pressed("w") is True
-    clock.t += 0.001
+    clock.t += 0.003
     assert poller.is_key_pressed("w") is False
 
 
@@ -547,3 +548,293 @@ def test_keyboard_presence_follows_the_evdev_device_list(
     clock.t += 1.0
     now["t"] += 1.0
     assert handler.is_connected() is True
+
+
+# --------------------------------------------------------------------------- #
+# Layout-aware letters (xkbcommon)
+# --------------------------------------------------------------------------- #
+
+_LETTER_CODES = {letter: KEY_CODES[f"KEY_{letter.upper()}"] for letter in "abcdefghijklmnopqrstuvwxyz"}
+
+
+def _keymap(letters: dict[str, int]) -> dict[int, list[int]]:
+    """xkb keycode -> level-0 keysyms; a Latin-1 keysym is its character's code point."""
+    return {code + 8: [ord(letter)] for letter, code in letters.items()}
+
+
+_US = _keymap(_LETTER_CODES)
+# QWERTZ: the keys US prints Y and Z on swap letters.
+_DE = _keymap({**_LETTER_CODES, "y": KEY_CODES["KEY_Z"], "z": KEY_CODES["KEY_Y"]})
+
+
+class _FakeKeymap:
+    def __init__(self, levels: dict[int, list[int]]) -> None:
+        self._levels = levels
+
+    def __iter__(self) -> Any:
+        return iter(sorted(self._levels))
+
+    def key_get_syms_by_level(self, key: int, layout: int, level: int) -> list[int]:
+        assert (layout, level) == (0, 0)
+        return list(self._levels[key])
+
+
+class _FakeXkbModule(types.ModuleType):
+    """The slice of python-xkbcommon's ``xkb`` module the layout map uses."""
+
+    def __init__(self, keymaps: dict[str, dict[int, list[int]]]) -> None:
+        super().__init__("xkbcommon.xkb")
+        self.keymaps = keymaps
+        self.compiled: list[dict[str, Any]] = []
+        self.contexts: list[bool] = []
+        fake = self
+
+        class Context:
+            def __init__(self, no_environment_names: bool = False) -> None:
+                fake.contexts.append(no_environment_names)
+
+            def keymap_new_from_names(self, **names: Any) -> _FakeKeymap:
+                fake.compiled.append(names)
+                layout = names.get("layout") or "us"
+                if layout not in fake.keymaps:
+                    raise RuntimeError("xkb_keymap_new_from_names returned NULL")
+                return _FakeKeymap(fake.keymaps[layout])
+
+        self.Context = Context
+
+    @staticmethod
+    def keysym_to_string(keysym: int) -> str | None:
+        return chr(keysym) if keysym else None
+
+
+@pytest.fixture
+def fake_xkb(monkeypatch: pytest.MonkeyPatch) -> _FakeXkbModule:
+    xkb = _FakeXkbModule({"us": _US, "de": _DE})
+    package = types.ModuleType("xkbcommon")
+    package.xkb = xkb  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "xkbcommon", package)
+    monkeypatch.setitem(sys.modules, "xkbcommon.xkb", xkb)
+    return xkb
+
+
+@pytest.fixture
+def system_keyboard(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    path = tmp_path / "keyboard"
+    monkeypatch.setattr(keyboard_layout, "SYSTEM_KEYBOARD", path)
+    return path
+
+
+def _letter_keys(poller: LinuxEvdevKeyboardPoller, node: _Node, clock: _Clock, code: int) -> set[str]:
+    """The letters the poller reports while only the key with evdev ``code`` is held."""
+    node.held = {code}
+    clock.t += 1.0
+    return poller.get_pressed_keys(list("abcdefghijklmnopqrstuvwxyz"))
+
+
+def test_a_qwertz_session_polls_z_and_y_on_their_printed_keys(
+    fake_evdev: _FakeEvdev, fake_xkb: _FakeXkbModule, input_dir: Path, clock: _Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XKB_DEFAULT_LAYOUT", "de")
+    node = fake_evdev.add("event0")
+    poller = _poller(input_dir, clock)
+    assert _letter_keys(poller, node, clock, KEY_CODES["KEY_Y"]) == {"z"}
+    assert _letter_keys(poller, node, clock, KEY_CODES["KEY_Z"]) == {"y"}
+    assert _letter_keys(poller, node, clock, KEY_CODES["KEY_W"]) == {"w"}
+
+
+def test_the_layout_never_moves_a_key_that_is_not_a_letter(
+    fake_evdev: _FakeEvdev, fake_xkb: _FakeXkbModule, input_dir: Path, clock: _Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The space bar types " " and the digit row's first key "1": neither is a letter.
+    fake_xkb.keymaps["de"] = {**_DE, KEY_CODES["KEY_SPACE"] + 8: [ord(" ")], 2 + 8: [ord("1")]}
+    monkeypatch.setenv("XKB_DEFAULT_LAYOUT", "de")
+    node = fake_evdev.add("event0")
+    poller = _poller(input_dir, clock)
+    node.held = _codes("KEY_SPACE")
+    assert poller.get_pressed_keys(["Space", "a"]) == {"Space"}
+
+
+def test_a_letter_on_several_keys_stays_on_the_lowest(
+    fake_evdev: _FakeEvdev, fake_xkb: _FakeXkbModule, input_dir: Path, clock: _Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_xkb.keymaps["de"] = {**_DE, 300: [ord("y")]}
+    monkeypatch.setenv("XKB_DEFAULT_LAYOUT", "de")
+    node = fake_evdev.add("event0")
+    poller = _poller(input_dir, clock)
+    assert _letter_keys(poller, node, clock, KEY_CODES["KEY_Z"]) == {"y"}
+    assert _letter_keys(poller, node, clock, 300 - 8) == set()
+
+
+# The lowest xkb keycode (Escape), so a letter it named would win over the letter's own key.
+_ESC_XKB = KEY_CODES["KEY_ESC"] + 8
+
+
+@pytest.mark.parametrize(
+    ("syms", "why"),
+    [
+        ([ord("y"), ord("z")], "a key with several level-0 keysyms names none"),
+        ([], "a key with no keysym names none"),
+        ([0], "a keysym with no text names none"),
+    ],
+)
+def test_a_key_without_one_keysym_names_no_letter(
+    syms: list[int],
+    why: str,
+    fake_evdev: _FakeEvdev,
+    fake_xkb: _FakeXkbModule,
+    input_dir: Path,
+    clock: _Clock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_xkb.keymaps["de"] = {**_DE, _ESC_XKB: syms}
+    monkeypatch.setenv("XKB_DEFAULT_LAYOUT", "de")
+    node = fake_evdev.add("event0")
+    poller = _poller(input_dir, clock)
+    assert _letter_keys(poller, node, clock, KEY_CODES["KEY_ESC"]) == set(), why
+    assert _letter_keys(poller, node, clock, KEY_CODES["KEY_Z"]) == {"y"}, why
+
+
+def test_the_session_environment_is_the_whole_rmlvo(
+    fake_evdev: _FakeEvdev,
+    fake_xkb: _FakeXkbModule,
+    input_dir: Path,
+    clock: _Clock,
+    monkeypatch: pytest.MonkeyPatch,
+    system_keyboard: Path,
+) -> None:
+    system_keyboard.write_text('XKBMODEL="pc86"\nXKBLAYOUT="us"\nXKBVARIANT="intl"\nXKBOPTIONS="ctrl:nocaps"\n')
+    monkeypatch.setenv("XKB_DEFAULT_LAYOUT", "de")
+    monkeypatch.setenv("XKB_DEFAULT_VARIANT", "nodeadkeys")
+    monkeypatch.setenv("XKB_DEFAULT_MODEL", "pc105")
+    monkeypatch.setenv("XKB_DEFAULT_OPTIONS", "grp:alt_shift_toggle")
+    _poller(input_dir, clock)
+    assert fake_xkb.compiled == [
+        {"layout": "de", "variant": "nodeadkeys", "model": "pc105", "options": "grp:alt_shift_toggle"}
+    ]
+    # The names come from the poller alone, never from libxkbcommon reading the environment itself.
+    assert fake_xkb.contexts == [True]
+
+
+def test_a_session_naming_only_the_layout_leaves_the_rest_to_xkb(
+    fake_evdev: _FakeEvdev,
+    fake_xkb: _FakeXkbModule,
+    input_dir: Path,
+    clock: _Clock,
+    monkeypatch: pytest.MonkeyPatch,
+    system_keyboard: Path,
+) -> None:
+    system_keyboard.write_text('XKBMODEL="pc86"\nXKBLAYOUT="de"\nXKBVARIANT="nodeadkeys"\n')
+    monkeypatch.setenv("XKB_DEFAULT_LAYOUT", "us")
+    _poller(input_dir, clock)
+    assert fake_xkb.compiled == [{"layout": "us", "variant": None, "model": None, "options": None}]
+
+
+def test_a_session_exporting_anything_keeps_the_system_file_out(
+    fake_evdev: _FakeEvdev,
+    fake_xkb: _FakeXkbModule,
+    input_dir: Path,
+    clock: _Clock,
+    monkeypatch: pytest.MonkeyPatch,
+    system_keyboard: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    system_keyboard.write_text('XKBLAYOUT="de"\n')
+    monkeypatch.setenv("XKB_DEFAULT_OPTIONS", "ctrl:nocaps")
+    with caplog.at_level(logging.INFO, logger=keyboard_module.__name__):
+        _poller(input_dir, clock)
+    assert fake_xkb.compiled == [{"layout": None, "variant": None, "model": None, "options": "ctrl:nocaps"}]
+    assert "Keyboard layout (xkb default) (from session)" in caplog.text
+
+
+def test_without_a_session_layout_the_system_file_decides(
+    fake_evdev: _FakeEvdev,
+    fake_xkb: _FakeXkbModule,
+    input_dir: Path,
+    clock: _Clock,
+    system_keyboard: Path,
+) -> None:
+    system_keyboard.write_text('XKBMODEL="pc105"\nXKBLAYOUT="de"\nXKBVARIANT="nodeadkeys"\nXKBOPTIONS=""\n')
+    node = fake_evdev.add("event0")
+    poller = _poller(input_dir, clock)
+    assert fake_xkb.compiled == [{"layout": "de", "variant": "nodeadkeys", "model": "pc105", "options": None}]
+    assert _letter_keys(poller, node, clock, KEY_CODES["KEY_Y"]) == {"z"}
+
+
+def test_a_system_file_without_a_layout_falls_to_us_and_keeps_its_model(
+    fake_evdev: _FakeEvdev, fake_xkb: _FakeXkbModule, input_dir: Path, clock: _Clock, system_keyboard: Path
+) -> None:
+    system_keyboard.write_text('XKBMODEL="pc86"\nXKBVARIANT="nodeadkeys"\n')
+    _poller(input_dir, clock)
+    assert fake_xkb.compiled == [{"layout": "us", "variant": None, "model": "pc86", "options": None}]
+
+
+def test_with_neither_session_nor_system_file_the_layout_is_us(
+    fake_evdev: _FakeEvdev, fake_xkb: _FakeXkbModule, input_dir: Path, clock: _Clock, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.INFO, logger=keyboard_module.__name__):
+        _poller(input_dir, clock)
+    assert fake_xkb.compiled == [{"layout": "us", "variant": None, "model": None, "options": None}]
+    assert "Keyboard layout us (from default)" in caplog.text
+
+
+def test_the_layout_log_names_the_layout_its_variant_and_its_source(
+    fake_evdev: _FakeEvdev,
+    fake_xkb: _FakeXkbModule,
+    input_dir: Path,
+    clock: _Clock,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("XKB_DEFAULT_LAYOUT", "de")
+    monkeypatch.setenv("XKB_DEFAULT_VARIANT", "nodeadkeys")
+    with caplog.at_level(logging.INFO, logger=keyboard_module.__name__):
+        _poller(input_dir, clock)
+    assert "Keyboard layout de (nodeadkeys) (from session); using layout-aware keycodes" in caplog.text
+
+
+def _on_us_positions(poller: LinuxEvdevKeyboardPoller, node: _Node, clock: _Clock) -> bool:
+    y_key = _letter_keys(poller, node, clock, KEY_CODES["KEY_Y"])
+    z_key = _letter_keys(poller, node, clock, KEY_CODES["KEY_Z"])
+    return (y_key, z_key) == ({"y"}, {"z"})
+
+
+def test_without_xkbcommon_the_letters_stay_on_us_positions(
+    fake_evdev: _FakeEvdev,
+    input_dir: Path,
+    clock: _Clock,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("XKB_DEFAULT_LAYOUT", "de")
+    node = fake_evdev.add("event0")
+    with caplog.at_level(logging.WARNING, logger=keyboard_module.__name__):
+        poller = _poller(input_dir, clock)
+    assert _on_us_positions(poller, node, clock)
+    assert "Could not resolve keyboard layout de (from session); falling back to US QWERTY" in caplog.text
+
+
+def test_a_keymap_that_does_not_compile_keeps_us_positions(
+    fake_evdev: _FakeEvdev, fake_xkb: _FakeXkbModule, input_dir: Path, clock: _Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XKB_DEFAULT_LAYOUT", "xx")
+    node = fake_evdev.add("event0")
+    assert _on_us_positions(_poller(input_dir, clock), node, clock)
+
+
+@pytest.mark.parametrize("text", ["1", "Y", "ä"])
+def test_a_keymap_without_polled_letters_keeps_us_positions(
+    text: str,
+    fake_evdev: _FakeEvdev,
+    fake_xkb: _FakeXkbModule,
+    input_dir: Path,
+    clock: _Clock,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fake_xkb.keymaps["xx"] = {KEY_CODES["KEY_Z"] + 8: [ord(text)]}
+    monkeypatch.setenv("XKB_DEFAULT_LAYOUT", "xx")
+    node = fake_evdev.add("event0")
+    with caplog.at_level(logging.WARNING, logger=keyboard_module.__name__):
+        poller = _poller(input_dir, clock)
+    assert _on_us_positions(poller, node, clock)
+    assert "Could not resolve keyboard layout xx" in caplog.text

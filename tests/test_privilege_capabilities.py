@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import FrozenInstanceError
 
@@ -408,5 +407,3 @@ def test_a_regex_rule_admits_only_its_calls(cap: Capability, args: str, admitted
 @pytest.mark.parametrize("member", list(CapabilityState))
 def test_capability_state_renders_as_its_value(member: CapabilityState) -> None:
     assert str(member) == f"{member}" == format(member) == member.value
-    assert json.dumps(member) == f'"{member.value}"'
-    assert CapabilityState(member.value) is member

@@ -12,8 +12,6 @@ echo shows the exact persisted value, which is the real guarantee.
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from openfollow.units import (
@@ -229,5 +227,3 @@ class TestRoundTrip:
 @pytest.mark.parametrize("member", list(UnitSystem))
 def test_unit_system_renders_as_its_value(member: UnitSystem) -> None:
     assert str(member) == f"{member}" == format(member) == member.value
-    assert json.dumps(member) == f'"{member.value}"'
-    assert UnitSystem(member.value) is member

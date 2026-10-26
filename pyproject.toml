@@ -132,7 +132,8 @@ optional = true
 mutmut = "^3.8"
 
 # Linting: ruff check/format (faster pyflakes/pycodestyle/isort/pyupgrade bundle).
-# line-length=120 matches old flake8 setting. target-version=py313 matches requires-python.
+# line-length=120 matches old flake8 setting.
+# target-version=py313 matches requires-python.
 [tool.ruff]
 line-length = 120
 target-version = "py313"

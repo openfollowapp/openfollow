@@ -20,6 +20,7 @@ from openfollow.configuration import (
     feature_on,
     is_simple_mode,
 )
+from openfollow.input.parking import is_parked
 from openfollow.input.touch_remote import STATUS_FLAG as REMOTE_FLAG
 from openfollow.input.touch_remote import status_row as remote_row
 from openfollow.marker_catalog.control_conflicts import ControlConflict
@@ -750,6 +751,7 @@ def build_marker_visual_state(
                 controller_connected=ctrl_conn,
                 identify_flash=marker_id == flash_marker,
                 is_controlled=is_controlled,
+                parked=is_controlled and is_parked(app, marker_id),
                 control_conflict=marker_id in conflict_ids,
                 name=name,
                 marker_fader=marker_fader,

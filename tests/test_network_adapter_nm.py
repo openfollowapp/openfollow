@@ -2248,6 +2248,14 @@ class TestAnUnpluggedAdapterKeepsItsSettings:
         assert (result.ok, result.message) == (False, message)
         assert a._broker.calls == []
 
+    def test_an_adapter_plugged_in_between_the_reads_keeps_its_profile(self, station, monkeypatch) -> None:
+        """Its profile is active by the time the profiles are read: not one for the delete to name."""
+        a, _ = station(_Device("enx001122334455", "192.0.2.5/24", "Wired connection 3"))
+        monkeypatch.setattr(a, "_device_state", lambda _name: "")
+        result = a.forget_interface("enx001122334455")
+        assert (result.ok, result.message) == (False, "enx001122334455 has no saved settings.")
+        assert a._broker.calls == []
+
     def test_a_profile_gone_before_the_delete_still_reports_it_forgotten(self, station) -> None:
         a, nmcli = self._station(station)
         a._broker.responses = [_ONE_GONE]

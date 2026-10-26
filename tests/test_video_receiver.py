@@ -4823,9 +4823,13 @@ class TestRecoveryTimersActOnTheFeed:
         assert r._heal_source_id is None
 
     def test_a_stall_timeout_alone_leaves_a_parked_feed_as_it_is(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        """Its pending heal keeps its time: restarting it would put the next probe off."""
         r = self._parked()
+        r.set_recovery_timers(heal_interval=5.0)
+        pending = r._heal_source_id
         r.set_recovery_timers(stall_timeout=3.0)
-        assert r._heal_source_id is None and r._watchdog_source_id is None
+        assert r._heal_source_id == pending and pending not in fake_glib.removed
+        assert r._watchdog_source_id is None
 
     @pytest.mark.parametrize("pending", ["reconnect", "connection timeout"])
     def test_a_feed_still_reconnecting_is_not_parked(self, fake_gst, fake_glib, fake_input_cls, pending) -> None:

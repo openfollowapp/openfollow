@@ -1401,7 +1401,7 @@ class GstNativeSinkReceiver:
         if heal_interval is not None:
             self._heal_interval_override = heal_interval
             self._reconnect_policy.heal_interval = heal_interval
-        if self._state.connected and not self._state.is_placeholder_pipeline:
+        if self._state.connected:
             # Every buffer stamps the frame clock, so a watchdog armed now judges the feed as it is.
             self._start_watchdog(reseed=False)
         elif heal_interval is not None and self._parked():

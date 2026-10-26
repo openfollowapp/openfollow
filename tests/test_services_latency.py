@@ -81,7 +81,7 @@ def _frame(services: AppRuntimeServices, clock: list[int], step_us: int = 16_000
     services.update_marker_visuals(step_us / 1e6)
 
 
-def test_a_run_hands_its_level_to_the_overlay_and_frames_to_the_probe_until_stopped(
+def test_a_run_hands_its_level_to_the_overlay_and_frames_to_the_probe(
     services: AppRuntimeServices, clock: list[int]
 ) -> None:
     receiver = services._app._video_receiver
@@ -89,12 +89,7 @@ def test_a_run_hands_its_level_to_the_overlay_and_frames_to_the_probe_until_stop
     assert receiver.listener is not None
     _frame(services, clock)
     assert services._overlay_renderer.state.latency_flash == lp.BLACK
-    receiver.listener(0.1, None)
-    services.stop_latency_run()
-    assert receiver.listener is None
-    _frame(services, clock)
-    assert services._overlay_renderer.state.latency_flash is None
-    assert services.latency_status()["failure"]["reason"] == "stopped"
+    assert services.latency_status()["state"] == "running"
 
 
 def test_a_run_that_times_out_lets_go_of_the_frames_by_itself(services: AppRuntimeServices, clock: list[int]) -> None:
@@ -159,13 +154,17 @@ def test_idle_the_receiver_is_never_handed_a_listener_and_the_overlay_no_flash(
     assert services.flashes == [None] * 5
 
 
-def test_a_start_during_a_run_starts_over(services: AppRuntimeServices, clock: list[int]) -> None:
+def test_a_start_during_a_run_lets_it_carry_on(services: AppRuntimeServices, clock: list[int]) -> None:
     receiver = services._app._video_receiver
     services.start_latency_run()
-    _frame(services, clock)
+    for _ in range(lp.SETTLE_US // 16_000 + 2):
+        _frame(services, clock)
+    assert services._overlay_renderer.state.latency_flash == lp.WHITE
     services.start_latency_run()
-    assert services.latency_status()["state"] == "running"
-    assert receiver.listener is not None
+    _frame(services, clock)
+    # Not back to the settle's black, and the receiver was handed the probe once.
+    assert services._overlay_renderer.state.latency_flash == lp.WHITE
+    assert len(receiver.listeners) == 1
 
 
 def test_the_last_success_is_published_with_its_age(services: AppRuntimeServices, clock: list[int]) -> None:
@@ -225,13 +224,8 @@ def test_a_frame_that_cannot_be_read_ends_the_run_and_still_reaches_the_screen(
     assert services.latency_status()["failure"]["reason"] == "unsupported_format"
 
 
-def test_stop_with_no_run_going_leaves_the_receiver_alone(services: AppRuntimeServices) -> None:
-    services.stop_latency_run()
-    assert services._app._video_receiver.listeners == []
-
-
-def test_a_run_ends_cleanly_when_the_receiver_is_gone(services: AppRuntimeServices) -> None:
+def test_a_run_ends_cleanly_when_the_receiver_is_gone(services: AppRuntimeServices, clock: list[int]) -> None:
     services.start_latency_run()
     services._app._video_receiver = None
-    services.stop_latency_run()
-    assert services.latency_status()["failure"]["reason"] == "stopped"
+    _frame(services, clock)
+    assert services.latency_status()["failure"]["reason"] == "source_changed"

@@ -8,8 +8,11 @@ draw calls (text strings, rectangles, chip arcs) without real rendering.
 
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
+from openfollow.runtime import overlay_draw_style as style
 from openfollow.runtime.overlay_draw_messages import (
     _truncate,
     draw_operator_messages,
@@ -29,6 +32,8 @@ def _view(
     marker_color: str = "#ee5a24",
     is_forever: bool = False,
     remaining_fraction: float = 0.5,
+    headline: str = "",
+    headline_level: str = "",
 ) -> OperatorMessageView:
     return OperatorMessageView(
         message=message,
@@ -38,6 +43,8 @@ def _view(
         marker_color=marker_color,
         is_forever=is_forever,
         remaining_fraction=remaining_fraction,
+        headline=headline,
+        headline_level=headline_level,
     )
 
 
@@ -85,6 +92,48 @@ def test_keyed_forever_card_shows_title_no_bar() -> None:
     assert cr.find_texts("Spot 3")  # marker title-bar name
     assert cr.find_texts("Hold")
     assert cr.rects == []  # forever → no countdown bar, no hint
+
+
+def _headline_card() -> FakeCairo:
+    return _draw(
+        [_view(message="Latency test about to start", is_forever=True, headline="WARNING", headline_level="caution")]
+    )
+
+
+def test_a_headline_card_has_a_bar_in_the_caution_chip_fill_with_off_white_text_and_no_countdown() -> None:
+    cr = _headline_card()
+    assert ("rgba", *style.COLOR_CAUTION_FILL) in cr.calls
+    title = cr.find_texts("WARNING")
+    assert title and title[0].rgba == (*style.COLOR_TEXT, 1.0)
+    assert cr.find_texts("Latency test about to start")
+    assert cr.rects == []
+
+
+def test_the_headline_bar_follows_the_caution_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    tuned = (0.612, 0.243, 0.0, 0.8)
+    monkeypatch.setattr(style, "COLOR_CAUTION_FILL", tuned)
+    assert ("rgba", *tuned) in _headline_card().calls
+
+
+def test_a_headline_card_is_as_tall_as_a_marker_card() -> None:
+    headline = _draw([_view(is_forever=True, headline="WARNING", headline_level="caution")])
+    keyed = _draw([_view(is_forever=True, marker_id=4, marker_name="WARNING")])
+    assert [(t.text, t.y) for t in headline.texts] == [(t.text, t.y) for t in keyed.texts]
+
+
+def test_osc_cards_draw_exactly_as_before_headlines_existed() -> None:
+    # The recorded calls of a broadcast, a keyed and a timed keyed card, pinned from the pass before headlines.
+    state = OverlayState()
+    state.operator_messages = [
+        OperatorMessageView("Next: SQ12", "Stand by", 0, "", "", False, 0.4),
+        OperatorMessageView("Hold", "detail", 3, "Spot 3", "#0652dd", True, 1.0),
+        OperatorMessageView("Go", "", 7, "", "#f5f5f5", False, 0.9),
+    ]
+    state.operator_message_overflow = 2
+    cr = FakeCairo()
+    draw_operator_messages(FakeRenderer(state=state), cr, state, 1920, 1080)
+    digest = hashlib.sha256(repr(cr.calls).encode()).hexdigest()
+    assert digest == "e3f4d64ea9e571c70dfd7b004fcb9756ed70f56cd3103ca5d4aad8cf57c67155"
 
 
 def test_keyed_card_without_name_falls_back_to_m_id() -> None:

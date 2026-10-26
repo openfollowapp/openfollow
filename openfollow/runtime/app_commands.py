@@ -61,13 +61,10 @@ def check_controller_slot_actions(app: OpenFollowApp) -> None:
 
 
 def check_latency_requests(app: OpenFollowApp) -> None:
-    """Run the Measure latency / Stop clicks and report the run back to the web UI."""
+    """Start a camera latency run the web UI asked for, and report the run back to it."""
     services = app._runtime_services
-    command = app._web_commands.consume_latency_command()
-    if command == "start":
+    if app._web_commands.consume_latency_requested():
         services.start_latency_run()
-    elif command == "stop":
-        services.stop_latency_run()
     app._web_commands.set_latency_status(services.latency_status())
 
 

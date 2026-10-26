@@ -239,17 +239,6 @@ def test_a_display_that_never_shows_the_flash_fails_as_no_rise() -> None:
     assert probe.failure is not None and probe.failure.reason is FailureReason.NO_RISE
 
 
-def test_stopping_mid_run_ends_it() -> None:
-    probe = _probe()
-    t = _drive_to_wait_rise(probe)
-    probe.stop()
-    assert probe.failure is not None and probe.failure.reason is FailureReason.STOPPED
-    assert probe.screen_level() is None
-    probe.feed(t + MS, HI)
-    probe.step(t + 2 * MS, FEED)
-    assert probe.status()["state"] == "failed"
-
-
 def test_a_source_change_mid_run_ends_it() -> None:
     probe = _probe()
     t = _drive_to_wait_rise(probe)
@@ -342,12 +331,13 @@ def test_idle_asks_for_no_level_and_reads_idle() -> None:
     assert probe.status() == {"state": "idle", "measured": 0, "total": 10, "result": None, "failure": None}
 
 
-@pytest.mark.parametrize("before", ["idle", "stopped"])
+@pytest.mark.parametrize("before", ["idle", "ended"])
 def test_a_frame_left_from_before_a_run_never_reaches_it(before: str) -> None:
     probe = _probe()
-    if before == "stopped":
-        _drive_to_wait_rise(probe)
-        probe.stop()
+    if before == "ended":
+        t = _drive_to_wait_rise(probe)
+        probe.step(t + lp.TIMEOUT_US, FEED)
+        assert probe.failure is not None
     # An unreadable frame handed over after the last run ended, before the receiver let go.
     probe.feed(MS, None)
     probe.start(10 * MS, FEED, "rtsp")
@@ -368,9 +358,9 @@ def test_a_failed_run_keeps_the_last_success() -> None:
     bench.run()
     success = probe.last_success
     assert success is not None
-    _drive_to_wait_rise(probe, t=100_000_000)
-    probe.stop()
-    assert probe.result is None
+    t = _drive_to_wait_rise(probe, t=100_000_000)
+    probe.step(t + lp.TIMEOUT_US, FEED)
+    assert probe.result is None and probe.failure is not None
     assert probe.last_success is success
 
 
@@ -395,10 +385,8 @@ def test_the_level_of_a_round_trip(median_ms: float, level: str) -> None:
     assert lp.result_level(median_ms) == level
 
 
-def test_a_refusal_during_a_run_and_a_stop_while_idle_change_nothing() -> None:
+def test_a_refusal_during_a_run_changes_nothing() -> None:
     probe = _probe()
-    probe.stop()
-    assert probe.status()["state"] == "idle"
     _drive_to_wait_rise(probe)
     probe.refuse(FailureReason.NO_DISPLAY)
     assert probe.active and probe.failure is None

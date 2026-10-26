@@ -124,7 +124,8 @@ def test_the_main_page_polls_only_what_is_in_view(live_server: str, marker: str,
         ("detection.tpl", 'hx-get="/section/detection"'),
         ("midi_fader_capture_status.tpl", "/learn/poll"),
         ("osc_midi_capture_status.tpl", "/midi/learn/poll/"),
-        ("video_source_latency.tpl", 'hx-get="/section/video_source/latency"'),
+        ("video_source_latency_progress.tpl", 'hx-get="/section/video_source/latency/dialog?poll=1"'),
+        ("video_source_latency_dialog.tpl", 'hx-get="/section/video_source/latency/warning'),
     ],
 )
 def test_a_short_lived_poll_pauses_only_with_the_browser_tab(template: str, url: str) -> None:

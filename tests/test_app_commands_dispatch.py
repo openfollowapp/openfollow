@@ -468,61 +468,38 @@ def test_an_unanswered_release_times_out() -> None:
 
 class _LatencyServices:
     def __init__(self) -> None:
-        self.calls: list[str] = []
+        self.starts = 0
         self.status: dict = {"state": "idle"}
 
     def start_latency_run(self) -> None:
-        self.calls.append("start")
+        self.starts += 1
         self.status = {"state": "running", "measured": 0}
-
-    def stop_latency_run(self) -> None:
-        self.calls.append("stop")
-        self.status = {"state": "failed", "failure": {"reason": "stopped"}}
 
     def latency_status(self) -> dict:
         return dict(self.status)
 
 
-@pytest.mark.parametrize(
-    ("clicks", "calls", "state"),
-    [
-        (["start"], ["start"], "running"),
-        (["stop"], ["stop"], "failed"),
-        (["start", "stop"], ["stop"], "failed"),
-        ([], [], "idle"),
-    ],
-)
-def test_the_newest_latency_click_runs_once_and_the_run_is_reported_back(
-    clicks: list[str], calls: list[str], state: str
-) -> None:
+@pytest.mark.parametrize(("clicks", "starts", "state"), [(1, 1, "running"), (2, 1, "running"), (0, 0, "idle")])
+def test_a_start_click_runs_once_and_the_run_is_reported_back(clicks: int, starts: int, state: str) -> None:
     app = _make_app(_runtime_services=_LatencyServices())
-    for click in clicks:
-        app._web_commands.request_latency(click)
+    for _ in range(clicks):
+        app._web_commands.request_latency()
     app_commands.check_latency_requests(app)
     app_commands.check_latency_requests(app)
-    assert app._runtime_services.calls == calls
+    assert app._runtime_services.starts == starts
     assert app._web_commands.get_latency_status()["state"] == state
 
 
 def test_a_start_reads_as_running_before_the_main_loop_takes_it() -> None:
     queue = WebCommandQueue()
-    queue.request_latency("start")
+    queue.request_latency()
     # The main loop's last report, from before the click, does not overwrite it.
     queue.set_latency_status({"state": "done"})
     assert queue.get_latency_status() == {"state": "running", "measured": 0}
 
 
-def test_a_stop_reads_as_stopped_at_once_while_a_run_was_going() -> None:
+def test_a_start_during_a_run_keeps_its_progress() -> None:
     queue = WebCommandQueue()
     queue.set_latency_status({"state": "running", "measured": 4})
-    queue.request_latency("stop")
-    status = queue.get_latency_status()
-    assert status["state"] == "failed" and status["measured"] == 4
-    assert status["failure"]["reason"] == "stopped"
-
-
-def test_a_stop_with_nothing_running_leaves_the_last_outcome() -> None:
-    queue = WebCommandQueue()
-    queue.set_latency_status({"state": "done", "result": {"median_ms": 80.0}})
-    queue.request_latency("stop")
-    assert queue.get_latency_status()["state"] == "done"
+    queue.request_latency()
+    assert queue.get_latency_status() == {"state": "running", "measured": 4}

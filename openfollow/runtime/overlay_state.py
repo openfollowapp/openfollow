@@ -108,7 +108,8 @@ class OperatorMessageView:
     ``marker_id == 0`` is a broadcast card (no marker chip). For keyed cards,
     ``marker_name`` is the resolved catalog name (empty falls back to ``M<id>``)
     and ``marker_color`` is its hex. ``remaining_fraction`` is ``1.0`` for a
-    forever message.
+    forever message. A station-made card carries a ``headline`` on a bar in its
+    ``headline_level``'s chip fill (a status level) in place of a marker's.
     """
 
     message: str
@@ -118,6 +119,8 @@ class OperatorMessageView:
     marker_color: str
     is_forever: bool
     remaining_fraction: float
+    headline: str = ""
+    headline_level: str = ""
 
 
 @dataclass

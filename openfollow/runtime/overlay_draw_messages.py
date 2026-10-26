@@ -6,7 +6,8 @@ Pure painter: consumes the ``OperatorMessageView`` list on :class:`OverlayState`
 and draws a centered stack of cards (top or bottom, per config).
 
 Marker-targeted cards (``marker_id >= 1``) get a solid title bar in the marker
-colour with the marker name on it; broadcast cards have neither. Below that:
+colour with the marker name on it; a station-made card with a ``headline`` gets
+the same bar in its status level's chip fill; broadcast cards have neither. Below that:
 bold message, optional muted detail line, and a shrinking countdown bar for
 timed messages (forever ones have no footer). A ``+N more`` line caps the stack.
 """
@@ -24,6 +25,7 @@ from openfollow.runtime.overlay_draw_style import (
     COLOR_TEXT_MUTED,
     PANEL_RADIUS,
     draw_card_background,
+    level_fill,
     parse_hex,
 )
 from openfollow.runtime.overlay_state import OperatorMessageView, OverlayState
@@ -109,8 +111,8 @@ def _card_height(v: OperatorMessageView, msg_lines: list[str], info_lines: list[
     All terms scale uniformly with ``scale`` – kept as a single trailing
     multiply so it stays in lockstep with the scaled cursor advances.
     """
-    # Marker cards: a flush title bar replaces the top pad + chip.
-    total = _PAD + (_TITLE_H + _TITLE_GAP if v.marker_id >= 1 else _PAD)
+    # Marker and headline cards: a flush title bar replaces the top pad + chip.
+    total = _PAD + (_TITLE_H + _TITLE_GAP if _has_title(v) else _PAD)
     total += len(msg_lines) * _MSG_LINE_H
     total += len(info_lines) * _INFO_LINE_H
     if not v.is_forever:
@@ -148,9 +150,10 @@ def _draw_card(
     accent = parse_hex(v.marker_color) if v.marker_id >= 1 else COLOR_ACCENT
 
     # Marker-targeted cards: solid title bar in the marker colour (rounded top
-    # to match the card, square bottom) with the marker name on it. Broadcast
-    # cards have no bar – the message starts straight under the top padding.
-    if v.marker_id >= 1:
+    # to match the card, square bottom) with the marker name on it; a headline
+    # card's bar takes its level's chip fill and off-white text, like a status
+    # row. Broadcast cards have no bar – the message starts straight under the top padding.
+    if _has_title(v):
         cr.move_to(x, y + title_h)
         cr.line_to(x, y + radius)
         cr.arc(x + radius, y + radius, radius, math.pi, 1.5 * math.pi)
@@ -158,11 +161,16 @@ def _draw_card(
         cr.arc(x + card_w - radius, y + radius, radius, 1.5 * math.pi, 2.0 * math.pi)
         cr.line_to(x + card_w, y + title_h)
         cr.close_path()
-        cr.set_source_rgb(*accent)
+        if v.headline:
+            cr.set_source_rgba(*level_fill(v.headline_level))
+            ink = COLOR_TEXT
+        else:
+            cr.set_source_rgb(*accent)
+            ink = _contrast_ink(accent)
         cr.fill()
-        label = v.marker_name or f"M{v.marker_id}"
+        label = v.headline or v.marker_name or f"M{v.marker_id}"
         renderer._set_ui_font(cr, _TITLE_SIZE * scale, bold=True)
-        cr.set_source_rgb(*_contrast_ink(accent))
+        cr.set_source_rgb(*ink)
         label = _truncate(cr, label, card_w - 2 * pad)
         # Center the actual glyph box in the bar so caps clear the top edge.
         te = cr.text_extents(label)
@@ -203,6 +211,10 @@ def _draw_card(
             cr.set_source_rgb(*accent)
             cr.rectangle(inner_x, bar_top, fill_w, bar_h)
             cr.fill()
+
+
+def _has_title(v: OperatorMessageView) -> bool:
+    return v.marker_id >= 1 or bool(v.headline)
 
 
 def _draw_overflow(renderer: Any, cr: Any, overflow: int, x: float, y: float, card_w: float, scale: float) -> None:

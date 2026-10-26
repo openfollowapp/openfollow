@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from openfollow.logging_setup import RingBufferLogHandler
     from openfollow.network.adapter import ApplyResult
     from openfollow.runtime.diagnostics_export import DiagnosticsExport
+    from openfollow.runtime.latency_warning import LatencyWarning
     from openfollow.runtime.removable_media import Media
 
 from bottle import TEMPLATE_PATH, Bottle
@@ -852,9 +853,14 @@ class ConfigWebServer:
         """Queue a controller-slot action (``identify`` / ``forget``) for the main loop."""
         self._command_queue.request_slot_action(action, index, ref)
 
-    def request_latency(self, command: str) -> None:
-        """Queue ``start`` or ``stop`` of a camera latency run for the main loop."""
-        self._command_queue.request_latency(command)
+    def request_latency(self) -> None:
+        """Queue the start of a camera latency run for the main loop."""
+        self._command_queue.request_latency()
+
+    @property
+    def latency_warning(self) -> LatencyWarning:
+        """The Operator Screen's warning card, held up by Measure dialogs showing their warnings."""
+        return self._command_queue.latency_warning
 
     def get_latency_status(self) -> dict[str, Any]:
         """The camera latency run as the main loop last reported it."""

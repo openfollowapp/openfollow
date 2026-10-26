@@ -24,7 +24,7 @@ The diagnostics bundle (and later settings / templates) can be saved to the top 
 
 ## Runtime state (A3)
 
-Section A3 reads the live `/api/stats` snapshot. Under the video block, `camera latency` is the last successful **Measure latency** run (see [video](video.md#camera-latency-probe-runtimelatency_probepy)): its median, spread, sample count, how long ago it finished and the source type it measured, or `not measured`. A run that failed or was stopped never replaces it, and nothing is kept across a restart.
+Section A3 reads the live `/api/stats` snapshot. Under the video block, `camera latency` is the last successful **Measure latency** run (see [video](video.md#camera-latency-probe-runtimelatency_probepy)): its median, spread, sample count, how long ago it finished and the source type it measured, or `not measured`. A run that failed never replaces it, and nothing is kept across a restart.
 
 ## Video-source reachability probe (A5)
 

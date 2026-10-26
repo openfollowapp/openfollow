@@ -9,8 +9,7 @@
  * HTMX saves (any non-GET request) are handled here on ``document``. An
  * action that saves nothing names its lead on the control or an ancestor
  * (``data-error-lead="Not started."``), and its unanswered advice ends "try
- * again"; a ``data-error-box`` ancestor takes the ring and the line in place of
- * the whole form. A script-driven save calls ``window.OpenFollow.saveError``:
+ * again". A script-driven save calls ``window.OpenFollow.saveError``:
  *
  *   show(box, info, lead, near) ring ``box``; write ``info`` after ``near``
  *                              (default: the box's last actions row)
@@ -41,7 +40,7 @@
         action: 'Check that it is switched on and on this network, then try again.',
         href: '',
     };
-    var BOX_SELECTOR = '[data-error-box], form.section, .save-flash, .section, .modal-card, [role="dialog"]';
+    var BOX_SELECTOR = 'form.section, .save-flash, .section, .modal-card, [role="dialog"]';
     var ANCHOR_SELECTOR = '.actions, .wizard-nav, .modal-footer';
     var MAX_TEXT = 200;
     var lastOrigin = null;

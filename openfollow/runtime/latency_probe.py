@@ -64,7 +64,6 @@ class Phase(Enum):
 class FailureReason(Enum):
     NO_RISE = "no_rise"
     NO_FALL = "no_fall"
-    STOPPED = "stopped"
     SOURCE_CHANGED = "source_changed"
     NO_VIDEO = "no_video"
     NO_DISPLAY = "no_display"
@@ -82,12 +81,11 @@ _FAILURE_TEXT: dict[FailureReason, tuple[str, str]] = {
         "The video did not go dark again within 3 s of the flash.",
         "Point the camera at the Operator Screen only.",
     ),
-    FailureReason.STOPPED: ("Measurement stopped.", ""),
     FailureReason.SOURCE_CHANGED: (
         "The video was rebuilt or changed during the measurement.",
         "Measure again once the video shows.",
     ),
-    FailureReason.NO_VIDEO: ("No video is arriving.", "Measure once the camera's picture shows."),
+    FailureReason.NO_VIDEO: ("No video is arriving.", "Measure when the camera's picture is on the Operator Screen."),
     FailureReason.NO_DISPLAY: (
         "No Operator Screen is showing on this station.",
         "Connect a screen to the station to measure.",
@@ -222,10 +220,6 @@ class LatencyProbe:
             self.result = None
             self._delays_us = []
             self._fail(reason)
-
-    def stop(self) -> None:
-        if self.active:
-            self._fail(FailureReason.STOPPED)
 
     def feed(self, arrival_us: int, mean_luma: float | None) -> None:
         """Streaming thread: a decoded frame's arrival and mean luma (0 to 1), None when unreadable."""

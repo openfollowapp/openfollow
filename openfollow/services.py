@@ -46,7 +46,8 @@ from openfollow.psn import MARKER_STALE_AFTER_S, PsnReceiver, PsnServer
 from openfollow.psn.server import _UNCHANGED, _Unchanged
 from openfollow.rttrpm import RttrpmServer
 from openfollow.runtime.frame_timing import NOMINAL_FRAME_DT
-from openfollow.runtime.latency_probe import MEDIA_GALLERY, FailureReason, LatencyFailure, LatencyProbe, monotonic_us
+from openfollow.runtime.latency_probe import MEDIA_GALLERY, FailureReason, LatencyProbe, monotonic_us
+from openfollow.runtime.latency_warning import LatencyWarning
 from openfollow.runtime.network_observer import DOWN_POLLS_BEFORE_SUSPEND, NetworkPlaneObserver, Plane
 from openfollow.runtime.services_detection_pin import (
     apply_detection_pin as apply_detection_pin_helper,
@@ -240,10 +241,12 @@ class WebCommandQueue:
         self._camera_release_requested = threading.Event()
         self._camera_released = threading.Event()
         self._video_rebuild_requested = threading.Event()
-        # Camera latency: the newest Measure / Stop click, and the run as the main loop last reported it.
+        # Camera latency: a Start not taken yet, and the run as the main loop last reported it.
         self._latency_lock = threading.Lock()
-        self._latency_command: str | None = None
+        self._latency_requested = False
         self._latency_status: dict[str, Any] = {"state": "idle"}
+        # The Operator Screen's warning card, held up by Measure dialogs showing their warnings.
+        self.latency_warning = LatencyWarning(clock=clock)
         self._update_lock = threading.Lock()
         self._update_request: dict[str, str] | None = None
         self._update_status: dict[str, str] = {
@@ -400,28 +403,22 @@ class WebCommandQueue:
             return True
         return False
 
-    def request_latency(self, command: str) -> None:
-        """Web thread: ``start`` or ``stop`` a camera latency run; the newest click wins.
-
-        The page shows the click's outcome at once: a start polls until the main loop reports.
-        """
+    def request_latency(self) -> None:
+        """Web thread: start a camera latency run; it reads as running at once, so the dialog polls it."""
         with self._latency_lock:
-            self._latency_command = command
-            if command == "start":
+            self._latency_requested = True
+            if self._latency_status.get("state") != "running":
                 self._latency_status = {"state": "running", "measured": 0}
-            elif self._latency_status.get("state") == "running":
-                stopped = LatencyFailure(FailureReason.STOPPED).to_dict()
-                self._latency_status = {**self._latency_status, "state": "failed", "failure": stopped}
 
-    def consume_latency_command(self) -> str | None:
+    def consume_latency_requested(self) -> bool:
         with self._latency_lock:
-            command, self._latency_command = self._latency_command, None
-        return command
+            requested, self._latency_requested = self._latency_requested, False
+        return requested
 
     def set_latency_status(self, status: dict[str, Any]) -> None:
-        """Main loop: the run as it stands; a click not taken yet keeps what it set."""
+        """Main loop: the run as it stands; a Start not taken yet keeps what it set."""
         with self._latency_lock:
-            if self._latency_command is None:
+            if not self._latency_requested:
                 self._latency_status = dict(status)
 
     def get_latency_status(self) -> dict[str, Any]:
@@ -3769,11 +3766,10 @@ class AppRuntimeServices:
         return (self._app._config.video_source_type, receiver.pipeline_builds)
 
     def start_latency_run(self) -> None:
-        """Start a camera latency run (GTK main thread); a run already going starts over."""
+        """Start a camera latency run (GTK main thread); a run already going carries on."""
         probe = self._latency_probe
         if probe.active:
-            probe.stop()
-            self._end_latency_run()
+            return
         source_type = self._app._config.video_source_type
         if self._hud_render is None:
             probe.refuse(FailureReason.NO_DISPLAY)
@@ -3785,11 +3781,6 @@ class AppRuntimeServices:
         if probe.active and receiver is not None:
             receiver.set_frame_listener(self._on_latency_frame)
             logger.info("Camera latency run started.")
-
-    def stop_latency_run(self) -> None:
-        if self._latency_probe.active:
-            self._latency_probe.stop()
-            self._end_latency_run()
 
     def latency_status(self) -> dict[str, Any]:
         """The latency run for the web UI, see ``LatencyProbe.status``."""

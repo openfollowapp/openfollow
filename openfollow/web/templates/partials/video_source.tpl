@@ -56,6 +56,35 @@
             vis('preview-row', value !== 'testpattern');
             vis('video-source-latency', value !== 'testpattern');
         };
+        // Measure latency: the station renders each state of the dialog into the shared modal.
+        window.ofLatencyDialog = function(){
+            openModal({
+                title: 'Measure Camera Latency',
+                bodyHTML: '<div id="latency-dialog"></div>',
+                footerButtons: [],
+                onClose: function(){
+                    // Closed on its warnings (Cancel, the close button, Escape): the screen's card goes at once.
+                    if(window.ofLatencyWarning){
+                        navigator.sendBeacon('/section/video_source/latency/warning/close?token=' + window.ofLatencyWarning);
+                        window.ofLatencyWarning = '';
+                    }
+                    // The row shows the newest result, and takes the focus back.
+                    htmx.ajax('GET', '/section/video_source/latency', {target: '#video-source-latency', swap: 'outerHTML'})
+                        .then(function(){
+                            var btn = document.querySelector('#video-source-latency button');
+                            if(btn) btn.focus();
+                        });
+                },
+            });
+            htmx.ajax('GET', '/section/video_source/latency/dialog', {target: '#latency-dialog', swap: 'outerHTML'});
+        };
+        // Each state of the dialog: locked while a run lasts, focus on its first action, else on the dialog.
+        window.ofLatencyDialogShown = function(running, warning){
+            window.ofLatencyWarning = warning;
+            modalLock(running);
+            var first = document.querySelector('#modal-footer button') || document.getElementById('latency-dialog');
+            if(first) first.focus();
+        };
         </script>
         <!-- Connection recovery applies to network inputs only (RTSP/SRT/RTP). -->
         <div class="row" id="recovery-row" style="display:{{'' if config.video_source_type in ('rtsp', 'srt', 'rtp') else 'none'}}">

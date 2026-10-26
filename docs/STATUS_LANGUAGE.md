@@ -94,15 +94,15 @@ circle with a check for success.
 Progress is an info box led by the spinner (`.modal-spinner`, the one the
 update dialog turns and the HUD's `draw_spinner` copies) in the sign's place:
 `.network-banner-busy`, shown while a slow request runs and hidden when it
-answers.
+answers, or for as long as a camera latency run lasts.
 
 A box says what the station observed on its main line (off-white, 600) and
 one next step on its second line (`--muted`, 400). The two never blur into one
 sentence.
 
 The dialog and diagnostics errors, the Media Gallery error, the network
-result, the Detection progress and result, the Statistics warning and the NDI
-box are all one of these four. Do not add an inline-styled box.
+result, the Detection progress and result, the camera latency progress and
+result, the Statistics warning and the NDI box are all one of these four. Do not add an inline-styled box.
 
 A box that a poll re-renders must not carry `role="alert"`: every swap inserts
 it again, and a screen reader announces it again. `hx-preserve` does not help,

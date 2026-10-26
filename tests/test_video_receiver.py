@@ -5208,7 +5208,7 @@ class TestAnRtspAddressFamilyFailureRetriesOverTcp:
         plugin_gst.Pipeline = SimpleNamespace(new=_PlayablePipeline)
         monkeypatch.setattr("gi.repository.Gst", plugin_gst)
         monkeypatch.setattr(receiver_mod, "get_input_class", lambda input_id: RtspInput if input_id == "rtsp" else None)
-        # An address literal: the build looks nothing up.
+        # A literal is no protection: the UDP family follows the server's session description.
         return receiver_mod.GstNativeSinkReceiver(
             source_type="rtsp", input_config={"rtsp_url": "rtsp://[2001:db8::10]:554/stream"}, reconnect_delay=0.2
         )
@@ -5246,6 +5246,18 @@ class TestAnRtspAddressFamilyFailureRetriesOverTcp:
         receiver._handle_bus_error(self._ERROR)
 
         assert receiver.status_marker.failure == VideoFailure.NO_DATA
+
+    def test_a_saved_change_to_the_source_tries_every_transport_again(self, receiver, fake_glib) -> None:
+        """The input is built anew, so the host the failed attempt moved to TCP is forgotten."""
+        receiver.play()
+        self._describe(receiver)
+        receiver._handle_bus_error(self._ERROR)
+        self._retry(receiver, fake_glib)
+        assert self._protocols(receiver) == 0x4
+
+        receiver.swap_input("rtsp", {"rtsp_url": "rtsp://[2001:db8::10]:554/stream"})
+
+        assert self._protocols(receiver) == 0x7
 
     def test_a_failed_tcp_retry_is_classified_and_the_next_stays_on_tcp(self, receiver, fake_glib) -> None:
         receiver.play()

@@ -11,7 +11,6 @@ videoconvert), the pad-added callbacks for both ``rtspsrc`` and
 from __future__ import annotations
 
 import socket
-import threading
 from typing import Any
 from unittest.mock import patch
 
@@ -38,8 +37,6 @@ class _Names:
     def __init__(self) -> None:
         self.answers: dict[str, list[str]] = {}
         self.looked_up: list[str] = []
-        # Set to hold every lookup until the test releases it.
-        self.hold: threading.Event | None = None
 
 
 @pytest.fixture(autouse=True)
@@ -49,8 +46,6 @@ def names(monkeypatch: pytest.MonkeyPatch) -> _Names:
 
     def _getaddrinfo(host: str, port: Any, *args: Any, **kwargs: Any) -> list[tuple[Any, ...]]:
         state.looked_up.append(host)
-        if state.hold is not None:
-            state.hold.wait(5.0)
         if host not in state.answers:
             raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
         return [
@@ -194,10 +189,7 @@ class TestAnAddressFamilyFailureMovesTheHostToTcp:
             )
         return pipeline.get_by_name("rtspsrc").properties["protocols"]
 
-    def test_the_attempts_after_it_run_over_tcp_interleaved(
-        self, names: _Names, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        names.answers["camera.example"] = ["192.0.2.10", "2001:db8::10"]
+    def test_the_attempts_after_it_run_over_tcp_interleaved(self, caplog: pytest.LogCaptureFixture) -> None:
         plugin = RtspInput()
         assert self._protocols(plugin, self._URL) == 0x7
 
@@ -232,8 +224,7 @@ class TestAnAddressFamilyFailureMovesTheHostToTcp:
         ],
         ids=["refused", "empty-sdp", "unauthorized", "no-identity"],
     )
-    def test_any_other_failure_keeps_every_transport(self, names: _Names, error: BusError) -> None:
-        names.answers["camera.example"] = ["192.0.2.10", "2001:db8::10"]
+    def test_any_other_failure_keeps_every_transport(self, error: BusError) -> None:
         plugin = RtspInput()
         self._protocols(plugin, self._URL)
 
@@ -241,10 +232,8 @@ class TestAnAddressFamilyFailureMovesTheHostToTcp:
 
         assert self._protocols(plugin, self._URL) == 0x7
 
-    def test_another_host_keeps_every_transport(self, names: _Names) -> None:
-        """The source picked afterwards is a different server with its own answer."""
-        names.answers["camera.example"] = ["192.0.2.10", "2001:db8::10"]
-        names.answers["other.example"] = ["192.0.2.20", "2001:db8::20"]
+    def test_another_host_keeps_every_transport(self) -> None:
+        """The source picked afterwards is a different server, with its own session description."""
         plugin = RtspInput()
         self._protocols(plugin, self._URL)
         plugin.on_bus_error(_ADDRESS_FAMILY_ERROR)
@@ -258,9 +247,8 @@ class TestAnAddressFamilyFailureMovesTheHostToTcp:
         plugin.on_bus_error(_ADDRESS_FAMILY_ERROR)
         assert self._protocols(plugin, "rtsp://0.0.0.0:554/stream") == 0x7
 
-    def test_a_rebuilt_input_starts_with_every_transport(self, names: _Names) -> None:
+    def test_a_rebuilt_input_starts_with_every_transport(self) -> None:
         """A saved change to the source's settings builds a new input, which tries UDP again."""
-        names.answers["camera.example"] = ["192.0.2.10", "2001:db8::10"]
         plugin = RtspInput()
         self._protocols(plugin, self._URL)
         plugin.on_bus_error(_ADDRESS_FAMILY_ERROR)

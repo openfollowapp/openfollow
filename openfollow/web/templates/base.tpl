@@ -1105,13 +1105,11 @@
  font-variant-numeric: tabular-nums;
  text-align: center;
  }
+ /* A caution row pill: caution text would miss AA over a light fader tint. */
  .midi-fader-strip-not-picked-up {
- display: block;
- font-size: 0.62rem;
- color: var(--caution-text);
- font-style: italic;
- line-height: 1;
- margin-top: 2px;
+ display: block; width: fit-content; max-width: 100%; margin: 2px auto 0;
+ border-radius: 0.4rem; --pill-pad-y: 0.1rem; padding-inline: 0.45rem; font-size: 0.7rem; font-weight: 500;
+ color: var(--text); background: var(--caution-chip); border: 1px solid var(--caution-line);
  }
  /* Read-only marker-fader strips: gamepad-driven, not clickable. */
  .midi-fader-strip--readonly { cursor: default; }
@@ -2301,13 +2299,13 @@
  height and baseline centres the label whatever the fallback font's ascent. */
  .stat-chip, .diag-status-pill, .slot-state, .slot-note, .badge-experimental, .net-iface-method-badge,
  .osc-binding-fault, .osc-binding-caution, .modal-list-item-badge, .update-flag, .osc-pill:not([data-invalid="true"]),
- .osc-pill[data-invalid="true"][data-unresolved="true"] {
+ .osc-pill[data-invalid="true"][data-unresolved="true"], .midi-fader-strip-not-picked-up {
  padding-block: var(--pill-pad-y);
  }
  @supports (text-box: trim-both cap alphabetic) {
  .stat-chip, .diag-status-pill, .slot-state, .slot-note, .badge-experimental, .net-iface-method-badge,
  .osc-binding-fault, .osc-binding-caution, .modal-list-item-badge, .update-flag, .osc-pill:not([data-invalid="true"]),
- .osc-pill[data-invalid="true"][data-unresolved="true"] {
+ .osc-pill[data-invalid="true"][data-unresolved="true"], .midi-fader-strip-not-picked-up {
  text-box: trim-both cap alphabetic;
  padding-block: calc((1lh - 1cap) / 2 + var(--pill-pad-y));
  }

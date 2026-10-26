@@ -3005,6 +3005,14 @@ def test_only_a_misfit_lines_glow_is_painted_and_it_never_takes_a_click() -> Non
     assert re.search(r"\.lens-tag text \{ fill: var\(--bg-deep\);", style)
 
 
+def test_a_caution_note_in_a_checked_tile_takes_the_tiles_dark_ink() -> None:
+    """A checked tile is the solid accent, on which caution orange reads 1.6:1."""
+    style = WIZARD_TEMPLATE.read_text(encoding="utf-8")
+    assert re.search(r"\.tier-option input:checked \+ span \.caution-text \{ color: var\(--bg-deep\); \}", style)
+    # Unchecked, the tile's small-text fade would take the orange under AA.
+    assert re.search(r"\.tier-option > span small\.caution-text \{ opacity: 1; \}", style)
+
+
 # A fit sent from a page of traced lines, whose answer ``renderLens`` draws and the hint names. The second line is too
 # short to count, so it is not sent: the answer's second line is the page's third.
 _MISFIT_FIT_PAGE = (

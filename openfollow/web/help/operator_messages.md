@@ -1,13 +1,13 @@
 # Operator Messages
 
-A station can show short text messages on the **Operator Screen** – typically the operator's next cue – pushed in over OSC by a console or show-control system. They share the same receiver as **OSC Input**, so the OSC server must be **Enabled** there for any message to arrive.
+A station can show short text messages on the **Operator Screen** – typically the operator's next cue – pushed in over OSC by a console or show-control system. They share the same receiver as **OSC Input**, so **Listen for OSC messages** must be ticked there for any message to arrive.
 
 ## Settings
 
-- **Enabled** – master toggle. When off, incoming operator messages are ignored and nothing is drawn on the Operator Screen. Default: off.
+- **Operator messages** – master toggle. When off, incoming operator messages are ignored and nothing is drawn on the Operator Screen. Default: off.
 - **Placement** – where the stack of message cards appears: **Bottom-center** or **Top-center**.
 - **Max visible** – how many cards show at once, 1–20. Default: `5`. Any cards beyond this collapse into a single "+N more" line so the overlay never overruns the screen.
-- **Route by marker** – when on (default), a marker-keyed message (`markerId` ≥ 1) shows only on the station controlling that marker. Turn it off to show every message on every station, regardless of `markerId`. Broadcast (`markerId` 0) always reaches every station either way.
+- **Routing** – with **Only the marker's station** (default), a marker-keyed message (`markerId` ≥ 1) shows only on the station controlling that marker. **Every station** ignores `markerId`. Broadcast (`markerId` 0) always reaches every station either way.
 - **Scale** – uniformly enlarges the message cards and their text: `1×`, `1.25×`, `1.5×`, `1.75×`, or `2×`. Default: `1×`. Card width is still capped at 60% of the screen, so very long lines wrap rather than overrun at the larger sizes.
 
 ## Sending a message
@@ -30,7 +30,7 @@ Trailing arguments are optional and fill in left to right; a numeric argument th
 - **`0` – broadcast.** Shown on every station. Broadcast cards have no title bar.
 - **`1` or higher – marker-routed.** Shown only on the station currently controlling that marker; every other station drops it. The card gets a solid title bar in the marker's colour with the marker name on it.
 
-This lets one sender address "whoever is on Marker 3" without knowing which physical station that is. Turn off **Route by marker** (Settings) to ignore this and show every message on every station.
+This lets one sender address "whoever is on Marker 3" without knowing which physical station that is. Set **Routing** to **Every station** to ignore this.
 
 ## Clearing
 

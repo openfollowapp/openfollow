@@ -10,8 +10,11 @@
     <div class="group">
         <div class="row">
             <div class="field checkbox-field">
-                <label>Enabled</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="enabled" {{'checked' if m.enabled else ''}}></div>
+                <label for="m3d-enabled">3D Mouse</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="m3d-enabled" name="enabled" {{'checked' if m.enabled else ''}}>
+                    <label for="m3d-enabled">Steer markers with a 3D Mouse</label>
+                </div>
             </div>
             <div class="field">
                 <label for="m3d-curve">Response curve</label>
@@ -29,7 +32,7 @@
         % for axis, label in MOUSE3D_AXIS_FORM_LABELS:
         <div class="row">
             <div class="field">
-                <label for="m3d-map-{{axis}}">{{label}}</label>
+                <label for="m3d-map-{{axis}}" id="m3d-map-{{axis}}-label">{{label}}</label>
                 <select id="m3d-map-{{axis}}" name="map_{{axis}}">
                     % for t in MOUSE3D_AXIS_TARGETS:
                     <option value="{{t}}" {{'selected' if getattr(m, 'map_' + axis) == t else ''}}>{{t}}</option>
@@ -46,9 +49,12 @@
                 <span id="m3d-{{idp}}-{{axis}}-error" class="field-error"></span>
             </div>
             % end
-            <div class="field checkbox-field">
-                <label>Invert</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="invert_{{axis}}" {{'checked' if getattr(m, 'invert_' + axis) else ''}}></div>
+            <div class="field">
+                <label for="m3d-invert-{{axis}}" id="m3d-invert-{{axis}}-label">Direction</label>
+                <select id="m3d-invert-{{axis}}" name="invert_{{axis}}" aria-labelledby="m3d-map-{{axis}}-label m3d-invert-{{axis}}-label">
+                    <option value="false" {{'' if getattr(m, 'invert_' + axis) else 'selected'}}>Normal</option>
+                    <option value="true" {{'selected' if getattr(m, 'invert_' + axis) else ''}}>Inverted</option>
+                </select>
             </div>
         </div>
         % end
@@ -59,7 +65,7 @@
         % for i in range(0, len(MOUSE3D_BUTTON_FORM_LABELS), 2):
         <div class="row">
             % for field, label in MOUSE3D_BUTTON_FORM_LABELS[i:i + 2]:
-            <div class="field">
+            <div class="field"{{!' data-feature="paths"' if field in ('btn_pathfinder', 'btn_toggle_paths') else (' data-feature="zones"' if field == 'btn_toggle_zones' else '')}}>
                 <label for="m3d-{{field}}">{{label}}</label>
                 <div class="detect-input">
                     <input id="m3d-{{field}}" type="number" name="{{field}}" value="{{getattr(m, field) if getattr(m, field) >= 0 else ''}}" min="0" step="1" placeholder="none"

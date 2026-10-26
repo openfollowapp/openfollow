@@ -707,9 +707,8 @@ def test_index_page_includes_diagnostics_section(live_server) -> None:
     assert "/api/diagnostics/log-tail" not in body
     assert 'id="diagnostics-log-tail"' not in body
     assert ">Logs</h3>" not in body
-    # Both the diagnostics and overview polls are gated to skip while their
-    # section is collapsed (same closest()-based trigger filter on each).
-    assert body.count("closest('.section').classList.contains('is-collapsed')") >= 2
+    live = body[body.index('id="diagnostics-live"') :].split(">", 1)[0]
+    assert 'hx-trigger="every 5s [pollShown(this)], poll-shown[pollShown(this)] from:body"' in live
 
 
 # ---------------------------------------------------------------------------

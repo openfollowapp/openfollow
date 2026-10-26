@@ -10,14 +10,57 @@ videoconvert), the pad-added callbacks for both ``rtspsrc`` and
 
 from __future__ import annotations
 
+import socket
+import threading
+from typing import Any
 from unittest.mock import patch
 
 import pytest
 
+from openfollow.net_utils import BoundedResolver
+from openfollow.runtime.receiver_bus import BusError
+from openfollow.video.failure import (
+    RESOURCE_DOMAIN,
+    RESOURCE_NOT_AUTHORIZED,
+    RESOURCE_OPEN_READ_WRITE,
+    RESOURCE_SETTINGS,
+)
+from openfollow.video.inputs import _pin
 from openfollow.video.inputs.rtsp import RtspInput
 from tests._fake_gst import FakeElement, FakePad, FakePipeline, make_fake_gst
 
 pytestmark = pytest.mark.unit
+
+
+class _Names:
+    """What the faked resolver knows: ``answers`` by name, ``looked_up`` in order."""
+
+    def __init__(self) -> None:
+        self.answers: dict[str, list[str]] = {}
+        self.looked_up: list[str] = []
+        # Set to hold every lookup until the test releases it.
+        self.hold: threading.Event | None = None
+
+
+@pytest.fixture(autouse=True)
+def names(monkeypatch: pytest.MonkeyPatch) -> _Names:
+    """No test here reaches the real resolver: a build looks the URL's name up."""
+    state = _Names()
+
+    def _getaddrinfo(host: str, port: Any, *args: Any, **kwargs: Any) -> list[tuple[Any, ...]]:
+        state.looked_up.append(host)
+        if state.hold is not None:
+            state.hold.wait(5.0)
+        if host not in state.answers:
+            raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+        return [
+            (socket.AF_INET6 if ":" in a else socket.AF_INET, socket.SOCK_DGRAM, 17, "", (a, 0))
+            for a in state.answers[host]
+        ]
+
+    monkeypatch.setattr(socket, "getaddrinfo", _getaddrinfo)
+    monkeypatch.setattr(_pin, "_resolver", BoundedResolver(ttl_s=30.0, failure_ttl_s=10.0, thread_name="test-rtsp-dns"))
+    return state
 
 
 class _RecordingFactory:
@@ -70,6 +113,55 @@ class TestCreatePipeline:
         # tcp+udp+multicast = 0b111 = 7
         assert rtspsrc.properties["protocols"] == 0x7
 
+    @pytest.mark.parametrize("url", ["rtsp://192.0.2.10:554/stream", "rtsp://[2001:db8::10]:554/stream"])
+    def test_an_address_literal_keeps_every_transport_without_a_lookup(self, names: _Names, url: str) -> None:
+        pipeline = self._build(config={"rtsp_url": url})
+        assert pipeline.get_by_name("rtspsrc").properties["protocols"] == 0x7
+        assert names.looked_up == []
+
+    def test_a_name_dialled_over_ipv6_takes_tcp_interleaved(
+        self, names: _Names, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        names.answers["camera.example"] = ["2001:db8::10", "192.0.2.10"]
+        with caplog.at_level("INFO", logger="openfollow.video.inputs.rtsp"):
+            pipeline = self._build(config={"rtsp_url": "rtsp://camera.example:554/stream"})
+        assert pipeline.get_by_name("rtspsrc").properties["protocols"] == 0x4
+        assert "tcp interleaved" in caplog.text and "IPv6" in caplog.text
+
+    def test_localhost_on_a_dual_stack_host_takes_tcp_interleaved(self, names: _Names) -> None:
+        names.answers["localhost"] = ["::1", "127.0.0.1"]
+        pipeline = self._build(config={"rtsp_url": "rtsp://localhost:8554/demo"})
+        assert pipeline.get_by_name("rtspsrc").properties["protocols"] == 0x4
+
+    def test_a_dual_stack_name_dialled_over_ipv4_keeps_every_transport(self, names: _Names) -> None:
+        names.answers["camera.example"] = ["192.0.2.10", "2001:db8::10"]
+        pipeline = self._build(config={"rtsp_url": "rtsp://camera.example:554/stream"})
+        assert pipeline.get_by_name("rtspsrc").properties["protocols"] == 0x7
+
+    @pytest.mark.parametrize("addresses", [["192.0.2.10"], ["192.0.2.10", "192.0.2.11"]])
+    def test_a_name_with_only_ipv4_addresses_keeps_every_transport(self, names: _Names, addresses: list[str]) -> None:
+        names.answers["camera.example"] = addresses
+        pipeline = self._build(config={"rtsp_url": "rtsp://camera.example:554/stream"})
+        assert pipeline.get_by_name("rtspsrc").properties["protocols"] == 0x7
+
+    def test_a_name_that_does_not_resolve_keeps_every_transport(self, names: _Names) -> None:
+        pipeline = self._build(config={"rtsp_url": "rtsp://nowhere.example:554/stream"})
+        assert pipeline.get_by_name("rtspsrc").properties["protocols"] == 0x7
+        assert names.looked_up == ["nowhere.example"]
+
+    def test_a_name_still_resolving_keeps_every_transport_until_its_answer_lands(
+        self, names: _Names, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(_pin, "_RESOLVE_WAIT_S", 0.05)
+        names.answers["camera.example"] = ["2001:db8::10"]
+        names.hold = threading.Event()
+        pipeline = self._build(config={"rtsp_url": "rtsp://camera.example:554/stream"})
+        assert pipeline.get_by_name("rtspsrc").properties["protocols"] == 0x7
+        names.hold.set()
+        assert _pin._resolver.lookup("camera.example", 5.0).addresses == ("2001:db8::10",)
+        pipeline = self._build(config={"rtsp_url": "rtsp://camera.example:554/stream"})
+        assert pipeline.get_by_name("rtspsrc").properties["protocols"] == 0x4
+
     def test_missing_rtspsrc_raises(self) -> None:
         fake = make_fake_gst(missing_elements={"rtspsrc"})
         with pytest.raises(RuntimeError, match="rtspsrc"):
@@ -92,6 +184,116 @@ class TestCreatePipeline:
         post = pipeline.get_by_name("post_queue")
         assert post is not None
         assert post.properties["leaky"] == 2
+
+
+_SETTINGS_MESSAGE = "Could not get/set settings from/on resource."
+
+# What rtspsrc posts when its UDP ports were opened for IPv4 and the server's
+# address is IPv6: its RTCP udpsink refuses the destination.
+_ADDRESS_FAMILY_ERROR = BusError(
+    message=_SETTINGS_MESSAGE,
+    domain=RESOURCE_DOMAIN,
+    code=RESOURCE_SETTINGS,
+    debug=(
+        "../gst/udp/gstmultiudpsink.c(1229): gst_multiudpsink_configure_client (): "
+        "/GstPipeline:rtsp-sink/GstRTSPSrc:rtspsrc/GstUDPSink:udpsink0:\nInvalid address family (got 10)"
+    ),
+)
+
+
+class TestAnAddressFamilyFailureMovesTheHostToTcp:
+    """A dual-stack name whose IPv4 address is refused lands on IPv6 after the
+    transport was chosen, so the UDP ports and the server's address disagree.
+    Only the failure says so, and the retry must not repeat it."""
+
+    _URL = "rtsp://camera.example:554/stream"
+
+    @staticmethod
+    def _protocols(plugin: RtspInput, url: str) -> object:
+        from gi.repository import Gst  # noqa: F401
+
+        sink = FakeElement("shared_videosink")
+        with patch("gi.repository.Gst", make_fake_gst()):
+            pipeline = plugin.create_pipeline(
+                config={"rtsp_url": url},
+                sink=sink,
+                build_overlay_tail=lambda *a: None,
+                prepare_sink=lambda: sink,
+            )
+        return pipeline.get_by_name("rtspsrc").properties["protocols"]
+
+    def test_the_attempts_after_it_run_over_tcp_interleaved(
+        self, names: _Names, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        names.answers["camera.example"] = ["192.0.2.10", "2001:db8::10"]
+        plugin = RtspInput()
+        assert self._protocols(plugin, self._URL) == 0x7
+
+        plugin.on_bus_error(_ADDRESS_FAMILY_ERROR)
+
+        with caplog.at_level("INFO", logger="openfollow.video.inputs.rtsp"):
+            assert self._protocols(plugin, self._URL) == 0x4
+        assert "tcp interleaved" in caplog.text
+        assert self._protocols(plugin, self._URL) == 0x4
+
+    def test_an_ipv6_literal_is_moved_too(self) -> None:
+        """The UDP family follows the server's session description, not the
+        URL, so a literal is no protection."""
+        url = "rtsp://[2001:db8::10]:554/stream"
+        plugin = RtspInput()
+        assert self._protocols(plugin, url) == 0x7
+        plugin.on_bus_error(_ADDRESS_FAMILY_ERROR)
+        assert self._protocols(plugin, url) == 0x4
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            BusError(
+                "Could not open resource for reading and writing.",
+                RESOURCE_DOMAIN,
+                RESOURCE_OPEN_READ_WRITE,
+                "gstrtspsrc.c(7469): gst_rtspsrc_send (): Connection refused",
+            ),
+            BusError(_SETTINGS_MESSAGE, RESOURCE_DOMAIN, RESOURCE_SETTINGS, "SDP contains no streams"),
+            BusError("Unauthorized", RESOURCE_DOMAIN, RESOURCE_NOT_AUTHORIZED, "Unauthorized (401)"),
+            BusError("No video received (connection timeout)"),
+        ],
+        ids=["refused", "empty-sdp", "unauthorized", "no-identity"],
+    )
+    def test_any_other_failure_keeps_every_transport(self, names: _Names, error: BusError) -> None:
+        names.answers["camera.example"] = ["192.0.2.10", "2001:db8::10"]
+        plugin = RtspInput()
+        self._protocols(plugin, self._URL)
+
+        plugin.on_bus_error(error)
+
+        assert self._protocols(plugin, self._URL) == 0x7
+
+    def test_another_host_keeps_every_transport(self, names: _Names) -> None:
+        """The source picked afterwards is a different server with its own answer."""
+        names.answers["camera.example"] = ["192.0.2.10", "2001:db8::10"]
+        names.answers["other.example"] = ["192.0.2.20", "2001:db8::20"]
+        plugin = RtspInput()
+        self._protocols(plugin, self._URL)
+        plugin.on_bus_error(_ADDRESS_FAMILY_ERROR)
+
+        assert self._protocols(plugin, "rtsp://other.example:554/stream") == 0x7
+        assert self._protocols(plugin, self._URL) == 0x4
+
+    def test_a_url_naming_no_host_is_never_moved(self) -> None:
+        plugin = RtspInput()
+        assert self._protocols(plugin, "rtsp://0.0.0.0:554/stream") == 0x7
+        plugin.on_bus_error(_ADDRESS_FAMILY_ERROR)
+        assert self._protocols(plugin, "rtsp://0.0.0.0:554/stream") == 0x7
+
+    def test_a_rebuilt_input_starts_with_every_transport(self, names: _Names) -> None:
+        """A saved change to the source's settings builds a new input, which tries UDP again."""
+        names.answers["camera.example"] = ["192.0.2.10", "2001:db8::10"]
+        plugin = RtspInput()
+        self._protocols(plugin, self._URL)
+        plugin.on_bus_error(_ADDRESS_FAMILY_ERROR)
+
+        assert self._protocols(RtspInput(), self._URL) == 0x7
 
 
 class TestRtspCredentials:

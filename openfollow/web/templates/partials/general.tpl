@@ -1,7 +1,7 @@
 %# General tab content. Top-level sections: Station Settings (identity,
 %# display units, web access PIN, and an Advanced Settings disclosure
-%# holding the start-at-boot switch + the experimental opt-in), Network
-%# (live interface state), and Software Update (signed-.deb installer).
+%# holding the domain name, the start-at-boot switch and the Features table),
+%# Network (live interface state), and Software Update (signed-.deb installer).
 %#
 %# Each form posts to ``/section/general`` (or the appropriate sub-
 %# route) with its own ``id``, ``hx-target=#its-id`` and
@@ -21,22 +21,6 @@
 % update_state = update_status.get('state', '') if defined('update_status') and update_status else ''
 % update_message = update_status.get('message', '') if defined('update_status') and update_status else ''
 % update_error = update_status.get('error', '') if defined('update_status') and update_status else ''
-
-% if defined('update_feedback') and update_feedback:
-<div class="update-notice">{{update_feedback}}</div>
-% end
-
-%# Restart notice lives at the top level so it doesn't get clipped
-%# when one of the inner forms swaps. Polls /section/general every
-%# 2s and reloads the page once the request succeeds – the polling
-%# response is discarded (hx-swap=none).
-% if defined('restarting') and restarting:
-<div class="restart-notice"
-     hx-get="/section/general"
-     hx-trigger="every 2s"
-     hx-swap="none"
-     hx-on::after-request="if(event.detail.successful) window.location.reload()">App is restarting... Please wait.</div>
-% end
 
 %# ------------------------------------------------------------------
 %# Station Settings – the device's identity + access in one box (web
@@ -58,7 +42,7 @@
     %# /section/general with the FQDN joined from Advanced Settings. A save's
     %# green or red ring goes around the Station Settings box, which holds every
     %# field the Save writes.
-    <form id="general-network-section" class="{{'saved' if defined('saved') and saved else ''}} {{'restarting' if defined('restarting') and restarting else ''}}"
+    <form id="general-network-section" class="{{'saved' if defined('saved') and saved else ''}}"
           hx-post="/section/general" hx-target="#general-network-section" hx-swap="outerHTML"
           hx-select="#general-network-section" hx-select-oob="#general-station-fqdn-row" hx-trigger="submit">
         <div class="group">
@@ -94,11 +78,7 @@
         <div class="group">
             <div class="row">
                 <div class="field wide">
-                    <label for="general-unit-system">Displayed unit system</label>
-                    <select id="general-unit-system" name="unit_system">
-                        <option value="metric" {{'selected' if _unit_system == 'metric' else ''}}>Metric (m, m/s)</option>
-                        <option value="imperial" {{'selected' if _unit_system == 'imperial' else ''}}>Imperial (ft / in, ft/s)</option>
-                    </select>
+                    % include('partials/unit_system_select.tpl', select_id='general-unit-system', unit_system=_unit_system)
                 </div>
             </div>
         </div>
@@ -111,9 +91,8 @@
     <details class="inline-advanced">
         <summary>Advanced Settings</summary>
         <div class="inline-advanced-content">
-            %# One group, so no rule inside the disclosure. The FQDN is saved with the
-            %# station name: ``form=`` joins that form from here, and its
-            %# ``hx-select-oob`` re-renders this row with the stored name.
+            %# The FQDN is saved with the station name: ``form=`` joins that form from
+            %# here, and its ``hx-select-oob`` re-renders this row with the stored name.
             % from openfollow.station_fqdn import mdns_name
             <div class="group">
                 <div class="row" id="general-station-fqdn-row">
@@ -142,39 +121,60 @@
                         % end
                     </div>
                 </div>
-                %# Autostart and the experimental opt-in share a row; each applies on change.
+                % if _startup_here:
+                %# Autostart applies on change.
                 <div class="row">
-                    % if _startup_here:
                     %# Fetched on its own so the ``systemctl`` read stays off the
                     %# General render path, and so the switch reports the host's state
                     %# rather than a stored flag.
                     <div id="startup-settings" class="field checkbox-field">
                         <p class="muted">Loading startup settings…</p>
                     </div>
-                    % end
-                    %# A separate form so its change does not also trigger the units form.
-                    <form id="general-experimental-section" class="field checkbox-field"
-                          hx-post="/settings/experimental" hx-swap="none" hx-trigger="change">
-                        <label for="general-show-experimental">Experimental features</label>
-                        <div class="checkbox-wrap checkbox-field inline">
-                            <input type="checkbox" id="general-show-experimental" name="show_experimental_features"
-                                   {{'checked' if config.ui.show_experimental_features else ''}}
-                                   onchange="onExperimentalToggle(this)">
-                            <label for="general-show-experimental">Show experimental features</label>
-                        </div>
-                    </form>
+                </div>
+                % end
+            </div>
+            %# Features: the boxes save with the box's Save (``form=``); feature-save.js asks
+            %# before a Save switches one off. ``data-saved`` is the stored state.
+            % from openfollow.configuration import EXPERIMENTAL_FEATURES, OFFERED_FEATURES
+            % from openfollow.web.labels import FEATURE_LABELS
+            <div id="features-section" class="group">
+                <h3 class="group-title" id="features-heading">Features</h3>
+                <input type="hidden" name="features_submitted" value="1" form="general-network-section">
+                <div class="feature-table-wrap" role="group" aria-labelledby="features-heading">
+                    <table class="data-table feature-table" aria-label="Features">
+                        <thead>
+                            <tr><th scope="col"><span class="visually-hidden">On</span></th><th scope="col">Feature</th><th scope="col">Description</th></tr>
+                        </thead>
+                        <tbody>
+                            % for _key in OFFERED_FEATURES:
+                            % _label = FEATURE_LABELS[_key]
+                            % _id = 'features-' + _key.replace('_', '-')
+                            % _on = config.ui.feature_on(_key)
+                            <tr>
+                                <td class="feature-check">
+                                    <input type="checkbox" id="{{_id}}" name="{{_key}}" form="general-network-section"
+                                           aria-describedby="{{_id}}-description" data-saved="{{'1' if _on else '0'}}"
+                                           data-title="{{_label.title}}" data-off="{{_label.when_off}}" {{'checked' if _on else ''}}>
+                                </td>
+                                <th scope="row"><label for="{{_id}}">{{_label.title}}</label>{{!' <span class="badge-experimental">Experimental</span>' if _key in EXPERIMENTAL_FEATURES else ''}}</th>
+                                <td id="{{_id}}-description" class="feature-description">{{_label.description}}</td>
+                            </tr>
+                            % end
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>
     </details>
 
-    %# Save sits at the box bottom (the display-units and experimental toggles
-    %# above live-apply on change, so only the station name, PIN and FQDN need it).
+    %# Save sits at the box bottom (the display-units and autostart toggles
+    %# above live-apply on change, so only the station name, PIN, FQDN and features need it).
     %# ``form=`` keeps it submitting the network form from outside it.
     <div class="actions">
         <button type="submit" form="general-network-section" class="save-btn">Save</button>
     </div>
 </div>
+
 
 % if defined('startup_supported') and startup_supported:
 <script>
@@ -279,10 +279,13 @@ window.loadAutostart();
 %# the same interface list. Lazy-loaded like the network region so the
 %# General render doesn't pay for the address resolution.
 %# ------------------------------------------------------------------
+%# Advanced only: in Simple the station interface carries every function.
+% if config.network_mode == 'advanced':
 <div id="interface-assignment" hx-get="/section/interface_assignment" hx-trigger="load"
      hx-target="this" hx-swap="innerHTML">
     <p class="muted">Loading interface assignment…</p>
 </div>
+% end
 
 %# ------------------------------------------------------------------
 %# 3. Software Update – GitHub Releases signed-bundle (.ofupdate) installer.
@@ -296,54 +299,41 @@ window.loadAutostart();
      data-fold-default="{{'expanded' if (defined('update_available') and update_available) else 'collapsed'}}">
     <div class="section-head">
         <h2>Software Update</h2>
-        <span class="section-note">Install the latest release from GitHub</span>
+        <span class="section-note">Online from GitHub, or from an .ofupdate file</span>
     </div>
-
-    %# Update-available banner – shown when the background online-sync check has
-    %# found a newer release on GitHub. Reuses the informational ``.notice``
-    %# style; the button hands off to the existing check+install confirm flow.
-    % if defined('update_available') and update_available:
-    <div class="notice" role="status" aria-live="polite"
-         style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
-        <span><strong>Update available:</strong> version {{latest_version}} is ready to install (installed v{{current_version}}).</span>
-        <button type="button" class="update-btn" style="margin:0"
-                onclick="openfollowCheckUpdate(this)"
-                {{'disabled' if update_state in ('queued', 'running', 'restarting') else ''}}>
-            Install now
-        </button>
-    </div>
-    % end
+    % busy = 'disabled' if update_state in ('queued', 'running', 'restarting') else ''
 
     <p class="field-note">Installed: v{{current_version}}</p>
 
+    %# At most one box: a failed install outranks the release online sync found,
+    %# which is not offered while an install is under way.
     % if update_state == 'failed':
-    <div class="update-notice error">{{update_message or 'Update failed.'}} {{update_error}}</div>
+    <div class="notice error">
+        <div>{{update_message or 'Update failed.'}}</div>
+        % if update_error:
+        <div class="notice-sub">{{update_error}}</div>
+        % end
+    </div>
+    % elif defined('update_available') and update_available and not busy:
+    <div class="notice" role="status">
+        <div>Version {{latest_version}} is available.</div>
+        <div class="notice-sub">Install it online, or install an .ofupdate file.</div>
+    </div>
     % end
-    %# ``update_feedback`` is rendered once at the top of this partial.
 
+    %# The same two actions in every state: online first, the offline bundle beside it.
     <div class="actions">
-        <button type="button" class="update-btn" onclick="openfollowCheckUpdate(this)" {{'disabled' if update_state in ('queued', 'running', 'restarting') else ''}}>
-            Check &amp; Install Latest
+        <button type="button" class="update-btn" onclick="openfollowCheckUpdate(this)" {{busy}}>
+            Install Latest Version Online
+        </button>
+        <input type="file" id="general-update-file" style="display:none"
+               accept=".ofupdate" {{busy}}
+               onchange="openfollowUploadUpdate(this)">
+        <button type="button" class="btn-secondary"
+                onclick="document.getElementById('general-update-file').click()" {{busy}}>
+            Install .ofupdate File
         </button>
     </div>
-
-    %# Offline install – collapsed by default; venues without internet expand this.
-    <details class="inline-advanced" data-adv-key="general-offline-install">
-        <summary>Offline install</summary>
-        <div class="inline-advanced-content">
-            <input type="file" id="general-update-file" style="display:none"
-                   accept=".ofupdate"
-                   {{'disabled' if update_state in ('queued', 'running', 'restarting') else ''}}
-                   onchange="openfollowUploadUpdate(this)">
-            <div class="actions">
-                <button type="button" class="update-btn"
-                        onclick="document.getElementById('general-update-file').click()"
-                        {{'disabled' if update_state in ('queued', 'running', 'restarting') else ''}}>
-                    Choose Update &amp; Install
-                </button>
-            </div>
-        </div>
-    </details>
 </div>
 
 <script>

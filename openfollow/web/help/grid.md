@@ -4,13 +4,14 @@ A reference plane drawn over the live video showing where stage coordinates
 land in the image. A **visual aid** – it doesn't change tracking; only
 calibration sets the maths.
 
-Easiest to set with the **Setup Wizard** (Open Setup Wizard on the Camera &
-Grid tab). All distances are in **metres**, relative to the **Reference
-Point** – the (0, 0, 0) of your show (see Core Concepts).
+Easiest to set with the **Setup Wizard** (Open Setup Wizard on the General or
+Camera & Grid tab): its Simple Camera Calibration saves the measured rectangle
+as the grid, keeping the spacing. All distances are in **metres**, relative to the
+**Reference Point** – the (0, 0, 0) of your show (see Core Concepts).
 
 ## Display
 
-- **Show Grid** – draw or hide the whole grid overlay on the Operator Screen.
+- **Grid** – draw or hide the whole grid overlay on the Operator Screen.
   The Origin Marker below has its own toggle, so the origin cross can still show
   when the grid lines are hidden. Display only – it never affects tracking,
   calibration, or any output protocol.
@@ -43,12 +44,17 @@ Use when the Reference Point isn't at the grid centre.
 - **Z Offset** – height of the grid plane above the Reference Point. `0` sits it
   on the floor; raise it for a stage deck or riser.
 
+With a Simple calibration from the Setup Wizard, the grid is its rectangle:
+saving a new width, depth or offset moves the rectangle's corners with it and
+unpins them, since they were pinned on the old grid; the next run of the Setup
+Wizard pins them again. An Advanced calibration's points stay as they are.
+
 ## Origin Marker
 
 A small cross at the Reference Point to confirm it lines up with your physical
 mark.
 
-- **Show Origin** – turn the marker on or off.
+- **Origin** – turn the cross on or off.
 - **Length** – arm length of the cross, in metres.
 - **Thickness** – line weight in pixels (1–20).
 

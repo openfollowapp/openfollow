@@ -165,3 +165,112 @@ def test_the_video_source_box_keeps_its_polite_role() -> None:
         live="status",
     )
     assert 'role="status" aria-live="polite" aria-atomic="true"' in html
+
+
+def _power(**flags: bool | None) -> dict[str, Any]:
+    power: dict[str, Any] = {
+        "available": True,
+        "under_voltage": False,
+        "throttled": False,
+        "under_voltage_since_boot": False,
+        "throttled_since_boot": False,
+    }
+    power.update(flags)
+    return _stats(system={"power": power})
+
+
+_UV_NOW = (
+    "error",
+    "Power supply under voltage now.",
+    "Use a 5 V 5 A supply or unplug bus-powered USB devices.",
+)
+_HOT_NOW = ("error", "CPU throttled now: the Pi is too hot.", "Check the fan and airflow.")
+_UV_PAST = ("caution", "Under voltage reported since the station last started.", "")
+_HOT_PAST = ("caution", "CPU throttling reported since the station last started.", "")
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected"),
+    [
+        ({}, []),
+        ({"under_voltage": True, "under_voltage_since_boot": True}, [_UV_NOW]),
+        ({"throttled": True, "throttled_since_boot": True}, [_HOT_NOW]),
+        ({"under_voltage_since_boot": True}, [_UV_PAST]),
+        ({"throttled_since_boot": True}, [_HOT_PAST]),
+        ({"under_voltage_since_boot": True, "throttled_since_boot": True}, [_UV_PAST, _HOT_PAST]),
+        ({"under_voltage_since_boot": True, "throttled": True, "throttled_since_boot": True}, [_HOT_NOW, _UV_PAST]),
+        ({"under_voltage": True, "throttled": True, "throttled_since_boot": True}, [_UV_NOW]),
+        ({"under_voltage": True, "throttled_since_boot": True}, [_UV_NOW, _HOT_PAST]),
+    ],
+    ids=[
+        "healthy",
+        "under-voltage-now",
+        "too-hot-now",
+        "under-voltage-past",
+        "throttled-past",
+        "both-past",
+        "errors-first",
+        "supply-named-over-heat",
+        "past-throttle-beside-live-supply",
+    ],
+)
+def test_a_power_alert_is_an_error_while_active_and_a_caution_after(
+    flags: dict[str, bool], expected: list[tuple[str, str, str]]
+) -> None:
+    alerts = statistics_alerts(_power(**flags)).power
+    assert [(a.level, a.text, a.step) for a in alerts] == expected
+
+
+@pytest.mark.parametrize(
+    "stats",
+    [
+        _stats(),
+        _stats(system={}),
+        _stats(system={"power": None}),
+        _power(
+            available=False,
+            under_voltage=None,
+            throttled=None,
+            under_voltage_since_boot=None,
+            throttled_since_boot=None,
+        ),
+    ],
+    ids=["no-system", "no-power", "power-null", "not-available"],
+)
+def test_a_host_that_cannot_tell_shows_no_power_alert(stats: dict[str, Any]) -> None:
+    assert statistics_alerts(stats).power == ()
+    html = template("partials/statistics", stats=stats)
+    assert "notice warning" not in html
+    assert "under voltage" not in html
+
+
+def test_the_power_boxes_take_their_level_component() -> None:
+    html = template("partials/statistics", stats=_power(under_voltage=True, throttled_since_boot=True))
+    assert html.count('class="notice error"') == 1
+    assert html.count('class="notice warning"') == 1
+    assert (
+        "<div>Power supply under voltage now.</div>\n"
+        '            <div class="notice-sub">Use a 5 V 5 A supply or unplug bus-powered USB devices.</div>'
+    ) in html
+    caution = html[html.index('class="notice warning"') :]
+    assert caution.split("</div>\n        </div>")[0].endswith(
+        "<div>CPU throttling reported since the station last started."
+    )
+    assert "role=" not in html
+
+
+def test_the_announcer_speaks_the_power_alerts_after_the_controllers() -> None:
+    stats = _power(under_voltage=True, throttled_since_boot=True)
+    stats["controllers"] = {"items": [_MISSING_PAD]}
+    assert statistics_alerts(stats).spoken() == [
+        "C2 missing · marker 5 · Xbox Wireless Controller (USB 2, port 2)",
+        "Power supply under voltage now. Use a 5 V 5 A supply or unplug bus-powered USB devices.",
+        "CPU throttling reported since the station last started.",
+    ]
+    html = template("partials/statistics_alerts", stats=stats)
+    assert "<p>CPU throttling reported since the station last started.</p>" in html
+
+
+def test_the_key_changes_when_a_power_alert_ends() -> None:
+    live = statistics_alerts(_power(under_voltage=True, under_voltage_since_boot=True)).key()
+    assert statistics_alerts(_power(under_voltage_since_boot=True)).key() != live

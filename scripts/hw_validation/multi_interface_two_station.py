@@ -87,6 +87,15 @@ def ssh(ssh_base: list[str], host: str, cmd: str, timeout: int = 30) -> subproce
     return subprocess.run([*argv, cmd], capture_output=True, text=True, timeout=timeout)
 
 
+def vlan_profile_uuids(ssh_base: list[str], host: str, vlan_name: str) -> list[str]:
+    """UUIDs of the VLAN profiles naming *vlan_name*: nmcli given a name deletes every profile of that name."""
+    cmd = (
+        "for u in $(nmcli -t -f UUID,TYPE con show | awk -F: '$2==\"vlan\" {print $1}'); do "
+        f'[ "$(nmcli -g connection.interface-name con show uuid "$u")" = "{vlan_name}" ] && echo "$u"; done'
+    )
+    return ssh(ssh_base, host, cmd).stdout.split()
+
+
 class Web:
     """Web UI client that carries the auth cookie when a PIN is configured."""
 
@@ -516,11 +525,15 @@ def main() -> int:
                 # correct; leaving the VLAN behind while claiming the station
                 # was restored is not, so fall back to removing it over SSH.
                 print(f"  web delete did not remove {vlan_name} (HTTP {status}); removing over SSH")
-                ssh(ssh_base, args.dut, f"sudo nmcli con delete {vlan_name} >/dev/null 2>&1 || true")
+                uuids = vlan_profile_uuids(ssh_base, args.dut, vlan_name)
+                if uuids:
+                    targets = " ".join(f"uuid {u}" for u in uuids)
+                    ssh(ssh_base, args.dut, f"sudo nmcli con delete {targets} >/dev/null 2>&1 || true")
                 gone = not netdev_exists(ssh_base, args.dut, vlan_name)
             print(f"  {vlan_name} removed: {gone}")
             if not gone:
-                print(f"  WARNING: {vlan_name} still present - remove it with: sudo nmcli con delete {vlan_name}")
+                listed = ", ".join(vlan_profile_uuids(ssh_base, args.dut, vlan_name)) or "none found"
+                print(f"  WARNING: {vlan_name} still present - delete its VLAN profiles by UUID ({listed})")
 
     failures = rep.failed()
     print(f"\n{'FAIL' if failures else 'PASS'} – {len(rep.rows) - len(failures)}/{len(rep.rows)} checks passed")

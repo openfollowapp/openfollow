@@ -39,6 +39,7 @@ REQUIRED_TYPELIBS = (
     ("Gst", "1.0"),
     ("GstApp", "1.0"),
     ("GstPbutils", "1.0"),
+    ("GstVideo", "1.0"),
     ("Rsvg", "2.0"),
 )
 
@@ -110,6 +111,10 @@ def seed_user_data(config_dir: Path, resources: Path) -> Path:
     storage_dir = config_dir / "yolo"
     config_path = config_dir / "config.toml"
 
+    from openfollow.configuration import restore_empty_config
+
+    # An empty config is restored from its backup, else removed: then it is seeded like a missing one.
+    restore_empty_config(str(config_path))
     seed = resources / SEED_CONFIG_NAME
     if not config_path.exists() and seed.is_file():
         text = seed.read_text(encoding="utf-8").replace(STORAGE_PLACEHOLDER, str(storage_dir))

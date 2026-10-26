@@ -20,6 +20,7 @@ from typing import Any
 
 from openfollow.net_egress import is_loopback_host
 from openfollow.net_utils import plane_source_iface
+from openfollow.runtime.receiver_bus import BusError
 from openfollow.video.failure import ConnectionPhase, SourceKind
 from openfollow.video.inputs._pin import PinRefusal
 
@@ -246,6 +247,9 @@ class VideoInputBase(ABC):
         next iteration of a seamless loop. The default reports it unhandled."""
         return False
 
+    def on_bus_error(self, error: BusError) -> None:  # noqa: B027 – intentional optional hook
+        """Called with a failed attempt's error before the next attempt is built."""
+
     def on_caps_changed(self, width: int, height: int) -> None:  # noqa: B027 – intentional optional hook
         """Called when video resolution is detected from caps-changed."""
 
@@ -402,6 +406,21 @@ class VideoInputBase(ABC):
         numeric field rendered through this helper isn't silently dropped.
         """
         return "" if value is None else html.escape(str(value))
+
+
+# A network input's queue before the decoder holds this much stream: its buffers are packet-sized, so a
+# buffer count would hold milliseconds and a decoder hiccup would drop compressed data.
+PRE_DECODE_QUEUE_NS = 300_000_000
+# Bounds the queue where timestamps cannot (none, or a step back); 300 ms of stream at over 200 Mbit/s.
+PRE_DECODE_QUEUE_BYTES = 8 * 1024 * 1024
+
+
+def configure_pre_decode_queue(queue: Any) -> None:
+    """Make ``queue`` hold ``PRE_DECODE_QUEUE_NS`` of stream, dropping the oldest past that or past the byte bound."""
+    queue.set_property("max-size-buffers", 0)
+    queue.set_property("max-size-bytes", PRE_DECODE_QUEUE_BYTES)
+    queue.set_property("max-size-time", PRE_DECODE_QUEUE_NS)
+    queue.set_property("leaky", 2)
 
 
 def video_input_pin_field() -> ConfigField:

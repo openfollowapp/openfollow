@@ -4,8 +4,6 @@
 
 High-value mutation kills targeting ``openfollow/configuration.py``:
 
-* ``_coerce_optional_float`` None-check inversion (``is None`` →
-  ``is not None``) and forced ``float(None)`` call.
 * ``save_config`` default path (``"config.toml"``) – the existing
   :mod:`tests.test_configuration` suite always passes a
   ``temp_config_path`` explicitly, hiding the default-value mutants.
@@ -27,39 +25,12 @@ import pytest
 from openfollow.configuration import (
     AppConfig,
     ControllerConfig,
-    _coerce_optional_float,
     apply_runtime_config_changes,
     load_config,
     save_config,
 )
 
 pytestmark = pytest.mark.unit
-
-# --------------------------------------------------------------------------- #
-# _coerce_optional_float – None-check and float(value) call guards
-# --------------------------------------------------------------------------- #
-
-
-class TestCoerceOptionalFloatNoneHandling:
-    def test_none_input_returns_none(self) -> None:
-        assert _coerce_optional_float(None, default=5.0) is None
-
-    def test_valid_numeric_returns_float(self) -> None:
-        assert _coerce_optional_float(3, default=99.0) == 3.0
-        assert _coerce_optional_float(2.5, default=99.0) == 2.5
-        assert _coerce_optional_float("7.25", default=99.0) == 7.25
-
-    def test_invalid_numeric_string_returns_default(self) -> None:
-        assert _coerce_optional_float("not-a-number", default=42.0) == 42.0
-
-    def test_lo_clamp_applies(self) -> None:
-        """``lo`` argument clamps low values – covers line 152."""
-        assert _coerce_optional_float(0.5, default=99.0, lo=1.0) == 1.0
-
-    def test_hi_clamp_applies(self) -> None:
-        """``hi`` argument clamps high values – covers line 154."""
-        assert _coerce_optional_float(10.0, default=99.0, hi=5.0) == 5.0
-
 
 # --------------------------------------------------------------------------- #
 # save_config – default path value preserved

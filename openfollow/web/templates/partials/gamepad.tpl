@@ -10,12 +10,18 @@
     <div class="group">
         <div class="row">
             <div class="field checkbox-field">
-                <label>Enabled</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="enabled" {{'checked' if config.controller.enabled else ''}}></div>
+                <label for="gamepad-enabled">Gamepad</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="gamepad-enabled" name="enabled" {{'checked' if config.controller.enabled else ''}}>
+                    <label for="gamepad-enabled">Control markers with gamepads</label>
+                </div>
             </div>
-            <div class="field checkbox-field">
-                <label>Invert Stick Y</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="invert_y" {{'checked' if config.controller.invert_y else ''}}></div>
+            <div class="field">
+                <label for="gamepad-invert-y">Stick Y axis</label>
+                <select id="gamepad-invert-y" name="invert_y">
+                    <option value="false" {{'' if config.controller.invert_y else 'selected'}}>Push up to move up the screen</option>
+                    <option value="true" {{'selected' if config.controller.invert_y else ''}}>Push up to move down the screen</option>
+                </select>
             </div>
             <div class="field">
                 <label>Axis Deadzone (0–1)</label>
@@ -51,7 +57,7 @@
                     % if defined('detection_started') and detection_started:
                     <span style="color:var(--accent);font-size:0.8em;margin-left:0.5rem;"
                           hx-get="/section/gamepad" hx-target="#gamepad-section"
-                          hx-swap="outerHTML" hx-trigger="every 2s">Wizard running on app display</span>
+                          hx-swap="outerHTML" hx-trigger="every 2s [!document.hidden], poll-shown from:body">Wizard running on app display</span>
                     %# Allow web UI cancellation so keyboardless operator
                     %# isn't stranded after wizard grabs exclusive input.
                     <button type="button" class="secondary small"
@@ -131,7 +137,7 @@
                 <div class="group">
                     <h3 class="group-title">Normal Mode</h3>
                     <div class="row">
-                        % for name in ('btn_reset', 'btn_toggle_help', 'btn_toggle_zones', 'btn_settings'):
+                        % for name in ('btn_reset', 'btn_toggle_help', 'btn_settings'):
                         % include('partials/button_binding_select.tpl', name=name, label=action_labels[name], value=getattr(c, name), buttons=action_buttons)
                         % end
                     </div>
@@ -181,6 +187,12 @@
                     <div class="row">
                         % for name in ('btn_next_marker', 'btn_prev_marker', 'btn_clear_messages'):
                         % include('partials/button_binding_select.tpl', name=name, label=action_labels[name], value=getattr(c, name), buttons=action_buttons)
+                        % end
+                    </div>
+                    <div class="row">
+                        % include('partials/button_binding_select.tpl', name='btn_toggle_zones', label=action_labels['btn_toggle_zones'], value=c.btn_toggle_zones, buttons=action_buttons, feature='zones')
+                        % for name in ('btn_toggle_paths', 'btn_pathfinder'):
+                        % include('partials/button_binding_select.tpl', name=name, label=action_labels[name], value=getattr(c, name), buttons=action_buttons, feature='paths')
                         % end
                     </div>
                 </div>

@@ -1,5 +1,8 @@
 % from openfollow.configuration import KEYBOARD_ACTION_FORM_LABELS
 % kb_labels = dict(KEYBOARD_ACTION_FORM_LABELS)
+%# Set only where the kiosk session resolved the layout (see keyboard_layout_view).
+% kb_layout = keyboard_layout if defined('keyboard_layout') else None
+% kb_pending = kb_layout is not None and kb_layout.pending
 <form id="keyboard-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="keyboard" data-help="keyboard"
       hx-post="/section/keyboard" hx-target="#keyboard-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
@@ -9,10 +12,49 @@
     <div class="group">
         <div class="row">
             <div class="field checkbox-field">
-                <label>Enabled</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="keyboard_enabled" {{'checked' if config.controller.keyboard_enabled else ''}}></div>
+                <label for="keyboard-enabled">Keyboard</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="keyboard-enabled" name="keyboard_enabled" {{'checked' if config.controller.keyboard_enabled else ''}}>
+                    <label for="keyboard-enabled">Move markers with the keyboard</label>
+                </div>
             </div>
         </div>
+        % if kb_layout is not None:
+        <div class="row">
+            <div class="field">
+                <label for="keyboard-layout">Keyboard Layout</label>
+                <select id="keyboard-layout" name="keyboard_layout"
+                        hx-get="/api/validate/keyboard/keyboard_layout" hx-trigger="blur changed delay:200ms"
+                        hx-target="#keyboard-layout-error" hx-swap="innerHTML" hx-include="closest form"
+                        aria-describedby="keyboard-layout-error" aria-invalid="false">
+                    % for value, label in kb_layout.layouts:
+                    <option value="{{value}}" {{'selected' if value == kb_layout.layout else ''}}>{{label}}</option>
+                    % end
+                </select>
+                <span id="keyboard-layout-error" class="field-error"></span>
+            </div>
+            %# Reloads the options for a new layout. Save is off meanwhile, or it would send the previous layout's
+            %# variant; a failed reload falls back to Standard. The gate runs again after, as htmx re-enables Save.
+            <div class="field" hx-get="/section/keyboard/variants" hx-trigger="change from:#keyboard-layout"
+                 hx-include="#keyboard-layout" hx-target="#keyboard-variant" hx-swap="innerHTML"
+                 hx-disabled-elt="#keyboard-section button[type=submit]"
+                 hx-on::after-request="if(!event.detail.successful) document.getElementById('keyboard-variant').value=''; refreshFormGate(this.closest('form'))">
+                <label for="keyboard-variant">Variant</label>
+                <select id="keyboard-variant" name="keyboard_variant"
+                        hx-get="/api/validate/keyboard/keyboard_variant" hx-trigger="blur changed delay:200ms"
+                        hx-target="#keyboard-variant-error" hx-swap="innerHTML" hx-include="closest form"
+                        aria-describedby="keyboard-variant-error" aria-invalid="false">
+                    % include('partials/keyboard_variant_options.tpl', variants=kb_layout.variants, selected=kb_layout.variant)
+                </select>
+                <span id="keyboard-variant-error" class="field-error"></span>
+            </div>
+        </div>
+        % if kb_pending and kb_layout.layout_pending:
+        <div class="field-caution-msg" role="status">In use: {{kb_layout.in_use_label}} until OpenFollow restarts.</div>
+        % elif kb_pending:
+        <div class="field-caution-msg" role="status">The system keyboard settings change when OpenFollow restarts.</div>
+        % end
+        % end
 
         <details class="inline-advanced" data-adv-key="keyboard-mapping">
             <summary>Button Mapping</summary>
@@ -75,7 +117,7 @@
                        aria-describedby="keyboard-key-toggle-help-error" aria-invalid="false">
                 <span id="keyboard-key-toggle-help-error" class="field-error"></span>
                         </div>
-                        <div class="field">
+                        <div class="field" data-feature="zones">
                             <label for="keyboard-key-toggle-zones">{{kb_labels['key_toggle_zones']}}</label>
                             <input id="keyboard-key-toggle-zones" type="text" name="key_toggle_zones"
                                    value="{{config.controller.key_toggle_zones}}"
@@ -142,6 +184,26 @@
                 <span id="keyboard-key-prev-marker-error" class="field-error"></span>
                         </div>
                     </div>
+                    <div class="row" data-feature="paths">
+                        <div class="field">
+                            <label for="keyboard-key-pathfinder">{{kb_labels['key_pathfinder']}}</label>
+                            <input id="keyboard-key-pathfinder" type="text" name="key_pathfinder"
+                                   value="{{config.controller.key_pathfinder}}"
+                       hx-get="/api/validate/keyboard/key_pathfinder" hx-trigger="blur changed delay:200ms"
+                       hx-target="#keyboard-key-pathfinder-error" hx-swap="innerHTML" hx-include="closest form"
+                       aria-describedby="keyboard-key-pathfinder-error" aria-invalid="false">
+                <span id="keyboard-key-pathfinder-error" class="field-error"></span>
+                        </div>
+                        <div class="field">
+                            <label for="keyboard-key-toggle-paths">{{kb_labels['key_toggle_paths']}}</label>
+                            <input id="keyboard-key-toggle-paths" type="text" name="key_toggle_paths"
+                                   value="{{config.controller.key_toggle_paths}}"
+                       hx-get="/api/validate/keyboard/key_toggle_paths" hx-trigger="blur changed delay:200ms"
+                       hx-target="#keyboard-key-toggle-paths-error" hx-swap="innerHTML" hx-include="closest form"
+                       aria-describedby="keyboard-key-toggle-paths-error" aria-invalid="false">
+                <span id="keyboard-key-toggle-paths-error" class="field-error"></span>
+                        </div>
+                    </div>
                 </div>
             </div>
         </details>
@@ -149,5 +211,9 @@
 
     <div class="actions">
         <button type="submit" class="save-btn">Save</button>
+        % if kb_pending:
+        <button type="button" class="danger"
+                onclick="openfollowRestart({title: 'Restart OpenFollow?', message: 'Outputs pause until OpenFollow is back.'})">Restart OpenFollow</button>
+        % end
     </div>
 </form>

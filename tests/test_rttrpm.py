@@ -7,13 +7,14 @@ from __future__ import annotations
 import socket
 import struct
 import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from openfollow.net_egress import Egress
 from openfollow.net_utils import InterfaceUnavailable
-from openfollow.psn.marker import Marker
+from openfollow.psn.marker import MARKER_STALE_AFTER_S, Marker
 from openfollow.rttrpm.server import (
     _CENTROID_SIZE,
     _FLOAT_SIG,
@@ -36,6 +37,16 @@ from openfollow.send_health import SendHealth
 pytestmark = pytest.mark.unit
 
 
+def _marker_clock() -> int:
+    """The clock the test markers are stamped from: it stands still, so a marker is fresh however slow the host."""
+    return 5_000_000
+
+
+def _slow_host():
+    """The process clock several stale limits on, as on a host that stalls between stamping and sending."""
+    return patch("openfollow.psn.clock.time.monotonic", return_value=time.monotonic() + 10 * MARKER_STALE_AFTER_S)
+
+
 def _marker(
     marker_id: int,
     x: float = 0.0,
@@ -43,7 +54,7 @@ def _marker(
     z: float = 0.0,
     name: str = "T",
 ) -> Marker:
-    t = Marker(marker_id, name)
+    t = Marker(marker_id, name, clock=_marker_clock)
     t.set_pos(x, y, z)
     return t
 
@@ -433,6 +444,7 @@ class TestRttrpmServerSend:
         srv._socket = None
         srv.register_marker(_marker(1))
         with (
+            _slow_host(),
             patch.object(srv, "_maybe_rebuild_socket_after_error") as rebuild,
             patch.object(srv, "_send") as send,
         ):

@@ -9,14 +9,19 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
+import openfollow.system_stats as stats_module
 from openfollow.configuration import Mouse3DConfig
+from openfollow.power_health import WARNING_HOLD_S, PowerMonitor
+from openfollow.runtime.overlay_draw_style import COLOR_WARNING_FILL
 from openfollow.runtime.overlay_layout import PictureGeometry
 from openfollow.runtime.overlay_state import OverlayState
+from openfollow.runtime.overlay_status_badge import draw_status_badge
 from openfollow.runtime.services_marker_visuals import (
     _populate_pi_network_overlay,
     _populate_zone_overlay,
@@ -26,9 +31,10 @@ from openfollow.runtime.services_marker_visuals import (
     sync_marker_config,
     sync_ui_config,
 )
-from openfollow.runtime_metrics import OverlayStatePool
+from openfollow.system_stats import SystemStats, SystemStatsCollector
 from openfollow.units import UnitSystem
 from openfollow.video.failure import VideoFailure
+from tests._fake_cairo import FakeCairo, FakeRenderer
 
 pytestmark = pytest.mark.unit
 
@@ -457,7 +463,7 @@ class TestBuildInitialOverlayState:
         state = build_initial_overlay_state(cfg)
 
         assert state.video_connected is False
-        assert state.picture_size == (0, 0)
+        assert state.scene_view is None
         assert state.source_label == ""
         assert state.reconnect_attempt == 0
         assert state.error_message == ""
@@ -535,6 +541,20 @@ class TestPopulateZoneOverlay:
         _, _, _, is_occupied, count = state.zone_polygons[0]
         assert is_occupied is False
         assert count == 0
+
+    def test_zones_are_not_drawn_while_their_feature_is_off(self) -> None:
+        from openfollow.configuration import UiConfig
+
+        square = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+        cfg = _make_cfg(enabled=True, show_overlay=True, zones=[_make_zone(square)])
+        cfg.ui = UiConfig(shown_features=[])
+        app = SimpleNamespace(_runtime_services=SimpleNamespace(_zone_engine=None))
+        state = OverlayState()
+
+        _populate_zone_overlay(state, cfg, app)
+
+        assert state.show_zones is False
+        assert state.zone_polygons == []
 
     def test_hides_overlay_only_when_show_overlay_is_false(self) -> None:
         square = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
@@ -761,15 +781,11 @@ class TestPopulatePiNetworkOverlay:
     def _bare_app(self) -> SimpleNamespace:
         return SimpleNamespace()
 
-    def test_all_inactive_resets_target(self) -> None:
+    def test_all_inactive_leaves_the_screens_closed(self) -> None:
         state = OverlayState()
-        # Dirty the slot first so reset() is observable.
-        state.pi_network.screen_active = True
-        state.pi_network.banner = "stale"
-        state.pi_network.banner_level = "error"
         _populate_pi_network_overlay(self._bare_app(), state)
         assert state.pi_network.screen_active is False
-        assert (state.pi_network.banner, state.pi_network.banner_level) == ("", "")
+        assert state.pi_network.field_edit_active is False
 
     def test_screen_active_copies_rows_and_metadata(self, monkeypatch) -> None:
         from openfollow.runtime import app_modes_network as anm
@@ -891,7 +907,7 @@ def _make_visual_app(marker: object, *, controlled: bool) -> SimpleNamespace:
         psn_system_name="OF",
         marker=_make_full_marker_config(),
         grid=_make_grid_config(),
-        camera=SimpleNamespace(lens_k1=0.0, lens_k2=0.0),
+        camera=SimpleNamespace(lens_k1=0.0, lens_k2=0.0, lens_cx=0.0, lens_cy=0.0),
         ui=SimpleNamespace(unit_system="metric"),
         controller=SimpleNamespace(
             enabled=False,
@@ -961,6 +977,7 @@ def _make_visual_app(marker: object, *, controlled: bool) -> SimpleNamespace:
         _viewer_ids=[1],
         _input_manager=None,
         _video_receiver=video_receiver,
+        _canvas=SimpleNamespace(get_canvas_size=lambda: (1920, 1080)),
         _source_type_selection_active=False,
         _available_source_types=[],
         _selected_source_type_index=0,
@@ -990,7 +1007,6 @@ class TestBuildMarkerVisualStateTornRead:
 
         state = build_marker_visual_state(
             app,
-            overlay_state_pool=OverlayStatePool(),
             system_stats=None,
             person_detector=None,
             cam_params_buffer=np.zeros(7),
@@ -1003,25 +1019,25 @@ class TestBuildMarkerVisualStateTornRead:
         # since a correct consumer reads ``pos`` exactly once.
         assert (card.x, card.y, card.z) == (10.0, 20.0, 30.0)
 
-    def test_lens_coefficients_are_copied_from_config(self) -> None:
-        # The overlay warp reads k1/k2 off the live config (the Camera object is
-        # pinhole), so a slider edit must land on the state for the renderer.
+    def test_the_lens_is_copied_from_config(self) -> None:
+        # The overlay warp reads the lens off the live config (the Camera object is
+        # pinhole), so an edit must land on the state for the renderer.
         marker = _TornMarker([(0.0, 0.0, 0.0)])
         app = _make_visual_app(marker, controlled=False)
         app._config.camera.lens_k1 = -0.15
         app._config.camera.lens_k2 = 0.04
+        app._config.camera.lens_cx = 0.03
+        app._config.camera.lens_cy = -0.02
 
         state = build_marker_visual_state(
             app,
-            overlay_state_pool=OverlayStatePool(),
             system_stats=None,
             person_detector=None,
             cam_params_buffer=np.zeros(7),
             dt=1.0 / 60.0,
         )
 
-        assert state.lens_k1 == -0.15
-        assert state.lens_k2 == 0.04
+        assert state.lens == (-0.15, 0.04, 0.03, -0.02)
 
     @pytest.mark.parametrize("enabled", [True, False])
     def test_wheel_z_setting_reaches_the_help_overlay_state(self, enabled: bool) -> None:
@@ -1031,7 +1047,6 @@ class TestBuildMarkerVisualStateTornRead:
 
         state = build_marker_visual_state(
             app,
-            overlay_state_pool=OverlayStatePool(),
             system_stats=None,
             person_detector=None,
             cam_params_buffer=np.zeros(7),
@@ -1061,7 +1076,6 @@ class TestVideoFailureReachesTheTopRightBadge:
         app._runtime_services = SimpleNamespace(_status_flags=flags)
         build_marker_visual_state(
             app,
-            overlay_state_pool=OverlayStatePool(),
             system_stats=None,
             person_detector=None,
             cam_params_buffer=np.zeros(7),
@@ -1084,6 +1098,64 @@ class TestVideoFailureReachesTheTopRightBadge:
     def test_an_unconfigured_source_is_not_alarmed_about(self) -> None:
         """Nothing is broken; the operator has not finished setting up."""
         assert self._flags_after(VideoFailure.NOT_CONFIGURED)["video_failure"] is None
+
+
+class TestPowerWarningReachesTheTopRightBadge:
+    """A dip in the supply or a throttled CPU is an error row in the top right,
+    held past the last active reading so a single dip is still seen."""
+
+    def _collector(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, now: list[float]) -> SystemStatsCollector:
+        monkeypatch.setattr(stats_module.psutil, "cpu_percent", lambda interval=None: 0.0)
+        monkeypatch.setattr(stats_module.psutil, "virtual_memory", lambda: SimpleNamespace(percent=0.0))
+        monkeypatch.setattr(stats_module, "get_local_ipv4_addresses", lambda: set())
+        monkeypatch.setattr(stats_module, "get_primary_local_ipv4", lambda default="N/A": "N/A")
+        monkeypatch.setattr(stats_module, "get_iface_for_ip", lambda _ip: "")
+        hwmon = tmp_path / "hwmon0"
+        hwmon.mkdir()
+        (hwmon / "name").write_text("rpi_volt\n")
+        (hwmon / "in0_lcrit_alarm").write_text("1\n")
+        return SystemStatsCollector(power=PowerMonitor(hwmon_root=tmp_path), clock=lambda: now[0])
+
+    def _build(self, collector: object) -> OverlayState:
+        app = _make_visual_app(_TornMarker([(0.0, 0.0, 0.0)]), controlled=False)
+        app._runtime_services = SimpleNamespace(_status_flags={})
+        return build_marker_visual_state(
+            app,
+            system_stats=collector,
+            person_detector=None,
+            cam_params_buffer=np.zeros(7),
+            dt=1.0 / 60.0,
+        )
+
+    def test_the_row_shows_while_active_and_goes_after_the_hold(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        now = [10.0]
+        collector = self._collector(monkeypatch, tmp_path, now)
+        row = ("power", "Power supply under voltage", "error")
+        assert row in self._build(collector).status_flags
+
+        (tmp_path / "hwmon0" / "in0_lcrit_alarm").write_text("0\n")
+        now[0] = 10.0 + WARNING_HOLD_S - 1.0
+        assert row in self._build(collector).status_flags
+
+        now[0] = 10.0 + WARNING_HOLD_S
+        assert [r for r in self._build(collector).status_flags if r[0] == "power"] == []
+
+    def test_the_row_is_drawn_as_an_error_box(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        state = self._build(self._collector(monkeypatch, tmp_path, [10.0]))
+        cr = FakeCairo()
+        draw_status_badge(FakeRenderer(state=state), cr, state, 1920, 1080)
+        assert "Power supply under voltage" in cr.show_text_strings()
+        assert ("rgba", *COLOR_WARNING_FILL) in cr.calls
+
+    @pytest.mark.parametrize(
+        "collector",
+        [None, SimpleNamespace(update=lambda: SystemStats())],
+        ids=["no-collector", "not-a-pi"],
+    )
+    def test_a_host_without_a_reading_shows_nothing(self, collector: object) -> None:
+        assert [r for r in self._build(collector).status_flags if r[0] == "power"] == []
 
 
 class TestNetworkScreenHeadline:
@@ -1114,6 +1186,183 @@ class TestNetworkScreenHeadline:
 
         monkeypatch.setattr(anm, "build_pi_network_rows", lambda _app: [])
         state = OverlayState()
-        state.pi_network.title = "stale"
         _populate_pi_network_overlay(SimpleNamespace(_pi_network_active=True), state)
         assert state.pi_network.title == ""
+
+
+class TestPathsOnTheOperatorScreen:
+    """Paths reach the overlay, the status corner and the help only while paths run."""
+
+    @staticmethod
+    def _app(*, enabled: bool = True, show: bool = True, mouse3d: bool = False):  # noqa: ANN205
+        from openfollow.configuration import PathConfig, PathPointConfig, PathsConfig
+        from openfollow.paths.engine import PathEngine
+
+        app = _make_visual_app(_TornMarker([(0.0, 0.0, 0.0)]), controlled=False)
+        app._config.paths = PathsConfig(
+            show_paths=show,
+            paths=[PathConfig(name="cross", active=True, points=[PathPointConfig(0, 0, 0), PathPointConfig(1, 0, 0)])],
+        )
+        cc = app._config.controller
+        cc.key_pathfinder, cc.key_toggle_paths = "p", "o"
+        cc.btn_pathfinder, cc.btn_toggle_paths = "A", "Y"
+        app._config.mouse3d.btn_pathfinder = 2
+        app._config.mouse3d.enabled = mouse3d
+        app._paths = PathEngine()
+        app._paths.reload(app._config.paths, enabled=enabled)
+        app._runtime_services = SimpleNamespace(_status_flags={})
+        return app
+
+    @staticmethod
+    def _state(app):  # noqa: ANN001, ANN205
+        return build_marker_visual_state(
+            app,
+            system_stats=None,
+            person_detector=None,
+            cam_params_buffer=np.zeros(7),
+            dt=1.0 / 60.0,
+        )
+
+    def test_the_ways_a_marker_can_turn_reach_the_overlay(self) -> None:
+        app = self._app()
+        arrow = ((0.25, 0.0, 0.0), (0.55, 0.0, 0.0))
+        app._paths.switch_arrows = lambda: [arrow]
+        assert self._state(app).path_arrows == [arrow]
+
+    @pytest.mark.parametrize("change", [{"show": False}, {"enabled": False}], ids=["hidden", "experimental-off"])
+    def test_hidden_paths_show_no_turns(self, change: dict) -> None:
+        app = self._app(**change)
+        app._paths.switch_arrows = lambda: [((0.0, 0.0, 0.0), (0.3, 0.0, 0.0))]
+        assert self._state(app).path_arrows == []
+
+    def test_active_paths_reach_the_overlay(self) -> None:
+        app = self._app()
+        app._paths.press(1, (0.5, 0.5, 0.0))
+        state = self._state(app)
+        assert state.show_paths is True
+        [(curve, ends, locked)] = state.path_lines
+        assert (curve[0], curve[-1], locked) == ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), True)
+        assert ends == [((0.0, 0.0, 0.0), (0.5, 0.0, 0.0), False), ((1.0, 0.0, 0.0), (0.5, 0.0, 0.0), False)]
+
+    @pytest.mark.parametrize(("enabled", "show"), [(False, True), (True, False)])
+    def test_nothing_is_drawn_while_paths_are_off_or_hidden(self, enabled: bool, show: bool) -> None:
+        state = self._state(self._app(enabled=enabled, show=show))
+        assert state.show_paths is False
+        assert state.path_lines == []
+
+    def test_an_app_without_paths_draws_none(self) -> None:
+        app = self._app()
+        del app._paths
+        state = self._state(app)
+        assert (state.show_paths, state.path_lines) == (False, [])
+        assert state.keyboard_labels["pathfinder"] == ""
+
+    def test_recording_shows_a_blue_row_in_the_status_corner(self) -> None:
+        app = self._app()
+        app._paths.record("cross", app._config.paths)
+        self._state(app)
+        assert app._runtime_services._status_flags["path_recording"] == ("info", "Recording path cross: 2 points")
+
+    def test_the_row_is_cleared_while_paths_are_off(self) -> None:
+        app = self._app(enabled=False)
+        app._runtime_services._status_flags["path_recording"] = ("info", "stale")
+        self._state(app)
+        assert app._runtime_services._status_flags["path_recording"] is None
+
+    def test_help_names_the_path_bindings_only_while_paths_run(self) -> None:
+        on = self._state(self._app())
+        assert (on.keyboard_labels["pathfinder"], on.keyboard_labels["toggle_paths"]) == ("p", "o")
+        assert (on.button_labels["pathfinder"], on.button_labels["toggle_paths"]) == ("A", "Y")
+        off = self._state(self._app(enabled=False))
+        assert (off.keyboard_labels["pathfinder"], off.button_labels["toggle_paths"]) == ("", "")
+
+    def test_3d_mouse_help_names_the_path_buttons_only_while_paths_run(self) -> None:
+        on_app = self._app(mouse3d=True)
+        on_app._input_manager = SimpleNamespace(
+            get_marker_gamepad_speeds=dict,
+            get_controller_info=list,
+            identify_flash_marker=lambda: None,
+            marker_cycle_active=lambda: True,
+            is_keyboard_connected=lambda: False,
+            mouse3d_manager=SimpleNamespace(connected=True),
+        )
+        off_app = self._app(enabled=False, mouse3d=True)
+        off_app._input_manager = on_app._input_manager
+        assert self._state(on_app).mouse3d_buttons["pathfinder"] == 2
+        assert "pathfinder" not in self._state(off_app).mouse3d_buttons
+
+
+# --------------------------------------------------------------------------- #
+# Ground grid: config -> overlay state -> floor height
+# --------------------------------------------------------------------------- #
+
+
+class TestGroundGridSync:
+    @staticmethod
+    def _cfg(*, experimental: bool = True, **gg: object):
+        from openfollow.configuration import AppConfig, GroundGridConfig
+
+        cfg = AppConfig()
+        cfg.ui.shown_features = ["ground_grid"] if experimental else []
+        cfg.ground_grid = GroundGridConfig(**gg)
+        return cfg
+
+    _SQUARE = [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]]
+
+    def test_enabled_polygon_redirects_the_floor_of_a_marker_inside(self) -> None:
+        from openfollow.runtime.overlay_draw_scene import floor_z_at
+
+        state = build_initial_overlay_state(self._cfg(enabled=True, z_offset=-0.9, vertices=self._SQUARE))
+        assert state.ground_grid_active is True
+        assert state.ground_grid_visible is True
+        assert floor_z_at(state, 1.0, 1.0) == -0.9
+        assert floor_z_at(state, 3.0, 1.0) == 0.0
+
+    @pytest.mark.parametrize(
+        "gg",
+        [
+            {"enabled": True, "vertices": _SQUARE[:2]},
+            {"enabled": True, "vertices": _SQUARE, "experimental": False},
+        ],
+        ids=["two-corners", "experimental-off"],
+    )
+    def test_unusable_ground_grid_neither_redirects_nor_draws(self, gg: dict) -> None:
+        from openfollow.runtime.overlay_draw_scene import floor_z_at
+
+        state = build_initial_overlay_state(self._cfg(z_offset=-0.9, **gg))
+        assert state.ground_grid_active is False
+        assert state.ground_grid_visible is False
+        assert floor_z_at(state, 1.0, 1.0) == 0.0
+
+    def test_a_displayed_ground_grid_draws_without_dropping_markers(self) -> None:
+        from openfollow.runtime.overlay_draw_scene import floor_z_at
+
+        state = build_initial_overlay_state(self._cfg(enabled=False, z_offset=-0.9, vertices=self._SQUARE))
+        assert state.ground_grid_visible is True
+        assert state.ground_grid_active is False
+        assert floor_z_at(state, 1.0, 1.0) == 0.0
+
+    def test_turning_the_ground_grid_feature_off_hides_it_at_once(self) -> None:
+        from openfollow.runtime.services_marker_visuals import sync_ground_grid_config
+
+        cfg = self._cfg(enabled=True, vertices=self._SQUARE)
+        state = build_initial_overlay_state(cfg)
+        cfg.ui.shown_features = []
+        sync_ground_grid_config(state, cfg)
+        assert (state.ground_grid_active, state.ground_grid_visible) == (False, False)
+
+    def test_hidden_ground_grid_still_redirects(self) -> None:
+        state = build_initial_overlay_state(self._cfg(enabled=True, visible=False, vertices=self._SQUARE))
+        assert state.ground_grid_active is True
+        assert state.ground_grid_visible is False
+
+    def test_shim_config_without_the_section_has_no_ground_grid(self) -> None:
+        from types import SimpleNamespace
+
+        from openfollow.configuration import AppConfig
+        from openfollow.runtime.services_marker_visuals import sync_ground_grid_config
+
+        state = build_initial_overlay_state(self._cfg(enabled=True, vertices=self._SQUARE))
+        sync_ground_grid_config(state, SimpleNamespace(grid=AppConfig().grid))
+        assert state.ground_grid_active is False
+        assert state.ground_grid_vertices == []

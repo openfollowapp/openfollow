@@ -4,11 +4,13 @@
     </div>
 
     <div class="dme-master">
-        <label class="dme-switch">
-            <input type="checkbox" data-dme="enabled">
-            <span>Apply masks</span>
-        </label>
-        <span class="dme-master-note" data-dme="enabledNote" aria-live="polite"></span>
+        <div class="field">
+            <label for="dme-enabled">Detection area</label>
+            <select id="dme-enabled" data-dme="enabled">
+                <option value="false">Whole frame</option>
+                <option value="true">Only inside the enabled masks</option>
+            </select>
+        </div>
     </div>
 
     <div class="dme-toolbar">
@@ -34,10 +36,7 @@
        below are ID-scoped and out-specify the base .section collapse rule, so
        restate it here at matching specificity. */
     #detection-mask-editor.is-collapsed > :not(.section-head) { display: none; }
-    #detection-mask-editor .dme-master { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; }
-    #detection-mask-editor .dme-switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: 0.9rem; }
-    #detection-mask-editor .dme-switch input { width: 16px; height: 16px; cursor: pointer; }
-    #detection-mask-editor .dme-master-note { font-size: 0.8rem; color: rgba(255,255,255,0.6); }
+    #detection-mask-editor .dme-master { margin-bottom: 12px; max-width: 26rem; }
     #detection-mask-editor .dme-toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
     #detection-mask-editor .dme-btn {
         padding: 6px 12px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.18);
@@ -94,8 +93,7 @@
     var btnCancel = root.querySelector('[data-dme="cancel"]');
     var btnDelete = root.querySelector('[data-dme="delete"]');
     var btnRefresh = root.querySelector('[data-dme="refresh"]');
-    var chkEnabled = root.querySelector('[data-dme="enabled"]');
-    var enabledNote = root.querySelector('[data-dme="enabledNote"]');
+    var areaSelect = root.querySelector('[data-dme="enabled"]');
 
     var SVG_NS = 'http://www.w3.org/2000/svg';
     var masks = [];      // [{name, vertices:[[nx,ny],...], enabled}]
@@ -193,12 +191,16 @@
             var li = document.createElement('li');
             li.className = 'dme-row' + (i === selected ? ' dme-selected' : '');
             var chk = document.createElement('input');
-            chk.type = 'checkbox'; chk.checked = m.enabled; chk.title = 'Enabled';
+            chk.type = 'checkbox'; chk.checked = m.enabled;
             chk.addEventListener('change', function() {
                 m.enabled = chk.checked; updateMask(i, { enabled: m.enabled }); render();
             });
             var name = document.createElement('input');
             name.type = 'text'; name.value = m.name; name.placeholder = 'Mask ' + (i + 1);
+            // The row shows no label: the box is named after its mask.
+            function nameCheckbox() { chk.setAttribute('aria-label', 'Use ' + (name.value || name.placeholder)); }
+            nameCheckbox();
+            name.addEventListener('input', nameCheckbox);
             name.addEventListener('focus', function() { select(i); });
             name.addEventListener('blur', function() {
                 if (name.value !== m.name) { m.name = name.value; updateMask(i, { name: m.name }); }
@@ -247,19 +249,11 @@
         });
         return request;
     }
-    function setMasterNote() {
-        if (!enabledNote) return;
-        enabledNote.textContent = (chkEnabled && chkEnabled.checked)
-            ? 'Masks on – detection is limited to the enabled regions below.'
-            : 'Masks off – detection runs over the whole frame.';
-    }
     function setMasterEnabledUI(on) {
-        if (chkEnabled) chkEnabled.checked = !!on;
-        setMasterNote();
+        if (areaSelect) areaSelect.value = on ? 'true' : 'false';
     }
     function saveMasterEnabled() {
-        setMasterNote();
-        jsonFetch('POST', '/api/detection/masks/enabled', { enabled: !!(chkEnabled && chkEnabled.checked) })
+        jsonFetch('POST', '/api/detection/masks/enabled', { enabled: !!areaSelect && areaSelect.value === 'true' })
             .catch(function() {});
     }
     function fetchMasks() {
@@ -380,12 +374,11 @@
     btnCancel.addEventListener('click', cancelDraft);
     btnDelete.addEventListener('click', function() { if (selected >= 0) deleteMask(selected); });
     btnRefresh.addEventListener('click', loadSnapshot);
-    if (chkEnabled) chkEnabled.addEventListener('change', saveMasterEnabled);
+    if (areaSelect) areaSelect.addEventListener('change', saveMasterEnabled);
     svg.addEventListener('click', onStageClick);
     svg.addEventListener('dblclick', function(ev) { if (draft) { ev.preventDefault(); finishDraft(); } });
 
     updateToolbar();
-    setMasterNote();
     fetchMasks();
     loadSnapshot();
 })();

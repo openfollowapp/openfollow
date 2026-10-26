@@ -80,6 +80,27 @@ def is_local_destination(host: str) -> bool:
     return bool(addresses) and all(_is_local(address, owners) for address in addresses)
 
 
+def dials_ipv6(host: str) -> bool:
+    """Whether a connection to the name *host* starts on IPv6, as far as a bounded lookup tells.
+
+    The connection dials the resolver's first answer, which the system orders
+    against its own routes, so a dual-stack name preferred over IPv4 is not one.
+    An IP literal is never one: it is not looked up, and the RTSP input moves a
+    host to TCP once an attempt fails on the address family. A name whose lookup
+    is still running reads as not one this attempt; the answer serves the next one.
+    """
+    if not host:
+        return False
+    try:
+        ipaddress.ip_address(host.split("%")[0])
+    except ValueError:
+        pass
+    else:
+        return False
+    addresses = _resolver.lookup(host, _RESOLVE_WAIT_S).addresses
+    return bool(addresses) and ":" in addresses[0]
+
+
 def binds_device(host: str) -> bool:
     """Whether a pinned SRT connection to *host* is bound to the device.
 

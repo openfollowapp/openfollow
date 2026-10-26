@@ -236,7 +236,13 @@ class FakeDrawingArea:
         return self.allocation
 
     def show(self) -> None:  # for widgets reparented into FakeOverlay
-        return None
+        self.hidden = False
+
+    def hide(self) -> None:
+        self.hidden = True
+
+    def set_no_show_all(self, value: bool) -> None:
+        self.no_show_all = value
 
 
 class FakeWindow:
@@ -292,6 +298,9 @@ class FakeWindow:
 
     def get_window(self) -> Any:
         return self._gdk_window
+
+    def realize(self) -> None:
+        self.realized = True
 
     def get_display(self) -> Any:
         return self._display
@@ -1285,6 +1294,82 @@ class TestHudTick:
         window._window.tick()
         # attach_hud queued one draw, the tick queued another.
         assert window._hud_drawing_area.queue_draw_calls >= before + 1
+
+    @pytest.mark.parametrize(("redraw", "draws"), [(True, 1), (False, 0)])
+    def test_tick_redraws_hud_only_when_it_has_something_new(self, window, redraw: bool, draws: int) -> None:
+        window.attach_hud(lambda *_a: None, tick=lambda: redraw)
+        before = window._hud_drawing_area.queue_draw_calls
+        window.start_hud_tick()
+        window._window.tick()
+        assert window._hud_drawing_area.queue_draw_calls == before + draws
+
+    def test_a_raising_hud_tick_keeps_the_display_tick_alive(self, window, caplog) -> None:
+        import logging
+
+        outcomes = iter([RuntimeError("tick boom"), RuntimeError("tick boom"), True])
+
+        def hud_tick() -> bool:
+            outcome = next(outcomes)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        window.attach_hud(lambda *_a: None, tick=hud_tick)
+        before = window._hud_drawing_area.queue_draw_calls
+        window.start_hud_tick()
+        with caplog.at_level(logging.ERROR, logger="openfollow.window"):
+            assert window._window.tick() is True
+            assert window._window.tick() is True
+        assert [r.getMessage() for r in caplog.records if "HUD tick" in r.getMessage()] == ["HUD tick failed"]
+        assert window._hud_drawing_area.queue_draw_calls == before
+        assert window._window.tick() is True
+        assert window._hud_drawing_area.queue_draw_calls == before + 1
+
+    def test_a_gl_display_renders_every_refresh_and_hides_the_cairo_hud(self, window) -> None:
+        renders: list[Any] = []
+        ticks: list[int] = []
+        display = SimpleNamespace(queue_render=renders.append)
+        assert window.gl_display_attached is False
+        window.attach_gl_display(display, tick=lambda: ticks.append(1) or False)
+        assert window.gl_display_attached is True
+        window.start_hud_tick()
+        clocks = [object() for _ in range(3)]
+        for clock in clocks:
+            window._window.tick(clock)
+        assert renders == clocks and len(ticks) == 3
+        assert window._hud_drawing_area.hidden is True
+        assert window._hud_drawing_area.no_show_all is True
+
+    def test_a_detached_gl_display_stops_rendering_and_the_cairo_hud_comes_back(self, window) -> None:
+        renders: list[Any] = []
+        window.attach_gl_display(SimpleNamespace(queue_render=renders.append), tick=lambda: True)
+        window.start_hud_tick()
+        window.detach_gl_display()
+        window.attach_hud(lambda cr, w, h: None, tick=lambda: True)
+        before = window._hud_drawing_area.queue_draw_calls
+        window._window.tick(object())
+
+        assert window.gl_display_attached is False
+        assert renders == []
+        assert window._hud_drawing_area.hidden is False and window._hud_drawing_area.no_show_all is False
+        assert window._hud_drawing_area.queue_draw_calls == before + 1
+
+    def test_the_gdk_window_for_a_gl_probe_is_the_realized_toplevel_s(self, window) -> None:
+        gdk = window.gdk_window()
+
+        assert window._window.realized is True
+        assert gdk is window._window.get_window()
+
+    def test_a_raising_hud_tick_still_renders_the_gl_display(self, window) -> None:
+        renders: list[int] = []
+
+        def hud_tick() -> bool:
+            raise RuntimeError("tick boom")
+
+        window.attach_gl_display(SimpleNamespace(queue_render=lambda clock: renders.append(1)), tick=hud_tick)
+        window.start_hud_tick()
+        assert window._window.tick() is True
+        assert renders == [1]
 
     def test_tick_regrabs_focus_when_lost(self, window) -> None:
         """If the toplevel lost focus (e.g. user clicked another app),

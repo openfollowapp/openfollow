@@ -2,7 +2,7 @@
 
 Where OpenFollow receives its video feed – every detection, overlay, and position output depends on it. Saving a change to the source itself – the Source Type or one of its settings below – rebuilds the pipeline within about a second; markers and PSN output keep running during the rebuild. The Connection recovery timers apply without a rebuild, and a save that changes nothing leaves the running source as it is and does not reconnect it.
 
-When the last attempt failed, a red box at the top of the section names what went wrong – nothing answered, the login was rejected, no video reached this station, and so on – and below it the one thing to try. It is the same box **Live Statistics → Video** shows, and it refreshes on its own, so a failure that starts while this page is open appears without reloading. **Live Statistics → Video** lists what each reading means.
+When the last attempt failed, a red box at the top of the section names what went wrong – nothing answered, the login was rejected, no video reached this station, and so on – and below it the one thing to try. It is the same box **Live Statistics → Video** and the Setup Wizard's Video Source step show, and it refreshes on its own, so a failure that starts while this page is open appears without reloading. **Live Statistics → Video** lists what each reading means.
 
 ## Source Type
 
@@ -13,9 +13,9 @@ Pick the protocol or device for your setup; the fields below update to match.
 - **RTP** – tightly controlled local pipelines you generate yourself (FFmpeg, hardware encoder).
 - **USB Camera** – UVC webcams and USB capture cards.
 - **Pi Camera** – CSI camera modules and HDMI/SDI-to-CSI adapters on the ribbon-cable port.
-- **Media Gallery** – play a stored still image or short looping clip, or capture a frame from a live source; ships with a Stage scene and a Grey card for bench-testing calibration and detection without a camera.
+- **Media Gallery** – play a stored still image or short looping clip, or capture a frame from a live source; ships with a Stage scene, a Concert, a Festival and a Grey card for bench-testing calibration, lens correction and detection without a camera.
 
-Which network interface SRT, RTSP and RTP use is set under **Network Interface Assignment**, in the Video input row.
+Which network interface SRT, RTSP and RTP use is set under **Network Interface Assignment**, in the Video input row. In Simple network mode they use the station interface.
 
 ## Settings (by Source Type)
 
@@ -24,10 +24,37 @@ Which network interface SRT, RTSP and RTP use is set under **Network Interface A
 - **SRT URL** – `srt://0.0.0.0:5000` to listen (listener mode) or `srt://203.0.113.10:5000` to connect (caller mode); a bare `host:port` also works.
 - **Passphrase (optional)** – the SRT stream's encryption key, when the sender encrypts. Same precedence as the RTSP login: filling it in overrides a `?passphrase=` carried in the URL.
 - **RTP URL** + **Encoding** – receive address, e.g. `rtp://0.0.0.0:5004` (unicast) or a `224.x–239.x` multicast address; set **Encoding** (`H264`, `H265`, `MP2T`) to match the sender.
-- **USB Camera** – pick the **Device** (Scan to re-enumerate), then choose a **Render resolution** and **FPS** (default 30). The camera is read at its own native resolution and scaled to the render size: pick a preset (`2160p` / `1080p` / `720p`, default `1080p`) to downscale for lower CPU, or `Native size` to keep the device's full resolution. This works with any input, including capture cards that only output the incoming signal's resolution (e.g. a 4K HDMI feed) – those failed to connect when a fixed size was forced. A camera that is not connected stays selected, marked *(unavailable)*, and the station reports it as not found rather than opening another camera in its place.
+- **H.265 (HEVC)** over RTSP, SRT or RTP decodes in software on a Raspberry Pi: the Pi's hardware HEVC decoder can take the station down when a stream loses packets or is joined between keyframes. At 1080p30 that takes about 0.6 of a Pi 5 core.
+- **USB Camera** – pick the **Device** (Scan to re-enumerate), then choose a **Render resolution** and **FPS** (default 30). The station reads the camera in a mode from the camera's own list that reaches the render size and FPS: its uncompressed mode where the camera's USB connection carries it, otherwise its compressed (MJPEG) mode, which the station decodes (about 0.4 of a Pi 5 core at 1080p30). The picture is then scaled to the render size: a preset (`2160p` / `1080p` / `720p`, default `1080p`) downscales for lower CPU, `Native size` keeps the largest size the camera offers, at the fastest rate up to **FPS** it offers there. Capture cards that only output the incoming signal's resolution (e.g. a 4K HDMI feed) list just that, and are read at it. A camera whose list the station cannot read chooses its own mode. A camera that is not connected stays selected, marked *(unavailable)*, and the station reports it as not found rather than opening another camera in its place.
 - **Pi Camera** – the **Camera** row shows the camera the station uses: its Raspberry Pi module name and sensor (*Camera Module 3 (imx708)*), the connector it is named on (CAM/DISP 0 or 1, as printed on the board), or *found automatically* when the Pi recognised it by itself; *set in config.txt* marks a camera named there by hand. With more than one camera found, the row is a choice of which one to stream, saved with the section. **Width** / **Height** (default 1920×1080) and **FPS** (default 30) set the stream.
 - **Change** (Pi Camera) – names the **Camera module** and **Connector** in the Pi's boot configuration. **Automatic** leaves it to the Pi, which recognises Raspberry Pi camera modules on a regular Pi but never on a Compute Module. Raspberry Pi's own modules are listed first by name, other sensors below. A camera named while none was loaded at boot starts at once and is checked again a few seconds later; one the station booted with changes at the next restart, shown as **Takes effect after the next restart** beside what runs now, with a **Restart now** button. A camera line added to `config.txt` by hand is replaced (kept, commented out) when another camera is applied here. **No camera found on this station** opens this choice by itself.
-- **Media Gallery** – a device-local library of images and looping clips, managed entirely from the browser (the on-display menu can select this source but not change its content). Click a tile to make it the source; the selected tile has an amber border. The bundled **Stage** and **Grey** items can't be deleted; per-tile buttons download or delete your own media. **Upload** accepts JPEG/PNG/WebP images (normalised to ≤1080p JPEG) and **VP8 WebM** clips (≤1080p, ≤30 fps, ≤60 s, audio ignored); other codecs are rejected. Every other source shows a **Capture frame** button that saves the current clean frame into the gallery at its native resolution. A selection that no longer resolves (deleted media, an imported config from another station) falls back to Stage.
+- **Media Gallery** – a device-local library of images and looping clips, managed entirely from the browser (the on-display menu can select this source but not change its content). Click a tile to make it the source; the selected tile has an amber border. The bundled **Stage**, **Concert**, **Festival** and **Grey** items can't be deleted; per-tile buttons download or delete your own media. **Upload** accepts JPEG/PNG/WebP images (normalised to ≤1080p JPEG) and **VP8 WebM** clips (≤1080p, ≤30 fps, ≤60 s, audio ignored); other codecs are rejected. Every other source shows a **Capture frame** button that saves the current clean frame into the gallery at its native resolution. A selection that no longer resolves (deleted media, an imported config from another station) falls back to Stage.
+
+  **Concert** is a concert stage seen from a camera on the upstage back truss, looking down over the stage into the crowd through a 2.8 mm lens. It was drawn with this camera, which puts the grid on the deck seams. The tape on the stage marks a 12 × 6 m grid with the Reference Point at the middle of its downstage edge; the stage decks are 1 m across and 2 m deep.
+
+  | Camera setting | Value |
+  |---|---|
+  | Position X / Y / Z | 0 / 10 / 9 m |
+  | Pitch | -48° |
+  | Yaw | 180° |
+  | Roll | 0° |
+  | Horizontal Field of View | 82.5° |
+  | Barrel / fisheye | -0.37 |
+  | Corner correction | -0.17 |
+
+  **Festival** is a festival stage seen from a camera on the front truss over the crowd barrier, looking steeply down onto the stage through a 2.8 mm lens whose centre sits off the centre of the picture. It was drawn with this camera, which puts the grid on the tape; its lens centre is typed in, under User input in the Setup Wizard's Lens step. The tape on the stage marks a 12 × 6 m grid with the Reference Point at the middle of its downstage edge; the stage decks are 2 m across and 1 m deep.
+
+  | Camera setting | Value |
+  |---|---|
+  | Position X / Y / Z | 0 / -4 / 9.3 m |
+  | Pitch | -42° |
+  | Yaw | 0° |
+  | Roll | 0° |
+  | Horizontal Field of View | 84.2° |
+  | Barrel / fisheye | -0.31 |
+  | Corner correction | -0.01 |
+  | Lens centre, right of the picture centre | 28 px |
+  | Lens centre, above the picture centre | 16 px |
 
   Clips are not transcoded on-device – prepare a conforming VP8 WebM on a workstation, e.g.:
 
@@ -44,6 +71,8 @@ Two safeguards keep a feed alive without operator intervention. Their fields are
 - **Stall Timeout (s)** – the *silent-stall* watchdog, for a source that is still "connected" but has quietly stopped delivering frames with no error to signal it. It watches every source type once its video flows, not only the network ones: UDP, multicast and some RTSP cameras freeze on the last frame this way, and so can a USB capture card whose input signal drops. If no new frame arrives within this many seconds, OpenFollow tears the pipeline down and reconnects. Default `3.0`. Raise it if a healthy source has long legitimate gaps (very low frame rate, sparse keyframes) and is being reconnected unnecessarily; lower it to react to freezes faster. `0` disables the watchdog. A new value applies to a running stream at once; a watchdog switched on from `0` starts with the next connection.
 - **Heal Interval (s)** – the *self-healing* re-probe, for an RTSP, SRT or RTP feed that is already down and showing the "No Signal" placeholder (source unplugged, encoder rebooting, network blip). OpenFollow retries the URL this often until the source returns, so the picture comes back by itself with no one re-saving. The other sources do not use it: a USB camera, the Pi Camera and NDI open the source picker once their retries run out, and the Media Gallery keeps retrying on its own. Default `5.0`. Shorter intervals recover faster but probe the network more often; a new value takes over once the retry already waiting has run. `0` disables auto-recovery: nothing then retries a parked feed on a timer, and only a rebuild of the source wakes it – a change to the source, confirming it again on the Operator Screen or a restart, for example. Setting a Heal Interval again does not wake it.
 
-**Show Preview** – an inline snapshot of the current feed, refreshed every two seconds while the section is expanded.
+NDI and the cameras (USB, Pi Camera, macOS) recover differently. When their source is lost, the station shows the source picker and keeps looking for that source every few seconds. Once it is announced again, video returns to it by itself, whether the picker is still open or was closed with BACK. A source that is announced but sent no video is tried again after about half a minute, or as soon as it disappears and is announced again. Picking another source in the picker ends the wait. A Pi Camera or macOS camera left on the default camera has no name to look for and is not reconnected this way.
+
+**Preview** – an inline snapshot of the current video input, refreshed every two seconds while the section is open and in view.
 
 **Save** – write and apply the settings; a changed source restarts the pipeline within about a second.

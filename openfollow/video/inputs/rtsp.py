@@ -9,8 +9,9 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlsplit
 
+from openfollow.runtime.receiver_bus import BusError
 from openfollow.uri_redaction import redact_uri, strip_uri_userinfo
-from openfollow.video.failure import ConnectionPhase, SourceKind
+from openfollow.video.failure import ConnectionPhase, SourceKind, address_family_mismatch
 from openfollow.video.inputs._base import (
     ConfigField,
     InputCapabilities,
@@ -20,13 +21,18 @@ from openfollow.video.inputs._base import (
     VideoInputBase,
     video_input_pin_field,
 )
-from openfollow.video.inputs._pin import PinRefusal, check_video_pin, config_pin
+from openfollow.video.inputs._hevc_guard import guard_hevc_decoder
+from openfollow.video.inputs._pin import PinRefusal, check_video_pin, config_pin, dials_ipv6
 
 logger = logging.getLogger(__name__)
 
 # Microseconds. Bounds the wait for each RTSP response, not the TCP connect, so
 # it stays generous enough for a busy NVR to answer DESCRIBE.
 _TCP_TIMEOUT_US = 10_000_000
+
+# rtspsrc "protocols" flags: UDP unicast | UDP multicast | TCP interleaved.
+_TRANSPORTS_ALL = 0x7
+_TRANSPORTS_TCP = 0x4
 
 
 def _endpoint_from_url(
@@ -69,6 +75,13 @@ class RtspInput(VideoInputBase):
     source_element_name = "rtspsrc"
     source_kind = SourceKind.REMOTE
     pins_interface = True
+
+    def __init__(self) -> None:
+        super().__init__()
+        # The host the last build dialled, and one whose UDP ports met a server
+        # address of the other IP family, which stays on TCP interleaved.
+        self._dialled_host = ""
+        self._interleaved_host = ""
 
     # -- Declarations ---------------------------------------------------------
 
@@ -122,6 +135,7 @@ class RtspInput(VideoInputBase):
         if factory:
             factory.set_rank(Gst.Rank.MARGINAL)
             logger.info("Decoder priority: openh264dec -> MARGINAL")
+        guard_hevc_decoder(Gst)
 
     @staticmethod
     def _credentials(config: dict[str, Any]) -> tuple[str, str]:
@@ -176,17 +190,29 @@ class RtspInput(VideoInputBase):
         rtspsrc.set_property("latency", 0)
         rtspsrc.set_property("drop-on-latency", True)
         rtspsrc.set_property("buffer-mode", 0)  # none – lowest latency
-        # Allow TCP + UDP + UDP-multicast so RTSP can negotiate the best working
-        # transport for the current network (Pi/macOS/firewall differences).
-        rtspsrc.set_property("protocols", 0x00000007)
+        # rtspsrc opens its UDP ports for the address type of the server's session
+        # description (IPv4 when it names none), whatever family the connection
+        # reached the server on, and udpsink then refuses an address of the other
+        # family. A name dialled over IPv6 takes the interleaved transport up front,
+        # a host whose attempt failed that way from then on; everything else may
+        # negotiate TCP, UDP or multicast.
+        endpoint = self.source_endpoint(config)
+        self._dialled_host = endpoint.host if endpoint is not None else ""
+        tcp_reason = ""
+        if self._dialled_host and self._dialled_host == self._interleaved_host:
+            tcp_reason = "an earlier attempt's UDP ports were of the other IP family"
+        elif endpoint is not None and dials_ipv6(endpoint.host):
+            tcp_reason = "the name is dialled over IPv6"
+        rtspsrc.set_property("protocols", _TRANSPORTS_TCP if tcp_reason else _TRANSPORTS_ALL)
         pin = config_pin(config)
         if pin:
             # Only the multicast membership can be pinned; the preflight checks
             # that the routing table already sends everything else there.
             rtspsrc.set_property("multicast-iface", pin)
         logger.info(
-            "RTSP source: %s (latency=0, tcp+udp+multicast, login=%s)",
+            "RTSP source: %s (latency=0, %s, login=%s)",
             redact_uri(location),
+            f"tcp interleaved: {tcp_reason}" if tcp_reason else "tcp+udp+multicast",
             "set" if (user or password) else "none",
         )
 
@@ -273,6 +299,12 @@ class RtspInput(VideoInputBase):
         """RTSP: force zero latency for minimal delay."""
         pipeline.set_latency(0)
         logger.info("Pipeline ASYNC_DONE (RTSP) -- latency forced to 0")
+
+    def on_bus_error(self, error: BusError) -> None:
+        """Keep the dialled host on TCP interleaved once its UDP ports met an address of the other family."""
+        if address_family_mismatch(error.debug):
+            self._interleaved_host = self._dialled_host
+            logger.warning("RTSP UDP ports did not match the server's IP family; using TCP interleaved from now on")
 
     def observe_progress(self, pipeline: Any, report: PhaseReporter) -> None:
         """Report the SDP: the server answered and described its media."""

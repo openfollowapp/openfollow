@@ -273,14 +273,15 @@ class TestWhereItAppears:
         assert "data-adv-key" not in opening_tag
         assert "open" not in opening_tag
 
-    def test_both_advanced_controls_are_inside_the_disclosure(self, tmp_path, monkeypatch) -> None:
+    def test_autostart_and_the_features_table_are_inside_the_disclosure(self, tmp_path, monkeypatch) -> None:
         monkeypatch.setattr(sys, "platform", "linux")
         with _serve(tmp_path, monkeypatch, _Host()) as (_server, base):
             _status, body = _get(base, "/")
         group = _advanced_group(body)
         assert group is not None
         assert 'id="startup-settings"' in group
-        assert 'name="show_experimental_features"' in group
+        assert 'id="features-section"' in group
+        assert body.count('id="features-section"') == 1
 
 
 def _no_redirect_opener() -> urllib.request.OpenerDirector:

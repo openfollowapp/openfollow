@@ -1374,3 +1374,50 @@ class TestBackwardCompat:
         )
         cam = CameraConfig(**tpl.payload["camera"])
         assert cam.fov == CameraConfig().fov
+
+    def test_old_payload_with_former_camera_settings_loads(self) -> None:
+        # A camera_grid template saved with the camera's sensor width and focal length.
+        from dataclasses import asdict
+
+        from openfollow.configuration import CameraConfig, GridConfig
+
+        camera = {**asdict(CameraConfig()), "sensor_width_mm": None, "focal_length_mm": 4.0}
+        tpl = parse_envelope(
+            {
+                "version": TEMPLATE_VERSION,
+                "type": "camera_grid",
+                "name": "Old rig",
+                "payload": {"camera": camera, "grid": asdict(GridConfig())},
+            }
+        )
+        assert tpl.payload["camera"]["focal_length_mm"] == 4.0
+
+
+class TestPathsPayload:
+    @pytest.mark.parametrize("payload", [{}, {"slide_time": 1.0}, {"paths": "nope"}, {"paths": {"name": "a"}}])
+    def test_a_payload_without_a_paths_array_is_rejected(self, payload: dict) -> None:
+        # Applying it would delete every path on the station.
+        with pytest.raises(TemplateValidationError, match="must include a 'paths' array"):
+            validate_payload("paths", payload)
+
+    def test_a_path_entry_that_is_not_an_object_is_rejected(self) -> None:
+        with pytest.raises(TemplateValidationError, match=r"'paths\[1\]' must be object, got str"):
+            validate_payload("paths", {"paths": [{"name": "a"}, "b"]})
+
+    def test_an_unknown_key_is_rejected(self) -> None:
+        with pytest.raises(TemplateValidationError, match="paths payload invalid"):
+            validate_payload("paths", {"paths": [], "bogus": 1})
+
+    def test_a_full_snapshot_passes(self) -> None:
+        validate_payload(
+            "paths",
+            {"slide_time": 0.5, "paths": [{"name": "cross", "closed": True, "points": [{"x": 1, "y": 2, "z": 0}]}]},
+        )
+
+
+@pytest.mark.parametrize("ground", ["pit", [], {"no_such_field": 1}], ids=["string", "list", "unknown-field"])
+def test_a_camera_grid_template_s_ground_grid_must_be_a_ground_grid(ground: object) -> None:
+    from openfollow.templates.schema import TemplateValidationError, validate_payload
+
+    with pytest.raises(TemplateValidationError, match="ground_grid"):
+        validate_payload("camera_grid", {"camera": {}, "grid": {}, "ground_grid": ground})

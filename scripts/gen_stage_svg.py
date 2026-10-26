@@ -3,7 +3,8 @@
 # Copyright (C) 2026 OpenFollow Project
 """Regenerate stock stage SVG from 3D world geometry using CameraConfig/GridConfig defaults.
 
-Writes stage_default_perspective.svg (with grid overlay) and stage_default.svg (no overlay).
+Writes stage_default_perspective.svg (with grid overlay), stage_default.svg (no overlay) and its
+calibration, stage_default.toml.
 Run after changing defaults in openfollow/configuration.py.
 """
 
@@ -16,6 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import numpy as np  # noqa: E402
+from gallery_calibration import CAMERA_KEYS, GRID_KEYS, write_calibration  # noqa: E402
 
 from openfollow.configuration import CameraConfig, GridConfig  # noqa: E402
 from openfollow.scene.solver import project_points  # noqa: E402
@@ -424,6 +426,12 @@ def main() -> None:
 
     docs_path.write_text(build_svg(cam, grid, include_grid_overlay=True))
     asset_path.write_text(build_svg(cam, grid, include_grid_overlay=False))
+    write_calibration(
+        asset_path,
+        "scripts/gen_stage_svg.py",
+        {key: getattr(cam, key) for key in CAMERA_KEYS},
+        {key: getattr(grid, key) for key in GRID_KEYS},
+    )
 
     print(
         f"Camera: pos=({cam.pos_x}, {cam.pos_y}, {cam.pos_z}) "

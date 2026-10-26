@@ -110,6 +110,35 @@ def test_seed_user_data_does_not_clobber_existing_files(launcher, tmp_path) -> N
     assert (config_dir / "yolo" / "models" / "yolo11s.onnx").read_bytes() == b"bundled-s"
 
 
+@pytest.mark.parametrize("content", ["", "  \n\t\n"], ids=["empty", "whitespace"])
+def test_seed_user_data_seeds_an_empty_config_with_no_backup(launcher, tmp_path, content: str) -> None:
+    resources = tmp_path / "res"
+    resources.mkdir()
+    _write_resources(resources, models=None)
+    config_dir = tmp_path / "support"
+    config_dir.mkdir()
+    (config_dir / "config.toml").write_text(content, encoding="utf-8")
+
+    launcher.seed_user_data(config_dir, resources)
+
+    assert "web_port = 8080" in (config_dir / "config.toml").read_text(encoding="utf-8")
+
+
+def test_seed_user_data_restores_an_empty_config_from_its_backup(launcher, tmp_path) -> None:
+    resources = tmp_path / "res"
+    resources.mkdir()
+    _write_resources(resources, models=None)
+    config_dir = tmp_path / "support"
+    config_dir.mkdir()
+    (config_dir / "config.toml").write_text("", encoding="utf-8")
+    (config_dir / "config.toml.bak").write_text("web_port = 9999\n", encoding="utf-8")
+
+    launcher.seed_user_data(config_dir, resources)
+
+    assert (config_dir / "config.toml").read_text(encoding="utf-8") == "web_port = 9999\n"
+    assert (config_dir / "config.toml.bak").read_text(encoding="utf-8") == "web_port = 9999\n"
+
+
 def test_seed_user_data_without_bundled_models_still_seeds_config(launcher, tmp_path) -> None:
     resources = tmp_path / "res"
     resources.mkdir()

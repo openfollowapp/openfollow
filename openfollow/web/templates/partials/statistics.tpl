@@ -115,6 +115,14 @@
 % end
         </div>
 % end
+% for alert in alerts.power:
+        <div class="notice {{'error' if alert.level == 'error' else 'warning'}}">
+            <div>{{alert.text}}</div>
+% if alert.step:
+            <div class="notice-sub">{{alert.step}}</div>
+% end
+        </div>
+% end
         <dl class="metric-list">
             <div class="metric-row">
                 <dt class="metric-label">IP</dt>

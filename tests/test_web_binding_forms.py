@@ -77,6 +77,21 @@ def test_gamepad_buttons_render_in_the_order_that_keeps_a_shared_button() -> Non
     assert rendered == expected
 
 
+def test_zone_overlay_paths_and_pathfinder_share_a_row_of_their_own() -> None:
+    html, _ = _gamepad()
+    rows = re.split(r'<div class="row[^"]*">', html)
+    [row] = [r for r in rows if 'name="btn_toggle_zones"' in r]
+    names = re.findall(r'<select id="gamepad-[^"]+" name="([^"]+)"', row.split('<div class="group">')[0])
+    assert names == ["btn_toggle_zones", "btn_toggle_paths", "btn_pathfinder"]
+
+
+def test_the_zone_and_path_bindings_hide_with_their_features() -> None:
+    html, _ = _gamepad()
+    gated = re.findall(r'<div class="field" data-feature="([a-z_]+)">\s*<label for="gamepad-([a-z-]+)"', html)
+    assert gated == [("zones", "btn-toggle-zones"), ("paths", "btn-toggle-paths"), ("paths", "btn-pathfinder")]
+    assert '<div class="row" data-feature=' not in html
+
+
 def test_gamepad_labels_are_the_ones_the_notes_name() -> None:
     _, form = _gamepad()
     for name, label in GAMEPAD_ACTION_BUTTON_FORM_LABELS + GAMEPAD_MENU_BUTTON_FORM_LABELS:

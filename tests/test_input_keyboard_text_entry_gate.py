@@ -345,3 +345,30 @@ def test_a_shift_held_through_a_close_still_stamps_the_next_key(poller: _Hardwar
         ("a", "press", frozenset({"shift"})),
         ("a", "release", frozenset({"shift"})),
     ]
+
+
+def test_the_release_on_the_first_gated_poll_carries_the_held_shift(poller: _HardwarePoller) -> None:
+    app = _app()
+    bus, events = _recording_bus()
+    handler = _handler(app, bus)
+    poller.held = {"Shift", "Enter"}
+    handler.poll_discrete_keys()
+    app._url_editor_active = True
+    handler.poll_discrete_keys()
+    released = [event for event in events if (event.key, event.edge) == ("Enter", "release")]
+    assert [event.modifiers for event in released] == [frozenset({"shift"})]
+
+
+def test_the_late_gtk_space_is_an_echo_too(poller: _HardwarePoller) -> None:
+    app = _app()
+    app._normalize_key = app_modes.normalize_key
+    handler = _handler(app)
+    poller.held = {"Space"}
+    handler.poll_discrete_keys()
+    app._url_editor_active = True
+    app_modes.on_key_down(app, {"key": " "})
+    assert app._url_editor_value == "rtsp://192.0.2.1/strea"
+    poller.held = set()
+    app_modes.on_key_up(app, {"key": " "})
+    app_modes.on_key_down(app, {"key": " "})
+    assert app._url_editor_value == "rtsp://192.0.2.1/strea "

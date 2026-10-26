@@ -522,7 +522,7 @@ class LinuxEvdevKeyboardPoller(KeyboardPoller):
         clock: Callable[[], float] = time.monotonic,
         sysfs_dir: str | None = None,
     ) -> None:
-        # Resolved per call, so a test can point the default away from the host's /sys.
+        # Read when built, not when defined, so the default can be redirected.
         sysfs_dir = _SYSFS_INPUT_DIR if sysfs_dir is None else sysfs_dir
         self._input_dir = input_dir
         self._sysfs_dir = sysfs_dir
@@ -845,7 +845,10 @@ class KeyboardHandler:
 
     @staticmethod
     def _event_key(event: dict[str, Any]) -> str:
+        """The polled name of a GTK key event (GTK delivers the space bar as ``" "``)."""
         key = str(event.get("key", ""))
+        if key == " ":
+            return "Space"
         return key.lower() if len(key) == 1 else key
 
     def is_late_echo(self, event: dict[str, Any]) -> bool:
@@ -971,8 +974,8 @@ class KeyboardHandler:
             self._gated_last_poll = gated
         discrete = self._discrete_polled_keys()
         if self._event_bus is not None:
-            # Physically held modifiers, swallowed or not; none while a text screen owns input.
-            modifiers = frozenset() if gated else self._current_modifiers()
+            # Physically held modifiers, swallowed or gated or not.
+            modifiers = self._current_modifiers()
             keys_to_poll: list[str] | frozenset[str] = POLLED_KEYS
         else:
             # No bus → no emission, no need to query modifier state.

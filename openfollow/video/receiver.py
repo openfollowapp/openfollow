@@ -132,7 +132,11 @@ class GstNativeSinkReceiver:
         self._pipeline = None
         self._discovery_source_id: int | None = None
         self._heal_source_id: int | None = None
+        # Parked on the placeholder by the reconnect fallback, which a heal brings back from.
+        self._parked = False
         self._watchdog_source_id: int | None = None
+        # The streaming thread arms the watchdog on the first frame while a save may re-arm it here.
+        self._watchdog_lock = threading.RLock()
         # Monotonic timestamp of the last decoded frame seen at the sink,
         # written by the BUFFER pad probe (streaming thread) and read by the
         # silent-stall watchdog (main thread). 0.0 until the first frame.
@@ -508,6 +512,7 @@ class GstNativeSinkReceiver:
         Only runs on GTK main thread.
         """
         self._awaited_source = ""
+        self._parked = False
         self._cancel_connection_timeout()
         self._cancel_reconnect()
         self._cancel_heal()
@@ -683,6 +688,7 @@ class GstNativeSinkReceiver:
     def create_pipeline(self) -> None:
         """Build the GStreamer pipeline via the active input plugin."""
         Gst.init(None)
+        self._parked = False
         # The input resolves what it plays as it builds; the label follows it.
         self._pipeline_builds += 1
         self._reset_video_flow_state()
@@ -1095,6 +1101,8 @@ class GstNativeSinkReceiver:
 
     def _create_placeholder_pipeline(self) -> None:
         """Build a black-frame pipeline for the 'No Signal' overlay."""
+        # Only the fallback parks a feed, and it marks it after this.
+        self._parked = False
         # Dispose any live pipeline first: ``self._pipeline`` is overwritten
         # below, so without this an existing pipeline (and its bus signal watch
         # + sockets) would be orphaned – a file-descriptor leak. Route through
@@ -1354,6 +1362,7 @@ class GstNativeSinkReceiver:
             elif self._has_configured_source():
                 # Fixed-URL input with no discovery: keep probing the URL
                 # in the background so the feed self-heals when it returns.
+                self._parked = True
                 self._schedule_heal()
 
             widget = self.get_sink_widget()
@@ -1462,15 +1471,30 @@ class GstNativeSinkReceiver:
         stall_timeout: float | None = None,
         heal_interval: float | None = None,
     ) -> None:
-        """Live-update stall_timeout and heal_interval without pipeline rebuild."""
+        """Live-update stall_timeout and heal_interval without pipeline rebuild.
+
+        Acts on the feed as it is now: a running feed is watched at the new
+        timeout (armed if it was off, stopped at 0), and a feed the fallback
+        parked heals at a changed interval.
+        """
+        heal_changed = heal_interval is not None and heal_interval != self._reconnect_policy.heal_interval
         if stall_timeout is not None:
             self._stall_timeout_override = stall_timeout
             self._reconnect_policy.stall_timeout = stall_timeout
         if heal_interval is not None:
             self._heal_interval_override = heal_interval
             self._reconnect_policy.heal_interval = heal_interval
-        if self._watchdog_source_id is not None and self._state.connected:
+        if self._state.connected:
+            # Every buffer stamps the frame clock, so a watchdog armed now judges the feed as it is.
             self._start_watchdog(reseed=False)
+        elif heal_changed and self._waiting_on_heal():
+            # Cancelled first: an interval of 0 schedules nothing, and stops the healing.
+            self._cancel_heal()
+            self._schedule_heal()
+
+    def _waiting_on_heal(self) -> bool:
+        """Parked by the fallback, with no reconnect or connection timeout pending to bring it back first."""
+        return self._parked and self._state.reconnect_source_id is None and self._state.connection_timeout_id is None
 
     # -- Silent-stall watchdog -------------------------------------------------
 
@@ -1480,19 +1504,22 @@ class GstNativeSinkReceiver:
         reseed=True sets last-frame clock to now (skip false positives on
         fresh connect); reseed=False preserves timestamp (live config changes).
         """
-        timeout = self._reconnect_policy.stall_timeout
-        if timeout <= 0:
-            return
-        self._cancel_watchdog()
-        if reseed:
-            self._last_frame_monotonic = time.monotonic()
-        check_ms = max(500, int(timeout * 1000 / 3))
-        self._watchdog_source_id = GLib.timeout_add(check_ms, self._do_watchdog)
+        with self._watchdog_lock:
+            # Read under the lock: a save may change it between the first frame and this arm.
+            timeout = self._reconnect_policy.stall_timeout
+            self._cancel_watchdog()
+            if timeout <= 0:
+                return
+            if reseed:
+                self._last_frame_monotonic = time.monotonic()
+            check_ms = max(500, int(timeout * 1000 / 3))
+            self._watchdog_source_id = GLib.timeout_add(check_ms, self._do_watchdog)
 
     def _cancel_watchdog(self) -> None:
-        if self._watchdog_source_id is not None:
-            GLib.source_remove(self._watchdog_source_id)
-            self._watchdog_source_id = None
+        with self._watchdog_lock:
+            if self._watchdog_source_id is not None:
+                GLib.source_remove(self._watchdog_source_id)
+                self._watchdog_source_id = None
 
     def _do_watchdog(self) -> bool:
         """Periodic check for stalled live feeds."""

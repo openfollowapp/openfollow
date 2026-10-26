@@ -569,6 +569,27 @@ class TestSourceElementDeclaration:
         assert name is None or (name and name == name.strip())
 
 
+@pytest.mark.parametrize("plugin", _plugin_params())
+class TestFrameMeterDeclaration:
+    """``frame_meter_element_name`` names the queue the source limits are measured
+    on. A rename would leave a 4K feed unreported; a queue that never drops would
+    let a station that cannot keep up read under the limit."""
+
+    def test_every_plugin_declares_it(self, plugin: type[VideoInputBase]) -> None:
+        """Inherited, it is None and the input is silently never measured."""
+        assert "frame_meter_element_name" in vars(plugin)
+
+    def test_the_metered_element_is_a_leaky_queue_in_the_built_pipeline(self, plugin: type[VideoInputBase]) -> None:
+        name = plugin.frame_meter_element_name
+        if name is None:
+            # Only the Media Gallery, which plays nothing past the limits.
+            assert plugin.input_id == "testpattern"
+            return
+        element = _build_pipeline(plugin).get_by_name(name)
+        assert element is not None, f"{plugin.input_id} meters {name!r} but builds no element with that name"
+        assert element.properties.get("leaky") == 2
+
+
 # --------------------------------------------------------------------------- #
 # Element timeouts vs our own
 # --------------------------------------------------------------------------- #

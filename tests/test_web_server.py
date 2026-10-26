@@ -1001,6 +1001,22 @@ def test_video_source_failure_fragment_carries_the_box(live_server, monkeypatch)
     assert "Could not open resource." not in body
 
 
+def test_video_source_failure_fragment_carries_the_limits_box(live_server, monkeypatch) -> None:
+    """A source over the limits plays on, so it has no failure; the fragment still swaps its box in."""
+    from openfollow.video.source_limits import OverLimit, SourceReading, limits_snapshot
+
+    server, base = live_server
+    limits = limits_snapshot(SourceReading(1920, 1080, 60.0, (OverLimit.FRAME_RATE,)))
+    monkeypatch.setattr(server, "get_runtime_stats", lambda: {"video": {"connected": True, "limits": limits}})
+    status, body = _get(base, "/section/video_source/failure")
+
+    assert status == 200
+    assert "Video arrives at 60 fps, over 30 fps." in body
+    assert "Set the camera or encoder to 1920×1080 at 30 fps or less." in body
+    assert 'id="video-error-source-limits-' in body
+    assert body.count('class="notice error"') == 1
+
+
 def test_unknown_section_returns_404(live_server) -> None:
     _, base = live_server
     status, _ = _get(base, "/section/nonexistent")

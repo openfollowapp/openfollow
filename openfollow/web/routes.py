@@ -165,7 +165,6 @@ from openfollow.web.bindings import check_binding, osc_row_overlap, osc_trigger_
 from openfollow.web.config_cache import ParsedConfigCache
 from openfollow.web.discovery import clean_peer_name
 from openfollow.web.keyboard_layout_view import build_keyboard_layout_view, station_catalog, variant_options
-from openfollow.web.labels import video_error_token
 from openfollow.web.live_alerts import statistics_alerts
 from openfollow.web.login_throttle import LoginThrottle
 from openfollow.web.whats_new import load_backup_note, load_whats_new
@@ -988,14 +987,24 @@ def _build_input_template_data(cfg: AppConfig, video_stats: Mapping[str, Any] | 
     for iid, cls in sorted(registry.items()):
         values = cls.get_config_field_values(cfg)
         input_html_fragments[iid] = cls.web_ui_html(values)
-    video = dict(video_stats or {})
     return {
         "available_inputs": available_inputs,
         "input_html_fragments": input_html_fragments,
+        **_video_box_data(video_stats),
+    }
+
+
+def _video_box_data(video_stats: Mapping[str, Any] | None) -> dict[str, str]:
+    """What the Video Source boxes show, from ``/api/stats``'s ``video`` section."""
+    video = dict(video_stats or {})
+    limits = video.get("limits") or {}
+    return {
         "video_failure": video.get("failure") or "none",
         "video_failure_text": video.get("failure_text") or "",
         "video_error_message": video.get("error_message") or "",
         "video_failure_action": video.get("failure_action") or "",
+        "video_limits_text": str(limits.get("text") or ""),
+        "video_limits_action": str(limits.get("action") or ""),
     }
 
 
@@ -6300,25 +6309,16 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         the operator is part-way through typing into the URL or password
         fields, which is precisely what they are there to do when it fails.
         """
-        video = server.get_runtime_stats().get("video") or {}
-        failure_text = str(video.get("failure_text") or "")
-        error_message = str(video.get("error_message") or "")
-        # Keyed on what there is to show, not on whether a classification
-        # exists: several receiver paths publish an error with no verdict, and
-        # Statistics renders that raw text. Dropping it here would leave this
-        # box empty while the other said something.
-        if not (failure_text or error_message):
+        data = _video_box_data(server.get_runtime_stats().get("video"))
+        if not (data["video_failure_text"] or data["video_error_message"] or data["video_limits_text"]):
             return ""
-        action = str(video.get("failure_action") or "")
-        token = video_error_token(failure_text, error_message, action)
         return template(
-            "partials/video_error_box",
-            failure_text=failure_text,
-            error_message=error_message,
-            action=action,
-            token=token,
-            scope="source",
-            live="status",
+            "partials/video_source_boxes",
+            failure_text=data["video_failure_text"],
+            error_message=data["video_error_message"],
+            failure_action=data["video_failure_action"],
+            limits_text=data["video_limits_text"],
+            limits_action=data["video_limits_action"],
         )
 
     @app.get("/section/general/network_state")

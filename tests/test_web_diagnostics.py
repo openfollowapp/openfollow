@@ -29,6 +29,7 @@ import openfollow
 from openfollow import net_utils
 from openfollow.logging_setup import RingBufferLogHandler
 from openfollow.runtime.removable_media import Media
+from openfollow.video.source_limits import OverLimit, SourceReading, limits_snapshot
 from openfollow.web import diagnostics as diag
 
 pytestmark = pytest.mark.unit
@@ -4566,6 +4567,39 @@ def test_collect_runtime_state_reports_the_reconnect_loop() -> None:
     assert "reconnect attempt 2" in joined
     assert "No video received (connection timeout)" in joined
     assert "- (no source frames yet)" in joined
+
+
+def _limits_line(limits: object) -> str:
+    stats = _stats(video=dict(_stats()["video"], limits=limits))
+    rows = diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats))
+    (line,) = [row for row in rows if row.startswith("    source limits")]
+    return line.removeprefix("    source limits").strip()
+
+
+@pytest.mark.parametrize(
+    ("reading", "expected"),
+    [
+        (
+            SourceReading(3840, 2160, 59.94, (OverLimit.RESOLUTION, OverLimit.FRAME_RATE)),
+            "resolution_over_limit, frame_rate_over_limit "
+            "(measured 3840x2160, 59.9 fps; limit 1920x1080 either orientation, 30 fps)",
+        ),
+        (
+            SourceReading(1920, 1080, None, ()),
+            "within (measured 1920x1080, rate not measured yet; limit 1920x1080 either orientation, 30 fps)",
+        ),
+        (None, "not measured (no source frames yet)"),
+    ],
+    ids=["over", "within", "unmeasured"],
+)
+def test_collect_runtime_state_names_the_source_limits_verdict(reading: SourceReading | None, expected: str) -> None:
+    """Support reads the stable ids without reading the numbers."""
+    assert _limits_line(limits_snapshot(reading)) == expected
+
+
+@pytest.mark.parametrize("limits", [None, "over", ["resolution_over_limit"]])
+def test_collect_runtime_state_survives_a_malformed_limits_entry(limits: object) -> None:
+    assert _limits_line(limits) == "-"
 
 
 def test_collect_runtime_state_redacts_a_credential_in_the_source_label() -> None:

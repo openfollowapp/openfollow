@@ -39,6 +39,7 @@ from openfollow.runtime.state_maps import get_or_create, prune_to_keep
 from openfollow.station_fqdn import web_ui_host
 from openfollow.units import UnitSystem
 from openfollow.video.failure import SourceKind, VideoFailure, failure_action, failure_chip, failure_sentence
+from openfollow.video.source_limits import limits_row
 
 
 def _receiver_kind(video_receiver: Any) -> SourceKind:
@@ -926,6 +927,8 @@ def build_marker_visual_state(
             if status.failure not in (VideoFailure.NONE, VideoFailure.NOT_CONFIGURED)
             else None
         )
+        limits = limits_row(getattr(video_receiver, "source_limits", None))
+        flags_dict["video_limits"] = ("error", limits) if limits else None
         flags_dict[RECORDING_FLAG] = recording_row(app) if paths_on else None
         flags_dict[REMOTE_FLAG] = remote_row(app)
         flags_dict["power"] = ("error", power_warning) if power_warning else None

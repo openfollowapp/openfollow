@@ -15,8 +15,10 @@ import io
 import json
 import os
 import re
+import socket
 import sys
 import tarfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -8691,7 +8693,7 @@ def test_a_refused_unlock_says_why_on_the_login_page(pin_protected_server) -> No
     assert "Set-Cookie" not in response_headers
 
 
-def _refused_login_post(tmp_path, declared_length: int | str, body: bytes) -> tuple[str, io.BytesIO]:
+def _refused_login_post(tmp_path, declared_length: int | str, body: bytes) -> str:
     """POST the login form through a refused name straight into the WSGI app."""
     server = ConfigWebServer(config_path=str(tmp_path / "config.toml"))
     stream = io.BytesIO(body)
@@ -8711,29 +8713,118 @@ def _refused_login_post(tmp_path, declared_length: int | str, body: bytes) -> tu
     )
     status: list[str] = []
     b"".join(server._app(environ, lambda s, _headers, _exc=None: status.append(s)))
-    return status[0], stream
+    return status[0]
 
 
-def test_a_refusal_reads_the_body_first_so_closing_does_not_reset_its_answer(tmp_path) -> None:
-    # Closing a connection with unread request data resets it, which can drop
-    # the refusal before the browser reads it.
-    body = b"pin=sekret"
-    status, stream = _refused_login_post(tmp_path, len(body), body)
-    assert status.startswith("403")
-    assert stream.tell() == len(body)
+def _post_unauthenticated(base: str, *, chunked: bool, body: bytes) -> bytes:
+    """Send a whole POST the PIN check refuses unread, then read the answer to EOF."""
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    if chunked:
+        framing = b"Transfer-Encoding: chunked\r\n"
+        payload = b"%x\r\n%s\r\n0\r\n\r\n" % (len(body), body)
+    else:
+        framing = b"Content-Length: %d\r\n" % len(body)
+        payload = body
+    head = b"POST /api/config/camera HTTP/1.1\r\nHost: %s\r\nContent-Type: application/json\r\n%s\r\n" % (
+        host.encode(),
+        framing,
+    )
+    with socket.create_connection((host, int(port)), timeout=5) as sock:
+        sock.sendall(head + payload)
+        answer = b""
+        while chunk := sock.recv(65536):
+            answer += chunk
+    return answer
 
 
-def test_a_refusal_does_not_read_a_body_past_the_pre_auth_cap(tmp_path) -> None:
-    status, stream = _refused_login_post(tmp_path, peer_auth.MAX_SIGNED_BODY_SIZE + 1, b"pin=sekret")
-    assert status.startswith("403")
-    assert stream.tell() == 0
+@pytest.mark.parametrize("chunked", [False, True], ids=["content-length", "chunked"])
+def test_a_refusal_before_the_body_is_read_reaches_the_client(pin_protected_server, chunked: bool) -> None:
+    # Closing with the body still arriving would reset the connection and drop the answer.
+    _, base, _ = pin_protected_server
+    body = b"x" * (4 * 1024 * 1024)
+    failures: list[str] = []
+    for _ in range(50):
+        try:
+            answer = _post_unauthenticated(base, chunked=chunked, body=body)
+        except OSError as exc:
+            failures.append(repr(exc))
+            continue
+        if not answer.startswith(b"HTTP/1.0 401 "):
+            failures.append(repr(answer[:40]))
+    assert failures == []
+
+
+def _slot_freed_after(base: str, monkeypatch, request: bytes, status: bytes) -> bool:
+    """Send ``request`` and hold the connection open once answered: is its handler slot freed?"""
+    from openfollow.web import server as server_module
+
+    slot = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(server_module, "_request_semaphore", slot)
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    with socket.create_connection((host, int(port)), timeout=5) as held:
+        held.sendall(request)
+        assert held.recv(65536).startswith(b"HTTP/1.0 " + status)
+        freed = slot.acquire(timeout=5)
+    if freed:
+        slot.release()
+    return freed
+
+
+def _owed_body(declared: str) -> bytes:
+    """A POST the PIN check refuses, declaring a body it never sends."""
+    return b"POST /api/config/camera HTTP/1.1\r\nHost: x\r\nContent-Length: %s\r\n\r\n" % declared.encode()
+
+
+def test_a_body_that_never_arrives_does_not_hold_the_connection(pin_protected_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_UNREAD_BODY_TIMEOUT_S", 0.2)
+    _, base, _ = pin_protected_server
+    assert _slot_freed_after(base, monkeypatch, _owed_body("1000"), b"401 ")
+
+
+@pytest.mark.parametrize("declared", ["1025", "abc", "-5"], ids=["past-the-cap", "malformed", "negative"])
+def test_a_body_with_no_length_to_wait_for_is_not_waited_for(pin_protected_server, monkeypatch, declared) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_UNREAD_BODY_TIMEOUT_S", 60.0)
+    monkeypatch.setattr(server_module, "_UNREAD_BODY_MAX_BYTES", 1024)
+    _, base, _ = pin_protected_server
+    assert _slot_freed_after(base, monkeypatch, _owed_body(declared), b"401 ")
+
+
+def test_a_body_the_route_read_is_not_waited_for(live_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_UNREAD_BODY_TIMEOUT_S", 60.0)
+    _, base = live_server
+    body = json.dumps({"pos_x": 1.0}).encode()
+    request = (
+        b"POST /api/config/camera HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+        b"Content-Length: %d\r\n\r\n%s" % (len(body), body)
+    )
+    assert _slot_freed_after(base, monkeypatch, request, b"200 ")
+
+
+def test_a_malformed_request_line_is_answered_without_a_handler_error(live_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    errors: list[object] = []
+    monkeypatch.setattr(server_module._ThreadingWSGIServer, "handle_error", lambda self, *args: errors.append(args))
+    _, base = live_server
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    with socket.create_connection((host, int(port)), timeout=5) as sock:
+        sock.sendall(b"POST / HTTP/1.x\r\nContent-Length: 4\r\n\r\nbody")
+        answer = b""
+        while chunk := sock.recv(65536):
+            answer += chunk
+    assert b"Error code: 400" in answer
+    assert errors == []
 
 
 @pytest.mark.parametrize("declared", ["abc", "", "-5"])
 def test_a_refusal_with_a_missing_or_malformed_length_still_refuses(tmp_path, declared: str) -> None:
-    status, stream = _refused_login_post(tmp_path, declared, b"pin=sekret")
-    assert status.startswith("403")
-    assert stream.tell() == 0
+    assert _refused_login_post(tmp_path, declared, b"pin=sekret").startswith("403")
 
 
 def test_the_refused_name_is_escaped(live_server) -> None:

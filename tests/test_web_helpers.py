@@ -3502,8 +3502,8 @@ def test_cancel_button_label_default_is_B() -> None:
 def test_cancel_button_label_falls_back_when_binding_cleared(cleared) -> None:
     """Empty / whitespace ``btn_menu_cancel`` (an operator cleared the
     binding via the web form) → fall back to the word ``"Cancel"`` so
-    the footer renders ``<kbd>Cancel</kbd>Close embedded browser``
-    instead of an empty key-cap hint."""
+    the footer renders ``<kbd>Cancel</kbd>`` instead of an empty
+    key-cap hint."""
     from openfollow.configuration import AppConfig
     from openfollow.web import routes as routes_mod
 

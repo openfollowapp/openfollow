@@ -108,7 +108,8 @@ class OperatorMessageView:
     ``marker_id == 0`` is a broadcast card (no marker chip). For keyed cards,
     ``marker_name`` is the resolved catalog name (empty falls back to ``M<id>``)
     and ``marker_color`` is its hex. ``remaining_fraction`` is ``1.0`` for a
-    forever message.
+    forever message. A station-made card carries a ``headline`` on a bar in its
+    ``headline_level``'s chip fill (a status level) in place of a marker's.
     """
 
     message: str
@@ -118,6 +119,8 @@ class OperatorMessageView:
     marker_color: str
     is_forever: bool
     remaining_fraction: float
+    headline: str = ""
+    headline_level: str = ""
 
 
 @dataclass
@@ -278,6 +281,8 @@ class OverlayState:
     detection_attached_colors: dict[int, str] = field(default_factory=dict)
     # Button detection wizard
     button_detection: ButtonDetectionState | None = None
+    # The latency probe's screen level (0 black, 1 white) covering the whole canvas; None draws the HUD.
+    latency_flash: float | None = None
     # Configurable button labels for help overlay (action -> button name)
     button_labels: dict[str, str] = field(default_factory=dict)
     # Configurable keyboard labels for help overlay (action -> key name)

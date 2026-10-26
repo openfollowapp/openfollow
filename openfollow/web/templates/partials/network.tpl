@@ -170,6 +170,8 @@
             % _entered = row.get("entered") or {}
             % _rmethod = _entered.get("method") or row.get("method") or "dhcp"
             % _vlan_id = row.get("vlan_id")
+            %# Not plugged in, with saved settings: editable, applied when it is plugged in.
+            % _absent = bool(row.get("absent"))
             % _row_edit = bool(_editable and _name and _name == _editing)
             % _dis = '' if _row_edit else 'disabled'
             %# The row being edited – and the row an apply reported on – opens
@@ -178,7 +180,7 @@
             <details class="net-iface-row" data-adv-key="net-iface-{{_name}}"
                      data-mode="{{'edit' if _row_edit else 'view'}}" data-method="{{_rmethod}}" {{!_force}}>
                 <summary class="net-iface-summary">
-                    <span class="ia-dot {{'up' if _addr else 'down'}}" aria-hidden="true"></span>
+                    <span class="ia-dot {{'up' if _addr and not _absent else 'down'}}" aria-hidden="true"></span>
                     %# The label leads when there is one; the kernel name and which
                     %# adapter it is sit underneath, so two USB adapters can be told apart.
                     % _label = row.get("label", "")
@@ -196,6 +198,9 @@
                     % end
                     % if _vlan_id is not None and not _simple:
                     <span class="stat-chip">VLAN {{_vlan_id}}</span>
+                    % end
+                    % if _absent:
+                    <span class="stat-chip">Not connected</span>
                     % end
                     <span class="net-iface-addr {{'' if _addr else 'muted'}}">{{(_addr + ('/' + str(_prefix) if _prefix else '')) if _addr else '(no address)'}}</span>
                     % if row.get('method_label'):
@@ -280,7 +285,7 @@
                     %# host's, there is no row to put the notice on - so every
                     %# editor carries the caution instead. Saying nothing is the
                     %# one outcome that leaves the operator unwarned.
-                    % elif _row_edit and not _session:
+                    % elif _row_edit and not _session and not _absent:
                     <div class="notice warning" role="status">Which interface is answering your browser can't be told here, so this may be the one carrying this web session.
                         <div class="notice-sub">If applying drops it, reconnect by name, or read the address off Settings &rsaquo; Network on the station's screen.</div>
                     </div>
@@ -290,7 +295,10 @@
                         <label for="net-method-{{_name}}">Method</label>
                         <select id="net-method-{{_name}}" class="net-method-select" name="method" {{_dis}}>
                             <option value="dhcp" {{'selected' if _rmethod == 'dhcp' else ''}}>DHCP (automatic)</option>
+                            %# Its subnet comes from a lease, which an adapter that is not plugged in has none of.
+                            % if not _absent or _rmethod == 'dhcp_manual':
                             <option value="dhcp_manual" {{'selected' if _rmethod == 'dhcp_manual' else ''}}>DHCP with manual address</option>
+                            % end
                             <option value="static" {{'selected' if _rmethod == 'static' else ''}}>Static</option>
                         </select>
                     </div>
@@ -330,7 +338,7 @@
                     %# rather than beside Apply. Static has no lease, and the
                     %# group carries the class that hides it for that method.
                     % _lease = row.get("lease_display")
-                    % if _lease or _row_edit:
+                    % if (_lease or _row_edit) and not _absent:
                     <div class="group net-dhcp-only">
                         <h4 class="group-title">Lease</h4>
                         <div class="network-grid">
@@ -352,7 +360,7 @@
                         <button type="submit" class="save-btn">Apply</button>
                         %# Delete lives inside the row's own form, so it can
                         %# only ever be aimed at the interface named above it.
-                        % if _vlan_id is not None and not _simple:
+                        % if _vlan_id is not None and not _simple and not _absent:
                         <button type="button" class="danger"
                                 hx-post="/section/network/vlan/delete" hx-target="#network-interface"
                                 hx-swap="innerHTML" hx-include="closest form" hx-disabled-elt="this"
@@ -368,7 +376,7 @@
                                 hx-target="#network-interface"
                                 hx-swap="innerHTML">Cancel</button>
                     </div>
-                    % elif _writable:
+                    % elif _writable and not _absent:
                     %# Editing one row at a time: opening this one closes any
                     %# other row's editor, so two adapters can never be
                     %# half-edited against each other.
@@ -380,6 +388,27 @@
                     </div>
                     % end
                 </form>
+                % if _absent and _writable and not _row_edit:
+                %# Forget is its own form, outside the row's: it posts the interface and the open edit row only.
+                % _forget_q = "Its saved settings" + (" and label are" if _label else " are") + " deleted from this station."
+                % _vlans = row.get("forget_vlans") or []
+                % if _vlans:
+                % _forget_q += " Its VLAN" + ("s " if len(_vlans) > 1 else " ") + ", ".join(_vlans) + (" go" if len(_vlans) > 1 else " goes") + " with it."
+                % end
+                <div class="actions">
+                    <button type="button" class="secondary"
+                            hx-get="/section/network/edit/{{_name}}"
+                            hx-target="#network-interface"
+                            hx-swap="innerHTML">Edit</button>
+                    <form class="net-forget" hx-post="/section/network/forget" hx-target="#network-interface"
+                          hx-swap="innerHTML" hx-include="{{_keep}}" hx-confirm="{{_forget_q}}"
+                          data-confirm-title="Forget {{_label or _name}}?" data-confirm-label="Forget" data-confirm-danger
+                          data-busy-text="Deleting the saved settings of {{_name}}…">
+                        <input type="hidden" name="iface" value="{{_name}}">
+                        <button type="submit" class="secondary">Forget</button>
+                    </form>
+                </div>
+                % end
             </details>
             % end
             % end

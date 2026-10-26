@@ -532,7 +532,7 @@ class TestProbeKeyboardConnected:
         handler = KeyboardHandler(_DummyApp())
         assert handler._probe_keyboard_connected() is True
 
-    def test_linux_delegates_to_linux_probe(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_linux_fallback_delegates_to_linux_probe(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(keyboard_module.platform, "system", lambda: "Linux")
         poller = _FakePoller()
         monkeypatch.setattr(keyboard_module, "create_keyboard_poller", lambda: poller)

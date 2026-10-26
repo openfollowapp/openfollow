@@ -535,9 +535,10 @@ class GtkNativeSinkWindow:
 
     # -- Internal event wiring ------------------------------------------------
 
-    def _emit(self, event_type: str, **kwargs: Any) -> None:
+    def _emit(self, event_type: str, **kwargs: Any) -> dict[str, Any]:
         for h in self._handlers.get(event_type, []):
             h(kwargs)
+        return kwargs
 
     def _setup_events(self) -> None:
         Gdk = self._Gdk
@@ -600,8 +601,9 @@ class GtkNativeSinkWindow:
             # close button (emit "close" → shutdown, then main_quit).
             return self._on_delete(widget, event)
         name = self._translate_key(event)
-        if name:
-            self._emit("key_down", key=name)
+        if name and self._emit("key_down", key=name).get("late_echo"):
+            # The press a hardware poller already acted on: keep it from the overlay too.
+            return True
         # Return False when overlay mounted to dispatch keys to it.
         return self._overlay_widget is None
 

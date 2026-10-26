@@ -15,12 +15,15 @@ from __future__ import annotations
 
 import re
 
+import cairo
 import numpy as np
 import pytest
 
+from openfollow.runtime.overlay_layers import LayerContext
 from openfollow.runtime.overlay_state import (
     ButtonDetectionState,
     MarkerOverlayData,
+    OperatorMessageView,
     OverlayState,
 )
 from openfollow.video import overlay as overlay_module
@@ -125,6 +128,44 @@ class TestDrawDispatch:
         renderer.state.button_detection = ButtonDetectionState(active=True)
         renderer.draw(FakeCairo(), 1280, 720, renderer.state)
         assert patched_passes == ["draw_button_detection_overlay_pass"]
+
+    @pytest.mark.parametrize("screen", ["settings_menu", "button_detection"])
+    def test_the_station_s_warning_card_stays_in_sight_over_a_menu_screen(self, patched_passes, screen: str) -> None:
+        renderer = CairoOverlayRenderer()
+        state = OverlayState()
+        if screen == "settings_menu":
+            state.settings_menu_active = True
+        else:
+            state.button_detection = ButtonDetectionState(active=True)
+        state.operator_messages = [
+            OperatorMessageView("Latency test about to start", "", 0, "", "", True, 1.0, "WARNING", "caution"),
+            OperatorMessageView("Next cue", "", 0, "", "", True, 1.0),
+        ]
+        cr = RecordingCairo()
+        renderer.draw(cr, 1280, 720, state)
+        assert cr.find_texts("WARNING") and cr.find_texts("Latency test about to start")
+        # The OSC cards stay out of the menu screen.
+        assert not cr.find_texts("Next cue")
+
+    @pytest.mark.parametrize("level", [0.0, 1.0])
+    def test_a_latency_flash_covers_the_canvas_first_and_alone(self, patched_passes, level: float) -> None:
+        renderer = CairoOverlayRenderer()
+        state = OverlayState(latency_flash=level)
+        state.settings_menu_active = True
+        state.button_detection = ButtonDetectionState(active=True)
+        cr = RecordingCairo()
+        renderer.draw(cr, 1280, 720, state)
+        assert patched_passes == []
+        assert cr.calls == [("rgb", level, level, level), ("paint",)]
+
+    def test_on_a_layered_canvas_the_flash_draws_nothing_and_nothing_else_either(self, patched_passes) -> None:
+        # The GL display clears to the level over video and HUD itself.
+        cr = LayerContext(64, 36, (1.0, 1.0), cairo.ImageSurface(cairo.FORMAT_ARGB32, 1, 1).get_font_options())
+        state = OverlayState(latency_flash=1.0)
+        state.settings_menu_active = True
+        CairoOverlayRenderer().draw(cr, 64, 36, state)
+        assert cr.finish().sprites == ()
+        assert patched_passes == []
 
     def test_a_state_handed_to_draw_is_drawn_rather_than_the_latest(self, patched_passes) -> None:
         """The HUD render thread draws the state it was handed while the frame loop moves on."""

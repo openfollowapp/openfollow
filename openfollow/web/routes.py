@@ -117,6 +117,7 @@ from openfollow.net_utils import (
 from openfollow.network.adapter import (
     LOOPBACK_NAMES,
     VLAN_UNSUPPORTED_MESSAGE,
+    ApplyResult,
     Ipv4Config,
     Ipv4Method,
 )
@@ -134,6 +135,7 @@ from openfollow.palette import AUTO_PICK_ORDER
 from openfollow.privilege import settings_backup
 from openfollow.privilege.camera_config import AUTOMATIC
 from openfollow.runtime.diagnostics_export import WEB, ExportStatus, status_lines
+from openfollow.runtime.latency_probe import MEDIA_GALLERY, LatencyFailure
 from openfollow.scene.edge_snap import LumaBand, NearEdge
 from openfollow.station_fqdn import canonical_host, fqdn_problem
 from openfollow.templates import (
@@ -166,6 +168,7 @@ from openfollow.web.config_cache import ParsedConfigCache
 from openfollow.web.discovery import clean_peer_name
 from openfollow.web.keyboard_layout_view import build_keyboard_layout_view, station_catalog, variant_options
 from openfollow.web.labels import video_error_token
+from openfollow.web.latency_view import latency_dialog_view, latency_row_view, latency_unavailable
 from openfollow.web.live_alerts import statistics_alerts
 from openfollow.web.login_throttle import LoginThrottle
 from openfollow.web.whats_new import load_backup_note, load_whats_new
@@ -4009,6 +4012,10 @@ def _update_refused(server: Any) -> str:
     return "An update is already running. Please wait for it to finish."
 
 
+# A latency warning session's token, as ``secrets.token_urlsafe(16)`` makes it.
+_LATENCY_WARNING_TOKEN = re.compile(r"[A-Za-z0-9_-]{16,64}")
+
+
 def _save_failed(status: int, error: str, action: str = "", **detail: str) -> HTTPResponse:
     """A refused or failed save, in the ``{error, action}`` shape the save-feedback line reads."""
     body = json.dumps({"error": error, "action": action, **detail})
@@ -6010,9 +6017,22 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         data: dict[str, Any] = {
             "config": cfg,
             "saved": saved,
+            "latency": _latency_view(cfg),
         }
         data.update(_build_input_template_data(cfg, video))
         return template("partials/video_source", **data)
+
+    def _latency_view(cfg: AppConfig) -> dict[str, Any]:
+        """The Camera Latency row; hidden while the saved source is the Media Gallery."""
+        return latency_row_view(
+            server.get_runtime_stats(), gallery=cfg.video_source_type == MEDIA_GALLERY, now=time.time()
+        )
+
+    def _latency_dialog(*, before_start: bool) -> Any:
+        dialog = latency_dialog_view(server.get_latency_status(), before_start=before_start)
+        # The warnings renew the Operator Screen's card under this token while they show.
+        warning = server.latency_warning.token() if dialog["state"] == "intro" else ""
+        return template("partials/video_source_latency_dialog", dialog=dialog, warning=warning)
 
     def _load_config_for_edit() -> AppConfig:
         """Fresh disk load with the live per-marker move speeds overlaid.
@@ -6246,6 +6266,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             on_device=_is_on_device_request(),
             cancel_button=_cancel_button_label(config),
             psn_source_advisory=server.get_psn_source_advisory(),
+            latency=_latency_view(config),
             **_build_input_template_data(config, server.get_runtime_stats().get("video")),
         )
 
@@ -6299,7 +6320,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         Only the box: re-swapping the Video Source form would discard whatever
         the operator is part-way through typing into the URL or password
         fields, which is precisely what they are there to do when it fails.
+        The Camera & Grid tab sends the Measure latency row's key too; between
+        runs a changed row rides along out of band.
         """
+        return _video_source_failure_box() + _latency_row_if_changed(request.query.get("latency"))
+
+    def _video_source_failure_box() -> str:
         video = server.get_runtime_stats().get("video") or {}
         failure_text = str(video.get("failure_text") or "")
         error_message = str(video.get("error_message") or "")
@@ -6311,15 +6337,82 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             return ""
         action = str(video.get("failure_action") or "")
         token = video_error_token(failure_text, error_message, action)
-        return template(
-            "partials/video_error_box",
-            failure_text=failure_text,
-            error_message=error_message,
-            action=action,
-            token=token,
-            scope="source",
-            live="status",
+        return str(
+            template(
+                "partials/video_error_box",
+                failure_text=failure_text,
+                error_message=error_message,
+                action=action,
+                token=token,
+                scope="source",
+                live="status",
+            )
         )
+
+    def _latency_row_if_changed(seen: str | None) -> str:
+        """The Camera Latency row to swap in out of band, when its key differs from ``seen``."""
+        if seen is None:
+            return ""
+        view = _latency_view(_request_scoped_config())
+        if view["key"] == seen:
+            return ""
+        return str(template("partials/video_source_latency", latency=view, oob=True))
+
+    @app.get("/section/video_source/latency")
+    def get_video_source_latency() -> Any:
+        """The Camera Latency row, fetched again when the Measure dialog closes."""
+        return template("partials/video_source_latency", latency=_latency_view(_request_scoped_config()))
+
+    @app.get("/section/video_source/latency/dialog")
+    def get_video_source_latency_dialog() -> Any:
+        """The Measure dialog: its warnings, or a run going on; ``poll`` is a run's progress box asking again.
+
+        While the run lasts the progress box answers alone. Once it ended, the whole dialog in its
+        outcome replaces the dialog's body.
+        """
+        if request.query.get("poll") is None:
+            return _latency_dialog(before_start=True)
+        dialog = latency_dialog_view(server.get_latency_status(), before_start=False)
+        if dialog["state"] == "running":
+            return template("partials/video_source_latency_dialog", dialog=dialog, progress_only=True)
+        response.set_header("HX-Retarget", "#latency-dialog")
+        response.set_header("HX-Reswap", "outerHTML")
+        return _latency_dialog(before_start=False)
+
+    def _latency_warning_token(value: Any) -> str | None:
+        token = _as_str(value, "")
+        return token if _LATENCY_WARNING_TOKEN.fullmatch(token) else None
+
+    @app.post("/section/video_source/latency/warning")
+    def renew_latency_warning() -> Any:
+        """The Measure dialog shows its warnings: put the Operator Screen's card up, or keep it up."""
+        token = _latency_warning_token(request.forms.get("token"))
+        if token is None:
+            return HTTPResponse(status=400)
+        server.latency_warning.renew(token)
+        return HTTPResponse(status=204)
+
+    @app.post("/section/video_source/latency/warning/close")
+    def close_latency_warning() -> Any:
+        """The Measure dialog closed on its warnings: the card goes at once (a beacon, so no answer is read)."""
+        token = _latency_warning_token(request.query.get("token"))
+        if token is None:
+            return HTTPResponse(status=400)
+        server.latency_warning.close(token)
+        return HTTPResponse(status=204)
+
+    @app.post("/section/video_source/latency")
+    def start_video_source_latency() -> Any:
+        """Start a camera latency run and answer with the dialog measuring; 409 with the reason while one cannot run."""
+        refusal = latency_unavailable(server.get_runtime_stats())
+        if refusal is not None:
+            failure = LatencyFailure(refusal)
+            return _save_failed(409, failure.text, failure.action)
+        token = _latency_warning_token(request.forms.get("token"))
+        if token is not None:
+            server.latency_warning.close(token)
+        server.request_latency()
+        return _latency_dialog(before_start=False)
 
     @app.get("/section/general/network_state")
     def get_general_network_state() -> Any:
@@ -6343,6 +6436,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     # ----------------------------------------------------------------------
 
     _NETWORK_METHODS = ("dhcp", "dhcp_manual", "static")
+    _DHCP_MANUAL_ABSENT = (
+        "DHCP with manual address takes its subnet from a lease, and this interface has none yet. Use Static."
+    )
     _NETWORK_METHOD_LABELS = {
         "dhcp": "DHCP",
         "dhcp_manual": "DHCP + manual",
@@ -6439,6 +6535,16 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 }
                 for name in net["interfaces"]
             ]
+        present = {str(row.get("name", "")) for row in rows}
+        saved = [row for row in server.get_network_saved() if str(row.get("name", "")) not in present]
+        opened = next((row for row in saved if iface and row.get("name") == iface), None)
+        if opened is not None:
+            net.update(
+                active_interface=iface,
+                method=_network_method_value(str(opened.get("method", "dhcp"))),
+                **{key: opened.get(key) for key in ("address", "prefix", "subnet_mask", "router", "lease_display")},
+                dns=list(opened.get("dns", [])),
+            )
         # A VLAN row carries its tag so the operator can tell eth0.10 apart
         # from a physical NIC that happens to be named with a dot, and so the
         # delete control renders only where deleting is meaningful.
@@ -6485,6 +6591,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # Only what the backend lists as a VLAN: that is what Advanced can remove.
             vlan_names = set(vlan_ids) if net["supports_vlans"] else set()
             _narrow_to_station(net, mode_cfg.psn_source_iface, vlan_names, labels)
+        else:
+            net["iface_rows"] += _saved_rows(saved, labels)
         _add_adapter_fields(net, labels, label_result)
         if simple:
             # The card lists the station interface alone, so every other labelled adapter is absent from it.
@@ -6557,6 +6665,27 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         net["iface_rows"] = [row for row in rows if str(row.get("name", "")) == resolved]
         net["vlan_parents"] = []
 
+    def _saved_rows(saved: list[dict[str, Any]], labels: Mapping[str, str]) -> list[dict[str, Any]]:
+        """The adapters that are not plugged in but have saved settings, each VLAN under its parent."""
+        from openfollow.net_adapters import display_name
+
+        rows = []
+        for row in sorted(
+            saved, key=lambda r: (str(r.get("vlan_parent") or r.get("name", "")), r.get("vlan_id") or -1)
+        ):
+            name = str(row.get("name", ""))
+            rows.append(
+                {
+                    **row,
+                    "absent": True,
+                    "method_label": _NETWORK_METHOD_LABELS.get(str(row.get("method", "")), ""),
+                    "forget_vlans": [
+                        display_name(str(r.get("name", "")), labels) for r in saved if r.get("vlan_parent") == name
+                    ],
+                }
+            )
+        return rows
+
     def _add_adapter_fields(
         net: dict[str, Any], labels: Mapping[str, str], label_result: dict[str, str] | None
     ) -> None:
@@ -6567,6 +6696,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         names = [str(row.get("name", "")) for row in net["iface_rows"]]
         for row, name in zip(net["iface_rows"], names, strict=True):
             row.update(adapter_fields(name, labels))
+            if row.get("absent") and row.get("vlan_parent"):
+                row["vlan_on"] = display_name(str(row["vlan_parent"]), labels)
             if name and name == result.get("iface"):
                 row["label_error"] = result.get("error", "")
                 row["label_entered"] = result.get("entered", row["label"])
@@ -6577,7 +6708,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         ]
         net["display_names"] = {name: display_name(name, labels) for name in names}
 
-    def _resolve_network_iface(iface: str) -> tuple[str | None, str]:
+    def _resolve_network_iface(iface: str, *, saved_ok: bool = False) -> tuple[str | None, str]:
         """Validate the posted interface against the interfaces the backend reports.
 
         A privileged adapter write must never receive a raw/forged POST value.
@@ -6587,8 +6718,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         would rewrite and bounce the one the operator is connected over, and the
         page that posted it had simply gone stale behind an unplugged adapter.
 
+        With ``saved_ok`` an interface that is not present but has saved
+        settings resolves to itself: an apply only saves to it.
+
         Returns ``(iface, "")``, or ``(None, message)`` naming what to do.
         """
+        if saved_ok and iface and iface in _saved_names():
+            return (iface, "")
         cfg = server.get_network_config(iface or None)
         if not cfg or not cfg.get("interfaces"):
             return (None, "Network interface not available on this host.")
@@ -6600,6 +6736,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         if resolved is None:
             return (None, "Network interface not available on this host.")
         return (resolved, "")
+
+    def _saved_names() -> set[str]:
+        return {str(row.get("name", "")) for row in server.get_network_saved()} - {""}
 
     def _network_vlan_response(
         *,
@@ -6677,14 +6816,14 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         rows = server.get_network_interfaces() or []
         snapshot = server.get_network_config(None) or {}
         names = {str(row.get("name", "")) for row in rows} | {str(n) for n in snapshot.get("interfaces", [])}
-        return {name for name in names if name}
+        return {name for name in names if name} | _saved_names()
 
     def _card_in_progress() -> dict[str, Any]:
         """The unsaved edit row and Add VLAN form a label request carried, for its re-render."""
         forms = request.forms
         kept: dict[str, Any] = {}
         editing = (forms.get("editing_iface") or "").strip()
-        if editing and _resolve_network_iface(editing)[0] == editing:
+        if editing and _resolve_network_iface(editing, saved_ok=True)[0] == editing:
             _label_iface, method, fields = _parse_network_form()
             kept.update(
                 iface=editing, editable=True, overrides={"active_interface": editing, "method": method, **fields}
@@ -6732,10 +6871,37 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             save_config(cfg, server.config_path)
         return _label_card(cfg.interface_labels, {})
 
+    @app.post("/section/network/forget")
+    def network_forget() -> Any:
+        """Delete the saved settings of an adapter that is not plugged in, with the VLANs on it, and their labels."""
+        iface = (request.forms.get("iface") or "").strip()
+        # Read first: a settings file that does not read refuses the Forget before any profile is deleted.
+        _load_config_for_edit()
+        before = {str(row.get("name", "")): row for row in server.get_network_saved()}
+        if iface not in before:
+            # A stale row: plugged in again, or forgotten from another browser. Truncated as it is echoed.
+            result = ApplyResult(ok=False, message=f"{iface[:_IFNAME_MAX]} has no saved settings.")
+        else:
+            result = server.forget_network_interface(iface)
+        labels: dict[str, str] | None = None
+        if result.ok:
+            # What is still saved stays labelled: a VLAN profile the delete could not reach keeps its row.
+            left = _saved_names()
+            gone = {name for name, row in before.items() if iface in (name, row.get("vlan_parent"))} - left
+            with _config_write_lock:
+                cfg = _load_config_for_edit()
+                if gone & set(cfg.interface_labels):
+                    cfg.interface_labels = {n: label for n, label in cfg.interface_labels.items() if n not in gone}
+                    save_config(cfg, server.config_path)
+                labels = cfg.interface_labels
+        banner = {"kind": "ok" if result.ok else "error", "text": result.message}
+        net = _build_network_form_context(labels=labels, banner=banner, **_card_in_progress())
+        return template("partials/network", net=net)
+
     @app.post("/section/network/apply")
     def network_apply() -> Any:
         iface, method_value, fields = _parse_network_form()
-        resolved, resolve_error = _resolve_network_iface(iface)
+        resolved, resolve_error = _resolve_network_iface(iface, saved_ok=True)
         if resolved is None:
             return template(
                 "partials/network",
@@ -6746,6 +6912,17 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             )
         iface = resolved
         method = Ipv4Method(method_value)
+        if method == Ipv4Method.DHCP_WITH_MANUAL_ADDRESS and iface in _saved_names():
+            # The subnet and router come from the lease, and an adapter that is not plugged in has none.
+            return template(
+                "partials/network",
+                net=_build_network_form_context(
+                    iface=iface,
+                    overrides={"active_interface": iface, "method": method_value, **fields},
+                    editable=True,
+                    banner={"kind": "error", "text": _DHCP_MANUAL_ABSENT},
+                ),
+            )
         address = fields["address"] or None
         # Router + prefix are operator-controlled (and validated) ONLY for a
         # static config. For dhcp_manual they come from the DHCP lease, and
@@ -7245,6 +7422,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             extra["psn_source_advisory"] = server.get_psn_source_advisory()
         elif name == "video_source":
             extra.update(_build_input_template_data(config, server.get_runtime_stats().get("video")))
+            extra["latency"] = _latency_view(config)
         elif name == "mouse3d":
             extra["mouse3d_status"] = _mouse3d_status_view(server)
         elif name in ("controller", "gamepad"):

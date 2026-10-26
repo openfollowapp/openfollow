@@ -4508,6 +4508,22 @@ def test_collect_runtime_state_lists_every_marker_conflict() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("block", "expected"),
+    [
+        ({"poller": "evdev", "devices": 2}, "  Keyboard poller:        evdev, 2 keyboard(s)"),
+        ({"poller": "evdev", "devices": 0}, "  Keyboard poller:        evdev, 0 keyboard(s)"),
+        ({"poller": "fallback", "devices": None}, "  Keyboard poller:        fallback"),
+        ({"poller": None, "devices": None}, "  Keyboard poller:        [not running]"),
+        (None, "  Keyboard poller:        [not running]"),
+    ],
+)
+def test_collect_runtime_state_names_the_keyboard_poller(block: dict[str, Any] | None, expected: str) -> None:
+    stats = _stats()
+    stats["keyboard"] = block
+    assert expected in diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats))
+
+
 def test_collect_runtime_state_says_when_no_marker_conflicts() -> None:
     assert "  Marker conflicts:       (none)" in diag.collect_runtime_state(
         diag.DiagnosticsProviders(runtime_stats=_stats)
@@ -6125,6 +6141,47 @@ def test_runtime_state_names_the_format_the_source_delivered(source_format: str,
     assert rows.index(f"    source format         {shown}") == 1 + next(
         i for i, row in enumerate(rows) if "source framerate" in row
     )
+
+
+def test_runtime_state_shows_the_last_camera_latency_under_the_video_block() -> None:
+    stats = _stats()
+    stats["latency"] = {
+        "median_ms": 84.4,
+        "min_ms": 70.2,
+        "max_ms": 101.6,
+        "samples": 10,
+        "age_s": 125.0,
+        "source_type": "rtsp",
+        "level": "success",
+        "finished_at": 1_700_000_000.0,
+    }
+    rows = diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats))
+    row = "    camera latency        84 ms median (70 to 102 ms), 10 samples, 125 s ago, source rtsp"
+    assert row in rows
+    assert rows.index(row) == 1 + next(i for i, r in enumerate(rows) if "source format" in r)
+
+
+@pytest.mark.parametrize("latency", [None, "garbage"], ids=["none", "not-a-result"])
+def test_runtime_state_without_a_camera_latency_says_not_measured(latency: Any) -> None:
+    stats = _stats()
+    stats["latency"] = latency
+    rows = diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats))
+    assert "    camera latency        not measured" in rows
+
+
+def test_a_failed_latency_run_leaves_the_last_success_in_the_bundle() -> None:
+    from openfollow.runtime import latency_probe as lp
+
+    probe = lp.LatencyProbe(wall_clock=lambda: 1_700_000_000.0)
+    probe.last_success = lp.LatencyResult(84.0, 70.0, 99.0, 10, 1_700_000_000.0, 0, "rtsp")
+    probe.start(1_000_000, ("rtsp", 1), "rtsp")
+    probe.step(1_000_000 + lp.SETTLE_US, ("rtsp", 1))
+    probe.step(1_000_000 + lp.SETTLE_US + lp.TIMEOUT_US, ("rtsp", 1))
+    assert probe.failure is not None
+    stats = _stats()
+    stats["latency"] = probe.last_success.to_dict(60_000_000)
+    rows = diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats))
+    assert "    camera latency        84 ms median (70 to 99 ms), 10 samples, 60 s ago, source rtsp" in rows
 
 
 # --- E5c. Settings backups ----------------------------------------------------

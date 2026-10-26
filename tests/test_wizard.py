@@ -262,6 +262,13 @@ class TestConfigDefaults:
 
 @integration
 class TestWizardPage:
+    def test_the_wizard_source_poll_names_no_latency_row(self, live_server) -> None:
+        """The wizard has no Measure latency row, so its poll includes nothing htmx cannot find."""
+        _, base = live_server
+        _status, body = _get(base, "/wizard")
+        assert 'id="video-source-failure"' in body
+        assert "video-source-latency-key" not in body
+
     def test_wizard_page_renders(self, live_server) -> None:
         _, base = live_server
         status, body = _get(base, "/wizard")

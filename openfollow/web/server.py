@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from openfollow.logging_setup import RingBufferLogHandler
     from openfollow.network.adapter import ApplyResult
     from openfollow.runtime.diagnostics_export import DiagnosticsExport
+    from openfollow.runtime.latency_warning import LatencyWarning
     from openfollow.runtime.removable_media import Media
 
 from bottle import TEMPLATE_PATH, Bottle
@@ -224,6 +225,9 @@ class ConfigWebServer:
         network_vlan_provider: Callable[[], dict[str, Any]] | None = None,
         network_vlan_create_handler: Callable[[str, int], ApplyResult] | None = None,
         network_vlan_delete_handler: Callable[[str], ApplyResult] | None = None,
+        # Interfaces that are not present but have saved settings, and deleting those settings.
+        network_saved_provider: Callable[[], list[dict[str, Any]]] | None = None,
+        network_forget_handler: Callable[[str], ApplyResult] | None = None,
         # Scan: drop the network reading the sections share, so the next read asks the backend.
         network_rescan_handler: Callable[[], None] | None = None,
         # Privilege capability snapshot for the diagnostics bundle; optional for tests.
@@ -333,6 +337,8 @@ class ConfigWebServer:
         self._network_vlan_provider = network_vlan_provider
         self._network_vlan_create_handler = network_vlan_create_handler
         self._network_vlan_delete_handler = network_vlan_delete_handler
+        self._network_saved_provider = network_saved_provider
+        self._network_forget_handler = network_forget_handler
         self._network_rescan_handler = network_rescan_handler
         self._psn_source_advisory_provider = psn_source_advisory_provider
         self._web_bind_advisory_provider = web_bind_advisory_provider
@@ -648,6 +654,28 @@ class ConfigWebServer:
             logger.exception("network_vlan_delete handler raised")
             return ApplyResult(ok=False, message=str(exc))
 
+    def get_network_saved(self) -> list[dict[str, Any]]:
+        """Every interface that is not present but has saved settings; empty when unwired or unreadable."""
+        if self._network_saved_provider is None:
+            return []
+        try:
+            return self._network_saved_provider()
+        except Exception:  # noqa: BLE001
+            logger.exception("Network saved-settings provider raised")
+            return []
+
+    def forget_network_interface(self, name: str) -> ApplyResult:
+        """Delete the saved settings of the absent interface ``name``; always returns ApplyResult."""
+        from openfollow.network.adapter import ApplyResult
+
+        if self._network_forget_handler is None:
+            return ApplyResult(ok=False, message="Network writes are not available on this build.")
+        try:
+            return self._network_forget_handler(name)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("network_forget handler raised")
+            return ApplyResult(ok=False, message=str(exc))
+
     def get_psn_source_advisory(self) -> dict[str, str]:
         """Startup advisory when pinned PSN source iface unavailable; returns status/banner/resolved_ip."""
         empty = {"status": "", "banner": "", "resolved_ip": ""}
@@ -851,6 +879,19 @@ class ConfigWebServer:
     def request_slot_action(self, action: str, index: int, ref: str) -> None:
         """Queue a controller-slot action (``identify`` / ``forget``) for the main loop."""
         self._command_queue.request_slot_action(action, index, ref)
+
+    def request_latency(self) -> None:
+        """Queue the start of a camera latency run for the main loop."""
+        self._command_queue.request_latency()
+
+    @property
+    def latency_warning(self) -> LatencyWarning:
+        """The Operator Screen's warning card, held up by Measure dialogs showing their warnings."""
+        return self._command_queue.latency_warning
+
+    def get_latency_status(self) -> dict[str, Any]:
+        """The camera latency run as the main loop last reported it."""
+        return self._command_queue.get_latency_status()
 
     def whats_new_pending(self) -> bool:
         """True when the page should open the updater's What's new step."""

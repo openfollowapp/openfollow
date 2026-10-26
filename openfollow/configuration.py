@@ -15,7 +15,7 @@ import re
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
 from pathlib import Path
@@ -3115,6 +3115,8 @@ class AppConfig:
     # the default selection is empty (operator picks via the catalog UI).
     controlled_marker_ids: list[int] = field(default_factory=list)
     viewer_marker_ids: list[int] = field(default_factory=list)
+    # Controlled markers no relative input moves; they keep transmitting.
+    parked_marker_ids: list[int] = field(default_factory=list)
     # Per-marker move-speed overrides; ``MarkerConfig.move_speed`` is the
     # fallback for a marker with no entry.
     marker_move_speeds: dict[int, float] = field(default_factory=dict)
@@ -3224,6 +3226,7 @@ class AppConfig:
         if not isinstance(self.srt_passphrase, str):
             self.srt_passphrase = ""
         self.normalise_startup_settings()
+        self.parked_marker_ids = parked_within(self.controlled_marker_ids, self.parked_marker_ids)
         # TOML produces ``dict[str, Any]``; the runtime contract is
         # ``dict[int, float]`` keyed by marker_id. Drop pairs with a non-int
         # key or non-finite/negative value.
@@ -3438,6 +3441,21 @@ def marker_id_list(raw: Any, *, path: str, field_name: str) -> list[int]:
             continue
         if value not in kept:
             kept.append(value)
+    return kept
+
+
+def parked_within(controlled: Any, parked: Any) -> list[int]:
+    """The parked markers as kept: marker ids of *controlled*, each once, in first-seen order.
+
+    Anything but a list reads as ``[]``, and so does a *controlled* that is not one.
+    """
+    if not isinstance(parked, list) or not isinstance(controlled, list):
+        return []
+    allowed = {mid for mid in controlled if isinstance(mid, int) and not isinstance(mid, bool) and mid >= 1}
+    kept: list[int] = []
+    for mid in parked:
+        if isinstance(mid, int) and not isinstance(mid, bool) and mid in allowed and mid not in kept:
+            kept.append(mid)
     return kept
 
 
@@ -3932,6 +3950,30 @@ def save_config_fields(
         save_config(on_disk, path)
 
 
+def park_changes_applied(parked: list[int], changes: Mapping[int, bool]) -> list[int]:
+    """*parked* with each marker in *changes* parked (``True``) or unparked (``False``), order kept."""
+    kept = [mid for mid in parked if changes.get(mid, True)]
+    return kept + [mid for mid, on in changes.items() if on and mid not in kept]
+
+
+def save_park_changes(config: AppConfig, path: str, changes: Mapping[int, bool]) -> bool:
+    """Apply *changes* to the parked markers of the file at *path* in one read-modify-write under the lock.
+
+    The file's parked and controlled sets are the base, so a park another writer saved since *config*
+    was read survives. A missing file is written from a copy of *config* with the changes applied; an
+    empty or unreadable one raises. Returns whether the file was written.
+    """
+    with config_write_lock:
+        on_disk = read_config_whole(path)
+        target = copy.deepcopy(config) if on_disk is None else on_disk
+        parked = parked_within(target.controlled_marker_ids, park_changes_applied(target.parked_marker_ids, changes))
+        if on_disk is not None and parked == on_disk.parked_marker_ids:
+            return False
+        target.parked_marker_ids = parked
+        save_config(target, path)
+        return True
+
+
 # ---------------------------------------------------------------------------
 # Runtime Hot-Reload
 # ---------------------------------------------------------------------------
@@ -4307,7 +4349,8 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
     if new_config.network != app._config.network:
         app._config.network = new_config.network
 
-    if new_config.controlled_marker_ids != app._config.controlled_marker_ids:
+    controlled_changed = new_config.controlled_marker_ids != app._config.controlled_marker_ids
+    if controlled_changed:
         # Defense-in-depth: filter ``< 1`` ids again (this path can bypass
         # ``load_config``'s filter via programmatic apply). ``Marker.__init__``
         # raises for id < 1 and id 0 is the reserved "ignored" wire value.
@@ -4373,7 +4416,9 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
                 # controlled_ids list and is only updated to a new value
                 # when removed; integration tests cover the True arm.
                 if app._selected_id not in new_ids:  # pragma: no branch
-                    app._selected_id = app._controlled_ids[0] if app._controlled_ids else None
+                    from openfollow.input.parking import is_parked
+
+                    app._selected_id = next((m for m in app._controlled_ids if not is_parked(app, m)), None)
                 receiver.set_ignore_ids(new_ids)
                 app._config.controlled_marker_ids = filtered_controlled
 
@@ -4410,6 +4455,19 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         ]
         app._viewer_ids = list(filtered_viewer)
         app._config.viewer_marker_ids = filtered_viewer
+
+    # Against the committed controlled set, which may also have moved the selection onto a parked marker.
+    parked = parked_within(app._config.controlled_marker_ids, new_config.parked_marker_ids)
+    if controlled_changed or parked != app._config.parked_marker_ids:
+        from openfollow.input.parking import set_parked
+
+        old_parked = app._config.parked_marker_ids
+        app._config.parked_marker_ids = parked
+        _apply(
+            "parked_marker_ids",
+            lambda: set_parked(app, parked),
+            on_failure=lambda: setattr(app._config, "parked_marker_ids", old_parked),
+        )
 
     if new_config.controller != app._config.controller:
         mouse_was_enabled = app._config.controller.mouse_enabled
@@ -4550,6 +4608,13 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
 
     if new_config.detection != app._config.detection or _flipped("detection"):
         old_detection = app._config.detection
+        # A new tracking mode or Follow marker is a fresh start for the pin: it no longer waits for a selection.
+        if _flipped("detection") or (old_detection.enabled, old_detection.pin_mode, old_detection.pin_marker_id) != (
+            new_config.detection.enabled,
+            new_config.detection.pin_mode,
+            new_config.detection.pin_marker_id,
+        ):
+            app._pin_waits_for_selection = False
         # What the detector runs: off while the Person detection feature is off.
         new_detection = feature_gated(new_config.detection, app._config, "detection")
         new_enabled = new_detection.enabled

@@ -30,10 +30,12 @@ from openfollow.configuration import (
     effective_lens,
     feature_gated,
     is_simple_mode,
+    parked_within,
     viewed_with_controlled,
 )
 from openfollow.input import InputManager
 from openfollow.input.mouse3d import idle_mouse3d_status
+from openfollow.input.parking import set_parked
 from openfollow.marker_catalog.control_conflicts import ControlConflict, find_control_conflicts
 from openfollow.net_adapters import display_name
 from openfollow.net_egress import Egress, is_loopback_host, resolve_egress
@@ -1785,7 +1787,11 @@ class AppRuntimeServices:
             name = entry.name if (entry is not None and entry.name) else f"Marker {marker_id}"
             marker = server.add_marker(marker_id, name)
             marker.set_pos(*default_pos)
-        self._app._selected_id = self._app._controlled_ids[0] if self._app._controlled_ids else None
+        # No selection yet, so the first unparked marker is chosen as a start, not as a park moving it.
+        self._app._selected_id = None
+        parked = parked_within(self._app._controlled_ids, self._app._config.parked_marker_ids)
+        self._app._config.parked_marker_ids = parked
+        set_parked(self._app, parked)
 
     def _resolved_plane_source_ip(self, pin: str, *, label: str) -> str | None:
         """Resolve one plane's configured interface to a concrete bind IP.
@@ -3143,6 +3149,8 @@ class AppRuntimeServices:
             network_vlan_provider=self._network_vlan_provider,
             network_vlan_create_handler=self._handle_network_vlan_create,
             network_vlan_delete_handler=self._handle_network_vlan_delete,
+            network_saved_provider=self._network_saved_provider,
+            network_forget_handler=self._handle_network_forget,
             network_rescan_handler=self._forget_network_reading,
             # Privilege capability snapshot for the diagnostics bundle.
             privilege_states_provider=self._privilege_states_provider,
@@ -3470,6 +3478,30 @@ class AppRuntimeServices:
             rows.append(row)
         return rows
 
+    def _network_saved_provider(self) -> list[dict[str, Any]]:
+        """Every interface that is not present but has saved settings, as the card shows them."""
+        from openfollow.network.validate import prefix_to_mask
+
+        reading = self._read_network()
+        if reading is None:
+            return []
+        return [
+            {
+                "name": saved.name,
+                "kind": "vlan" if saved.vlan_id is not None else None,
+                "address": saved.ipv4.address or "",
+                "prefix": saved.ipv4.prefix,
+                "subnet_mask": prefix_to_mask(saved.ipv4.prefix) or "",
+                "method": saved.ipv4.method.value,
+                "router": saved.ipv4.router or "",
+                "dns": list(saved.ipv4.dns),
+                "lease_display": None,
+                "vlan_parent": saved.vlan_parent,
+                "vlan_id": saved.vlan_id,
+            }
+            for saved in reading.saved
+        ]
+
     def _network_address_sources_provider(self) -> list[dict[str, Any]] | None:
         """Every interface's address and its source, read now for the diagnostics bundle.
 
@@ -3557,6 +3589,19 @@ class AppRuntimeServices:
             return ApplyResult(ok=False, message="Read-only host – cannot delete a VLAN.")
         with self.network_change():
             return cast(ApplyResult, adapter.delete_vlan(name))
+
+    def _handle_network_forget(self, name: str) -> ApplyResult:
+        """Delete the saved settings of an interface that is not present, serialised
+        with the other network writes (see :meth:`_handle_network_apply`)."""
+        from openfollow.network.adapter import ApplyResult
+
+        adapter = getattr(self, "_network_adapter", None)
+        if adapter is None:
+            return ApplyResult(ok=False, message="No network adapter available.")
+        if not adapter.is_writable():
+            return ApplyResult(ok=False, message="Read-only host – cannot delete saved settings.")
+        with self.network_change():
+            return cast(ApplyResult, adapter.forget_interface(name))
 
     def _privilege_states_provider(self) -> dict[str, str]:
         """Snapshot every capability's state for the web UI.
@@ -4386,6 +4431,7 @@ class AppRuntimeServices:
                         "state": str(item.get("state", "connected" if item["connected"] else "missing")),
                         "connected": bool(item["connected"]),
                         "marker_id": (int(item["marker_id"]) if item["marker_id"] is not None else None),
+                        "parked": bool(item.get("parked", False)),
                         "effective_speed": float(item["effective_speed"]),
                         "backend": str(item["backend"]),
                         "port_label": str(item.get("port_label", "")),

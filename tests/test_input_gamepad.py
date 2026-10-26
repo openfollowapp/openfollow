@@ -4531,3 +4531,77 @@ class TestPinCaptureReads:
         handler.update(0.016)
         joy.press(CONTROLLER_BUTTON_Y)
         assert handler.update(0.016).toggle_help_pressed is True
+
+
+class TestParkedSlotThroughTheRealHandler:
+    """The resolver InputManager injects reaches the handler's bumper and fader writes for a parked slot."""
+
+    class _Bus:
+        def __init__(self) -> None:
+            self.calls: list[int] = []
+
+        def set_marker_fader_from_velocity_delta(self, marker_id: int, _delta: float) -> None:
+            self.calls.append(marker_id)
+
+    @pytest.mark.parametrize("surface", ["bumper_speed", "marker_fader"])
+    def test_a_parked_slot_writes_nothing_and_the_other_pad_still_does(
+        self, stubbed_pygame, monkeypatch, surface: str
+    ) -> None:
+        from openfollow.input.parking import set_parked
+
+        class _Keyboard:
+            def __init__(self, _app, **_kwargs) -> None:
+                pass
+
+            def update(self, _dt: float) -> None:
+                return None
+
+        class _Pucks:
+            def __init__(self, _config, **_kwargs) -> None:
+                pass
+
+            def start(self) -> None:
+                pass
+
+            def connected_devices(self) -> dict:
+                return {}
+
+            def initial_scan_settled(self) -> bool:
+                return True
+
+            def last_input(self) -> dict:
+                return {}
+
+        monkeypatch.setattr(input_manager_module, "KeyboardHandler", _Keyboard)
+        monkeypatch.setattr(input_manager_module, "Mouse3DManager", _Pucks)
+        cfg = ControllerConfig(move_xy_stick="right", marker_fader_stick="left_y", marker_fader_max_speed_s=1.0)
+        app = FakeApp(controller_cfg=cfg)
+        app._config.osc.enabled = False
+        app._controlled_ids = [10, 11]
+        app._selected_id = 10
+        app._server = SimpleNamespace(get_marker=lambda _marker_id: None)
+        app._assist_manual = {}
+        bus = self._Bus()
+        app._runtime_services = SimpleNamespace(_virtual_faders=bus, _operator_message_store=OperatorMessageStore())
+        joys = {i: FakeJoystick(instance_id=i, name=f"Pad {i}") for i in (0, 1)}
+        stubbed_pygame["state"].update(
+            count=2,
+            lookup=True,
+            instance_ids={0: 0, 1: 1},
+            names={0: "Pad 0", 1: "Pad 1"},
+            factories={i: (lambda _idx, j=j: j) for i, j in joys.items()},
+        )
+        manager = InputManager(app)
+        assert [c["marker_id"] for c in manager.get_controller_info()] == [10, 11]
+        set_parked(app, [10])
+        manager.update(0.016)  # baselines the shoulders and primes the sticks
+        for joy in joys.values():
+            if surface == "bumper_speed":
+                joy.press(BUMPER_LEFT_BUTTON_INDICES[0])
+            else:
+                joy.set_axis(1, -0.8)
+        manager.update(0.016)
+        if surface == "bumper_speed":
+            assert app.move_speed_calls == [(-1, 11)]
+        else:
+            assert set(bus.calls) == {11}

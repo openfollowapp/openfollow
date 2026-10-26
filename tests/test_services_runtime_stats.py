@@ -655,6 +655,27 @@ class TestPublishRuntimeStats:
         items = services.get_runtime_stats_snapshot()["controllers"]["items"]
         assert [i["notes"] for i in items] == [["buttons_unrecognised", "cannot_identify"], []]
 
+    def test_controller_items_publish_whether_the_slot_marker_is_parked(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The Controller Slots table reads ``parked`` off this snapshot to show the P."""
+        item = {"name": "Pad", "connected": True, "effective_speed": 0.0, "backend": "joystick"}
+        mgr = _FakeInputManager(
+            [
+                {**item, "controller_index": 0, "marker_id": 3, "parked": True},
+                {**item, "controller_index": 1, "marker_id": 4, "parked": False},
+                {**item, "controller_index": 2, "marker_id": None},
+            ]
+        )
+        self._prime(services, input_manager=mgr)
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+
+        services.publish_runtime_stats(force=True)
+        items = services.get_runtime_stats_snapshot()["controllers"]["items"]
+        assert [i["parked"] for i in items] == [True, False, False]
+
     def test_detector_present_delegates_to_performance_stats(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
     ) -> None:

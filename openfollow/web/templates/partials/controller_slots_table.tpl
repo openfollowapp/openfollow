@@ -53,7 +53,11 @@
             % end
             </td>
             % if c.get('all_markers'):
-            <td>All markers</td>
+            <td>All markers\\
+            % if c.get('parked'):
+<span class="park-badge"><span aria-hidden="true">P</span><span class="visually-hidden">Parked</span></span>\\
+            % end
+</td>
             % elif state in ('connected', 'missing') and choices and armed is None:
             <td><span class="slot-marker">\\
                 % if c.get('marker_id') is not None:
@@ -66,9 +70,17 @@
                 % for choice in choices:
                 <option value="{{choice['id']}}"{{' selected' if choice['id'] == c.get('marker_id') else ''}}>{{choice['label']}}</option>
                 % end
-            </select></span></td>
+            </select>\\
+            % if c.get('parked'):
+<span class="park-badge"><span aria-hidden="true">P</span><span class="visually-hidden">Parked</span></span>\\
+            % end
+</span></td>
             % elif c.get('marker_id') is not None:
-            <td><span class="slot-marker"><span class="slot-marker-dot" style="--marker-color: {{c.get('marker_color', '')}}"></span>{{c.get('marker_label') or c['marker_id']}}</span></td>
+            <td><span class="slot-marker"><span class="slot-marker-dot" style="--marker-color: {{c.get('marker_color', '')}}"></span>{{c.get('marker_label') or c['marker_id']}}\\
+            % if c.get('parked'):
+<span class="park-badge"><span aria-hidden="true">P</span><span class="visually-hidden">Parked</span></span>\\
+            % end
+</span></td>
             % else:
             <td>-</td>
             % end

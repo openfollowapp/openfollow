@@ -405,6 +405,19 @@ def test_controller_slots_name_each_marker_in_its_colour(slots_server, path: str
     assert "<td>-</td>" in empty
 
 
+def test_a_parked_slot_marker_carries_the_p_badge(slots_server) -> None:
+    """The slot keeps its marker; a blue P after it says the controller in that slot idles."""
+    _, base, stats = slots_server
+    stats["controllers"]["items"] = [dict(_SLOT_ITEMS[0], parked=True), dict(_SLOT_ITEMS[1], parked=False)]
+    _, body = _get(base, "/section/controller_slots")
+    parked, free = _row(body, "C1"), _row(body, "C2")
+    assert (
+        'Lead &amp; &lt;Keys&gt; (10)<span class="park-badge"><span aria-hidden="true">P</span>'
+        '<span class="visually-hidden">Parked</span></span></span>' in parked
+    )
+    assert "park-badge" not in free
+
+
 def test_controller_slots_table_shows_every_state(slots_server) -> None:
     _, base, _ = slots_server
     status, body = _get(base, "/section/controller_slots")
@@ -498,6 +511,26 @@ def test_a_lone_slot_drives_all_markers(slots_server) -> None:
     row = _row(body, "C2")
     assert "<td>All markers</td>" in row
     assert "<select" not in row
+
+
+@pytest.mark.parametrize(
+    ("extra", "before_badge"),
+    [({}, "</select>"), ({"all_markers": True}, "<td>All markers")],
+)
+def test_a_parked_marker_carries_the_p_badge_in_the_picker_and_for_a_lone_slot(
+    slots_server, extra: dict[str, Any], before_badge: str
+) -> None:
+    _, base, stats = slots_server
+    stats["controllers"]["marker_choices"] = [10, 11]
+    badge = (
+        '<span class="park-badge"><span aria-hidden="true">P</span><span class="visually-hidden">Parked</span></span>'
+    )
+    stats["controllers"]["items"][1] = {**_SLOT_ITEMS[1], **extra, "parked": True}
+    _, body = _get(base, "/section/controller_slots")
+    assert before_badge + badge in _row(body, "C2")
+    stats["controllers"]["items"][1] = {**_SLOT_ITEMS[1], **extra, "parked": False}
+    _, body = _get(base, "/section/controller_slots")
+    assert "park-badge" not in _row(body, "C2")
 
 
 def test_no_picker_while_pin_here_waits_or_nothing_is_controlled(slots_server) -> None:

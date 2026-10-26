@@ -615,11 +615,13 @@ def test_apply_section_data_general_ignores_marker_ids(monkeypatch) -> None:
         {
             "controlled_marker_ids": "99",
             "viewer_marker_ids": "98",
+            "parked_marker_ids": "99",
         },
     )
     assert ok is True
     assert config.controlled_marker_ids == original_controlled
     assert config.viewer_marker_ids == original_viewer
+    assert config.parked_marker_ids == []
 
 
 def test_apply_section_data_marker_ignores_marker_id_fields() -> None:
@@ -1312,6 +1314,44 @@ def test_an_imported_controlled_marker_is_viewed_too() -> None:
     assert new.viewer_marker_ids == [4, 2]
 
 
+def test_an_import_restores_the_parked_markers_it_controls() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    new = _apply_import_data(AppConfig(), {"controlled_marker_ids": [2, 3], "parked_marker_ids": [3, 4, True, "2", 3]})
+
+    assert new.parked_marker_ids == [3]
+
+
+def test_an_import_that_drops_a_controlled_marker_drops_its_park() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    new = _apply_import_data(
+        AppConfig(controlled_marker_ids=[1, 2], parked_marker_ids=[1, 2]), {"controlled_marker_ids": [2]}
+    )
+
+    assert new.parked_marker_ids == [2]
+
+
+def test_a_push_leaves_this_stations_parked_markers() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    new = _apply_import_data(
+        AppConfig(controlled_marker_ids=[1, 2], parked_marker_ids=[1]),
+        {"controlled_marker_ids": [1, 2], "parked_marker_ids": [2]},
+        pushed=True,
+    )
+
+    assert new.parked_marker_ids == [1]
+
+
+def test_an_export_carries_the_parked_markers() -> None:
+    from openfollow.web.routes import _config_dict_redacted
+
+    payload = _config_dict_redacted(AppConfig(controlled_marker_ids=[1, 2], parked_marker_ids=[2]))
+
+    assert payload["parked_marker_ids"] == [2]
+
+
 def test_an_import_without_a_marker_selection_keeps_this_stations() -> None:
     from openfollow.web.routes import _apply_import_data
 
@@ -1900,6 +1940,7 @@ def test_reset_config_to_defaults_returns_every_section_to_default() -> None:
     configured.window_width = 3840
     configured.controlled_marker_ids = [1, 2]
     configured.viewer_marker_ids = [1, 2, 3]
+    configured.parked_marker_ids = [2]
     configured.marker_move_speeds = {1: 2.5}
     configured.auto_update_check = False
     configured.camera.pos_x = 9.5

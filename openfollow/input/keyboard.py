@@ -531,7 +531,7 @@ class LinuxEvdevKeyboardPoller(KeyboardPoller):
         self._evdev: Any = None
         self._key_codes: dict[str, tuple[int, ...]] = {}
         self._devices: dict[str, Any] = {}
-        # Nodes sysfs could not classify that are not keyboards, or failed to open, by inode.
+        # Nodes sysfs could not classify that are not keyboards, or that python-evdev cannot read, by inode.
         self._rejected: dict[str, int] = {}
         self._held: frozenset[int] = frozenset()
         self._held_at = -math.inf

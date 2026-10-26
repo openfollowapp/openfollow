@@ -128,13 +128,13 @@ class _Node:
 _BAD_NAME = UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
 
 
-def _sysfs_bitmap(keys: list[int]) -> str:
-    """The kernel's ``capabilities/key`` text: hex longs, most significant first."""
+def _sysfs_bitmap(keys: list[int], bits: int = 64) -> str:
+    """The kernel's ``capabilities/key`` text: hex longs of ``bits`` (32 on armhf), most significant first."""
     mask = sum(1 << key for key in set(keys))
     words = []
     while mask:
-        words.append(f"{mask & (1 << 64) - 1:x}")
-        mask >>= 64
+        words.append(f"{mask & (1 << bits) - 1:x}")
+        mask >>= bits
     return " ".join(reversed(words)) or "0"
 
 
@@ -172,20 +172,22 @@ class _FakeEvdev(types.ModuleType):
         self.opened: list[str] = []
         self.list_error = False
 
-    def add(self, name: str, keys: list[int] | None = None, *, sysfs: bool = True, **flags: Any) -> _Node:
+    def add(
+        self, name: str, keys: list[int] | None = None, *, sysfs: bool = True, bits: int = 64, **flags: Any
+    ) -> _Node:
         """A node; with ``sysfs=False`` sysfs cannot classify it and the poller must open it to tell."""
         path = self.input_dir / name
         path.touch()
         node = _Node(keys=KEYBOARD_KEYS if keys is None else keys, **flags)
         self.nodes[str(path)] = node
         if sysfs:
-            self.write_sysfs(name, node.keys)
+            self.write_sysfs(name, node.keys, bits)
         return node
 
-    def write_sysfs(self, name: str, keys: list[int]) -> None:
+    def write_sysfs(self, name: str, keys: list[int], bits: int = 64) -> None:
         caps = self.sysfs_dir / name / "device" / "capabilities"
         caps.mkdir(parents=True, exist_ok=True)
-        (caps / "key").write_text(_sysfs_bitmap(keys) + "\n")
+        (caps / "key").write_text(_sysfs_bitmap(keys, bits) + "\n")
 
     def replace(self, name: str, keys: list[int]) -> _Node:
         """A new node at the same path (a different inode), as after an unplug and replug."""
@@ -311,11 +313,12 @@ def test_unavailable_when_a_node_sysfs_cannot_classify_is_closed(
     assert _poller(input_dir, clock).is_available() is False
 
 
+@pytest.mark.parametrize("bits", [64, 32])
 def test_a_closed_node_that_is_not_a_keyboard_keeps_evdev(
-    fake_evdev: _FakeEvdev, input_dir: Path, clock: _Clock, monkeypatch: pytest.MonkeyPatch
+    bits: int, fake_evdev: _FakeEvdev, input_dir: Path, clock: _Clock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    fake_evdev.add("event0")
-    fake_evdev.add("event1", keys=MOUSE_KEYS)
+    fake_evdev.add("event0", bits=bits)
+    fake_evdev.add("event1", keys=MOUSE_KEYS, bits=bits)
     _deny(monkeypatch, input_dir / "event1")
     poller = _poller(input_dir, clock)
     assert (poller.is_available(), poller.device_count()) == (True, 1)
@@ -448,10 +451,11 @@ def test_a_keyboard_plugged_in_later_is_read_after_the_rescan(
     assert poller.device_count() == 1
 
 
+@pytest.mark.parametrize("bits", [64, 32])
 def test_a_device_sysfs_lists_without_letter_keys_is_never_opened(
-    fake_evdev: _FakeEvdev, input_dir: Path, clock: _Clock
+    bits: int, fake_evdev: _FakeEvdev, input_dir: Path, clock: _Clock
 ) -> None:
-    fake_evdev.add("event0", keys=MOUSE_KEYS, held={BTN_LEFT})
+    fake_evdev.add("event0", keys=MOUSE_KEYS, held={BTN_LEFT}, bits=bits)
     poller = _poller(input_dir, clock)
     clock.t += 1.0
     assert poller.device_count() == 0
@@ -1039,17 +1043,26 @@ def test_a_keymap_without_polled_letters_keeps_us_positions(
 
 
 @pytest.mark.parametrize(("layout", "z_key", "y_key"), [("de", "KEY_Y", "KEY_Z"), ("us", "KEY_Z", "KEY_Y")])
-def test_the_real_xkbcommon_places_z_and_y(
-    layout: str, z_key: str, y_key: str, monkeypatch: pytest.MonkeyPatch
+def test_the_real_xkbcommon_moves_the_letters(
+    layout: str,
+    z_key: str,
+    y_key: str,
+    fake_evdev: _FakeEvdev,
+    input_dir: Path,
+    clock: _Clock,
+    system_keyboard: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Pins the binding's API the fakes assume; compiles a keymap from the host's xkb-data."""
+    """Pins the binding's API the fakes assume; compiles the keymap from the host's xkb-data."""
+    if sys.platform != "linux":
+        pytest.skip("python-xkbcommon is a Linux-only dependency")
     monkeypatch.delitem(sys.modules, "xkbcommon")
-    try:
-        import xkbcommon.xkb  # noqa: F401
-    except ImportError:
-        pytest.skip("python-xkbcommon is not installed (Linux only)")
-    layout_map = keyboard_module._build_linux_layout_keycode_map(
-        {"layout": layout, "variant": "", "model": "", "options": ""}
-    )
-    assert layout_map is not None
-    assert (layout_map["z"], layout_map["y"]) == (KEY_CODES[z_key], KEY_CODES[y_key])
+    monkeypatch.setenv("XKB_DEFAULT_LAYOUT", layout)
+    node = fake_evdev.add("event0")
+    with caplog.at_level(logging.INFO, logger=keyboard_module.__name__):
+        poller = _poller(input_dir, clock)
+    # The US fallback places us letters too; only this line tells the real map was applied.
+    assert f"Keyboard layout {layout} (from session); using layout-aware keycodes" in caplog.text
+    assert _letter_keys(poller, node, clock, KEY_CODES[z_key]) == {"z"}
+    assert _letter_keys(poller, node, clock, KEY_CODES[y_key]) == {"y"}

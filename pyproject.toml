@@ -181,7 +181,6 @@ module = [
     "easyhid",
     "OpenGL",
     "evdev",
-    "evdev.*",
     "xkbcommon.*",
 ]
 ignore_missing_imports = true

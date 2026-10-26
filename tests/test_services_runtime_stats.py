@@ -142,12 +142,21 @@ class _FakeMouse3DManager:
 
 
 class _FakeInputManager:
-    def __init__(self, items: list[dict] | None = None, mouse3d: Mouse3DStatus | None = None) -> None:
+    def __init__(
+        self,
+        items: list[dict] | None = None,
+        mouse3d: Mouse3DStatus | None = None,
+        keyboard: dict[str, Any] | None = None,
+    ) -> None:
         self._items = items or []
         self.mouse3d_manager = _FakeMouse3DManager(mouse3d)
+        self._keyboard = keyboard or {"poller": "fallback", "devices": None}
 
     def get_controller_info(self) -> list[dict]:
         return list(self._items)
+
+    def keyboard_status(self) -> dict[str, Any]:
+        return dict(self._keyboard)
 
 
 class _FakeCanvas:
@@ -197,12 +206,14 @@ class TestDefaultRuntimeStatsSnapshot:
             "video",
             "controllers",
             "mouse3d",
+            "keyboard",
             "playback",
             "tracking",
             "hud",
             "marker_conflicts",
         }
         assert snap["marker_conflicts"] == []
+        assert snap["keyboard"] == {"poller": None, "devices": None}
         assert snap["system"]["cpu_percent"] == 0.0
         assert snap["video"]["connected"] is False
         assert snap["controllers"]["items"] == []
@@ -372,6 +383,26 @@ class TestPublishRuntimeStats:
         self._prime(services, input_manager=_FakeInputManager(mouse3d=status))
         services.publish_runtime_stats(force=True)
         assert services.get_runtime_stats_snapshot()["mouse3d"] == status.to_dict()
+
+    def test_the_keyboard_poller_is_the_input_managers_own(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+        self._prime(services, input_manager=_FakeInputManager(keyboard={"poller": "evdev", "devices": 2}))
+        services.publish_runtime_stats(force=True)
+        assert services.get_runtime_stats_snapshot()["keyboard"] == {"poller": "evdev", "devices": 2}
+
+    def test_without_input_no_keyboard_poller_is_published(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+        self._prime(services)
+        services.publish_runtime_stats(force=True)
+        assert services.get_runtime_stats_snapshot()["keyboard"] == {"poller": None, "devices": None}
 
     @pytest.mark.parametrize("enabled", [True, False])
     def test_without_input_the_3d_mouse_reads_as_not_scanned(

@@ -8,7 +8,9 @@ the poller abstraction:
 
 - ``FallbackKeyboardPoller`` event → state API.
 - ``create_keyboard_poller`` factory: Darwin → Mac native when available,
-  fallback otherwise; non-Darwin → fallback.
+  fallback otherwise; a platform with no native poller → fallback. The
+  ``platform.system -> "Linux"`` tests get the fallback because the suite's
+  conftest makes ``evdev`` unimportable; the evdev poller has its own file.
 - ``KeyboardHandler.is_connected`` caching against a clock.
 - ``KeyboardHandler.on_key_down/up``: routes to the fallback poller,
   noop for the native poller.
@@ -109,8 +111,8 @@ def test_factory_falls_back_on_darwin_when_mac_unavailable(monkeypatch) -> None:
     assert isinstance(poller, FallbackKeyboardPoller)
 
 
-def test_factory_uses_fallback_on_non_darwin(monkeypatch) -> None:
-    monkeypatch.setattr(keyboard_module.platform, "system", lambda: "Linux")
+def test_factory_uses_fallback_without_a_native_poller(monkeypatch) -> None:
+    monkeypatch.setattr(keyboard_module.platform, "system", lambda: "FreeBSD")
     poller = create_keyboard_poller()
     assert isinstance(poller, FallbackKeyboardPoller)
 

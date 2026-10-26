@@ -532,8 +532,9 @@ class LinuxEvdevKeyboardPoller(KeyboardPoller):
         self._key_codes: dict[str, tuple[int, ...]] = {}
         self._devices: dict[str, Any] = {}
         self._inodes: dict[str, int] = {}
-        # Keyboards dropped for a failed read since the last rescan: path -> (inode at open, error).
-        self._lost: dict[str, tuple[int, Exception]] = {}
+        # Inodes whose read failed since the last rescan, and reopened ones not yet read cleanly since.
+        self._lost: dict[str, int] = {}
+        self._suspect: dict[str, int] = {}
         # Nodes sysfs could not classify that are not keyboards, or that python-evdev cannot read, by inode.
         self._rejected: dict[str, int] = {}
         self._held: frozenset[int] = frozenset()
@@ -604,9 +605,17 @@ class LinuxEvdevKeyboardPoller(KeyboardPoller):
                 held.update(device.active_keys())
             # python-evdev's C extension can raise SystemError, not OSError, for a device the kernel lost.
             except Exception as exc:
-                logger.info("evdev keyboard poller drops %s: %r", path, exc)
-                self._lost[path] = (self._inodes[path], exc)
+                inode = self._inodes[path]
+                again = self._suspect.get(path) == inode
                 self._drop(path)
+                if again:
+                    self._reject_broken(path, inode, exc)
+                else:
+                    logger.info("evdev keyboard poller drops %s: %r", path, exc)
+                    self._lost[path] = inode
+            else:
+                if self._suspect:
+                    self._suspect.pop(path, None)
         self._held = frozenset(held)
         self._held_at = now
         return self._held
@@ -632,10 +641,6 @@ class LinuxEvdevKeyboardPoller(KeyboardPoller):
                 continue
             if self._rejected.get(path) == inode:
                 continue
-            # Still there after a failed read: not an unplug, so skip it like a broken node.
-            if path in lost and lost[path][0] == inode:
-                self._reject_broken(path, inode, lost[path][1])
-                continue
             try:
                 device = self._evdev.InputDevice(path)
             except OSError:
@@ -655,6 +660,9 @@ class LinuxEvdevKeyboardPoller(KeyboardPoller):
             if is_keyboard:
                 self._devices[path] = device
                 self._inodes[path] = inode
+                # Still there after a failed read: one more failure before a clean read skips it.
+                if lost.get(path) == inode:
+                    self._suspect[path] = inode
             else:
                 self._rejected[path] = inode
                 _close_quietly(device)
@@ -666,6 +674,7 @@ class LinuxEvdevKeyboardPoller(KeyboardPoller):
 
     def _drop(self, path: str) -> None:
         self._inodes.pop(path, None)
+        self._suspect.pop(path, None)
         _close_quietly(self._devices.pop(path))
 
 

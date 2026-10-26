@@ -18,6 +18,7 @@ import pytest
 import openfollow.input.keyboard as keyboard_module
 from openfollow import keyboard_layout
 from openfollow.configuration import AppConfig
+from openfollow.input.events import InputEventBus, KeyEvent
 from openfollow.input.keyboard import (
     POLLED_KEYS,
     FallbackKeyboardPoller,
@@ -469,7 +470,7 @@ def test_a_keyboard_whose_read_raises_is_dropped_once_and_the_others_keep_their_
 
 
 @pytest.mark.parametrize("error", _LOST_DEVICE_ERRORS)
-def test_a_keyboard_whose_reads_keep_raising_is_skipped_once_until_replugged(
+def test_a_keyboard_whose_reads_keep_raising_is_skipped_after_the_reopen_until_replugged(
     error: Exception, fake_evdev: _FakeEvdev, input_dir: Path, clock: _Clock, caplog: pytest.LogCaptureFixture
 ) -> None:
     fake_evdev.add("event0", held=_codes("KEY_W"), keys_raises=error)
@@ -480,13 +481,34 @@ def test_a_keyboard_whose_reads_keep_raising_is_skipped_once_until_replugged(
         for _ in range(4):
             assert poller.get_pressed_keys(["w", "a"]) == {"a"}
             clock.t += 1.0
-    assert fake_evdev.opened.count(path) == 1
+    assert fake_evdev.opened.count(path) == 2
     assert caplog.text.count(f"evdev keyboard poller drops {path}") == 1
     assert caplog.text.count(f"evdev keyboard poller skips {path}") == 1
     fake_evdev.replace("event0", KEYBOARD_KEYS).held = _codes("KEY_W")
     clock.t += 1.0
     assert poller.get_pressed_keys(["w", "a"]) == {"w", "a"}
-    assert fake_evdev.opened.count(path) == 2
+    assert fake_evdev.opened.count(path) == 3
+
+
+def test_a_keyboard_whose_reads_fail_now_and_then_is_reopened_and_kept(
+    fake_evdev: _FakeEvdev, input_dir: Path, clock: _Clock, caplog: pytest.LogCaptureFixture
+) -> None:
+    node = fake_evdev.add("event0", held=_codes("KEY_W"))
+    path = str(input_dir / "event0")
+    poller = _poller(input_dir, clock)
+    with caplog.at_level(logging.INFO, logger=keyboard_module.__name__):
+        for _ in range(2):
+            node.keys_raises = OSError(4, "Interrupted system call")
+            clock.t += 1.0
+            assert poller.is_key_pressed("w") is False
+            node.keys_raises = None
+            for _ in range(2):
+                clock.t += 1.0
+                assert poller.is_key_pressed("w") is True
+    assert poller.device_count() == 1
+    assert fake_evdev.opened.count(path) == 3
+    assert caplog.text.count(f"evdev keyboard poller drops {path}") == 2
+    assert "evdev keyboard poller skips" not in caplog.text
 
 
 def test_a_keyboard_replugged_before_the_rescan_after_a_failed_read_is_opened(
@@ -495,7 +517,13 @@ def test_a_keyboard_replugged_before_the_rescan_after_a_failed_read_is_opened(
     gone = fake_evdev.add("event0", keys_raises=SystemError("gone"))
     poller = _poller(input_dir, clock)
     assert poller.is_key_pressed("w") is False
-    fake_evdev.replace("event0", KEYBOARD_KEYS).held = _codes("KEY_W")
+    fresh = fake_evdev.replace("event0", KEYBOARD_KEYS)
+    fresh.held = _codes("KEY_W")
+    # The new inode's own first failure is not the old one's second.
+    fresh.keys_raises = SystemError("again")
+    clock.t += 1.0
+    assert poller.is_key_pressed("w") is False
+    fresh.keys_raises = None
     clock.t += 1.0
     assert poller.is_key_pressed("w") is True
     assert gone.closed == 1
@@ -508,14 +536,17 @@ def test_a_failed_read_is_forgotten_once_its_node_leaves_the_listing(
     node = fake_evdev.add("event0", held=_codes("KEY_W"), keys_raises=SystemError("gone"))
     poller = _poller(input_dir, clock)
     assert poller.is_key_pressed("w") is False
+    clock.t += 1.0
+    poller.device_count()
     del fake_evdev.nodes[path]
     clock.t += 1.0
     poller.device_count()
-    # devtmpfs may hand a new device the inode of the one that left.
-    node.keys_raises = None
+    # The record goes with the node, so one back in the listing gets a reopen of its own before any skip.
     fake_evdev.nodes[path] = node
-    clock.t += 1.0
-    assert poller.is_key_pressed("w") is True
+    for _ in range(3):
+        clock.t += 1.0
+        assert poller.is_key_pressed("w") is False
+    assert fake_evdev.opened.count(path) == 4
 
 
 @pytest.mark.parametrize("error", _LOST_DEVICE_ERRORS)
@@ -530,6 +561,22 @@ def test_a_keyboard_whose_read_raises_does_not_stop_the_frame(
     clock.t += 0.01
     handler.poll_discrete_keys()
     assert handler.keys == {"a"}
+
+
+def test_a_key_held_on_a_lost_keyboard_is_released_on_the_bus(
+    fake_evdev: _FakeEvdev, input_dir: Path, clock: _Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gone = fake_evdev.add("event0", held=_codes("KEY_W"))
+    _install_poller(monkeypatch, input_dir, clock)
+    bus = InputEventBus()
+    seen: list[KeyEvent] = []
+    bus.subscribe_key(seen.append)
+    handler = KeyboardHandler(_App(), event_bus=bus)
+    handler.poll_discrete_keys()
+    gone.keys_raises = SystemError("gone")
+    clock.t += 0.01
+    handler.poll_discrete_keys()
+    assert [(event.key, event.edge) for event in seen] == [("w", "press"), ("w", "release")]
 
 
 @pytest.mark.parametrize("error", _LOST_DEVICE_ERRORS)

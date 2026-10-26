@@ -435,7 +435,9 @@ tokens:
   `#ff6600` reaches 4.8 : 1 at the low end, under the gold glow at the page's
   top; off-white text reads at least 7.2 : 1 on the caution box and 7.3 : 1 on
   the caution chip. The box's muted second line (`.notice-sub`) is the tightest
-  web pairing, about 5.0 : 1 in a section.
+  web pairing. At the highest a section reaches, just under the header in the
+  glow's centre, it reads 4.8 : 1 on a 1080 px tall viewport and 4.6 : 1 on a
+  2160 px tall one; in a dialog (`--bg-soft`) it reads 4.9 : 1.
 - Text on a solid caution fill is the dark `--bg-deep` (6.6 : 1); off-white
   reaches only 2.7 : 1 there.
 - On the HUD, a status row's 80% chip lets the video through. Off-white on the

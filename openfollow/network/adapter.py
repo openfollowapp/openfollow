@@ -144,15 +144,27 @@ class VlanInterface:
 
 
 @dataclass(frozen=True)
+class SavedInterface:
+    """An interface that is not present, with the settings its saved profile brings up when it is plugged in."""
+
+    name: str
+    ipv4: Ipv4Config
+    vlan_parent: str = ""
+    vlan_id: int | None = None
+
+
+@dataclass(frozen=True)
 class NetworkReading:
     """Every interface but loopback, its state, and the VLAN links, read together.
 
-    An interface whose state could not be read is listed without one.
+    An interface whose state could not be read is listed without one. ``saved``
+    lists the interfaces that are not present but have saved settings.
     """
 
     interfaces: tuple[NetworkInterface, ...] = ()
     states: Mapping[str, NetworkState] = field(default_factory=dict)
     vlans: tuple[VlanInterface, ...] = ()
+    saved: tuple[SavedInterface, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -172,6 +184,7 @@ class ApplyResult:
 
 
 VLAN_UNSUPPORTED_MESSAGE = "This network backend cannot create VLAN interfaces."
+FORGET_UNSUPPORTED_MESSAGE = "This network backend keeps no saved settings to delete."
 DHCP_FQDN_UNSUPPORTED_MESSAGE = "This network backend cannot register a name by DHCP."
 
 
@@ -245,6 +258,10 @@ class NetworkAdapter(ABC):
         ``None``: this backend cannot say where an address came from.
         """
         return None
+
+    def forget_interface(self, name: str) -> ApplyResult:
+        """Delete the saved settings of ``name``, which is not present, and of the VLANs on it."""
+        return ApplyResult(ok=False, message=FORGET_UNSUPPORTED_MESSAGE)
 
     # ---- VLAN sub-interfaces --------------------------------------------
     #

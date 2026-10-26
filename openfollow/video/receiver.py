@@ -172,6 +172,8 @@ class GstNativeSinkReceiver:
         self._shared_sink = None
         # Told of every frame that reaches the display sink, from its streaming thread.
         self._display_frame_listener: Callable[[], None] | None = None
+        # Handed each source frame reaching the display sink, with its caps, only while set.
+        self._frame_listener: Callable[[Any, Any], None] | None = None
         # The gtksink is shared across pipeline rebuilds, and pad probes live
         # on its (persistent) sink pad – so attach them exactly once. Without
         # this guard every reconnect/heal rebuild would stack another pair of
@@ -248,10 +250,20 @@ class GstNativeSinkReceiver:
         """Call ``listener`` (from the sink's streaming thread) for each frame that reaches the display."""
         self._display_frame_listener = listener
 
-    def _on_display_frame(self, _pad: Any, _info: Any) -> Any:
+    def set_frame_listener(self, listener: Callable[[Any, Any], None] | None) -> None:
+        """Hand ``listener`` (on the sink's streaming thread) each source frame's buffer and caps; None stops.
+
+        The No Signal placeholder's frames are not handed over.
+        """
+        self._frame_listener = listener
+
+    def _on_display_frame(self, pad: Any, info: Any) -> Any:
         listener = self._display_frame_listener
         if listener is not None:
             listener()
+        frames = self._frame_listener
+        if frames is not None and not self._state.is_placeholder_pipeline:
+            frames(info.get_buffer(), pad.get_current_caps())
         return Gst.PadProbeReturn.OK
 
     def _get_shared_sink(self) -> Any:
@@ -307,6 +319,11 @@ class GstNativeSinkReceiver:
     @property
     def status_marker(self) -> NdiStatusMarker:
         return self._status_marker
+
+    @property
+    def pipeline_builds(self) -> int:
+        """How many pipelines this receiver has built; a reconnect, heal or source swap counts one more."""
+        return self._pipeline_builds
 
     @property
     def source_name(self) -> str:

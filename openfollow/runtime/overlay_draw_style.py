@@ -55,9 +55,9 @@ COLOR_WARNING_BORDER = (0.69, 0.149, 0.149)  # #b02626 (RGB)
 COLOR_INFO_BG = (0.09, 0.239, 0.42)  # #173d6b (RGB)
 COLOR_INFO_FILL = (*COLOR_INFO_BG, 0.8)  # #173d6b at 80% (RGBA)
 COLOR_INFO_BORDER = (0.149, 0.392, 0.69)  # #2664b0 (RGB)
-COLOR_CAUTION_BG = (0.608, 0.447, 0.0)  # #9b7200 (RGB)
-COLOR_CAUTION_FILL = (*COLOR_CAUTION_BG, 0.8)  # #9b7200 at 80% (RGBA)
-COLOR_CAUTION_BORDER = (1.0, 0.737, 0.0)  # #ffbc00 (RGB)
+COLOR_CAUTION_BG = (0.612, 0.243, 0.0)  # #9c3e00 (RGB)
+COLOR_CAUTION_FILL = (*COLOR_CAUTION_BG, 0.8)  # #9c3e00 at 80% (RGBA)
+COLOR_CAUTION_BORDER = (1.0, 0.4, 0.0)  # #ff6600 (RGB)
 COLOR_SUCCESS_BG = (0.145, 0.369, 0.227)  # #255e3a (RGB)
 COLOR_SUCCESS_FILL = (*COLOR_SUCCESS_BG, 0.8)  # #255e3a at 80% (RGBA)
 COLOR_SUCCESS_BORDER = (0.239, 0.604, 0.376)  # #3d9a60 (RGB)
@@ -165,6 +165,16 @@ STATUS_LEVEL_COLORS: dict[str, tuple[tuple[float, ...], tuple[float, ...], tuple
 }
 # Gravest first.
 STATUS_LEVELS = ("error", "caution", "info", "success")
+
+
+def level_fill(level: str) -> tuple[float, float, float, float]:
+    """The chip fill of *level*, read from its token when drawn."""
+    return {
+        "error": COLOR_WARNING_FILL,
+        "caution": COLOR_CAUTION_FILL,
+        "info": COLOR_INFO_FILL,
+        "success": COLOR_SUCCESS_FILL,
+    }[status_level(level)]
 
 
 def status_level(value: object) -> str:

@@ -168,7 +168,7 @@
  style="bottom:{{fill_pct}}%"></div>
  </div>
  <span class="midi-fader-strip-name">{{display_name}}</span>
- <span id="midi-fader-strip-value-{{idx}}" class="midi-fader-strip-value">{{'%.2f' % value}}{{!'<span class="midi-fader-strip-not-picked-up">not picked up</span>' if live and not live['picked_up'] else ''}}</span>
+ <span id="midi-fader-strip-value-{{idx}}" class="midi-fader-strip-value">{{'%.2f' % value}}<span class="midi-fader-strip-not-picked-up"{{!'' if live and not live['picked_up'] else ' data-picked-up'}}>not picked up</span></span>
  </button>
  % end
  </div>

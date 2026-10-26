@@ -22,6 +22,8 @@ Eight normalised faders (0.00 – 1.00), addressed by position on the bus (1 thr
 
 The strips show the values as they were when the page opened. **Show live** follows them twice a second for 10 seconds, then stops by itself, and **Stop live** ends it sooner. The same button above the Marker Faders runs both rows. Every update is a request the station answers, so the strips are not kept live while nobody is looking.
 
+A strip marked **not picked up** is a MIDI fader whose physical control has not yet met the fader's value. Moving the physical fader changes nothing until it crosses that value; from then on it drives the fader.
+
 Click a strip to open its settings in the detail panel below.
 
 ### Identity

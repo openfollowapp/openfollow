@@ -44,7 +44,7 @@
             fb.textContent = msg;
         };
         // Source Type drives which controls apply: capture (live sources only),
-        // healing (network sources only), preview (not the gallery).
+        // healing (network sources only), preview and latency (not the gallery).
         window.ofVideoSourceToggle = function(value){
             document.querySelectorAll('[data-input-type]').forEach(function(el){
                 el.style.display = el.dataset.inputType === value ? '' : 'none';
@@ -54,6 +54,52 @@
             vis('capture-frame-row', value !== 'testpattern');
             vis('heal-field', net);
             vis('preview-row', value !== 'testpattern');
+            vis('video-source-latency', value !== 'testpattern');
+        };
+        // Measure latency: the station renders each state of the dialog into the shared modal.
+        window.ofLatencyDialog = function(){
+            openModal({
+                title: 'Measure Camera Latency',
+                bodyHTML: '<div id="latency-dialog"></div>',
+                footerButtons: [],
+                onClose: function(){
+                    // The dialog goes first, its warnings' renewal with it; then the screen's card goes at once.
+                    var dialog = document.getElementById('latency-dialog');
+                    if(dialog) dialog.remove();
+                    if(window.ofLatencyWarning){
+                        navigator.sendBeacon('/section/video_source/latency/warning/close?token=' + window.ofLatencyWarning);
+                        window.ofLatencyWarning = '';
+                    }
+                    // The row shows the newest result, and takes the focus back.
+                    htmx.ajax('GET', '/section/video_source/latency', {target: '#video-source-latency', swap: 'outerHTML'})
+                        .then(function(){
+                            var btn = document.querySelector('#video-source-latency button');
+                            if(btn) btn.focus();
+                        });
+                },
+            });
+            htmx.ajax('GET', '/section/video_source/latency/dialog', {target: '#latency-dialog', swap: 'outerHTML'});
+        };
+        // Whether an element of the dialog is on the open dialog: closing removes it, and a state that
+        // arrives after its dialog closed lands nowhere in the page.
+        window.ofLatencyWarningLive = function(el){
+            return !!(el && el.isConnected);
+        };
+        // Each state of the dialog: locked while a run lasts; focus on the action that starts nothing, else the dialog.
+        // A state meant for a dialog closed before it arrived (another one may be open by then) is ignored.
+        window.ofLatencyDialogShown = function(running, warning){
+            var dialog = document.getElementById('latency-dialog');
+            if(!ofLatencyWarningLive(dialog) || dialog.getAttribute('data-warning') !== warning) return;
+            window.ofLatencyWarning = warning;
+            // The state's own actions take the modal's footer only now that the state is known to be this dialog's.
+            var actions = dialog.querySelector('[data-latency-footer]');
+            var footer = document.getElementById('modal-footer');
+            footer.replaceChildren.apply(footer, actions ? Array.from(actions.childNodes) : []);
+            if(actions) actions.remove();
+            htmx.process(footer);
+            modalLock(running);
+            var target = document.querySelector('#modal-footer [data-autofocus]') || dialog;
+            target.focus();
         };
         </script>
         <!-- Every source's video can stall; only the network inputs (RTSP/SRT/RTP) heal. -->
@@ -129,6 +175,9 @@
             document.body.addEventListener('poll-shown', onShown);
         })();
         </script>
+% if defined('latency'):
+%     include('partials/video_source_latency.tpl')
+% end
     </div>
 
     <div class="actions">

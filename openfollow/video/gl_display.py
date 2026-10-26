@@ -349,6 +349,23 @@ in vec2 v_uv; out vec4 o; uniform sampler2D t;
 void main() { o = texture(t, v_uv).bgra; }"""
 
 
+class ScreenFlash:
+    """Covers video and HUD in the latency probe's screen level and tells the probe the refresh that showed it."""
+
+    def __init__(self, level: Callable[[], float | None], presented: Callable[[float, int], None]) -> None:
+        self._level = level
+        self._presented = presented
+
+    def draw(self, gl: Any, refresh_us: int) -> None:
+        """Last in a render: clear to the level asked for, if any."""
+        level = self._level()
+        if level is None:
+            return
+        gl.glClearColor(level, level, level, 1.0)
+        gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+        self._presented(level, refresh_us)
+
+
 class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the station
     """The receiver's video sink and the window's main widget, in one."""
 
@@ -363,6 +380,8 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
         self._Gst = Gst
         self._monotonic_us = GLib.get_monotonic_time
         self._hud = hud
+        # The latency probe's black or white over everything, while it asks for one.
+        self.flash: ScreenFlash | None = None
         Gst.init(None)
         # fakevideosink, not appsink: it announces GstVideoMeta, so a decoder writes into it without a copy.
         sink = Gst.parse_bin_from_description(
@@ -606,6 +625,8 @@ class GlDisplay:  # pragma: no cover - GTK GL area and GL calls, verified on the
                 GL.glActiveTexture(GL.GL_TEXTURE0)
                 GL.glBindTexture(GL.GL_TEXTURE_2D, self._t_hud)
                 self._draw_quad(-1.0, -1.0, 1.0, 1.0)
+        if self.flash is not None:
+            self.flash.draw(GL, self._refresh[0])
 
     def _draw_layers(self, layers: Layers, serial: int, aw: int, ah: int) -> None:
         import numpy as np

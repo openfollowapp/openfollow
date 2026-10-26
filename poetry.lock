@@ -926,6 +926,18 @@ files = [
 cffi = "*"
 
 [[package]]
+name = "evdev"
+version = "2.0.0"
+description = "Bindings to the Linux input handling subsystem"
+optional = false
+python-versions = ">=3.11"
+groups = ["main"]
+markers = "sys_platform == \"linux\""
+files = [
+    {file = "evdev-2.0.0.tar.gz", hash = "sha256:442fb3f4c8dfc9e61e901133c356220c02d663eca8f34722e0cecdd637eba504"},
+]
+
+[[package]]
 name = "execnet"
 version = "2.1.2"
 description = "execnet: rapid multi-Python deployment"
@@ -4377,6 +4389,21 @@ packaging = ">=26.3"
 platformdirs = ">=4.4,<5"
 python-discovery = ">=1.6.1"
 
+[[package]]
+name = "xkbcommon"
+version = "1.5.1"
+description = "Bindings for libxkbcommon using cffi"
+optional = false
+python-versions = ">=3.8"
+groups = ["main"]
+markers = "sys_platform == \"linux\""
+files = [
+    {file = "xkbcommon-1.5.1.tar.gz", hash = "sha256:ac174808dbf61d35d9da804bf33baac74bc6f2be0c108594ae93c79cd15ddc36"},
+]
+
+[package.dependencies]
+cffi = ">=1.5.0"
+
 [extras]
 detection = ["onnxruntime", "opencv-python"]
 export = ["ultralytics"]
@@ -4384,4 +4411,4 @@ export = ["ultralytics"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13,<3.14"
-content-hash = "ea9f5e32efe99ff188216b33fa9451c1ae5dc09086d99ed42e8abadcedb1321a"
+content-hash = "b695c179083cdc71a4a8353908bfc57295487940e96d17dc9d4dbb223a6baa7a"

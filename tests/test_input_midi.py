@@ -1052,6 +1052,22 @@ class TestMatchAllocation:
         shared, spare = _xtm(None, "Pad MIDI 1"), _xtm("U", "Pad MIDI 2")
         assert match_patches(patches, [shared, spare]) == {1: shared, 2: spare}
 
+    def test_a_saved_sibling_patch_claims_the_unit_until_the_other_is_saved(self) -> None:
+        one, two = _xtm("U", "Pad MIDI 1"), _xtm("U", "Pad MIDI 2")
+        saved = MidiPatch(id=1, serial="U", port_name="Pad MIDI 1")
+        unsaved = MidiPatch(id=2, port_name="Pad MIDI 2")
+        assert match_patches([saved, unsaved], [one, two]) == {1: one}
+        unsaved.serial = "U"
+        assert match_patches([saved, unsaved], [one, two]) == {1: one, 2: two}
+
+    def test_a_patch_saved_onto_a_spare_claims_it_until_its_sibling_is_saved(self) -> None:
+        one, two = _xtm("SPARE", "Pad MIDI 1"), _xtm("SPARE", "Pad MIDI 2")
+        saved = MidiPatch(id=1, serial="SPARE", port_name="Pad MIDI 1")
+        unsaved = MidiPatch(id=2, serial="F", port_name="Pad MIDI 2")
+        assert match_patches([saved, unsaved], [one, two]) == {1: one}
+        unsaved.serial = "SPARE"
+        assert match_patches([saved, unsaved], [one, two]) == {1: one, 2: two}
+
     def test_a_patch_without_a_device_is_never_matched(self) -> None:
         assert match_patches([MidiPatch(id=1, product="XTM")], [_xtm(None)]) == {}
 

@@ -1047,6 +1047,8 @@ class GstNativeSinkReceiver:
 
     def _create_placeholder_pipeline(self) -> None:
         """Build a black-frame pipeline for the 'No Signal' overlay."""
+        # Only the fallback parks a feed, and it marks it after this.
+        self._parked = False
         # Dispose any live pipeline first: ``self._pipeline`` is overwritten
         # below, so without this an existing pipeline (and its bus signal watch
         # + sockets) would be orphaned – a file-descriptor leak. Route through
@@ -1430,8 +1432,9 @@ class GstNativeSinkReceiver:
         reseed=True sets last-frame clock to now (skip false positives on
         fresh connect); reseed=False preserves timestamp (live config changes).
         """
-        timeout = self._reconnect_policy.stall_timeout
         with self._watchdog_lock:
+            # Read under the lock: a save may change it between the first frame and this arm.
+            timeout = self._reconnect_policy.stall_timeout
             self._cancel_watchdog()
             if timeout <= 0:
                 return

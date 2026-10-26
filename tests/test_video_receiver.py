@@ -4864,6 +4864,38 @@ class TestRecoveryTimersActOnTheFeed:
         r.set_recovery_timers(heal_interval=5.0)
         assert r._heal_source_id is None
 
+    @pytest.mark.parametrize("source", ["", "cam-2"], ids=["no-source", "another-source"])
+    def test_a_feed_swapped_after_parking_is_no_longer_parked(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch, source
+    ) -> None:
+        """A new source starts its own connection; one with nothing to dial would otherwise heal forever."""
+        r = self._parked()
+        monkeypatch.setattr(FakeInput, "create_pipeline_result", FakePipeline())
+        r.swap_input("fake", {"fake_source": source})
+        r.set_recovery_timers(heal_interval=5.0)
+        assert r._heal_source_id is None
+
+    def test_a_watchdog_armed_as_a_save_lands_reads_the_saved_timeout(
+        self, fake_gst, fake_glib, fake_input_cls
+    ) -> None:
+        """The first frame arms it on the streaming thread while a save writes the timeout on the main loop."""
+        r = receiver_mod.GstNativeSinkReceiver(
+            source_type="fake", input_config={"fake_source": "cam-1"}, stall_timeout=0.0
+        )
+        lock = r._watchdog_lock
+
+        class _SaveLandsFirst:
+            def __enter__(self):
+                r._reconnect_policy.stall_timeout = 3.0  # the save, landing as the arm waits for the lock
+                return lock.__enter__()
+
+            def __exit__(self, *exc):
+                return lock.__exit__(*exc)
+
+        r._watchdog_lock = _SaveLandsFirst()
+        r._start_watchdog()
+        assert fake_glib.timers[r._watchdog_source_id][0] == 1000
+
     def test_a_build_that_failed_from_the_start_is_not_healed(self, fake_gst, fake_glib, fake_input_cls) -> None:
         """Only the fallback parks a feed; a failed first build keeps its own reason on screen."""
         r = receiver_mod.GstNativeSinkReceiver(

@@ -66,7 +66,7 @@ Which network interface SRT, RTSP and RTP use is set under **Network Interface A
 
 ## Connection recovery
 
-Two safeguards keep a feed alive without operator intervention. Both take effect on the running feed as soon as they are saved. They cover two different failure modes:
+Two safeguards keep a feed alive without operator intervention. Both take effect on the current feed without rebuilding it. They cover two different failure modes:
 
 - **Stall Timeout (s)** – the *silent-stall* watchdog, for a stream that is still "connected" but has quietly stopped delivering frames with no error to signal it. This is common on UDP, multicast, and some RTSP cameras: the last frame just freezes on screen and nothing recovers on its own. If no new frame arrives within this many seconds, OpenFollow tears the pipeline down and reconnects. It watches every source type: a capture card whose HDMI signal drops, for example, is rebuilt the same way. Default `3.0`. Raise it if a healthy source has long legitimate gaps (very low frame rate, sparse keyframes) and is being reconnected unnecessarily; lower it to react to freezes faster. `0` disables the watchdog.
 - **Heal Interval (s)** – the *self-healing* re-probe, for a network feed (RTSP, SRT, RTP) that is already down and showing the "No Signal" placeholder (source unplugged, encoder rebooting, network blip). OpenFollow retries the URL this often until the source returns, so the picture comes back by itself with no one re-saving. Default `5.0`. Shorter intervals recover faster but probe the network more often; `0` disables auto-recovery, and the feed then stays on the placeholder. Saving an interval above `0` starts healing a feed that is down; the first retry follows one interval after the save.

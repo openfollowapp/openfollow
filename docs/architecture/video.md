@@ -291,7 +291,7 @@ The "No Signal" placeholder is a black `videotestsrc` pinned at 1920x1080 @ 30 t
 - `play()` → `_start_connection_timeout()` (uses plugin's `connection_timeout`)
 - On error: `_schedule_reconnect()` with exponential backoff (plugin's `ReconnectPolicy`)
 - `_is_placeholder_pipeline`: True when showing "No Signal" placeholder
-- Recovery timers (`set_recovery_timers`, from a saved `stall_timeout` / `heal_interval`) act on the feed as it is now: a running feed of any input gets the stall watchdog at the new timeout, armed if it was off (judged by the frame clock every buffer stamps, never reseeded); a fixed-URL feed parked on the placeholder with no reconnect or connection timeout pending (`_parked`) heals at the new interval, and `0` stops it
+- Recovery timers (`set_recovery_timers`, from a saved `stall_timeout` / `heal_interval`) act on the feed as it is now: a running feed of any input gets the stall watchdog at the new timeout, armed if it was off (judged by the frame clock every buffer stamps, never reseeded); a fixed-URL feed parked on the placeholder with no reconnect or connection timeout pending (`_parked`) heals at a changed interval, and `0` stops it; any placeholder built for another reason clears the mark
 - `STATE_CHANGED` check: sink name is `"shared_videosink"` (not `"videosink"`); connected status is set on first frame/caps, not on PLAYING alone
 
 ## GStreamer SRT gotchas

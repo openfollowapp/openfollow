@@ -693,8 +693,9 @@ def text_entry_owns_input(app: Any) -> bool:
     """True while a screen the operator types into owns the keyboard.
 
     The URL editor, the Pi-network field editor and the browser overlay take
-    their keys from GTK events; the GTK path stops forwarding keys to the
-    poller while one is open, and a hardware poller is gated by the same test.
+    their keys from GTK events. ``on_key_down`` / ``on_key_up`` check this
+    first and stop forwarding keys to the poller, and a hardware poller is
+    gated by the same test.
     """
     return bool(
         getattr(app, "_url_editor_active", False)
@@ -809,6 +810,9 @@ class KeyboardHandler:
         # while one owns input, or as it closes, stay invisible until released.
         self._swallowed: set[str] = set()
         self._gated_last_poll = False
+        # Keys held at the last poll before a text screen opened: the press that
+        # opened it, whose GTK key_down can still arrive after it is open.
+        self._echoes: set[str] = set()
         if self._is_fallback:
             logger.warning("Using fallback keyboard tracking – key events may be lost")
 
@@ -828,14 +832,29 @@ class KeyboardHandler:
     @property
     def keys(self) -> set[str]:
         """Return set of currently pressed keys (for compatibility)."""
+        if self._gated():
+            return set()
         return {key for key in POLLED_KEYS if self._held(key)}
 
     def _gated(self) -> bool:
         return not self._is_fallback and text_entry_owns_input(self.app)
 
     def _held(self, key: str) -> bool:
-        """Whether ``key`` is held, as the app may act on it."""
-        return key not in self._swallowed and not self._gated() and self._poller.is_key_pressed(key)
+        """Whether ``key`` is held and not swallowed; callers check the gate first."""
+        return key not in self._swallowed and self._poller.is_key_pressed(key)
+
+    @staticmethod
+    def _event_key(event: dict[str, Any]) -> str:
+        key = str(event.get("key", ""))
+        return key.lower() if len(key) == 1 else key
+
+    def is_late_echo(self, event: dict[str, Any]) -> bool:
+        """Whether a GTK key_down repeats a press the hardware poller acted on before a text screen opened."""
+        return self._event_key(event) in self._echoes
+
+    def end_echo(self, event: dict[str, Any]) -> None:
+        """A GTK key_up ends that key's echo."""
+        self._echoes.discard(self._event_key(event))
 
     def is_connected(self) -> bool:
         """Return whether a keyboard appears to be connected and usable."""
@@ -908,7 +927,9 @@ class KeyboardHandler:
         contract – modifier flicker faster than 60 Hz isn't
         observable through this interface anyway.
         """
-        return frozenset(canonical for key, canonical in self._MODIFIER_KEY_TO_NAME.items() if self._held(key))
+        return frozenset(
+            canonical for key, canonical in self._MODIFIER_KEY_TO_NAME.items() if self._poller.is_key_pressed(key)
+        )
 
     def poll_discrete_keys(self) -> None:
         """Poll keyboard state and detect press / release edges.
@@ -940,21 +961,25 @@ class KeyboardHandler:
         later re-add re-sees the press edge instead of a phantom held state.
         """
         gated = self._gated()
-        self._swallowed = {key for key in self._swallowed if self._poller.is_key_pressed(key)}
-        if gated or self._gated_last_poll:
-            # A screen closed by a GTK key event leaves that key held: no press edge for it underneath.
-            self._swallowed |= self._poller.get_pressed_keys(POLLED_KEYS)
-        self._gated_last_poll = gated
+        if not self._is_fallback:
+            held = self._poller.get_pressed_keys(POLLED_KEYS)
+            self._swallowed &= held
+            if gated or self._gated_last_poll:
+                # A screen closed by a GTK key event leaves that key held: no press edge for it underneath.
+                self._swallowed |= held
+            self._echoes = self._echoes & held if gated else held
+            self._gated_last_poll = gated
         discrete = self._discrete_polled_keys()
         if self._event_bus is not None:
-            modifiers = self._current_modifiers()
+            # Physically held modifiers, swallowed or not; none while a text screen owns input.
+            modifiers = frozenset() if gated else self._current_modifiers()
             keys_to_poll: list[str] | frozenset[str] = POLLED_KEYS
         else:
             # No bus → no emission, no need to query modifier state.
             modifiers = frozenset()
             keys_to_poll = discrete
         for key in keys_to_poll:
-            is_pressed = self._held(key)
+            is_pressed = not gated and self._held(key)
             was_pressed = self._prev_key_state.get(key, False)
             if is_pressed and not was_pressed:
                 if key in discrete:
@@ -1064,8 +1089,10 @@ class KeyboardHandler:
         # tests that don't go through that gate.
         move_speed = self.app.get_marker_move_speed(self.app._selected_id)
 
+        gated = self._gated()
+
         def pressed(key: str) -> bool:
-            return bool(key) and self._held(key)
+            return bool(key) and not gated and self._held(key)
 
         layout = MOVEMENT_LAYOUTS.get(cc.key_move_layout, MOVEMENT_LAYOUTS["wasd"])
         vx = vy = vz = 0.0

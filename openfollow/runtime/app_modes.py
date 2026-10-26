@@ -871,36 +871,29 @@ def on_key_down(app: OpenFollowApp, event: dict[str, Any]) -> None:
     """
     key = app._normalize_key(event.get("key", ""))
 
-    # URL editor / browser overlays own input exclusively. Skip the
-    # forward to ``keyboard_handler.on_key_down`` so the polled-key
-    # tracker doesn't latch keys as "pressed" while the overlay is
-    # up – otherwise the matching ``on_key_up`` (also gated below) is
-    # the only way they'd clear, and a release that lands after the
-    # overlay closes leaves the key flagged pressed and can fire app
-    # shortcuts on the next polled tick.
-    if app._url_editor_active:
-        # URL editor needs every printable key and Backspace, neither
-        # of which flow through the polled discrete-key path
-        # (``KeyboardHandler.POLLED_KEYS`` covers letters / arrows /
-        # Tab / Enter / Escape but not digits / punctuation /
-        # Backspace). Route everything to ``handle_url_editor_key``
-        # and skip the digit-as-marker shortcut below so typing "1"
-        # goes into the URL buffer instead of picking marker 0.
-        handle_url_editor_key(app, key)
-        return
+    # A text-entry screen owns input exclusively. Skip the forward to
+    # ``keyboard_handler.on_key_down`` so the polled-key tracker doesn't latch
+    # keys as "pressed" while it is up – otherwise the matching ``on_key_up``
+    # (also gated below) is the only way they'd clear, and a release that
+    # lands after the screen closes leaves the key flagged pressed and can
+    # fire app shortcuts on the next polled tick.
+    if text_entry_owns_input(app):
+        manager = app._input_manager
+        if manager is not None and manager.keyboard_handler.is_late_echo(event):
+            # A hardware poller already acted on this press, which opened the
+            # screen; its GTK event arrived late. The window keeps it from the WebView.
+            event["late_echo"] = True
+            return
+        # The editors take the top-row digits, punctuation and Backspace, none
+        # of which ``POLLED_KEYS`` covers, so GTK events go straight to them and
+        # the digit-as-marker shortcut below never fires under them.
+        if app._url_editor_active:
+            handle_url_editor_key(app, key)
+        elif getattr(app, "_pi_network_field_edit_active", False):
+            from openfollow.runtime.app_modes_network import handle_pi_network_field_edit_key
 
-    # Pi network field editor: same constraint as the URL editor – it
-    # accepts the top-row digits, '.' and Backspace, none of which flow
-    # through the polled discrete-key path. ``POLLED_KEYS`` polls a-z, the
-    # modifiers, Space, the arrows, Tab/Enter/Escape and the numpad – but not
-    # the top number/punctuation row or Backspace. Route GTK key events
-    # straight to the field handler and skip the digit-as-marker shortcut
-    # below so typing an IP octet edits the buffer instead of reselecting a
-    # marker.
-    if getattr(app, "_pi_network_field_edit_active", False):
-        from openfollow.runtime.app_modes_network import handle_pi_network_field_edit_key
-
-        handle_pi_network_field_edit_key(app, key)
+            handle_pi_network_field_edit_key(app, key)
+        # The browser overlay's WebView interprets its keys itself (and intercepts Esc).
         return
 
     # Field-choice picker also owns input exclusively. ArrowUp/Down/
@@ -908,13 +901,6 @@ def on_key_down(app: OpenFollowApp, event: dict[str, Any]) -> None:
     # here keeps the digit-marker shortcut from firing while the
     # operator is choosing a value.
     if app._field_choice_active:
-        return
-
-    # Browser overlay: the WebView's own ``key-press-event`` handler
-    # interprets keys for the rendered page and intercepts Esc to
-    # dismiss. Skip the digit-marker shortcut below so typing into a
-    # form field can't fire a side-effect on the underlying app.
-    if app._browser_active:
         return
 
     if app._input_manager is not None:
@@ -940,6 +926,8 @@ def on_key_up(app: OpenFollowApp, event: dict[str, Any]) -> None:
     # arrives after the overlay closes can't clear a key it never saw
     # pressed (which would otherwise underflow ``keys`` or strand a
     # different key as latched-pressed).
+    if app._input_manager is not None:
+        app._input_manager.keyboard_handler.end_echo(event)
     if text_entry_owns_input(app) or app._field_choice_active:
         return
     if app._input_manager is not None:

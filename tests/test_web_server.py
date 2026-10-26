@@ -7356,28 +7356,6 @@ def test_update_marker_post_persists_visual_booleans(live_server) -> None:
     assert saved.marker.ground_circle is False
 
 
-def test_marker_form_accepts_the_former_z_line_checkbox_name(live_server) -> None:
-    """A page rendered before the rename posts the checkbox under its former name.
-
-    The bool fields are synthesised from what the form did *not* send, so without
-    translating first the synthesised ``False`` would win over the ticked box and
-    silently switch the line off - while the thickness beside it, not being a
-    bool, would translate and carry over. The two halves of one rename must not
-    disagree on the same POST.
-    """
-    server, base = live_server
-    status, _ = _post_form(
-        base,
-        "/section/marker",
-        {"drop_line": "on", "drop_line_thickness": "7"},
-    )
-    assert status == 200
-
-    saved = load_config(server.config_path)
-    assert saved.marker.z_line is True
-    assert saved.marker.z_line_thickness == 7
-
-
 def test_marker_save_preserves_the_control_frame(live_server) -> None:
     """The control frame lives on MarkerConfig but is rendered by the *movement*
     section, so saving a visual toggle must not reset the operator's controls."""

@@ -3473,7 +3473,7 @@ def _config_from_data(path: str, data: dict[str, Any]) -> AppConfig:
             if _old in _ctrl and _new not in _ctrl:
                 _ctrl[_new] = _ctrl[_old]
 
-    # Back-compat: read the marker's Z-line settings under their former names
+    # Back-compat: read the marker's settings under their former names
     # BEFORE ``_filter_known`` drops them, so an existing config keeps them.
     _marker = data.get("marker")
     if isinstance(_marker, dict):
@@ -3532,12 +3532,6 @@ def load_config_for_save(path: str, *, missing: Callable[[], AppConfig] | None =
 _DEPRECATED_WARNED: set[str] = set()
 
 
-_RENAMED_MARKER_KEYS: tuple[tuple[str, str], ...] = (
-    ("drop_line", "z_line"),
-    ("drop_line_thickness", "z_line_thickness"),
-)
-
-
 def apply_renamed_marker_keys(marker_data: dict[str, Any]) -> None:
     """Read the marker's settings under their former names, in place.
 
@@ -3546,10 +3540,6 @@ def apply_renamed_marker_keys(marker_data: dict[str, Any]) -> None:
     during a rolling upgrade is understood rather than accepted and silently
     discarded. The current name wins wherever both appear.
     """
-    for old, new in _RENAMED_MARKER_KEYS:
-        if old in marker_data and new not in marker_data:
-            marker_data[new] = marker_data[old]
-            _warn_renamed_marker_key(old, new)
     # invert_control_direction is stage axes, or when true the heading of a camera looking downstage.
     if "invert_control_direction" in marker_data:
         inverted = _coerce_bool(marker_data.pop("invert_control_direction"), False)

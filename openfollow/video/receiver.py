@@ -1193,7 +1193,7 @@ class GstNativeSinkReceiver:
             finally:
                 self._pipeline = None
 
-        # Refreshed during the backoff, so the retry's pin check reads a current answer.
+        # Looked up again during the backoff when the answer has expired.
         self._input.__class__.prefetch(self._input_config)
         schedule = self._state.build_reconnect_schedule(self._reconnect_policy)
         self._status_marker.set_reconnecting(schedule.attempt, error_message, failure=failure, phase=phase)
@@ -1211,7 +1211,7 @@ class GstNativeSinkReceiver:
         """Retry a refused build; one still waiting on its name is checked again unannounced."""
         if refusal.retry_s > 0:
             self._cancel_reconnect()
-            delay_ms = max(1, math.ceil(refusal.retry_s * 1000))
+            delay_ms = math.ceil(refusal.retry_s * 1000)
             self._state.reconnect_source_id = GLib.timeout_add(delay_ms, self._recheck_name)
             return
         self._schedule_reconnect(self._refusal_text(refusal), failure=refusal.failure)

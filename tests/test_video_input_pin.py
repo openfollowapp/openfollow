@@ -414,8 +414,8 @@ def test_a_check_never_waits_for_a_name_whose_answer_has_not_landed(
     net: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, check: Any, host: str
 ) -> None:
     """The check runs on the main loop before every build: it reads what is known,
-    and a name still resolving is refused as pending for the input's own retry."""
-    resolver = _Unanswered()
+    and a name unanswered past its time is refused for the input's own retry."""
+    resolver = _Unanswered(age=1.0)
     monkeypatch.setattr(_pin, "_resolver", resolver)
     assert check() == PinRefusal(VideoFailure.UNKNOWN, f"{host} did not resolve in time to check it against eth1")
     assert resolver.waits == [0.0]

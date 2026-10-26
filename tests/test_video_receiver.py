@@ -5581,6 +5581,7 @@ class TestTheInterfacePinRefusesABuild:
         # Checked again once its time is up, without spending a backoff step.
         assert [(delay, cb.__name__) for delay, cb in fake_glib.timers.values()] == [(200, "_recheck_name")]
         assert r._state.reconnect_attempt == 0
+        assert r._state.is_placeholder_pipeline is True
 
     def test_a_name_check_replaces_a_reconnect_already_pending(
         self, fake_gst, fake_glib, fake_input_cls, monkeypatch
@@ -5617,9 +5618,11 @@ class TestTheInterfacePinRefusesABuild:
         built = FakePipeline()
         FakeInput.create_pipeline_result = built
         monkeypatch.setattr(FakeInput, "_refusal", None)
+        ((_delay, recheck),) = fake_glib.timers.values()
+        assert recheck.__name__ == "_recheck_name"
         fake_glib.timers.clear()
 
-        r._do_reconnect()
+        recheck()
 
         assert r._pipeline is built
         assert r.status_marker.failure is VideoFailure.NONE
@@ -5633,9 +5636,11 @@ class TestTheInterfacePinRefusesABuild:
         r.play()
         late = PinRefusal(VideoFailure.UNKNOWN, "camera.example did not resolve in time to check it against eth1")
         monkeypatch.setattr(FakeInput, "_refusal", late)
+        ((_delay, recheck),) = fake_glib.timers.values()
+        assert recheck.__name__ == "_recheck_name"
         fake_glib.timers.clear()
 
-        r._do_reconnect()
+        recheck()
 
         assert r.status_marker.failure is VideoFailure.UNKNOWN
         assert r.status_marker.error_message == late.detail

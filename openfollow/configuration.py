@@ -1328,12 +1328,11 @@ class MidiPatch:
 
     @property
     def identifier(self) -> str:
-        """Stable device key matching ``_DiscoveredDevice.identifier`` in
+        """Stable device key matching ``DiscoveredDevice.identifier`` in
         the MIDI subsystem – ``serial:<serial>|<port_name>`` when a serial is
         known, else ``port:<port_name>|<product>``. Empty when no device is bound
-        (a fresh patch). Used by the Device dropdown to mark the selected
-        option and to preserve a binding whose device is currently
-        disconnected (the row re-submits this same key)."""
+        (a fresh patch). The value a disconnected binding's option re-submits,
+        so a save keeps it."""
         if not (self.serial or self.port_name or self.product):
             return ""
         if self.serial:

@@ -680,7 +680,7 @@ def match_patches(patches: Sequence[MidiPatch], discovered: Sequence[DiscoveredD
     order and only onto a unit no patch names by serial. A unit taken that way
     stands in for one absent serial (all of that serial's patches); for patches
     saved without a serial, each of its ports serves one patch. A device without
-    a serial is shared, as before.
+    a serial is shared.
     """
     matched: dict[int, DiscoveredDevice] = {}
     # Every connected own unit first, so no fallback can take it.

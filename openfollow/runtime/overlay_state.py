@@ -177,7 +177,7 @@ class OverlayState:
     # HUD
     controller_connected: bool = False
     keyboard_connected: bool = False
-    # Indices of connected gamepads not bound to any marker; shown in Settings info card.
+    # Indices of connected controllers that drive no marker; shown in the Settings info box.
     unbound_controller_indices: list[int] = field(default_factory=list)
     mouse_enabled: bool = False
     mouse_double_click_reset: bool = True

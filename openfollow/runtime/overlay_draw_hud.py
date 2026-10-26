@@ -1198,7 +1198,7 @@ def draw_menu_help(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) 
 
 
 def draw_hud(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
-    # Controller badges render per-marker card; unbound pads in the Settings info box.
+    # Controller badges render per-marker card; unbound controllers in the Settings info box.
     panels = renderer._panel_cache
     info_key = (tuple(build_info_panel_rows(state)), info_panel_in_error(state))
     panels.draw(cr, "info", info_key, lambda ctx: draw_bottom_left_info_panel(renderer, ctx, state, w, h), w, h)

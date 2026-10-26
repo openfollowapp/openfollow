@@ -1014,6 +1014,22 @@ def test_video_source_failure_fragment_carries_the_box(live_server, monkeypatch)
     assert "Could not open resource." not in body
 
 
+def test_video_source_failure_fragment_carries_the_limits_box(live_server, monkeypatch) -> None:
+    """A source over the limits plays on, so it has no failure; the fragment still swaps its box in."""
+    from openfollow.video.source_limits import OverLimit, SourceReading, limits_snapshot
+
+    server, base = live_server
+    limits = limits_snapshot(SourceReading(1920, 1080, 60.0, (OverLimit.FRAME_RATE,)))
+    monkeypatch.setattr(server, "get_runtime_stats", lambda: {"video": {"connected": True, "limits": limits}})
+    status, body = _get(base, "/section/video_source/failure")
+
+    assert status == 200
+    assert "Video arrives at 60 fps, over 30 fps." in body
+    assert "Set the camera or encoder to 1920×1080 at 30 fps or less." in body
+    assert 'id="video-error-source-limits-' in body
+    assert body.count('class="notice error"') == 1
+
+
 def test_unknown_section_returns_404(live_server) -> None:
     _, base = live_server
     status, _ = _get(base, "/section/nonexistent")
@@ -2381,6 +2397,15 @@ def test_form_post_movement_renders_saved_partial(live_server) -> None:
     )
     assert status == 200
     assert "movement-section" in body
+
+
+def test_form_post_movement_reads_the_former_invert_flag_as_the_control_frame(live_server) -> None:
+    """A page served before the control frame posts the flag; it lands as a camera looking downstage."""
+    server, base = live_server
+    status, _body = _post_form(base, "/section/movement", {"invert_control_direction": "on"})
+    assert status == 200
+    cfg = load_config(server.config_path)
+    assert (cfg.marker.control_frame, cfg.marker.control_heading) == ("heading", 180.0)
 
 
 def test_form_post_gamepad_renders_saved_partial(live_server) -> None:
@@ -5530,6 +5555,95 @@ def test_update_video_source_post_renders_video_source_partial(live_server) -> N
     assert saved.video_source_type == "rtsp"
 
 
+class _LookupsStarted:
+    """A resolver that records each lookup started and has answered none."""
+
+    def __init__(self) -> None:
+        self.started: list[str] = []
+
+    def prefetch(self, host: str) -> None:
+        self.started.append(host)
+
+    def lookup(self, host: str, wait_s: float) -> Any:
+        from openfollow.net_utils import HostLookup
+
+        return HostLookup("pending")
+
+    def cached(self, host: str) -> tuple[str, ...]:
+        return ()
+
+
+@pytest.mark.parametrize(("pin", "started"), [("eth1", ["camera.example"]), ("", [])], ids=["pinned", "unpinned"])
+def test_saving_a_source_starts_the_lookup_its_pin_check_reads(
+    live_server, monkeypatch: pytest.MonkeyPatch, pin: str, started: list[str]
+) -> None:
+    """The name resolves before the saved source is applied, so its first build reads the answer."""
+    from openfollow.video.inputs import _pin
+
+    resolver = _LookupsStarted()
+    monkeypatch.setattr(_pin, "_resolver", resolver)
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
+    cfg.psn_source_iface = ""
+    cfg.video_input_iface = pin
+    save_config(cfg, server.config_path)
+
+    status, _body = _post_form(
+        base, "/section/video_source", {"video_source_type": "rtsp", "rtsp_url": "rtsp://camera.example:554/stream"}
+    )
+
+    assert status == 200
+    assert resolver.started == started
+
+
+@pytest.mark.parametrize(("pin", "started"), [("eth1", ["camera.example"]), ("", [])], ids=["pinned", "unpinned"])
+def test_pinning_the_video_input_starts_the_lookup_its_pin_check_reads(
+    live_server, monkeypatch: pytest.MonkeyPatch, pin: str, started: list[str]
+) -> None:
+    """A pin saved in the Assignment panel resolves its camera before the input is rebuilt under it."""
+    from openfollow.video.inputs import _pin
+    from openfollow.web import routes as routes_module
+
+    resolver = _LookupsStarted()
+    monkeypatch.setattr(_pin, "_resolver", resolver)
+    # The panel's own Address column asks the shared resolver; it must not reach the network.
+    monkeypatch.setattr(routes_module, "HOST_RESOLVER", _LookupsStarted())
+    _patch_ifaces(monkeypatch, {"eth0": "192.0.2.10", "eth1": "198.51.100.10"})
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
+    cfg.psn_source_iface = ""
+    cfg.video_source_type = "rtsp"
+    cfg.rtsp_url = "rtsp://camera.example:554/stream"
+    save_config(cfg, server.config_path)
+
+    status, _body = _post_form(base, "/section/interface_assignment", {"video_input_iface": pin})
+
+    assert status == 200
+    assert load_config(server.config_path).video_input_iface == pin
+    assert resolver.started == started
+
+
+def test_a_pin_saved_for_an_unregistered_source_type_starts_no_lookup(
+    live_server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openfollow.video.inputs import _pin
+
+    resolver = _LookupsStarted()
+    monkeypatch.setattr(_pin, "_resolver", resolver)
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
+    cfg.video_source_type = "not-an-input"
+    save_config(cfg, server.config_path)
+
+    status, _body = _post_form(base, "/section/interface_assignment", {"video_input_iface": "eth1"})
+
+    assert status == 200
+    assert resolver.started == []
+
+
 def test_deb_update_dispatches_request(live_server, monkeypatch) -> None:
     """POST /section/general/deb-update queues a deb update when idle."""
     from openfollow.web import server as server_module
@@ -7377,28 +7491,6 @@ def test_update_marker_post_persists_visual_booleans(live_server) -> None:
     assert saved.marker.crosshair_visible is True
     assert saved.marker.z_line is False
     assert saved.marker.ground_circle is False
-
-
-def test_marker_form_accepts_the_former_z_line_checkbox_name(live_server) -> None:
-    """A page rendered before the rename posts the checkbox under its former name.
-
-    The bool fields are synthesised from what the form did *not* send, so without
-    translating first the synthesised ``False`` would win over the ticked box and
-    silently switch the line off - while the thickness beside it, not being a
-    bool, would translate and carry over. The two halves of one rename must not
-    disagree on the same POST.
-    """
-    server, base = live_server
-    status, _ = _post_form(
-        base,
-        "/section/marker",
-        {"drop_line": "on", "drop_line_thickness": "7"},
-    )
-    assert status == 200
-
-    saved = load_config(server.config_path)
-    assert saved.marker.z_line is True
-    assert saved.marker.z_line_thickness == 7
 
 
 def test_marker_save_preserves_the_control_frame(live_server) -> None:

@@ -6,7 +6,7 @@
 
 A second floor at its own height, for an area that is lower or higher than the
 main grid: a pit, a riser, a ramp's landing. It is one polygon drawn on the
-stage plan. A marker standing inside it (seen from above) gets its dropline,
+stage plan. A marker standing inside it (seen from above) gets its Z line,
 ground circle, cone base and assist ring drawn down to the ground grid's
 height instead of the main grid's.
 
@@ -37,7 +37,7 @@ Changes to the polygon show at once but are kept only when you **Save** (or **Ap
   is on. Off, markers inside it still drop onto it when **Ground grid** is on.
 - **Height** – the ground grid's height in world coordinates, the same frame
   as the main grid's Z offset and every marker. A pit below the main grid has
-  a lower value; the dropline of a marker inside it can also point up when
+  a lower value; the Z line of a marker inside it can also point up when
   the marker sits below this height.
 
 The polygon needs at least three corners; with fewer the ground grid does

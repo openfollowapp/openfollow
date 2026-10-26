@@ -103,6 +103,7 @@ from openfollow.configuration import (
     save_config,
     viewed_with_controlled,
 )
+from openfollow.input.midi import bound_identifiers
 from openfollow.input.mouse3d_status import status_key
 from openfollow.lens_model import pull_back_to_valid
 
@@ -169,7 +170,6 @@ from openfollow.web.bindings import check_binding, osc_row_overlap, osc_trigger_
 from openfollow.web.config_cache import ParsedConfigCache
 from openfollow.web.discovery import clean_peer_name
 from openfollow.web.keyboard_layout_view import build_keyboard_layout_view, station_catalog, variant_options
-from openfollow.web.labels import video_error_token
 from openfollow.web.latency_view import latency_dialog_view, latency_row_view, latency_unavailable
 from openfollow.web.live_alerts import statistics_alerts
 from openfollow.web.login_throttle import LoginThrottle
@@ -993,14 +993,24 @@ def _build_input_template_data(cfg: AppConfig, video_stats: Mapping[str, Any] | 
     for iid, cls in sorted(registry.items()):
         values = cls.get_config_field_values(cfg)
         input_html_fragments[iid] = cls.web_ui_html(values)
-    video = dict(video_stats or {})
     return {
         "available_inputs": available_inputs,
         "input_html_fragments": input_html_fragments,
+        **_video_box_data(video_stats),
+    }
+
+
+def _video_box_data(video_stats: Mapping[str, Any] | None) -> dict[str, str]:
+    """What the Video Source boxes show, from ``/api/stats``'s ``video`` section."""
+    video = dict(video_stats or {})
+    limits = video.get("limits") or {}
+    return {
         "video_failure": video.get("failure") or "none",
         "video_failure_text": video.get("failure_text") or "",
         "video_error_message": video.get("error_message") or "",
         "video_failure_action": video.get("failure_action") or "",
+        "video_limits_text": str(limits.get("text") or ""),
+        "video_limits_action": str(limits.get("action") or ""),
     }
 
 
@@ -1496,6 +1506,15 @@ def _video_input_row(cfg: AppConfig, wait_s: float | None, names: _PanelNames) -
         return {**row, "key": "video_input_iface", "address": address, "editable": True, "blank": "all"}
     address = _egress_address(pin, target, "", resolver=HOST_RESOLVER, wait_s=wait_s, names=names)
     return {**row, "key": "video_input_iface", "address": address, "editable": True}
+
+
+def _prefetch_video_source(cfg: AppConfig) -> None:
+    """Start the lookup the saved video source's pin check reads, before the file watcher applies the save."""
+    from openfollow.video.inputs import get_input_class
+
+    input_cls = get_input_class(cfg.video_source_type)
+    if input_cls is not None:
+        input_cls.prefetch(input_cls.runtime_config(cfg))
 
 
 _PLANE_PIN_LABELS = {key: label for key, _owner, _name, label in PLANE_PIN_FIELDS}
@@ -2941,6 +2960,11 @@ def _midi_patches_for_form(cfg: AppConfig) -> list[dict[str, Any]]:
     it's named. The dropdown's value is the patch id; ``0`` is "any patch".
     """
     return [{"id": patch.id, "label": patch.label} for patch in cfg.midi.patches if patch.id >= 1]
+
+
+def _midi_device_context(cfg: AppConfig, devices: list[dict[str, Any]]) -> dict[str, Any]:
+    """The connected devices and, per patch id, the one its Device dropdown selects."""
+    return {"discovered_devices": devices, "bound_devices": bound_identifiers(cfg.midi.patches, devices)}
 
 
 def _osc_binding_form_sources(cfg: AppConfig) -> dict[str, Any]:
@@ -6078,11 +6102,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         extra_fields: dict[str, Any] | None = None,
     ) -> AppConfig:
         form_data = dict(request.forms)
-        if section == "marker":
-            apply_renamed_marker_keys(form_data)
-        # Test ``form_data``, not ``request.forms``: a checkbox translated from
-        # its former name above is present here and nowhere else, and would
-        # otherwise be synthesised straight back to False.
         for field_name in bool_fields:
             form_data[field_name] = field_name in form_data
         if extra_fields:
@@ -6274,7 +6293,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # MIDI Devices table needs the live discovered-devices list so
             # it renders connected ports at first paint, not after the first
             # HTMX refresh.
-            midi_discovered_devices=server.midi_discovered_devices(),
+            midi_devices=_midi_device_context(config, server.midi_discovered_devices()),
             # Per-controlled-marker fader snapshot so the MIDI page's
             # read-only Marker Faders strips render populated at first paint.
             marker_fader_values=server.marker_fader_values(),
@@ -6346,29 +6365,20 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         The Camera & Grid tab sends the Measure latency row's key too; between
         runs a changed row rides along out of band.
         """
-        return _video_source_failure_box() + _latency_row_if_changed(request.query.get("latency"))
+        return _video_source_boxes() + _latency_row_if_changed(request.query.get("latency"))
 
-    def _video_source_failure_box() -> str:
-        video = server.get_runtime_stats().get("video") or {}
-        failure_text = str(video.get("failure_text") or "")
-        error_message = str(video.get("error_message") or "")
-        # Keyed on what there is to show, not on whether a classification
-        # exists: several receiver paths publish an error with no verdict, and
-        # Statistics renders that raw text. Dropping it here would leave this
-        # box empty while the other said something.
-        if not (failure_text or error_message):
+    def _video_source_boxes() -> str:
+        data = _video_box_data(server.get_runtime_stats().get("video"))
+        if not (data["video_failure_text"] or data["video_error_message"] or data["video_limits_text"]):
             return ""
-        action = str(video.get("failure_action") or "")
-        token = video_error_token(failure_text, error_message, action)
         return str(
             template(
-                "partials/video_error_box",
-                failure_text=failure_text,
-                error_message=error_message,
-                action=action,
-                token=token,
-                scope="source",
-                live="status",
+                "partials/video_source_boxes",
+                failure_text=data["video_failure_text"],
+                error_message=data["video_error_message"],
+                failure_action=data["video_failure_action"],
+                limits_text=data["video_limits_text"],
+                limits_action=data["video_limits_action"],
             )
         )
 
@@ -7534,6 +7544,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         offers Restart OpenFollow.
         """
         cfg = _save_section_from_form("interface_assignment")
+        _prefetch_video_source(cfg)
         return _render_interface_assignment(cfg, saved=True)
 
     @app.post("/section/video_source")
@@ -7545,6 +7556,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             apply_section_data(cfg, "video_source", form_data)
             save_config(cfg, server.config_path)
 
+        _prefetch_video_source(cfg)
         return _render_video_source(cfg, saved=True)
 
     @app.post("/section/general")
@@ -7969,7 +7981,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             config=cfg,
             saved=saved,
             selected_fader=selected_fader,
-            discovered_devices=server.midi_discovered_devices(),
+            **_midi_device_context(cfg, server.midi_discovered_devices()),
             midi_patches=_midi_patches_for_form(cfg),
             valid_fader_midi_types=VALID_FADER_MIDI_TYPES,
             marker_fader_values=server.marker_fader_values(),

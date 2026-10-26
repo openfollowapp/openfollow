@@ -15,6 +15,7 @@ import numpy.typing as npt
 
 from openfollow.runtime.overlay_draw_style import parse_hex
 from openfollow.runtime.overlay_layers import LayerContext, cut, keep
+from openfollow.runtime.overlay_picture import box_picture, paste
 from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
 from openfollow.scene.ground_grid import grid_segments_in_polygon, main_grid_steps, outline_segments
 from openfollow.scene.solver import (
@@ -722,9 +723,7 @@ class ConeCache:
                 return
             self._entries[slot] = entry
         _, picture, x0, y0 = entry
-        if not keep(cr, picture, x0, y0):
-            cr.set_source_surface(picture, x0, y0)
-            cr.paint()
+        paste(cr, picture, x0, y0)
 
     @staticmethod
     def _render(
@@ -753,14 +752,11 @@ class ConeCache:
         y1 = min(h, int(math.ceil(points[:, 1].max())) + pad)
         if x1 <= x0 or y1 <= y0:
             return None
-        sx, sy = scale
-        # Drawn at the target's device scale, so a HiDPI screen gets a sharp cone.
-        picture = cairo.ImageSurface(cairo.FORMAT_ARGB32, math.ceil((x1 - x0) * sx), math.ceil((y1 - y0) * sy))
-        picture.set_device_scale(sx, sy)
-        ctx = cairo.Context(picture)
-        ctx.translate(-x0, -y0)
-        _draw_cone(ctx, state, t, w, h, rgb, alpha, line_width, fill_alpha, shaded, geometry=g)
-        return key, picture, x0, y0
+
+        def paint(ctx: cairo.Context[Any]) -> None:
+            _draw_cone(ctx, state, t, w, h, rgb, alpha, line_width, fill_alpha, shaded, geometry=g)
+
+        return key, box_picture(paint, x0, y0, x1, y1, scale, None), x0, y0
 
 
 def draw_marker(

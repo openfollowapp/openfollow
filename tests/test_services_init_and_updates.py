@@ -2939,7 +2939,7 @@ class TestInitOscTransmitters:
                 "serial": None,
             },
             {
-                "identifier": "serial:ABC123",
+                "identifier": "serial:ABC123|X-Touch",
                 "port_name": "X-Touch",
                 "product": "X-Touch Mini",
                 "serial": "ABC123",

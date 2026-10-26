@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from openfollow.input import controller_identity as ci
-from openfollow.input.controller_identity import natural_sort_key, port_label, resolve_key, usb_host_paths
+from openfollow.input.controller_identity import natural_sort_key, port_label, resolve_key, usb_host_paths, usb_serial
 
 pytestmark = pytest.mark.unit
 
@@ -295,3 +295,99 @@ def test_a_name_is_looked_up_in_its_own_class_only(tmp_path: Path) -> None:
     _node(tmp_path, "net", "event0", nic / "3-2:2.0")
     assert resolve_key("event0", sysfs_root=tmp_path, classes=("net",)) == f"usb:{_HOST1}:2"
     assert resolve_key("/dev/input/event0", sysfs_root=tmp_path) == f"usb:{_HOST0}:1"
+
+
+def _sound_card(sysfs: Path, card: int, device: Path, interface: str) -> str:
+    _node(sysfs, "sound", f"card{card}", device / interface)
+    return f"card{card}"
+
+
+def test_a_sound_card_reads_the_serial_of_its_usb_device(tmp_path: Path) -> None:
+    device = _usb_device(tmp_path, _HOST0, "usb1", "1-1", "1")
+    (device / "serial").write_text("XTM-0001\n")
+    card = _sound_card(tmp_path, 2, device, "1-1:1.0")
+    assert usb_serial(card, sysfs_root=tmp_path, classes=("sound",)) == "XTM-0001"
+
+
+def test_every_card_of_one_usb_device_has_its_serial(tmp_path: Path) -> None:
+    device = _usb_device(tmp_path, _HOST0, "usb1/1-1", "1-1.2", "1.2")
+    (device / "serial").write_text("A1B2\n")
+    audio = _sound_card(tmp_path, 2, device, "1-1.2:1.0")
+    midi = _sound_card(tmp_path, 3, device, "1-1.2:1.3")
+    serials = {usb_serial(card, sysfs_root=tmp_path, classes=("sound",)) for card in (audio, midi)}
+    assert serials == {"A1B2"}
+
+
+@pytest.mark.parametrize("content", [None, "", "  \n", "\x00\x1b\n"])
+def test_a_device_without_a_serial_descriptor_has_none(tmp_path: Path, content: str | None) -> None:
+    device = _usb_device(tmp_path, _HOST0, "usb1", "1-1", "1")
+    if content is not None:
+        (device / "serial").write_text(content)
+    card = _sound_card(tmp_path, 2, device, "1-1:1.0")
+    assert usb_serial(card, sysfs_root=tmp_path, classes=("sound",)) is None
+
+
+def test_control_characters_never_reach_a_serial(tmp_path: Path) -> None:
+    device = _usb_device(tmp_path, _HOST0, "usb1", "1-1", "1")
+    (device / "serial").write_text("AB\u202eC\x07D\n")
+    card = _sound_card(tmp_path, 2, device, "1-1:1.0")
+    assert usb_serial(card, sysfs_root=tmp_path, classes=("sound",)) == "ABCD"
+
+
+def test_an_unreadable_serial_is_none(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    device = _usb_device(tmp_path, _HOST0, "usb1", "1-1", "1")
+    (device / "serial").write_text("XTM-0001\n")
+    card = _sound_card(tmp_path, 2, device, "1-1:1.0")
+    real_read = Path.read_text
+
+    def denied(self: Path, *args: object, **kwargs: object) -> str:
+        if self.name == "serial":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_read(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_text", denied)
+    assert usb_serial(card, sysfs_root=tmp_path, classes=("sound",)) is None
+
+
+def test_a_serial_that_is_not_a_file_is_none(tmp_path: Path) -> None:
+    device = _usb_device(tmp_path, _HOST0, "usb1", "1-1", "1")
+    (device / "serial").mkdir()
+    card = _sound_card(tmp_path, 2, device, "1-1:1.0")
+    assert usb_serial(card, sysfs_root=tmp_path, classes=("sound",)) is None
+
+
+def test_a_sound_card_off_usb_has_no_serial(tmp_path: Path) -> None:
+    hdmi = tmp_path / "devices" / "platform" / "axi" / "107c701400.hdmi"
+    _node(tmp_path, "sound", "card0", hdmi)
+    (hdmi / "serial").write_text("not-usb\n")
+    assert usb_serial("card0", sysfs_root=tmp_path, classes=("sound",)) is None
+
+
+def test_a_bluetooth_device_behind_a_usb_radio_does_not_take_its_serial(tmp_path: Path) -> None:
+    radio = _usb_device(tmp_path, _HOST0, "usb1", "1-1", "1")
+    (radio / "serial").write_text("RADIO\n")
+    _node(tmp_path, "sound", "card4", radio / "1-1:1.0" / "bluetooth" / "hci0" / "hci0:256")
+    assert usb_serial("card4", sysfs_root=tmp_path, classes=("sound",)) is None
+
+
+@pytest.mark.parametrize("node", [None, "", "card9"])
+def test_an_unknown_card_has_no_serial(tmp_path: Path, node: str | None) -> None:
+    assert usb_serial(node, sysfs_root=tmp_path, classes=("sound",)) is None
+
+
+def test_a_serial_is_looked_up_in_the_named_class_only(tmp_path: Path) -> None:
+    device = _usb_device(tmp_path, _HOST0, "usb1", "1-1", "1")
+    (device / "serial").write_text("XTM-0001\n")
+    _sound_card(tmp_path, 2, device, "1-1:1.0")
+    assert usb_serial("card2", sysfs_root=tmp_path, classes=("input",)) is None
+
+
+def test_the_live_sysfs_serial_is_read_only_on_linux(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    device = _usb_device(tmp_path, _HOST0, "usb1", "1-1", "1")
+    (device / "serial").write_text("XTM-0001\n")
+    card = _sound_card(tmp_path, 2, device, "1-1:1.0")
+    monkeypatch.setattr(ci, "_SYSFS", tmp_path)
+    monkeypatch.setattr(ci.sys, "platform", "linux")
+    assert usb_serial(card, sysfs_root=None, classes=("sound",)) == "XTM-0001"
+    monkeypatch.setattr(ci.sys, "platform", "darwin")
+    assert usb_serial(card, sysfs_root=None, classes=("sound",)) is None

@@ -3001,6 +3001,8 @@ def test_only_a_misfit_lines_glow_is_painted_and_it_never_takes_a_click() -> Non
         r"\.lens-line\.misfit \.lens-halo \{ stroke: var\(--caution-line\); stroke-opacity: 0\.4; \}", style
     )
     assert re.search(r"\.lens-tag \{ pointer-events: none; \}", style)
+    # The pill is solid caution, dark enough by luminance for the off-white text.
+    assert re.search(r"\.lens-tag text \{ fill: var\(--text\);", style)
 
 
 # A fit sent from a page of traced lines, whose answer ``renderLens`` draws and the hint names. The second line is too

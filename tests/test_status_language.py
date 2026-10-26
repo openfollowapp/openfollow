@@ -25,7 +25,8 @@ _STATUS_CLASS = re.compile(
     r"osc-binding-row|osc-binding-enabled-dot|osc-binding-nested-row|osc-pill|peer-item|peer-status|toast|"
     r"save-error|save-failed|field-error-msg|field-warn-msg|field-note-msg|conflict-flag|not-controlled|"
     r"add-feedback|saved-flash|wizard-status|wizard-preview-container|wizard-meter|awaiting-password|wizard-field-error|"
-    r"update-flag|danger|btn-danger|modal-list-item-delete|gallery-del|dme-row|ia-dot)(?![\w-])"
+    r"update-flag|danger|btn-danger|modal-list-item-delete|gallery-del|dme-row|ia-dot|midi-fader-strip-not-picked-up)"
+    r"(?![\w-])"
 )
 _COLOUR = re.compile(r"#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\)")
 # Greys, whites and the off-white text: neutral, so a literal is fine.
@@ -147,6 +148,25 @@ def test_status_rules_take_their_colours_from_tokens() -> None:
             if max(r, g, b) - min(r, g, b) > _MAX_NEUTRAL_CHROMA:
                 literal.append(f"{name}: {selector} uses {colour}")
     assert literal == []
+
+
+def test_an_unpicked_midi_fader_reads_as_caution_not_accent() -> None:
+    """The gold accent marks the commit button; the pickup note is a limitation worth knowing."""
+    bodies = [body for _, selector, body in _status_rules() if selector == ".midi-fader-strip-not-picked-up"]
+    assert len(bodies) == 1
+    assert "color: var(--caution-text);" in bodies[0]
+    assert "--accent" not in bodies[0]
+
+
+def test_caution_has_its_own_colour_apart_from_the_accent() -> None:
+    """A warning must read apart from the accent on both surfaces, so the two are never one value."""
+    from openfollow.runtime.overlay_draw_style import COLOR_ACCENT, COLOR_CAUTION_BORDER
+
+    defined = _root_tokens()
+    accent = _rgba(defined["--accent"])[:3]
+    for token in ("--caution-line", "--caution-text", "--caution-border"):
+        assert _rgba(defined[token])[:3] != accent, token
+    assert tuple(round(c * 255) for c in COLOR_CAUTION_BORDER) != tuple(round(c * 255) for c in COLOR_ACCENT)
 
 
 @pytest.mark.parametrize(("keyframes", "token"), [("flash-green", "--success-line"), ("flash-red", "--error-line")])

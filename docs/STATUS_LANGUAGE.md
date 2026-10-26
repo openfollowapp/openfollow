@@ -36,11 +36,11 @@ or inline `style` colours.
 
 | Token | Error | Caution | Info | Success |
 |---|---|---|---|---|
-| `--<level>-fill` (box) | `#6b1414` at 80% | `#ffbc00` at 12% | `#2664b0` at 20% | `#3d9a60` at 20% |
-| `--<level>-border` (box) | `#B02626` | `#ffbc00` at 60% | `#2664b0` at 50% | `#3d9a60` at 50% |
-| `--<level>-chip` (chip fill) | `#6b1414` at 80% | `#9b7200` at 80% | `#173d6b` at 80% | `#255e3a` at 80% |
-| `--<level>-line` (solid line) | `#B02626` | `#ffbc00` | `#2664b0` | `#3d9a60` |
-| `--<level>-text` (inline text) | `#f44848` | `#ffbc00` | `#4f8dd9` | `#5cc98c` |
+| `--<level>-fill` (box) | `#6b1414` at 80% | `#ff6600` at 38% | `#2664b0` at 20% | `#3d9a60` at 20% |
+| `--<level>-border` (box) | `#B02626` | `#ff6600` | `#2664b0` at 50% | `#3d9a60` at 50% |
+| `--<level>-chip` (chip fill) | `#6b1414` at 80% | `#9c3e00` at 80% | `#173d6b` at 80% | `#255e3a` at 80% |
+| `--<level>-line` (solid line) | `#B02626` | `#ff6600` | `#2664b0` | `#3d9a60` |
+| `--<level>-text` (inline text) | `#f44848` | `#ff6600` | `#4f8dd9` | `#5cc98c` |
 | `--<level>-mark` (dots) | `#e04848` | none | none | `#5cc98c` |
 | `--<level>-mark-muted` (dot centre or ring) | `#e04848` at 40% | none | none | `#5cc98c` at 40% |
 | `--error-row` (row tint) | `hsl(2 64% 14%)`, opaque | | | |
@@ -56,12 +56,21 @@ the grey neutral chip, so each chip fill is its level colour darkened to 61%
 Small marks (dots, rings) use the brighter `--<level>-mark` tones, because the
 surface colours vanish at dot size on the dark page.
 
+Caution is an orange of its own, never the gold `--accent`: the accent marks the
+one commit button, and a warning must read apart from it. Its box is stronger
+than the other levels', a 38% fill with a solid border, so it does not read
+muted on the dark page or over video. Text on a solid caution fill is the
+off-white `--text`, as the luminance rule of the HUD's message title bars picks
+for it. [`tests/test_status_language.py`](../tests/test_status_language.py)
+keeps `--caution-line` apart from `--accent`.
+
 The HUD carries the error level as `COLOR_WARNING_FILL` and
 `COLOR_WARNING_BORDER` in
 [`overlay_draw_style.py`](../openfollow/runtime/overlay_draw_style.py), the same
 `#6b1414` at 80% and `#B02626`. Caution, info and success are `COLOR_CAUTION_*`,
 `COLOR_INFO_*` and `COLOR_SUCCESS_*`, each the web chip of its level: fill
-`--<level>-chip`, border `--<level>-line`. `STATUS_LEVEL_COLORS` maps a level
+`--<level>-chip`, border `--<level>-line` (caution: `#9c3e00` at 80% and
+`#ff6600`, apart from `COLOR_ACCENT`). `STATUS_LEVEL_COLORS` maps a level
 name to the three.
 
 ### Why the row tint is opaque
@@ -192,7 +201,7 @@ holds the line.
 
 | Element | Look |
 |---|---|
-| A traced Lens line that does not fit the others (Setup Wizard) | `--caution-line` stroke over a 16 px `--caution-line` glow at 40%, its number a `--caution-line` pill reading `! N` in `--bg-deep`; a fitting one is the accent with no glow and a plain number, its predicted curve `--success-line` |
+| A traced Lens line that does not fit the others (Setup Wizard) | `--caution-line` stroke over a 16 px `--caution-line` glow at 40%, its number a `--caution-line` pill reading `! N` in `--text`; a fitting one is the accent with no glow and a plain number, its predicted curve `--success-line` |
 | A pin that disagrees with the other points (Setup Wizard) | `--caution-line` stroke on its dot; where the solved camera sees each point, a `--success-mark` ring |
 | Failed / successful save | 2px ring for 0.55 s in `--error-line` / `--success-line` |
 | Invalid field, a control marked unresolved, or a binding another field took | `--error-line` border plus a 1px `--error-line` shadow |
@@ -223,6 +232,9 @@ Error, caution, info and success text take their `--<level>-text`, keeping the
 weight and size of the element. Inline error text has no icon. Inline
 confirmations lead with the success sign in `--success-text` (a filled green
 circle with the check cut out).
+
+A MIDI fader whose hardware has not picked up the stored value says "not picked
+up" in `--caution-text`: moving it changes nothing until it crosses that value.
 
 A binding edit that takes an input from another field notes it in both: info
 text on the field that took it, error text (`.field-warn-msg`, which leaves Save
@@ -388,8 +400,8 @@ Support OpenFollow edge, so it is the same object on both:
 | `--qr-light` / `--qr-dark` | `#ffffff` / `#000000` | The QR field and modules |
 
 The edge is gold, but it can't pass for a caution box: a caution box has a
-solid border, a gold fill and the "i" sign, while this card is dashed, takes
-the neutral `--surface` fill and leads with a heart. Never give it a level's
+solid orange border, an orange fill and the "i" sign, while this card is
+dashed, takes the neutral `--surface` fill and leads with a heart. Never give it a level's
 fill, a solid border or a status sign. Its text makes no claim that could go
 stale on a station that never updates.
 

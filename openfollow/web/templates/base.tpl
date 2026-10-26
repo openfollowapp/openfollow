@@ -62,11 +62,11 @@
  --error-mark: #e04848;
  --error-mark-muted: rgba(224, 72, 72, 0.4);
  --error-row: hsl(2deg 64% 14%);
- --caution-fill: rgba(255, 188, 0, 0.12);
- --caution-border: rgba(255, 188, 0, 0.6);
- --caution-chip: rgba(155, 114, 0, 0.8);
- --caution-line: #ffbc00;
- --caution-text: #ffbc00;
+ --caution-fill: rgba(255, 102, 0, 0.38);
+ --caution-border: #ff6600;
+ --caution-chip: rgba(156, 62, 0, 0.8);
+ --caution-line: #ff6600;
+ --caution-text: #ff6600;
  --info-fill: rgba(38, 100, 176, 0.2);
  --info-border: rgba(38, 100, 176, 0.5);
  --info-chip: rgba(23, 61, 107, 0.8);
@@ -1108,7 +1108,7 @@
  .midi-fader-strip-not-picked-up {
  display: block;
  font-size: 0.62rem;
- color: var(--accent, #ffbc00);
+ color: var(--caution-text);
  font-style: italic;
  line-height: 1;
  margin-top: 2px;

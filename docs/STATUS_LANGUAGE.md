@@ -102,7 +102,8 @@ sentence.
 
 The dialog and diagnostics errors, the Media Gallery error, the network
 result, the Detection progress and result, the camera latency progress and
-result, the Statistics warning and the NDI box are all one of these four. Do not add an inline-styled box.
+result, the Statistics warning and the NDI box are all one of these four.
+Do not add an inline-styled box.
 
 A box that a poll re-renders must not carry `role="alert"`: every swap inserts
 it again, and a screen reader announces it again. `hx-preserve` does not help,

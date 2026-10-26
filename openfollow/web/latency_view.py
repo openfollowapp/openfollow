@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import json
+import zlib
 from collections.abc import Mapping
 from typing import Any
 
@@ -31,7 +33,7 @@ def latency_view(stats: Mapping[str, Any], status: Mapping[str, Any], *, gallery
     state = str(status.get("state") or "idle")
     refusal = latency_unavailable(stats)
     result = status.get("result") if state == "done" else None
-    return {
+    view: dict[str, Any] = {
         "gallery": gallery,
         "state": state,
         "measured": int(status.get("measured") or 0),
@@ -41,3 +43,7 @@ def latency_view(stats: Mapping[str, Any], status: Mapping[str, Any], *, gallery
         "result_class": RESULT_CLASS.get(str(result.get("level")), "error") if result else "",
         "failure": status.get("failure") if state == "failed" else None,
     }
+    # What the row shows, so a page polling the source status swaps it only when that changes.
+    shown = {**view, "result": {k: v for k, v in result.items() if k != "age_s"} if result else None}
+    view["key"] = str(zlib.crc32(json.dumps(shown, sort_keys=True).encode()))
+    return view

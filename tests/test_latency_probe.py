@@ -334,12 +334,25 @@ def test_an_unreadable_frame_fails_the_run_instead_of_waiting_out_the_timeout() 
     assert probe.failure is not None and probe.failure.reason is FailureReason.UNSUPPORTED_FORMAT
 
 
-def test_idle_asks_for_no_level_and_takes_no_frames() -> None:
+def test_idle_asks_for_no_level_and_reads_idle() -> None:
     probe = _probe()
     assert probe.screen_level() is None
     probe.feed(MS, HI)
     probe.step(2 * MS, FEED)
     assert probe.status() == {"state": "idle", "measured": 0, "total": 10, "result": None, "failure": None}
+
+
+@pytest.mark.parametrize("before", ["idle", "stopped"])
+def test_a_frame_left_from_before_a_run_never_reaches_it(before: str) -> None:
+    probe = _probe()
+    if before == "stopped":
+        _drive_to_wait_rise(probe)
+        probe.stop()
+    # An unreadable frame handed over after the last run ended, before the receiver let go.
+    probe.feed(MS, None)
+    probe.start(10 * MS, FEED, "rtsp")
+    probe.step(20 * MS, FEED)
+    assert probe.active and probe.failure is None
 
 
 def test_a_run_with_no_decoded_video_ends_at_once() -> None:

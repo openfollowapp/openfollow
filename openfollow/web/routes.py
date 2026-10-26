@@ -6311,7 +6311,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         Only the box: re-swapping the Video Source form would discard whatever
         the operator is part-way through typing into the URL or password
         fields, which is precisely what they are there to do when it fails.
+        The Camera & Grid tab sends the Measure latency row's key too; between
+        runs a changed row rides along out of band.
         """
+        return _video_source_failure_box() + _latency_row_if_changed(request.query.get("latency"))
+
+    def _video_source_failure_box() -> str:
         video = server.get_runtime_stats().get("video") or {}
         failure_text = str(video.get("failure_text") or "")
         error_message = str(video.get("error_message") or "")
@@ -6323,15 +6328,26 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             return ""
         action = str(video.get("failure_action") or "")
         token = video_error_token(failure_text, error_message, action)
-        return template(
-            "partials/video_error_box",
-            failure_text=failure_text,
-            error_message=error_message,
-            action=action,
-            token=token,
-            scope="source",
-            live="status",
+        return str(
+            template(
+                "partials/video_error_box",
+                failure_text=failure_text,
+                error_message=error_message,
+                action=action,
+                token=token,
+                scope="source",
+                live="status",
+            )
         )
+
+    def _latency_row_if_changed(seen: str | None) -> str:
+        """The Measure latency row to swap in out of band, when its key differs from ``seen``; a run polls itself."""
+        if seen is None:
+            return ""
+        view = _latency_view(_request_scoped_config())
+        if view["state"] == "running" or view["key"] == seen:
+            return ""
+        return str(template("partials/video_source_latency", latency=view, oob=True))
 
     @app.get("/section/video_source/latency")
     def get_video_source_latency() -> Any:

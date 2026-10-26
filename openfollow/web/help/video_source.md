@@ -85,8 +85,8 @@ Each change of the screen, white and back to black, is timed from the display re
 
 The result is green below 120 ms, amber from 120 to 250 ms and red from 250 ms. At walking pace, about 1.5 m/s, a performer moves about 15 cm in 100 ms before the Operator Screen shows it.
 
-**No flash seen in the video within 3 s** means the picture never got brighter after the screen turned white: the camera does not see the Operator Screen, or the screen is too small a part of its picture to change the brightness. **The video did not go dark again within 3 s of the flash** means the picture stayed bright after the screen turned black. A run also ends when the video source changes or stops while it runs.
+**No flash seen in the video within 3 s** means the picture never got brighter after the screen turned white: the camera does not see the Operator Screen, or the screen is too small a part of its picture to change the brightness. **The video did not go dark again within 3 s of the flash** means the picture stayed bright after the screen turned black. A run also ends when the video source changes, its video is rebuilt (the station reconnecting, or the Operator Screen changing how it draws) or it stops while the run lasts.
 
-The button is unavailable while no screen shows the Operator Screen or no video is decoded, and the row is hidden for the Media Gallery, which plays stored pictures. The last successful result is kept until the next one and is listed in the diagnostics bundle; a run that fails or is stopped keeps none.
+The button is unavailable while no screen shows the Operator Screen or no video is decoded, and the row is hidden for the Media Gallery, which plays stored pictures. The last successful result is listed in the diagnostics bundle and stays there until a later run succeeds: a run that fails or is stopped neither replaces nor clears it.
 
 **Save** – write and apply the settings; the pipeline restarts with the new source within about a second.

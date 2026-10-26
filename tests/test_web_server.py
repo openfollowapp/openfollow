@@ -9814,3 +9814,54 @@ def test_the_video_source_section_hides_measure_latency_for_the_media_gallery(li
     assert 'style="display:none"' in row[: row.index(">")]
     # Switching the source type on the page hides and shows it too.
     assert "vis('video-source-latency', value !== 'testpattern');" in body
+
+
+def _latency_key(body: str) -> str:
+    match = re.search(r'id="video-source-latency-key" name="latency" value="(\d+)"', body)
+    assert match, "the row carries its key"
+    return match.group(1)
+
+
+def test_the_idle_latency_row_turns_on_once_video_is_decoding_without_a_reload(live_server, monkeypatch) -> None:
+    server, base = live_server
+    save_config(AppConfig(video_source_type="rtsp"), server.config_path)
+    no_video = {**_DECODING, "video": {**_DECODING["video"], "connected": False}}
+    _latency_stats(monkeypatch, server, no_video)
+    _, section = _get(base, "/section/video_source")
+    shown = _latency_key(section)
+    poll = section[section.index('id="video-source-failure"') :]
+    assert 'hx-include="#video-source-latency-key"' in poll[: poll.index(">")]
+    # Nothing changed: the source-status poll leaves the row alone.
+    _, body = _get(base, f"/section/video_source/failure?latency={shown}")
+    assert "video-source-latency" not in body
+    _latency_stats(monkeypatch, server, _DECODING)
+    _, body = _get(base, f"/section/video_source/failure?latency={shown}")
+    row = _latency_row(body)
+    assert 'hx-swap-oob="true"' in row[: row.index(">")]
+    assert re.search(r'hx-params="none"\s+data-error-lead="Not started\."\s*>Measure latency', row)
+    assert "No video is arriving." not in row
+    assert _latency_key(body) != shown
+    _, again = _get(base, f"/section/video_source/failure?latency={_latency_key(body)}")
+    assert "video-source-latency" not in again
+
+
+def test_the_status_poll_leaves_a_running_row_and_the_setup_wizard_alone(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    # The Setup Wizard's poll sends no key.
+    _, body = _get(base, "/section/video_source/failure")
+    assert "video-source-latency" not in body
+    # A run polls itself.
+    server._command_queue.set_latency_status({"state": "running", "measured": 3})
+    _, body = _get(base, "/section/video_source/failure?latency=0")
+    assert "video-source-latency" not in body
+
+
+def test_the_latency_key_is_never_saved_with_the_video_source_form(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    _, body = _get(base, "/section/video_source")
+    key = body[body.rindex("<", 0, body.index('id="video-source-latency-key"')) :]
+    # Owned by a form id that does not exist, so the form leaves it out.
+    assert 'form="video-source-latency-unsaved"' in key[: key.index(">")]
+    assert 'id="video-source-latency-unsaved"' not in body

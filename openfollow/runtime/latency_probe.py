@@ -84,8 +84,8 @@ _FAILURE_TEXT: dict[FailureReason, tuple[str, str]] = {
     ),
     FailureReason.STOPPED: ("Measurement stopped.", ""),
     FailureReason.SOURCE_CHANGED: (
-        "The video source changed during the measurement.",
-        "Measure again once the video is back.",
+        "The video was rebuilt or changed during the measurement.",
+        "Measure again once the video shows.",
     ),
     FailureReason.NO_VIDEO: ("No video is arriving.", "Measure once the camera's picture shows."),
     FailureReason.NO_DISPLAY: (

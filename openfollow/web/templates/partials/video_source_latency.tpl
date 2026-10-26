@@ -1,9 +1,14 @@
 %# Measure latency: one status box and the button. Polls only while a run the
 %# operator started lasts, and swaps only itself, never the form around it.
+%# Between runs the source-status poll sends its key and swaps it in out of band
+%# when what it shows changed, such as video arriving.
 % lat = latency
 % running = lat['state'] == 'running'
 <div id="video-source-latency" class="row"
      style="display:{{'none' if lat['gallery'] else ''}}"
+% if defined('oob') and oob:
+     hx-swap-oob="true"
+% end
 % if running:
      hx-get="/section/video_source/latency"
      hx-trigger="every 1s [!document.hidden], poll-shown from:body"
@@ -11,6 +16,9 @@
      hx-swap="outerHTML"
 % end
      >
+%# Owned by no form (no such form id), so Save never sends it.
+    <input type="hidden" id="video-source-latency-key" name="latency" value="{{lat['key']}}"
+           form="video-source-latency-unsaved">
     <div class="field wide" data-error-box>
         <label>Camera Latency</label>
 % if running:

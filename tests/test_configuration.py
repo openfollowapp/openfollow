@@ -3203,6 +3203,21 @@ def test_apply_runtime_parks_live_and_moves_the_selection() -> None:
     assert app._web_commands.restart_requested is False
 
 
+def test_a_failed_park_apply_reverts_the_config_and_the_rest_still_applies(monkeypatch) -> None:
+    import openfollow.input.parking as parking_module
+
+    def _boom(_app: object, _parked: list[int]) -> None:
+        raise RuntimeError("park failed")
+
+    monkeypatch.setattr(parking_module, "set_parked", _boom)
+    app = _DummyApp(AppConfig(controlled_marker_ids=[1, 2], viewer_marker_ids=[1, 2]))
+    new_config = AppConfig(controlled_marker_ids=[1, 2], viewer_marker_ids=[1, 2], parked_marker_ids=[2])
+    new_config.controller.deadzone = 0.3
+    apply_runtime_config_changes(app, new_config)
+    assert app._config.parked_marker_ids == []
+    assert app._config.controller.deadzone == 0.3
+
+
 def test_apply_runtime_unparks_live() -> None:
     app = _DummyApp(AppConfig(controlled_marker_ids=[1, 2], viewer_marker_ids=[1, 2], parked_marker_ids=[2]))
     app._parked_ids = frozenset({2})

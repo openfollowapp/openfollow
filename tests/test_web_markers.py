@@ -21,7 +21,7 @@ import pytest
 import tomllib
 
 import openfollow.web.discovery as discovery_module
-from openfollow.configuration import load_config, save_config
+from openfollow.configuration import load_config, save_config, save_config_fields
 from openfollow.marker_catalog import MarkerCatalog
 from openfollow.marker_catalog.sync import PeerSelection
 from openfollow.web.server import ConfigWebServer
@@ -484,52 +484,72 @@ class TestParkedSelection:
         for mid in (1, 2, 3):
             catalog.upsert(mid, f"M{mid}", "#ff0000")
 
-    def test_parked_ids_are_saved_and_served(self, live_server) -> None:
+    def _parked(self, cfg_path: str) -> list[int]:
+        return tomllib.loads(Path(cfg_path).read_text(encoding="utf-8"))["parked_marker_ids"]
+
+    def test_a_p_click_parks_and_unparks_exactly_that_row(self, live_server) -> None:
         _, base, cfg_path, catalog, _ = live_server
         self._catalog(catalog)
-        assert self._post(base, {"controlled_ids": [1, 2], "viewer_ids": [], "parked_ids": [2]}) == 200
-        saved = tomllib.loads(Path(cfg_path).read_text(encoding="utf-8"))
-        assert saved["parked_marker_ids"] == [2]
+        assert self._post(base, {"controlled_ids": [1, 2, 3], "viewer_ids": [], "park": {"2": True}}) == 200
+        assert self._parked(cfg_path) == [2]
+        assert self._post(base, {"controlled_ids": [1, 2, 3], "viewer_ids": [], "park": {"3": True}}) == 200
+        assert self._parked(cfg_path) == [2, 3]
+        assert self._post(base, {"controlled_ids": [1, 2, 3], "viewer_ids": [], "park": {"2": False}}) == 200
+        assert self._parked(cfg_path) == [3]
         _, body = _request(base, "/api/markers/catalog")
-        assert json.loads(body)["this_station"]["parked_ids"] == [2]
+        assert json.loads(body)["this_station"]["parked_ids"] == [3]
+
+    def test_an_osc_park_survives_an_unrelated_selection_save(self, live_server) -> None:
+        """The frame thread saves an OSC park on its own; a page that has not seen it yet must not undo it."""
+        _, base, cfg_path, catalog, _ = live_server
+        self._catalog(catalog)
+        self._post(base, {"controlled_ids": [1, 2], "viewer_ids": []})
+        running = load_config(cfg_path)
+        running.parked_marker_ids = [2]
+        save_config_fields(running, cfg_path, ("parked_marker_ids",))
+        assert self._post(base, {"controlled_ids": [1, 2, 3], "viewer_ids": [], "park": {}}) == 200
+        assert self._parked(cfg_path) == [2]
+        assert self._post(base, {"controlled_ids": [1, 2, 3], "viewer_ids": [], "park": {"1": True}}) == 200
+        assert self._parked(cfg_path) == [2, 1]
 
     def test_only_a_controlled_marker_stays_parked(self, live_server) -> None:
         _, base, cfg_path, catalog, _ = live_server
         self._catalog(catalog)
-        assert self._post(base, {"controlled_ids": [1, 2], "viewer_ids": [3], "parked_ids": [1, 2, 3]}) == 200
+        body = {"controlled_ids": [1, 2], "viewer_ids": [3], "park": {"1": True, "2": True, "3": True}}
+        assert self._post(base, body) == 200
+        assert self._parked(cfg_path) == [1, 2]
         assert self._post(base, {"controlled_ids": [1], "viewer_ids": [2, 3]}) == 200
-        saved = tomllib.loads(Path(cfg_path).read_text(encoding="utf-8"))
-        assert saved["parked_marker_ids"] == [1]
+        assert self._parked(cfg_path) == [1]
 
-    def test_leaving_parked_ids_out_keeps_the_parked_markers(self, live_server) -> None:
+    @pytest.mark.parametrize(
+        "park",
+        [
+            "2",
+            None,
+            True,
+            [2],
+            {"2": 1},
+            {"2": "true"},
+            {"2": None},
+            {"x": True},
+            {"0": True},
+            {"99": True},
+            {"-1": True},
+        ],
+    )
+    def test_a_malformed_park_change_is_rejected(self, live_server, park: object) -> None:
         _, base, cfg_path, catalog, _ = live_server
         self._catalog(catalog)
-        self._post(base, {"controlled_ids": [1, 2], "viewer_ids": [], "parked_ids": [1]})
-        assert self._post(base, {"controlled_ids": [1, 2, 3], "viewer_ids": []}) == 200
-        assert load_config(cfg_path).parked_marker_ids == [1]
-
-    def test_an_empty_list_unparks_everything(self, live_server) -> None:
-        _, base, cfg_path, catalog, _ = live_server
-        self._catalog(catalog)
-        self._post(base, {"controlled_ids": [1, 2], "viewer_ids": [], "parked_ids": [1, 2]})
-        assert self._post(base, {"controlled_ids": [1, 2], "viewer_ids": [], "parked_ids": []}) == 200
-        assert load_config(cfg_path).parked_marker_ids == []
-
-    @pytest.mark.parametrize("parked", ["2", None, True, [True], [0], [99], ["2"], [2.0]])
-    def test_a_malformed_parked_list_is_rejected(self, live_server, parked: object) -> None:
-        _, base, cfg_path, catalog, _ = live_server
-        self._catalog(catalog)
-        assert self._post(base, {"controlled_ids": [1, 2], "viewer_ids": [], "parked_ids": parked}) == 400
+        assert self._post(base, {"controlled_ids": [1, 2], "viewer_ids": [], "park": park}) == 400
         assert load_config(cfg_path).parked_marker_ids == []
 
     def test_deleting_a_parked_marker_drops_its_park(self, live_server) -> None:
         _, base, cfg_path, catalog, _ = live_server
         self._catalog(catalog)
-        self._post(base, {"controlled_ids": [1, 2], "viewer_ids": [], "parked_ids": [1, 2]})
+        self._post(base, {"controlled_ids": [1, 2], "viewer_ids": [], "park": {"1": True, "2": True}})
         status, _ = _request(base, "/api/markers/catalog/2", method="DELETE")
         assert status == 200
-        saved = tomllib.loads(Path(cfg_path).read_text(encoding="utf-8"))
-        assert saved["parked_marker_ids"] == [1]
+        assert self._parked(cfg_path) == [1]
 
 
 class TestCatalogPolling:

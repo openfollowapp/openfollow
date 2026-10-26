@@ -450,10 +450,10 @@
 
     // ---- Selection POST (out-of-band write, same wire as before). ``extra``
     // adds a marker that has no catalog row yet: the add-row's choice.
-    function postSelection(root, row, extra) {
+    function postSelection(root, row, extra, park) {
         selectionPending++;
         selectionQueue = selectionQueue
-            .then(function() { return saveSelection(root, row, extra); })
+            .then(function() { return saveSelection(root, row, extra, park); })
             .catch(function() {})
             .then(function() {
                 selectionPending--;
@@ -462,10 +462,10 @@
     }
 
     // Reads the toggles when it is sent, so a queued save carries the latest selection.
-    function saveSelection(root, row, extra) {
+    // ``park`` is the one row whose P was clicked ({"<id>": true|false}); a park set elsewhere is never sent back.
+    function saveSelection(root, row, extra, park) {
         const controlled = [];
         const viewer = [];
-        const parked = [];
         function add(id, state) {
             if (state === 'control') controlled.push(id);
             if (state !== 'hide') viewer.push(id);
@@ -473,15 +473,12 @@
         root.querySelectorAll('tr[data-marker-id] input[data-this-station]:checked').forEach(function(radio) {
             add(parseInt(radio.getAttribute('data-marker-id'), 10), radio.value);
         });
-        root.querySelectorAll('tr[data-marker-id] button[data-park][aria-pressed="true"]').forEach(function(button) {
-            parked.push(parseInt(button.getAttribute('data-marker-id'), 10));
-        });
         if (extra) add(extra.id, extra.state);
         const table = root.querySelector('.marker-catalog-table');
         return fetch('/api/markers/selection', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({controlled_ids: controlled, viewer_ids: viewer, parked_ids: parked})
+            body: JSON.stringify({controlled_ids: controlled, viewer_ids: viewer, park: park || {}})
         }).then(writeResult(table)).then(function(ok) {
             flashRow(row, ok);
             const flash = root.querySelector('#selection-saved-flash');
@@ -525,8 +522,9 @@
         });
         park.addEventListener('click', function() {
             if (park.disabled) return;
-            setPark(park, 'control', park.getAttribute('aria-pressed') !== 'true');
-            postSelection(root, tr);
+            const on = park.getAttribute('aria-pressed') !== 'true';
+            setPark(park, 'control', on);
+            postSelection(root, tr, null, {[id]: on});
         });
         tr.querySelector('[data-action="save"]').addEventListener('click', function() {
             const name = tr.querySelector('[data-field="name"]').value;

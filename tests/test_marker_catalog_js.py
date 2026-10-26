@@ -107,7 +107,7 @@ function park(id) { return root.querySelector('tr[data-marker-id="' + id + '"] b
 function parkState(id) { return {pressed: park(id).getAttribute('aria-pressed'), disabled: park(id).disabled}; }
 function posted() {
     return requests.filter(function (r) { return r.url === '/api/markers/selection'; })
-        .map(function (r) { return r.body.parked_ids; });
+        .map(function (r) { return r.body.park; });
 }
 """
 
@@ -139,14 +139,25 @@ def test_the_park_toggle_shows_the_saved_park_and_only_a_controlled_row_can_take
     assert out == {"lead": {"pressed": "true", "disabled": False}, "second": {"pressed": "false", "disabled": True}}
 
 
-def test_a_click_on_p_saves_the_park_with_the_selection() -> None:
+def test_a_click_on_p_sends_only_that_rows_change() -> None:
     out = _run_async(
         "pollPark([]); park(3).click(); await settle(); out.on = parkState(3);"
         " park(3).click(); await settle(); out.off = parkState(3); out.posted = posted();"
     )
     assert out["on"] == {"pressed": "true", "disabled": False}
     assert out["off"] == {"pressed": "false", "disabled": False}
-    assert out["posted"] == [[3], []]
+    assert out["posted"] == [{"3": True}, {"3": False}]
+
+
+def test_another_rows_save_never_sends_a_park_it_did_not_click() -> None:
+    """A park the poll showed (set by OSC, say) is the station's; only a P click changes it."""
+    out = _run_async(
+        "pollPark([3]);"
+        ' var ctrl = root.querySelector(\'tr[data-marker-id="4"] input[data-this-station][value="control"]\');'
+        " ctrl.checked = true; ctrl.dispatchEvent(makeEvent('change')); await settle();"
+        " out.posted = posted();"
+    )
+    assert out["posted"] == [{}]
 
 
 def test_moving_a_parked_row_off_view_and_control_clears_its_park() -> None:
@@ -157,4 +168,5 @@ def test_moving_a_parked_row_off_view_and_control_clears_its_park() -> None:
         " ctrl.checked = false; view.checked = true; view.dispatchEvent(makeEvent('change')); await settle();"
         " out.state = parkState(3); out.posted = posted();"
     )
-    assert out == {"state": {"pressed": "false", "disabled": True}, "posted": [[]]}
+    # The server drops the park of a marker that leaves View & Control; the save carries no change.
+    assert out == {"state": {"pressed": "false", "disabled": True}, "posted": [{}]}

@@ -4258,6 +4258,7 @@ class AppRuntimeServices:
                         "state": str(item.get("state", "connected" if item["connected"] else "missing")),
                         "connected": bool(item["connected"]),
                         "marker_id": (int(item["marker_id"]) if item["marker_id"] is not None else None),
+                        "parked": bool(item.get("parked", False)),
                         "effective_speed": float(item["effective_speed"]),
                         "backend": str(item["backend"]),
                         "port_label": str(item.get("port_label", "")),

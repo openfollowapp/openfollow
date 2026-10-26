@@ -519,6 +519,8 @@ class InputManager:
 
     def _apply_osc_parks(self, parks: dict[int, bool]) -> None:
         """Park or unpark controlled markers from OSC, live and in the file; others are ignored."""
+        if not parks:
+            return
         parked = list(self.app._config.parked_marker_ids)
         for marker_id, park in parks.items():
             if park and marker_id not in parked:

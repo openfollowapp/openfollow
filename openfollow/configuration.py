@@ -4322,8 +4322,13 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
     if controlled_changed or parked != app._config.parked_marker_ids:
         from openfollow.input.parking import set_parked
 
+        old_parked = app._config.parked_marker_ids
         app._config.parked_marker_ids = parked
-        set_parked(app, parked)
+        _apply(
+            "parked_marker_ids",
+            lambda: set_parked(app, parked),
+            on_failure=lambda: setattr(app._config, "parked_marker_ids", old_parked),
+        )
 
     if new_config.controller != app._config.controller:
         mouse_was_enabled = app._config.controller.mouse_enabled

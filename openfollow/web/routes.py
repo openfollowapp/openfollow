@@ -4964,11 +4964,25 @@ def _register_marker_catalog_routes(
                 out.append(v)
             return out
 
+        def _park_changes() -> dict[int, bool] | None:
+            # Only the rows whose P was clicked: a park set elsewhere (OSC) since the page read it must survive.
+            raw = data.get("park", {})
+            if not isinstance(raw, dict):
+                return None
+            changes: dict[int, bool] = {}
+            for key, value in raw.items():
+                if not isinstance(key, str) or not key.isdecimal() or not isinstance(value, bool):
+                    return None
+                mid = int(key)
+                if mid < 1 or catalog.get(mid) is None:
+                    return None
+                changes[mid] = value
+            return changes
+
         controlled = _coerce("controlled_ids")
         viewer = _coerce("viewer_ids")
-        # Left out, the parked markers stay as they are.
-        parked = _coerce("parked_ids") if "parked_ids" in data else None
-        if controlled is None or viewer is None or ("parked_ids" in data and parked is None):
+        park = _park_changes()
+        if controlled is None or viewer is None or park is None:
             response.status = 400
             return json.dumps({"error": "invalid id list"})
 
@@ -4984,10 +4998,10 @@ def _register_marker_catalog_routes(
             cfg.viewer_marker_ids = viewed_with_controlled(
                 cfg.controlled_marker_ids, _keep_order(cfg.viewer_marker_ids, viewer)
             )
+            parked = [mid for mid in cfg.parked_marker_ids if park.get(mid, True)]
+            parked += [mid for mid, on in park.items() if on and mid not in parked]
             # Only a controlled marker can be parked: leaving View & Control clears it.
-            cfg.parked_marker_ids = parked_within(
-                cfg.controlled_marker_ids, cfg.parked_marker_ids if parked is None else parked
-            )
+            cfg.parked_marker_ids = parked_within(cfg.controlled_marker_ids, parked)
             save_config(cfg, server.config_path)
         return json.dumps({"success": True})
 

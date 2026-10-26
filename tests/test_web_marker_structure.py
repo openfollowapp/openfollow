@@ -384,7 +384,8 @@ class TestThisStationToggle:
         assert '<button type="button" class="park-toggle" data-park data-marker-id="' in body
         assert '" aria-pressed="false" aria-label="Park" disabled>P</button>' in body
         assert "parkToggle(null)" not in body
-        assert "body: JSON.stringify({controlled_ids: controlled, viewer_ids: viewer, parked_ids: parked})" in body
+        assert "body: JSON.stringify({controlled_ids: controlled, viewer_ids: viewer, park: park || {}})" in body
+        assert "postSelection(root, tr, null, {[id]: on});" in body
 
     def test_the_p_toggle_is_grey_off_and_the_info_line_on(self) -> None:
         body = _render_marker()
@@ -409,13 +410,13 @@ class TestThisStationToggle:
         """Each save posts the whole selection, and the server runs requests in
         parallel: two in flight could commit out of order and put back the older one."""
         body = _render_marker()
-        start = body.index("function postSelection(root, row, extra) {")
+        start = body.index("function postSelection(root, row, extra, park) {")
         post = body[start : body.index("\n    }\n", start)]
         assert "selectionQueue = selectionQueue" in post
-        assert ".then(function() { return saveSelection(root, row, extra); })" in post
+        assert ".then(function() { return saveSelection(root, row, extra, park); })" in post
         # The snapshot is taken inside the queued save, not when the click happened.
         assert "querySelectorAll" not in post
-        save = body[body.index("function saveSelection(root, row, extra) {") :]
+        save = body[body.index("function saveSelection(root, row, extra, park) {") :]
         assert save.index("root.querySelectorAll('tr[data-marker-id] input[data-this-station]:checked')") < save.index(
             "fetch('/api/markers/selection'"
         )

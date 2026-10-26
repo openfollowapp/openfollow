@@ -391,6 +391,13 @@ class TestOscUpdateApplication:
         manager.update(0.016)  # must not raise
 
 
+class _RaisingLog:
+    """Stands in for a throttled error log: a swallowed failure fails the test instead."""
+
+    def log(self) -> None:
+        raise AssertionError("an OSC step failed")
+
+
 class TestOscPark:
     @pytest.fixture
     def saved(self, monkeypatch: pytest.MonkeyPatch) -> list[tuple[list[int], tuple[str, ...]]]:
@@ -448,6 +455,16 @@ class TestOscPark:
         _FakeOscHandler.next_updates = {10: {"x": 1.0, "y": 2.0, "z": 3.0}}
         manager.update(0.016)
         assert app._server.get_marker(10).pos == pytest.approx((1.0, 2.0, 3.0))
+
+    def test_a_frame_without_a_park_command_does_no_park_work(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _boom(*_args: Any) -> list[int]:
+            raise AssertionError("parked set rebuilt with no park command")
+
+        monkeypatch.setattr(input_manager_module, "parked_within", _boom)
+        app = _DummyApp(osc_enabled=True)
+        manager = InputManager(app)
+        manager._osc_apply_err_log = _RaisingLog()
+        manager.update(0.016)
 
     def test_a_failed_save_keeps_the_park_live(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _fail(*_args: Any) -> None:

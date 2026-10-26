@@ -480,6 +480,47 @@ def test_a_puck_on_a_parked_slot_moves_and_resets_nothing(station, monkeypatch) 
     assert app._server.markers[11].pos != (2.0, 2.0, 1.0)
 
 
+@pytest.mark.parametrize(
+    ("device", "frame"),
+    [
+        ("gamepad", GamepadUpdate(pathfinder_presses={0, 1})),
+        ("mouse3d", Mouse3DUpdate(speed_steps=2)),
+        ("mouse3d", Mouse3DUpdate(pathfinder=True)),
+        ("mouse3d", Mouse3DUpdate(fader_signal=1.0)),
+    ],
+    ids=["gamepad-pathfinder", "puck-speed-steps", "puck-pathfinder", "puck-fader"],
+)
+def test_a_parked_slot_writes_nothing_while_the_other_slot_still_does(
+    station, monkeypatch, device: str, frame: object
+) -> None:
+    monkeypatch.setattr(_Pucks, "initial", {0: Mouse3DDeviceInfo(path="/dev/hidraw0", port_key=_key("3"))})
+    manager, app = station({0: (_key("1"), "First"), 1: (_key("2"), "Second")}, mouse3d__enabled=True)
+    # Slots: C1 pad 0 -> 10, C2 pad 1 -> 11, C3 puck -> 12.
+    writes: list[tuple[str, int]] = []
+    app._paths = object()
+    monkeypatch.setattr(
+        input_manager_module.paths_runtime, "pathfinder", lambda _app, mid, _m: writes.append(("pathfinder", mid))
+    )
+    app.adjust_move_speed = lambda _direction, marker_id=None: writes.append(("speed", marker_id))
+    manager._virtual_faders = SimpleNamespace(
+        set_marker_fader_from_velocity_delta=lambda mid, _delta: writes.append(("fader", mid))
+    )
+    if device == "gamepad":
+        set_parked(app, [10])
+        manager.gamepad_handler.next_update = frame
+        manager.update(0.016)
+        assert writes == [("pathfinder", 11)]
+        return
+    set_parked(app, [12])
+    manager.mouse3d_manager.next_frames = {0: frame}
+    manager.update(0.016)
+    assert writes == []
+    set_parked(app, [])
+    manager.mouse3d_manager.next_frames = {0: frame}
+    manager.update(0.016)
+    assert writes and {mid for _kind, mid in writes} == {12}
+
+
 def test_a_lone_controller_never_moves_a_parked_marker(station) -> None:
     manager, app = station({0: (_key("1"), "Only")})
     set_parked(app, [10, 11, 12])

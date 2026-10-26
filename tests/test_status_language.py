@@ -181,13 +181,32 @@ def test_an_unpicked_midi_fader_is_a_caution_row_pill() -> None:
     ):
         assert declaration in body
     assert "--accent" not in body
+    assert "line-height: 1.2;" in body
+    assert "overflow-wrap: anywhere;" in body
     base = (_TEMPLATES / "base.tpl").read_text(encoding="utf-8")
-    trim = base[base.index("@supports (text-box: trim-both cap alphabetic)") :].split("}", 1)[0]
+    supports = base.index("@supports (text-box: trim-both cap alphabetic)")
+    fallback = base[: base.index("{", base.rindex("/* Pills set --pill-pad-y", 0, supports))]
+    trim = base[supports:].split("}", 1)[0]
+    assert ".midi-fader-strip-not-picked-up" in fallback.split("*/")[-1]
     assert ".midi-fader-strip-not-picked-up" in trim
 
 
-# midi.tpl tints a fader strip with its colour at 0x40; black stays untinted.
-_FADER_TINT_ALPHA = round(0x40 / 255, 3)
+def test_a_picked_up_fader_keeps_the_pills_slot() -> None:
+    """Hidden, not removed: the strips stretch to the tallest, so a pill that came and went would resize them all."""
+    rules = {
+        selector: body.strip()
+        for _, selector, body in _status_rules()
+        if selector.startswith(".midi-fader-strip-not-picked-up[data-picked-up]")
+    }
+    assert rules == {".midi-fader-strip-not-picked-up[data-picked-up]": "visibility: hidden;"}
+
+
+def _fader_tint_alpha() -> float:
+    """The alpha midi.tpl appends to a fader's colour to tint its strip."""
+    midi = (_TEMPLATES / "partials" / "midi.tpl").read_text(encoding="utf-8")
+    suffix = re.search(r"_fader_color \+ '([0-9a-fA-F]{2})'", midi)
+    assert suffix, "the strip tint moved"
+    return round(int(suffix.group(1), 16) / 255, 3)
 
 
 def _fader_colours() -> list[str]:
@@ -202,7 +221,7 @@ def test_the_pickup_pill_holds_aa_over_every_fader_tint(colour: str) -> None:
     defined = _root_tokens()
     deep = _rgba(defined["--bg-deep"])[:3]
     pages = (deep, _rgba(defined["--bg-base"])[:3], _over(_rgba(defined["--accent-soft"]), deep))
-    tint = (*_rgba(colour)[:3], _FADER_TINT_ALPHA)
+    tint = (*_rgba(colour)[:3], _fader_tint_alpha())
     for page in pages:
         pill = _over(_rgba(defined["--caution-chip"]), _over(tint, _over(_rgba(defined["--surface"]), page)))
         assert _contrast(_rgba(defined["--text"])[:3], pill) >= 4.5

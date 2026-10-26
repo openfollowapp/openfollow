@@ -300,7 +300,7 @@
   .caution-text { color: var(--caution-text); }
   /* Full strength in a tile, and dark ink on a checked tile's accent fill. */
   .tier-option > span small.caution-text { opacity: 1; }
-  .tier-option input:checked + span .caution-text { color: var(--bg-deep); }
+  .tier-option input:checked + span .caution-text { color: inherit; }
   .mode-field { margin-bottom: 0.9rem; }
   .lens-current { margin: 0.9rem 0; }
   .lens-current-values { margin: 0.2rem 0 0.6rem; color: var(--muted); }

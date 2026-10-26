@@ -63,7 +63,8 @@ muted on the dark page. Text on a solid caution fill is the dark `--bg-deep`,
 chosen for contrast (see Contrast); text on the caution box and chip stays
 off-white.
 [`tests/test_status_language.py`](../tests/test_status_language.py) keeps
-`--caution-line` apart from `--accent`.
+the caution line, text and border, and the HUD's caution border, at least 15°
+of hue from the accent.
 
 The HUD carries the error level as `COLOR_WARNING_FILL` and
 `COLOR_WARNING_BORDER` in
@@ -309,8 +310,8 @@ without the danger button.
 Selection is the accent, never a level colour: the selected Media Gallery tile,
 the active Setup Wizard step and the selected Detection Mask take a gold border
 on `--accent-soft`. A finished Setup Wizard step is `--success-text`. A
-checked choice tile takes the solid accent, so a caution note inside it turns to
-the tile's dark `--bg-deep` ink while it is checked.
+checked choice tile takes the solid accent, so a caution note inside it takes
+the tile's own dark ink while it is checked.
 
 Drawings use the text tones: the Setup Wizard's axes keep X red, Y green,
 Z blue as `#f44848`, `#5cc98c` and `#4f8dd9`, labels at full strength and lines at
@@ -404,9 +405,9 @@ Support OpenFollow edge, so it is the same object on both:
 
 The edge is gold, but it can't pass for a caution box: a caution box has a
 solid orange border, an orange fill and the "i" sign, while this card is
-dashed, takes the neutral `--surface` fill and leads with a heart. Never give it a level's
-fill, a solid border or a status sign. Its text makes no claim that could go
-stale on a station that never updates.
+dashed, takes the neutral `--surface` fill and leads with a heart. Never give
+it a level's fill, a solid border or a status sign. Its text makes no claim
+that could go stale on a station that never updates.
 
 ## Corner radius
 
@@ -422,24 +423,29 @@ An inner corner is never rounder than its container.
 
 ## Contrast
 
-On the web UI, every text colour passes WCAG AA (4.5 : 1) against the
-background it actually sits on. Measure the rendered pixel, not the token: a
-translucent fill changes with whatever is under it. The numbers that set the
-tokens:
+Text passes WCAG AA (4.5 : 1) against the background it actually sits on,
+within the known limits at the end of this list. Measure the rendered pixel,
+not the token: a translucent fill changes with whatever is under it. On the web
+UI, measure where an element can sit highest: a `.section` starts just under
+the header, where the page's gold glow is strongest, and the glow grows with
+the viewport's height. The figures are for viewports 768 to 2160 px tall and
+for a dialog (`--bg-soft`). The numbers that set the tokens:
 
 - Red text passes only near full saturation. Pure `#ff0000` reaches 4.14 : 1 on
-  the page, so the error text is `#f44848` (4.6 to 4.9 : 1), not the dot's
-  `#e04848` (4.1 : 1).
+  the page, so the error text is `#f44848` (4.7 to 4.9 : 1 in a section up to
+  1080 px tall), not the dot's `#e04848` (4.1 : 1).
 - Text on a red fill is off-white (15 : 1), not red (4.7 : 1).
-- Measured inside a `.section`, where these elements sit, caution text
-  `#ff6600` reaches 4.8 : 1 at the low end, under the gold glow at the page's
-  top; off-white text reads at least 7.2 : 1 on the caution box and 7.3 : 1 on
-  the caution chip. The box's muted second line (`.notice-sub`) is the tightest
-  web pairing. At the highest a section reaches, just under the header in the
-  glow's centre, it reads 4.8 : 1 on a 1080 px tall viewport and 4.6 : 1 on a
-  2160 px tall one; in a dialog (`--bg-soft`) it reads 4.9 : 1.
+- Caution text `#ff6600` reads 5.4 to 6.0 : 1. Off-white reads at least
+  7.9 : 1 on the caution box and 7.5 : 1 on the caution chip. The caution box's
+  muted second line (`.notice-sub`) reads 4.8 : 1 at 1080 px tall, 4.6 : 1 at
+  2160 px and 4.9 : 1 in a dialog.
 - Text on a solid caution fill is the dark `--bg-deep` (6.6 : 1); off-white
   reaches only 2.7 : 1 there.
+- Up to 1080 px tall, the tightest web pairing is error text at the top of a
+  section or in a dialog, 4.7 : 1; info text reads 4.9 : 1 there.
+- Known limit: on a viewport taller than about 1600 px, error text at the top
+  of the first section falls under AA, to 4.4 : 1 at 2160 px. Info text holds
+  there at 4.6 : 1.
 - On the HUD, a status row's 80% chip lets the video through. Off-white on the
   caution chip reads 8.2 : 1 over black and 5.8 : 1 over mid grey, but only
   4.0 : 1 over pure white video (success 4.3 : 1); error and info hold AA over

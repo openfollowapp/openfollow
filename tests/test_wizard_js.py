@@ -3006,9 +3006,9 @@ def test_only_a_misfit_lines_glow_is_painted_and_it_never_takes_a_click() -> Non
 
 
 def test_a_caution_note_in_a_checked_tile_takes_the_tiles_dark_ink() -> None:
-    """A checked tile is the solid accent, on which caution orange reads 1.6:1."""
+    """A checked tile is the solid accent, on which caution orange reads 1.74:1; the tile's own ink reads 11:1."""
     style = WIZARD_TEMPLATE.read_text(encoding="utf-8")
-    assert re.search(r"\.tier-option input:checked \+ span \.caution-text \{ color: var\(--bg-deep\); \}", style)
+    assert re.search(r"\.tier-option input:checked \+ span \.caution-text \{ color: inherit; \}", style)
     # Unchecked, the tile's small-text fade would take the orange under AA.
     assert re.search(r"\.tier-option > span small\.caution-text \{ opacity: 1; \}", style)
 

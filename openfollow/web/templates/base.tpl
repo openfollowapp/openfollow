@@ -1105,12 +1105,15 @@
  font-variant-numeric: tabular-nums;
  text-align: center;
  }
- /* A caution row pill: caution text would miss AA over a light fader tint. */
+ /* A caution row pill: caution text would miss AA over a light fader tint. Every strip
+ keeps the pill's slot, hidden once picked up, so a pickup never changes the strip height. */
  .midi-fader-strip-not-picked-up {
  display: block; width: fit-content; max-width: 100%; margin: 2px auto 0;
- border-radius: 0.4rem; --pill-pad-y: 0.1rem; padding-inline: 0.45rem; font-size: 0.7rem; font-weight: 500;
+ border-radius: 0.4rem; --pill-pad-y: 0.1rem; padding-inline: 0.35rem; font-size: 0.7rem; font-weight: 500;
+ line-height: 1.2; overflow-wrap: anywhere;
  color: var(--text); background: var(--caution-chip); border: 1px solid var(--caution-line);
  }
+ .midi-fader-strip-not-picked-up[data-picked-up] { visibility: hidden; }
  /* Read-only marker-fader strips: gamepad-driven, not clickable. */
  .midi-fader-strip--readonly { cursor: default; }
  .midi-fader-strip--readonly:hover { background: transparent; }

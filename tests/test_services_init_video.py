@@ -34,6 +34,7 @@ import openfollow.services as services_module
 from openfollow.configuration import AppConfig, DetectionConfig
 from openfollow.power_health import PowerMonitor
 from openfollow.runtime.overlay_layers import LayerContext
+from openfollow.runtime.overlay_state import OverlayState
 from openfollow.services import AppRuntimeServices
 from tests._fake_cairo import FakeCairo
 from tests._fake_gtk import FakeCanvas
@@ -61,7 +62,7 @@ class _FakeOverlayRenderer:
 def _assert_hud_drawn_on_its_thread(services: AppRuntimeServices) -> None:
     """The display refresh hands the renderer's current state to the HUD render thread."""
     renderer = services._overlay_renderer
-    renderer.state = sentinel = object()
+    renderer.state = sentinel = OverlayState()
     canvas = services._app._canvas
     canvas.hud_draw_fn(FakeCairo(), 640, 360)
     canvas.hud_tick()  # the display refresh starts the picture
@@ -642,6 +643,25 @@ class TestInitVideoCanvasWithoutAttachHud:
             _assert_hud_drawn_on_its_thread(services)
         # Either Operator Screen counts the video frames reaching its sink.
         assert recv_factory.last.display_frame_listener == services._hud_render.video_frame
+
+    @pytest.mark.parametrize("blocker", [None, "no GL display on darwin"], ids=["gl", "cairo"])
+    def test_either_operator_screen_tells_the_latency_probe_when_its_flash_shows(
+        self,
+        services: AppRuntimeServices,
+        recv_factory: _RecordingReceiverFactory,
+        patched_subsystems: None,
+        monkeypatch: pytest.MonkeyPatch,
+        blocker: str | None,
+    ) -> None:
+        from openfollow.video import gl_display
+
+        self._gl_world(monkeypatch, services._app._canvas, blocker=blocker, probe=None)
+        services.init_video()
+
+        assert services._hud_render.on_flash_shown == services._latency_probe.presented
+        display = recv_factory.last.display
+        if blocker is None:
+            assert isinstance(display.flash, gl_display.ScreenFlash)
 
     def test_the_gl_display_can_fall_back_from_the_moment_its_area_is_embedded(
         self,

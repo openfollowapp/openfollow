@@ -167,6 +167,16 @@ STATUS_LEVEL_COLORS: dict[str, tuple[tuple[float, ...], tuple[float, ...], tuple
 STATUS_LEVELS = ("error", "caution", "info", "success")
 
 
+def level_fill(level: str) -> tuple[float, float, float, float]:
+    """The chip fill of *level*, read from its token when drawn."""
+    return {
+        "error": COLOR_WARNING_FILL,
+        "caution": COLOR_CAUTION_FILL,
+        "info": COLOR_INFO_FILL,
+        "success": COLOR_SUCCESS_FILL,
+    }[status_level(level)]
+
+
 def status_level(value: object) -> str:
     """*value* when it names a status level, else "error": a malformed writer shows as a fault."""
     return value if isinstance(value, str) and value in STATUS_LEVEL_COLORS else "error"

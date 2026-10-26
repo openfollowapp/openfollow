@@ -467,3 +467,78 @@ def test_with_no_one_to_tell_nothing_is_queued_and_a_later_listener_still_hears(
     give_way.give_up("the GL area could not start")
     idle.run()
     assert told == ["the GL area could not start"]
+
+
+# -- the latency flash -----------------------------------------------------------------------
+
+
+class _RecordingGl:
+    """Every GL call in order; each constant a number of its own, far apart."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple[Any, ...]]] = []
+        self._constants: dict[str, int] = {}
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("GL_"):
+            return self._constants.setdefault(name, 1000 * (len(self._constants) + 1))
+
+        def call(*args: Any) -> int:
+            self.calls.append((name, args))
+            return 0
+
+        return call
+
+
+def _display(level: float | None, presented: list[tuple[float, int]]) -> tuple[Any, _RecordingGl]:
+    """A GL display past its start: a frame uploaded, a HUD picture shown, and the probe's level."""
+    gl = _RecordingGl()
+    display = object.__new__(gl_display.GlDisplay)
+    picture = cairo.ImageSurface(cairo.FORMAT_ARGB32, 64, 36)
+    display.__dict__.update(
+        _gl=gl,
+        _frame=(1920, 1080),
+        _colour=yuv_to_rgb(1080),
+        _p_yuv=1,
+        _p_hud=2,
+        _t_yuv=[3, 4, 5],
+        _t_hud=6,
+        _quad=(7, 8),
+        _hud_serial=-1,
+        _hud_size=(0, 0),
+        _refresh=(5_000_000, 16_667),
+        _hud=SimpleNamespace(set_canvas=lambda *_a: None, shown_picture=lambda: (picture, 1)),
+        flash=gl_display.ScreenFlash(lambda: level, lambda lv, at: presented.append((lv, at))),
+    )
+    display._upload_due_frame = lambda: None
+    display._log_cadence = lambda: None
+    return display, gl
+
+
+def _area() -> Any:
+    return SimpleNamespace(get_scale_factor=lambda: 1, get_allocation=lambda: SimpleNamespace(width=64, height=36))
+
+
+@pytest.mark.parametrize("level", [0.0, 1.0])
+def test_the_flash_clears_over_video_and_hud_and_reports_the_refresh(level: float) -> None:
+    presented: list[tuple[float, int]] = []
+    display, gl = _display(level, presented)
+    display._draw(_area())
+    names = [name for name, _ in gl.calls]
+    programs = [args[0] for name, args in gl.calls if name == "glUseProgram"]
+    assert programs == [1, 2], "video, then the HUD"
+    last_draw = max(i for i, name in enumerate(names) if name == "glDrawArrays")
+    assert gl.calls[last_draw + 1 :] == [
+        ("glClearColor", (level, level, level, 1.0)),
+        ("glClear", (gl.GL_COLOR_BUFFER_BIT,)),
+    ]
+    assert presented == [(level, 5_000_000)]
+
+
+def test_with_no_run_the_display_draws_no_flash_and_reports_nothing() -> None:
+    presented: list[tuple[float, int]] = []
+    display, gl = _display(None, presented)
+    display._draw(_area())
+    assert [args for name, args in gl.calls if name == "glClearColor"] == [(0.0, 0.0, 0.0, 1.0)]
+    assert gl.calls[-1][0] == "glDrawArrays"
+    assert presented == []

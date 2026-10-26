@@ -211,9 +211,11 @@ class TestDefaultRuntimeStatsSnapshot:
             "tracking",
             "hud",
             "marker_conflicts",
+            "latency",
         }
         assert snap["marker_conflicts"] == []
         assert snap["keyboard"] == {"poller": None, "devices": None}
+        assert snap["latency"] is None
         assert snap["system"]["cpu_percent"] == 0.0
         assert snap["video"]["connected"] is False
         assert snap["controllers"]["items"] == []

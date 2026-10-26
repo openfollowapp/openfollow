@@ -1373,6 +1373,14 @@
  .ndi-row { align-items: flex-end; }
  /* A setting shown, not edited here: sized like an input beside it. */
  .value-box { display: block; border-radius: 0.75rem; border: 1px solid var(--border); background: var(--surface); padding: 0.62rem 0.72rem; font-size: 0.93rem; line-height: 1.25; }
+ /* Camera Latency: the last result beside the button that opens the Measure dialog. */
+ .latency-row { align-items: flex-end; }
+ .latency-row .notice { margin: 0; }
+ .latency-value { font-weight: 600; font-variant-numeric: tabular-nums; }
+ .latency-value small { display: block; font-weight: 400; color: var(--muted); font-size: 0.82rem; }
+ .latency-hazard { letter-spacing: 0.02em; }
+ .modal-body ol { margin: 0 0 0.7rem; padding-left: 1.3rem; line-height: 1.45; }
+ .modal-body .modal-note { color: var(--muted); font-size: 0.82rem; }
  .inset-panel { padding: 0.9rem; border-radius: 0.9rem; border: 1px solid var(--border); background: var(--surface); }
  /* A block loaded between a fragment's rows: its parts and the row after it keep the row gap. */
  .camera-block { display: flex; flex-direction: column; gap: 0.72rem; margin-bottom: 0.72rem; }
@@ -2278,7 +2286,7 @@
  background: var(--info-sign) no-repeat center / contain;
  }
  /* Progress: an info box led by the spinner in the sign's place. */
- .network-banner.network-banner-busy::before { content: none; }
+ .network-banner.network-banner-busy::before, .notice.network-banner-busy::before { content: none; }
  .network-banner-busy .modal-spinner { position: absolute; left: 12px; top: 11px; width: 16px; height: 16px; box-sizing: border-box; }
  .notice.error, .update-notice.error, .modal-error, .diag-error, .gallery-error, .network-banner.network-banner-error {
  border-color: var(--error-border);
@@ -2955,6 +2963,15 @@
  lastFocus.focus();
  }
  if (handler) handler();
+ }
+ // Lock an open modal (× hidden; ESC, the backdrop and the page behind it do nothing) or release it.
+ function modalLock(locked) {
+ const root = document.getElementById('modal-root');
+ if (!root || root.hidden) return;
+ _modalDismissable = !locked;
+ _lockModalBackground(locked);
+ const closeBtn = root.querySelector('.modal-close');
+ if (closeBtn) closeBtn.hidden = locked;
  }
  function openModal(opts) {
  // ``opts`` keys: ``title`` (string), ``bodyHTML`` (string OR

@@ -94,15 +94,16 @@ circle with a check for success.
 Progress is an info box led by the spinner (`.modal-spinner`, the one the
 update dialog turns and the HUD's `draw_spinner` copies) in the sign's place:
 `.network-banner-busy`, shown while a slow request runs and hidden when it
-answers.
+answers, or for as long as a camera latency run lasts.
 
 A box says what the station observed on its main line (off-white, 600) and
 one next step on its second line (`--muted`, 400). The two never blur into one
 sentence.
 
 The dialog and diagnostics errors, the Media Gallery error, the network
-result, the Detection progress and result, the Statistics warning and the NDI
-box are all one of these four. Do not add an inline-styled box.
+result, the Detection progress and result, the camera latency progress and
+result, the Statistics warning and the NDI box are all one of these four.
+Do not add an inline-styled box.
 
 A box that a poll re-renders must not carry `role="alert"`: every swap inserts
 it again, and a screen reader announces it again. `hx-preserve` does not help,
@@ -361,6 +362,12 @@ attributes, so it spells the token's value.
   one error row for all of them: "Control conflict: Marker 3 (Lead)" for one,
   "Control conflict: Markers 3, 4, 5" for several, cut with "…" so it stays on
   one line. Each of those markers' cards turns red.
+- An operator-message card the station makes itself, such as the camera
+  latency test's "Latency test about to start", may carry a headline bar: the
+  bar marker cards carry, in a level's chip fill (`--caution-chip` /
+  `COLOR_CAUTION_FILL` here) with off-white text, like a HUD status row. A
+  warning the station raises reads as a warning, not as a cue someone sent; a
+  card from OSC never carries one.
 - Settings another station pushed here are an info row naming the newest push
   ("Settings pushed from Stage Left (+1 more)"), held until the warning is
   removed, on the web UI or from the Settings menu, whose first entry is

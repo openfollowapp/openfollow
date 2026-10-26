@@ -372,3 +372,41 @@ def test_the_support_card_never_takes_a_level_colour() -> None:
             assert max(r, g, b) - min(r, g, b) <= _MAX_NEUTRAL_CHROMA, f"{selector} uses {colour}"
     border = next(body for selector, body in rules if selector == ".support-card")
     assert "dashed var(--support-border)" in border
+
+
+def _winning_sign(classes: set[str]) -> str:
+    """The ``content`` base.tpl gives ``::before`` on an element of ``classes``, by specificity, then order."""
+    base = (_TEMPLATES / "base.tpl").read_text(encoding="utf-8")
+    css = re.sub(r"/\*.*?\*/", "", "".join(re.findall(r"<style[^>]*>(.*?)</style>", base, re.S)), flags=re.S)
+    best: tuple[int, int, str] | None = None
+    for order, (selector, body) in enumerate(re.findall(r"([^{}]+)\{([^{}]*)\}", css)):
+        content = re.search(r"content\s*:\s*([^;]+);", body)
+        if content is None:
+            continue
+        for part in selector.split(","):
+            compound = re.fullmatch(r"\s*((?:\.[\w-]+)+)::before\s*", part)
+            if compound and set(compound.group(1)[1:].split(".")) <= classes:
+                specificity = compound.group(1).count(".")
+                if best is None or (specificity, order) >= best[:2]:
+                    best = (specificity, order, content.group(1).strip())
+    assert best is not None
+    return best[2]
+
+
+@pytest.mark.parametrize(
+    "classes",
+    [
+        {"network-banner", "network-banner-info", "network-banner-busy"},
+        {"notice", "network-banner-busy"},
+    ],
+    ids=["network-apply", "notice"],
+)
+def test_a_progress_box_shows_its_spinner_in_place_of_the_sign(classes: set[str]) -> None:
+    assert _winning_sign(classes) == "none"
+
+
+@pytest.mark.parametrize(
+    "classes", [{"network-banner", "network-banner-info"}, {"notice"}], ids=["network-banner", "notice"]
+)
+def test_a_box_that_is_not_busy_keeps_its_sign(classes: set[str]) -> None:
+    assert _winning_sign(classes) == '""'

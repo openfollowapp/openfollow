@@ -62,11 +62,11 @@
  --error-mark: #e04848;
  --error-mark-muted: rgba(224, 72, 72, 0.4);
  --error-row: hsl(2deg 64% 14%);
- --caution-fill: rgba(255, 188, 0, 0.12);
- --caution-border: rgba(255, 188, 0, 0.6);
- --caution-chip: rgba(155, 114, 0, 0.8);
- --caution-line: #ffbc00;
- --caution-text: #ffbc00;
+ --caution-fill: rgba(255, 102, 0, 0.38);
+ --caution-border: #ff6600;
+ --caution-chip: rgba(156, 62, 0, 0.8);
+ --caution-line: #ff6600;
+ --caution-text: #ff6600;
  --info-fill: rgba(38, 100, 176, 0.2);
  --info-border: rgba(38, 100, 176, 0.5);
  --info-chip: rgba(23, 61, 107, 0.8);
@@ -1105,14 +1105,16 @@
  font-variant-numeric: tabular-nums;
  text-align: center;
  }
+ /* A caution row pill: caution text would miss AA over a light fader tint. Every strip
+ keeps the pill's slot, hidden once picked up, so a pickup never changes the strip height. */
  .midi-fader-strip-not-picked-up {
- display: block;
- font-size: 0.62rem;
- color: var(--accent, #ffbc00);
- font-style: italic;
- line-height: 1;
- margin-top: 2px;
+ display: block; width: fit-content; max-width: 100%; margin: 2px auto 0;
+ /* 0.35rem, not 0.45rem: at 0.45rem "picked" breaks mid-word in the 50.8 px strip in Inter and Noto. */
+ border-radius: 0.4rem; --pill-pad-y: 0.1rem; padding-inline: 0.35rem; font-size: 0.7rem; font-weight: 500;
+ line-height: 1.2; overflow-wrap: anywhere;
+ color: var(--text); background: var(--caution-chip); border: 1px solid var(--caution-line);
  }
+ .midi-fader-strip-not-picked-up[data-picked-up] { visibility: hidden; }
  /* Read-only marker-fader strips: gamepad-driven, not clickable. */
  .midi-fader-strip--readonly { cursor: default; }
  .midi-fader-strip--readonly:hover { background: transparent; }
@@ -2306,13 +2308,13 @@
  height and baseline centres the label whatever the fallback font's ascent. */
  .stat-chip, .diag-status-pill, .slot-state, .slot-note, .badge-experimental, .net-iface-method-badge,
  .osc-binding-fault, .osc-binding-caution, .modal-list-item-badge, .update-flag, .osc-pill:not([data-invalid="true"]),
- .osc-pill[data-invalid="true"][data-unresolved="true"] {
+ .osc-pill[data-invalid="true"][data-unresolved="true"], .midi-fader-strip-not-picked-up {
  padding-block: var(--pill-pad-y);
  }
  @supports (text-box: trim-both cap alphabetic) {
  .stat-chip, .diag-status-pill, .slot-state, .slot-note, .badge-experimental, .net-iface-method-badge,
  .osc-binding-fault, .osc-binding-caution, .modal-list-item-badge, .update-flag, .osc-pill:not([data-invalid="true"]),
- .osc-pill[data-invalid="true"][data-unresolved="true"] {
+ .osc-pill[data-invalid="true"][data-unresolved="true"], .midi-fader-strip-not-picked-up {
  text-box: trim-both cap alphabetic;
  padding-block: calc((1lh - 1cap) / 2 + var(--pill-pad-y));
  }

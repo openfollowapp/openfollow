@@ -1738,6 +1738,27 @@ def test_a_snapshot_of_another_size_stores_the_pins_as_the_same_fractions() -> N
     assert out["points"][0]["pin"] == [0.5, 0.25]
 
 
+def test_a_new_snapshot_keeps_the_corners_the_operator_dragged() -> None:
+    """Reloading the picture during Simple's corner step refreshes the picture only; a corner not yet
+    dragged follows the starting quad, as it did before."""
+    out = run_wizard_js(
+        "(function() { showSnapshotOnCurrentStep('blob:x', {}); return S.cornerPins; })()",
+        functions=("pinsToSnapshot", "placeStartQuad", "showSnapshotOnCurrentStep"),
+        variables=("CORNERS",),
+        prelude=_DOM + "var imageWidth = 1920, imageHeight = 1080, snapshotCanvas = null, FS = false, currentStep = 0;"
+        " var WIZ = { calib: 3, review: 4 };"
+        " document.createElement = function() {"
+        " return { getContext: function() { return { drawImage: function() {} }; } }; };"
+        " function setPreviewVisibility() {} function renderCalibOverlay() {} function runSolve() {}"
+        " function lensOnSnapshot() {}"
+        " function startQuad() { return [[10, 10], [20, 10], [20, 20], [10, 20]]; }"
+        " var S = { mode: 'simple', pinSize: [1920, 1080],"
+        " cornerPins: { DSL: [700, 800], DSR: [1300, 790], USR: [20, 10], USL: [10, 10] },"
+        " cornerMoved: { DSL: true, DSR: true, USR: false, USL: false } };",
+    )
+    assert out == {"DSL": [700, 800], "DSR": [1300, 790], "USR": [20, 20], "USL": [10, 20]}
+
+
 def test_pins_are_stored_as_fractions_of_the_snapshot_they_are_in() -> None:
     # Between a new snapshot's size arriving and the pins following it, they are still the old snapshot's pixels.
     out = run_wizard_js(

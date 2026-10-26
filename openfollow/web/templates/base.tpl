@@ -1956,6 +1956,7 @@
  .fields-grid { grid-template-columns: 1fr; }
  .fields-grid .field.span-2, .fields-grid .field.span-3 { grid-column: auto; }
  .actions button { width: 100%; }
+ .actions > form { width: 100%; }
  .peer-item { flex-wrap: wrap; }
  .peer-address { width: 100%; }
  .tab-btn { padding: 0.45rem 0.7rem; font-size: 0.78rem; }

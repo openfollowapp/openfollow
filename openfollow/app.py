@@ -207,6 +207,7 @@ if TYPE_CHECKING:
     from openfollow.input.button_detection import ButtonDetectionWizard
     from openfollow.logging_setup import RingBufferLogHandler
     from openfollow.net_adapters import Adapter
+    from openfollow.network.adapter import SavedInterface
     from openfollow.otp import OtpServer
     from openfollow.psn import Marker, PsnReceiver, PsnServer
     from openfollow.rttrpm import RttrpmServer
@@ -377,6 +378,8 @@ class OpenFollowApp:
         self._pi_network_methods: dict[str, str] = {}
         # Interface name -> which adapter it is, read with the methods.
         self._pi_network_adapters: dict[str, Adapter] = {}
+        # Interfaces that are not present but have saved settings, read with the methods.
+        self._pi_network_saved: tuple[SavedInterface, ...] = ()
         # Which interface's own screen is open; "" is the interface list.
         # Separate from ``_pi_network_active_iface``, which says whose state is
         # loaded from the adapter and has to stay set for the static editor.

@@ -3128,6 +3128,8 @@ class AppRuntimeServices:
             network_vlan_provider=self._network_vlan_provider,
             network_vlan_create_handler=self._handle_network_vlan_create,
             network_vlan_delete_handler=self._handle_network_vlan_delete,
+            network_saved_provider=self._network_saved_provider,
+            network_forget_handler=self._handle_network_forget,
             network_rescan_handler=self._forget_network_reading,
             # Privilege capability snapshot for the diagnostics bundle.
             privilege_states_provider=self._privilege_states_provider,
@@ -3455,6 +3457,30 @@ class AppRuntimeServices:
             rows.append(row)
         return rows
 
+    def _network_saved_provider(self) -> list[dict[str, Any]]:
+        """Every interface that is not present but has saved settings, as the card shows them."""
+        from openfollow.network.validate import prefix_to_mask
+
+        reading = self._read_network()
+        if reading is None:
+            return []
+        return [
+            {
+                "name": saved.name,
+                "kind": "vlan" if saved.vlan_id is not None else None,
+                "address": saved.ipv4.address or "",
+                "prefix": saved.ipv4.prefix,
+                "subnet_mask": prefix_to_mask(saved.ipv4.prefix) or "",
+                "method": saved.ipv4.method.value,
+                "router": saved.ipv4.router or "",
+                "dns": list(saved.ipv4.dns),
+                "lease_display": None,
+                "vlan_parent": saved.vlan_parent,
+                "vlan_id": saved.vlan_id,
+            }
+            for saved in reading.saved
+        ]
+
     def _network_address_sources_provider(self) -> list[dict[str, Any]] | None:
         """Every interface's address and its source, read now for the diagnostics bundle.
 
@@ -3542,6 +3568,19 @@ class AppRuntimeServices:
             return ApplyResult(ok=False, message="Read-only host – cannot delete a VLAN.")
         with self.network_change():
             return cast(ApplyResult, adapter.delete_vlan(name))
+
+    def _handle_network_forget(self, name: str) -> ApplyResult:
+        """Delete the saved settings of an interface that is not present, serialised
+        with the other network writes (see :meth:`_handle_network_apply`)."""
+        from openfollow.network.adapter import ApplyResult
+
+        adapter = getattr(self, "_network_adapter", None)
+        if adapter is None:
+            return ApplyResult(ok=False, message="No network adapter available.")
+        if not adapter.is_writable():
+            return ApplyResult(ok=False, message="Read-only host – cannot delete saved settings.")
+        with self.network_change():
+            return cast(ApplyResult, adapter.forget_interface(name))
 
     def _privilege_states_provider(self) -> dict[str, str]:
         """Snapshot every capability's state for the web UI.

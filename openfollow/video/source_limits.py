@@ -14,7 +14,7 @@ import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from openfollow.video.failure import SourceKind
@@ -45,7 +45,7 @@ def limits_action(kind: SourceKind) -> str:
     return _LOCAL_ACTION if kind is SourceKind.LOCAL else _REMOTE_ACTION
 
 
-class OverLimit(str, Enum):
+class OverLimit(StrEnum):
     """What a source exceeds. The values are a wire interface: ``/api/stats`` and the diagnostics bundle."""
 
     RESOLUTION = "resolution_over_limit"

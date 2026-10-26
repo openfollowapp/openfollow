@@ -392,3 +392,8 @@ class TestTheStatsSnapshot:
 
     def test_the_ids_are_a_wire_interface(self) -> None:
         assert {cause.value for cause in OverLimit} == {"resolution_over_limit", "frame_rate_over_limit"}
+
+
+@pytest.mark.parametrize("member", list(sl.OverLimit))
+def test_over_limit_renders_as_its_value(member: sl.OverLimit) -> None:
+    assert str(member) == f"{member}" == format(member) == member.value

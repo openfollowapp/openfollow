@@ -5208,7 +5208,7 @@ class TestAnRtspAddressFamilyFailureRetriesOverTcp:
         plugin_gst.Pipeline = SimpleNamespace(new=_PlayablePipeline)
         monkeypatch.setattr("gi.repository.Gst", plugin_gst)
         monkeypatch.setattr(receiver_mod, "get_input_class", lambda input_id: RtspInput if input_id == "rtsp" else None)
-        # A literal is no protection: the UDP family follows the server's session description.
+        # An IPv6 literal still fails on the address family: the UDP family follows the server's session description.
         return receiver_mod.GstNativeSinkReceiver(
             source_type="rtsp", input_config={"rtsp_url": "rtsp://[2001:db8::10]:554/stream"}, reconnect_delay=0.2
         )

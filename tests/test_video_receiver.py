@@ -363,6 +363,13 @@ class FakeInput:
             raise cls._refusal
         return cls._refusal
 
+    # Every config whose name lookup the receiver started.
+    prefetched: tuple[dict[str, Any], ...] = ()
+
+    @classmethod
+    def prefetch(cls, config: dict[str, Any]) -> None:
+        cls.prefetched = (*cls.prefetched, dict(config))
+
     @classmethod
     def get_source_label(cls, config: dict[str, Any]) -> str:
         return str(config.get("fake_source", "") or "")
@@ -491,6 +498,10 @@ class FakeInputAlt:
         return None
 
     @classmethod
+    def prefetch(cls, config: dict[str, Any]) -> None:
+        pass
+
+    @classmethod
     def get_source_label(cls, config: dict[str, Any]) -> str:
         return str(config.get("alt_url", "") or "")
 
@@ -570,6 +581,7 @@ def fake_input_cls(monkeypatch):
             "create_pipeline_result",
             "create_pipeline_call_count",
             "preflight_calls",
+            "prefetched",
         )
     }
     monkeypatch.setattr(
@@ -600,6 +612,7 @@ def fake_input_pair(monkeypatch):
                 "create_pipeline_result",
                 "create_pipeline_call_count",
                 "preflight_calls",
+                "prefetched",
             )
             if hasattr(cls, name)
         }
@@ -5243,7 +5256,7 @@ class TestAnRtspAddressFamilyFailureRetriesOverTcp:
         plugin_gst.Pipeline = SimpleNamespace(new=_PlayablePipeline)
         monkeypatch.setattr("gi.repository.Gst", plugin_gst)
         monkeypatch.setattr(receiver_mod, "get_input_class", lambda input_id: RtspInput if input_id == "rtsp" else None)
-        # An address literal: the build looks nothing up.
+        # An IPv6 literal still fails on the address family: the UDP family follows the server's session description.
         return receiver_mod.GstNativeSinkReceiver(
             source_type="rtsp", input_config={"rtsp_url": "rtsp://[2001:db8::10]:554/stream"}, reconnect_delay=0.2
         )
@@ -5281,6 +5294,18 @@ class TestAnRtspAddressFamilyFailureRetriesOverTcp:
         receiver._handle_bus_error(self._ERROR)
 
         assert receiver.status_marker.failure == VideoFailure.NO_DATA
+
+    def test_a_saved_change_to_the_source_tries_every_transport_again(self, receiver, fake_glib) -> None:
+        """The input is built anew, so the host the failed attempt moved to TCP is forgotten."""
+        receiver.play()
+        self._describe(receiver)
+        receiver._handle_bus_error(self._ERROR)
+        self._retry(receiver, fake_glib)
+        assert self._protocols(receiver) == 0x4
+
+        receiver.swap_input("rtsp", {"rtsp_url": "rtsp://[2001:db8::10]:554/stream", "rtsp_user": "operator"})
+
+        assert self._protocols(receiver) == 0x7
 
     def test_a_failed_tcp_retry_is_classified_and_the_next_stays_on_tcp(self, receiver, fake_glib) -> None:
         receiver.play()
@@ -5560,6 +5585,112 @@ class TestTheInterfacePinRefusesABuild:
         callbacks = [cb.__name__ for _delay, cb in fake_glib.timers.values()]
         assert callbacks == ["_do_reconnect"]
         assert r.status_marker.failure is VideoFailure.WRONG_INTERFACE
+        assert r.status_marker.reconnect_attempt == 1
+
+    def test_a_refused_build_starts_the_lookup_its_retry_reads(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        """A refused build looks the name up again during its backoff, so the retry's check finds a current answer."""
+        r = self._refused(monkeypatch)
+
+        r.play()
+
+        assert FakeInput.prefetched == ({"fake_source": "cam-1", "video_input_iface": "eth1"},)
+
+    def test_a_dropped_feed_refreshes_the_lookup_before_its_retry(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        """An answer older than its lifetime is looked up again during the backoff, not on the retry."""
+        r = _make_receiver(input_config={"fake_source": "cam-1", "video_input_iface": "eth1"})
+
+        r._handle_bus_error(BusError("Could not open resource for reading", RESOURCE_DOMAIN, RESOURCE_OPEN_READ))
+
+        assert FakeInput.prefetched == ({"fake_source": "cam-1", "video_input_iface": "eth1"},)
+        assert [cb.__name__ for _delay, cb in fake_glib.timers.values()] == ["_do_reconnect"]
+
+    _RESOLVING = PinRefusal(VideoFailure.NONE, "camera.example is still resolving", retry_s=0.2)
+
+    def test_a_name_still_resolving_reads_as_connecting(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch, caplog
+    ) -> None:
+        """A first build that beats its own lookup is no failure: no verdict, no error text, no warning."""
+        monkeypatch.setattr(FakeInput, "_refusal", self._RESOLVING)
+        r = _make_receiver(input_config={"fake_source": "cam-1", "video_input_iface": "eth1"})
+
+        with caplog.at_level(logging.DEBUG, logger="openfollow.video.receiver"):
+            r.play()
+
+        assert FakeInput.create_pipeline_call_count == 0
+        status = r.status_marker.snapshot()
+        assert status.status is ConnectionStatus.CONNECTING
+        assert status.failure is VideoFailure.NONE
+        assert status.error_message == ""
+        assert status.reconnect_attempt == 0
+        assert [rec for rec in caplog.records if rec.levelno >= logging.WARNING] == []
+        # Checked again once its time is up, without spending a backoff step.
+        assert [(delay, cb.__name__) for delay, cb in fake_glib.timers.values()] == [(200, "_recheck_name")]
+        assert r._state.reconnect_attempt == 0
+        assert r._state.is_placeholder_pipeline is True
+
+    def test_a_name_check_replaces_a_reconnect_already_pending(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        """Two timers would build twice; the later one would tear down the first one's pipeline."""
+        r = _make_receiver(input_config={"fake_source": "cam-1", "video_input_iface": "eth1"})
+        r._schedule_reconnect("Stream stalled (no frames received)")
+        assert [cb.__name__ for _delay, cb in fake_glib.timers.values()] == ["_do_reconnect"]
+        monkeypatch.setattr(FakeInput, "_refusal", self._RESOLVING)
+
+        r.play()
+
+        assert [(delay, cb.__name__) for delay, cb in fake_glib.timers.values()] == [(200, "_recheck_name")]
+
+    def test_a_name_check_is_logged_quietly(self, fake_gst, fake_glib, fake_input_cls, monkeypatch, caplog) -> None:
+        """It is no reconnect: the attempt count would read 0 at startup and repeat mid-sequence."""
+        monkeypatch.setattr(FakeInput, "_refusal", self._RESOLVING)
+        r = _make_receiver(input_config={"fake_source": "cam-1", "video_input_iface": "eth1"})
+        r.play()
+        (_delay, recheck), *_ = fake_glib.timers.values()
+
+        with caplog.at_level(logging.DEBUG, logger="openfollow.video.receiver"):
+            recheck()
+
+        assert [rec for rec in caplog.records if rec.levelno >= logging.INFO] == []
+        assert "Checking the Fake source's name again" in caplog.text
+
+    def test_a_name_that_answers_in_its_time_builds_on_the_next_check(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(FakeInput, "_refusal", self._RESOLVING)
+        r = _make_receiver(input_config={"fake_source": "cam-1", "video_input_iface": "eth1"})
+        r.play()
+        built = FakePipeline()
+        FakeInput.create_pipeline_result = built
+        monkeypatch.setattr(FakeInput, "_refusal", None)
+        ((_delay, recheck),) = fake_glib.timers.values()
+        assert recheck.__name__ == "_recheck_name"
+        fake_glib.timers.clear()
+
+        recheck()
+
+        assert r._pipeline is built
+        assert r.status_marker.failure is VideoFailure.NONE
+        assert r.status_marker.error_message == ""
+
+    def test_a_name_unanswered_past_its_time_is_the_failure_it_was(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(FakeInput, "_refusal", self._RESOLVING)
+        r = _make_receiver(input_config={"fake_source": "cam-1", "video_input_iface": "eth1"})
+        r.play()
+        late = PinRefusal(VideoFailure.UNKNOWN, "camera.example did not resolve in time to check it against eth1")
+        monkeypatch.setattr(FakeInput, "_refusal", late)
+        ((_delay, recheck),) = fake_glib.timers.values()
+        assert recheck.__name__ == "_recheck_name"
+        fake_glib.timers.clear()
+
+        recheck()
+
+        assert r.status_marker.failure is VideoFailure.UNKNOWN
+        assert r.status_marker.error_message == late.detail
         assert r.status_marker.reconnect_attempt == 1
 
     def test_a_retry_that_is_still_refused_keeps_the_verdict(

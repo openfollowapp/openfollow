@@ -145,6 +145,7 @@ class _FakeReceiver:
         self.stall_timeout = stall_timeout
         self.heal_interval = heal_interval
         self.create_called = False
+        self.prefetched_before_build: list[dict[str, Any]] | None = None
         self.started = False
         self.widget: Any = object()
         self.display_frame_listener: Any = None
@@ -158,6 +159,8 @@ class _FakeReceiver:
 
     def create_pipeline(self) -> None:
         self.create_called = True
+        # Whether startup had started the source's name lookup by the first build.
+        self.prefetched_before_build = list(_FakeInputCls.prefetched)
         if self._raise_on_create is not None:
             raise self._raise_on_create
 
@@ -208,6 +211,13 @@ class _FakeInputCls:
     @classmethod
     def runtime_config(cls, cfg: Any) -> dict[str, Any]:
         return cls.get_config_field_values(cfg)
+
+    # Every config whose name lookup startup started.
+    prefetched: list[dict[str, Any]] = []
+
+    @classmethod
+    def prefetch(cls, config: dict[str, Any]) -> None:
+        cls.prefetched.append(dict(config))
 
 
 # --------------------------------------------------------------------------- #
@@ -289,6 +299,7 @@ def _reset_fake_instances() -> None:
     _FakePreviewProvider.instances = []
     _FakeSnapshotProvider.instances = []
     _FakePersonDetector.instances = []
+    _FakeInputCls.prefetched = []
 
 
 @pytest.fixture
@@ -313,6 +324,20 @@ def patched_subsystems(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestInitVideoDetectionDisabled:
+    def test_startup_starts_the_lookup_of_the_source_it_builds(
+        self,
+        services: AppRuntimeServices,
+        recv_factory: _RecordingReceiverFactory,
+        patched_subsystems: None,
+    ) -> None:
+        """The name resolves while video comes up, so the first build's pin check reads the answer."""
+        services.init_video()
+
+        recv = recv_factory.last
+        assert recv is not None
+        assert recv.create_called is True
+        assert recv.prefetched_before_build == [recv.input_config]
+
     def test_wires_renderer_stats_preview_receiver_and_starts(
         self,
         services: AppRuntimeServices,

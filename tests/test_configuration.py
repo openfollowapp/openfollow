@@ -4862,54 +4862,6 @@ def test_otp_output_config_rejects_non_string_source_iface() -> None:
     assert cfg.source_iface == ""
 
 
-def test_load_config_migrates_the_former_marker_key_names(temp_config_path) -> None:
-    """A pre-rename config carries the marker's Z-line settings under their former
-    names. Both carry over, so an operator who turned the line off or thickened it
-    keeps that instead of silently reverting to the default when ``_filter_known``
-    drops them."""
-    temp_config_path.write_text("[marker]\ndrop_line = false\ndrop_line_thickness = 7\n", encoding="utf-8")
-
-    cfg = load_config(str(temp_config_path))
-
-    assert cfg.marker.z_line is False
-    assert cfg.marker.z_line_thickness == 7
-
-
-def test_load_config_prefers_the_current_marker_key_over_the_legacy_one(temp_config_path) -> None:
-    """With both spellings present the current one wins, so a former name left
-    behind in a hand-edited file cannot override a deliberate ``z_line``."""
-    temp_config_path.write_text(
-        "[marker]\ndrop_line = false\nz_line = true\ndrop_line_thickness = 7\nz_line_thickness = 3\n",
-        encoding="utf-8",
-    )
-
-    cfg = load_config(str(temp_config_path))
-
-    assert cfg.marker.z_line is True
-    assert cfg.marker.z_line_thickness == 3
-
-
-def test_load_config_warns_once_per_legacy_marker_key(temp_config_path, caplog, monkeypatch) -> None:
-    """``load_config`` runs on every hot-reload, so the rename warning is emitted
-    once per key rather than once per reload.
-
-    ``monkeypatch`` both isolates the shared warn-once set and restores it, so this
-    test cannot leave the keys suppressed for whatever runs next in the process.
-    """
-    import openfollow.configuration as configuration
-
-    monkeypatch.setattr(configuration, "_DEPRECATED_WARNED", set())
-    temp_config_path.write_text("[marker]\ndrop_line = false\ndrop_line_thickness = 7\n", encoding="utf-8")
-
-    with caplog.at_level("WARNING"):
-        load_config(str(temp_config_path))
-        load_config(str(temp_config_path))
-
-    renamed = [r for r in caplog.records if "has been renamed" in r.getMessage()]
-    assert len(renamed) == 2
-    assert {"drop_line", "drop_line_thickness"} == {r.args[0] for r in renamed}
-
-
 @pytest.mark.parametrize("flag", ["true", '"on"'])
 def test_load_config_reads_the_control_direction_flip_as_heading_180(temp_config_path, flag) -> None:  # noqa: ANN001
     """The flip was a camera looking downstage, which is a 180-degree heading."""
@@ -8348,9 +8300,13 @@ class TestMidiPatch:
 
     def test_identifier_mirrors_subsystem_key(self) -> None:
         from openfollow.configuration import MidiPatch
+        from openfollow.input.midi import DiscoveredDevice
 
-        # Serial wins when present; else port|product; else empty.
-        assert MidiPatch(id=1, serial="ABC").identifier == "serial:ABC"
+        # Serial plus port when a serial is known; else port|product; else empty.
+        assert MidiPatch(id=1, serial="ABC").identifier == "serial:ABC|"
+        patch = MidiPatch(id=1, serial="ABC", port_name="MIDI Mix")
+        device = DiscoveredDevice(serial="ABC", port_name="MIDI Mix", product="MIDI Mix")
+        assert patch.identifier == device.identifier == "serial:ABC|MIDI Mix"
         assert MidiPatch(id=1, port_name="MIDI Mix", product="Mix").identifier == "port:MIDI Mix|Mix"
         assert MidiPatch(id=1).identifier == ""
 

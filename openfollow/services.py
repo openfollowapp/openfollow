@@ -1145,6 +1145,14 @@ class AppRuntimeServices:
         assert canvas is not None, "init_canvas must run before init_video"
         cfg = self._app._config
 
+        from openfollow.video.inputs import get_input_class
+
+        input_cls = get_input_class(cfg.video_source_type)
+        input_config = input_cls.runtime_config(cfg) if input_cls else {}
+        # Resolves while detection and the display are set up, so the first build reads the answer.
+        if input_cls is not None:
+            input_cls.prefetch(input_config)
+
         # Seed the pre-shipped quality-tier models into the storage folder so
         # detection (and the web tier picker) works offline out of the box.
         # No-op on a source checkout. Runs before the web server starts.
@@ -1174,12 +1182,7 @@ class AppRuntimeServices:
         self._preview_provider = PreviewProvider()
         self._snapshot_provider = SnapshotProvider()
 
-        # Build input-specific config dict from the active plugin
         from openfollow.runtime.app_modes import save_source_pick
-        from openfollow.video.inputs import get_input_class
-
-        input_cls = get_input_class(cfg.video_source_type)
-        input_config = input_cls.runtime_config(cfg) if input_cls else {}
 
         gl_display = self._choose_gl_display(canvas)
         receiver = GstNativeSinkReceiver(
@@ -2159,7 +2162,7 @@ class AppRuntimeServices:
 
         ``identifier`` is the substrate's stable matching key
         (serial-prefixed when present, port+product fallback otherwise) –
-        the alias-edit form posts it back so :meth:`MidiSubsystem._match`
+        the alias-edit form posts it back so :func:`~openfollow.input.midi.match_patches`
         can resolve the operator's choice to a port. Empty list while
         ``discover`` returns nothing (no devices, or broken backend)."""
         out: list[dict[str, Any]] = []

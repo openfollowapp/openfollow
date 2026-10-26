@@ -5,7 +5,8 @@
 The key names the socket, not the device or the order it was probed in, and it
 is the same for every kind of controller: a gamepad's ``/dev/input/event*`` and
 a 3D mouse's ``/dev/hidraw*`` walk through sysfs to the same USB device. A
-network adapter's interface name resolves the same way.
+network adapter's interface name resolves the same way. The USB device found
+on that walk also names the unit plugged in, by the serial number it reports.
 """
 
 from __future__ import annotations
@@ -15,6 +16,8 @@ import re
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+
+from openfollow.text_hygiene import CONTROL_CHARS_RE
 
 _SYSFS = Path("/sys")
 _ROOT_HUB_RE = re.compile(r"usb\d+")
@@ -59,6 +62,32 @@ def resolve_key(
         return None
 
 
+def usb_serial(node: str | None, *, sysfs_root: Path | None, classes: tuple[str, ...]) -> str | None:
+    """Serial number the USB device holding ``node`` reports, or ``None``.
+
+    ``None`` off Linux (unless *sysfs_root* is given), for a node that is not on
+    USB, and for a device without a serial descriptor. Never raises.
+    """
+    if sysfs_root is None:
+        if not sys.platform.startswith("linux"):
+            return None
+        sysfs_root = _SYSFS
+    if not node:
+        return None
+    try:
+        device = _class_device(Path(node).name, sysfs_root, classes)
+        # A Bluetooth device behind a USB radio would take the radio's serial.
+        if device is None or "bluetooth" in device.parts:
+            return None
+        usb = _usb_device(device, sysfs_root)
+        if usb is None:
+            return None
+        serial = (usb / "serial").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    return CONTROL_CHARS_RE.sub("", serial).strip() or None
+
+
 def _class_device(name: str, sysfs_root: Path, classes: tuple[str, ...]) -> Path | None:
     for cls in classes:
         link = sysfs_root / "class" / cls / name / "device"
@@ -67,18 +96,27 @@ def _class_device(name: str, sysfs_root: Path, classes: tuple[str, ...]) -> Path
     return None
 
 
-def _usb_key(device: Path, sysfs_root: Path) -> str | None:
+def _usb_device(device: Path, sysfs_root: Path) -> Path | None:
+    """The USB device ``device`` (an interface, or a node below one) belongs to."""
     devices = (sysfs_root / "devices").resolve()
     node = device
     while devices in node.parents:
         if (node / "devpath").is_file() and (node / "busnum").is_file():
-            devpath = (node / "devpath").read_text(encoding="ascii").strip()
-            root_hub = next((p for p in node.parents if _ROOT_HUB_RE.fullmatch(p.name)), None)
-            if root_hub is None or not devpath:
-                return None
-            return f"{USB_KEY_PREFIX}{root_hub.parent.relative_to(devices).as_posix()}:{devpath}"
+            return node
         node = node.parent
     return None
+
+
+def _usb_key(device: Path, sysfs_root: Path) -> str | None:
+    node = _usb_device(device, sysfs_root)
+    if node is None:
+        return None
+    devpath = (node / "devpath").read_text(encoding="ascii").strip()
+    root_hub = next((p for p in node.parents if _ROOT_HUB_RE.fullmatch(p.name)), None)
+    if root_hub is None or not devpath:
+        return None
+    devices = (sysfs_root / "devices").resolve()
+    return f"{USB_KEY_PREFIX}{root_hub.parent.relative_to(devices).as_posix()}:{devpath}"
 
 
 def _bluetooth_key(device: Path) -> str | None:

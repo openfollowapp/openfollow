@@ -10,6 +10,7 @@ import random
 
 import pytest
 
+from openfollow.runtime.services_marker_visuals import CONTROL_CONFLICT_ROW_MAX_CHARS
 from openfollow.video import source_limits as sl
 from openfollow.video.failure import SourceKind
 from openfollow.video.source_limits import (
@@ -215,6 +216,37 @@ class TestTheVerdictDoesNotFlap:
             if FPS in r.over:
                 assert r.fps is not None and r.fps > 30.5
 
+    def test_a_wandering_over_limit_rate_keeps_the_text(self) -> None:
+        """A decoder-limited feed drifting between 44 and 46 fps: the row and the box
+        keep the rate the verdict was reached at, so the box is not redrawn and re-announced."""
+        per_second = [(44.0, 45.0, 46.0, 45.0)[(second // 4) % 4] for second in range(60)]
+        # The 5 s average does cross whole numbers: 44.6 reads 45, 45.4 reads 45, 44.4 reads 44 ...
+        assert len({f"{sum(per_second[s - 5 : s]) / 5:.0f}" for s in range(5, 60)}) > 1
+        meter, clock = _meter(3840, 2160)
+        times: list[float] = []
+        for second, fps in enumerate(per_second):
+            times += [1000.0 + second + k / fps for k in range(int(fps))]
+        slots: list[SourceReading] = []
+        for r in _feed(meter, clock, times):
+            if r is not None and FPS in r.over and (not slots or r is not slots[-1]):
+                slots.append(r)
+        # Read at the flip and once a window later, when no frame from before it is left; then held.
+        settled = slots[sl.WINDOW_SLOTS :]
+        assert len(settled) > 30
+        assert {limits_row(r) for r in settled} == {limits_row(settled[0])}
+        assert {limits_sentence(r) for r in settled} == {limits_sentence(settled[0])}
+
+    def test_the_shown_rate_is_taken_again_when_the_verdict_changes(self) -> None:
+        meter, clock = _meter()
+        first = _steady(60.0, 15.0)
+        _feed(meter, clock, first)
+        assert limits_row(meter.reading) == "Video 60 fps > 30 fps"
+        within = _steady(30.0, 20.0, start=first[-1] + 1 / 60)
+        _feed(meter, clock, within)
+        assert meter.reading is not None and meter.reading.over == ()
+        _feed(meter, clock, _steady(50.0, 15.0, start=within[-1] + 1 / 30))
+        assert limits_row(meter.reading) == "Video 50 fps > 30 fps"
+
 
 class TestAVariableRateFeed:
     def test_it_is_judged_on_what_arrives_on_average(self) -> None:
@@ -297,7 +329,7 @@ class TestTheOperatorScreenRow:
         assert limits_row(reading) == row
 
     def test_the_row_fits_a_badge_row(self) -> None:
-        assert len(limits_row(_BOTH)) <= 45
+        assert len(limits_row(_BOTH)) <= CONTROL_CONFLICT_ROW_MAX_CHARS
 
 
 class TestTheWebSentence:
@@ -318,10 +350,12 @@ class TestTheWebSentence:
     def test_a_sender_is_told_to_set_the_camera_or_encoder(self, kind: SourceKind) -> None:
         assert limits_action(kind) == "Set the camera or encoder to 1920×1080 at 30 fps or less."
 
-    def test_a_local_camera_is_told_to_change_the_station_s_own_settings(self) -> None:
-        """USB, Pi Camera and macOS cameras are read at the resolution and FPS set under Video Source."""
+    def test_a_local_camera_is_pointed_at_the_camera_and_the_station_s_settings(self) -> None:
+        """A USB camera can be read past its settings (a capture card at its incoming
+        signal), so the step names both, and no control by a label it may not carry."""
         assert limits_action(SourceKind.LOCAL) == (
-            "Set the resolution to 1920×1080 or less and FPS to 30 or less under Video Source."
+            "Set the camera, or the signal into the capture card, to 1920×1080 at 30 fps or less, "
+            "or lower the resolution and frame rate under Video Source."
         )
 
 

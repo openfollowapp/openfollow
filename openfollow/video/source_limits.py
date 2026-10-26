@@ -32,9 +32,11 @@ WINDOW_SLOTS = 5
 CONFIRM_READINGS = 3
 
 _REMOTE_ACTION = f"Set the camera or encoder to {MAX_LONG_SIDE}×{MAX_SHORT_SIDE} at {MAX_FPS} fps or less."
-# A local camera is read at the size and rate the station's own settings ask for.
+# A local camera is read in a mode its own list offers, which can be past the
+# Video Source settings; a capture card is read at its incoming signal.
 _LOCAL_ACTION = (
-    f"Set the resolution to {MAX_LONG_SIDE}×{MAX_SHORT_SIDE} or less and FPS to {MAX_FPS} or less under Video Source."
+    f"Set the camera, or the signal into the capture card, to {MAX_LONG_SIDE}×{MAX_SHORT_SIDE} at {MAX_FPS} fps "
+    "or less, or lower the resolution and frame rate under Video Source."
 )
 
 
@@ -77,7 +79,8 @@ class SourceReading:
 
     width: int
     height: int
-    # The arrival rate behind the verdict, held while readings disagree with it; None until the window spans.
+    # The arrival rate behind the verdict: while over, the one it settled at after the flip, held;
+    # else the latest reading within the limit. None until the window spans.
     fps: float | None
     over: tuple[OverLimit, ...]
 
@@ -101,6 +104,7 @@ class FrameMeter:
         self._rate_over = False
         self._rate_fps: float | None = None
         self._disagreeing = 0
+        self._settling = 0
         self.reading: SourceReading | None = None
 
     def note_caps(self, width: int, height: int) -> None:
@@ -127,13 +131,23 @@ class FrameMeter:
         self.reading = SourceReading(self._width, self._height, self._rate_fps, over)
 
     def _judge_rate(self, fps: float) -> None:
-        if (OverLimit.FRAME_RATE in over_limits(0, 0, fps)) != self._rate_over:
-            self._disagreeing += 1
-            if self._disagreeing < CONFIRM_READINGS:
-                return
-            self._rate_over = not self._rate_over
-        self._disagreeing = 0
-        self._rate_fps = fps
+        over = OverLimit.FRAME_RATE in over_limits(0, 0, fps)
+        if over == self._rate_over:
+            self._disagreeing = 0
+            # An over rate is shown, and the web box is keyed on its text: one wandering
+            # across a whole number would redraw and re-announce it, so it is held. It is
+            # taken once more a window after the flip, when no frame from before is left.
+            if not over:
+                self._rate_fps = fps
+            elif self._settling:
+                self._settling -= 1
+                if not self._settling:
+                    self._rate_fps = fps
+            return
+        self._disagreeing += 1
+        if self._disagreeing >= CONFIRM_READINGS:
+            self._rate_over, self._rate_fps, self._disagreeing = over, fps, 0
+            self._settling = WINDOW_SLOTS if over else 0
 
 
 def _causes(reading: SourceReading | None) -> list[tuple[str, str, str]]:

@@ -465,7 +465,10 @@ class TestPublishRuntimeStats:
 
         services.publish_runtime_stats(force=True)
         limits = services.get_runtime_stats_snapshot()["video"]["limits"]
-        assert limits["action"] == "Set the resolution to 1920×1080 or less and FPS to 30 or less under Video Source."
+        assert limits["action"] == (
+            "Set the camera, or the signal into the capture card, to 1920×1080 at 30 fps or less, "
+            "or lower the resolution and frame rate under Video Source."
+        )
 
     def test_receiver_absent_uses_default_video_shape(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch

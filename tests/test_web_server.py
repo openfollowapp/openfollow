@@ -8930,6 +8930,8 @@ def test_video_source_section_camera_hides_healing_keeps_stall_and_preview(live_
     assert status == 200
     assert 'id="heal-field" style="display:none"' in body
     assert '<div class="row" id="recovery-row">' in body
+    # The Source Type toggle shows and hides the same field the server rendered.
+    assert "vis('heal-field', net);" in body
     assert 'id="preview-row" style="margin-top:0.5rem;display:"' in body
     assert 'id="capture-frame-row" style="margin-top:0.5rem;display:"' in body
 

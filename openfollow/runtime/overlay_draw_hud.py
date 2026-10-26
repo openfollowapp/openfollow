@@ -21,6 +21,8 @@ from openfollow.runtime.overlay_draw_style import (
     COLOR_ACCENT_SOFT,
     COLOR_BG_BASE,
     COLOR_BORDER_SOFT,
+    COLOR_INFO_BORDER,
+    COLOR_INFO_FILL,
     COLOR_OK,
     COLOR_SUPPORT_BORDER,
     COLOR_TEXT,
@@ -1385,6 +1387,28 @@ _CARD_BORDER_W_SELECTED = 4.0
 _CARD_GROUP_MARGIN = 4.0
 
 
+# Side of the square P badge on a parked marker's card.
+_PARK_BADGE_SIZE = 12.0
+
+
+def _draw_park_badge(renderer: Any, cr: Any, left: float, top: float) -> float:
+    """The info-level P badge of a parked marker; returns its right edge."""
+    size = _PARK_BADGE_SIZE
+    cr.set_source_rgba(*COLOR_INFO_FILL)
+    draw_rounded_rect(cr, left, top, size, size, ROW_RADIUS)
+    cr.fill()
+    cr.set_source_rgb(*COLOR_INFO_BORDER)
+    cr.set_line_width(1.0)
+    draw_rounded_rect(cr, left + 0.5, top + 0.5, size - 1.0, size - 1.0, ROW_RADIUS)
+    cr.stroke()
+    renderer._set_ui_font(cr, 9, bold=True)
+    cr.set_source_rgb(*COLOR_TEXT)
+    ext = cr.text_extents("P")
+    cr.move_to(left + (size - ext.width) / 2 - ext.x_bearing, top + (size + ext.height) / 2)
+    cr.show_text("P")
+    return left + size
+
+
 def draw_marker_card(
     renderer: Any,
     cr: Any,
@@ -1469,6 +1493,8 @@ def draw_marker_card(
             cr.move_to(x + 8, y + 14)
             cr.show_text(badge)
             badge_right = x + 8 + cr.text_extents(badge).width
+        if t.is_controlled and t.parked:
+            badge_right = _draw_park_badge(renderer, cr, badge_right + 4 if badge_right is not None else x + 8, y + 5)
 
         if selected:
             cr.set_source_rgb(*COLOR_ACCENT)

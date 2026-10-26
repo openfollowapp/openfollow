@@ -94,6 +94,8 @@ from openfollow.configuration import (
     load_config_for_save,
     marker_id_list,
     migrate_ui_keys,
+    park_changes_applied,
+    parked_within,
     path_name_from,
     plane_pin_key,
     plane_pins,
@@ -3479,10 +3481,11 @@ def _apply_file_import_data(cfg: AppConfig, data: dict[str, Any]) -> None:
     draws paths, and the settings read at startup (network backend, update and
     time sync).
     """
-    for name in ("controlled_marker_ids", "viewer_marker_ids"):
+    for name in ("controlled_marker_ids", "viewer_marker_ids", "parked_marker_ids"):
         if name in data:
             setattr(cfg, name, marker_id_list(data[name], path="imported settings", field_name=name))
     cfg.viewer_marker_ids = viewed_with_controlled(cfg.controlled_marker_ids, cfg.viewer_marker_ids)
+    cfg.parked_marker_ids = parked_within(cfg.controlled_marker_ids, cfg.parked_marker_ids)
 
     from openfollow.video.inputs import get_registry
 
@@ -4750,6 +4753,7 @@ def _register_marker_catalog_routes(
                         "station_name": cfg.psn_system_name,
                         "controlled_ids": list(cfg.controlled_marker_ids),
                         "viewer_ids": list(cfg.viewer_marker_ids),
+                        "parked_ids": list(cfg.parked_marker_ids),
                     },
                 }
             )
@@ -4777,6 +4781,7 @@ def _register_marker_catalog_routes(
                     "station_name": cfg.psn_system_name,
                     "controlled_ids": list(cfg.controlled_marker_ids),
                     "viewer_ids": list(cfg.viewer_marker_ids),
+                    "parked_ids": list(cfg.parked_marker_ids),
                 },
                 "next_free_id": catalog.next_free_id(),
             }
@@ -4910,6 +4915,7 @@ def _register_marker_catalog_routes(
                 if new_controlled != fresh.controlled_marker_ids or new_viewer != fresh.viewer_marker_ids:
                     fresh.controlled_marker_ids = new_controlled
                     fresh.viewer_marker_ids = new_viewer
+                    fresh.parked_marker_ids = parked_within(new_controlled, fresh.parked_marker_ids)
                     save_config(fresh, server.config_path)
             except OSError:
                 logger.exception(
@@ -4966,9 +4972,25 @@ def _register_marker_catalog_routes(
                 out.append(v)
             return out
 
+        def _park_changes() -> dict[int, bool] | None:
+            # Only the rows whose P was clicked: a park set elsewhere (OSC) since the page read it must survive.
+            raw = data.get("park", {})
+            if not isinstance(raw, dict):
+                return None
+            changes: dict[int, bool] = {}
+            for key, value in raw.items():
+                if not isinstance(key, str) or not key.isdecimal() or not isinstance(value, bool):
+                    return None
+                mid = int(key)
+                if mid < 1 or catalog.get(mid) is None:
+                    return None
+                changes[mid] = value
+            return changes
+
         controlled = _coerce("controlled_ids")
         viewer = _coerce("viewer_ids")
-        if controlled is None or viewer is None:
+        park = _park_changes()
+        if controlled is None or viewer is None or park is None:
             response.status = 400
             return json.dumps({"error": "invalid id list"})
 
@@ -4983,6 +5005,10 @@ def _register_marker_catalog_routes(
             cfg.controlled_marker_ids = _keep_order(cfg.controlled_marker_ids, controlled)
             cfg.viewer_marker_ids = viewed_with_controlled(
                 cfg.controlled_marker_ids, _keep_order(cfg.viewer_marker_ids, viewer)
+            )
+            # Only a controlled marker can be parked: leaving View & Control clears it.
+            cfg.parked_marker_ids = parked_within(
+                cfg.controlled_marker_ids, park_changes_applied(cfg.parked_marker_ids, park)
             )
             save_config(cfg, server.config_path)
         return json.dumps({"success": True})

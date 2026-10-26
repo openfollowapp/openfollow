@@ -281,6 +281,10 @@ Each of these has broken before or would break silently. The guides hold the why
 **Input**
 - Gamepad → marker routing goes through `_gamepad_marker_id` (or the injected
   `marker_resolver`); never index `_controlled_ids[controller_idx]`.
+- A parked marker is skipped by every relative input through `is_parked`
+  (`input/parking.py`): its slot resolves to `None` in `_controller_marker_id`,
+  while `_slot_marker_id` (OSC `cN`, Controller Slots, Identify) still names it.
+  The selection never rests on one; `set_parked` is the only writer.
 - Never call `pygame.joystick.Joystick(i)` for an already-open device.
 - The control frame (`input/control_frame.py`) is applied once in
   `InputManager.update`, on relative input only, never on Z; each source's

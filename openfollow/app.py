@@ -25,6 +25,7 @@ from openfollow.configuration import (
     load_config,
     load_config_for_save,
     network_mode_unsaved,
+    parked_within,
     restore_empty_config,
     save_config,
 )
@@ -270,6 +271,10 @@ class OpenFollowApp:
         self._controlled_ids: list[int] = []
         self._viewer_ids: list[int] = []
         self._selected_id: int | None = None
+        # Controlled markers no relative input moves (``input/parking.py``).
+        self._parked_ids: frozenset[int] = frozenset()
+        # The selection moved off a marker that parked; a pin following the selection waits for the operator.
+        self._pin_waits_for_selection = False
         # Assist-mode manual anchor markers, keyed by the pinned marker id.
         # These are operator-steered "ghosts" that are never registered with
         # ``_server`` (so never broadcast) – the detection pin reads them as the
@@ -815,6 +820,7 @@ class OpenFollowApp:
                     return  # none of the deleted ids were in our selection
                 cfg.controlled_marker_ids = new_controlled
                 cfg.viewer_marker_ids = new_viewer
+                cfg.parked_marker_ids = parked_within(new_controlled, cfg.parked_marker_ids)
                 save_config(cfg, self._config_path)
             except OSError:
                 logger.exception(
@@ -930,6 +936,7 @@ class OpenFollowApp:
         if new_controlled != controlled or new_viewer != viewer:
             self._config.controlled_marker_ids = new_controlled
             self._config.viewer_marker_ids = new_viewer
+            self._config.parked_marker_ids = parked_within(new_controlled, self._config.parked_marker_ids)
             try:
                 save_config(self._config, self._config_path)
             except OSError:

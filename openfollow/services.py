@@ -30,10 +30,12 @@ from openfollow.configuration import (
     effective_lens,
     feature_gated,
     is_simple_mode,
+    parked_within,
     viewed_with_controlled,
 )
 from openfollow.input import InputManager
 from openfollow.input.mouse3d import idle_mouse3d_status
+from openfollow.input.parking import set_parked
 from openfollow.marker_catalog.control_conflicts import ControlConflict, find_control_conflicts
 from openfollow.net_adapters import display_name
 from openfollow.net_egress import Egress, is_loopback_host, resolve_egress
@@ -1770,7 +1772,11 @@ class AppRuntimeServices:
             name = entry.name if (entry is not None and entry.name) else f"Marker {marker_id}"
             marker = server.add_marker(marker_id, name)
             marker.set_pos(*default_pos)
-        self._app._selected_id = self._app._controlled_ids[0] if self._app._controlled_ids else None
+        # No selection yet, so the first unparked marker is chosen as a start, not as a park moving it.
+        self._app._selected_id = None
+        parked = parked_within(self._app._controlled_ids, self._app._config.parked_marker_ids)
+        self._app._config.parked_marker_ids = parked
+        set_parked(self._app, parked)
 
     def _resolved_plane_source_ip(self, pin: str, *, label: str) -> str | None:
         """Resolve one plane's configured interface to a concrete bind IP.
@@ -4407,6 +4413,7 @@ class AppRuntimeServices:
                         "state": str(item.get("state", "connected" if item["connected"] else "missing")),
                         "connected": bool(item["connected"]),
                         "marker_id": (int(item["marker_id"]) if item["marker_id"] is not None else None),
+                        "parked": bool(item.get("parked", False)),
                         "effective_speed": float(item["effective_speed"]),
                         "backend": str(item["backend"]),
                         "port_label": str(item.get("port_label", "")),

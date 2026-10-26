@@ -14,10 +14,12 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from conftest import PsnStepClock
 
 import openfollow.system_stats as stats_module
 from openfollow.configuration import Mouse3DConfig
 from openfollow.power_health import WARNING_HOLD_S, PowerMonitor
+from openfollow.psn.marker import Marker, marker_age_s
 from openfollow.runtime.overlay_draw_style import COLOR_WARNING_FILL
 from openfollow.runtime.overlay_state import OverlayState
 from openfollow.runtime.overlay_status_badge import draw_status_badge
@@ -1064,6 +1066,35 @@ class TestBuildMarkerVisualStateTornRead:
         )
 
         assert state.mouse_wheel_z_enabled is enabled
+
+
+class TestParkedMarker:
+    """A parked marker keeps transmitting: its frame stamp is fresh and its card says it is parked."""
+
+    def _build(self, app: SimpleNamespace):  # noqa: ANN202
+        app.get_marker_move_speed = lambda _mid: 1.0
+        return build_marker_visual_state(
+            app, system_stats=None, person_detector=None, cam_params_buffer=np.zeros(7), dt=1.0 / 60.0
+        )
+
+    def test_a_parked_marker_is_stamped_every_frame_and_its_card_is_parked(self) -> None:
+        clock = PsnStepClock(1_000_000)
+        marker = Marker(marker_id=1, name="M1", clock=clock)
+        marker.set_pos(1.0, 2.0, 0.0)
+        app = _make_visual_app(marker, controlled=True)
+        app._parked_ids = frozenset({1})
+        clock.now = 9_000_000
+        state = self._build(app)
+        assert marker_age_s(marker) == pytest.approx(0.0)
+        assert state.markers[0].parked is True
+
+    @pytest.mark.parametrize(("controlled", "parked"), [(True, frozenset()), (False, frozenset({1}))])
+    def test_only_a_parked_controlled_marker_has_a_parked_card(self, controlled: bool, parked: frozenset) -> None:
+        marker = Marker(marker_id=1, name="M1")
+        marker.set_pos(1.0, 2.0, 0.0)
+        app = _make_visual_app(marker, controlled=controlled)
+        app._parked_ids = parked
+        assert self._build(app).markers[0].parked is False
 
 
 class TestVideoFailureReachesTheTopRightBadge:

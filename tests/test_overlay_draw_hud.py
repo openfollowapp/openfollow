@@ -1262,6 +1262,34 @@ class TestSystemStatsAndPanels:
 
 
 class TestMarkerCard:
+    def _parked_card(self, *, parked: bool, controller_idx: int | None = 0, is_controlled: bool = True) -> FakeCairo:
+        state = _base_state()
+        cr = FakeCairo()
+        marker = _marker(controller_idx=controller_idx, controller_connected=True, is_controlled=is_controlled)
+        marker.parked = parked
+        draw_marker_card(FakeRenderer(state=state), cr, x=0, y=0, w=180, h=64, t=marker, selected=False, state=state)
+        return cr
+
+    def test_a_parked_card_shows_an_info_p_beside_the_controller_badge(self) -> None:
+        cr = self._parked_card(parked=True)
+        texts = [t.text for t in cr.texts]
+        assert texts[:2] == ["C1", "P"]
+        assert ("rgba", *COLOR_INFO_FILL) in cr.calls
+        assert ("rgb", *COLOR_INFO_BORDER) in cr.calls
+        c1, p = cr.texts[0], cr.texts[1]
+        assert p.x > c1.x
+
+    def test_a_parked_card_without_a_controller_shows_the_p_alone(self) -> None:
+        cr = self._parked_card(parked=True, controller_idx=None)
+        assert "P" in cr.show_text_strings()
+        assert not any(t.startswith("C") for t in cr.show_text_strings())
+
+    @pytest.mark.parametrize(("parked", "is_controlled"), [(False, True), (True, False)])
+    def test_only_a_parked_controlled_card_shows_the_p(self, parked: bool, is_controlled: bool) -> None:
+        cr = self._parked_card(parked=parked, is_controlled=is_controlled)
+        assert "P" not in cr.show_text_strings()
+        assert ("rgba", *COLOR_INFO_FILL) not in cr.calls
+
     def test_label_falls_back_to_m_prefix_when_name_empty(self) -> None:
         """No catalog name → render ``M<id>`` so the operator still
         sees *something* during the transient race between the

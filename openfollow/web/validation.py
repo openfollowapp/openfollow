@@ -844,6 +844,9 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "viewer_marker_ids": FieldRule(
             _as_int_list, custom=_validate_int_list, human_error="Comma-separated marker IDs."
         ),
+        "parked_marker_ids": FieldRule(
+            _as_int_list, custom=_validate_int_list, human_error="Comma-separated marker IDs."
+        ),
     },
 }
 

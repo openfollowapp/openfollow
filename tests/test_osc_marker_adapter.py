@@ -384,3 +384,75 @@ def test_real_udp_dispatch_respects_allowlist() -> None:
     finally:
         adapter.stop()
         svc.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Park / unpark
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("args", [(), (1,), (0,), (1.0,), ("x", 2)])
+def test_park_and_unpark_ignore_their_arguments(args: tuple[Any, ...]) -> None:
+    """A console button sends 1 on press and 0 on release: both land on one state."""
+    a = _adapter()
+    a._handle_park(True, "/marker/2/park", *args)
+    assert a.flush_parks() == {2: True}
+    a._handle_park(False, "/marker/2/unpark", *args)
+    assert a.flush_parks() == {2: False}
+
+
+def test_the_latest_park_command_per_marker_wins() -> None:
+    a = _adapter()
+    a._handle_park(True, "/marker/2/park", 1)
+    a._handle_park(False, "/marker/2/unpark", 1)
+    a._handle_park(True, "/marker/3/park", 0)
+    assert a.flush_parks() == {2: False, 3: True}
+    assert a.flush_parks() == {}
+
+
+@pytest.mark.parametrize(
+    ("parked", "address"),
+    [(True, "/marker/x/park"), (True, "/marker/2/unpark"), (False, "/marker/2/park"), (True, "/marker/2/park/now")],
+)
+def test_a_malformed_park_address_is_dropped(parked: bool, address: str) -> None:
+    a = _adapter()
+    a._handle_park(parked, address, 1)
+    assert a.flush_parks() == {}
+
+
+def test_a_park_is_no_position() -> None:
+    """``/marker/*`` also matches the park address; the triple handler must not read it as one."""
+    a = _adapter()
+    a._handle_triple("/marker/2/park", 1.0, 2.0, 3.0)
+    assert a.flush_updates() == {}
+
+
+@pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
+def test_start_subscribes_park_and_unpark_and_stop_drops_them() -> None:
+    svc = OscService()
+    a, _ = _listening_adapter(svc)
+    try:
+        assert {"/marker/*/park", "/marker/*/unpark"} <= set(svc._subscriptions)
+    finally:
+        a.stop()
+    assert not {"/marker/*/park", "/marker/*/unpark"} & set(svc._subscriptions)
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
+def test_real_udp_park_round_trip() -> None:
+    svc = OscService()
+    adapter, port = _listening_adapter(svc)
+    try:
+        svc.send("/marker/2/park", [0], host="127.0.0.1", port=port)
+        deadline = time.monotonic() + 1.0
+        parks: dict[int, bool] = {}
+        while time.monotonic() < deadline and not parks:
+            parks = adapter.flush_parks()
+            if not parks:
+                time.sleep(0.01)
+        assert parks == {2: True}
+        assert adapter.flush_updates() == {}
+    finally:
+        adapter.stop()
+        svc.shutdown()

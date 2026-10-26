@@ -405,6 +405,19 @@ def test_controller_slots_name_each_marker_in_its_colour(slots_server, path: str
     assert "<td>-</td>" in empty
 
 
+def test_a_parked_slot_marker_carries_the_p_badge(slots_server) -> None:
+    """The slot keeps its marker; a blue P after it says the controller in that slot idles."""
+    _, base, stats = slots_server
+    stats["controllers"]["items"] = [dict(_SLOT_ITEMS[0], parked=True), dict(_SLOT_ITEMS[1], parked=False)]
+    _, body = _get(base, "/section/controller_slots")
+    parked, free = _row(body, "C1"), _row(body, "C2")
+    assert (
+        'Lead &amp; &lt;Keys&gt; (10)<span class="park-badge"><span aria-hidden="true">P</span>'
+        '<span class="visually-hidden">Parked</span></span></span>' in parked
+    )
+    assert "park-badge" not in free
+
+
 def test_controller_slots_table_shows_every_state(slots_server) -> None:
     _, base, _ = slots_server
     status, body = _get(base, "/section/controller_slots")

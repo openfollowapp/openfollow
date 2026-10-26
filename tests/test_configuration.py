@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 
 import pytest
@@ -200,9 +200,13 @@ class _DummyGamepadHandler:
 class _DummyMouseHandler:
     def __init__(self) -> None:
         self.deactivate_calls = 0
+        self.kept: list[int] = []
 
     def deactivate(self) -> None:
         self.deactivate_calls += 1
+
+    def keep_grab(self, marker_id: int) -> None:
+        self.kept.append(marker_id)
 
 
 class _DummyInputManager:
@@ -3151,6 +3155,143 @@ def test_apply_runtime_rewires_controlled_marker_ids() -> None:
     assert app._selected_id == 2
     assert app._psn_receiver.ignore_ids == {2}
     assert app._viewer_ids == [2]
+
+
+@pytest.mark.parametrize("raw", ["abc", None, True, 5, 2.0, {"2": True}, (2,)])
+def test_parked_marker_ids_of_the_wrong_type_read_as_none(raw: object) -> None:
+    assert AppConfig(controlled_marker_ids=[1, 2], parked_marker_ids=raw).parked_marker_ids == []  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ([2, "1", True, None, 2.5, 0, -1, 1], [2, 1]),
+        ([1, 1, 2, 1], [1, 2]),
+        ([3, 2], [2]),
+        ([], []),
+    ],
+)
+def test_parked_marker_ids_keep_controlled_int_ids_once(raw: list[object], expected: list[int]) -> None:
+    assert AppConfig(controlled_marker_ids=[1, 2], parked_marker_ids=raw).parked_marker_ids == expected  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("controlled", ["1,2", None, [True, "2"]])
+def test_parked_marker_ids_with_no_usable_controlled_list_read_as_none(controlled: object) -> None:
+    assert AppConfig(controlled_marker_ids=controlled, parked_marker_ids=[1, 2]).parked_marker_ids == []  # type: ignore[arg-type]
+
+
+def test_a_hand_edited_parked_list_loads_as_a_subset_of_the_controlled_markers(temp_config_path) -> None:
+    temp_config_path.write_text('controlled_marker_ids = [3, 5]\nparked_marker_ids = [5, 7, "3", 5]\n')
+    assert load_config(str(temp_config_path)).parked_marker_ids == [5]
+
+
+def test_parked_markers_survive_a_save_and_a_restart(temp_config_path) -> None:
+    save_config(AppConfig(controlled_marker_ids=[3, 5], parked_marker_ids=[5]), str(temp_config_path))
+    assert load_config(str(temp_config_path)).parked_marker_ids == [5]
+
+
+@pytest.mark.parametrize(
+    ("parked", "changes", "expected"),
+    [
+        ([1, 2], {3: True}, [1, 2, 3]),
+        ([1, 2], {1: False}, [2]),
+        ([1, 2], {2: True, 3: False}, [1, 2]),
+        ([], {}, []),
+    ],
+)
+def test_park_changes_apply_to_the_parked_list(
+    parked: list[int], changes: dict[int, bool], expected: list[int]
+) -> None:
+    from openfollow.configuration import park_changes_applied
+
+    assert park_changes_applied(parked, changes) == expected
+
+
+def test_save_park_changes_builds_on_the_file_and_its_controlled_set(temp_config_path) -> None:
+    from openfollow.configuration import save_park_changes
+
+    save_config(AppConfig(controlled_marker_ids=[1, 2], parked_marker_ids=[1]), str(temp_config_path))
+    stale = AppConfig(controlled_marker_ids=[1, 2, 3])
+    assert save_park_changes(stale, str(temp_config_path), {2: True, 3: True}) is True
+    # Read as written: a load would apply the subset rule again and hide a write that skipped it.
+    assert tomllib.loads(temp_config_path.read_text(encoding="utf-8"))["parked_marker_ids"] == [1, 2]
+    assert save_park_changes(stale, str(temp_config_path), {2: True}) is False
+
+
+def test_save_park_changes_writes_a_missing_file_from_the_running_config(temp_config_path) -> None:
+    from openfollow.configuration import save_park_changes
+
+    running = AppConfig(controlled_marker_ids=[1, 2])
+    assert save_park_changes(running, str(temp_config_path), {2: True}) is True
+    assert load_config(str(temp_config_path)).parked_marker_ids == [2]
+    assert running.parked_marker_ids == []
+
+
+def test_save_park_changes_leaves_an_unreadable_file_alone(temp_config_path) -> None:
+    from openfollow.configuration import ConfigFileUnreadableError, save_park_changes
+
+    temp_config_path.write_text("not [[ toml", encoding="utf-8")
+    with pytest.raises(ConfigFileUnreadableError):
+        save_park_changes(AppConfig(controlled_marker_ids=[1]), str(temp_config_path), {1: True})
+    assert temp_config_path.read_text(encoding="utf-8") == "not [[ toml"
+
+
+def test_apply_runtime_parks_live_and_moves_the_selection() -> None:
+    app = _DummyApp(AppConfig(controlled_marker_ids=[1, 2, 3], viewer_marker_ids=[1, 2, 3]))
+    apply_runtime_config_changes(
+        app, AppConfig(controlled_marker_ids=[1, 2, 3], viewer_marker_ids=[1, 2, 3], parked_marker_ids=[1])
+    )
+    assert app._parked_ids == {1}
+    assert app._config.parked_marker_ids == [1]
+    assert app._selected_id == 2
+    # A mouse dragging the marker that parks stays on it.
+    assert app._input_manager.mouse_handler.kept == [1]
+    assert app._web_commands.restart_requested is False
+
+
+def test_a_failed_park_apply_reverts_the_config_and_the_rest_still_applies(monkeypatch) -> None:
+    import openfollow.input.parking as parking_module
+
+    def _boom(_app: object, _parked: list[int]) -> None:
+        raise RuntimeError("park failed")
+
+    monkeypatch.setattr(parking_module, "set_parked", _boom)
+    app = _DummyApp(AppConfig(controlled_marker_ids=[1, 2], viewer_marker_ids=[1, 2]))
+    new_config = AppConfig(controlled_marker_ids=[1, 2], viewer_marker_ids=[1, 2], parked_marker_ids=[2])
+    new_config.controller.deadzone = 0.3
+    apply_runtime_config_changes(app, new_config)
+    assert app._config.parked_marker_ids == []
+    assert app._config.controller.deadzone == 0.3
+
+
+def test_apply_runtime_unparks_live() -> None:
+    app = _DummyApp(AppConfig(controlled_marker_ids=[1, 2], viewer_marker_ids=[1, 2], parked_marker_ids=[2]))
+    app._parked_ids = frozenset({2})
+    apply_runtime_config_changes(app, AppConfig(controlled_marker_ids=[1, 2], viewer_marker_ids=[1, 2]))
+    assert app._parked_ids == frozenset()
+    assert app._config.parked_marker_ids == []
+
+
+def test_apply_runtime_drops_the_park_of_a_marker_no_longer_controlled() -> None:
+    app = _DummyApp(AppConfig(controlled_marker_ids=[1, 2], viewer_marker_ids=[1, 2], parked_marker_ids=[2]))
+    app._parked_ids = frozenset({2})
+    new_config = AppConfig(controlled_marker_ids=[1], viewer_marker_ids=[1])
+    new_config.parked_marker_ids = [2]  # as a reload that skipped normalisation would carry it
+    apply_runtime_config_changes(app, new_config)
+    assert app._parked_ids == frozenset()
+    assert app._config.parked_marker_ids == []
+
+
+def test_apply_runtime_keeps_the_selection_off_a_parked_marker_when_the_selected_one_leaves() -> None:
+    app = _DummyApp(AppConfig(controlled_marker_ids=[1, 2, 3], viewer_marker_ids=[1, 2, 3], parked_marker_ids=[2]))
+    app._parked_ids = frozenset({2})
+    app._selected_id = 1
+    apply_runtime_config_changes(
+        app, AppConfig(controlled_marker_ids=[2, 3], viewer_marker_ids=[2, 3], parked_marker_ids=[2])
+    )
+    assert app._selected_id == 3
+    # The selected marker left the controlled set; nothing parked under it, so a following pin keeps following.
+    assert getattr(app, "_pin_waits_for_selection", False) is False
 
 
 def test_apply_runtime_seeds_a_live_added_marker_with_the_default_position() -> None:
@@ -6166,6 +6307,39 @@ def test_apply_runtime_applies_detection_change_live_when_already_enabled() -> N
     assert app._config.detection == new_det
     assert app._runtime_services.detection_changes == [new_det]
     assert app._web_commands.restart_requested is False
+
+
+@pytest.mark.parametrize(
+    ("change", "waits"),
+    [
+        ({"enabled": False}, False),
+        ({"pin_mode": "assist"}, False),
+        ({"pin_marker_id": 4}, False),
+        ({"confidence": 0.85}, True),
+    ],
+    ids=["tracking-off", "tracking-mode", "follow-marker", "other-field"],
+)
+def test_a_new_tracking_mode_or_follow_marker_stops_the_pin_waiting(change: dict, waits: bool) -> None:
+    current = DetectionConfig(enabled=True, pin_mode="replace", pin_marker_id=-1, confidence=0.40)
+    app = _app_with(detection=current)
+    app._pin_waits_for_selection = True
+    new_config = AppConfig(detection=replace(current, **change))
+
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._pin_waits_for_selection is waits
+
+
+def test_switching_the_detection_feature_stops_the_pin_waiting() -> None:
+    current = DetectionConfig(enabled=True, pin_mode="replace", pin_marker_id=-1)
+    app = _app_with(detection=current)
+    app._pin_waits_for_selection = True
+    new_config = AppConfig(detection=current)
+    new_config.ui.shown_features = [*new_config.ui.shown_features, "detection"]
+
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._pin_waits_for_selection is False
 
 
 def test_apply_runtime_applies_detection_disable_live() -> None:

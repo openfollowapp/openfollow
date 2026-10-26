@@ -63,6 +63,7 @@ from openfollow.runtime.overlay_draw_style import (
     COLOR_CAUTION_BORDER,
     COLOR_CAUTION_FILL,
     COLOR_DANGER_BG,
+    COLOR_INFO_BG,
     COLOR_INFO_BORDER,
     COLOR_INFO_FILL,
     COLOR_OK,
@@ -1877,31 +1878,59 @@ class TestMarkerCardRendering:
 
 
 # --------------------------------------------------------------------------- #
-# Settings menu info card – orphan controllers
+# Settings menu – unbound controllers info box
 # --------------------------------------------------------------------------- #
 
 
-class TestSettingsInfoCardOrphans:
-    def test_unbound_controllers_row_renders_when_list_present(self) -> None:
-        from openfollow.runtime.overlay_draw_hud import _draw_settings_info_card
+class TestSettingsUnboundControllersBox:
+    """Connected controllers that drive no marker are an info box below the station card, not a card row."""
 
-        state = _base_state(ip_text="1.2.3.4")
-        state.unbound_controller_indices = [2, 3]
+    def _draw(self, unbound: list[int], *, error: str = "") -> FakeCairo:
+        state = _base_state(ip_text="192.0.2.5", settings_items=["Network"], settings_items_enabled=[True])
+        state.unbound_controller_indices = unbound
+        state.error_message = error
         cr = FakeCairo()
-        _draw_settings_info_card(FakeRenderer(state=state), cr, state, 0, 0, 400)
+        draw_settings_menu(FakeRenderer(state=state), cr, state, 1600, 900)
+        return cr
+
+    def _y(self, cr: FakeCairo, needle: str) -> float:
+        matches = cr.find_texts(needle)
+        assert matches, f"{needle!r} was not drawn"
+        return matches[0].y
+
+    @pytest.mark.parametrize(
+        ("unbound", "line"),
+        [
+            ([1], "C2 is connected but drives no marker."),
+            ([1, 2], "C2, C3 are connected but drive no marker."),
+        ],
+    )
+    def test_an_info_box_below_the_card_names_them(self, unbound: list[int], line: str) -> None:
+        cr = self._draw(unbound)
         texts = cr.show_text_strings()
-        assert "Unbound controllers:" in texts
-        # 1-based display: indices 2, 3 -> "Ctrl3", "Ctrl4".
-        assert any("Ctrl3" in t and "Ctrl4" in t for t in texts)
 
-    def test_unbound_controllers_row_omitted_when_empty(self) -> None:
-        from openfollow.runtime.overlay_draw_hud import _draw_settings_info_card
+        assert line in texts
+        assert self._y(cr, "INFO") > self._y(cr, "Station:")
+        assert ("rgba", *COLOR_INFO_FILL) in cr.calls
+        assert ("rgb", *COLOR_INFO_BORDER) in cr.calls
+        # The "i" sign's cut-out in the info background.
+        assert ("rgb", *COLOR_INFO_BG) in cr.calls
+        assert not any("Unbound" in t or "Ctrl" in t for t in texts)
 
-        state = _base_state(ip_text="1.2.3.4")
-        state.unbound_controller_indices = []
-        cr = FakeCairo()
-        _draw_settings_info_card(FakeRenderer(state=state), cr, state, 0, 0, 400)
-        assert "Unbound controllers:" not in cr.show_text_strings()
+    def test_an_error_box_comes_first_and_the_info_box_below_it(self) -> None:
+        cr = self._draw([2], error="Connection refused")
+
+        assert self._y(cr, "Station:") < self._y(cr, "ERROR") < self._y(cr, "Connection refused")
+        assert self._y(cr, "Connection refused") < self._y(cr, "INFO") < self._y(cr, "C3 is connected")
+        assert ("rgba", *COLOR_WARNING_FILL) in cr.calls
+        assert ("rgba", *COLOR_INFO_FILL) in cr.calls
+
+    def test_every_controller_driving_a_marker_draws_no_info_box(self) -> None:
+        cr = self._draw([])
+
+        assert "INFO" not in cr.show_text_strings()
+        assert not cr.find_texts("drives no marker")
+        assert ("rgba", *COLOR_INFO_FILL) not in cr.calls
 
 
 # --------------------------------------------------------------------------- #

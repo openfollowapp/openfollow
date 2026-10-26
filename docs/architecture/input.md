@@ -176,8 +176,8 @@ numbering starts at 1, a 0 never appears in the UI) mirroring the status dot
 top-right. A card whose controller is missing turns red with the badge
 "C1 missing", and the top-right status badge carries one row per missing
 controller; Identify flashes the card. Connected pads
-with no marker (more pads than `controlled_marker_ids`) surface in the
-Settings menu's info card under "Unbound controllers". Assignment stays
+with no marker (more pads than `controlled_marker_ids`) surface in an info
+box below the Settings menu's station card, named "C2", "C2, C3". Assignment stays
 **implicit**: the unified slot order (see the routing section above) × the
 `controlled_marker_ids` list (edited via the web UI).
 

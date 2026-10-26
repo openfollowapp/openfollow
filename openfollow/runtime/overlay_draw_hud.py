@@ -38,7 +38,6 @@ from openfollow.runtime.overlay_draw_style import (
     draw_level_sign,
     draw_rounded_rect,
     draw_success_sign,
-    draw_warning_sign,
     parse_hex,
     speed_color,
     status_level,
@@ -672,7 +671,7 @@ def draw_url_editor_overlay(
 
 
 def draw_settings_menu(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
-    """Render Settings menu modal with info card and error box."""
+    """Render Settings menu modal with the station card, then the error box and the unbound-controllers box."""
     labels = list(state.settings_items)
     enabled = list(state.settings_items_enabled)
     reasons = list(state.settings_items_disabled_reasons)
@@ -719,15 +718,19 @@ def draw_settings_menu(renderer: Any, cr: Any, state: OverlayState, w: int, h: i
     # brings its own next step; the video's goes only under the video failure.
     error_text = state.settings_menu_banner or state.video_failure_text or state.error_message
     if error_text:
-        cursor_y = _draw_settings_error_box(
+        cursor_y = _draw_settings_notice_box(
             renderer,
             cr,
+            "error",
             error_text,
             state.settings_menu_banner_action if state.settings_menu_banner else state.video_failure_action,
             content_x,
             cursor_y,
             content_w,
         )
+    unbound_text = _unbound_controllers_text(state.unbound_controller_indices)
+    if unbound_text:
+        cursor_y = _draw_settings_notice_box(renderer, cr, "info", unbound_text, "", content_x, cursor_y, content_w)
 
     # The list takes the height its rows need, not everything left over, so the
     # documentation pointer below it is on screen rather than under the panel.
@@ -833,11 +836,6 @@ def _draw_settings_info_card(
     # The card is wider than the bottom-left panel, so the source string gets
     # a longer budget here.
     rows = build_info_panel_rows(state, source_max_len=64)
-    # Surface unbound controller pads so operators can spot stray input.
-    # 1-based to match the marker-card badge + OSC ``:cN``.
-    if state.unbound_controller_indices:
-        joined = ", ".join(f"Ctrl{i + 1}" for i in state.unbound_controller_indices)
-        rows.append(("Unbound controllers:", joined))
     row_h = 20.0
     card_h = row_h * len(rows) + 14.0
     draw_panel_background(renderer, cr, x, y, w, card_h, radius=PANEL_RADIUS)
@@ -858,23 +856,36 @@ def _draw_settings_info_card(
     return y + card_h + 10.0
 
 
-def _draw_settings_error_box(
+def _unbound_controllers_text(indices: list[int]) -> str:
+    """The Settings info line for connected controllers that drive no marker; empty when there are none.
+
+    1-based, as the marker-card badge and OSC ``:cN``.
+    """
+    if not indices:
+        return ""
+    names = ", ".join(f"C{i + 1}" for i in indices)
+    if len(indices) == 1:
+        return f"{names} is connected but drives no marker."
+    return f"{names} are connected but drive no marker."
+
+
+def _draw_settings_notice_box(
     renderer: Any,
     cr: Any,
+    level: str,
     message: str,
     action: str,
     x: float,
     y: float,
     w: float,
 ) -> float:
-    """Render the red-bordered failure box for the Settings modal.
+    """Render a Settings modal notice box in *level*'s fill and border, led by its sign.
 
-    Two weights, matching the web UI's ``.notice.error`` and its
-    ``.notice-sub``: what the station saw carries the emphasis, the step to try
-    sits under it, lighter. The text keeps the HUD's normal colours; the box
-    carries the red.
+    Two weights, matching the web UI's ``.notice`` and its ``.notice-sub``:
+    what the station saw carries the emphasis, the step to try sits under it,
+    lighter. The text keeps the HUD's normal colours; the box carries the level.
     """
-    label = "ERROR"
+    label = level.upper()
     pad = 12.0
     title_size = 11.0
     body_size = 13.0
@@ -894,9 +905,9 @@ def _draw_settings_error_box(
         body_h += 4.0
     card_h = pad * 2 + title_size + 6.0 + body_h
 
-    draw_level_box(cr, "error", x, y, w, card_h, radius=PANEL_RADIUS, line_width=2.0)
+    draw_level_box(cr, level, x, y, w, card_h, radius=PANEL_RADIUS, line_width=2.0)
 
-    draw_warning_sign(cr, x + pad + sign_size / 2, y + pad + sign_size / 2, size=sign_size)
+    draw_level_sign(cr, level, x + pad + sign_size / 2, y + pad + sign_size / 2, size=sign_size)
 
     renderer._set_ui_font(cr, title_size, bold=True)
     cr.set_source_rgba(*COLOR_TEXT_MUTED)
@@ -1187,7 +1198,7 @@ def draw_menu_help(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) 
 
 
 def draw_hud(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
-    # Controller badges render per-marker card; unbound pads in Settings menu.
+    # Controller badges render per-marker card; unbound pads in the Settings info box.
     panels = renderer._panel_cache
     info_key = (tuple(build_info_panel_rows(state)), info_panel_in_error(state))
     panels.draw(cr, "info", info_key, lambda ctx: draw_bottom_left_info_panel(renderer, ctx, state, w, h), w, h)

@@ -25,7 +25,8 @@ _STATUS_CLASS = re.compile(
     r"osc-binding-row|osc-binding-enabled-dot|osc-binding-nested-row|osc-pill|peer-item|peer-status|toast|"
     r"save-error|save-failed|field-error-msg|field-warn-msg|field-note-msg|conflict-flag|not-controlled|"
     r"add-feedback|saved-flash|wizard-status|wizard-preview-container|wizard-meter|awaiting-password|wizard-field-error|"
-    r"update-flag|danger|btn-danger|modal-list-item-delete|gallery-del|dme-row|ia-dot)(?![\w-])"
+    r"update-flag|danger|btn-danger|modal-list-item-delete|gallery-del|dme-row|ia-dot|midi-fader-strip-not-picked-up)"
+    r"(?![\w-])"
 )
 _COLOUR = re.compile(r"#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\)")
 # Greys, whites and the off-white text: neutral, so a literal is fine.
@@ -147,6 +148,106 @@ def test_status_rules_take_their_colours_from_tokens() -> None:
             if max(r, g, b) - min(r, g, b) > _MAX_NEUTRAL_CHROMA:
                 literal.append(f"{name}: {selector} uses {colour}")
     assert literal == []
+
+
+def _over(fg: tuple[int, int, int, float], bg: tuple[int, int, int]) -> tuple[int, int, int]:
+    r, g, b, a = fg
+    return (round(r * a + bg[0] * (1 - a)), round(g * a + bg[1] * (1 - a)), round(b * a + bg[2] * (1 - a)))
+
+
+def _contrast(a: tuple[int, int, int], b: tuple[int, int, int]) -> float:
+    def lum(rgb: tuple[int, int, int]) -> float:
+        lin = [c / 255 / 12.92 if c / 255 <= 0.04045 else ((c / 255 + 0.055) / 1.055) ** 2.4 for c in rgb]
+        return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+
+    hi, lo = sorted((lum(a), lum(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def _pickup_pill_rule() -> str:
+    bodies = [body for _, selector, body in _status_rules() if selector == ".midi-fader-strip-not-picked-up"]
+    assert len(bodies) == 1
+    return bodies[0]
+
+
+def test_an_unpicked_midi_fader_is_a_caution_row_pill() -> None:
+    body = _pickup_pill_rule()
+    for declaration in (
+        "background: var(--caution-chip);",
+        "border: 1px solid var(--caution-line);",
+        "color: var(--text);",
+        "border-radius: 0.4rem;",
+        "font-size: 0.7rem;",
+    ):
+        assert declaration in body
+    assert "--accent" not in body
+    assert "line-height: 1.2;" in body
+    assert "overflow-wrap: anywhere;" in body
+    base = (_TEMPLATES / "base.tpl").read_text(encoding="utf-8")
+    supports = base.index("@supports (text-box: trim-both cap alphabetic)")
+    fallback = base[: base.index("{", base.rindex("/* Pills set --pill-pad-y", 0, supports))]
+    trim = base[supports:].split("}", 1)[0]
+    assert ".midi-fader-strip-not-picked-up" in fallback.split("*/")[-1]
+    assert ".midi-fader-strip-not-picked-up" in trim
+
+
+def test_a_picked_up_fader_keeps_the_pills_slot() -> None:
+    """Hidden, not removed: the strips stretch to the tallest, so a pill that came and went would resize them all."""
+    rules = {
+        selector: body.strip()
+        for _, selector, body in _status_rules()
+        if selector.startswith(".midi-fader-strip-not-picked-up[data-picked-up]")
+    }
+    assert rules == {".midi-fader-strip-not-picked-up[data-picked-up]": "visibility: hidden;"}
+
+
+def _fader_tint_alpha() -> float:
+    """The alpha midi.tpl appends to a fader's colour to tint its strip."""
+    midi = (_TEMPLATES / "partials" / "midi.tpl").read_text(encoding="utf-8")
+    suffix = re.search(r"_fader_color \+ '([0-9a-fA-F]{2})'", midi)
+    assert suffix, "the strip tint moved"
+    return round(int(suffix.group(1), 16) / 255, 3)
+
+
+def _fader_colours() -> list[str]:
+    from openfollow.palette import GREYS, HUE_COLUMNS
+
+    return [hex_ for column in [*HUE_COLUMNS, GREYS] for hex_, _ in column if hex_ != "#000000"]
+
+
+@pytest.mark.parametrize("colour", _fader_colours())
+def test_the_pickup_pill_holds_aa_over_every_fader_tint(colour: str) -> None:
+    """The strip sits in a section, on the page or under its gold glow (the accent at the soft alpha)."""
+    defined = _root_tokens()
+    deep = _rgba(defined["--bg-deep"])[:3]
+    pages = (deep, _rgba(defined["--bg-base"])[:3], _over(_rgba(defined["--accent-soft"]), deep))
+    tint = (*_rgba(colour)[:3], _fader_tint_alpha())
+    for page in pages:
+        pill = _over(_rgba(defined["--caution-chip"]), _over(tint, _over(_rgba(defined["--surface"]), page)))
+        assert _contrast(_rgba(defined["--text"])[:3], pill) >= 4.5
+
+
+# Hue gap that keeps caution reading apart from the accent, not a near copy of it.
+_MIN_HUE_GAP_DEG = 15.0
+
+
+def _hue_gap(a: tuple[int, ...], b: tuple[int, ...]) -> float:
+    ha, hb = (colorsys.rgb_to_hls(*(c / 255 for c in rgb[:3]))[0] * 360 for rgb in (a, b))
+    gap = abs(ha - hb) % 360
+    return min(gap, 360 - gap)
+
+
+@pytest.mark.parametrize("token", ["--caution-line", "--caution-text", "--caution-border"])
+def test_web_caution_reads_apart_from_the_accent(token: str) -> None:
+    defined = _root_tokens()
+    assert _hue_gap(_rgba(defined[token]), _rgba(defined["--accent"])) >= _MIN_HUE_GAP_DEG
+
+
+def test_hud_caution_reads_apart_from_the_accent() -> None:
+    from openfollow.runtime.overlay_draw_style import COLOR_ACCENT, COLOR_CAUTION_BORDER
+
+    border, accent = (tuple(round(c * 255) for c in rgb) for rgb in (COLOR_CAUTION_BORDER, COLOR_ACCENT))
+    assert _hue_gap(border, accent) >= _MIN_HUE_GAP_DEG
 
 
 @pytest.mark.parametrize(("keyframes", "token"), [("flash-green", "--success-line"), ("flash-red", "--error-line")])

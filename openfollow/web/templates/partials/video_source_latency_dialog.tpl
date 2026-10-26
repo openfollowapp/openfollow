@@ -1,18 +1,20 @@
 %# The Measure Camera Latency dialog, in the shared modal (#modal-root): its body
 %# here, its footer out of band, and the modal locked while a run lasts. A run
-%# ends by itself within seconds, so it has no way out but its end.
+%# ends by itself (about 5 s, never past about 35 s), so it has no way out but its end.
 % d = dialog
 % running = d['state'] == 'running'
 % warning = str(defined('warning') and warning or '')
 % if defined('progress_only') and progress_only:
 %     include('partials/video_source_latency_progress.tpl', d=d)
 % else:
-<div id="latency-dialog" tabindex="-1">
+<div id="latency-dialog" tabindex="-1" data-warning="{{warning}}">
 % if d['state'] == 'intro':
 %     if warning:
-%#    Renews the Operator Screen's warning card while these warnings show.
-    <div hidden hx-get="/section/video_source/latency/warning?token={{warning}}"
-         hx-trigger="every 1s [!document.hidden], poll-shown from:body" hx-swap="none"></div>
+%#    Puts the Operator Screen's warning card up and keeps it there while these warnings show in an
+%#    open dialog; closing the dialog removes it. A failed renewal is no one's to act on.
+    <div id="latency-warning-renewal" hidden data-error-quiet
+         hx-post="/section/video_source/latency/warning" hx-vals='{"token": "{{warning}}"}' hx-swap="none"
+         hx-trigger="load[ofLatencyWarningLive(this)], every 1s [!document.hidden && ofLatencyWarningLive(this)], poll-shown[ofLatencyWarningLive(this)] from:body"></div>
 %     end
     <div class="notice warning">
         <div class="latency-hazard">WARNING: PHOTOSENSITIVITY / EPILEPSY SEIZURES</div>
@@ -52,7 +54,7 @@
 </div>
 <div class="modal-footer" id="modal-footer" hx-swap-oob="true">
 % if d['state'] == 'intro':
-    <button type="button" onclick="closeModal()">Cancel</button>
+    <button type="button" onclick="closeModal()" data-autofocus>Cancel</button>
     <button type="button" class="primary" hx-post="/section/video_source/latency"
             hx-target="#latency-dialog" hx-swap="outerHTML" hx-vals='{"token": "{{warning}}"}'
             data-error-lead="Not started.">Start</button>
@@ -60,7 +62,7 @@
     <button type="button" hx-post="/section/video_source/latency"
             hx-target="#latency-dialog" hx-swap="outerHTML"
             data-error-lead="Not started.">{{'Measure again' if d['state'] == 'done' else 'Try again'}}</button>
-    <button type="button" class="primary" onclick="closeModal()">Close</button>
+    <button type="button" class="primary" onclick="closeModal()" data-autofocus>Close</button>
 % end
 </div>
 <script>ofLatencyDialogShown({{'true' if running else 'false'}}, '{{warning}}');</script>

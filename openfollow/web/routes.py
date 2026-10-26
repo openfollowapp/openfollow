@@ -6029,8 +6029,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     def _latency_dialog(*, before_start: bool) -> Any:
         dialog = latency_dialog_view(server.get_latency_status(), before_start=before_start)
-        # The warnings put a card on the Operator Screen for as long as they show.
-        warning = server.latency_warning.open() if dialog["state"] == "intro" else ""
+        # The warnings renew the Operator Screen's card under this token while they show.
+        warning = server.latency_warning.token() if dialog["state"] == "intro" else ""
         return template("partials/video_source_latency_dialog", dialog=dialog, warning=warning)
 
     def _load_config_for_edit() -> AppConfig:
@@ -6382,10 +6382,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         token = _as_str(value, "")
         return token if _LATENCY_WARNING_TOKEN.fullmatch(token) else None
 
-    @app.get("/section/video_source/latency/warning")
+    @app.post("/section/video_source/latency/warning")
     def renew_latency_warning() -> Any:
-        """The Measure dialog still shows its warnings: keep the Operator Screen's card up."""
-        token = _latency_warning_token(request.query.get("token"))
+        """The Measure dialog shows its warnings: put the Operator Screen's card up, or keep it up."""
+        token = _latency_warning_token(request.forms.get("token"))
         if token is None:
             return HTTPResponse(status=400)
         server.latency_warning.renew(token)

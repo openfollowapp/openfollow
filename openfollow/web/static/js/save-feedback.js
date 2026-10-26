@@ -9,7 +9,8 @@
  * HTMX saves (any non-GET request) are handled here on ``document``. An
  * action that saves nothing names its lead on the control or an ancestor
  * (``data-error-lead="Not started."``), and its unanswered advice ends "try
- * again". A script-driven save calls ``window.OpenFollow.saveError``:
+ * again". A background request nobody acts on is marked ``data-error-quiet``
+ * and reports nothing. A script-driven save calls ``window.OpenFollow.saveError``:
  *
  *   show(box, info, lead, near) ring ``box``; write ``info`` after ``near``
  *                              (default: the box's last actions row)
@@ -143,6 +144,8 @@
 
     function isSave(evt) {
         var cfg = evt.detail && evt.detail.requestConfig;
+        var elt = evt.detail && evt.detail.elt;
+        if (elt && elt.closest && elt.closest('[data-error-quiet]')) return false;
         return !!(cfg && cfg.verb && String(cfg.verb).toLowerCase() !== 'get');
     }
 

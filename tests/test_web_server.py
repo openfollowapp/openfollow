@@ -9747,28 +9747,41 @@ def test_the_row_is_hidden_for_the_media_gallery(live_server, monkeypatch) -> No
     assert "vis('video-source-latency', value !== 'testpattern');" in body
 
 
-def test_the_dialog_opens_on_its_warnings_and_puts_the_card_up(live_server, monkeypatch) -> None:
+def _warning_token(body: str) -> str:
+    token = re.search(r"ofLatencyDialogShown\(false, '([A-Za-z0-9_-]+)'\)", body)
+    assert token, "the warnings carry their token"
+    return token.group(1)
+
+
+def test_the_dialog_opens_on_its_warnings_and_its_renewal_puts_the_card_up(live_server, monkeypatch) -> None:
     server, base = live_server
     _latency_stats(monkeypatch, server, _DECODING)
-    assert not server.latency_warning.showing()
     status, body = _get(base, "/section/video_source/latency/dialog")
     assert status == 200
-    assert server.latency_warning.showing()
+    # A GET changes nothing on the station: the card goes up when the dialog's renewal posts.
+    assert not server.latency_warning.showing()
     hazard = body.index("WARNING: PHOTOSENSITIVITY / EPILEPSY SEIZURES")
     show = body.index("Never during a show.")
     assert hazard < show < body.index("The station flashes its Operator Screen")
     assert body.count('<div class="notice warning">') == 2
     footer = _footer(body)
     assert 'hx-swap-oob="true"' in footer
-    assert re.search(r'onclick="closeModal\(\)">Cancel</button>', footer)
+    assert re.search(r'onclick="closeModal\(\)" data-autofocus>Cancel</button>', footer)
     assert re.search(r'class="primary" hx-post="/section/video_source/latency"', footer)
     assert 'data-error-lead="Not started."' in footer
-    # Free to close; the card is renewed while the warnings show.
-    token = re.search(r"ofLatencyDialogShown\(false, '([A-Za-z0-9_-]+)'\)", body)
-    assert token
-    renew = body[body.rindex("<div", 0, body.index("/section/video_source/latency/warning?token=")) :]
-    assert f'hx-get="/section/video_source/latency/warning?token={token.group(1)}"' in renew
-    assert 'hx-trigger="every 1s [!document.hidden], poll-shown from:body"' in renew
+    # Free to close; the card is put up and renewed while the warnings show in an open dialog.
+    token = _warning_token(body)
+    renew = body[body.index('id="latency-warning-renewal"') :]
+    renew = renew[: renew.index("></div>")]
+    assert 'hx-post="/section/video_source/latency/warning"' in renew
+    assert f"""hx-vals='{{"token": "{token}"}}'""" in renew
+    assert "data-error-quiet" in renew
+    assert (
+        'hx-trigger="load[ofLatencyWarningLive(this)], every 1s [!document.hidden && ofLatencyWarningLive(this)],'
+        ' poll-shown[ofLatencyWarningLive(this)] from:body"'
+    ) in renew
+    assert _post_form(base, "/section/video_source/latency/warning", {"token": token})[0] == 204
+    assert server.latency_warning.showing()
     assert 'role="alert"' not in body
 
 
@@ -9791,7 +9804,7 @@ def test_the_dialog_opens_on_its_warnings_again_after_a_run(live_server, monkeyp
     _, body = _get(base, "/section/video_source/latency/dialog")
     assert "WARNING: PHOTOSENSITIVITY / EPILEPSY SEIZURES" in body
     assert "Round trip" not in body and "No flash seen." not in body
-    assert server.latency_warning.showing()
+    assert _warning_token(body)
 
 
 def test_a_run_started_elsewhere_shows_measuring_with_no_way_out(live_server, monkeypatch) -> None:
@@ -9844,7 +9857,9 @@ def test_the_run_s_end_turns_the_dialog_to_its_result(
     assert sub in body
     footer = _footer(body)
     assert re.search(r'hx-post="/section/video_source/latency"[^>]*>Measure again</button>', footer)
-    assert re.search(r'class="primary" onclick="closeModal\(\)">Close</button>', footer)
+    # Focus lands on Close, so one Enter never starts another flashing run.
+    assert re.search(r'class="primary" onclick="closeModal\(\)" data-autofocus>Close</button>', footer)
+    assert footer.count("data-autofocus") == 1
     assert "ofLatencyDialogShown(false, '')" in body
     assert not server.latency_warning.showing()
 
@@ -9866,14 +9881,18 @@ def test_start_runs_the_measurement_and_takes_the_card_down(live_server, monkeyp
     server, base = live_server
     _latency_stats(monkeypatch, server, _DECODING)
     _, intro = _get(base, "/section/video_source/latency/dialog")
-    token = re.search(r"ofLatencyDialogShown\(false, '([A-Za-z0-9_-]+)'\)", intro)
-    assert token and server.latency_warning.showing()
-    status, body = _post_form(base, "/section/video_source/latency", {"token": token.group(1)})
+    token = _warning_token(intro)
+    _post_form(base, "/section/video_source/latency/warning", {"token": token})
+    assert server.latency_warning.showing()
+    status, body = _post_form(base, "/section/video_source/latency", {"token": token})
     assert status == 200
     assert server._command_queue.consume_latency_requested()
     assert not server.latency_warning.showing()
     assert "Measuring: 0 of 10 changes seen." in body
     assert "<button" not in _footer(body)
+    # A renewal still on its way never brings the card back.
+    _post_form(base, "/section/video_source/latency/warning", {"token": token})
+    assert not server.latency_warning.showing()
 
 
 def test_measure_again_starts_at_once_without_the_warnings(live_server, monkeypatch) -> None:
@@ -9911,12 +9930,6 @@ def test_start_while_it_cannot_run_answers_409_with_the_reason(
     assert not server._command_queue.consume_latency_requested()
 
 
-def test_a_run_has_no_stop(live_server) -> None:
-    _, base = live_server
-    status, _body = _post_form(base, "/section/video_source/latency/stop", {})
-    assert status in (404, 405)
-
-
 def test_the_warning_card_is_renewed_and_closed_by_its_token(live_server, monkeypatch) -> None:
     server, base = live_server
     renewed: list[str] = []
@@ -9924,7 +9937,7 @@ def test_the_warning_card_is_renewed_and_closed_by_its_token(live_server, monkey
     monkeypatch.setattr(server.latency_warning, "renew", renewed.append)
     monkeypatch.setattr(server.latency_warning, "close", closed.append)
     token = "Abc_DEF-123456789"
-    status, _body = _get(base, f"/section/video_source/latency/warning?token={token}")
+    status, _body = _post_form(base, "/section/video_source/latency/warning", {"token": token})
     assert status == 204 and renewed == [token]
     status, _body = _post_form(base, f"/section/video_source/latency/warning/close?token={token}", {})
     assert status == 204 and closed == [token]
@@ -9934,8 +9947,21 @@ def test_the_warning_card_is_renewed_and_closed_by_its_token(live_server, monkey
 def test_a_malformed_warning_token_is_refused(live_server, token: str) -> None:
     _, base = live_server
     query = urllib.parse.urlencode({"token": token})
-    assert _get(base, f"/section/video_source/latency/warning?{query}")[0] == 400
+    assert _post_form(base, "/section/video_source/latency/warning", {"token": token})[0] == 400
     assert _post_form(base, f"/section/video_source/latency/warning/close?{query}", {})[0] == 400
+
+
+def test_a_renewal_from_another_site_is_refused_and_a_get_puts_nothing_up(live_server) -> None:
+    server, base = live_server
+    status, _body, _headers = _post_form_full(
+        base,
+        "/section/video_source/latency/warning",
+        {"token": "Abc_DEF-123456789"},
+        headers={"Origin": "http://203.0.113.9", "Referer": "http://203.0.113.9/"},
+    )
+    assert status == 403
+    assert _get(base, "/section/video_source/latency/warning?token=Abc_DEF-123456789")[0] == 405
+    assert not server.latency_warning.showing()
 
 
 def _latency_key(body: str) -> str:

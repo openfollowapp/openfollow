@@ -59,8 +59,17 @@ def _contrast_ink(rgb: tuple[float, float, float]) -> tuple[float, float, float]
 
 def draw_operator_messages(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
     """Draw the operator-message stack onto ``cr``."""
-    views = state.operator_messages
-    overflow = state.operator_message_overflow
+    _draw_stack(renderer, cr, state, state.operator_messages, state.operator_message_overflow, w, h)
+
+
+def draw_station_cards(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
+    """Draw only the station's own headline cards, over a screen that hides the other messages."""
+    _draw_stack(renderer, cr, state, [v for v in state.operator_messages if v.headline], 0, w, h)
+
+
+def _draw_stack(
+    renderer: Any, cr: Any, state: OverlayState, views: list[OperatorMessageView], overflow: int, w: int, h: int
+) -> None:
     if not views and overflow <= 0:
         return
 

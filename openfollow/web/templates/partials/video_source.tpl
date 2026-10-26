@@ -63,7 +63,9 @@
                 bodyHTML: '<div id="latency-dialog"></div>',
                 footerButtons: [],
                 onClose: function(){
-                    // Closed on its warnings (Cancel, the close button, Escape): the screen's card goes at once.
+                    // The dialog goes first, its warnings' renewal with it; then the screen's card goes at once.
+                    var dialog = document.getElementById('latency-dialog');
+                    if(dialog) dialog.remove();
                     if(window.ofLatencyWarning){
                         navigator.sendBeacon('/section/video_source/latency/warning/close?token=' + window.ofLatencyWarning);
                         window.ofLatencyWarning = '';
@@ -78,12 +80,20 @@
             });
             htmx.ajax('GET', '/section/video_source/latency/dialog', {target: '#latency-dialog', swap: 'outerHTML'});
         };
-        // Each state of the dialog: locked while a run lasts, focus on its first action, else on the dialog.
+        // Whether an element of the dialog is on an open dialog, not one closed before its state arrived.
+        window.ofLatencyWarningLive = function(el){
+            var root = document.getElementById('modal-root');
+            return !!(el && el.isConnected && root && !root.hidden);
+        };
+        // Each state of the dialog: locked while a run lasts; focus on the action that starts nothing, else the dialog.
+        // A state meant for a dialog closed before it arrived (another one may be open by then) is ignored.
         window.ofLatencyDialogShown = function(running, warning){
+            var dialog = document.getElementById('latency-dialog');
+            if(!ofLatencyWarningLive(dialog) || dialog.getAttribute('data-warning') !== warning) return;
             window.ofLatencyWarning = warning;
             modalLock(running);
-            var first = document.querySelector('#modal-footer button') || document.getElementById('latency-dialog');
-            if(first) first.focus();
+            var target = document.querySelector('#modal-footer [data-autofocus]') || dialog;
+            target.focus();
         };
         </script>
         <!-- Connection recovery applies to network inputs only (RTSP/SRT/RTP). -->

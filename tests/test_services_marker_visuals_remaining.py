@@ -1784,7 +1784,7 @@ class TestLatencyWarningCard:
         app._config.operator_messages.enabled = False
         app._config.operator_messages.position = "top"
         app._config.operator_messages.scale = 1.5
-        warning.open()
+        warning.renew(warning.token())
 
         state = _build(app)
         (card,) = state.operator_messages
@@ -1803,7 +1803,7 @@ class TestLatencyWarningCard:
         for i in range(7):
             store.add(f"m{i}", marker_id=0, duration_s=0.0)
         _attach_store(app, store)
-        warning.open()
+        warning.renew(warning.token())
 
         state = _build(app)
         assert [v.message for v in state.operator_messages] == [lw.MESSAGE, "m6", "m5", "m4", "m3", "m2"]
@@ -1814,7 +1814,8 @@ class TestLatencyWarningCard:
 
         clock = [100.0]
         app, warning = self._app(clock)
-        token = warning.open()
+        token = warning.token()
+        warning.renew(token)
         clock[0] += lw.STALE_S
         warning.renew(token)
         clock[0] += lw.STALE_S
@@ -1827,7 +1828,7 @@ class TestLatencyWarningCard:
         from openfollow.runtime.overlay_draw_messages import draw_operator_messages
 
         app, warning = self._app([100.0])
-        warning.open()
+        warning.renew(warning.token())
         state = _build(app)
         cr = FakeCairo()
         draw_operator_messages(FakeRenderer(state=state), cr, state, 1280, 720)

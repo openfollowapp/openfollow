@@ -21,7 +21,8 @@ _MARKUP = (
     '<form class="section" id="sec">'
     '<input id="field"><div class="actions" id="actions"><button type="submit" id="save">Save</button></div></form>'
     '<div class="modal-card" id="card"><div class="modal-body"></div><div class="modal-footer" id="footer">'
-    '<button type="button" id="start" data-error-lead="Not started.">Start</button></div></div>'
+    '<button type="button" id="start" data-error-lead="Not started.">Start</button></div>'
+    '<div id="renewal" hidden data-error-quiet></div></div>'
 )
 _REFUSED = json.dumps({"error": "No video is arriving.", "action": "Measure once the camera's picture shows."})
 
@@ -68,6 +69,11 @@ def test_a_save_outside_the_dialog_keeps_not_saved_and_the_form_ring() -> None:
     out = _failed("htmx:responseError", "save")
     assert out["line"].startswith("Not saved. No video is arriving.")
     assert (out["box"], out["ringed"]) == ("sec", ["sec"])
+
+
+@pytest.mark.parametrize("event", ["htmx:responseError", "htmx:sendError"])
+def test_a_quiet_background_request_reports_nothing(event: str) -> None:
+    assert _failed(event, "renewal") == {"line": None, "box": None, "ringed": []}
 
 
 def test_an_unanswered_save_still_asks_to_save_again() -> None:

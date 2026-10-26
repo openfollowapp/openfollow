@@ -871,12 +871,7 @@ def on_key_down(app: OpenFollowApp, event: dict[str, Any]) -> None:
     """
     key = app._normalize_key(event.get("key", ""))
 
-    # A text-entry screen owns input exclusively. Skip the forward to
-    # ``keyboard_handler.on_key_down`` so the polled-key tracker doesn't latch
-    # keys as "pressed" while it is up – otherwise the matching ``on_key_up``
-    # (also gated below) is the only way they'd clear, and a release that
-    # lands after the screen closes leaves the key flagged pressed and can
-    # fire app shortcuts on the next polled tick.
+    # A text screen owns input: never forward to the poller, which would latch keys its key_up can't clear.
     if text_entry_owns_input(app):
         manager = app._input_manager
         if manager is not None and manager.keyboard_handler.is_late_echo(event):
@@ -884,9 +879,8 @@ def on_key_down(app: OpenFollowApp, event: dict[str, Any]) -> None:
             # screen; its GTK event arrived late. The window keeps it from the WebView.
             event["late_echo"] = True
             return
-        # The editors take the top-row digits, punctuation and Backspace, none
-        # of which ``POLLED_KEYS`` covers, so GTK events go straight to them and
-        # the digit-as-marker shortcut below never fires under them.
+        # The editors take digits, punctuation and Backspace (not in ``POLLED_KEYS``)
+        # from GTK, and the digit-as-marker shortcut below never fires under them.
         if app._url_editor_active:
             handle_url_editor_key(app, key)
         elif getattr(app, "_pi_network_field_edit_active", False):
@@ -921,13 +915,14 @@ def on_key_down(app: OpenFollowApp, event: dict[str, Any]) -> None:
 
 
 def on_key_up(app: OpenFollowApp, event: dict[str, Any]) -> None:
+    if app._input_manager is not None:
+        # A released key is no longer the echo of a press a hardware poller acted on.
+        app._input_manager.keyboard_handler.end_echo(event)
     # Symmetric with ``on_key_down``: while an exclusive overlay owns
     # input, the polled-key tracker stays frozen so a release that
     # arrives after the overlay closes can't clear a key it never saw
     # pressed (which would otherwise underflow ``keys`` or strand a
     # different key as latched-pressed).
-    if app._input_manager is not None:
-        app._input_manager.keyboard_handler.end_echo(event)
     if text_entry_owns_input(app) or app._field_choice_active:
         return
     if app._input_manager is not None:

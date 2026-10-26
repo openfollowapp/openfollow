@@ -266,6 +266,39 @@ def test_the_late_gtk_enter_does_not_commit_the_field_editor_it_opened(
     assert committed == [True]
 
 
+def test_keys_pressed_after_the_screen_opened_still_type(poller: _HardwarePoller) -> None:
+    app = _opened_by_a_polled_enter(poller, _url_editor_active=True)
+    handler = app._input_manager.keyboard_handler
+    poller.held = set()
+    handler.poll_discrete_keys()
+    poller.held = {"b"}
+    handler.poll_discrete_keys()
+    app_modes.on_key_down(app, {"key": "b"})
+    assert app._url_editor_value == "rtsp://192.0.2.1/streab"
+
+
+def test_the_echo_keys_auto_repeat_never_confirms_the_url_editor(poller: _HardwarePoller) -> None:
+    confirmed: list[bool] = []
+    app = _opened_by_a_polled_enter(poller, _url_editor_active=True)
+    app._confirm_url_editor = lambda: confirmed.append(True)
+    for _ in range(4):
+        app._input_manager.keyboard_handler.poll_discrete_keys()
+        app_modes.on_key_down(app, {"key": "Enter"})
+    assert (app._url_editor_active, confirmed) == (True, [])
+
+
+def test_the_echo_keys_auto_repeat_never_commits_the_field_editor(
+    poller: _HardwarePoller, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    committed: list[bool] = []
+    monkeypatch.setattr(app_modes_network, "confirm_pi_network_field_edit", lambda app: committed.append(True))
+    app = _opened_by_a_polled_enter(poller, _pi_network_active=True, _pi_network_field_edit_active=True)
+    for _ in range(4):
+        app._input_manager.keyboard_handler.poll_discrete_keys()
+        app_modes.on_key_down(app, {"key": "Enter"})
+    assert committed == []
+
+
 def test_the_late_gtk_enter_is_marked_for_the_window_to_keep_from_the_webview(poller: _HardwarePoller) -> None:
     app = _opened_by_a_polled_enter(poller, _browser_active=True)
     late = {"key": "Enter"}

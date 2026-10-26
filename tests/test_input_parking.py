@@ -9,7 +9,9 @@ from types import SimpleNamespace
 
 import pytest
 
+import openfollow.input.keyboard as keyboard_module
 from openfollow.configuration import AppConfig, DetectionConfig
+from openfollow.input.keyboard import KeyboardHandler, KeyboardPoller
 from openfollow.input.parking import is_parked, rehome_selection, select, set_parked
 from openfollow.psn.marker import Marker
 from openfollow.runtime import app_modes
@@ -129,6 +131,57 @@ def test_a_digit_never_selects_a_parked_marker() -> None:
     app_modes.on_key_down(app, {"key": "2"})
     assert app._selected_id == 10
     app_modes.on_key_down(app, {"key": "3"})
+    assert app._selected_id == 30
+
+
+class _HardwarePoller(KeyboardPoller):
+    """Reads held keys the way evdev and Quartz do, whatever has focus."""
+
+    kind = "evdev"
+
+    def __init__(self) -> None:
+        self.held: set[str] = set()
+
+    def is_available(self) -> bool:
+        return True
+
+    def is_key_pressed(self, key: str) -> bool:
+        return key in self.held
+
+
+def test_a_hardware_poller_keeps_both_the_text_entry_gate_and_the_park_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    hardware = _HardwarePoller()
+    monkeypatch.setattr(keyboard_module, "create_keyboard_poller", lambda: hardware)
+    app = _keyboard_app(10, [20])
+    vars(app).update(
+        _config=AppConfig(),
+        _button_detection=None,
+        _settings_menu_active=False,
+        _video_receiver=None,
+        _source_type_selection_active=False,
+        _url_editor_active=True,
+        _url_editor_value="rtsp://192.0.2.1/stream",
+    )
+    handler = KeyboardHandler(app)  # type: ignore[arg-type]
+    app._input_manager.keyboard_handler = handler
+
+    # The URL editor owns input: Next Marker never presses and a digit types.
+    hardware.held = {"Tab"}
+    handler.poll_discrete_keys()
+    assert handler.consume_key_presses() == []
+    app_modes.on_key_down(app, {"key": "3"})
+    assert (app._selected_id, app._url_editor_value) == (10, "rtsp://192.0.2.1/stream3")
+
+    # Closed: Next Marker, pressed again, steps over the parked marker; a digit never selects it.
+    app._url_editor_active = False
+    hardware.held = set()
+    handler.poll_discrete_keys()
+    hardware.held = {"Tab"}
+    handler.poll_discrete_keys()
+    for key in handler.consume_key_presses():
+        app_modes.handle_key_press(app, key)
+    assert app._selected_id == 30
+    app_modes.on_key_down(app, {"key": "2"})
     assert app._selected_id == 30
 
 

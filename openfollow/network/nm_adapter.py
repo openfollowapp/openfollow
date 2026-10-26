@@ -239,15 +239,19 @@ def _profile_ipv4(fields: Mapping[str, str]) -> Ipv4Config:
 
 
 def _bound_saved(profiles: Sequence[_Profile], details: Mapping[str, Mapping[str, str]], iface: str) -> list[_Profile]:
-    """The inactive ethernet, Wi-Fi and VLAN profiles bound to *iface*, and those of every VLAN on it."""
+    """The inactive ethernet, Wi-Fi and VLAN profiles bound to *iface*, and those of every VLAN bound on it.
+
+    A profile naming no interface is never one: it can come up on any adapter.
+    """
     device_by_uuid = _device_by_uuid(profiles, details)
     out: list[_Profile] = []
     for profile in profiles:
-        if profile.device or profile.kind not in _SAVED_PROFILE_KINDS:
-            continue
         fields = details.get(profile.uuid, {})
+        name = fields.get("connection.interface-name", "")
+        if profile.device or profile.kind not in _SAVED_PROFILE_KINDS or not name:
+            continue
         link = _vlan_link(fields, device_by_uuid) if profile.kind == "vlan" else None
-        if fields.get("connection.interface-name") == iface or (link is not None and link[0] == iface):
+        if name == iface or (link is not None and link[0] == iface):
             out.append(profile)
     return out
 
@@ -259,15 +263,14 @@ def _saved_interfaces(
 
     A profile naming no interface is never claimed: it can come up on any adapter.
     """
-    bound: dict[str, list[_Profile]] = {}
-    for profile in profiles:
-        name = details.get(profile.uuid, {}).get("connection.interface-name", "")
-        if name and name not in present and not profile.device and profile.kind in _SAVED_PROFILE_KINDS:
-            bound.setdefault(name, []).append(profile)
+    names = {details.get(p.uuid, {}).get("connection.interface-name", "") for p in profiles} - present - {""}
     device_by_uuid = _device_by_uuid(profiles, details)
     out: list[SavedInterface] = []
-    for name in sorted(bound):
-        profile = max(bound[name], key=_autoconnect_order)
+    for name in sorted(names):
+        # The profile an apply writes: the one autoconnect prefers among every kind bound to the name.
+        profile = _saved_profile(profiles, details, name)
+        if profile is None or profile.device or profile.kind not in _SAVED_PROFILE_KINDS:
+            continue
         fields = details.get(profile.uuid, {})
         link = _vlan_link(fields, device_by_uuid) if profile.kind == "vlan" else None
         parent, vlan_id = link if link is not None else ("", None)
@@ -717,10 +720,10 @@ class NetworkManagerAdapter(NetworkAdapter):
                 else f"Could not save the settings to profile '{name}'; nothing was changed.",
             )
 
-        if not profile.device and self._waits_for_its_adapter(iface, profile):
+        if not profile.device and (awaited := self._awaited_adapter(iface, profile)):
             # Saved only: NetworkManager brings the profile up when the adapter appears.
             return ApplyResult(
-                ok=True, pending=True, message=f"Saved; the settings take effect when {iface} is plugged in."
+                ok=True, pending=True, message=f"Saved; the settings take effect when {awaited} is plugged in."
             )
         if not self._has_carrier(iface):
             # Saved only: con down here leaves the profile blocked from
@@ -763,22 +766,24 @@ class NetworkManagerAdapter(NetworkAdapter):
             )
         return ApplyResult(ok=True, message="Applied.", partial_failures=tuple(partial))
 
-    def _waits_for_its_adapter(self, iface: str, profile: _Profile) -> bool:
-        """*iface* is not present, nor, for a VLAN, its parent: the profile comes up when the adapter does.
+    def _awaited_adapter(self, iface: str, profile: _Profile) -> str:
+        """The adapter whose plugging in brings the profile up: *iface*, or a VLAN's parent; "" when it is here.
 
         A VLAN whose parent is present waits for nothing, so it is brought up now.
         """
         if self._device_state(iface) != "":
-            return False
+            return ""
         if profile.kind != "vlan":
-            return True
+            return iface
         try:
             profiles = self._read_profiles()
             details = self._profile_details(profiles)
         except (RuntimeError, FileNotFoundError, subprocess.SubprocessError):
-            return True
+            return iface
         link = _vlan_link(details.get(profile.uuid, {}), _device_by_uuid(profiles, details))
-        return link is None or self._device_state(link[0]) == ""
+        if link is None:
+            return iface
+        return link[0] if self._device_state(link[0]) == "" else ""
 
     def renew_lease(self, iface: str) -> ApplyResult:
         profile = self._profile_for(iface)
@@ -813,6 +818,8 @@ class NetworkManagerAdapter(NetworkAdapter):
         is a wildcarded grant, so it only ever names inactive profiles of an
         interface that is gone, read under the same lock as the delete.
         """
+        if not name:
+            return ApplyResult(ok=False, message="No interface was named; nothing was deleted.")
         state = self._device_state(name)
         if state is None:
             return ApplyResult(ok=False, message=f"Could not read {name} from NetworkManager; nothing was deleted.")

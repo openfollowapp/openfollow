@@ -285,7 +285,7 @@
                     %# host's, there is no row to put the notice on - so every
                     %# editor carries the caution instead. Saying nothing is the
                     %# one outcome that leaves the operator unwarned.
-                    % elif _row_edit and not _session:
+                    % elif _row_edit and not _session and not _absent:
                     <div class="notice warning" role="status">Which interface is answering your browser can't be told here, so this may be the one carrying this web session.
                         <div class="notice-sub">If applying drops it, reconnect by name, or read the address off Settings &rsaquo; Network on the station's screen.</div>
                     </div>

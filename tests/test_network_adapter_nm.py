@@ -2119,6 +2119,8 @@ class TestWhichProfileAWriteAddresses:
         assert not a.apply_ipv4("", Ipv4Config(method=Ipv4Method.DHCP)).ok
         assert not a.renew_lease("").ok
         assert not a.delete_vlan("").ok
+        # Every unbound profile would match: ``con delete`` is a wildcarded grant.
+        assert not a.forget_interface("").ok
         assert a._broker.calls == []
 
 
@@ -2181,6 +2183,18 @@ class TestAnUnpluggedAdapterKeepsItsSettings:
         )
         assert [s.ipv4.address for s in a.read_network().saved] == ["192.0.2.7"]
 
+    def test_the_listed_settings_are_those_an_apply_writes(self, station) -> None:
+        """When autoconnect prefers a profile of another kind, the adapter is not listed: Edit would show one
+        profile's settings and write the other's."""
+        a, _ = station(
+            saved=(
+                _Saved("Wired", "enx001122334455", rank="yes:0:100"),
+                _Saved("Dial-up", "enx001122334455", kind="pppoe", rank="yes:9:900"),
+            )
+        )
+        assert a.read_network().saved == ()
+        assert a._profile_for("enx001122334455").name == "Dial-up"
+
     def test_a_failed_profile_read_lists_none(self, station) -> None:
         a, _ = self._station(station, fail={_profile_list: _NOT_RUNNING})
         assert a.read_network().saved == ()
@@ -2199,9 +2213,11 @@ class TestAnUnpluggedAdapterKeepsItsSettings:
         assert [call.argv[1:5] for call in a._broker.calls] == [["con", "mod", "uuid", "uuid-Wired connection 3"]]
 
     def test_a_vlan_on_an_unplugged_parent_is_saved_for_it(self, station) -> None:
+        """It comes up when its parent is plugged in, so the result names the parent."""
         a, _ = self._station(station)
         result = a.apply_ipv4("enx0011223344.2", Ipv4Config(method=Ipv4Method.DHCP))
         assert (result.ok, result.pending) == (True, True)
+        assert result.message == "Saved; the settings take effect when enx001122334455 is plugged in."
         assert [call.argv[2] for call in a._broker.calls] == ["mod"]
 
     @pytest.mark.parametrize(
@@ -2259,6 +2275,14 @@ class TestAnUnpluggedAdapterKeepsItsSettings:
             + ["uuid", "uuid-Wired connection 3", "uuid", "uuid-enx0011223344.2", "uuid", "uuid-By profile"]
         ]
         assert a._broker.calls[0].capability == NETWORK_NM_CON_DELETE
+
+    def test_forget_leaves_a_vlan_profile_that_names_no_interface(self, station) -> None:
+        """Never claimed: it is no row on the card, so the confirmation could not name it."""
+        a, _ = self._station(station)
+        nmcli_saved = a._run.saved
+        a._run.saved = (*nmcli_saved, _Saved("Hand-made", "", kind="vlan", vlan=("enx001122334455", "7")))
+        assert a.forget_interface("enx001122334455").ok
+        assert "uuid-Hand-made" not in a._broker.calls[0].argv
 
     def test_forgetting_a_vlan_deletes_only_its_own(self, station) -> None:
         a, _ = self._station(station)

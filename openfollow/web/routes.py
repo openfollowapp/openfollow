@@ -6344,7 +6344,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     # ----------------------------------------------------------------------
 
     _NETWORK_METHODS = ("dhcp", "dhcp_manual", "static")
-    _DHCP_MANUAL_ABSENT = "DHCP with manual address takes its subnet from a lease. Plug the adapter in, or use Static."
+    _DHCP_MANUAL_ABSENT = (
+        "DHCP with manual address takes its subnet from a lease, and this interface has none yet. Use Static."
+    )
     _NETWORK_METHOD_LABELS = {
         "dhcp": "DHCP",
         "dhcp_manual": "DHCP + manual",

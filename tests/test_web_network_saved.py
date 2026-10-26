@@ -178,6 +178,8 @@ def test_edit_opens_it_with_its_own_saved_settings(unplugged) -> None:
     assert 'value="192.0.2.5"' in row and 'value="192.0.2.1"' in row
     assert "10.0.0.5" not in row  # not the active interface's
     assert ">Apply<" in row and "Renew DHCP lease" not in row
+    # It carries no session, whichever interface answers this browser.
+    assert "may be the one carrying this web session" not in row
     # Its subnet would come from a lease, and there is none.
     assert 'value="dhcp_manual"' not in row
     assert "/section/network/forget" not in _after_row(body, _USB)
@@ -286,7 +288,7 @@ def test_dhcp_with_manual_address_is_refused_on_it(unplugged) -> None:
         base, "/section/network/apply", {"iface": _USB, "method": "dhcp_manual", "address": "192.0.2.9"}
     )
     assert fake.applied == []
-    assert "DHCP with manual address takes its subnet from a lease." in body
+    assert "DHCP with manual address takes its subnet from a lease, and this interface has none yet." in body
     row = _row(body, _USB)
     # What was entered stays, the choice included, so it can be corrected.
     assert 'data-mode="edit"' in row and 'value="192.0.2.9"' in row

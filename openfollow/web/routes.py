@@ -1499,6 +1499,15 @@ def _video_input_row(cfg: AppConfig, wait_s: float | None, names: _PanelNames) -
     return {**row, "key": "video_input_iface", "address": address, "editable": True}
 
 
+def _prefetch_video_source(cfg: AppConfig) -> None:
+    """Start the lookup the saved video source's pin check reads, before the file watcher applies the save."""
+    from openfollow.video.inputs import get_input_class
+
+    input_cls = get_input_class(cfg.video_source_type)
+    if input_cls is not None:
+        input_cls.prefetch(input_cls.runtime_config(cfg))
+
+
 _PLANE_PIN_LABELS = {key: label for key, _owner, _name, label in PLANE_PIN_FIELDS}
 
 
@@ -7538,6 +7547,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         offers Restart OpenFollow.
         """
         cfg = _save_section_from_form("interface_assignment")
+        _prefetch_video_source(cfg)
         return _render_interface_assignment(cfg, saved=True)
 
     @app.post("/section/video_source")
@@ -7549,6 +7559,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             apply_section_data(cfg, "video_source", form_data)
             save_config(cfg, server.config_path)
 
+        _prefetch_video_source(cfg)
         return _render_video_source(cfg, saved=True)
 
     @app.post("/section/general")

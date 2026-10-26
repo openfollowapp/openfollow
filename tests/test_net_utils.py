@@ -1431,6 +1431,18 @@ class TestBoundedResolver:
         assert resolver.lookup("cam.example", 5.0).addresses == ("192.0.2.20",)
         assert len(dns.calls) == 1
 
+    def test_running_for_is_the_age_of_a_lookup_still_running(self, dns) -> None:
+        dns.gate = threading.Event()
+        clock = _Clock()
+        resolver = _resolver(ttl_s=30.0, clock=clock)
+        assert resolver.running_for("cam.example") is None
+        resolver.prefetch("cam.example")
+        clock.now += 0.25
+        assert resolver.running_for("cam.example") == pytest.approx(0.25)
+        dns.gate.set()
+        _join_test_lookups()
+        assert resolver.running_for("cam.example") is None
+
     def test_a_lookup_that_cannot_start_does_not_block_the_name(self, dns) -> None:
         starts: list[int] = []
 

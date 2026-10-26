@@ -559,6 +559,12 @@ class BoundedResolver:
         """Start *host*'s lookup without waiting, so several can run at once."""
         self._begin(host)
 
+    def running_for(self, host: str) -> float | None:
+        """How long *host*'s lookup has been running; None when none is."""
+        with self._lock:
+            running = self._pending.get(host)
+            return None if running is None else self._clock() - running.started
+
     def cached(self, host: str) -> tuple[str, ...]:
         """What *host* is known to resolve to, without looking it up."""
         literal = self._literal(host)

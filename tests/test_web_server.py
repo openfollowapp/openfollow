@@ -9772,6 +9772,28 @@ def test_the_dialog_opens_on_its_warnings_and_puts_the_card_up(live_server, monk
     assert 'role="alert"' not in body
 
 
+@pytest.mark.parametrize(
+    "status",
+    [
+        {
+            "state": "done",
+            "measured": 10,
+            "result": {"median_ms": 64.0, "min_ms": 37.0, "max_ms": 79.0, "level": "success"},
+        },
+        {"state": "failed", "measured": 0, "failure": {"reason": "no_rise", "text": "No flash seen.", "action": ""}},
+    ],
+    ids=["after-a-result", "after-a-failure"],
+)
+def test_the_dialog_opens_on_its_warnings_again_after_a_run(live_server, monkeypatch, status: dict) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    server._command_queue.set_latency_status(status)
+    _, body = _get(base, "/section/video_source/latency/dialog")
+    assert "WARNING: PHOTOSENSITIVITY / EPILEPSY SEIZURES" in body
+    assert "Round trip" not in body and "No flash seen." not in body
+    assert server.latency_warning.showing()
+
+
 def test_a_run_started_elsewhere_shows_measuring_with_no_way_out(live_server, monkeypatch) -> None:
     server, base = live_server
     _latency_stats(monkeypatch, server, _DECODING)

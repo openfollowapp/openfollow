@@ -144,6 +144,7 @@ class _FakeReceiver:
         self.stall_timeout = stall_timeout
         self.heal_interval = heal_interval
         self.create_called = False
+        self.prefetched_before_build: list[dict[str, Any]] | None = None
         self.started = False
         self.widget: Any = object()
         self.display_frame_listener: Any = None
@@ -157,6 +158,8 @@ class _FakeReceiver:
 
     def create_pipeline(self) -> None:
         self.create_called = True
+        # Whether startup had started the source's name lookup by the first build.
+        self.prefetched_before_build = list(_FakeInputCls.prefetched)
         if self._raise_on_create is not None:
             raise self._raise_on_create
 
@@ -329,8 +332,10 @@ class TestInitVideoDetectionDisabled:
         """The name resolves while video comes up, so the first build's pin check reads the answer."""
         services.init_video()
 
-        assert recv_factory.last is not None
-        assert _FakeInputCls.prefetched == [recv_factory.last.input_config]
+        recv = recv_factory.last
+        assert recv is not None
+        assert recv.create_called is True
+        assert recv.prefetched_before_build == [recv.input_config]
 
     def test_wires_renderer_stats_preview_receiver_and_starts(
         self,

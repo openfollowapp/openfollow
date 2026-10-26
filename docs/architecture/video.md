@@ -216,9 +216,9 @@ interface is, so a name that may turn out to be this station is not refused for
 an outage: the refusal carries `retry_s`, the input reads as connecting (no
 verdict, no error text, DEBUG log lines only) and is checked again by
 `_recheck_name` once that time is up, without spending a backoff step.
-Unanswered past it, the name is judged as before: a down pin is
-`INTERFACE_DOWN`, otherwise an `UNKNOWN` refusal ("did not resolve in time"),
-retried on the backoff like any other.
+A name unanswered past that time is no longer waited on: a down pin is
+`INTERFACE_DOWN`, otherwise the name is an `UNKNOWN` refusal ("did not resolve
+in time"), retried on the backoff like any other.
 
 **`REFUSED` has no observed producer.** `rtspsrc` reports a refused connection
 as `Failed to connect. (Generic error)`, the errno discarded inside GStreamer's

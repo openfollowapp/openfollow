@@ -5255,7 +5255,7 @@ class TestAnRtspAddressFamilyFailureRetriesOverTcp:
         self._retry(receiver, fake_glib)
         assert self._protocols(receiver) == 0x4
 
-        receiver.swap_input("rtsp", {"rtsp_url": "rtsp://[2001:db8::10]:554/stream"})
+        receiver.swap_input("rtsp", {"rtsp_url": "rtsp://[2001:db8::10]:554/stream", "rtsp_user": "operator"})
 
         assert self._protocols(receiver) == 0x7
 

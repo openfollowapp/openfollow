@@ -195,7 +195,7 @@ class RtspInput(VideoInputBase):
         # reached the server on, and udpsink then refuses an address of the other
         # family. A host whose attempt failed that way takes the interleaved
         # transport from then on; every other attempt may negotiate TCP, UDP or
-        # multicast. Choosing it looks no name up.
+        # multicast. Choosing the transport looks no name up.
         endpoint = self.source_endpoint(config)
         self._dialled_host = endpoint.host if endpoint is not None else ""
         tcp_reason = ""

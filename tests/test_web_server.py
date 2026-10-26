@@ -9825,3 +9825,360 @@ def test_requests_share_one_parse_of_an_unchanged_config(live_server, monkeypatc
         status, _body = _get(base, "/api/info")
         assert status == 200
     assert parses == [server.config_path]
+
+
+# ---------------------------------------------------------------------------
+# Measure latency (Video Source)
+# ---------------------------------------------------------------------------
+
+_DECODING = {"video": {"source_type": "rtsp", "connected": True, "phase": "decoding"}, "hud": {"window_s": 2.0}}
+_NO_VIDEO = {**_DECODING, "video": {**_DECODING["video"], "connected": False}}
+
+
+def _latency_stats(monkeypatch, server, stats: dict) -> None:
+    monkeypatch.setattr(server, "get_runtime_stats", lambda: stats)
+
+
+def _get_full(base: str, path: str) -> tuple[int, str, Any]:
+    """Status, body and the headers, which read without regard to case."""
+    with urllib.request.urlopen(f"{base}{path}", timeout=5) as r:
+        return r.status, r.read().decode(), r.headers
+
+
+def _latency_row(body: str) -> str:
+    """The Camera Latency row up to its button."""
+    row = body[body.index('id="video-source-latency"') :]
+    return row[: row.index("</button>")]
+
+
+def _footer(body: str) -> str:
+    """The dialog's actions, which the page moves into the modal's footer."""
+    footer = body[body.index("data-latency-footer") :]
+    return footer[: footer.index("</div>")]
+
+
+def _rtsp(server) -> None:
+    save_config(AppConfig(video_source_type="rtsp"), server.config_path)
+
+
+def test_the_row_shows_the_last_successful_result_and_when(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _rtsp(server)
+    last = {"median_ms": 64.2, "min_ms": 37.0, "max_ms": 79.4, "samples": 10, "finished_at": time.time() - 60.0}
+    _latency_stats(monkeypatch, server, {**_DECODING, "latency": last})
+    _, body = _get(base, "/section/video_source")
+    row = _latency_row(body)
+    assert "Round trip 64 ms (37 to 79 ms)<small>Measured " in row
+    assert re.search(r'onclick="ofLatencyDialog\(\)"\s*>Measure latency', row)
+
+
+def test_the_row_without_a_result_says_not_measured_yet(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _rtsp(server)
+    _latency_stats(monkeypatch, server, _DECODING)
+    _, body = _get(base, "/section/video_source/latency")
+    assert "Not measured yet." in _latency_row(body)
+
+
+@pytest.mark.parametrize(
+    ("stats", "reason"),
+    [
+        ({**_DECODING, "hud": None}, "No Operator Screen is showing on this station."),
+        (_NO_VIDEO, "No video is arriving."),
+    ],
+    ids=["no-display", "no-video"],
+)
+def test_the_row_says_why_it_cannot_measure_and_disables_its_button(
+    live_server, monkeypatch, stats: dict, reason: str
+) -> None:
+    server, base = live_server
+    _rtsp(server)
+    last = {"median_ms": 64.0, "min_ms": 37.0, "max_ms": 79.0, "samples": 10, "finished_at": time.time()}
+    _latency_stats(monkeypatch, server, {**stats, "latency": last})
+    for path in ("/", "/section/video_source"):
+        _, body = _get(base, path)
+        row = _latency_row(body)
+        assert reason in row
+        assert "Round trip" not in row
+        assert re.search(r"<button[^>]*\sdisabled\s*>Measure latency", row)
+
+
+def test_the_row_is_hidden_for_the_media_gallery(live_server, monkeypatch) -> None:
+    server, base = live_server
+    save_config(AppConfig(video_source_type="testpattern"), server.config_path)
+    _latency_stats(monkeypatch, server, _DECODING)
+    _, body = _get(base, "/section/video_source")
+    row = _latency_row(body)
+    assert 'style="display:none"' in row[: row.index(">")]
+    # Switching the source type on the page hides and shows it too.
+    assert "vis('video-source-latency', value !== 'testpattern');" in body
+
+
+def _warning_token(body: str) -> str:
+    token = re.search(r"ofLatencyDialogShown\(false, '([A-Za-z0-9_-]+)'\)", body)
+    assert token, "the warnings carry their token"
+    return token.group(1)
+
+
+def test_the_dialog_opens_on_its_warnings_and_its_renewal_puts_the_card_up(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    status, body = _get(base, "/section/video_source/latency/dialog")
+    assert status == 200
+    # A GET changes nothing on the station: the card goes up when the dialog's renewal posts.
+    assert not server.latency_warning.showing()
+    hazard = body.index("WARNING: PHOTOSENSITIVITY / EPILEPSY SEIZURES")
+    show = body.index("Never during a show.")
+    assert "For about 5 seconds, longer with a slow camera, the Operator Screen shows no video and no markers" in body
+    assert hazard < show < body.index("The station flashes its Operator Screen")
+    assert body.count('<div class="notice warning">') == 2
+    footer = _footer(body)
+    assert "hx-swap-oob" not in body
+    assert re.search(r'onclick="closeModal\(\)" data-autofocus>Cancel</button>', footer)
+    assert re.search(r'class="primary" hx-post="/section/video_source/latency"', footer)
+    assert 'data-error-lead="Not started."' in footer
+    # Free to close; the card is put up and renewed while the warnings show in an open dialog.
+    token = _warning_token(body)
+    renew = body[body.index('id="latency-warning-renewal"') :]
+    renew = renew[: renew.index("></div>")]
+    assert 'hx-post="/section/video_source/latency/warning"' in renew
+    assert f"""hx-vals='{{"token": "{token}"}}'""" in renew
+    assert "data-error-quiet" in renew
+    assert (
+        'hx-trigger="load[ofLatencyWarningLive(this)], every 1s [!document.hidden && ofLatencyWarningLive(this)],'
+        ' poll-shown[ofLatencyWarningLive(this)] from:body"'
+    ) in renew
+    assert _post_form(base, "/section/video_source/latency/warning", {"token": token})[0] == 204
+    assert server.latency_warning.showing()
+    assert 'role="alert"' not in body
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        {
+            "state": "done",
+            "measured": 10,
+            "result": {"median_ms": 64.0, "min_ms": 37.0, "max_ms": 79.0, "level": "success"},
+        },
+        {"state": "failed", "measured": 0, "failure": {"reason": "no_rise", "text": "No flash seen.", "action": ""}},
+    ],
+    ids=["after-a-result", "after-a-failure"],
+)
+def test_the_dialog_opens_on_its_warnings_again_after_a_run(live_server, monkeypatch, status: dict) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    server._command_queue.set_latency_status(status)
+    _, body = _get(base, "/section/video_source/latency/dialog")
+    assert "WARNING: PHOTOSENSITIVITY / EPILEPSY SEIZURES" in body
+    assert "Round trip" not in body and "No flash seen." not in body
+    assert _warning_token(body)
+
+
+def test_a_run_started_elsewhere_shows_measuring_with_no_way_out(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    server._command_queue.set_latency_status({"state": "running", "measured": 4})
+    _, body = _get(base, "/section/video_source/latency/dialog")
+    assert "Measuring: 4 of 10 changes seen." in body
+    assert "The Operator Screen is flashing." in body
+    assert "<button" not in _footer(body)
+    assert "ofLatencyDialogShown(true, '')" in body
+    assert not server.latency_warning.showing()
+    progress = body[body.index('id="latency-progress"') :]
+    progress = progress[: progress.index(">")]
+    assert 'hx-get="/section/video_source/latency/dialog?poll=1"' in progress
+    assert 'hx-trigger="every 1s [!document.hidden], poll-shown from:body"' in progress
+    assert 'role="alert"' not in body
+
+
+def test_a_run_s_progress_answers_alone_while_it_lasts(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    server._command_queue.set_latency_status({"state": "running", "measured": 7})
+    status, body, headers = _get_full(base, "/section/video_source/latency/dialog?poll=1")
+    assert status == 200
+    assert "Measuring: 7 of 10 changes seen." in body
+    assert "data-latency-footer" not in body
+    assert "HX-Retarget" not in headers
+
+
+@pytest.mark.parametrize(
+    ("median", "level", "notice", "sub"),
+    [
+        (64.0, "success", "notice success", "Measured over 10 changes."),
+        (180.0, "caution", "notice warning", "Lower the buffering of the camera and the stream, then measure again."),
+        (420.0, "error", "notice error", "Lower the buffering of the camera and the stream, then measure again."),
+    ],
+)
+def test_the_run_s_end_turns_the_dialog_to_its_result(
+    live_server, monkeypatch, median: float, level: str, notice: str, sub: str
+) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    result = {"median_ms": median, "min_ms": median - 10, "max_ms": median + 12.4, "samples": 10, "level": level}
+    server._command_queue.set_latency_status({"state": "done", "measured": 10, "result": result})
+    _, body, headers = _get_full(base, "/section/video_source/latency/dialog?poll=1")
+    assert headers.get("HX-Retarget") == "#latency-dialog" and headers.get("HX-Reswap") == "outerHTML"
+    assert f'<div class="{notice}">' in body
+    assert f"Round trip {median:.0f} ms ({median - 10:.0f} to {median + 12.4:.0f} ms)." in body
+    assert sub in body
+    footer = _footer(body)
+    assert re.search(r'hx-post="/section/video_source/latency"[^>]*>Measure again</button>', footer)
+    # Focus lands on Close, so one Enter never starts another flashing run.
+    assert re.search(r'class="primary" onclick="closeModal\(\)" data-autofocus>Close</button>', footer)
+    assert footer.count("data-autofocus") == 1
+    assert "ofLatencyDialogShown(false, '')" in body
+    assert not server.latency_warning.showing()
+
+
+def test_a_failed_run_turns_the_dialog_to_what_was_seen(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    failure = {"reason": "no_rise", "text": "No flash seen in the video within 3 s.", "action": "Point the camera."}
+    server._command_queue.set_latency_status({"state": "failed", "measured": 0, "failure": failure})
+    _, body, _headers = _get_full(base, "/section/video_source/latency/dialog?poll=1")
+    assert '<div class="notice error">' in body
+    assert "No flash seen in the video within 3 s." in body and "Point the camera." in body
+    footer = _footer(body)
+    assert re.search(r'hx-post="/section/video_source/latency"[^>]*>Try again</button>', footer)
+    assert ">Close</button>" in footer
+
+
+def test_start_runs_the_measurement_and_takes_the_card_down(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    _, intro = _get(base, "/section/video_source/latency/dialog")
+    token = _warning_token(intro)
+    _post_form(base, "/section/video_source/latency/warning", {"token": token})
+    assert server.latency_warning.showing()
+    status, body = _post_form(base, "/section/video_source/latency", {"token": token})
+    assert status == 200
+    assert server._command_queue.consume_latency_requested()
+    assert not server.latency_warning.showing()
+    assert "Measuring: 0 of 10 changes seen." in body
+    assert "<button" not in _footer(body)
+    # A renewal still on its way never brings the card back.
+    _post_form(base, "/section/video_source/latency/warning", {"token": token})
+    assert not server.latency_warning.showing()
+
+
+def test_measure_again_starts_at_once_without_the_warnings(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    result = {"median_ms": 64.0, "min_ms": 37.0, "max_ms": 79.0, "samples": 10, "level": "success"}
+    server._command_queue.set_latency_status({"state": "done", "measured": 10, "result": result})
+    status, body = _post_form(base, "/section/video_source/latency", {})
+    assert status == 200
+    assert server._command_queue.consume_latency_requested()
+    assert "Measuring:" in body and "PHOTOSENSITIVITY" not in body
+    assert not server.latency_warning.showing()
+
+
+@pytest.mark.parametrize(
+    ("stats", "reason"),
+    [
+        ({**_DECODING, "hud": None}, "No Operator Screen is showing on this station."),
+        (_NO_VIDEO, "No video is arriving."),
+        ({**_DECODING, "video": {**_DECODING["video"], "phase": "data_arriving"}}, "No video is arriving."),
+        ({**_DECODING, "video": {**_DECODING["video"], "source_type": "testpattern"}}, "The Media Gallery plays"),
+        ({}, "No Operator Screen is showing on this station."),
+    ],
+    ids=["no-display", "not-connected", "not-decoding", "gallery", "no-stats"],
+)
+def test_start_while_it_cannot_run_answers_409_with_the_reason(
+    live_server, monkeypatch, stats: dict, reason: str
+) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, stats)
+    status, body = _post_form(base, "/section/video_source/latency", {})
+    assert status == 409
+    answer = json.loads(body)
+    assert answer["error"].startswith(reason) and answer["action"]
+    assert not server._command_queue.consume_latency_requested()
+
+
+def test_the_warning_card_is_put_up_and_taken_down_by_its_token(live_server) -> None:
+    server, base = live_server
+    token = "Abc_DEF-123456789"
+    assert not server.latency_warning.showing()
+    status, _body = _post_form(base, "/section/video_source/latency/warning", {"token": token})
+    assert status == 204 and server.latency_warning.showing()
+    status, _body = _post_form(base, f"/section/video_source/latency/warning/close?token={token}", {})
+    assert status == 204 and not server.latency_warning.showing()
+
+
+@pytest.mark.parametrize("token", ["", "short", "x" * 65, "bad token!!!!!!!!"])
+def test_a_malformed_warning_token_is_refused(live_server, token: str) -> None:
+    _, base = live_server
+    query = urllib.parse.urlencode({"token": token})
+    assert _post_form(base, "/section/video_source/latency/warning", {"token": token})[0] == 400
+    assert _post_form(base, f"/section/video_source/latency/warning/close?{query}", {})[0] == 400
+
+
+def test_a_renewal_from_another_site_is_refused_and_a_get_puts_nothing_up(live_server) -> None:
+    server, base = live_server
+    status, _body, _headers = _post_form_full(
+        base,
+        "/section/video_source/latency/warning",
+        {"token": "Abc_DEF-123456789"},
+        headers={"Origin": "http://203.0.113.9", "Referer": "http://203.0.113.9/"},
+    )
+    assert status == 403
+    assert _get(base, "/section/video_source/latency/warning?token=Abc_DEF-123456789")[0] == 405
+    assert not server.latency_warning.showing()
+
+
+def _latency_key(body: str) -> str:
+    match = re.search(r'id="video-source-latency-key" name="latency" value="(\d+)"', body)
+    assert match, "the row carries its key"
+    return match.group(1)
+
+
+def test_the_idle_latency_row_turns_on_once_video_is_decoding_without_a_reload(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _rtsp(server)
+    _latency_stats(monkeypatch, server, _NO_VIDEO)
+    _, section = _get(base, "/section/video_source")
+    shown = _latency_key(section)
+    poll = section[section.index('id="video-source-failure"') :]
+    assert 'hx-include="#video-source-latency-key"' in poll[: poll.index(">")]
+    # Nothing changed: the source-status poll leaves the row alone.
+    _, body = _get(base, f"/section/video_source/failure?latency={shown}")
+    assert "video-source-latency" not in body
+    _latency_stats(monkeypatch, server, _DECODING)
+    _, body = _get(base, f"/section/video_source/failure?latency={shown}")
+    row = _latency_row(body)
+    assert 'hx-swap-oob="true"' in row[: row.index(">")]
+    assert re.search(r'onclick="ofLatencyDialog\(\)"\s*>Measure latency', row)
+    assert "No video is arriving." not in row
+    _, again = _get(base, f"/section/video_source/failure?latency={_latency_key(body)}")
+    assert "video-source-latency" not in again
+
+
+def test_a_new_latency_result_reaches_the_row_through_the_status_poll(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _rtsp(server)
+    _latency_stats(monkeypatch, server, _DECODING)
+    _, section = _get(base, "/section/video_source")
+    last = {"median_ms": 64.0, "min_ms": 37.0, "max_ms": 79.0, "samples": 10, "finished_at": time.time()}
+    _latency_stats(monkeypatch, server, {**_DECODING, "latency": last})
+    _, body = _get(base, f"/section/video_source/failure?latency={_latency_key(section)}")
+    assert "Round trip 64 ms (37 to 79 ms)" in _latency_row(body)
+
+
+def test_the_setup_wizard_s_status_poll_gets_no_latency_row(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    _, body = _get(base, "/section/video_source/failure")
+    assert "video-source-latency" not in body
+
+
+def test_the_latency_key_is_never_saved_with_the_video_source_form(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    _, body = _get(base, "/section/video_source")
+    key = body[body.rindex("<", 0, body.index('id="video-source-latency-key"')) :]
+    # Owned by a form id that does not exist, so the form leaves it out.
+    assert 'form="video-source-latency-unsaved"' in key[: key.index(">")]
+    assert 'id="video-source-latency-unsaved"' not in body

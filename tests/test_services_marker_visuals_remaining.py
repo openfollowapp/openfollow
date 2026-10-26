@@ -1775,6 +1775,82 @@ class TestOperatorMessageViews:
         assert state.operator_messages == []
 
 
+class TestLatencyWarningCard:
+    """While a Measure dialog shows its warnings, the Operator Screen shows one operator-message card of its own."""
+
+    def _app(self, clock: list[float]) -> tuple[SimpleNamespace, Any]:
+        from openfollow.runtime.latency_warning import LatencyWarning
+
+        app = _build_app()
+        warning = LatencyWarning(clock=lambda: clock[0])
+        app._web_commands = SimpleNamespace(latency_warning=warning)
+        return app, warning
+
+    def test_the_card_shows_with_operator_messages_switched_off(self) -> None:
+        from openfollow.operator_messages import OperatorMessageStore
+        from openfollow.runtime import latency_warning as lw
+
+        clock = [100.0]
+        app, warning = self._app(clock)
+        store = OperatorMessageStore(clock=lambda: 0.0)
+        store.add("osc", marker_id=0, duration_s=0.0)
+        _attach_store(app, store)
+        app._config.operator_messages.enabled = False
+        app._config.operator_messages.position = "top"
+        app._config.operator_messages.scale = 1.5
+        warning.renew(warning.token())
+
+        state = _build(app)
+        (card,) = state.operator_messages
+        assert (card.message, card.info) == (lw.MESSAGE, lw.INFO)
+        assert card.marker_id == 0 and card.is_forever
+        assert (card.headline, card.headline_level) == (lw.HEADLINE, "caution")
+        assert (state.operator_message_position, state.operator_message_scale) == ("top", 1.5)
+
+    def test_the_card_is_one_more_beside_the_osc_messages(self) -> None:
+        from openfollow.operator_messages import OperatorMessageStore
+        from openfollow.runtime import latency_warning as lw
+
+        clock = [100.0]
+        app, warning = self._app(clock)
+        store = OperatorMessageStore(clock=lambda: 0.0)
+        for i in range(7):
+            store.add(f"m{i}", marker_id=0, duration_s=0.0)
+        _attach_store(app, store)
+        warning.renew(warning.token())
+
+        state = _build(app)
+        assert [v.message for v in state.operator_messages] == [lw.MESSAGE, "m6", "m5", "m4", "m3", "m2"]
+        assert state.operator_message_overflow == 2
+
+    def test_the_card_goes_once_no_dialog_renewed_it_for_a_few_seconds(self) -> None:
+        from openfollow.runtime import latency_warning as lw
+
+        clock = [100.0]
+        app, warning = self._app(clock)
+        token = warning.token()
+        warning.renew(token)
+        clock[0] += lw.STALE_S
+        warning.renew(token)
+        clock[0] += lw.STALE_S
+        assert len(_build(app).operator_messages) == 1
+        clock[0] += 0.5
+        assert _build(app).operator_messages == []
+
+    def test_the_operator_screen_draws_the_card_without_a_countdown(self) -> None:
+        from openfollow.runtime import latency_warning as lw
+        from openfollow.runtime.overlay_draw_messages import draw_operator_messages
+
+        app, warning = self._app([100.0])
+        warning.renew(warning.token())
+        state = _build(app)
+        cr = FakeCairo()
+        draw_operator_messages(FakeRenderer(state=state), cr, state, 1280, 720)
+        assert cr.find_texts(lw.MESSAGE)
+        assert cr.find_texts("The Operator Screen will flash black and white.")
+        assert cr.rects == []
+
+
 # --------------------------------------------------------------------------- #
 # Detection assist-mode AI-output ghost
 # --------------------------------------------------------------------------- #

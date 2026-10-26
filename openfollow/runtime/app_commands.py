@@ -83,6 +83,14 @@ def check_controller_slot_actions(app: OpenFollowApp) -> None:
             save_slot_markers(app)
 
 
+def check_latency_requests(app: OpenFollowApp) -> None:
+    """Start a camera latency run the web UI asked for, and report the run back to it."""
+    services = app._runtime_services
+    if app._web_commands.consume_latency_requested():
+        services.start_latency_run()
+    app._web_commands.set_latency_status(services.latency_status())
+
+
 def check_camera_setup_requests(app: OpenFollowApp) -> None:
     """Stop, then rebuild, the Pi Camera pipeline around a live change from the web camera setup."""
     web_commands = app._web_commands

@@ -134,6 +134,7 @@ from openfollow.palette import AUTO_PICK_ORDER
 from openfollow.privilege import settings_backup
 from openfollow.privilege.camera_config import AUTOMATIC
 from openfollow.runtime.diagnostics_export import WEB, ExportStatus, status_lines
+from openfollow.runtime.latency_probe import MEDIA_GALLERY, LatencyFailure
 from openfollow.scene.edge_snap import LumaBand, NearEdge
 from openfollow.station_fqdn import canonical_host, fqdn_problem
 from openfollow.templates import (
@@ -166,6 +167,7 @@ from openfollow.web.config_cache import ParsedConfigCache
 from openfollow.web.discovery import clean_peer_name
 from openfollow.web.keyboard_layout_view import build_keyboard_layout_view, station_catalog, variant_options
 from openfollow.web.labels import video_error_token
+from openfollow.web.latency_view import latency_dialog_view, latency_row_view, latency_unavailable
 from openfollow.web.live_alerts import statistics_alerts
 from openfollow.web.login_throttle import LoginThrottle
 from openfollow.web.whats_new import load_backup_note, load_whats_new
@@ -4016,6 +4018,10 @@ def _update_refused(server: Any) -> str:
     return "An update is already running. Please wait for it to finish."
 
 
+# A latency warning session's token, as ``secrets.token_urlsafe(16)`` makes it.
+_LATENCY_WARNING_TOKEN = re.compile(r"[A-Za-z0-9_-]{16,64}")
+
+
 def _save_failed(status: int, error: str, action: str = "", **detail: str) -> HTTPResponse:
     """A refused or failed save, in the ``{error, action}`` shape the save-feedback line reads."""
     body = json.dumps({"error": error, "action": action, **detail})
@@ -6017,9 +6023,22 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         data: dict[str, Any] = {
             "config": cfg,
             "saved": saved,
+            "latency": _latency_view(cfg),
         }
         data.update(_build_input_template_data(cfg, video))
         return template("partials/video_source", **data)
+
+    def _latency_view(cfg: AppConfig) -> dict[str, Any]:
+        """The Camera Latency row; hidden while the saved source is the Media Gallery."""
+        return latency_row_view(
+            server.get_runtime_stats(), gallery=cfg.video_source_type == MEDIA_GALLERY, now=time.time()
+        )
+
+    def _latency_dialog(*, before_start: bool) -> Any:
+        dialog = latency_dialog_view(server.get_latency_status(), before_start=before_start)
+        # The warnings renew the Operator Screen's card under this token while they show.
+        warning = server.latency_warning.token() if dialog["state"] == "intro" else ""
+        return template("partials/video_source_latency_dialog", dialog=dialog, warning=warning)
 
     def _load_config_for_edit() -> AppConfig:
         """Fresh disk load with the live per-marker move speeds overlaid.
@@ -6253,6 +6272,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             on_device=_is_on_device_request(),
             cancel_button=_cancel_button_label(config),
             psn_source_advisory=server.get_psn_source_advisory(),
+            latency=_latency_view(config),
             **_build_input_template_data(config, server.get_runtime_stats().get("video")),
         )
 
@@ -6306,7 +6326,12 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         Only the box: re-swapping the Video Source form would discard whatever
         the operator is part-way through typing into the URL or password
         fields, which is precisely what they are there to do when it fails.
+        The Camera & Grid tab sends the Measure latency row's key too; between
+        runs a changed row rides along out of band.
         """
+        return _video_source_failure_box() + _latency_row_if_changed(request.query.get("latency"))
+
+    def _video_source_failure_box() -> str:
         video = server.get_runtime_stats().get("video") or {}
         failure_text = str(video.get("failure_text") or "")
         error_message = str(video.get("error_message") or "")
@@ -6318,15 +6343,82 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             return ""
         action = str(video.get("failure_action") or "")
         token = video_error_token(failure_text, error_message, action)
-        return template(
-            "partials/video_error_box",
-            failure_text=failure_text,
-            error_message=error_message,
-            action=action,
-            token=token,
-            scope="source",
-            live="status",
+        return str(
+            template(
+                "partials/video_error_box",
+                failure_text=failure_text,
+                error_message=error_message,
+                action=action,
+                token=token,
+                scope="source",
+                live="status",
+            )
         )
+
+    def _latency_row_if_changed(seen: str | None) -> str:
+        """The Camera Latency row to swap in out of band, when its key differs from ``seen``."""
+        if seen is None:
+            return ""
+        view = _latency_view(_request_scoped_config())
+        if view["key"] == seen:
+            return ""
+        return str(template("partials/video_source_latency", latency=view, oob=True))
+
+    @app.get("/section/video_source/latency")
+    def get_video_source_latency() -> Any:
+        """The Camera Latency row, fetched again when the Measure dialog closes."""
+        return template("partials/video_source_latency", latency=_latency_view(_request_scoped_config()))
+
+    @app.get("/section/video_source/latency/dialog")
+    def get_video_source_latency_dialog() -> Any:
+        """The Measure dialog: its warnings, or a run going on; ``poll`` is a run's progress box asking again.
+
+        While the run lasts the progress box answers alone. Once it ended, the whole dialog in its
+        outcome replaces the dialog's body.
+        """
+        if request.query.get("poll") is None:
+            return _latency_dialog(before_start=True)
+        dialog = latency_dialog_view(server.get_latency_status(), before_start=False)
+        if dialog["state"] == "running":
+            return template("partials/video_source_latency_dialog", dialog=dialog, progress_only=True)
+        response.set_header("HX-Retarget", "#latency-dialog")
+        response.set_header("HX-Reswap", "outerHTML")
+        return _latency_dialog(before_start=False)
+
+    def _latency_warning_token(value: Any) -> str | None:
+        token = _as_str(value, "")
+        return token if _LATENCY_WARNING_TOKEN.fullmatch(token) else None
+
+    @app.post("/section/video_source/latency/warning")
+    def renew_latency_warning() -> Any:
+        """The Measure dialog shows its warnings: put the Operator Screen's card up, or keep it up."""
+        token = _latency_warning_token(request.forms.get("token"))
+        if token is None:
+            return HTTPResponse(status=400)
+        server.latency_warning.renew(token)
+        return HTTPResponse(status=204)
+
+    @app.post("/section/video_source/latency/warning/close")
+    def close_latency_warning() -> Any:
+        """The Measure dialog closed on its warnings: the card goes at once (a beacon, so no answer is read)."""
+        token = _latency_warning_token(request.query.get("token"))
+        if token is None:
+            return HTTPResponse(status=400)
+        server.latency_warning.close(token)
+        return HTTPResponse(status=204)
+
+    @app.post("/section/video_source/latency")
+    def start_video_source_latency() -> Any:
+        """Start a camera latency run and answer with the dialog measuring; 409 with the reason while one cannot run."""
+        refusal = latency_unavailable(server.get_runtime_stats())
+        if refusal is not None:
+            failure = LatencyFailure(refusal)
+            return _save_failed(409, failure.text, failure.action)
+        token = _latency_warning_token(request.forms.get("token"))
+        if token is not None:
+            server.latency_warning.close(token)
+        server.request_latency()
+        return _latency_dialog(before_start=False)
 
     @app.get("/section/general/network_state")
     def get_general_network_state() -> Any:
@@ -7252,6 +7344,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             extra["psn_source_advisory"] = server.get_psn_source_advisory()
         elif name == "video_source":
             extra.update(_build_input_template_data(config, server.get_runtime_stats().get("video")))
+            extra["latency"] = _latency_view(config)
         elif name == "mouse3d":
             extra["mouse3d_status"] = _mouse3d_status_view(server)
         elif name in ("controller", "gamepad"):

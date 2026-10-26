@@ -46,6 +46,8 @@ from openfollow.psn import MARKER_STALE_AFTER_S, PsnReceiver, PsnServer
 from openfollow.psn.server import _UNCHANGED, _Unchanged
 from openfollow.rttrpm import RttrpmServer
 from openfollow.runtime.frame_timing import NOMINAL_FRAME_DT
+from openfollow.runtime.latency_probe import MEDIA_GALLERY, FailureReason, LatencyProbe, monotonic_us
+from openfollow.runtime.latency_warning import LatencyWarning
 from openfollow.runtime.network_observer import DOWN_POLLS_BEFORE_SUSPEND, NetworkPlaneObserver, Plane
 from openfollow.runtime.services_detection_pin import (
     apply_detection_pin as apply_detection_pin_helper,
@@ -242,6 +244,12 @@ class WebCommandQueue:
         self._camera_release_requested = threading.Event()
         self._camera_released = threading.Event()
         self._video_rebuild_requested = threading.Event()
+        # Camera latency: a Start not taken yet, and the run as the main loop last reported it.
+        self._latency_lock = threading.Lock()
+        self._latency_requested = False
+        self._latency_status: dict[str, Any] = {"state": "idle"}
+        # The Operator Screen's warning card, held up by Measure dialogs showing their warnings.
+        self.latency_warning = LatencyWarning(clock=clock)
         self._update_lock = threading.Lock()
         self._update_request: dict[str, str] | None = None
         self._update_status: dict[str, str] = {
@@ -397,6 +405,28 @@ class WebCommandQueue:
             self._video_rebuild_requested.clear()
             return True
         return False
+
+    def request_latency(self) -> None:
+        """Web thread: start a camera latency run; it reads as running at once, so the dialog polls it."""
+        with self._latency_lock:
+            self._latency_requested = True
+            if self._latency_status.get("state") != "running":
+                self._latency_status = {"state": "running", "measured": 0}
+
+    def consume_latency_requested(self) -> bool:
+        with self._latency_lock:
+            requested, self._latency_requested = self._latency_requested, False
+        return requested
+
+    def set_latency_status(self, status: dict[str, Any]) -> None:
+        """Main loop: the run as it stands; a Start not taken yet keeps what it set."""
+        with self._latency_lock:
+            if not self._latency_requested:
+                self._latency_status = dict(status)
+
+    def get_latency_status(self) -> dict[str, Any]:
+        with self._latency_lock:
+            return dict(self._latency_status)
 
     def consume_button_detection_requested(self) -> bool:
         if self._button_detection_requested.is_set():
@@ -737,6 +767,9 @@ class AppRuntimeServices:
         self._web_bind_pin_at_start: tuple[str, str] = ("", "")
         self._overlay_renderer: CairoOverlayRenderer | None = None  # set in init_video
         self._hud_render: HudRenderThread | None = None  # set in init_video when there is a screen
+        self._latency_probe = LatencyProbe()
+        # The display's monotonic clock in µs; the probe's frames, flashes and steps all read it.
+        self._monotonic_us: Callable[[], int] = monotonic_us
         self._system_stats: SystemStatsCollector | None = None  # set in init_video
         self._person_detector: PersonDetector | None = None  # set in init_video if enabled
         # A detector is built off the frame loop and wired back on it; tests run both in place.
@@ -1162,8 +1195,12 @@ class AppRuntimeServices:
         # The display tick, not video buffer flow, paces the HUD, so a 0 fps source cannot freeze it.
         # The tick starts and shows pictures drawn on the HUD render thread; the draw callback only pastes.
         if hasattr(canvas, "attach_hud"):
-            self._hud_render = HudRenderThread(overlay, layered=gl_display is not None)
+            self._hud_render = HudRenderThread(overlay, layered=gl_display is not None, refresh_us=self._monotonic_us)
+            self._hud_render.on_flash_shown = self._latency_probe.presented
             if gl_display is not None:
+                from openfollow.video.gl_display import ScreenFlash
+
+                gl_display.flash = ScreenFlash(self._latency_probe.screen_level, self._latency_probe.presented)
                 gl_display.set_hud(self._hud_render)
                 canvas.attach_gl_display(gl_display, tick=self._hud_render.tick)
             else:
@@ -3703,6 +3740,7 @@ class AppRuntimeServices:
         broadcasts, so it carries no default - a wrong step silently rescales
         every velocity on the wire.
         """
+        self._step_latency_probe()
         state = build_marker_visual_state(
             self._app,
             system_stats=self._system_stats,
@@ -3711,6 +3749,7 @@ class AppRuntimeServices:
             dt=dt,
             network_alerts=self.network_alerts(),
             control_conflicts=self._control_conflicts,
+            latency_flash=self._latency_probe.screen_level(),
         )
 
         # Replaced on the main thread; a state the render thread received at a refresh is never changed.
@@ -3719,6 +3758,79 @@ class AppRuntimeServices:
         # unreachable at runtime.
         if self._overlay_renderer is not None:  # pragma: no branch
             self._overlay_renderer.state = state
+
+    # -- Camera latency ------------------------------------------------------
+
+    def _latency_feed(self) -> tuple[str, int] | None:
+        """What a run measures: the source and the pipeline it plays through, None while no video is decoded."""
+        receiver = self._app._video_receiver
+        if receiver is None or not receiver.status_marker.snapshot().is_connected:
+            return None
+        return (self._app._config.video_source_type, receiver.pipeline_builds)
+
+    def start_latency_run(self) -> None:
+        """Start a camera latency run (GTK main thread); a run already going carries on."""
+        probe = self._latency_probe
+        if probe.active:
+            return
+        source_type = self._app._config.video_source_type
+        if self._hud_render is None:
+            probe.refuse(FailureReason.NO_DISPLAY)
+        elif source_type == MEDIA_GALLERY:
+            probe.refuse(FailureReason.MEDIA_GALLERY)
+        else:
+            probe.start(self._monotonic_us(), self._latency_feed(), source_type)
+        receiver = self._app._video_receiver
+        if probe.active and receiver is not None:
+            receiver.set_frame_listener(self._on_latency_frame)
+            logger.info("Camera latency run started.")
+
+    def latency_status(self) -> dict[str, Any]:
+        """The latency run for the web UI, see ``LatencyProbe.status``."""
+        return self._latency_probe.status(self._monotonic_us())
+
+    def latency_last_success(self) -> dict[str, Any] | None:
+        """The last successful run, kept until a later one succeeds; failures never replace it."""
+        result = self._latency_probe.last_success
+        return result.to_dict(self._monotonic_us()) if result is not None else None
+
+    def _on_latency_frame(self, buffer: Any, caps: Any) -> None:
+        # Streaming thread: stamp the arrival before the read. A raise would drop the frame from the display.
+        from openfollow.video.frame_luma import frame_mean_luma
+
+        arrival = self._monotonic_us()
+        try:
+            luma = frame_mean_luma(buffer, caps)
+        except Exception:
+            logger.exception("Camera latency: a frame could not be read; the run ends.")
+            luma = None
+        self._latency_probe.feed(arrival, luma)
+
+    def _step_latency_probe(self) -> None:
+        """Frame loop: move a run on; nothing while idle."""
+        probe = self._latency_probe
+        if not probe.active:
+            return
+        probe.step(self._monotonic_us(), self._latency_feed())
+        if not probe.active:
+            self._end_latency_run()
+
+    def _end_latency_run(self) -> None:
+        """The receiver stops handing frames over, and the outcome is logged."""
+        receiver = self._app._video_receiver
+        if receiver is not None:
+            receiver.set_frame_listener(None)
+        status = self._latency_probe.status()
+        if (result := status["result"]) is not None:
+            logger.info(
+                "Camera latency: median %.0f ms (%.0f to %.0f ms) over %d changes.",
+                result["median_ms"],
+                result["min_ms"],
+                result["max_ms"],
+                result["samples"],
+            )
+        else:
+            logger.info("Camera latency run ended: %s", (status["failure"] or {}).get("reason"))
 
     def apply_detection_pin(self, dt: float = NOMINAL_FRAME_DT) -> None:
         """Drive controlled marker(s) from detection with EMA smoothing.
@@ -4100,6 +4212,7 @@ class AppRuntimeServices:
             # Filled once the Operator Screen has drawn for a window (``HudMetrics``); None headless.
             "hud": None,
             "marker_conflicts": [],
+            "latency": None,
         }
 
     def _find_control_conflicts(self) -> tuple[ControlConflict, ...]:
@@ -4330,6 +4443,8 @@ class AppRuntimeServices:
             "tracking": detection_snapshot,
             "hud": self._hud_render.stats() if self._hud_render is not None else None,
             "marker_conflicts": [conflict.to_dict() for conflict in self._control_conflicts],
+            # The last successful camera latency run; a failed run never replaces it.
+            "latency": self.latency_last_success(),
         }
 
         with self._runtime_stats_lock:

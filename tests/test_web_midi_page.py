@@ -271,6 +271,57 @@ class TestMidiSectionRender:
             assert "No MIDI patches yet" not in body
 
 
+_TWO_UNITS = [
+    {"identifier": "serial:S1|XTM", "port_name": "XTM", "product": "XTM", "serial": "S1"},
+    {"identifier": "serial:S2|XTM", "port_name": "XTM", "product": "XTM", "serial": "S2"},
+]
+
+
+def _selected_device(body: str) -> list[str]:
+    select = re.search(r'<select form="patch-1-form" name="device">(.*?)</select>', body, re.S)
+    assert select is not None
+    return re.findall(r'<option value="([^"]*)" selected>', select.group(1))
+
+
+class TestPatchDeviceSelection:
+    """The Device dropdown selects the unit the patch opens on."""
+
+    @pytest.mark.parametrize("route", ["/section/midi", "/"])
+    def test_a_patch_with_a_serial_selects_its_own_unit(self, tmp_path, monkeypatch, route: str) -> None:
+        with _live_server_with_midi_providers(tmp_path, monkeypatch, discovered=_TWO_UNITS) as (_, base, cfg_path):
+            cfg = load_config(cfg_path)
+            cfg.midi = MidiConfig(patches=[MidiPatch(id=1, serial="S2", port_name="XTM")])
+            save_config(cfg, cfg_path)
+            status, body = _get(base, route)
+            assert status == 200
+            assert _selected_device(body) == ["serial:S2|XTM"]
+            assert "(not connected)" not in body
+
+    def test_a_patch_saved_without_a_serial_shows_its_device_connected(self, tmp_path, monkeypatch) -> None:
+        with _live_server_with_midi_providers(tmp_path, monkeypatch, discovered=_TWO_UNITS[:1]) as (_, base, cfg_path):
+            cfg = load_config(cfg_path)
+            cfg.midi = MidiConfig(patches=[MidiPatch(id=1, alias="Desk", port_name="XTM")])
+            save_config(cfg, cfg_path)
+            _, body = _get(base, "/section/midi")
+            assert _selected_device(body) == ["serial:S1|XTM"]
+            assert "(not connected)" not in body
+            # Saving the row as shown binds the patch to that unit's serial.
+            status, _ = _post_form(base, "/section/midi/patches/1", {"alias": "Desk", "device": "serial:S1|XTM"})
+            assert status == 200
+            patch = load_config(cfg_path).midi.patches[0]
+            assert (patch.serial, patch.port_name) == ("S1", "XTM")
+
+    def test_a_patch_whose_unit_is_absent_shows_not_connected(self, tmp_path, monkeypatch) -> None:
+        devices = [{"identifier": "port:Keys|Keys", "port_name": "Keys", "product": "Keys", "serial": None}]
+        with _live_server_with_midi_providers(tmp_path, monkeypatch, discovered=devices) as (_, base, cfg_path):
+            cfg = load_config(cfg_path)
+            cfg.midi = MidiConfig(patches=[MidiPatch(id=1, serial="S2", port_name="XTM")])
+            save_config(cfg, cfg_path)
+            _, body = _get(base, "/section/midi")
+            assert _selected_device(body) == ["serial:S2|XTM"]
+            assert "XTM (not connected)" in body
+
+
 # ---------------------------------------------------------------------------
 # MIDI Patches – CRUD operations
 # ---------------------------------------------------------------------------

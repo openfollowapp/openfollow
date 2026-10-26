@@ -165,7 +165,7 @@ def _no_host_cgroup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _no_real_midi_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+def _no_real_midi_backend(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
     """Force the MIDI backend absent by default in every test.
 
     ``mido`` / ``python-rtmidi`` are base deps, so
@@ -188,6 +188,8 @@ def _no_real_midi_backend(monkeypatch: pytest.MonkeyPatch) -> None:
         "ImportError: no MIDI backend (test default)",
         raising=False,
     )
+    # Nor read the serial number of a sound card on the host.
+    monkeypatch.setattr("openfollow.input.midi._SYSFS", tmp_path_factory.getbasetemp() / "no-sysfs", raising=False)
 
 
 @pytest.fixture

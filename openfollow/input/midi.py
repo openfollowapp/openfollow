@@ -12,10 +12,11 @@ Key design:
   never by port name or alias. ``apply_config`` maps :class:`~openfollow.configuration.MidiPatch`
   entries to open mido ports.
 
-- **Identification (best-effort):** mido exposes only port-name strings; USB serial
-  enumeration needs platform-specific code (pyudev / IOKit / setupapi). Currently
-  returns ``serial=None``; the field exists for future serial-based matching without
-  schema migration.
+- **Identification:** mido exposes only port-name strings. On Linux a port of a USB
+  sound card also carries the serial number its USB device reports (read from sysfs
+  through the ALSA sequencer client in the port name), so two devices of one model
+  stay apart. Elsewhere, and for a device without one, ``serial`` is ``None`` and the
+  normalized port name is the identity.
 
 - **Status signaling:** When a patch has no matching device, ``apply_config`` writes
   to ``status_flags["midi_patch_missing"]``. Set to ``None`` when all patches resolve.
@@ -37,14 +38,17 @@ from __future__ import annotations
 
 import logging
 import re
+import sys
 import threading
 import time
 from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from openfollow.configuration import MidiPatch
+from openfollow.input.controller_identity import usb_serial
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +83,15 @@ _MIDI_EVENT_TYPES: tuple[str, ...] = (
 # ``"nanoKONTROL2:nanoKONTROL2 _ CTRL 16:0"``. The numbers are assigned at
 # device-registration time and shift when USB enumeration order or boot
 # timing changes, so they must not be part of a device's saved identity.
-_ALSA_ADDR_SUFFIX = re.compile(r"\s+\d+:\d+$")
+_ALSA_ADDR_SUFFIX = re.compile(r"\s+(\d+):\d+$")
+
+# The kernel gives sound card N the sequencer clients 16 + 4N to 16 + 4N + 3; from
+# 128 on, clients are numbered on demand (applications, cards past the 28th).
+_SEQ_CARD_CLIENTS_FIRST = 16
+_SEQ_CLIENTS_PER_CARD = 4
+_SEQ_DYNAMIC_CLIENTS_FIRST = 128
+
+_SYSFS = Path("/sys")
 
 
 def _normalize_port_name(name: str) -> str:
@@ -97,6 +109,37 @@ def _normalize_port_name(name: str) -> str:
     return _ALSA_ADDR_SUFFIX.sub("", name)
 
 
+def _alsa_card(raw_name: str) -> int | None:
+    """Sound card number behind a mido ALSA port name, or ``None`` for a port
+    without a sequencer address or of a client no card owns at a fixed number."""
+    match = _ALSA_ADDR_SUFFIX.search(raw_name)
+    if match is None:
+        return None
+    client = int(match.group(1))
+    if not _SEQ_CARD_CLIENTS_FIRST <= client < _SEQ_DYNAMIC_CLIENTS_FIRST:
+        return None
+    return (client - _SEQ_CARD_CLIENTS_FIRST) // _SEQ_CLIENTS_PER_CARD
+
+
+def _usb_serials(raw_names: Sequence[str]) -> dict[str, str]:
+    """``{raw port name: serial}`` for the ports whose USB device reports a serial
+    number. Linux only; a card's sysfs is read once per call. Never raises."""
+    if not sys.platform.startswith("linux"):
+        return {}
+    by_card: dict[int, str | None] = {}
+    serials: dict[str, str] = {}
+    for name in raw_names:
+        card = _alsa_card(name)
+        if card is None:
+            continue
+        if card not in by_card:
+            by_card[card] = usb_serial(f"card{card}", sysfs_root=_SYSFS, classes=("sound",))
+        serial = by_card[card]
+        if serial:
+            serials[name] = serial
+    return serials
+
+
 @dataclass(frozen=True)
 class DiscoveredDevice:
     """A MIDI input device the OS currently exposes.
@@ -105,8 +148,9 @@ class DiscoveredDevice:
     suffix stripped by :func:`_normalize_port_name`), so a device keeps the same
     identity across restarts / replug. ``raw_port_name`` is the exact OS name mido
     needs to open the port (carries volatile suffix, never use as identity key).
-    ``identifier`` is the stable match key – serial wins when present, else the
-    normalized (port_name, product) composite.
+    ``identifier`` is the stable match key: serial plus port name when a serial is
+    known (one device may have several ports), else the normalized
+    (port_name, product) composite.
     """
 
     serial: str | None
@@ -117,7 +161,7 @@ class DiscoveredDevice:
     @property
     def identifier(self) -> str:
         if self.serial:
-            return f"serial:{self.serial}"
+            return f"serial:{self.serial}|{self.port_name}"
         return f"port:{self.port_name}|{self.product}"
 
     @property
@@ -274,9 +318,10 @@ class MidiSubsystem:
         # Normalize the identity (port_name / product) so a device matches its
         # saved patch across restarts even when the ALSA client:port number
         # shifts; keep the raw name for the actual ``open_input`` call.
+        serials = _usb_serials(names)
         return [
             DiscoveredDevice(
-                serial=None,
+                serial=serials.get(name),
                 port_name=_normalize_port_name(name),
                 product=_normalize_port_name(name),
                 raw_port_name=name,
@@ -423,15 +468,19 @@ class MidiSubsystem:
         """Resolve a configured patch to a connected device.
 
         Serial wins when both sides have a non-empty value (the only way to
-        disambiguate two identical models); otherwise fall through to the
+        disambiguate two identical models), and among the ports of that one
+        device the patch's port name; otherwise fall through to the
         (port_name, product) composite. Returns ``None`` when nothing matches
         – the subsystem records the patch in ``midi_patch_missing`` rather
         than opening a port for it.
         """
         if patch.serial:
-            for d in discovered:
-                if d.serial and d.serial == patch.serial:
+            unit = [d for d in discovered if d.serial == patch.serial]
+            for d in unit:
+                if d.port_name == patch.port_name:
                     return d
+            if unit:
+                return unit[0]
         for d in discovered:
             if d.port_name == patch.port_name and d.product == patch.product:
                 return d
@@ -651,3 +700,23 @@ class MidiSubsystem:
                 timestamp=timestamp,
             )
         return None
+
+
+def bound_identifier(patch: MidiPatch, devices: Sequence[dict[str, Any]]) -> str:
+    """Identifier of the connected device ``patch`` opens on, as :meth:`MidiSubsystem._match`
+    picks it from the web layer's device dicts; the patch's own when none, ``""`` when unbound."""
+    if not patch.identifier:
+        return ""
+    discovered = [
+        DiscoveredDevice(
+            serial=d.get("serial") or None,
+            port_name=d.get("port_name") or "",
+            product=d.get("product") or "",
+        )
+        for d in devices
+    ]
+    match = MidiSubsystem._match(patch, discovered)
+    for device, found in zip(devices, discovered, strict=True):
+        if found is match:
+            return str(device.get("identifier") or "")
+    return patch.identifier

@@ -47,7 +47,11 @@
  % # disconnected binding can be shown (and preserved)
  % # rather than silently dropped on the next save.
  % connected_ids = set(d['identifier'] for d in discovered_devices)
+ % from openfollow.input.midi import bound_identifier
  % for patch in config.midi.patches:
+ % # The device the patch opens on, which a patch saved without a
+ % # serial (or for a swapped unit) reaches through its port name.
+ % bound = bound_identifier(patch, discovered_devices)
  <tr>
  <td><span class="patch-id">{{patch.id}}</span></td>
  <td>
@@ -55,15 +59,15 @@
  </td>
  <td>
  <select form="patch-{{patch.id}}-form" name="device">
- <option value="" {{'selected' if not patch.identifier else ''}}>– none –</option>
+ <option value="" {{'selected' if not bound else ''}}>– none –</option>
  % for device in discovered_devices:
- <option value="{{device['identifier']}}" {{'selected' if device['identifier'] == patch.identifier else ''}}>{{device['port_name']}}{{' – ' + device['serial'] if device['serial'] else ''}}</option>
+ <option value="{{device['identifier']}}" {{'selected' if device['identifier'] == bound else ''}}>{{device['port_name']}}{{' – ' + device['serial'] if device['serial'] else ''}}</option>
  % end
  % # Disconnected binding: the device this patch
  % # points at isn't currently connected. Offer a
  % # selected option carrying the patch's own
  % # identifier so a save round-trips the binding.
- % if patch.identifier and patch.identifier not in connected_ids:
+ % if bound and bound not in connected_ids:
  <option value="{{patch.identifier}}" selected>{{patch.port_name or patch.identifier}} (not connected)</option>
  % end
  </select>

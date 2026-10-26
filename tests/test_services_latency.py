@@ -185,3 +185,53 @@ def test_the_last_success_is_published_with_its_age(services: AppRuntimeServices
     services._app._video_receiver = None
     services.publish_runtime_stats(force=True)
     assert services.get_runtime_stats_snapshot()["latency"]["median_ms"] == 84.0
+
+
+def test_a_complete_run_is_kept_as_the_last_success_and_logged(
+    services: AppRuntimeServices, clock: list[int], caplog: pytest.LogCaptureFixture
+) -> None:
+    receiver = services._app._video_receiver
+    probe = services._latency_probe
+    services.start_latency_run()
+    # The screen shows each level at the next refresh; the camera sees it 3 frames later.
+    seen: list[tuple[int, float]] = []
+    with caplog.at_level("INFO", logger=services_module.__name__):
+        while probe.active:
+            level = probe.screen_level()
+            if level is not None:
+                probe.presented(level, clock[0])
+                if not seen or seen[-1][1] != level:
+                    seen.append((clock[0], level))
+            visible = [lv for at, lv in seen if clock[0] - at >= 48_000]
+            receiver.listener(0.1 + 0.7 * (visible[-1] if visible else 0.0), None)
+            _frame(services, clock)
+    assert services.latency_status()["state"] == "done"
+    assert services.latency_last_success()["samples"] == lp.SAMPLES
+    assert receiver.listener is None
+    assert "Camera latency: median" in caplog.text
+
+
+def test_a_frame_that_cannot_be_read_ends_the_run_and_still_reaches_the_screen(
+    services: AppRuntimeServices, clock: list[int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(_buffer: Any, _caps: Any) -> float:
+        raise TypeError("not a video buffer")
+
+    monkeypatch.setattr(frame_luma_module, "frame_mean_luma", broken)
+    receiver = services._app._video_receiver
+    services.start_latency_run()
+    assert receiver.listener("buffer", "caps") is None
+    _frame(services, clock)
+    assert services.latency_status()["failure"]["reason"] == "unsupported_format"
+
+
+def test_stop_with_no_run_going_leaves_the_receiver_alone(services: AppRuntimeServices) -> None:
+    services.stop_latency_run()
+    assert services._app._video_receiver.listeners == []
+
+
+def test_a_run_ends_cleanly_when_the_receiver_is_gone(services: AppRuntimeServices) -> None:
+    services.start_latency_run()
+    services._app._video_receiver = None
+    services.stop_latency_run()
+    assert services.latency_status()["failure"]["reason"] == "stopped"

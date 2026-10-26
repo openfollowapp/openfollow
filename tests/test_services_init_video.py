@@ -34,6 +34,7 @@ import openfollow.services as services_module
 from openfollow.configuration import AppConfig, DetectionConfig
 from openfollow.power_health import PowerMonitor
 from openfollow.runtime.overlay_layers import LayerContext
+from openfollow.runtime.overlay_state import OverlayState
 from openfollow.services import AppRuntimeServices
 from tests._fake_cairo import FakeCairo
 from tests._fake_gtk import FakeCanvas
@@ -61,7 +62,7 @@ class _FakeOverlayRenderer:
 def _assert_hud_drawn_on_its_thread(services: AppRuntimeServices) -> None:
     """The display refresh hands the renderer's current state to the HUD render thread."""
     renderer = services._overlay_renderer
-    renderer.state = sentinel = object()
+    renderer.state = sentinel = OverlayState()
     canvas = services._app._canvas
     canvas.hud_draw_fn(FakeCairo(), 640, 360)
     canvas.hud_tick()  # the display refresh starts the picture

@@ -132,3 +132,16 @@ def test_an_unsupported_buffer_is_none() -> None:
     caps = gst.Caps.from_string("video/x-raw,format=NV12,width=16,height=8")
     assert frame_mean_luma(gst.Buffer.new_wrapped(bytes(16 * 12)), caps) is None
     assert frame_mean_luma(gst.Buffer.new_wrapped(bytes(16)), None) is None
+
+
+def test_a_buffer_that_cannot_be_mapped_is_none() -> None:
+    from openfollow.video.frame_luma import frame_mean_luma
+
+    gst = _gst()
+    caps = gst.Caps.from_string("video/x-raw,format=I420,width=16,height=8")
+
+    class _Unmappable:
+        def map(self, _flags: Any) -> tuple[bool, None]:
+            return False, None
+
+    assert frame_mean_luma(_Unmappable(), caps) is None

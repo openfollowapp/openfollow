@@ -3801,11 +3801,16 @@ class AppRuntimeServices:
         return result.to_dict(self._monotonic_us()) if result is not None else None
 
     def _on_latency_frame(self, buffer: Any, caps: Any) -> None:
-        # Streaming thread: stamp the arrival before the read.
+        # Streaming thread: stamp the arrival before the read. A raise would drop the frame from the display.
         from openfollow.video.frame_luma import frame_mean_luma
 
         arrival = self._monotonic_us()
-        self._latency_probe.feed(arrival, frame_mean_luma(buffer, caps))
+        try:
+            luma = frame_mean_luma(buffer, caps)
+        except Exception:
+            logger.exception("Camera latency: a frame could not be read; the run ends.")
+            luma = None
+        self._latency_probe.feed(arrival, luma)
 
     def _step_latency_probe(self) -> None:
         """Frame loop: move a run on; nothing while idle."""
@@ -3821,18 +3826,17 @@ class AppRuntimeServices:
         receiver = self._app._video_receiver
         if receiver is not None:
             receiver.set_frame_listener(None)
-        probe = self._latency_probe
-        if probe.result is not None:
-            result = probe.result
+        status = self._latency_probe.status()
+        if (result := status["result"]) is not None:
             logger.info(
                 "Camera latency: median %.0f ms (%.0f to %.0f ms) over %d changes.",
-                result.median_ms,
-                result.min_ms,
-                result.max_ms,
-                result.samples,
+                result["median_ms"],
+                result["min_ms"],
+                result["max_ms"],
+                result["samples"],
             )
-        elif probe.failure is not None:
-            logger.info("Camera latency run ended: %s", probe.failure.reason.value)
+        else:
+            logger.info("Camera latency run ended: %s", (status["failure"] or {}).get("reason"))
 
     def apply_detection_pin(self, dt: float = NOMINAL_FRAME_DT) -> None:
         """Drive controlled marker(s) from detection with EMA smoothing.

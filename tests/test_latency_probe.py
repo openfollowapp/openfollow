@@ -121,12 +121,12 @@ def test_drift_between_flashes_leaves_the_measurement_as_it_was() -> None:
     assert result.min_ms >= 120
 
 
-def _drive_to_wait_rise(probe: LatencyProbe, t: int = 0) -> int:
+def _drive_to_wait_rise(probe: LatencyProbe, t: int = 0, dark: float = LO) -> int:
     """Start, feed dark frames through the settle, and step until the probe asks for white."""
     probe.start(t, FEED, "rtsp")
     while probe.phase is not Phase.WAIT_RISE:
         t += 10 * MS
-        probe.feed(t, LO)
+        probe.feed(t, dark)
         probe.step(t, FEED)
     return t
 
@@ -163,6 +163,42 @@ def test_a_fall_spread_over_two_frames_still_detects() -> None:
         probe.feed(t, luma)
     probe.step(t, FEED)
     assert probe.phase is Phase.GAP
+
+
+def test_after_a_faint_first_flash_noise_under_the_4_percent_floor_is_no_edge() -> None:
+    # A first flash only 8 % bright puts 35 % of its contrast at 2.8 %; the floor keeps the threshold at 4 %.
+    lo, hi = 0.30, 0.38
+    probe = _probe()
+    t = _drive_to_wait_rise(probe, dark=lo)
+    probe.presented(lp.WHITE, t + MS)
+    for luma in (lo, lo, lo, hi):
+        t += 10 * MS
+        probe.feed(t, luma)
+    probe.step(t, FEED)
+    while probe.phase is not Phase.WAIT_FALL:
+        t += 10 * MS
+        probe.feed(t, hi)
+        probe.step(t, FEED)
+    probe.presented(lp.BLACK, t + MS)
+    for luma in (hi, hi - 0.03, hi):
+        t += 10 * MS
+        probe.feed(t, luma)
+    probe.step(t, FEED)
+    assert probe.phase is Phase.WAIT_FALL
+    t += 10 * MS
+    probe.feed(t, lo)
+    probe.step(t, FEED)
+    assert probe.phase is Phase.GAP
+
+
+def test_a_refused_run_shows_no_earlier_result_or_progress() -> None:
+    probe = _probe()
+    _Bench(probe, delay_us=lambda _k: 90 * MS).run()
+    probe.refuse(FailureReason.NO_DISPLAY)
+    status = probe.status()
+    assert (status["state"], status["measured"], status["result"]) == ("failed", 0, None)
+    assert status["failure"]["reason"] == "no_display"
+    assert probe.last_success is not None
 
 
 def test_no_rise_within_3_s_fails_with_its_reason_at_the_timeout() -> None:
@@ -314,6 +350,26 @@ def test_a_result_reads_with_its_level_age_and_source() -> None:
 )
 def test_the_level_of_a_round_trip(median_ms: float, level: str) -> None:
     assert lp.result_level(median_ms) == level
+
+
+def test_a_refusal_during_a_run_and_a_stop_while_idle_change_nothing() -> None:
+    probe = _probe()
+    probe.stop()
+    assert probe.status()["state"] == "idle"
+    _drive_to_wait_rise(probe)
+    probe.refuse(FailureReason.NO_DISPLAY)
+    assert probe.active and probe.failure is None
+
+
+def test_the_clock_is_glibs_monotonic_time_in_microseconds() -> None:
+    gi = pytest.importorskip("gi")
+    gi.require_version("GLib", "2.0")
+    from gi.repository import GLib
+
+    before = GLib.get_monotonic_time()
+    now = lp.monotonic_us()
+    assert isinstance(now, int)
+    assert before <= now <= GLib.get_monotonic_time()
 
 
 @pytest.mark.parametrize("reason", list(FailureReason))

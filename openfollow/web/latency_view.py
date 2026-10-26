@@ -27,9 +27,9 @@ def latency_unavailable(stats: Mapping[str, Any]) -> FailureReason | None:
 
 
 def latency_view(stats: Mapping[str, Any], status: Mapping[str, Any], *, gallery: bool) -> dict[str, Any]:
-    """The row's state: ``running`` with its progress, else the reason it cannot start or the last outcome."""
+    """The row's state: ``running`` with its progress, else the reason a run cannot start, else the last outcome."""
     state = str(status.get("state") or "idle")
-    refusal = None if state == "running" else latency_unavailable(stats)
+    refusal = latency_unavailable(stats)
     result = status.get("result") if state == "done" else None
     return {
         "gallery": gallery,

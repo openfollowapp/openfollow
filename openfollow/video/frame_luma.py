@@ -63,14 +63,12 @@ def frame_mean_luma(buffer: Any, caps: Any) -> float | None:
 
     if caps is None:
         return None
-    info = GstVideo.VideoInfo.new_from_caps(caps)
-    if info is None:
-        return None
-    offsets, strides = frame_layout(GstVideo.buffer_get_video_meta(buffer), info, 1)
     ok, mapped = buffer.map(Gst.MapFlags.READ)
     if not ok:
         return None
     try:
+        info = GstVideo.VideoInfo.new_from_caps(caps)
+        offsets, strides = frame_layout(GstVideo.buffer_get_video_meta(buffer), info, 1)
         return mean_luma(mapped.data, info.finfo.name, info.width, info.height, offsets[0], strides[0])
     finally:
         buffer.unmap(mapped)

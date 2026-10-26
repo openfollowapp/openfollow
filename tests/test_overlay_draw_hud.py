@@ -1885,9 +1885,9 @@ class TestMarkerCardRendering:
 class TestSettingsUnboundControllersBox:
     """Connected controllers that drive no marker are an info box below the station card, not a card row."""
 
-    def _draw(self, unbound: list[int], *, error: str = "") -> FakeCairo:
+    def _draw(self, unbound: list[tuple[int, str]], *, error: str = "") -> FakeCairo:
         state = _base_state(ip_text="192.0.2.5", settings_items=["Network"], settings_items_enabled=[True])
-        state.unbound_controller_indices = unbound
+        state.unbound_controllers = unbound
         state.error_message = error
         cr = FakeCairo()
         draw_settings_menu(FakeRenderer(state=state), cr, state, 1600, 900)
@@ -1901,18 +1901,24 @@ class TestSettingsUnboundControllersBox:
     @pytest.mark.parametrize(
         ("unbound", "line"),
         [
-            ([1], "C2 is connected but drives no marker."),
-            ([1, 2], "C2, C3 are connected but drive no marker."),
+            ([(1, "gamepad")], "Gamepad C2 is connected but drives no marker."),
+            ([(2, "mouse3d")], "3D Mouse C3 is connected but drives no marker."),
+            ([(1, "gamepad"), (2, "mouse3d")], "Gamepad C2 and 3D Mouse C3 are connected but drive no marker."),
+            ([(1, "gamepad"), (3, "gamepad")], "Gamepads C2, C4 are connected but drive no marker."),
+            (
+                [(1, "gamepad"), (2, "mouse3d"), (3, "gamepad"), (4, "mouse3d")],
+                "Gamepads C2, C4 and 3D Mice C3, C5 are connected but drive no marker.",
+            ),
         ],
     )
-    def test_an_info_box_below_the_card_names_them(self, unbound: list[int], line: str) -> None:
+    def test_an_info_box_below_the_card_names_them(self, unbound: list[tuple[int, str]], line: str) -> None:
         cr = self._draw(unbound)
         texts = cr.show_text_strings()
 
         assert line in texts
         assert self._y(cr, "INFO") > self._y(cr, "Station:")
         # The list starts below the box, never under it.
-        assert self._y(cr, "Network") > self._y(cr, line.split(" ")[0])
+        assert self._y(cr, "Network") > self._y(cr, line)
         assert ("rgba", *COLOR_INFO_FILL) in cr.calls
         assert ("rgb", *COLOR_INFO_BORDER) in cr.calls
         # The "i" sign's cut-out in the info background.
@@ -1920,10 +1926,10 @@ class TestSettingsUnboundControllersBox:
         assert not any("Unbound" in t or "Ctrl" in t for t in texts)
 
     def test_an_error_box_comes_first_and_the_info_box_below_it(self) -> None:
-        cr = self._draw([2], error="Connection refused")
+        cr = self._draw([(2, "gamepad")], error="Connection refused")
 
         assert self._y(cr, "Station:") < self._y(cr, "ERROR") < self._y(cr, "Connection refused")
-        assert self._y(cr, "Connection refused") < self._y(cr, "INFO") < self._y(cr, "C3 is connected")
+        assert self._y(cr, "Connection refused") < self._y(cr, "INFO") < self._y(cr, "Gamepad C3 is connected")
         assert ("rgba", *COLOR_WARNING_FILL) in cr.calls
         assert ("rgba", *COLOR_INFO_FILL) in cr.calls
 

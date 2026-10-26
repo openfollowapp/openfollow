@@ -728,7 +728,7 @@ def draw_settings_menu(renderer: Any, cr: Any, state: OverlayState, w: int, h: i
             cursor_y,
             content_w,
         )
-    unbound_text = _unbound_controllers_text(state.unbound_controller_indices)
+    unbound_text = _unbound_controllers_text(state.unbound_controllers)
     if unbound_text:
         cursor_y = _draw_settings_notice_box(renderer, cr, "info", unbound_text, "", content_x, cursor_y, content_w)
 
@@ -856,17 +856,29 @@ def _draw_settings_info_card(
     return y + card_h + 10.0
 
 
-def _unbound_controllers_text(indices: list[int]) -> str:
+# Singular and plural name of each controller kind.
+_CONTROLLER_KIND_NAMES = {"gamepad": ("Gamepad", "Gamepads"), "mouse3d": ("3D Mouse", "3D Mice")}
+
+
+def _unbound_controllers_text(controllers: list[tuple[int, str]]) -> str:
     """The Settings info line for connected controllers that drive no marker; empty when there are none.
 
-    1-based, as the marker-card badge and OSC ``:cN``.
+    One group per kind, in order of first appearance, each slot 1-based as the
+    marker-card badge and OSC ``:cN``: "Gamepads C2, C4 and 3D Mouse C3".
     """
-    if not indices:
+    if not controllers:
         return ""
-    names = ", ".join(f"C{i + 1}" for i in indices)
-    if len(indices) == 1:
-        return f"{names} is connected but drives no marker."
-    return f"{names} are connected but drive no marker."
+    groups: dict[str, list[int]] = {}
+    for index, kind in controllers:
+        groups.setdefault(kind, []).append(index)
+    named = []
+    for kind, indices in groups.items():
+        singular, plural = _CONTROLLER_KIND_NAMES[kind]
+        slots = ", ".join(f"C{i + 1}" for i in indices)
+        named.append(f"{singular if len(indices) == 1 else plural} {slots}")
+    if len(controllers) == 1:
+        return f"{named[0]} is connected but drives no marker."
+    return f"{' and '.join(named)} are connected but drive no marker."
 
 
 def _draw_settings_notice_box(

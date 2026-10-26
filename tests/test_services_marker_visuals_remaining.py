@@ -1250,9 +1250,9 @@ class TestControllerBindingOnMarkerCard:
         assert state.markers[0].is_controlled is False
         assert state.markers[0].controller_idx is None
 
-    @pytest.mark.parametrize("backend", ["pygame", "mouse3d"])
-    def test_unbound_controller_indices_collected(self, backend: str) -> None:
-        """A 3D mouse with no marker is as unbound as a gamepad."""
+    @pytest.mark.parametrize(("backend", "kind"), [("pygame", "gamepad"), ("mouse3d", "mouse3d")])
+    def test_unbound_controllers_collected_with_their_kind(self, backend: str, kind: str) -> None:
+        """A 3D mouse with no marker is as unbound as a gamepad, and named as one."""
         app = _build_app(
             controlled=[1],
             viewer=[1],
@@ -1279,7 +1279,7 @@ class TestControllerBindingOnMarkerCard:
             ),
         )
         state = _build(app)
-        assert state.unbound_controller_indices == [2]
+        assert state.unbound_controllers == [(2, kind)]
 
     def test_disconnected_unbound_controller_is_dropped(self) -> None:
         """A pad that's both disconnected AND unbound carries no actionable
@@ -1300,7 +1300,7 @@ class TestControllerBindingOnMarkerCard:
             ),
         )
         state = _build(app)
-        assert state.unbound_controller_indices == []
+        assert state.unbound_controllers == []
 
 
 class TestControllerTextAndHelp:

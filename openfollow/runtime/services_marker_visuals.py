@@ -863,8 +863,8 @@ def build_marker_visual_state(
     # Connected controllers that map to no marker (more than
     # ``controlled_marker_ids``) are surfaced in the Settings menu's info
     # box; there is no bottom-center status panel.
-    state.unbound_controller_indices = [
-        int(info["controller_index"])
+    state.unbound_controllers = [
+        (int(info["controller_index"]), "mouse3d" if info.get("backend") == "mouse3d" else "gamepad")
         for info in controller_info
         if info["marker_id"] is None and bool(info["connected"])
     ]

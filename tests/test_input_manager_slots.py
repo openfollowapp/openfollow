@@ -520,15 +520,15 @@ def test_a_parked_slot_writes_nothing_while_the_other_slot_still_does(
         manager.gamepad_handler.next_update = frame
         manager.update(0.016)
         assert writes == [("pathfinder", 11)]
-        return
-    set_parked(app, [12])
-    manager.mouse3d_manager.next_frames = {0: frame}
-    manager.update(0.016)
-    assert writes == []
-    set_parked(app, [])
-    manager.mouse3d_manager.next_frames = {0: frame}
-    manager.update(0.016)
-    assert writes and {mid for _kind, mid in writes} == {12}
+    else:
+        set_parked(app, [12])
+        manager.mouse3d_manager.next_frames = {0: frame}
+        manager.update(0.016)
+        assert writes == []
+        set_parked(app, [])
+        manager.mouse3d_manager.next_frames = {0: frame}
+        manager.update(0.016)
+        assert writes and {mid for _kind, mid in writes} == {12}
 
 
 def test_a_lone_controller_never_moves_a_parked_marker(station) -> None:

@@ -1738,25 +1738,39 @@ def test_a_snapshot_of_another_size_stores_the_pins_as_the_same_fractions() -> N
     assert out["points"][0]["pin"] == [0.5, 0.25]
 
 
-def test_a_new_snapshot_keeps_the_corners_the_operator_dragged() -> None:
-    """Reloading the picture during Simple's corner step refreshes the picture only; a corner not yet
-    dragged follows the starting quad, as it did before."""
+# A new snapshot keeps the dragged corners, in its own pixels; an undragged corner follows the starting quad.
+@pytest.mark.parametrize(
+    ("size", "pin_size", "dragged", "expected"),
+    [
+        ([1920, 1080], [1920, 1080], [[700, 800], [1300, 790]], [[700, 800], [1300, 790]]),
+        ([1280, 720], [1920, 1080], [[960, 540], [1440, 810]], [[640, 360], [960, 540]]),
+        ([1920, 1080], None, [[0.5, 0.5], [0.25, 0.75]], [[960, 540], [480, 810]]),
+    ],
+    ids=["same size", "another size", "restored session"],
+)
+def test_a_new_snapshot_keeps_the_corners_the_operator_dragged(
+    size: list, pin_size: list | None, dragged: list, expected: list
+) -> None:
     out = run_wizard_js(
-        "(function() { showSnapshotOnCurrentStep('blob:x', {}); return S.cornerPins; })()",
+        "(function() { imageWidth = size[0]; imageHeight = size[1];"
+        " S = { mode: 'simple', pinSize: pinSize,"
+        " cornerPins: { DSL: dragged[0], DSR: dragged[1], USR: [20, 10], USL: [10, 10] },"
+        " cornerMoved: { DSL: true, DSR: true, USR: false, USL: false }, points: [] };"
+        " showSnapshotOnCurrentStep('blob:x', {}); return S.cornerPins; })()",
         functions=("pinsToSnapshot", "placeStartQuad", "showSnapshotOnCurrentStep"),
         variables=("CORNERS",),
-        prelude=_DOM + "var imageWidth = 1920, imageHeight = 1080, snapshotCanvas = null, FS = false, currentStep = 0;"
-        " var WIZ = { calib: 3, review: 4 };"
+        prelude=_DOM + "var imageWidth = 1920, imageHeight = 1080, snapshotCanvas = null, FS = false;"
+        " var WIZ = { calib: 3, review: 4 }, currentStep = WIZ.calib;"
         " document.createElement = function() {"
         " return { getContext: function() { return { drawImage: function() {} }; } }; };"
         " function setPreviewVisibility() {} function renderCalibOverlay() {} function runSolve() {}"
         " function lensOnSnapshot() {}"
-        " function startQuad() { return [[10, 10], [20, 10], [20, 20], [10, 20]]; }"
-        " var S = { mode: 'simple', pinSize: [1920, 1080],"
-        " cornerPins: { DSL: [700, 800], DSR: [1300, 790], USR: [20, 10], USL: [10, 10] },"
-        " cornerMoved: { DSL: true, DSR: true, USR: false, USL: false } };",
+        " function startQuad() { return [[10, 10], [20, 10], [20, 20], [10, 20]]; } var S;",
+        size=size,
+        pinSize=pin_size,
+        dragged=dragged,
     )
-    assert out == {"DSL": [700, 800], "DSR": [1300, 790], "USR": [20, 20], "USL": [10, 20]}
+    assert out == {"DSL": expected[0], "DSR": expected[1], "USR": [20, 20], "USL": [10, 20]}
 
 
 def test_pins_are_stored_as_fractions_of_the_snapshot_they_are_in() -> None:

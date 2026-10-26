@@ -1838,6 +1838,18 @@ def test_apply_runtime_ui_unit_system_propagates_to_config() -> None:
     assert app._web_commands.restart_requested is False
 
 
+def test_apply_runtime_button_name_style_applies_live() -> None:
+    """The HUD and the web read the style off ``app._config`` every frame / render."""
+    app = _DummyApp(AppConfig())
+    new_config = AppConfig()
+    new_config.controller.button_name_style = "xbox"
+
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._config.controller.button_name_style == "xbox"
+    assert app._web_commands.restart_requested is False
+
+
 def test_apply_runtime_ui_shown_features_propagates_to_config() -> None:
     """The Features list is read off ``app._config``, so a change applies live without a restart."""
     app = _DummyApp(AppConfig())
@@ -5138,6 +5150,35 @@ def test_controller_invalid_curve_falls_back_to_logarithmic(caplog) -> None:
 def test_controller_accepts_valid_curves(curve: str) -> None:
     cfg = ControllerConfig(curve=curve)
     assert cfg.curve == curve
+
+
+def test_controller_button_names_default_to_standard() -> None:
+    assert ControllerConfig().button_name_style == "standard"
+
+
+@pytest.mark.parametrize("style", ["standard", "xbox", "playstation", "nintendo"])
+def test_controller_accepts_every_button_name_style(style: str) -> None:
+    assert ControllerConfig(button_name_style=style).button_name_style == style
+
+
+@pytest.mark.parametrize("style", ["ps5", "Xbox", "PLAYSTATION", " nintendo", "", "unknown"])
+def test_controller_unknown_button_name_style_falls_back_to_standard(style: str) -> None:
+    assert ControllerConfig(button_name_style=style).button_name_style == "standard"
+
+
+@pytest.mark.parametrize("style", [None, True, 1, 2.5, ["xbox"], {"xbox": 1}])
+def test_controller_wrongly_typed_button_name_style_falls_back_to_standard(style: object) -> None:
+    assert ControllerConfig(button_name_style=style).button_name_style == "standard"  # type: ignore[arg-type]
+
+
+def test_a_hand_edited_button_name_style_survives_a_load(temp_config_path) -> None:
+    temp_config_path.write_text('[controller]\nbutton_name_style = "playstation"\n', encoding="utf-8")
+    assert load_config(str(temp_config_path)).controller.button_name_style == "playstation"
+
+
+def test_a_bad_hand_edited_button_name_style_loads_as_standard(temp_config_path) -> None:
+    temp_config_path.write_text("[controller]\nbutton_name_style = 7\n", encoding="utf-8")
+    assert load_config(str(temp_config_path)).controller.button_name_style == "standard"
 
 
 def test_controller_invalid_move_xy_stick_falls_back_to_left(caplog) -> None:

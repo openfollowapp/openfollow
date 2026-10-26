@@ -246,7 +246,7 @@
  </div>
  </div>
  <div id="trigger-fields-{{row.id}}" class="row">
- % include('partials/osc_binding_trigger_form.tpl', row=row, kind=trigger_kind, valid_rates=valid_rates, valid_edges=valid_edges, valid_modifiers=valid_modifiers, valid_keys=valid_keys, valid_buttons=valid_buttons, valid_midi_types=valid_midi_types, virtual_fader_names=virtual_fader_names, midi_patches=midi_patches, binding_overlap=binding_overlap if defined('binding_overlap') else (lambda kind, value: ''))
+ % include('partials/osc_binding_trigger_form.tpl', row=row, kind=trigger_kind, valid_rates=valid_rates, valid_edges=valid_edges, valid_modifiers=valid_modifiers, valid_keys=valid_keys, valid_buttons=valid_buttons, valid_midi_types=valid_midi_types, virtual_fader_names=virtual_fader_names, midi_patches=midi_patches, binding_overlap=binding_overlap if defined('binding_overlap') else (lambda kind, value: ''), button_name_style=config.controller.button_name_style)
  </div>
  </div>
 

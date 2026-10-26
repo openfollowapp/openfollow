@@ -14,6 +14,7 @@ Configure how a connected USB gamepad drives markers: stick sensitivity and resp
   - `Logarithmic` – finer movement at small deflections, faster at large ones. The default and usually best for live tracking.
   - `Quadratic` – like Logarithmic but with a steeper ramp-up.
   - `S-Law` – slow at both ends, fast through the middle; suits very dynamic shows.
+- **Button Names** – the pad family whose button names the station shows: on the Operator Screen (its help, key hints and the Button Detection Wizard) and in this section's selectors, detection table and notes. `Standard`, the default, shows the generic names (A, B, Back, Start, LB); `Xbox`, `PlayStation` and `Nintendo` show what those pads print (see Button Names below). Only the names change: every binding stays on its button.
 
 ## Button Detection Map
 
@@ -22,9 +23,28 @@ Use this panel when your controller's layout doesn't match the standard Xbox ref
 - **Start Button Detection Wizard** – launches the wizard on the Operator Screen. A "Wizard running on app display" notice appears here while it's active; the table refreshes when it finishes, showing the detected controller as *Mapped with …*. Ignored while the Operator Screen is showing a menu or other modal – close it on the device first.
 - **Cancel wizard** – stops a running wizard from the web UI. Use this if the wizard has taken exclusive input on the Operator Screen and you can't reach the device keyboard.
 
-The detection table shows each physical button (A, B, X, Y, LB, RB, Back, Start, D-Pad directions), the logical name OpenFollow assigned it, and the raw hardware ID. LT and RT trigger state (normal or swapped) is shown beneath the table.
+The detection table shows each physical button (A, B, X, Y, LB, RB, Back, Start, D-Pad directions, named by **Button Names**), the logical name OpenFollow assigned it, and the raw hardware ID. LT and RT trigger state (normal or swapped) is shown beneath the table.
 
 > Re-run the wizard if you swap to a different model or change the controller's mode; another pad of the same model shares the mapping. A pad of another model shows **Button map is for another model** on its Controller Slots row, and the diagnostics bundle reports the GUID mismatch under Gamepad controllers.
+
+## Button Names
+
+The same buttons carry different names on different pads. **Button Names** picks the family whose names the station shows; this table lists every family. Symbols stand for the PlayStation face buttons and the Xbox View and Menu buttons, except in drop-down lists, which show the word. The D-Pad is named the same in every family.
+
+| Standard | Xbox | PlayStation | Nintendo |
+|---|---|---|---|
+| A | A | ![](button:cross) Cross | A |
+| B | B | ![](button:circle) Circle | B |
+| X | X | ![](button:square) Square | X |
+| Y | Y | ![](button:triangle) Triangle | Y |
+| Left Bumper (LB) | LB | L1 | L |
+| Right Bumper (RB) | RB | R1 | R |
+| Left Trigger (LT) | LT | L2 | ZL |
+| Right Trigger (RT) | RT | R2 | ZR |
+| Back | ![](button:view) View | Create | - |
+| Start | ![](button:menu) Menu | Options | + |
+
+The Nintendo names assume the pad reports its face buttons by their printed letters, which is the default.
 
 ## Button Mapping
 

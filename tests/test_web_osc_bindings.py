@@ -1865,6 +1865,25 @@ def test_trigger_form_accepts_trigger_type_query_param(live_server) -> None:
     assert "Modifiers" in body
 
 
+@pytest.mark.parametrize(
+    ("style", "options"),
+    [
+        ("standard", ['<option value="A" >A</option>', '<option value="BACK" >Back</option>']),
+        ("playstation", ['<option value="A" >Cross</option>', '<option value="BACK" >Create</option>']),
+        ("xbox", ['<option value="BACK" >View</option>', '<option value="START" >Menu</option>']),
+    ],
+)
+def test_controller_button_trigger_names_buttons_in_the_stations_style(live_server, style, options) -> None:
+    _, base, cfg_path = live_server
+    _post_form(base, "/section/gamepad", {"enabled": "true", "deadzone": "0.15", "button_name_style": style})
+    _post_form(base, "/section/osc_bindings/add", {})
+    row_id = load_config(cfg_path).osc_transmitters.transmitters[0].id
+    status, body = _get(base, f"/section/osc_binding/{row_id}/trigger_form?trigger.kind=controller_button")
+    assert status == 200
+    assert all(option in body for option in options)
+    assert "btn-symbol" not in body
+
+
 def test_trigger_form_accepts_legacy_trigger_kind_query_param(live_server) -> None:
     """Backwards compat: a stale tab might post ``?trigger.kind=``;
     the route must still resolve it correctly."""

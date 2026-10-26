@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import math
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, cast
 
 import cairo
 
+from openfollow.button_names import hud_label
+from openfollow.runtime import overlay_button_symbols as symbols
 from openfollow.runtime.overlay_draw_style import (
     CHEVRON_SIZE,
     COLOR_ACCENT,
@@ -93,6 +95,7 @@ def _help_sections_for(
         tuple(sorted((state.mouse3d_axis_map or {}).items())),
         tuple(sorted((state.mouse3d_buttons or {}).items())),
         state.marker_cycle_enabled,
+        state.button_name_style,
     )
     cached = renderer._help_sections_cache
     if cached is not None and cached[0] == key:
@@ -110,6 +113,7 @@ def _help_sections_for(
         mouse3d_axis_map=state.mouse3d_axis_map,
         mouse3d_buttons=state.mouse3d_buttons,
         marker_cycle_enabled=state.marker_cycle_enabled,
+        button_name_style=state.button_name_style,
     )
     renderer._help_sections_cache = (key, result)
     return result
@@ -123,8 +127,18 @@ def _wrapped_help(renderer: Any, cr: Any, width: float, sections: HelpSections) 
     """Each line wrapped after its bullet to *width*: a help line is never cut."""
     renderer._set_ui_font(cr, _HELP_FONT)
     text_w = width - cr.text_extents(_HELP_BULLET).x_advance
+
+    def measure(text: str) -> float:
+        return symbols.text_advance(cr, text, _HELP_FONT)
+
     return [
-        (title, [_wrap_error_message(renderer, cr, line, text_w, _HELP_FONT, bold=False) for line in lines])
+        (
+            title,
+            [
+                _wrap_error_message(renderer, cr, line, text_w, _HELP_FONT, bold=False, measure=measure)
+                for line in lines
+            ],
+        )
         for title, lines in sections
     ]
 
@@ -158,8 +172,9 @@ def draw_help_block(
         for parts in lines:
             # A wrapped line continues under its own text, not under the bullet.
             for i, part in enumerate(parts):
-                cr.move_to(x + indent if i else x, y_cursor)
-                cr.show_text(part if i else f"{_HELP_BULLET}{part}")
+                symbols.show_text(
+                    cr, part if i else f"{_HELP_BULLET}{part}", x + indent if i else x, y_cursor, _HELP_FONT
+                )
                 y_cursor += 14.0
 
         if idx < len(wrapped) - 1:
@@ -931,13 +946,15 @@ def _wrap_error_message(
     max_w: float,
     font_size: float,
     bold: bool = True,
+    measure: Callable[[str], float] | None = None,
 ) -> list[str]:
     """Greedy word-wrap respecting ``max_w`` at the given font size and weight.
 
-    ``bold`` must match the render weight (bold glyphs are wider). Returns at
-    least one line.
+    ``bold`` must match the render weight (bold glyphs are wider); ``measure``
+    replaces the plain text width (button symbols). Returns at least one line.
     """
     renderer._set_ui_font(cr, font_size, bold=bold)
+    width = measure or (lambda text: cr.text_extents(text).width)
     if not message:
         return [""]
     words = message.split()
@@ -946,13 +963,13 @@ def _wrap_error_message(
 
     # Hard-wrap single tokens wider than max_w to prevent overflow.
     def _split_long(token: str) -> list[str]:
-        if cr.text_extents(token).width <= max_w:
+        if width(token) <= max_w:
             return [token]
         chunks: list[str] = []
         buf = ""
         for ch in token:
             candidate = buf + ch
-            if cr.text_extents(candidate).width <= max_w:
+            if width(candidate) <= max_w:
                 buf = candidate
             else:
                 if buf:
@@ -971,7 +988,7 @@ def _wrap_error_message(
                 continue
             sep = "" if i > 0 else " "
             candidate = f"{current}{sep}{piece}"
-            if cr.text_extents(candidate).width <= max_w:
+            if width(candidate) <= max_w:
                 current = candidate
             else:
                 lines.append(current)
@@ -1205,12 +1222,11 @@ def draw_hud(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> Non
         renderer._set_ui_font(cr, 9)
         cr.set_source_rgba(*COLOR_TEXT_MUTED)
         help_key = key_label(state.keyboard_labels.get("toggle_help") or "h", fallback="")
-        help_btn = friendly_button_label(state.button_labels.get("toggle_help") or "Y")
+        help_btn = friendly_button_label(state.button_labels.get("toggle_help") or "Y", state.button_name_style)
         parts = [p for p in (help_key, help_btn) if p]
         if parts:
             hint = f"{' / '.join(parts)}: help"
-            cr.move_to(icon_x + icon_size + 4.0, icon_y + icon_size * 0.7)
-            cr.show_text(hint)
+            symbols.show_text(cr, hint, icon_x + icon_size + 4.0, icon_y + icon_size * 0.7, 9.0)
 
     stats_text = build_system_stats_text(state.cpu_percent, state.ram_percent, state.temperature)
     panels.draw(cr, "stats", stats_text, lambda ctx: draw_system_stats(renderer, ctx, state, w), w, h)
@@ -1680,40 +1696,6 @@ def draw_virtual_fader_card(
     cr.show_text(value_text)
 
 
-_BUTTON_DISPLAY_NAMES: dict[str, str] = {
-    "A": "A",
-    "B": "B",
-    "X": "X",
-    "Y": "Y",
-    "LB": "Left Bumper",
-    "RB": "Right Bumper",
-    "LT": "Left Trigger",
-    "RT": "Right Trigger",
-    "BACK": "Back / Select",
-    "START": "Start / Menu",
-    "DPAD_UP": "D-Pad Up",
-    "DPAD_DOWN": "D-Pad Down",
-    "DPAD_LEFT": "D-Pad Left",
-    "DPAD_RIGHT": "D-Pad Right",
-}
-
-_BUTTON_SHORT_NAMES: dict[str, str] = {
-    "A": "A",
-    "B": "B",
-    "X": "X",
-    "Y": "Y",
-    "LB": "LB",
-    "RB": "RB",
-    "LT": "LT",
-    "RT": "RT",
-    "BACK": "Back",
-    "START": "Start",
-    "DPAD_UP": "D-Up",
-    "DPAD_DOWN": "D-Down",
-    "DPAD_LEFT": "D-Left",
-    "DPAD_RIGHT": "D-Right",
-}
-
 _HAT_RESULT_NAMES: dict[int, str] = {
     -1: "hat Up",
     -2: "hat Down",
@@ -1768,13 +1750,18 @@ def draw_button_detection_overlay(renderer: Any, cr: Any, state: OverlayState, w
         cr.show_text(prompt_text)
         cursor_y += 10.0
 
-        display_name = _BUTTON_DISPLAY_NAMES.get(bd.current_label, bd.current_label)
-        renderer._set_ui_font(cr, 42 if h >= 720 else 32, bold=True)
+        display_name = hud_label(bd.current_label, state.button_name_style, short=False)
+        size = 42.0 if h >= 720 else 32.0
+        renderer._set_ui_font(cr, size, bold=True)
+        name_w = symbols.text_advance(cr, display_name, size)
+        if name_w > content_w:
+            size *= content_w / name_w
+            renderer._set_ui_font(cr, size, bold=True)
+            name_w = symbols.text_advance(cr, display_name, size)
+        cap_h = cr.text_extents("H").height
         cr.set_source_rgb(*COLOR_ACCENT)
-        ext = cr.text_extents(display_name)
-        cr.move_to(panel_x + (panel_w - ext.width) / 2.0 - ext.x_bearing, cursor_y + ext.height)
-        cr.show_text(display_name)
-        cursor_y += ext.height + 24.0
+        symbols.show_text(cr, display_name, panel_x + (panel_w - name_w) / 2.0, cursor_y + cap_h, size)
+        cursor_y += cap_h + 24.0
     else:
         renderer._set_ui_font(cr, 18, bold=True)
         done_text = "Detection Complete!"
@@ -1820,15 +1807,14 @@ def draw_button_detection_overlay(renderer: Any, cr: Any, state: OverlayState, w
             x = content_x + col * col_w
             y = cursor_y + row * row_h
 
-            short_name = _BUTTON_SHORT_NAMES.get(label, label)
             renderer._set_ui_font(cr, 10, bold=True)
+            short_name = hud_label(label, state.button_name_style)
             cr.set_source_rgb(*COLOR_TEXT)
-            cr.move_to(x, y)
-            cr.show_text(short_name)
+            name_w = symbols.show_text(cr, short_name, x, y, 10.0) - x
 
             renderer._set_ui_font(cr, 10)
             cr.set_source_rgba(*COLOR_TEXT_MUTED)
-            cr.move_to(x + 70.0, y)
+            cr.move_to(x + max(70.0, name_w + 8.0), y)
             if raw_idx <= -100:
                 axis_idx = -100 - raw_idx
                 cr.show_text(f"\u2192 axis {axis_idx}")

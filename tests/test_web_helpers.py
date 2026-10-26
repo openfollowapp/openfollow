@@ -3539,6 +3539,33 @@ def test_cancel_button_label_default_is_B() -> None:
     assert routes_mod._cancel_button_label(cfg) == "B"
 
 
+@pytest.mark.parametrize(
+    ("style", "button", "word"),
+    [("playstation", "B", "Circle"), ("xbox", "BACK", "View")],
+)
+def test_cancel_button_label_draws_the_symbol_with_its_word(style: str, button: str, word: str) -> None:
+    from openfollow.configuration import AppConfig
+    from openfollow.web import routes as routes_mod
+
+    cfg = AppConfig()
+    cfg.controller.button_name_style = style
+    cfg.controller.btn_menu_cancel = button
+    label = routes_mod._cancel_button_label(cfg)
+    assert label.startswith('<span class="btn-symbol"><svg class="btn-symbol-icon"')
+    assert f'<span class="visually-hidden">{word}</span>' in label
+
+
+@pytest.mark.parametrize(("style", "word"), [("standard", "Back"), ("playstation", "Create"), ("nintendo", "-")])
+def test_cancel_button_label_names_a_worded_button_in_the_style(style: str, word: str) -> None:
+    from openfollow.configuration import AppConfig
+    from openfollow.web import routes as routes_mod
+
+    cfg = AppConfig()
+    cfg.controller.button_name_style = style
+    cfg.controller.btn_menu_cancel = "BACK"
+    assert routes_mod._cancel_button_label(cfg) == word
+
+
 @pytest.mark.parametrize("cleared", ["", "   "])
 def test_cancel_button_label_falls_back_when_binding_cleared(cleared) -> None:
     """Empty / whitespace ``btn_menu_cancel`` (an operator cleared the

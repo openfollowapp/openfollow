@@ -8901,6 +8901,7 @@ def test_a_body_that_stops_arriving_is_answered_and_frees_its_slot(live_server, 
     from openfollow.web import server as server_module
 
     monkeypatch.setattr(server_module, "_REQUEST_BODY_READ_TIMEOUT_S", 0.3)
+    monkeypatch.setattr(server_module, "_UNREAD_BODY_TIMEOUT_S", 60.0)
     _, base = live_server
     body = json.dumps({"pos_x": 1.0, "pos_y": 2.0}).encode()
     request = (
@@ -8908,6 +8909,54 @@ def test_a_body_that_stops_arriving_is_answered_and_frees_its_slot(live_server, 
         b"Content-Length: %d\r\n\r\n%s" % (len(body), body[: len(body) // 2])
     )
     assert _slot_freed_after(base, monkeypatch, request, b"408 ")
+
+
+class _FixedToken:
+    """``secrets`` with a known ``token_hex``, so a test can name the file a route stages."""
+
+    def __init__(self, token: str) -> None:
+        self._token = token
+
+    def token_hex(self, _nbytes: int | None = None) -> str:
+        return self._token
+
+    def __getattr__(self, name: str) -> Any:
+        import secrets
+
+        return getattr(secrets, name)
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/video-input/testpattern/upload", "/section/general/deb-upload?filename=a.ofupdate"],
+    ids=["gallery", "ofupdate"],
+)
+def test_an_upload_that_stops_arriving_is_answered_408_and_leaves_nothing_staged(
+    live_server, monkeypatch, caplog, path
+) -> None:
+    import glob
+    import logging
+
+    import openfollow.web.routes as routes_module
+    from openfollow.web import server as server_module
+
+    token = f"stall{os.getpid()}{time.monotonic_ns()}"
+    monkeypatch.setattr(routes_module, "secrets", _FixedToken(token))
+    monkeypatch.setattr(server_module, "_REQUEST_BODY_READ_TIMEOUT_S", 0.3)
+    caplog.set_level(logging.INFO)
+    _, base = live_server
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    with socket.create_connection((host, int(port)), timeout=5) as sock:
+        sock.sendall(
+            b"POST %s HTTP/1.1\r\nHost: x\r\nContent-Type: application/octet-stream\r\n"
+            b"Content-Length: 1000\r\n\r\n%s" % (path.encode(), b"x" * 10)
+        )
+        answer = b""
+        while chunk := sock.recv(65536):
+            answer += chunk
+    assert answer.startswith(b"HTTP/1.0 408 ")
+    assert glob.glob(f"/tmp/*{token}*") == []  # nosec B108 - where the routes stage uploads
+    assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
 
 
 def test_a_large_answer_reaches_a_client_that_reads_late(live_server, monkeypatch) -> None:

@@ -5176,6 +5176,8 @@ def _register_gallery_routes(app: Bottle, server: ConfigWebServer) -> None:
             media_store.save_upload(Path(staged))
         except MediaStoreError as exc:
             return _render_gallery_grid(server, error=exc.message)
+        except HTTPResponse:  # the station's own answer, e.g. 408 for a body that stopped arriving
+            raise
         except Exception:
             logger.exception("Media upload failed")
             return _render_gallery_grid(server, error="Upload failed.")
@@ -7765,6 +7767,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     "downgrade": not _is_newer(version.replace("~", ""), openfollow.__version__),
                 }
             )
+        except HTTPResponse:  # the station's own answer, e.g. 408 for a body that stopped arriving
+            _discard_staged(staged_path)
+            raise
         except Exception as exc:  # validation / stream failure
             _discard_staged(staged_path)
             return json.dumps({"ok": False, "error": str(exc)})

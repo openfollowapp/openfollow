@@ -154,7 +154,7 @@ Peer-to-peer config broadcast is HMAC-signed. The web PIN is the HMAC key; the P
 - **Offline brute-force note:** a captured signed request lets an attacker test candidate PINs offline. The HMAC construction only hides the PIN from the wire – it does not make a short / low-entropy PIN strong. Operators wanting meaningful resistance should use a longer shared secret; a future KDF derivation would raise the cost further.
 
 ## Connection timeouts (`web/server.py`)
-The request line and headers must arrive within `_REQUEST_HEAD_TIMEOUT_S` (10 s) in total, then each read of the body within `_REQUEST_BODY_READ_TIMEOUT_S` (60 s), so a slow upload lasts as long as it keeps moving. A connection that sends no request in time is closed with only a DEBUG line. A body that stops arriving is answered 408. Writes are not bounded: a socket timeout would cap a whole response.
+The request line and headers must arrive within `_REQUEST_HEAD_TIMEOUT_S` (10 s) in total, then each read of the body within `_REQUEST_BODY_READ_TIMEOUT_S` (60 s), so a slow upload lasts as long as it keeps moving. A connection that sends no request in time is closed with only a DEBUG line. A body that stops arriving is answered 408; a route that catches broadly re-raises Bottle's `HTTPResponse` first (the gallery and `.ofupdate` uploads), keeping its staged-file cleanup. Writes are not bounded: a socket timeout would cap a whole response.
 
 ## Browser auth (`_check_auth` + `login_submit`)
 - `web_pin` non-empty → every non-asset route requires either a valid HMAC signature (peer path above) or the `_openfollow_auth` cookie.

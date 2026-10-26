@@ -14,6 +14,14 @@ Three surfaces consume it, and **a new one that displays, logs, or exports a str
 - **The diagnostics config dump** – `redact_config_secrets` collapses `_SECRET_CONFIG_KEYS` (`web_pin`, `rtsp_user`, `rtsp_password`, `srt_passphrase`) to `"***"` / `"(empty)"`, whether a login is *set* being the whole useful content, and runs `_URI_CONFIG_KEYS` (`rtsp_url`, `srt_host`) through `redact_uri`. A value in an unparsed shape **fails closed** to `"***"`. Add a new credential or URL-valued field to the matching set.
 - **`redact_log_line`** is the single redactor for log content: the bundle's log tail, its failure extract, and worker-thread tracebacks. **Do not add a log path that bypasses it.**
 
+## Log sources
+
+Section D reads the journal (`journalctl -u <update_service_name>`) first. Where there is none, it reads the log file the station writes (`logging_setup.active_log_file()`: the macOS app's `~/Library/Logs/OpenFollow/openfollow.log` and its rotated copies, see [packaging](../PACKAGING.md#logs)), else the in-memory ring, which holds the current process only. A Pi writes no log file, so it reads the journal or the ring.
+
+- **Log tail:** the last 2000 lines of the source.
+- **Failure extract:** the journal's last 24 h, every kept copy of the log file, or the ring. From the log file each failing record is kept whole, its traceback included. A faulthandler crash dump (`Fatal Python error:`) and an uncaught thread exception (`Exception in thread`) count as failures too: they reach the file through stderr, with no level token.
+- Every source goes through `redact_log_line`.
+
 ## Removable drives (`runtime/removable_media.py`)
 The diagnostics bundle (and later settings / templates) can be saved to the top level of a USB drive or card reader, from Diagnostics → Bundle & tools and from Settings → **Export Diagnostics File for Support** on the Operator Screen.
 

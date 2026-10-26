@@ -2,18 +2,24 @@
 # Copyright (C) 2026 OpenFollow Project
 """Process-wide logging configuration with bounded in-memory ring buffer fallback.
 
-The ring buffer is used when ``journalctl`` is unavailable (non-systemd hosts or
-unprivileged users). Sized at 2000 lines (~160 KB).
+Records go to stderr (the journal on a Pi), or to a size-rotated log file (the
+macOS app). The ring buffer is used when neither the journal nor a log file can
+be read. Sized at 2000 lines (~160 KB).
 """
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 import threading
 import time
 from collections import deque
 from collections.abc import Callable, Iterable
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # Default cap for the in-memory ring.
 # Public so tests can drive a smaller cap without monkeypatching.
@@ -22,6 +28,16 @@ DEFAULT_RING_CAPACITY = 2000
 # Default format string for log records.
 DEFAULT_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 DEFAULT_DATEFMT = "%H:%M:%S"
+
+# A log file spans days and restarts, so its lines carry the date too.
+LOG_FILE_DATEFMT = "%Y-%m-%d %H:%M:%S"
+# 5 MB a file, the current one and four rotated copies: 25 MB at most.
+LOG_FILE_MAX_BYTES = 5 * 1024 * 1024
+LOG_FILE_BACKUPS = 4
+# How often a log file checks its size between records.
+LOG_FILE_CHECK_S = 10.0
+# stdout and stderr, which a log file takes over.
+STD_FDS = (1, 2)
 
 
 class ThrottledExceptionLogger:
@@ -145,13 +161,105 @@ class RingBufferLogHandler(logging.Handler):
         return self._capacity
 
 
+class LogFileHandler(RotatingFileHandler):
+    """Size-rotated log file that also takes the process's stdout and stderr.
+
+    Every file it opens is duplicated onto ``std_fds``, so what the process
+    writes there past the logging module (GLib and GStreamer warnings, uncaught
+    thread exceptions, faulthandler's crash tracebacks) lands in the same file
+    and follows each rotation. The rotation size counts those writes too: the
+    duplicated descriptors share the stream's file offset. A background check
+    every ``check_every_s`` rotates a file that output alone has filled.
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        max_bytes: int = LOG_FILE_MAX_BYTES,
+        backup_count: int = LOG_FILE_BACKUPS,
+        std_fds: tuple[int, ...] = STD_FDS,
+        check_every_s: float = LOG_FILE_CHECK_S,
+    ) -> None:
+        self._std_fds = std_fds
+        path.parent.mkdir(parents=True, exist_ok=True)
+        super().__init__(path, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8")
+        self._closing = threading.Event()
+        self._watcher = threading.Thread(
+            target=self._watch, args=(check_every_s,), daemon=True, name="log-file-rotation"
+        )
+        self._watcher.start()
+
+    def _open(self) -> io.TextIOWrapper:
+        stream = super()._open()
+        for fd in self._std_fds:
+            os.dup2(stream.fileno(), fd)
+        return stream
+
+    def roll_over_if_full(self) -> None:
+        """Rotate once the file has reached its size, whoever wrote to it."""
+        self.acquire()
+        try:
+            if self.stream is not None and self.stream.tell() >= self.maxBytes:
+                self.doRollover()
+        finally:
+            self.release()
+
+    def _watch(self, every_s: float) -> None:
+        while not self._closing.wait(every_s):
+            self.roll_over_if_full()
+
+    def close(self) -> None:
+        # No join: ``logging.shutdown`` calls this holding the lock a check may be waiting for.
+        self._closing.set()
+        super().close()
+
+
+def read_log_file(path: Path, *, last_n: int | None = None) -> list[str]:
+    """Lines of ``path`` and its rotated copies, oldest first; the last ``last_n`` when given.
+
+    Raises ``OSError`` when ``path`` itself cannot be read.
+    """
+    chunks: list[list[str]] = []
+    count = 0
+    for index in range(LOG_FILE_BACKUPS + 1):
+        file = path if index == 0 else path.with_name(f"{path.name}.{index}")
+        try:
+            text = file.read_text(encoding="utf-8", errors="replace")
+        except FileNotFoundError:
+            if index == 0:
+                raise
+            # Rotation fills .1, .2, ... in order, so a gap ends the kept set.
+            break
+        chunks.append(text.splitlines())
+        count += len(chunks[-1])
+        if last_n is not None and count >= last_n:
+            break
+    lines = [line for chunk in reversed(chunks) for line in chunk]
+    return lines if last_n is None else lines[max(0, len(lines) - last_n) :]
+
+
+def active_log_file() -> Path | None:
+    """The log file ``setup_logging`` installed, ``None`` when records go to stderr."""
+    for handler in logging.getLogger().handlers:
+        if isinstance(handler, LogFileHandler):
+            return Path(handler.baseFilename)
+    return None
+
+
 def setup_logging(
     *,
     level: int = logging.INFO,
     ring_capacity: int = DEFAULT_RING_CAPACITY,
     extra_handlers: Iterable[logging.Handler] = (),
+    log_file: Path | None = None,
+    std_fds: tuple[int, ...] = STD_FDS,
 ) -> RingBufferLogHandler:
-    """Install stderr stream handler + in-memory ring. Idempotent (safe to call multiple times)."""
+    """Install the output handler + in-memory ring. Idempotent (safe to call multiple times).
+
+    Records go to stderr, or to ``log_file``, which then takes ``std_fds`` over
+    too. A log file that cannot be opened leaves the records on stderr.
+    """
     root = logging.getLogger()
     root.setLevel(level)
     formatter = logging.Formatter(fmt=DEFAULT_FORMAT, datefmt=DEFAULT_DATEFMT)
@@ -165,14 +273,24 @@ def setup_logging(
             except Exception:  # pragma: no cover – defensive
                 pass
 
-    stream = logging.StreamHandler()
-    # Under systemd, prefix stderr lines with the sd-daemon priority token so
-    # journald assigns the right per-line priority; off systemd keep clean lines.
-    stream.setFormatter(
-        _JournalPriorityFormatter(fmt=DEFAULT_FORMAT, datefmt=DEFAULT_DATEFMT) if _under_systemd() else formatter
-    )
-    stream._openfollow_managed = True  # type: ignore[attr-defined]
-    root.addHandler(stream)
+    output: logging.Handler | None = None
+    file_error: OSError | None = None
+    if log_file is not None:
+        try:
+            output = LogFileHandler(log_file, std_fds=std_fds)
+        except OSError as exc:
+            file_error = exc
+        else:
+            output.setFormatter(logging.Formatter(fmt=DEFAULT_FORMAT, datefmt=LOG_FILE_DATEFMT))
+    if output is None:
+        output = logging.StreamHandler()
+        # Under systemd, prefix stderr lines with the sd-daemon priority token so
+        # journald assigns the right per-line priority; off systemd keep clean lines.
+        output.setFormatter(
+            _JournalPriorityFormatter(fmt=DEFAULT_FORMAT, datefmt=DEFAULT_DATEFMT) if _under_systemd() else formatter
+        )
+    output._openfollow_managed = True  # type: ignore[attr-defined]
+    root.addHandler(output)
 
     ring = RingBufferLogHandler(capacity=ring_capacity)
     ring.setFormatter(formatter)
@@ -183,4 +301,9 @@ def setup_logging(
         h._openfollow_managed = True  # type: ignore[attr-defined]
         root.addHandler(h)
 
+    if file_error is not None:
+        logger.warning("Cannot write the log file %s, logging to stderr: %s", log_file, file_error)
+    elif log_file is not None:
+        # The file spans restarts: this line marks where each process starts.
+        logger.info("Process %d logging to %s", os.getpid(), log_file)
     return ring

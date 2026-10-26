@@ -103,6 +103,7 @@ from openfollow.configuration import (
 )
 from openfollow.input.mouse3d_status import status_key
 from openfollow.lens_model import pull_back_to_valid
+from openfollow.logging_setup import active_log_file
 
 # Module-level so handler closures resolve ``save_catalog`` from this
 # namespace at call time (tests monkeypatch it for persist-failure paths).
@@ -4050,6 +4051,7 @@ def build_diagnostics_bundle(server: ConfigWebServer, cfg: AppConfig | None = No
         providers=_build_diagnostics_providers(server, cfg),
         log_ring=server.log_ring,
         update_service_name=cfg.update_service_name or None,
+        log_file=active_log_file(),
         repo_root=_repo_root_for_diagnostics(),
         extra_storage_paths=extra_storage or None,
         config_path=Path(server.config_path),

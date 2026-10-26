@@ -4234,7 +4234,7 @@ class AppRuntimeServices:
                 "source_selection_active": bool(receiver.source_selection_active),
                 "source_fps": float(getattr(receiver, "source_framerate", 0.0)),
                 "source_format": str(getattr(receiver, "source_format", "") or ""),
-                "limits": limits_snapshot(getattr(receiver, "source_limits", None)),
+                "limits": limits_snapshot(getattr(receiver, "source_limits", None), receiver.source_kind),
             }
 
         controller_items: list[dict[str, Any]] = []

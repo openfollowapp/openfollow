@@ -11,11 +11,12 @@ import random
 import pytest
 
 from openfollow.video import source_limits as sl
+from openfollow.video.failure import SourceKind
 from openfollow.video.source_limits import (
-    LIMITS_ACTION,
     FrameMeter,
     OverLimit,
     SourceReading,
+    limits_action,
     limits_row,
     limits_sentence,
     limits_snapshot,
@@ -313,8 +314,15 @@ class TestTheWebSentence:
     def test_the_observed_value_sits_beside_the_limit(self, reading: SourceReading | None, sentence: str) -> None:
         assert limits_sentence(reading) == sentence
 
-    def test_the_step_names_the_limits(self) -> None:
-        assert LIMITS_ACTION == "Set the camera or encoder to 1920×1080 at 30 fps or less."
+    @pytest.mark.parametrize("kind", [SourceKind.REMOTE, SourceKind.LISTENER, SourceKind.NAMED])
+    def test_a_sender_is_told_to_set_the_camera_or_encoder(self, kind: SourceKind) -> None:
+        assert limits_action(kind) == "Set the camera or encoder to 1920×1080 at 30 fps or less."
+
+    def test_a_local_camera_is_told_to_change_the_station_s_own_settings(self) -> None:
+        """USB, Pi Camera and macOS cameras are read at the resolution and FPS set under Video Source."""
+        assert limits_action(SourceKind.LOCAL) == (
+            "Set the resolution to 1920×1080 or less and FPS to 30 or less under Video Source."
+        )
 
 
 class TestTheStatsSnapshot:
@@ -336,7 +344,11 @@ class TestTheStatsSnapshot:
         assert snap["exceeded"] == ["resolution_over_limit", "frame_rate_over_limit"]
         assert (snap["width"], snap["height"], snap["fps"]) == (3840, 2160, 60.0)
         assert snap["text"] == limits_sentence(_BOTH)
-        assert snap["action"] == LIMITS_ACTION
+        assert snap["action"] == limits_action(SourceKind.REMOTE)
+
+    def test_the_step_follows_the_source_kind(self) -> None:
+        assert limits_snapshot(_BOTH, SourceKind.LOCAL)["action"] == limits_action(SourceKind.LOCAL)
+        assert limits_snapshot(_WITHIN, SourceKind.LOCAL)["action"] == ""
 
     def test_within_carries_the_measurement_and_no_box(self) -> None:
         snap = limits_snapshot(_WITHIN)

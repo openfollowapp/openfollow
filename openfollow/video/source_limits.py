@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from openfollow.video.failure import SourceKind
+
 MAX_LONG_SIDE = 1920
 MAX_SHORT_SIDE = 1080
 MAX_FPS = 30
@@ -29,7 +31,16 @@ WINDOW_SLOTS = 5
 # Readings in a row that must disagree with the frame-rate verdict before it changes.
 CONFIRM_READINGS = 3
 
-LIMITS_ACTION = f"Set the camera or encoder to {MAX_LONG_SIDE}×{MAX_SHORT_SIDE} at {MAX_FPS} fps or less."
+_REMOTE_ACTION = f"Set the camera or encoder to {MAX_LONG_SIDE}×{MAX_SHORT_SIDE} at {MAX_FPS} fps or less."
+# A local camera is read at the size and rate the station's own settings ask for.
+_LOCAL_ACTION = (
+    f"Set the resolution to {MAX_LONG_SIDE}×{MAX_SHORT_SIDE} or less and FPS to {MAX_FPS} or less under Video Source."
+)
+
+
+def limits_action(kind: SourceKind) -> str:
+    """The one next step for a source over the limits, in the words its kind's settings use."""
+    return _LOCAL_ACTION if kind is SourceKind.LOCAL else _REMOTE_ACTION
 
 
 class OverLimit(str, Enum):
@@ -153,7 +164,7 @@ def limits_sentence(reading: SourceReading | None) -> str:
     return f"Video arrives at {seen}, over {limits}."
 
 
-def limits_snapshot(reading: SourceReading | None) -> dict[str, Any]:
+def limits_snapshot(reading: SourceReading | None, kind: SourceKind = SourceKind.REMOTE) -> dict[str, Any]:
     """``/api/stats``'s ``video.limits``: the verdict as stable ids, what was measured, the limits, the box text."""
     exceeded = [cause.value for cause in reading.over] if reading is not None else []
     return {
@@ -165,5 +176,5 @@ def limits_snapshot(reading: SourceReading | None) -> dict[str, Any]:
         "max_short_side": MAX_SHORT_SIDE,
         "max_fps": MAX_FPS,
         "text": limits_sentence(reading),
-        "action": LIMITS_ACTION if exceeded else "",
+        "action": limits_action(kind) if exceeded else "",
     }

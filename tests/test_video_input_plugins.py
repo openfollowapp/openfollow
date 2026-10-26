@@ -19,6 +19,7 @@ from openfollow.configuration import AppConfig
 from openfollow.video.failure import SourceKind
 from openfollow.video.inputs import get_registry
 from openfollow.video.inputs._base import (
+    PRE_DECODE_QUEUE_NS,
     ConfigField,
     InputCapabilities,
     ReconnectPolicy,
@@ -588,6 +589,25 @@ class TestFrameMeterDeclaration:
         element = _build_pipeline(plugin).get_by_name(name)
         assert element is not None, f"{plugin.input_id} meters {name!r} but builds no element with that name"
         assert element.properties.get("leaky") == 2
+
+    def test_the_metered_element_holds_whole_frames(self, plugin: type[VideoInputBase]) -> None:
+        """SRT's and RTP's queue before ``decodebin`` is leaky too, but holds stream
+        bytes: metered there, packets would be counted as frames. A buffer of an
+        MJPEG camera before ``jpegdec`` is one whole frame, so that is fine."""
+        name = plugin.frame_meter_element_name
+        if name is None:
+            return
+        element = _build_pipeline(plugin).get_by_name(name)
+        assert element is not None
+        assert element.properties.get("max-size-time") != PRE_DECODE_QUEUE_NS
+        downstream, seen = list(element.links), set()
+        while downstream:
+            nxt = downstream.pop()
+            if id(nxt) in seen:
+                continue
+            seen.add(id(nxt))
+            assert nxt.name != "decodebin", f"{plugin.input_id} meters {name!r}, upstream of decodebin"
+            downstream.extend(nxt.links)
 
 
 # --------------------------------------------------------------------------- #

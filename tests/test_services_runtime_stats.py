@@ -452,6 +452,21 @@ class TestPublishRuntimeStats:
         assert limits["text"] == "Video arrives at 3840×2160 and 60 fps, over Full HD (1920×1080) and 30 fps."
         assert limits["action"] == "Set the camera or encoder to 1920×1080 at 30 fps or less."
 
+    def test_a_local_camera_over_the_limits_is_pointed_at_the_station_s_settings(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receiver = _FakeReceiver()
+        receiver.source_kind = SourceKind.LOCAL
+        receiver.source_limits = SourceReading(3840, 2160, None, (OverLimit.RESOLUTION,))
+        self._prime(services, receiver=receiver)
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+
+        services.publish_runtime_stats(force=True)
+        limits = services.get_runtime_stats_snapshot()["video"]["limits"]
+        assert limits["action"] == "Set the resolution to 1920×1080 or less and FPS to 30 or less under Video Source."
+
     def test_receiver_absent_uses_default_video_shape(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
     ) -> None:

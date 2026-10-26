@@ -5978,10 +5978,29 @@ class TestTheSourceIsMeasuredAgainstItsLimits:
         self._deliver(pad, clock, _UHD, 30.0, 1.0)
         assert r.source_limits is None
 
-    def test_a_placeholder_flag_hides_a_reading(self, fake_gst, fake_glib, fake_input_cls, monkeypatch, clock) -> None:
-        r, pad = self._build(monkeypatch)
-        self._deliver(pad, clock, _UHD, 30.0, 1.0)
-        r._state.set_placeholder_pipeline(True)
+    def test_dropping_the_display_measures_afresh(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch, clock
+    ) -> None:
+        monkeypatch.setattr(receiver_mod.threading, "Thread", _SyncSwapThread)
+        monkeypatch.setattr(FakeInput, "frame_meter_element_name", "post_queue", raising=False)
+        display = SimpleNamespace(
+            sink=FakeElement("shared_videosink"),
+            widget="GL area",
+            release_frames=lambda: None,
+            accept_frames=lambda: None,
+        )
+        pipeline, queue = _metered_pipeline()
+        FakeInput.create_pipeline_result = pipeline
+        r = receiver_mod.GstNativeSinkReceiver(
+            source_type="fake", input_config={"fake_source": "cam-1"}, display=display
+        )
+        monkeypatch.setattr(r, "_select_sink_name", lambda: "gtksink")
+        r.create_pipeline()
+        self._deliver(queue.get_static_pad("sink"), clock, _UHD, 30.0, 1.0)
+        assert r.source_limits is not None
+
+        FakeInput.create_pipeline_result = FakePipeline(elements={"shared_videosink": FakeElement("shared_videosink")})
+        r.drop_display()
         assert r.source_limits is None
 
     def test_a_reconnect_measures_afresh(self, fake_gst, fake_glib, fake_input_cls, monkeypatch, clock) -> None:

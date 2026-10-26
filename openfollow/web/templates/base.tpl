@@ -2413,11 +2413,8 @@
  {{!base}}
  % if defined('on_device') and on_device:
  <footer class="on-device-footer">
- %# Render the operator's actual ``btn_menu_cancel`` mapping, not
- %# a hardcoded "B" – Settings → Button Detection can remap this
- %# to any of A/B/X/Y/etc., and a stale hint here would tell
- %# operators to press a button that no longer dismisses the
- %# overlay.
+ %# The operator's own ``btn_menu_cancel`` mapping, which Button Detection can remap;
+ %# Esc is fixed, handled by the embedded browser itself.
  <span><kbd>{{cancel_button or 'Cancel'}}</kbd>on a controller or <kbd>Esc</kbd>on a keyboard closes the embedded browser</span>
  </footer>
  % end

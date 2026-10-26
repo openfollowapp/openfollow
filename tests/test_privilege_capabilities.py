@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import FrozenInstanceError
 
@@ -38,6 +39,7 @@ from openfollow.privilege.capabilities import (
     SYSTEM_SET_CLOCK,
     SYSTEMD_UNIT_TMP_PREFIX,
     Capability,
+    CapabilityState,
     capability_by_name,
 )
 
@@ -401,3 +403,10 @@ def test_a_regex_rule_admits_its_own_probe(cap: Capability) -> None:
 )
 def test_a_regex_rule_admits_only_its_calls(cap: Capability, args: str, admitted: bool) -> None:
     assert _sudo_admits(cap, args) is admitted
+
+
+@pytest.mark.parametrize("member", list(CapabilityState))
+def test_capability_state_renders_as_its_value(member: CapabilityState) -> None:
+    assert str(member) == f"{member}" == format(member) == member.value
+    assert json.dumps(member) == f'"{member.value}"'
+    assert CapabilityState(member.value) is member

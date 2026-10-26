@@ -13,11 +13,11 @@ build's own bundled-in-venv assertion.
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 from typing import Any
 
 import pytest
-import tomllib
 
 import openfollow
 

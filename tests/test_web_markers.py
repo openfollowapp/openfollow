@@ -12,13 +12,13 @@ from __future__ import annotations
 
 import json
 import time
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
 import pytest
-import tomllib
 
 import openfollow.web.discovery as discovery_module
 from openfollow.configuration import load_config, save_config

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from openfollow.privilege.camera_config import AUTOMATIC, CAMERA_TOKEN_RE, CHOICE_TOKEN_RE, HELPER_PATH
 from openfollow.privilege.media_writer import DEVICE_RE
@@ -38,7 +38,7 @@ def _regex_args(*tokens: str) -> str:
     return "^" + " ".join([*words, arg_re.removeprefix("^")])
 
 
-class CapabilityState(str, Enum):
+class CapabilityState(StrEnum):
     """Result of probing whether the host can run a capability silently."""
 
     PASSWORDLESS = "passwordless"

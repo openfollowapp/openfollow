@@ -6,13 +6,13 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from typing import Any, TypeAlias
+from typing import Any
 
 import cairo
 
 from openfollow.runtime.overlay_layers import keep
 
-Paint: TypeAlias = "Callable[[cairo.Context[Any]], None]"
+type Paint = Callable[[cairo.Context[Any]], None]
 
 
 def target_font_options(cr: Any) -> cairo.FontOptions:

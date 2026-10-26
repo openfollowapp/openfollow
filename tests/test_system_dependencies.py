@@ -19,9 +19,9 @@ a source build to reach a state that already works.
 from __future__ import annotations
 
 import pathlib
+import tomllib
 
 import pytest
-import tomllib
 
 pytestmark = pytest.mark.unit
 

@@ -8,13 +8,13 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Literal
 
 logger = logging.getLogger(__name__)
 
 
-class Ipv4Method(str, Enum):
+class Ipv4Method(StrEnum):
     DHCP = "dhcp"
     DHCP_WITH_MANUAL_ADDRESS = "dhcp_manual"
     STATIC = "static"

@@ -9,13 +9,10 @@ from __future__ import annotations
 
 from collections.abc import Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Generic, TypeVar
-
-V = TypeVar("V", bound=Hashable)
 
 
 @dataclass(frozen=True)
-class BindingMove(Generic[V]):
+class BindingMove[V: Hashable]:
     """``field`` gave ``value`` up to ``kept_by``."""
 
     field: str
@@ -23,7 +20,7 @@ class BindingMove(Generic[V]):
     value: V
 
 
-def settle_duplicates(
+def settle_duplicates[V: Hashable](
     values: Mapping[str, V],
     order: Sequence[str],
     *,

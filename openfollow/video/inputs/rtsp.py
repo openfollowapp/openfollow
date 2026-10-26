@@ -22,7 +22,7 @@ from openfollow.video.inputs._base import (
     video_input_pin_field,
 )
 from openfollow.video.inputs._hevc_guard import guard_hevc_decoder
-from openfollow.video.inputs._pin import PinRefusal, check_video_pin, config_pin, dials_ipv6
+from openfollow.video.inputs._pin import PinRefusal, check_video_pin, config_pin
 
 logger = logging.getLogger(__name__)
 
@@ -193,16 +193,14 @@ class RtspInput(VideoInputBase):
         # rtspsrc opens its UDP ports for the address type of the server's session
         # description (IPv4 when it names none), whatever family the connection
         # reached the server on, and udpsink then refuses an address of the other
-        # family. A name dialled over IPv6 takes the interleaved transport up front,
-        # a host whose attempt failed that way from then on; everything else may
-        # negotiate TCP, UDP or multicast.
+        # family. A host whose attempt failed that way takes the interleaved
+        # transport from then on; every other attempt may negotiate TCP, UDP or
+        # multicast. Choosing the transport looks no name up.
         endpoint = self.source_endpoint(config)
         self._dialled_host = endpoint.host if endpoint is not None else ""
         tcp_reason = ""
         if self._dialled_host and self._dialled_host == self._interleaved_host:
             tcp_reason = "an earlier attempt's UDP ports were of the other IP family"
-        elif endpoint is not None and dials_ipv6(endpoint.host):
-            tcp_reason = "the name is dialled over IPv6"
         rtspsrc.set_property("protocols", _TRANSPORTS_TCP if tcp_reason else _TRANSPORTS_ALL)
         pin = config_pin(config)
         if pin:

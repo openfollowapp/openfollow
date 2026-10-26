@@ -85,9 +85,8 @@ udpsrc → rtpjitterbuffer → pre_queue → decodebin → post_queue → videoc
 ```
 rtspsrc → decodebin → post_queue (leaky) → videoconvert → shared_videosink
 ```
-- `protocols` allows TCP + UDP + multicast, **except for a name dialled over IPv6 and a host whose attempt failed on the address family, which get TCP interleaved only**. `rtspsrc` opens a stream's UDP ports for the address type of the server's session description (`c=IN IP4` / `IP6`, IPv4 when there is none), not for the family the control connection reached the server on, so a server reached over IPv6 that describes IPv4 (or nothing) gets IPv4 ports, and the RTCP `udpsink` then refuses its address: `gst-resource-error-quark:13`, `Invalid address family` in the debug string, posted as a pipeline error after `on-sdp`. Verified against 1.28.7 on loopback with a stub server, for a name and an IPv6 literal alike; the 1.26 source picks the family the same way (`gst_rtspsrc_do_stream_connection`)
-  - **Up front:** `_pin.dials_ipv6` asks the bounded resolver (`_RESOLVE_WAIT_S`) and reads the family of its first answer, the one the system's address selection (RFC 6724, against its own routes) puts first and the connection dials, so a dual-stack camera reached over IPv4 keeps UDP and multicast; a name still resolving keeps every transport this attempt and the next attempt reads the answer. An address literal is not looked up
-  - **After the fact:** the connection can land on the other family anyway (the first address refused or unreachable, the next one dialled; an IPv6 literal whose server describes IPv4). `on_bus_error` reads `Invalid address family` in the failed attempt's debug string and keeps that host on TCP interleaved for every later attempt and heal of this input; a changed URL host, or an input rebuilt by a saved change to the source's own settings or type, tries every transport again
+- `protocols` allows TCP + UDP + multicast, **except for a host whose attempt failed on the address family, which gets TCP interleaved only**: the transport follows what an attempt saw, and choosing it looks no name up (the bounded lookup of a pinned source's preflight is the pin's). `rtspsrc` opens a stream's UDP ports for the address type of the server's session description (`c=IN IP4` / `IP6`, IPv4 when there is none), not for the family the control connection reached the server on, so a server reached over IPv6 that describes IPv4 (or nothing) gets IPv4 ports, and the RTCP `udpsink` then refuses its address: `gst-resource-error-quark:13`, `Invalid address family` in the debug string, posted as a pipeline error after `on-sdp`. Verified against 1.28.7 on loopback with a stub server, for a name and an IPv6 literal alike; the 1.26 source picks the family the same way (`gst_rtspsrc_do_stream_connection`)
+  - A connection can reach the server on a family its session description does not name: a name whose first answer (RFC 6724) is IPv6, a fallback to the next address after the first is refused, or an IPv6 literal. Such an attempt fails once. `on_bus_error` reads `Invalid address family` in the failed attempt's debug string and keeps that host on TCP interleaved for every later attempt and heal of this input; a changed URL host, or an input rebuilt by a saved change to the source's own settings or type, tries every transport again
 - `tcp-timeout` 10 s so the element gives up before the connection timeout, `latency` 0, `drop-on-latency`, `buffer-mode` none; only the video track is linked into `decodebin`, since an NVR may list its audio track first
 
 ## USB Camera plugin (`video/inputs/v4l2.py`)
@@ -203,6 +202,22 @@ video input pin's preflight produces them, before anything is dialled, so
 even the placeholder, and retries on the input's own backoff; the placeholder
 appears only once the reconnects run out, as for any failure. `error_message`
 carries the interfaces the sentence cannot name.
+
+**The preflight never waits for DNS.** It runs on the main loop before every
+build, so it reads only the answer `HOST_RESOLVER` already holds for the source's
+name. `VideoInputBase.prefetch` starts that lookup ahead of the build: when the
+Video Source or a pin in the Interface Assignment panel is saved, at startup
+before detection and the display come up, and whenever the receiver schedules a
+retry. A build that meets no answer (none yet, or one past its lifetime, as on a
+heal) starts the lookup itself. A name whose lookup has run less than
+`_RESOLVE_WAIT_S` (0.3 s) is no failure yet, and that is checked before the pin's
+interface is, so a name that may turn out to be this station is not refused for
+an outage: the refusal carries `retry_s`, the input reads as connecting (no
+verdict, no error text, DEBUG log lines only) and is checked again by
+`_recheck_name` once that time is up, without spending a backoff step.
+A name unanswered past that time is no longer waited on: a down pin is
+`INTERFACE_DOWN`, otherwise the name is an `UNKNOWN` refusal ("did not resolve
+in time"), retried on the backoff like any other.
 
 **`REFUSED` has no observed producer.** `rtspsrc` reports a refused connection
 as `Failed to connect. (Generic error)`, the errno discarded inside GStreamer's

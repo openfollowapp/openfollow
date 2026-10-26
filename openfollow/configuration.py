@@ -1345,16 +1345,15 @@ class MidiPatch:
 
     @property
     def identifier(self) -> str:
-        """Stable device key matching ``_DiscoveredDevice.identifier`` in
-        the MIDI subsystem – ``serial:<serial>`` when a serial is known,
-        else ``port:<port_name>|<product>``. Empty when no device is bound
-        (a fresh patch). Used by the Device dropdown to mark the selected
-        option and to preserve a binding whose device is currently
-        disconnected (the row re-submits this same key)."""
+        """Stable device key matching ``DiscoveredDevice.identifier`` in
+        the MIDI subsystem – ``serial:<serial>|<port_name>`` when a serial is
+        known, else ``port:<port_name>|<product>``. Empty when no device is bound
+        (a fresh patch). The value a disconnected binding's option re-submits,
+        so a save keeps it."""
         if not (self.serial or self.port_name or self.product):
             return ""
         if self.serial:
-            return f"serial:{self.serial}"
+            return f"serial:{self.serial}|{self.port_name}"
         return f"port:{self.port_name}|{self.product}"
 
 
@@ -3552,8 +3551,8 @@ def _config_from_data(path: str, data: dict[str, Any]) -> AppConfig:
             if _old in _ctrl and _new not in _ctrl:
                 _ctrl[_new] = _ctrl[_old]
 
-    # Back-compat: read the marker's Z-line settings under their former names
-    # BEFORE ``_filter_known`` drops them, so an existing config keeps them.
+    # Back-compat: read ``invert_control_direction`` as the control frame
+    # BEFORE ``_filter_known`` drops it, so an existing config keeps it.
     _marker = data.get("marker")
     if isinstance(_marker, dict):
         apply_renamed_marker_keys(_marker)
@@ -3611,24 +3610,14 @@ def load_config_for_save(path: str, *, missing: Callable[[], AppConfig] | None =
 _DEPRECATED_WARNED: set[str] = set()
 
 
-_RENAMED_MARKER_KEYS: tuple[tuple[str, str], ...] = (
-    ("drop_line", "z_line"),
-    ("drop_line_thickness", "z_line_thickness"),
-)
-
-
 def apply_renamed_marker_keys(marker_data: dict[str, Any]) -> None:
-    """Read the marker's settings under their former names, in place.
+    """Read ``invert_control_direction`` as the control frame, in place.
 
-    Every route into a marker section goes through here - config file, JSON
-    config API, peer broadcast - so a station still sending the former names
-    during a rolling upgrade is understood rather than accepted and silently
-    discarded. The current name wins wherever both appear.
+    Every route into a marker section goes through here - config file, web
+    form, JSON config API, import, peer broadcast - so a station still sending
+    ``invert_control_direction`` during a rolling upgrade is understood rather
+    than accepted and silently discarded. A ``control_frame`` beside it wins.
     """
-    for old, new in _RENAMED_MARKER_KEYS:
-        if old in marker_data and new not in marker_data:
-            marker_data[new] = marker_data[old]
-            _warn_renamed_marker_key(old, new)
     # invert_control_direction is stage axes, or when true the heading of a camera looking downstage.
     if "invert_control_direction" in marker_data:
         inverted = _coerce_bool(marker_data.pop("invert_control_direction"), False)

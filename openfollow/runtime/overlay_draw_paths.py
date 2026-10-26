@@ -22,7 +22,7 @@ from openfollow.runtime.overlay_draw_style import (
     PATH_LOCKED_LINE_WIDTH,
     PATH_POINT_RADIUS,
 )
-from openfollow.runtime.overlay_layers import keep
+from openfollow.runtime.overlay_picture import box_picture, paste
 from openfollow.runtime.overlay_state import OverlayState
 
 
@@ -149,9 +149,7 @@ class PathCache:
             entry = (key, *_render(state, lines, w, h, view[-1], locked=locked))
             self._layers[locked] = entry
         _, picture, x0, y0 = entry
-        if picture is not None and not keep(cr, picture, x0, y0):
-            cr.set_source_surface(picture, x0, y0)
-            cr.paint()
+        paste(cr, picture, x0, y0)
 
 
 def _render(
@@ -171,11 +169,4 @@ def _render(
     y1 = min(h, int(math.ceil(bounds[:, 1].max())) + pad)
     if x1 <= x0 or y1 <= y0:
         return None, 0, 0
-    sx, sy = scale
-    # Drawn at the target's device scale, so a HiDPI screen gets sharp paths.
-    picture = cairo.ImageSurface(cairo.FORMAT_ARGB32, math.ceil((x1 - x0) * sx), math.ceil((y1 - y0) * sy))
-    picture.set_device_scale(sx, sy)
-    ctx = cairo.Context(picture)
-    ctx.translate(-x0, -y0)
-    _paint_paths(ctx, shapes, locked=locked)
-    return picture, x0, y0
+    return box_picture(lambda ctx: _paint_paths(ctx, shapes, locked=locked), x0, y0, x1, y1, scale, None), x0, y0

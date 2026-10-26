@@ -103,6 +103,7 @@ from openfollow.configuration import (
     save_config,
     viewed_with_controlled,
 )
+from openfollow.input.midi import bound_identifiers
 from openfollow.input.mouse3d_status import status_key
 from openfollow.lens_model import pull_back_to_valid
 
@@ -1500,6 +1501,15 @@ def _video_input_row(cfg: AppConfig, wait_s: float | None, names: _PanelNames) -
         return {**row, "key": "video_input_iface", "address": address, "editable": True, "blank": "all"}
     address = _egress_address(pin, target, "", resolver=HOST_RESOLVER, wait_s=wait_s, names=names)
     return {**row, "key": "video_input_iface", "address": address, "editable": True}
+
+
+def _prefetch_video_source(cfg: AppConfig) -> None:
+    """Start the lookup the saved video source's pin check reads, before the file watcher applies the save."""
+    from openfollow.video.inputs import get_input_class
+
+    input_cls = get_input_class(cfg.video_source_type)
+    if input_cls is not None:
+        input_cls.prefetch(input_cls.runtime_config(cfg))
 
 
 _PLANE_PIN_LABELS = {key: label for key, _owner, _name, label in PLANE_PIN_FIELDS}
@@ -2945,6 +2955,11 @@ def _midi_patches_for_form(cfg: AppConfig) -> list[dict[str, Any]]:
     it's named. The dropdown's value is the patch id; ``0`` is "any patch".
     """
     return [{"id": patch.id, "label": patch.label} for patch in cfg.midi.patches if patch.id >= 1]
+
+
+def _midi_device_context(cfg: AppConfig, devices: list[dict[str, Any]]) -> dict[str, Any]:
+    """The connected devices and, per patch id, the one its Device dropdown selects."""
+    return {"discovered_devices": devices, "bound_devices": bound_identifiers(cfg.midi.patches, devices)}
 
 
 def _osc_binding_form_sources(cfg: AppConfig) -> dict[str, Any]:
@@ -6088,11 +6103,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         extra_fields: dict[str, Any] | None = None,
     ) -> AppConfig:
         form_data = dict(request.forms)
-        if section == "marker":
-            apply_renamed_marker_keys(form_data)
-        # Test ``form_data``, not ``request.forms``: a checkbox translated from
-        # its former name above is present here and nowhere else, and would
-        # otherwise be synthesised straight back to False.
         for field_name in bool_fields:
             form_data[field_name] = field_name in form_data
         if extra_fields:
@@ -6284,7 +6294,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # MIDI Devices table needs the live discovered-devices list so
             # it renders connected ports at first paint, not after the first
             # HTMX refresh.
-            midi_discovered_devices=server.midi_discovered_devices(),
+            midi_devices=_midi_device_context(config, server.midi_discovered_devices()),
             # Per-controlled-marker fader snapshot so the MIDI page's
             # read-only Marker Faders strips render populated at first paint.
             marker_fader_values=server.marker_fader_values(),
@@ -7544,6 +7554,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         offers Restart OpenFollow.
         """
         cfg = _save_section_from_form("interface_assignment")
+        _prefetch_video_source(cfg)
         return _render_interface_assignment(cfg, saved=True)
 
     @app.post("/section/video_source")
@@ -7555,6 +7566,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             apply_section_data(cfg, "video_source", form_data)
             save_config(cfg, server.config_path)
 
+        _prefetch_video_source(cfg)
         return _render_video_source(cfg, saved=True)
 
     @app.post("/section/general")
@@ -7979,7 +7991,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             config=cfg,
             saved=saved,
             selected_fader=selected_fader,
-            discovered_devices=server.midi_discovered_devices(),
+            **_midi_device_context(cfg, server.midi_discovered_devices()),
             midi_patches=_midi_patches_for_form(cfg),
             valid_fader_midi_types=VALID_FADER_MIDI_TYPES,
             marker_fader_values=server.marker_fader_values(),

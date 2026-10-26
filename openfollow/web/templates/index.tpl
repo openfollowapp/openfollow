@@ -96,7 +96,7 @@
     % from openfollow.configuration import VALID_FADER_MIDI_TYPES
     % include('partials/midi.tpl',
     %     config=config, saved=False,
-    %     discovered_devices=midi_discovered_devices,
+    %     **midi_devices,
     %     valid_fader_midi_types=VALID_FADER_MIDI_TYPES,
     %     marker_fader_values=marker_fader_values,
     %     fader_values=fader_values)

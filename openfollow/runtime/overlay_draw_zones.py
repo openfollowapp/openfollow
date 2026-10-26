@@ -13,8 +13,7 @@ import numpy.typing as npt
 
 from openfollow.runtime.overlay_draw_scene import _DISTORTION_SUBDIVISIONS, _project_segments, project
 from openfollow.runtime.overlay_draw_style import parse_hex
-from openfollow.runtime.overlay_layers import keep
-from openfollow.runtime.overlay_picture import ink_picture, target_font_options
+from openfollow.runtime.overlay_picture import ink_picture, paste, target_font_options
 from openfollow.runtime.overlay_state import OverlayState
 
 _LABEL_SIZE = 13
@@ -159,9 +158,7 @@ class ZoneCache:
         if self._entry is None or self._entry[0] != key:
             self._entry = (key, *self._render(renderer, _zone_outlines(state, w, h), w, h, scale, options))
         _, picture, x0, y0 = self._entry
-        if picture is not None and not keep(cr, picture, x0, y0):
-            cr.set_source_surface(picture, x0, y0)
-            cr.paint()
+        paste(cr, picture, x0, y0)
 
     @staticmethod
     def _render(

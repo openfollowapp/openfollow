@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from openfollow.logging_setup import ThrottledExceptionLogger
 from openfollow.runtime.overlay_layout import PictureGeometry, SceneView, scene_view
+from openfollow.video import gl_display
 
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp
@@ -41,16 +42,19 @@ def operator_screen_size(app: OpenFollowApp) -> tuple[int, int]:
 
 
 def operator_scene_view(app: OpenFollowApp) -> SceneView:
-    """Where the scene sits on the Operator Screen: the box the sink letterboxes the picture into.
+    """Where the scene sits on the Operator Screen: the box the active display letterboxes the picture into.
 
-    The last source picture on the sink (``picture_geometry``) on the canvas of
-    ``operator_screen_size``; the whole canvas before any picture. Main thread:
-    the frame loop hands it to the renderer, and the mouse and the control
-    frame read the screen through the same view.
+    The last source picture (``picture_geometry``) on the canvas of
+    ``operator_screen_size``; the whole canvas before any picture. The GL
+    display fits the stored frame at square pixels, gtksink the frame's display
+    size. Main thread: the frame loop hands it to the renderer, and the mouse
+    and the control frame read the screen through the same view.
     """
     width, height = operator_screen_size(app)
     receiver = app._video_receiver
     picture = PictureGeometry() if receiver is None else receiver.picture_geometry
+    if getattr(app._canvas, "gl_display_attached", False):
+        return gl_display.scene_view(picture.width, picture.height, width, height)
     return scene_view(width, height, picture.width, picture.height, picture.par)
 
 
@@ -396,6 +400,11 @@ class GtkNativeSinkWindow:
         self._gl_display = None
         self._hud_drawing_area.set_no_show_all(False)
         self._hud_drawing_area.show()
+
+    @property
+    def gl_display_attached(self) -> bool:
+        """Whether the GL display shows the video and the HUD, in place of gtksink and the Cairo HUD."""
+        return self._gl_display is not None
 
     def gdk_window(self) -> Any:
         """The realized toplevel's GDK window, for probing a GL context before the GL display is chosen."""

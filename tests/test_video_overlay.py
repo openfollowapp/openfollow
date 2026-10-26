@@ -1017,8 +1017,9 @@ def test_the_renderer_keeps_its_paths_as_one_picture_between_frames(monkeypatch)
         ("settings_menu_active", True),
         ("camera_params", None),
         ("button_detection", ButtonDetectionState(active=True)),
+        ("scene_view", SceneView(VideoRect(0, 0, 0, 0), 1.0)),
     ],
-    ids=["menu-open", "no-camera", "button-wizard"],
+    ids=["menu-open", "no-camera", "button-wizard", "no-picture-area"],
 )
 def test_the_renderer_lets_its_path_pictures_go_while_the_scene_is_not_drawn(monkeypatch, field, value) -> None:
     from openfollow.runtime import overlay_draw_paths
@@ -1070,8 +1071,9 @@ def test_the_renderer_keeps_its_zones_as_one_picture_between_frames() -> None:
         ("settings_menu_active", True),
         ("camera_params", None),
         ("button_detection", ButtonDetectionState(active=True)),
+        ("scene_view", SceneView(VideoRect(0, 0, 0, 0), 1.0)),
     ],
-    ids=["menu-open", "no-camera", "button-wizard"],
+    ids=["menu-open", "no-camera", "button-wizard", "no-picture-area"],
 )
 def test_the_renderer_lets_its_zone_picture_go_while_the_scene_is_not_drawn(field: str, value: object) -> None:
     renderer = _zone_renderer()
@@ -1126,8 +1128,9 @@ def test_the_renderer_keeps_its_grid_as_one_picture_between_frames() -> None:
         ("settings_menu_active", True),
         ("camera_params", None),
         ("button_detection", ButtonDetectionState(active=True)),
+        ("scene_view", SceneView(VideoRect(0, 0, 0, 0), 1.0)),
     ],
-    ids=["menu-open", "no-camera", "button-wizard"],
+    ids=["menu-open", "no-camera", "button-wizard", "no-picture-area"],
 )
 def test_the_renderer_lets_its_grid_picture_go_while_the_scene_is_not_drawn(field: str, value: object) -> None:
     renderer = _grid_renderer()

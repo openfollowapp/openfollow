@@ -1329,7 +1329,9 @@ class TestHudTick:
         renders: list[Any] = []
         ticks: list[int] = []
         display = SimpleNamespace(queue_render=renders.append)
+        assert window.gl_display_attached is False
         window.attach_gl_display(display, tick=lambda: ticks.append(1) or False)
+        assert window.gl_display_attached is True
         window.start_hud_tick()
         clocks = [object() for _ in range(3)]
         for clock in clocks:
@@ -1347,6 +1349,7 @@ class TestHudTick:
         before = window._hud_drawing_area.queue_draw_calls
         window._window.tick(object())
 
+        assert window.gl_display_attached is False
         assert renders == []
         assert window._hud_drawing_area.hidden is False and window._hud_drawing_area.no_show_all is False
         assert window._hud_drawing_area.queue_draw_calls == before + 1

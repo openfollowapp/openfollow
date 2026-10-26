@@ -87,7 +87,7 @@ The dialog opens on two warnings: the Operator Screen will flash black and white
 
 Each change of the screen, white and back to black, is timed from the display refresh that showed it to the first decoded frame in which the picture changed: ten changes in all. The result is the median of the ten, with the shortest and longest beside it. It includes everything between the screen and the decoded frame: the camera's exposure and processing, encoding, the network, buffering in the stream and in the station, decoding, and the delay of the screen itself, so the same camera can read differently on another monitor.
 
-The result is green below 120 ms, amber from 120 to 250 ms and red from 250 ms. At walking pace, about 1.5 m/s, a performer moves about 15 cm in 100 ms before the Operator Screen shows it. **Measure again** measures straight away, without the warnings.
+The result is green below 120 ms, amber from 120 to 250 ms and red from 250 ms. At walking pace, about 1.5 m/s, a performer moves about 15 cm in 100 ms before the Operator Screen shows it. **Measure again**, and **Try again** after a measurement that failed, measure straight away, without the warnings.
 
 **No flash seen in the video within 3 s** means the picture never got brighter after the screen turned white: the camera does not see the Operator Screen, or the screen is too small a part of its picture to change the brightness. **The video did not go dark again within 3 s of the flash** means the picture stayed bright after the screen turned black. A measurement also ends when the video source changes, its video is rebuilt (the station reconnecting, or the Operator Screen changing how it draws) or it stops while the measurement lasts.
 

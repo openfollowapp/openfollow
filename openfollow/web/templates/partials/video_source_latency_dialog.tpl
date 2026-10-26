@@ -23,7 +23,7 @@
     </div>
     <div class="notice warning">
         <div>Never during a show.</div>
-        <div class="notice-sub">For about 5 seconds the Operator Screen shows no video and no markers, so nobody can follow a performer on it.</div>
+        <div class="notice-sub">For about 5 seconds, longer with a slow camera, the Operator Screen shows no video and no markers, so nobody can follow a performer on it.</div>
     </div>
     <p>The station flashes its Operator Screen and times each flash in the camera's picture. The result is the round trip from the screen, through the camera and the stream, back to the station.</p>
     <ol>

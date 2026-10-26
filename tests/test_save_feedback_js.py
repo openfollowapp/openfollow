@@ -24,7 +24,8 @@ _MARKUP = (
     '<button type="button" id="start" data-error-lead="Not started.">Start</button></div>'
     '<div id="renewal" hidden data-error-quiet></div></div>'
 )
-_REFUSED = json.dumps({"error": "No video is arriving.", "action": "Measure once the camera's picture shows."})
+_ACTION = "Measure when the camera's picture is on the Operator Screen."
+_REFUSED = json.dumps({"error": "No video is arriving.", "action": _ACTION})
 
 
 def _failed(event: str, button: str, then: str = "") -> Any:
@@ -54,7 +55,7 @@ def _failed(event: str, button: str, then: str = "") -> Any:
 
 def test_a_refused_start_reads_with_its_own_lead_in_its_dialog() -> None:
     assert _failed("htmx:responseError", "start") == {
-        "line": "Not started. No video is arriving. Measure once the camera's picture shows.",
+        "line": f"Not started. No video is arriving. {_ACTION}",
         "box": "card",
         "ringed": ["card"],
     }
@@ -85,7 +86,7 @@ def _request(elt: str) -> str:
 
 def test_a_refused_start_s_line_outlasts_the_renewals_posting_beside_it() -> None:
     out = _failed("htmx:responseError", "start", _request("renewal") * 3)
-    assert out["line"] == "Not started. No video is arriving. Measure once the camera's picture shows."
+    assert out["line"] == f"Not started. No video is arriving. {_ACTION}"
 
 
 def test_another_start_clears_the_line() -> None:

@@ -9762,6 +9762,7 @@ def test_the_dialog_opens_on_its_warnings_and_its_renewal_puts_the_card_up(live_
     assert not server.latency_warning.showing()
     hazard = body.index("WARNING: PHOTOSENSITIVITY / EPILEPSY SEIZURES")
     show = body.index("Never during a show.")
+    assert "For about 5 seconds, longer with a slow camera, the Operator Screen shows no video and no markers" in body
     assert hazard < show < body.index("The station flashes its Operator Screen")
     assert body.count('<div class="notice warning">') == 2
     footer = _footer(body)
@@ -9930,17 +9931,14 @@ def test_start_while_it_cannot_run_answers_409_with_the_reason(
     assert not server._command_queue.consume_latency_requested()
 
 
-def test_the_warning_card_is_renewed_and_closed_by_its_token(live_server, monkeypatch) -> None:
+def test_the_warning_card_is_put_up_and_taken_down_by_its_token(live_server) -> None:
     server, base = live_server
-    renewed: list[str] = []
-    closed: list[str] = []
-    monkeypatch.setattr(server.latency_warning, "renew", renewed.append)
-    monkeypatch.setattr(server.latency_warning, "close", closed.append)
     token = "Abc_DEF-123456789"
+    assert not server.latency_warning.showing()
     status, _body = _post_form(base, "/section/video_source/latency/warning", {"token": token})
-    assert status == 204 and renewed == [token]
+    assert status == 204 and server.latency_warning.showing()
     status, _body = _post_form(base, f"/section/video_source/latency/warning/close?token={token}", {})
-    assert status == 204 and closed == [token]
+    assert status == 204 and not server.latency_warning.showing()
 
 
 @pytest.mark.parametrize("token", ["", "short", "x" * 65, "bad token!!!!!!!!"])

@@ -9,6 +9,7 @@ RenderCanvas-compatible event API and a display-tick animation loop.
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import sys
 from collections.abc import Callable
@@ -129,6 +130,62 @@ _GDK_KEY_MAP: dict[str, str] = {
 # event; the size of a single event says how fast the wheel turned, not how far.
 _SCROLL_UNIT_QUARTZ = 100.0
 
+_LIBOBJC = "/usr/lib/libobjc.A.dylib"
+_APPKIT = "/System/Library/Frameworks/AppKit.framework/AppKit"
+
+
+class _NSPoint(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double)]
+
+
+class _AppKitPointerProbe:
+    """macOS: whether a mouse-down at the pointer would land on one of this app's windows.
+
+    AppKit's hit-test sees every app's windows; GDK's sees only this app's.
+    """
+
+    def __init__(self) -> None:
+        objc = ctypes.cdll.LoadLibrary(_LIBOBJC)
+        ctypes.cdll.LoadLibrary(_APPKIT)
+        objc.objc_getClass.restype = ctypes.c_void_p
+        objc.objc_getClass.argtypes = [ctypes.c_char_p]
+        objc.sel_registerName.restype = ctypes.c_void_p
+        objc.sel_registerName.argtypes = [ctypes.c_char_p]
+        self._objc = objc
+        self._event = objc.objc_getClass(b"NSEvent")
+        self._ns_window = objc.objc_getClass(b"NSWindow")
+        application = objc.objc_getClass(b"NSApplication")
+        if not (self._event and self._ns_window and application):
+            raise OSError("AppKit classes unavailable")
+        self._app = self._message(b"sharedApplication", ctypes.c_void_p)(application)
+        self._mouse_location = self._message(b"mouseLocation", _NSPoint)
+        self._number_at = self._message(
+            b"windowNumberAtPoint:belowWindowWithWindowNumber:", ctypes.c_long, _NSPoint, ctypes.c_long
+        )
+        self._window_with = self._message(b"windowWithWindowNumber:", ctypes.c_void_p, ctypes.c_long)
+
+    def _message(self, selector: bytes, restype: Any, *argtypes: Any) -> Callable[..., Any]:
+        # Indexing returns a new function object, so each message keeps its own C signature.
+        send = self._objc["objc_msgSend"]
+        send.restype = restype
+        send.argtypes = [ctypes.c_void_p, ctypes.c_void_p, *argtypes]
+        sel = self._objc.sel_registerName(selector)
+        return lambda receiver, *args: send(receiver, sel, *args)
+
+    def __call__(self) -> bool:
+        number = self._number_at(self._ns_window, self._mouse_location(self._event), 0)
+        return bool(self._window_with(self._app, number))
+
+
+def _pointer_probe() -> Callable[[], bool]:
+    try:
+        return _AppKitPointerProbe()
+    except (OSError, AttributeError):
+        logger.warning(
+            "Window under the pointer unknown: clicks in a window over the Operator Screen reach it", exc_info=True
+        )
+        return lambda: True
+
 
 class GtkNativeSinkWindow:
     """GTK 3 window for GStreamer native sink mode.
@@ -190,9 +247,11 @@ class GtkNativeSinkWindow:
         # sends one event per click instead.
         self._scroll_is_batched = sys.platform == "darwin"
         self._pointer_device: Any = None  # lazily acquired on the first poll
+        self._pointer_probe: Callable[[], bool] | None = None  # built on first use
         self._poll_last_pos: tuple[int, int] | None = None
-        self._poll_btn1 = False
-        self._poll_btn3 = False
+        # Held buttons, each with whether its press was the Operator Screen's.
+        self._poll_held: dict[int, bool] = {}
+        self._poll_was_key = True
         # The pointer poll runs every frame; throttle its failure log so a
         # persistent error can't flood the journal at the display tick rate.
         self._poll_err_log = ThrottledExceptionLogger(logger, "Pointer poll failed")
@@ -469,35 +528,6 @@ class GtkNativeSinkWindow:
             self._window.remove_tick_callback(self._tick_callback_id)
             self._tick_callback_id = None
 
-    @staticmethod
-    def _poll_pointer_events(
-        state: tuple[tuple[int, int] | None, bool, bool],
-        x: int,
-        y: int,
-        b1: bool,
-        b3: bool,
-        within: bool,
-    ) -> tuple[list[tuple[str, dict[str, Any]]], tuple[tuple[int, int], bool, bool]]:
-        """Pure edge-detection for the macOS pointer poll.
-
-        Given the previous ``(last_pos, last_b1, last_b3)`` and the freshly polled
-        position / button state, return the pointer events to emit and the new
-        state. Grab / release / reset all happen on a button *press*, so only
-        down edges over the canvas (``within``) are emitted; a move on the same
-        frame as a grab is suppressed so the grab seeds its baseline without
-        yanking the marker.
-        """
-        last_pos, last_b1, last_b3 = state
-        events: list[tuple[str, dict[str, Any]]] = []
-        b1_grab = b1 and not last_b1 and within
-        if b1_grab:
-            events.append(("pointer_down", {"x": x, "y": y, "button": 1}))
-        if b3 and not last_b3 and within:
-            events.append(("pointer_down", {"x": x, "y": y, "button": 3}))
-        if within and (x, y) != last_pos and not b1_grab:
-            events.append(("pointer_move", {"x": x, "y": y}))
-        return events, ((x, y), b1, b3)
-
     def _acquire_pointer_device(self) -> Any:
         try:
             seat = self._Gdk.Display.get_default().get_default_seat()
@@ -511,6 +541,16 @@ class GtkNativeSinkWindow:
         No-op where GTK delivers pointer events (Linux/Pi). The emitted events go
         through the same ``_emit`` path as the GTK signal handlers, so all
         downstream gating and ``MouseHandler`` behaviour is unchanged.
+
+        Quartz reports the pointer and buttons for the whole screen, so nothing
+        is emitted unless this is the key window, and a press acts only if it
+        starts on the canvas where a mouse-down lands on this window, and not
+        on the frame the window became key; it keeps that owner until
+        released. A move counts while the pointer is over the window or a
+        press the window took is held, never while one it did not take is
+        held. Grab, release and reset happen on a press, so no release is
+        emitted; a move on the frame of a grab is dropped so the grab seeds
+        its baseline without yanking the marker.
         """
         if not self._pointer_poll:
             return
@@ -524,16 +564,37 @@ class GtkNativeSinkWindow:
             return
         _w, x, y, mask = gwin.get_device_position(self._pointer_device)
         Gdk = self._Gdk
-        b1 = bool(mask & Gdk.ModifierType.BUTTON1_MASK)
-        b3 = bool(mask & Gdk.ModifierType.BUTTON3_MASK)
+        down = {
+            button
+            for button, bit in ((1, Gdk.ModifierType.BUTTON1_MASK), (3, Gdk.ModifierType.BUTTON3_MASK))
+            if mask & bit
+        }
         cw, ch = self.get_canvas_size()
         within = 0 <= x < cw and 0 <= y < ch
-        events, new_state = self._poll_pointer_events(
-            (self._poll_last_pos, self._poll_btn1, self._poll_btn3), x, y, b1, b3, within
-        )
-        self._poll_last_pos, self._poll_btn1, self._poll_btn3 = new_state
-        for etype, kwargs in events:
-            self._emit(etype, **kwargs)
+        key = bool(self._window.has_toplevel_focus())
+        regained = key and not self._poll_was_key
+        self._poll_was_key = key
+        held = {button: ours for button, ours in self._poll_held.items() if button in down}
+        pressed = [button for button in (1, 3) if button in down and button not in held]
+        moved = within and (x, y) != self._poll_last_pos
+        self._poll_last_pos = (x, y)
+        # AppKit's hit-test is a WindowServer round trip: asked only when an event may follow.
+        over = key and within and bool(pressed or moved) and self._pointer_over_window()
+        for button in pressed:
+            held[button] = over and not regained
+        self._poll_held = held
+        for button in pressed:
+            if held[button]:
+                self._emit("pointer_down", x=x, y=y, button=button)
+        grabbed = held.get(1, False) and 1 in pressed
+        steers = all(held.values()) if held else over
+        if moved and key and steers and not grabbed:
+            self._emit("pointer_move", x=x, y=y)
+
+    def _pointer_over_window(self) -> bool:
+        if self._pointer_probe is None:
+            self._pointer_probe = _pointer_probe()
+        return self._pointer_probe()
 
     def _on_tick(self, widget: Any, frame_clock: Any, user_data: Any) -> bool:
         """GTK tick callback – runs once per display frame."""

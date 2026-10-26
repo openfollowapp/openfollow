@@ -1863,6 +1863,39 @@ _B1 = FakeGdkModifierType.BUTTON1_MASK
 _B3 = FakeGdkModifierType.BUTTON3_MASK
 
 
+class _PointerFrames:
+    """Drives ``poll_pointer`` one frame at a time on a 1280x720 canvas.
+
+    Each frame sets the pointer, the buttons, whether the Operator Screen is the
+    key window, and whether a mouse-down at the pointer would land on it.
+    """
+
+    def __init__(self, window: Any) -> None:
+        self._window = window
+        self._sample = (0, 0, 0)
+        self._over = True
+        self.probes = 0
+        self.events: list[tuple[str, dict[str, Any]]] = []
+        window._pointer_poll = True
+        window._pointer_device = object()
+        window._pointer_probe = self._probe
+        window._box._alloc_w = 1280
+        window._box._alloc_h = 720
+        window._window._gdk_window = SimpleNamespace(get_device_position=lambda _device: (None, *self._sample))
+        for kind in ("pointer_down", "pointer_move", "pointer_up"):
+            window.add_event_handler(lambda payload, kind=kind: self.events.append((kind, payload)), kind)
+
+    def _probe(self) -> bool:
+        self.probes += 1
+        return self._over
+
+    def poll(self, x: int, y: int, mask: int = 0, *, key: bool = True, over: bool = True) -> None:
+        self._sample = (x, y, mask)
+        self._over = over
+        self._window._window.toplevel_focus = key
+        self._window.poll_pointer()
+
+
 class TestPointerPoll:
     """On macOS the window polls the pointer each frame and synthesises the
     same pointer events the GTK signal handlers would."""
@@ -1872,42 +1905,228 @@ class TestPointerPoll:
         window.add_event_handler(collected.append, event)
         return collected
 
-    # --- pure edge-detection helper -------------------------------------
+    # --- edge detection -------------------------------------------------
 
     def test_left_press_over_canvas_grabs(self, window) -> None:
-        events, state = window._poll_pointer_events((None, False, False), 100, 200, True, False, True)
-        assert events == [("pointer_down", {"x": 100, "y": 200, "button": 1})]
-        assert state == ((100, 200), True, False)
+        frames = _PointerFrames(window)
+        frames.poll(100, 200, _B1)
+        assert frames.events == [("pointer_down", {"x": 100, "y": 200, "button": 1})]
 
-    def test_press_outside_canvas_does_not_grab(self, window) -> None:
-        events, _ = window._poll_pointer_events((None, False, False), 5, 5, True, False, False)
-        assert events == []
+    @pytest.mark.parametrize(("x", "y"), [(-5, 200), (1280, 200), (100, -1), (100, 720)])
+    def test_press_outside_canvas_does_not_grab(self, window, x: int, y: int) -> None:
+        frames = _PointerFrames(window)
+        frames.poll(x, y, _B1)
+        assert frames.events == []
 
     def test_right_press_over_canvas_emits_button3(self, window) -> None:
-        events, _ = window._poll_pointer_events(((10, 10), False, False), 10, 10, False, True, True)
-        assert events == [("pointer_down", {"x": 10, "y": 10, "button": 3})]
+        frames = _PointerFrames(window)
+        frames.poll(10, 10)
+        frames.poll(10, 10, _B3)
+        assert frames.events == [
+            ("pointer_move", {"x": 10, "y": 10}),
+            ("pointer_down", {"x": 10, "y": 10, "button": 3}),
+        ]
 
     def test_position_change_emits_move(self, window) -> None:
-        events, _ = window._poll_pointer_events(((10, 10), False, False), 30, 40, False, False, True)
-        assert events == [("pointer_move", {"x": 30, "y": 40})]
+        frames = _PointerFrames(window)
+        frames.poll(10, 10)
+        frames.poll(30, 40)
+        assert frames.events[-1] == ("pointer_move", {"x": 30, "y": 40})
 
     def test_unchanged_position_emits_nothing(self, window) -> None:
-        events, _ = window._poll_pointer_events(((30, 40), False, False), 30, 40, False, False, True)
-        assert events == []
+        frames = _PointerFrames(window)
+        frames.poll(30, 40)
+        frames.events.clear()
+        frames.poll(30, 40)
+        assert frames.events == []
 
     def test_no_move_on_grab_frame(self, window) -> None:
         # Cursor moved AND left-pressed in one frame: only the grab is emitted
         # so it seeds its baseline without yanking the marker.
-        events, _ = window._poll_pointer_events((None, False, False), 50, 60, True, False, True)
-        assert events == [("pointer_down", {"x": 50, "y": 60, "button": 1})]
+        frames = _PointerFrames(window)
+        frames.poll(10, 10)
+        frames.events.clear()
+        frames.poll(50, 60, _B1)
+        assert frames.events == [("pointer_down", {"x": 50, "y": 60, "button": 1})]
 
     def test_no_move_when_outside_canvas(self, window) -> None:
-        events, _ = window._poll_pointer_events(((10, 10), False, False), 99, 99, False, False, False)
-        assert events == []
+        frames = _PointerFrames(window)
+        frames.poll(10, 10)
+        frames.events.clear()
+        frames.poll(1300, 99)
+        assert frames.events == []
 
     def test_held_button_is_not_a_new_press(self, window) -> None:
-        events, _ = window._poll_pointer_events(((10, 10), True, False), 10, 10, True, False, True)
-        assert events == []
+        frames = _PointerFrames(window)
+        frames.poll(10, 10, _B1)
+        frames.events.clear()
+        frames.poll(10, 10, _B1)
+        assert frames.events == []
+
+    def test_both_buttons_pressed_together_both_count(self, window) -> None:
+        frames = _PointerFrames(window)
+        frames.poll(10, 10, _B1 | _B3)
+        assert frames.events == [
+            ("pointer_down", {"x": 10, "y": 10, "button": 1}),
+            ("pointer_down", {"x": 10, "y": 10, "button": 3}),
+        ]
+
+    def test_press_whose_handler_raised_is_not_emitted_again(self, window) -> None:
+        frames = _PointerFrames(window)
+
+        def _boom(_payload: dict[str, Any]) -> None:
+            raise RuntimeError("handler boom")
+
+        window.add_event_handler(_boom, "pointer_down")
+        with pytest.raises(RuntimeError):
+            frames.poll(100, 200, _B1)
+        frames.poll(100, 200, _B1)
+        assert frames.events == [("pointer_down", {"x": 100, "y": 200, "button": 1})]
+
+    # --- ownership: only the Operator Screen's own presses act -----------
+
+    def test_click_in_a_window_over_the_screen_grabs_nothing(self, window) -> None:
+        frames = _PointerFrames(window)
+        frames.poll(100, 200, _B1, over=False)
+        frames.poll(100, 200, over=False)
+        assert frames.events == []
+
+    def test_double_right_click_in_a_window_over_the_screen_does_nothing(self, window) -> None:
+        frames = _PointerFrames(window)
+        for mask in (_B3, 0, _B3, 0):
+            frames.poll(100, 200, mask, over=False)
+        assert frames.events == []
+
+    def test_moves_in_a_window_over_the_screen_do_not_steer(self, window) -> None:
+        frames = _PointerFrames(window)
+        frames.poll(100, 200, _B1)
+        frames.events.clear()
+        frames.poll(100, 200)  # released: the grab stays, the marker follows moves
+        frames.poll(140, 260, over=False)
+        frames.poll(180, 300, over=False)
+        assert frames.events == []
+        frames.poll(200, 320)
+        assert frames.events == [("pointer_move", {"x": 200, "y": 320})]
+
+    def test_nothing_acts_while_another_window_is_key(self, window) -> None:
+        frames = _PointerFrames(window)
+        frames.poll(10, 10)
+        frames.events.clear()
+        frames.poll(100, 200, _B1, key=False)
+        frames.poll(100, 200, key=False)
+        frames.poll(140, 260, key=False)
+        frames.poll(140, 260, _B3, key=False)
+        assert frames.events == []
+
+    def test_press_that_started_while_another_window_was_key_stays_ignored(self, window) -> None:
+        frames = _PointerFrames(window)
+        frames.poll(100, 200, _B1, key=False)
+        frames.poll(100, 200, _B1)
+        frames.poll(140, 260, _B1)
+        assert frames.events == []
+        frames.poll(140, 260)
+        frames.poll(140, 260, _B1)
+        assert frames.events == [("pointer_down", {"x": 140, "y": 260, "button": 1})]
+
+    def test_press_on_the_frame_the_screen_becomes_key_is_ignored(self, window) -> None:
+        # The click that brings the Operator Screen to the front only activates it.
+        frames = _PointerFrames(window)
+        frames.poll(100, 200, key=False)
+        frames.poll(100, 200, _B1)
+        frames.poll(100, 200)
+        assert frames.events == []
+        frames.poll(100, 200, _B1)
+        assert frames.events == [("pointer_down", {"x": 100, "y": 200, "button": 1})]
+
+    def test_drag_started_on_the_screen_keeps_steering_over_a_window_above_it(self, window) -> None:
+        frames = _PointerFrames(window)
+        frames.poll(100, 200, _B1)
+        frames.poll(140, 260, _B1, over=False)
+        assert frames.events == [
+            ("pointer_down", {"x": 100, "y": 200, "button": 1}),
+            ("pointer_move", {"x": 140, "y": 260}),
+        ]
+
+    def test_drag_started_in_a_window_above_the_screen_steers_nothing(self, window) -> None:
+        frames = _PointerFrames(window)
+        frames.poll(100, 200, _B1)
+        frames.poll(100, 200)
+        frames.events.clear()
+        frames.poll(120, 220, _B1, over=False)
+        frames.poll(140, 260, _B1)
+        frames.poll(180, 300, _B1)
+        assert frames.events == []
+        frames.poll(180, 300)
+        frames.poll(200, 320)
+        assert frames.events == [("pointer_move", {"x": 200, "y": 320})]
+
+    def test_press_outside_the_canvas_dragged_onto_it_steers_nothing(self, window) -> None:
+        frames = _PointerFrames(window)
+        frames.poll(100, 200, _B1)
+        frames.poll(100, 200)
+        frames.events.clear()
+        frames.poll(100, -10, _B1)  # the title bar
+        frames.poll(140, 260, _B1)
+        assert frames.events == []
+
+    def test_drag_stops_steering_once_another_window_is_key(self, window) -> None:
+        frames = _PointerFrames(window)
+        frames.poll(100, 200, _B1)
+        frames.events.clear()
+        frames.poll(140, 260, _B1, key=False)
+        assert frames.events == []
+
+    def test_still_pointer_is_not_hit_tested(self, window) -> None:
+        frames = _PointerFrames(window)
+        frames.poll(100, 200)
+        asked = frames.probes
+        frames.poll(100, 200)
+        frames.poll(1300, 200)
+        frames.poll(1300, 200, _B1)
+        frames.poll(100, 200, key=False)
+        assert frames.probes == asked
+
+    # --- the hit-test behind it -------------------------------------------
+
+    def test_hit_test_is_built_on_first_use(self, window, monkeypatch) -> None:
+        import openfollow.window as window_module
+
+        built: list[bool] = []
+
+        class _Probe:
+            def __init__(self) -> None:
+                built.append(True)
+
+            def __call__(self) -> bool:
+                return False
+
+        monkeypatch.setattr(window_module, "_AppKitPointerProbe", _Probe)
+        frames = _PointerFrames(window)
+        window._pointer_probe = None
+        frames.poll(100, 200)
+        frames.poll(100, 200, _B1)
+        assert built == [True]
+        assert frames.events == []
+
+    def test_without_a_hit_test_the_canvas_counts_as_the_screen(self, window, monkeypatch, caplog) -> None:
+        import logging
+
+        import openfollow.window as window_module
+
+        def _unavailable() -> Any:
+            raise OSError("no AppKit")
+
+        monkeypatch.setattr(window_module, "_AppKitPointerProbe", _unavailable)
+        frames = _PointerFrames(window)
+        window._pointer_probe = None
+        with caplog.at_level(logging.WARNING, logger="openfollow.window"):
+            frames.poll(100, 200, _B1)
+            frames.poll(140, 260, _B1)
+        assert frames.events == [
+            ("pointer_down", {"x": 100, "y": 200, "button": 1}),
+            ("pointer_move", {"x": 140, "y": 260}),
+        ]
+        assert [r.levelname for r in caplog.records] == ["WARNING"]
 
     # --- poll_pointer integration (GDK read -> emit) --------------------
 
@@ -1920,6 +2139,7 @@ class TestPointerPoll:
     def test_poll_pointer_emits_grab_then_move(self, window) -> None:
         window._pointer_poll = True
         window._pointer_device = object()  # skip the lazy Gdk.Display acquire
+        window._pointer_probe = lambda: True
         window._box._alloc_w = 1280
         window._box._alloc_h = 720
         window._window._gdk_window = _PollSurface(
@@ -1967,6 +2187,7 @@ class TestPointerPoll:
         monkeypatch.setattr(window._Gdk, "Display", _Display, raising=False)
         window._pointer_poll = True
         window._pointer_device = None
+        window._pointer_probe = lambda: True
         window._box._alloc_w = 1280
         window._box._alloc_h = 720
         window._window._gdk_window = _PollSurface([(100, 200, _B1)])
@@ -1989,3 +2210,128 @@ class TestPointerPoll:
         with caplog.at_level(logging.ERROR):
             assert window._window.tick() is True
         assert any("Pointer poll failed" in rec.message for rec in caplog.records)
+
+
+# --------------------------------------------------------------------------- #
+# macOS: which window a mouse-down at the pointer lands on
+# --------------------------------------------------------------------------- #
+
+
+class _FakeCFunction:
+    """A ctypes function stand-in: settable ``restype`` / ``argtypes``, scripted reply."""
+
+    def __init__(self, reply: Callable[..., Any]) -> None:
+        self.restype: Any = None
+        self.argtypes: Any = None
+        self.selectors: list[bytes] = []
+        self._reply = reply
+
+    def __call__(self, *args: Any) -> Any:
+        return self._reply(self, *args)
+
+
+class _FakeObjc:
+    """libobjc stand-in: classes and selectors are their names, messages answer from ``replies``."""
+
+    def __init__(self, replies: dict[bytes, Callable[..., Any]], missing: frozenset[bytes]) -> None:
+        self.objc_getClass = _FakeCFunction(lambda _fn, name: None if name in missing else name)
+        self.sel_registerName = _FakeCFunction(lambda _fn, name: name)
+        self.sends: list[_FakeCFunction] = []
+        self.messages: list[tuple[Any, bytes, tuple[Any, ...]]] = []
+        self._replies = replies
+
+    def __getitem__(self, name: str) -> _FakeCFunction:
+        assert name == "objc_msgSend"
+        fn = _FakeCFunction(self._send)
+        self.sends.append(fn)
+        return fn
+
+    def _send(self, fn: _FakeCFunction, receiver: Any, selector: bytes, *args: Any) -> Any:
+        fn.selectors.append(selector)
+        self.messages.append((receiver, selector, args))
+        return self._replies[selector](*args)
+
+
+_POINT = object()
+
+
+def _appkit(window_with: Any = 0x77, missing: frozenset[bytes] = frozenset()) -> _FakeObjc:
+    return _FakeObjc(
+        {
+            b"sharedApplication": lambda: "app",
+            b"mouseLocation": lambda: _POINT,
+            b"windowNumberAtPoint:belowWindowWithWindowNumber:": lambda _point, _below: 42,
+            b"windowWithWindowNumber:": lambda number: window_with if number == 42 else None,
+        },
+        missing,
+    )
+
+
+class TestAppKitPointerProbe:
+    """AppKit's hit-test sees every app's windows, GDK's only this one's."""
+
+    @pytest.fixture
+    def load(self, monkeypatch) -> Callable[[_FakeObjc], list[str]]:
+        import ctypes
+
+        import openfollow.window as window_module
+
+        loaded: list[str] = []
+
+        def install(objc: _FakeObjc) -> list[str]:
+            def load_library(path: str) -> Any:
+                loaded.append(path)
+                return objc if path == window_module._LIBOBJC else object()
+
+            monkeypatch.setattr(ctypes.cdll, "LoadLibrary", load_library)
+            return loaded
+
+        return install
+
+    def test_true_when_the_window_at_the_pointer_is_this_apps(self, load) -> None:
+        from openfollow.window import _AppKitPointerProbe
+
+        objc = _appkit()
+        load(objc)
+        assert _AppKitPointerProbe()() is True
+        assert (b"NSWindow", b"windowNumberAtPoint:belowWindowWithWindowNumber:", (_POINT, 0)) in objc.messages
+        assert ("app", b"windowWithWindowNumber:", (42,)) in objc.messages
+
+    @pytest.mark.parametrize("window_with", [None, 0])
+    def test_false_when_it_is_another_apps(self, load, window_with: Any) -> None:
+        from openfollow.window import _AppKitPointerProbe
+
+        load(_appkit(window_with))
+        assert _AppKitPointerProbe()() is False
+
+    def test_each_message_has_its_own_signature(self, load) -> None:
+        import ctypes
+
+        from openfollow.window import _AppKitPointerProbe, _NSPoint
+
+        objc = _appkit()
+        load(objc)
+        _AppKitPointerProbe()()
+        receiver = [ctypes.c_void_p, ctypes.c_void_p]
+        signatures = {fn.selectors[0]: (fn.restype, fn.argtypes) for fn in objc.sends}
+        assert signatures == {
+            b"sharedApplication": (ctypes.c_void_p, receiver),
+            b"mouseLocation": (_NSPoint, receiver),
+            b"windowNumberAtPoint:belowWindowWithWindowNumber:": (ctypes.c_long, [*receiver, _NSPoint, ctypes.c_long]),
+            b"windowWithWindowNumber:": (ctypes.c_void_p, [*receiver, ctypes.c_long]),
+        }
+
+    def test_loads_appkit_with_the_runtime(self, load) -> None:
+        import openfollow.window as window_module
+
+        loaded = load(_appkit())
+        window_module._AppKitPointerProbe()
+        assert loaded == [window_module._LIBOBJC, window_module._APPKIT]
+
+    @pytest.mark.parametrize("missing", [b"NSEvent", b"NSWindow", b"NSApplication"])
+    def test_refuses_without_appkit(self, load, missing: bytes) -> None:
+        from openfollow.window import _AppKitPointerProbe
+
+        load(_appkit(missing=frozenset({missing})))
+        with pytest.raises(OSError, match="AppKit"):
+            _AppKitPointerProbe()

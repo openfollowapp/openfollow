@@ -44,7 +44,7 @@ class _Names:
 
 @pytest.fixture(autouse=True)
 def names(monkeypatch: pytest.MonkeyPatch) -> _Names:
-    """No test here reaches the real resolver: a build looks the URL's name up."""
+    """No test here reaches the real resolver."""
     state = _Names()
 
     def _getaddrinfo(host: str, port: Any, *args: Any, **kwargs: Any) -> list[tuple[Any, ...]]:
@@ -119,48 +119,20 @@ class TestCreatePipeline:
         assert pipeline.get_by_name("rtspsrc").properties["protocols"] == 0x7
         assert names.looked_up == []
 
-    def test_a_name_dialled_over_ipv6_takes_tcp_interleaved(
-        self, names: _Names, caplog: pytest.LogCaptureFixture
+    @pytest.mark.parametrize(
+        "answers",
+        [["2001:db8::10", "192.0.2.10"], ["192.0.2.10", "2001:db8::10"], ["192.0.2.10"], None],
+        ids=["ipv6-first", "ipv4-first", "ipv4-only", "unresolvable"],
+    )
+    def test_a_name_keeps_every_transport_and_is_never_looked_up(
+        self, names: _Names, answers: list[str] | None
     ) -> None:
-        names.answers["camera.example"] = ["2001:db8::10", "192.0.2.10"]
-        with caplog.at_level("INFO", logger="openfollow.video.inputs.rtsp"):
-            pipeline = self._build(config={"rtsp_url": "rtsp://camera.example:554/stream"})
-        assert pipeline.get_by_name("rtspsrc").properties["protocols"] == 0x4
-        assert "tcp interleaved" in caplog.text and "IPv6" in caplog.text
-
-    def test_localhost_on_a_dual_stack_host_takes_tcp_interleaved(self, names: _Names) -> None:
-        names.answers["localhost"] = ["::1", "127.0.0.1"]
-        pipeline = self._build(config={"rtsp_url": "rtsp://localhost:8554/demo"})
-        assert pipeline.get_by_name("rtspsrc").properties["protocols"] == 0x4
-
-    def test_a_dual_stack_name_dialled_over_ipv4_keeps_every_transport(self, names: _Names) -> None:
-        names.answers["camera.example"] = ["192.0.2.10", "2001:db8::10"]
+        """The transport follows what an attempt saw; the build never waits on DNS."""
+        if answers is not None:
+            names.answers["camera.example"] = answers
         pipeline = self._build(config={"rtsp_url": "rtsp://camera.example:554/stream"})
         assert pipeline.get_by_name("rtspsrc").properties["protocols"] == 0x7
-
-    @pytest.mark.parametrize("addresses", [["192.0.2.10"], ["192.0.2.10", "192.0.2.11"]])
-    def test_a_name_with_only_ipv4_addresses_keeps_every_transport(self, names: _Names, addresses: list[str]) -> None:
-        names.answers["camera.example"] = addresses
-        pipeline = self._build(config={"rtsp_url": "rtsp://camera.example:554/stream"})
-        assert pipeline.get_by_name("rtspsrc").properties["protocols"] == 0x7
-
-    def test_a_name_that_does_not_resolve_keeps_every_transport(self, names: _Names) -> None:
-        pipeline = self._build(config={"rtsp_url": "rtsp://nowhere.example:554/stream"})
-        assert pipeline.get_by_name("rtspsrc").properties["protocols"] == 0x7
-        assert names.looked_up == ["nowhere.example"]
-
-    def test_a_name_still_resolving_keeps_every_transport_until_its_answer_lands(
-        self, names: _Names, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(_pin, "_RESOLVE_WAIT_S", 0.05)
-        names.answers["camera.example"] = ["2001:db8::10"]
-        names.hold = threading.Event()
-        pipeline = self._build(config={"rtsp_url": "rtsp://camera.example:554/stream"})
-        assert pipeline.get_by_name("rtspsrc").properties["protocols"] == 0x7
-        names.hold.set()
-        assert _pin._resolver.lookup("camera.example", 5.0).addresses == ("2001:db8::10",)
-        pipeline = self._build(config={"rtsp_url": "rtsp://camera.example:554/stream"})
-        assert pipeline.get_by_name("rtspsrc").properties["protocols"] == 0x4
+        assert names.looked_up == []
 
     def test_missing_rtspsrc_raises(self) -> None:
         fake = make_fake_gst(missing_elements={"rtspsrc"})

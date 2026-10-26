@@ -118,9 +118,11 @@ class _Node:
     open_error: bool = False
     caps_error: bool = False
     close_error: bool = False
-    # What opening the node or reading its capabilities raises besides OSError.
+    # What opening, reading or closing the node raises besides the OSErrors above.
     open_raises: Exception | None = None
     caps_raises: Exception | None = None
+    keys_raises: Exception | None = None
+    close_raises: Exception | None = None
     closed: int = 0
 
 
@@ -152,12 +154,16 @@ class _FakeDevice:
     def active_keys(self) -> list[int]:
         if self._node.unplugged:
             raise OSError(19, "No such device")
+        if self._node.keys_raises is not None:
+            raise self._node.keys_raises
         return sorted(self._node.held)
 
     def close(self) -> None:
         self._node.closed += 1
         if self._node.close_error:
             raise OSError("close")
+        if self._node.close_raises is not None:
+            raise self._node.close_raises
 
 
 class _FakeEvdev(types.ModuleType):
@@ -431,6 +437,61 @@ def test_an_unplugged_keyboard_is_dropped_and_the_others_keep_their_keys(
     gone.unplugged = True
     assert poller.get_pressed_keys(["w", "a"]) == {"a"}
     assert gone.closed == 1
+    assert poller.device_count() == 1
+
+
+# What python-evdev raises for a node the kernel lost: its C extension can return NULL without an exception set.
+_LOST_DEVICE_ERRORS = [
+    pytest.param(
+        SystemError("<built-in function ioctl_EVIOCG_bits> returned NULL without setting an exception"),
+        id="SystemError",
+    ),
+    pytest.param(OSError(19, "No such device"), id="OSError"),
+    pytest.param(RuntimeError("device gone"), id="RuntimeError"),
+]
+
+
+@pytest.mark.parametrize("error", _LOST_DEVICE_ERRORS)
+def test_a_keyboard_whose_read_raises_is_dropped_once_and_the_others_keep_their_keys(
+    error: Exception, fake_evdev: _FakeEvdev, input_dir: Path, clock: _Clock, caplog: pytest.LogCaptureFixture
+) -> None:
+    gone = fake_evdev.add("event0", held=_codes("KEY_W"))
+    fake_evdev.add("event1", held=_codes("KEY_A"))
+    poller = _poller(input_dir, clock)
+    gone.keys_raises = error
+    with caplog.at_level(logging.INFO, logger=keyboard_module.__name__):
+        assert poller.get_pressed_keys(["w", "a"]) == {"a"}
+        clock.t += 0.01
+        assert poller.is_key_pressed("a") is True
+    assert gone.closed == 1
+    assert poller.device_count() == 1
+    assert caplog.text.count(f"evdev keyboard poller drops {input_dir / 'event0'}") == 1
+
+
+@pytest.mark.parametrize("error", _LOST_DEVICE_ERRORS)
+def test_a_keyboard_whose_read_raises_does_not_stop_the_frame(
+    error: Exception, fake_evdev: _FakeEvdev, input_dir: Path, clock: _Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gone = fake_evdev.add("event0", held=_codes("KEY_W"))
+    fake_evdev.add("event1", held=_codes("KEY_A"))
+    _install_poller(monkeypatch, input_dir, clock)
+    handler = KeyboardHandler(_App())
+    gone.keys_raises = error
+    clock.t += 0.01
+    handler.poll_discrete_keys()
+    assert handler.keys == {"a"}
+
+
+@pytest.mark.parametrize("error", _LOST_DEVICE_ERRORS)
+def test_a_close_that_raises_still_drops_the_keyboard(
+    error: Exception, fake_evdev: _FakeEvdev, input_dir: Path, clock: _Clock
+) -> None:
+    gone = fake_evdev.add("event0", held=_codes("KEY_W"))
+    fake_evdev.add("event1", held=_codes("KEY_A"))
+    poller = _poller(input_dir, clock)
+    gone.keys_raises = error
+    gone.close_raises = error
+    assert poller.get_pressed_keys(["w", "a"]) == {"a"}
     assert poller.device_count() == 1
 
 

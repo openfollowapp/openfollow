@@ -599,7 +599,9 @@ class LinuxEvdevKeyboardPoller(KeyboardPoller):
         for path, device in list(self._devices.items()):
             try:
                 held.update(device.active_keys())
-            except OSError:
+            # python-evdev's C extension can raise SystemError, not OSError, for a device the kernel lost.
+            except Exception as exc:
+                logger.info("evdev keyboard poller drops %s: %r", path, exc)
                 self._drop(path)
         self._held = frozenset(held)
         self._held_at = now
@@ -657,7 +659,7 @@ class LinuxEvdevKeyboardPoller(KeyboardPoller):
 
 
 def _close_quietly(device: Any) -> None:
-    with contextlib.suppress(OSError):
+    with contextlib.suppress(Exception):
         device.close()
 
 

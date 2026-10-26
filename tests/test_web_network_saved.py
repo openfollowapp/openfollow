@@ -293,3 +293,12 @@ def test_dhcp_with_manual_address_is_refused_on_it(unplugged) -> None:
     # What was entered stays, the choice included, so it can be corrected.
     assert 'data-mode="edit"' in row and 'value="192.0.2.9"' in row
     assert '<option value="dhcp_manual" selected>' in row
+
+
+def test_a_settings_file_that_does_not_read_refuses_forget_before_any_profile_is_deleted(unplugged, tmp_path) -> None:
+    """The labels could not be cleaned up afterwards, so nothing on the network is changed either."""
+    fake, base = unplugged
+    (tmp_path / "config.toml").write_text("not [[ valid toml", encoding="utf-8")
+    status, _body = _post(base, "/section/network/forget", {"iface": _USB})
+    assert status == 409
+    assert fake.forgotten == []

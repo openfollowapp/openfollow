@@ -6783,6 +6783,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def network_forget() -> Any:
         """Delete the saved settings of an adapter that is not plugged in, with the VLANs on it, and their labels."""
         iface = (request.forms.get("iface") or "").strip()
+        # Read first: a settings file that does not read refuses the Forget before any profile is deleted.
+        _load_config_for_edit()
         before = {str(row.get("name", "")): row for row in server.get_network_saved()}
         if iface not in before:
             # A stale row: plugged in again, or forgotten from another browser. Truncated as it is echoed.

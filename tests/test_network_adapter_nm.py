@@ -2234,6 +2234,18 @@ class TestAnUnpluggedAdapterKeepsItsSettings:
         assert (result.ok, result.pending, result.message) == (True, False, "Applied.")
         assert [call.argv[2] for call in a._broker.calls] == ["mod", "down", "up"]
 
+    def test_a_vlan_whose_parent_cannot_be_read_is_brought_up_and_reported(self, station, monkeypatch) -> None:
+        """Pending would tell the operator to plug in an adapter that may be in; bringing it up says what fails."""
+        a, _ = station(
+            _Device("eth0", "192.0.2.10/24", "Wired connection 1"),
+            saved=(_Saved("eth0.10", "eth0.10", kind="vlan", vlan=("eth0", "10")),),
+        )
+        monkeypatch.setattr(a, "_device_state", lambda name: "" if name == "eth0.10" else None)
+        a._broker.responses = [_OK, _NOT_ACTIVE, _OK]
+        result = a.apply_ipv4("eth0.10", Ipv4Config(method=Ipv4Method.DHCP))
+        assert (result.ok, result.pending) == (True, False)
+        assert [call.argv[2] for call in a._broker.calls] == ["mod", "down", "up"]
+
     @pytest.mark.parametrize("case", ["unplaceable", "profiles-unreadable"])
     def test_a_vlan_that_cannot_be_placed_waits_for_its_adapter(self, station, case) -> None:
         """Bringing it up could only fail: it is saved, as for an absent adapter."""
@@ -2268,6 +2280,8 @@ class TestAnUnpluggedAdapterKeepsItsSettings:
 
     def test_forget_deletes_its_profiles_and_its_vlans_by_uuid(self, station) -> None:
         a, _ = self._station(station)
+        # Bound to the same name but no row of its own: the card never showed it.
+        a._run.saved = (*a._run.saved, _Saved("Dial-up", "enx001122334455", kind="pppoe", rank="yes:0:1"))
         result = a.forget_interface("enx001122334455")
         assert (result.ok, result.message) == (True, "Deleted the saved settings of enx001122334455.")
         assert [call.argv for call in a._broker.calls] == [

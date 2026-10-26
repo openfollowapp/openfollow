@@ -164,8 +164,9 @@ NETWORK_NM_CON_DOWN = Capability(
 # VLAN sub-interfaces are created and removed as NetworkManager profiles. The
 # grants are wildcarded like ``con mod``: ``add`` takes an operator-influenced
 # name, ``delete`` the UUIDs of a VLAN's profiles or of an unplugged adapter's.
-# The app layer refuses to delete a present interface's profile that is not a
-# VLAN, or the interface the request arrived on, before either is invoked.
+# Before either is invoked, VLAN removal refuses a non-VLAN or the interface the
+# request arrived on, and Forget refuses any interface NetworkManager lists and
+# deletes only inactive profiles.
 NETWORK_NM_CON_ADD = Capability(
     name="network.nm.con_add",
     probe_argv=("/usr/bin/nmcli", "con", "add", _PROBE_PLACEHOLDER),

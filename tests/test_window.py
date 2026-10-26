@@ -542,6 +542,39 @@ class TestPublicApi:
         assert window._tick_callback_id is None
         assert FakeGtk.main_quit_calls == 1
 
+    def test_request_quit_closes_as_the_close_button_does(self, window) -> None:
+        closes: list[dict[str, Any]] = []
+        window.add_event_handler(closes.append, "close")
+        window.start_hud_tick()
+
+        window.request_quit()
+
+        assert closes == [{}]
+        assert window.is_closing is True
+        assert window._tick_callback_id is None
+        assert FakeGtk.main_quit_calls == 1
+
+    def test_request_quit_twice_shuts_down_once(self, window) -> None:
+        closes: list[dict[str, Any]] = []
+        window.add_event_handler(closes.append, "close")
+
+        window.request_quit()
+        window.request_quit()
+
+        assert closes == [{}]
+        assert FakeGtk.main_quit_calls == 1
+
+    def test_request_quit_after_close_does_nothing(self, window) -> None:
+        """A restart closes the window after its own shutdown; a quit then has nothing left to do."""
+        closes: list[dict[str, Any]] = []
+        window.add_event_handler(closes.append, "close")
+        window.close()
+
+        window.request_quit()
+
+        assert closes == []
+        assert FakeGtk.main_quit_calls == 1
+
     def test_set_title_propagates_to_window(self, window) -> None:
         window.set_title("New Title")
         assert window._window.set_title_calls == ["New Title"]

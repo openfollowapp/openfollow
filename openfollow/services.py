@@ -4507,3 +4507,4 @@ class AppRuntimeServices:
         # dispatcher's own state honest.
         self._safe_stop("MIDI fader dispatcher", self._midi_fader_dispatcher.detach)
         self._safe_stop("MIDI", self._midi.shutdown)
+        logger.info("Shutdown complete.")

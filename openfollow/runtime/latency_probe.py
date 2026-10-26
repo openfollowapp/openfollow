@@ -47,7 +47,7 @@ def monotonic_us() -> int:
         from gi.repository import GLib
 
         return int(GLib.get_monotonic_time())
-    except Exception:  # pragma: no cover - only without PyGObject
+    except ImportError:
         return time.monotonic_ns() // 1000
 
 
@@ -156,7 +156,7 @@ class LatencyFailure:
 
 
 class LatencyProbe:
-    """One measurement run at a time; idle, it asks for no screen level and takes no frames."""
+    """One measurement run at a time; idle, it asks for no screen level and the receiver hands it no frames."""
 
     def __init__(
         self,
@@ -168,7 +168,6 @@ class LatencyProbe:
         self._rng = rng or random.Random()  # nosec B311 - flash timing, not security
         self._lock = threading.Lock()
         self._frames: deque[tuple[int, float | None]] = deque(maxlen=_QUEUE)
-        self._accepting = False
         self._phase = Phase.IDLE
         self._level = BLACK
         self._feed: Hashable = None
@@ -208,7 +207,6 @@ class LatencyProbe:
         self._delays_us = []
         with self._lock:
             self._frames.clear()
-            self._accepting = True
         self._phase = Phase.SETTLE
         self._feed = feed
         self._source_type = source_type
@@ -232,13 +230,16 @@ class LatencyProbe:
     def feed(self, arrival_us: int, mean_luma: float | None) -> None:
         """Streaming thread: a decoded frame's arrival and mean luma (0 to 1), None when unreadable."""
         with self._lock:
-            if self._accepting:
-                self._frames.append((arrival_us, mean_luma))
+            self._frames.append((arrival_us, mean_luma))
 
     def presented(self, level: float, refresh_us: int) -> None:
-        """The display put ``level`` on screen at the refresh at ``refresh_us``; the first report counts."""
-        if self.active and self._shown_us is None and level == self._level and refresh_us >= self._requested_us:
-            self._shown_us = refresh_us
+        """The display put ``level`` on screen at the refresh at ``refresh_us``; the first report counts.
+
+        A vsync-aligned frame time can precede a request made in the same refresh, whose render drew it:
+        the edge is then timed from the request.
+        """
+        if self.active and self._shown_us is None and level == self._level:
+            self._shown_us = max(refresh_us, self._requested_us)
 
     def step(self, now_us: int, feed: Hashable) -> None:
         """Frame loop: take the frames that arrived, look for the edge, and move the run on."""
@@ -345,5 +346,4 @@ class LatencyProbe:
     def _end(self) -> None:
         self._phase = Phase.DONE
         with self._lock:
-            self._accepting = False
             self._frames.clear()

@@ -2,7 +2,7 @@
 %# operator started lasts, and swaps only itself, never the form around it.
 % lat = latency
 % running = lat['state'] == 'running'
-<div id="video-source-latency" class="row" data-error-lead="Not started."
+<div id="video-source-latency" class="row"
      style="display:{{'none' if lat['gallery'] else ''}}"
 % if running:
      hx-get="/section/video_source/latency"
@@ -11,7 +11,7 @@
      hx-swap="outerHTML"
 % end
      >
-    <div class="field wide">
+    <div class="field wide" data-error-box>
         <label>Camera Latency</label>
 % if running:
         <div class="notice network-banner-busy">
@@ -45,11 +45,12 @@
         <div>
 % if running:
             <button type="button" class="secondary" hx-post="/section/video_source/latency/stop"
-                    hx-target="#video-source-latency" hx-swap="outerHTML" hx-params="none">Stop</button>
+                    hx-target="#video-source-latency" hx-swap="outerHTML" hx-params="none"
+                    data-error-lead="Not stopped.">Stop</button>
 % else:
             <button type="button" class="secondary" hx-post="/section/video_source/latency"
                     hx-target="#video-source-latency" hx-swap="outerHTML" hx-params="none"
-                    {{'disabled' if lat['unavailable'] else ''}}>Measure latency</button>
+                    data-error-lead="Not started." {{'disabled' if lat['unavailable'] else ''}}>Measure latency</button>
 % end
         </div>
     </div>

@@ -77,7 +77,7 @@ from openfollow.runtime.overlay_draw_scene import (
 )
 from openfollow.runtime.overlay_draw_zones import ZoneCache
 from openfollow.runtime.overlay_draw_zones import draw_zones as draw_zones_pass
-from openfollow.runtime.overlay_layers import cairo_context, cut, keep_fill, mark_top
+from openfollow.runtime.overlay_layers import LayerContext, cairo_context, cut, mark_top
 from openfollow.runtime.overlay_picture import PanelCache
 from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
 
@@ -283,9 +283,9 @@ class CairoOverlayRenderer:
         try:
             self._frame_timestamps.append(time.monotonic())
 
-            # The latency probe's black or white covers everything, alone.
+            # The latency probe's black or white covers everything, alone; the GL display draws its own.
             if (level := state.latency_flash) is not None:
-                if not keep_fill(cr, (level, level, level, 1.0)):
+                if not isinstance(cr, LayerContext):
                     cr.set_source_rgb(level, level, level)
                     cr.paint()
                 return

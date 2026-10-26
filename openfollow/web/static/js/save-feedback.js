@@ -6,10 +6,11 @@
  * station observed and one next step. The line stays until the next edit in
  * that form or the next save from it.
  *
- * HTMX saves (any non-GET request) are handled here on ``document``; an
- * element or ancestor with ``data-error-lead`` names the lead for an action
- * that saves nothing ("Not started."). A script-driven save calls
- * ``window.OpenFollow.saveError``:
+ * HTMX saves (any non-GET request) are handled here on ``document``. An
+ * action that saves nothing names its lead on the control or an ancestor
+ * (``data-error-lead="Not started."``), and its unanswered advice ends "try
+ * again"; a ``data-error-box`` ancestor takes the ring and the line in place of
+ * the whole form. A script-driven save calls ``window.OpenFollow.saveError``:
  *
  *   show(box, info, lead, near) ring ``box``; write ``info`` after ``near``
  *                              (default: the box's last actions row)
@@ -35,7 +36,12 @@
         action: 'Check that it is switched on and on this network, then save again.',
         href: '',
     };
-    var BOX_SELECTOR = 'form.section, .save-flash, .section, .modal-card, [role="dialog"]';
+    var UNREACHABLE_ACTION = {
+        error: UNREACHABLE.error,
+        action: 'Check that it is switched on and on this network, then try again.',
+        href: '',
+    };
+    var BOX_SELECTOR = '[data-error-box], form.section, .save-flash, .section, .modal-card, [role="dialog"]';
     var ANCHOR_SELECTOR = '.actions, .wizard-nav, .modal-footer';
     var MAX_TEXT = 200;
     var lastOrigin = null;
@@ -156,7 +162,9 @@
         show(boxFor(evt.detail.elt), fromText(xhr.status, xhr.responseText), leadFor(evt.detail.elt));
     });
     document.addEventListener('htmx:sendError', function (evt) {
-        if (isSave(evt)) show(boxFor(evt.detail.elt), UNREACHABLE, leadFor(evt.detail.elt));
+        if (!isSave(evt)) return;
+        var lead = leadFor(evt.detail.elt);
+        show(boxFor(evt.detail.elt), lead === undefined ? UNREACHABLE : UNREACHABLE_ACTION, lead);
     });
 
     window.OpenFollow = window.OpenFollow || {};

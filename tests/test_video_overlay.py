@@ -139,14 +139,14 @@ class TestDrawDispatch:
         assert patched_passes == []
         assert cr.calls == [("rgb", level, level, level), ("paint",)]
 
-    def test_on_a_layered_canvas_the_flash_is_one_kept_fill_of_the_whole_canvas(self) -> None:
+    def test_on_a_layered_canvas_the_flash_draws_nothing_and_nothing_else_either(self, patched_passes) -> None:
+        # The GL display clears to the level over video and HUD itself.
         cr = LayerContext(64, 36, (1.0, 1.0), cairo.ImageSurface(cairo.FORMAT_ARGB32, 1, 1).get_font_options())
-        CairoOverlayRenderer().draw(cr, 64, 36, OverlayState(latency_flash=1.0))
-        (sprite,) = cr.finish().sprites
-        assert (sprite.x, sprite.y, sprite.kept) == (0, 0, True)
-        picture = sprite.picture
-        assert (picture.get_width(), picture.get_height()) == (64, 36)
-        assert bytes(picture.get_data())[:4] == b"\xff\xff\xff\xff"
+        state = OverlayState(latency_flash=1.0)
+        state.settings_menu_active = True
+        CairoOverlayRenderer().draw(cr, 64, 36, state)
+        assert cr.finish().sprites == ()
+        assert patched_passes == []
 
     def test_a_state_handed_to_draw_is_drawn_rather_than_the_latest(self, patched_passes) -> None:
         """The HUD render thread draws the state it was handed while the frame loop moves on."""

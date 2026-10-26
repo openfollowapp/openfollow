@@ -9688,6 +9688,7 @@ def test_measure_latency_starts_a_run_and_polls_while_it_lasts(live_server, monk
     assert 'hx-target="this"' in tag
     assert "modal-spinner" in body and "Measuring: 0 of 10 changes seen." in body
     assert 'hx-post="/section/video_source/latency/stop"' in body
+    assert re.search(r'data-error-lead="Not stopped\."\s*>Stop</button>', body)
     assert 'role="alert"' not in body
 
 
@@ -9758,7 +9759,7 @@ def test_a_failed_run_shows_what_was_seen_and_one_next_step(live_server, monkeyp
     _, body = _get(base, "/section/video_source/latency")
     assert '<div class="notice error">' in body
     assert "No flash seen in the video within 3 s." in body and "Point the camera." in body
-    assert re.search(r'hx-params="none"\s*>Measure latency', body)
+    assert re.search(r'hx-params="none"[^>]*>Measure latency', body)
 
 
 def test_a_running_status_keeps_polling_and_counts_the_changes_seen(live_server, monkeypatch) -> None:
@@ -9798,8 +9799,9 @@ def test_the_video_source_section_offers_measure_latency_while_video_is_decoded(
     _latency_stats(monkeypatch, server, _DECODING)
     _, body = _get(base, "/section/video_source")
     row = _latency_row(body)
-    assert re.search(r'hx-params="none"\s*>Measure latency', row)
+    assert re.search(r'hx-params="none"\s+data-error-lead="Not started\."\s*>Measure latency', row)
     assert 'hx-target="#video-source-latency"' in row
+    assert "data-error-box" in row
     assert 'style="display:"' in row
 
 

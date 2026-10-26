@@ -239,14 +239,14 @@ def test_a_display_that_never_shows_the_flash_fails_as_no_rise() -> None:
     assert probe.failure is not None and probe.failure.reason is FailureReason.NO_RISE
 
 
-def test_stopping_mid_run_ends_it_and_takes_no_more_frames() -> None:
+def test_stopping_mid_run_ends_it() -> None:
     probe = _probe()
     t = _drive_to_wait_rise(probe)
     probe.stop()
     assert probe.failure is not None and probe.failure.reason is FailureReason.STOPPED
     assert probe.screen_level() is None
     probe.feed(t + MS, HI)
-    assert probe._frames == type(probe._frames)()
+    probe.step(t + 2 * MS, FEED)
     assert probe.status()["state"] == "failed"
 
 
@@ -264,6 +264,27 @@ def test_a_feed_that_stops_decoding_mid_run_ends_it() -> None:
     assert probe.failure is not None and probe.failure.reason is FailureReason.SOURCE_CHANGED
 
 
+def _complete(probe: LatencyProbe, t: int, delays_ms: list[int]) -> int:
+    """Run the remaining edges, each seen ``delays_ms[i]`` after the refresh that shows it."""
+    luma = {lp.WHITE: HI, lp.BLACK: LO}
+    for delay in delays_ms:
+        while probe.phase not in (Phase.WAIT_RISE, Phase.WAIT_FALL):
+            t += 10 * MS
+            probe.feed(t, luma[lp.WHITE if probe.phase is Phase.HOLD else lp.BLACK])
+            probe.step(t, FEED)
+        level = probe.screen_level()
+        assert level is not None
+        shown = t + MS
+        probe.presented(level, shown)
+        while t + 10 * MS < shown + delay * MS:
+            t += 10 * MS
+            probe.feed(t, luma[1.0 - level])
+        t = shown + delay * MS
+        probe.feed(t, luma[level])
+        probe.step(t, FEED)
+    return t
+
+
 def test_an_edge_before_the_flash_was_shown_is_never_paired_with_it() -> None:
     probe = _probe()
     t = _drive_to_wait_rise(probe)
@@ -271,8 +292,8 @@ def test_an_edge_before_the_flash_was_shown_is_never_paired_with_it() -> None:
     probe.feed(t + 5 * MS, HI)
     probe.step(t + 5 * MS, FEED)
     shown = t + 20 * MS
-    # Drained only after the report, but it arrived before the white was on screen.
-    probe.feed(shown - MS, HI)
+    # Drained only after the report, and it arrived when the white went on screen, not after.
+    probe.feed(shown, HI)
     probe.presented(lp.WHITE, shown)
     probe.step(shown, FEED)
     assert probe.phase is Phase.WAIT_RISE and probe.status()["measured"] == 0
@@ -280,19 +301,29 @@ def test_an_edge_before_the_flash_was_shown_is_never_paired_with_it() -> None:
         probe.feed(shown + after * MS, LO)
     probe.feed(shown + 100 * MS, HI)
     probe.step(shown + 100 * MS, FEED)
-    assert probe.phase is Phase.HOLD
-    assert probe._delays_us == [100 * MS]
+    assert probe.status()["measured"] == 1
+    _complete(probe, shown + 100 * MS, [40] * 9)
+    result = probe.result
+    assert result is not None
+    assert (result.max_ms, result.min_ms) == (100.0, 40.0)
 
 
-def test_a_refresh_from_before_the_request_does_not_count_as_shown() -> None:
+def test_a_refresh_stamped_before_the_request_counts_and_is_timed_from_the_request() -> None:
+    # A vsync-aligned frame time can precede a request made in the same refresh, whose render drew it.
     probe = _probe()
     t = _drive_to_wait_rise(probe)
-    probe.presented(lp.WHITE, t - MS)
-    probe.presented(lp.BLACK, t + MS)
-    assert probe._shown_us is None
-    probe.presented(lp.WHITE, t + 2 * MS)
-    probe.presented(lp.WHITE, t + 20 * MS)
-    assert probe._shown_us == t + 2 * MS
+    probe.presented(lp.BLACK, t + MS)  # not the level asked for
+    probe.presented(lp.WHITE, t - 5 * MS)
+    probe.presented(lp.WHITE, t + 16 * MS)  # only the first report counts
+    for after in (10, 20, 30, 40, 50, 60):
+        probe.feed(t + after * MS, LO)
+    probe.feed(t + 70 * MS, HI)
+    probe.step(t + 70 * MS, FEED)
+    assert probe.status()["measured"] == 1
+    _complete(probe, t + 70 * MS, [40] * 9)
+    result = probe.result
+    assert result is not None
+    assert (result.max_ms, result.min_ms) == (70.0, 40.0)
 
 
 def test_an_unreadable_frame_fails_the_run_instead_of_waiting_out_the_timeout() -> None:
@@ -308,7 +339,6 @@ def test_idle_asks_for_no_level_and_takes_no_frames() -> None:
     assert probe.screen_level() is None
     probe.feed(MS, HI)
     probe.step(2 * MS, FEED)
-    assert not probe._frames
     assert probe.status() == {"state": "idle", "measured": 0, "total": 10, "result": None, "failure": None}
 
 
@@ -359,6 +389,19 @@ def test_a_refusal_during_a_run_and_a_stop_while_idle_change_nothing() -> None:
     _drive_to_wait_rise(probe)
     probe.refuse(FailureReason.NO_DISPLAY)
     assert probe.active and probe.failure is None
+
+
+def test_without_pygobject_the_clock_is_pythons_monotonic_time_in_microseconds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+    import time
+
+    monkeypatch.setitem(sys.modules, "gi.repository", None)
+    before = time.monotonic_ns() // 1000
+    now = lp.monotonic_us()
+    assert isinstance(now, int)
+    assert before <= now <= time.monotonic_ns() // 1000
 
 
 def test_the_clock_is_glibs_monotonic_time_in_microseconds() -> None:

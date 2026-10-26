@@ -11,7 +11,8 @@ import cairo
 import numpy as np
 import pytest
 
-from openfollow.runtime.overlay_picture import PanelCache, ink_picture
+from openfollow.runtime.overlay_layers import LayerContext, Sprite
+from openfollow.runtime.overlay_picture import PanelCache, box_picture, ink_picture, paste
 from openfollow.runtime.overlay_state import OverlayState
 from openfollow.video.overlay import CairoOverlayRenderer
 from tests._fake_cairo import DirectPanels, FakeCairo
@@ -207,3 +208,59 @@ def test_an_ink_picture_pasted_at_its_origin_is_the_drawing(scale: float) -> Non
         surface.flush()
         pictures.append(np.frombuffer(surface.get_data(), dtype=np.uint8).copy())
     assert np.array_equal(*pictures)
+
+
+def _ring(ctx: cairo.Context) -> None:
+    ctx.set_source_rgba(0.2, 0.8, 0.4, 0.7)
+    ctx.set_line_width(4.0)
+    ctx.arc(60.5, 40.25, 25.0, 0.0, 6.0)
+    ctx.stroke()
+
+
+@pytest.mark.parametrize("scale", [1.0, 2.0])
+def test_a_box_picture_pasted_at_its_origin_is_the_drawing_inside_the_box(scale: float) -> None:
+    # The box cuts through the ring, so what lies outside it must stay out of the picture.
+    x0, y0, x1, y1 = 30, 20, 70, 90
+    picture = box_picture(_ring, x0, y0, x1, y1, (scale, scale), None)
+    assert (picture.get_width(), picture.get_height()) == (40 * scale, 70 * scale)
+    assert picture.get_device_scale() == (scale, scale)
+
+    pictures = []
+    for kept in (False, True):
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, int(160 * scale), int(120 * scale))
+        surface.set_device_scale(scale, scale)
+        cr = cairo.Context(surface)
+        if kept:
+            paste(cr, picture, x0, y0)
+        else:
+            cr.rectangle(x0, y0, x1 - x0, y1 - y0)
+            cr.clip()
+            _ring(cr)
+        surface.flush()
+        pictures.append(np.frombuffer(surface.get_data(), dtype=np.uint8).copy())
+    assert pictures[0].any()
+    assert np.array_equal(*pictures)
+
+
+def test_a_box_picture_draws_text_with_the_font_options_it_is_given() -> None:
+    def label(ctx: cairo.Context) -> None:
+        ctx.set_font_size(18)
+        ctx.move_to(4, 24)
+        ctx.show_text("Stage left")
+
+    def pixels(options: cairo.FontOptions | None) -> np.ndarray:
+        picture = box_picture(label, 0, 0, 120, 32, (1.0, 1.0), options)
+        picture.flush()
+        return np.frombuffer(picture.get_data(), dtype=np.uint8).copy()
+
+    gray, none = cairo.FontOptions(), cairo.FontOptions()
+    gray.set_antialias(cairo.ANTIALIAS_GRAY)
+    none.set_antialias(cairo.ANTIALIAS_NONE)
+    assert not np.array_equal(pixels(gray), pixels(none))
+
+
+def test_a_pasted_picture_is_a_kept_layer_on_a_layered_canvas() -> None:
+    picture = box_picture(_ring, 30, 20, 70, 90, (1.0, 1.0), None)
+    cr = LayerContext(160, 120, (1.0, 1.0), cairo.FontOptions())
+    paste(cr, picture, 30, 20)
+    assert cr.finish().sprites == (Sprite(picture, 30, 20, kept=True),)

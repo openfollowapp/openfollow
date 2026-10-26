@@ -61,6 +61,7 @@ from openfollow.video.inputs._base import (
 )
 from openfollow.video.inputs._pin import PinRefusal
 from openfollow.video.inputs.rtsp import RtspInput
+from openfollow.video.source_limits import FrameMeter, OverLimit
 from tests import _fake_gst as shared_fake_gst
 
 pytestmark = pytest.mark.unit
@@ -302,6 +303,7 @@ class FakeInput:
     input_id = "fake"
     display_name = "Fake"
     source_element_name: str | None = None
+    frame_meter_element_name: str | None = None
 
     # Defaults – override per-test via subclass.
     _available: tuple[bool, str] = (True, "")
@@ -443,6 +445,7 @@ class FakeInputAlt:
     input_id = "fake_alt"
     display_name = "FakeAlt"
     source_element_name: str | None = None
+    frame_meter_element_name: str | None = None
 
     _available: tuple[bool, str] = (True, "")
     _capabilities = InputCapabilities(
@@ -6029,3 +6032,195 @@ class TestReturningSource:
         fake_glib.run_idles()
         assert FakeInput.create_pipeline_call_count == builds
         assert lost._input_config["fake_source"] == ""
+
+
+# --------------------------------------------------------------------------- #
+# Source limits
+# --------------------------------------------------------------------------- #
+
+_UHD = "video/x-raw, format=(string)NV12, width=(int)3840, height=(int)2160"
+_FHD = "video/x-raw, width=(int)1920, height=(int)1080"
+
+
+def _caps_info(caps: str | None) -> SimpleNamespace:
+    event = SimpleNamespace(type=FakeEventType.CAPS, parse_caps=lambda: FakeCaps(caps) if caps is not None else None)
+    return SimpleNamespace(get_event=lambda: event)
+
+
+def _metered_pipeline() -> tuple[FakePipeline, FakeElement]:
+    queue = FakeElement(name="post_queue")
+    return FakePipeline(elements={"shared_videosink": FakeElement("shared_videosink"), "post_queue": queue}), queue
+
+
+class TestTheSourceIsMeasuredAgainstItsLimits:
+    """The frames that arrive are counted on the plugin's first frame-dropping
+    queue, per attempt, and never the placeholder's."""
+
+    @pytest.fixture
+    def clock(self, monkeypatch) -> list[float]:
+        now = [1000.0]
+        monkeypatch.setattr(receiver_mod, "FrameMeter", lambda: FrameMeter(clock=lambda: now[0]))
+        return now
+
+    def _build(self, monkeypatch, name: str | None = "post_queue") -> tuple[Any, FakePad]:
+        monkeypatch.setattr(FakeInput, "frame_meter_element_name", name, raising=False)
+        pipeline, queue = _metered_pipeline()
+        FakeInput.create_pipeline_result = pipeline
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r.create_pipeline()
+        return r, queue.get_static_pad("sink")
+
+    @staticmethod
+    def _probe(pad: FakePad, kind: str) -> Callable:
+        (callback,) = [cb for probe_type, cb in pad.probes if probe_type == kind]
+        return callback
+
+    def _deliver(self, pad: FakePad, clock: list[float], caps: str, fps: float, seconds: float) -> None:
+        self._probe(pad, FakePadProbeType.EVENT_DOWNSTREAM)(pad, _caps_info(caps))
+        frame = self._probe(pad, FakePadProbeType.BUFFER)
+        start = clock[0]
+        for i in range(int(fps * seconds)):
+            clock[0] = start + i / fps
+            assert frame(pad, object()) == FakePadProbeReturn.OK
+
+    def test_the_metered_queue_carries_a_caps_and_a_frame_probe(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        _r, pad = self._build(monkeypatch)
+        assert sorted(kind for kind, _cb in pad.probes) == [FakePadProbeType.BUFFER, FakePadProbeType.EVENT_DOWNSTREAM]
+
+    def test_nothing_is_read_before_a_frame(self, fake_gst, fake_glib, fake_input_cls, monkeypatch) -> None:
+        r, _pad = self._build(monkeypatch)
+        assert r.source_limits is None
+
+    def test_an_oversized_frame_is_named(self, fake_gst, fake_glib, fake_input_cls, monkeypatch, clock) -> None:
+        r, pad = self._build(monkeypatch)
+        self._deliver(pad, clock, _UHD, 30.0, 1.0)
+        assert r.source_limits is not None
+        assert r.source_limits.over == (OverLimit.RESOLUTION,)
+        assert (r.source_limits.width, r.source_limits.height) == (3840, 2160)
+
+    def test_the_arrival_rate_is_judged_not_the_declared_one(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch, clock
+    ) -> None:
+        r, pad = self._build(monkeypatch)
+        self._deliver(pad, clock, _FHD + ", framerate=(fraction)0/1", 60.0, 12.0)
+        assert r.source_limits is not None
+        assert r.source_limits.over == (OverLimit.FRAME_RATE,)
+        assert r.source_limits.fps == pytest.approx(60.0, abs=0.01)
+
+    def test_a_portrait_feed_at_thirty_reads_within(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch, clock
+    ) -> None:
+        r, pad = self._build(monkeypatch)
+        self._deliver(pad, clock, "video/x-raw, width=(int)1080, height=(int)1920", 30.0, 12.0)
+        assert r.source_limits is not None and r.source_limits.over == ()
+
+    @pytest.mark.parametrize(
+        "info",
+        [
+            pytest.param(SimpleNamespace(get_event=lambda: None), id="no-event"),
+            pytest.param(SimpleNamespace(get_event=lambda: SimpleNamespace(type=FakeEventType.OTHER)), id="not-caps"),
+            pytest.param(_caps_info(None), id="no-caps"),
+            pytest.param(_caps_info("video/x-raw, format=(string)I420"), id="no-size"),
+        ],
+    )
+    def test_an_event_without_a_size_leaves_it_unknown(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch, clock, info
+    ) -> None:
+        r, pad = self._build(monkeypatch)
+        assert self._probe(pad, FakePadProbeType.EVENT_DOWNSTREAM)(pad, info) == FakePadProbeReturn.OK
+        self._probe(pad, FakePadProbeType.BUFFER)(pad, object())
+        assert r.source_limits is not None
+        assert (r.source_limits.width, r.source_limits.height, r.source_limits.over) == (0, 0, ())
+
+    def test_the_placeholder_is_never_measured(self, fake_gst, fake_glib, fake_input_cls, monkeypatch, clock) -> None:
+        r, pad = self._build(monkeypatch)
+        self._deliver(pad, clock, _UHD, 30.0, 1.0)
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+        r._create_placeholder_pipeline()
+        assert r.source_limits is None
+        # A late frame of the old pipeline does not bring it back.
+        self._deliver(pad, clock, _UHD, 30.0, 1.0)
+        assert r.source_limits is None
+
+    def test_dropping_the_display_measures_afresh(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch, clock
+    ) -> None:
+        monkeypatch.setattr(receiver_mod.threading, "Thread", _SyncSwapThread)
+        monkeypatch.setattr(FakeInput, "frame_meter_element_name", "post_queue", raising=False)
+        display = SimpleNamespace(
+            sink=FakeElement("shared_videosink"),
+            widget="GL area",
+            release_frames=lambda: None,
+            accept_frames=lambda: None,
+        )
+        pipeline, queue = _metered_pipeline()
+        FakeInput.create_pipeline_result = pipeline
+        r = receiver_mod.GstNativeSinkReceiver(
+            source_type="fake", input_config={"fake_source": "cam-1"}, display=display
+        )
+        monkeypatch.setattr(r, "_select_sink_name", lambda: "gtksink")
+        r.create_pipeline()
+        self._deliver(queue.get_static_pad("sink"), clock, _UHD, 30.0, 1.0)
+        assert r.source_limits is not None
+
+        FakeInput.create_pipeline_result = FakePipeline(elements={"shared_videosink": FakeElement("shared_videosink")})
+        r.drop_display()
+        assert r.source_limits is None
+
+    def test_a_reconnect_measures_afresh(self, fake_gst, fake_glib, fake_input_cls, monkeypatch, clock) -> None:
+        r, old_pad = self._build(monkeypatch)
+        self._deliver(old_pad, clock, _UHD, 30.0, 1.0)
+        r._schedule_reconnect("Stream stalled")
+        assert r.source_limits is None
+
+        pipeline, queue = _metered_pipeline()
+        FakeInput.create_pipeline_result = pipeline
+        r.create_pipeline()
+        # The old pipeline's probe writes only to its own meter.
+        self._deliver(old_pad, clock, _UHD, 30.0, 1.0)
+        assert r.source_limits is None
+        self._deliver(queue.get_static_pad("sink"), clock, _FHD, 30.0, 1.0)
+        assert r.source_limits is not None and r.source_limits.over == ()
+
+    def test_a_source_change_clears_the_verdict(self, fake_gst, fake_glib, fake_input_cls, monkeypatch, clock) -> None:
+        monkeypatch.setattr(receiver_mod.threading, "Thread", _SyncSwapThread)
+        r, pad = self._build(monkeypatch)
+        self._deliver(pad, clock, _UHD, 30.0, 1.0)
+        FakeInput.create_pipeline_result = FakePipeline(elements={"shared_videosink": FakeElement("shared_videosink")})
+        r.set_source("cam-2")
+        assert r.source_limits is None
+
+    def test_an_input_that_declares_no_queue_is_not_measured(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        r, pad = self._build(monkeypatch, name=None)
+        assert pad.probes == []
+        assert r.source_limits is None
+
+    def test_a_missing_queue_is_survivable(self, fake_gst, fake_glib, fake_input_cls, monkeypatch) -> None:
+        r, pad = self._build(monkeypatch, name="absent_queue")
+        assert pad.probes == []
+        assert r.source_limits is None
+        assert r._pipeline is not None
+
+
+class TestCapsDimensions:
+    @pytest.mark.parametrize(
+        ("caps", "expected"),
+        [
+            ("video/x-raw, format=(string)I420, width=(int)1920, height=(int)1080", (1920, 1080)),
+            ("video/x-raw,width=3840,height=2160", (3840, 2160)),
+            ("image/jpeg, width=(int)1280, height=(int)720, framerate=(fraction)30/1", (1280, 720)),
+            ("video/x-raw(memory:DMABuf), height=(int)1920, width=(int)1080", (1080, 1920)),
+            ("video/x-raw, width=(int)1920", None),
+            ("video/x-raw, height=(int)1080", None),
+            ("video/x-raw, width=(int)0, height=(int)1080", None),
+            ("video/x-raw, max-width=(int)1920, height=(int)1080", None),
+            ("", None),
+            ("ANY", None),
+        ],
+    )
+    def test_it_reads_both_sides_or_nothing(self, caps: str, expected: tuple[int, int] | None) -> None:
+        assert receiver_mod._caps_dimensions(caps) == expected

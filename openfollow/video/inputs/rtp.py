@@ -70,6 +70,7 @@ class RtpInput(VideoInputBase):
     input_id = "rtp"
     display_name = "RTP"
     source_element_name = "udpsrc"
+    frame_meter_element_name = "post_queue"
     source_kind = SourceKind.LISTENER
     pins_interface = True
 

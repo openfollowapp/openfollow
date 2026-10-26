@@ -459,6 +459,22 @@ def _fmt_resolution(res: Any) -> str:
     return f"{width}x{height}" if width > 0 and height > 0 else "- (no source frames yet)"
 
 
+def _fmt_source_limits(limits: Any) -> str:
+    """The verdict's stable ids (or ``within``), then what the arriving frames measured and the limit."""
+    if not isinstance(limits, dict):
+        return "-"
+    width, height = int(limits.get("width", 0) or 0), int(limits.get("height", 0) or 0)
+    if width <= 0 or height <= 0:
+        return "not measured (no source frames yet)"
+    fps = limits.get("fps")
+    rate = f"{float(fps):.1f} fps" if isinstance(fps, (int, float)) else "rate not measured yet"
+    verdict = ", ".join(str(cause) for cause in limits.get("exceeded") or ()) or "within"
+    return (
+        f"{verdict} (measured {width}x{height}, {rate}; limit {limits.get('max_long_side', '?')}x"
+        f"{limits.get('max_short_side', '?')} either orientation, {limits.get('max_fps', '?')} fps)"
+    )
+
+
 def _fmt_latency(latency: Any) -> str:
     """The last successful camera latency run, or ``not measured``."""
     if not isinstance(latency, dict):
@@ -514,6 +530,7 @@ def collect_runtime_state(p: DiagnosticsProviders) -> list[str]:
     rows.append(f"    input resolution      {_fmt_resolution(video.get('resolution'))}")
     rows.append(f"    source framerate      {float(video.get('source_fps', 0.0) or 0.0):.1f} fps")
     rows.append(f"    source format         {video.get('source_format') or '-'}")
+    rows.append(f"    source limits         {_fmt_source_limits(video.get('limits'))}")
     rows.append(f"    camera latency        {_fmt_latency(stats.get('latency'))}")
 
     playback = stats.get("playback") or {}

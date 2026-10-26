@@ -73,6 +73,7 @@ class RtspInput(VideoInputBase):
     input_id = "rtsp"
     display_name = "RTSP"
     source_element_name = "rtspsrc"
+    frame_meter_element_name = "post_queue"
     source_kind = SourceKind.REMOTE
     pins_interface = True
 

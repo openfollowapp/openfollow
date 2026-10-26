@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from openfollow.video import media_store as ms
+from openfollow.video.source_limits import over_limits
 
 pytestmark = pytest.mark.unit
 
@@ -260,6 +261,33 @@ def test_save_uploaded_video_rejects_oversize(storage: Path, tmp_path: Path, mon
 
 def test_validate_video_probe_accepts_within_limits() -> None:
     assert ms.validate_video_probe(_valid_probe(fps=30.4, duration_s=60.4)) is None
+
+
+@pytest.mark.parametrize(("width", "height"), [(1920, 1080), (1080, 1920), (720, 1280), (1080, 1080)])
+def test_a_clip_up_to_full_hd_uploads_in_either_orientation(width: int, height: int) -> None:
+    assert ms.validate_video_probe(_valid_probe(width=width, height=height)) is None
+
+
+@pytest.mark.parametrize(("width", "height"), [(2560, 1080), (1080, 2560), (1200, 1920), (1440, 1440)])
+def test_a_clip_past_full_hd_in_either_orientation_is_refused(width: int, height: int) -> None:
+    with pytest.raises(
+        ms.MediaStoreError, match=rf"{width}x{height} exceeds the 1920x1080 limit \(either orientation\)"
+    ):
+        ms.validate_video_probe(_valid_probe(width=width, height=height))
+
+
+@pytest.mark.parametrize(
+    ("width", "height", "fps"), [(1080, 1920, 30.0), (2560, 1080, 30.0), (1920, 1080, 30.5), (1920, 1080, 31.0)]
+)
+def test_the_upload_check_and_the_live_feed_share_one_rule(width: int, height: int, fps: float) -> None:
+    """A clip the gallery accepts never raises the live feed's error, and the other way round."""
+    live_over = bool(over_limits(width, height, fps))
+    try:
+        ms.validate_video_probe(_valid_probe(width=width, height=height, fps=fps))
+        refused = False
+    except ms.MediaStoreError:
+        refused = True
+    assert refused is live_over
 
 
 @pytest.mark.parametrize(

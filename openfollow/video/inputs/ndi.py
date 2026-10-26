@@ -91,6 +91,7 @@ class NdiInput(VideoInputBase):
     input_id = "ndi"
     display_name = "NDI®"
     source_element_name = "ndisrc"
+    frame_meter_element_name = "ndi_video_queue"
     source_kind = SourceKind.NAMED
 
     # -- Declarations ---------------------------------------------------------

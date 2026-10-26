@@ -35,6 +35,7 @@ from openfollow.runtime.services_marker_visuals import (
 from openfollow.system_stats import SystemStats, SystemStatsCollector
 from openfollow.units import UnitSystem
 from openfollow.video.failure import VideoFailure
+from openfollow.video.source_limits import OverLimit, SourceReading
 from tests._fake_cairo import FakeCairo, FakeRenderer
 
 pytestmark = pytest.mark.unit
@@ -1136,6 +1137,63 @@ class TestVideoFailureReachesTheTopRightBadge:
     def test_an_unconfigured_source_is_not_alarmed_about(self) -> None:
         """Nothing is broken; the operator has not finished setting up."""
         assert self._flags_after(VideoFailure.NOT_CONFIGURED)["video_failure"] is None
+
+
+class TestASourceOverTheLimitsReachesTheTopRightBadge:
+    """A feed past Full HD or 30 fps is an error row naming what is over."""
+
+    def _build(self, reading: SourceReading | None) -> OverlayState:
+        app = _make_visual_app(_TornMarker([(0.0, 0.0, 0.0)]), controlled=False)
+        app._video_receiver.source_limits = reading
+        app._runtime_services = SimpleNamespace(_status_flags={})
+        return build_marker_visual_state(
+            app,
+            system_stats=None,
+            person_detector=None,
+            cam_params_buffer=np.zeros(7),
+            dt=1.0 / 60.0,
+        )
+
+    def _rows(self, reading: SourceReading | None) -> list[tuple[str, str, str]]:
+        return [row for row in self._build(reading).status_flags if row[0] == "video_limits"]
+
+    def test_both_causes_share_one_row(self) -> None:
+        reading = SourceReading(3840, 2160, 60.0, (OverLimit.RESOLUTION, OverLimit.FRAME_RATE))
+        assert self._rows(reading) == [("video_limits", "Video 3840×2160 > Full HD, 60 fps > 30 fps", "error")]
+
+    def test_a_rate_alone_is_named(self) -> None:
+        reading = SourceReading(1920, 1080, 50.0, (OverLimit.FRAME_RATE,))
+        assert self._rows(reading) == [("video_limits", "Video 50 fps > 30 fps", "error")]
+
+    @pytest.mark.parametrize(
+        "reading", [None, SourceReading(1920, 1080, 30.0, ()), SourceReading(0, 0, None, ())], ids=str
+    )
+    def test_a_source_within_the_limits_raises_no_row(self, reading: SourceReading | None) -> None:
+        assert self._rows(reading) == []
+
+    def test_the_row_clears_when_the_source_comes_within(self) -> None:
+        app = _make_visual_app(_TornMarker([(0.0, 0.0, 0.0)]), controlled=False)
+        flags: dict = {}
+        app._runtime_services = SimpleNamespace(_status_flags=flags)
+
+        def build() -> None:
+            build_marker_visual_state(
+                app, system_stats=None, person_detector=None, cam_params_buffer=np.zeros(7), dt=1.0 / 60.0
+            )
+
+        app._video_receiver.source_limits = SourceReading(3840, 2160, None, (OverLimit.RESOLUTION,))
+        build()
+        assert flags["video_limits"] == ("error", "Video 3840×2160 > Full HD")
+        app._video_receiver.source_limits = None
+        build()
+        assert flags["video_limits"] is None
+
+    def test_the_row_is_drawn_as_an_error_box(self) -> None:
+        state = self._build(SourceReading(3840, 2160, None, (OverLimit.RESOLUTION,)))
+        cr = FakeCairo()
+        draw_status_badge(FakeRenderer(state=state), cr, state, 1920, 1080)
+        assert "Video 3840×2160 > Full HD" in cr.show_text_strings()
+        assert ("rgba", *COLOR_WARNING_FILL) in cr.calls
 
 
 class TestPowerWarningReachesTheTopRightBadge:

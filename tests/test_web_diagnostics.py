@@ -29,6 +29,7 @@ import openfollow
 from openfollow import net_utils
 from openfollow.logging_setup import RingBufferLogHandler
 from openfollow.runtime.removable_media import Media
+from openfollow.video.source_limits import OverLimit, SourceReading, limits_snapshot
 from openfollow.web import diagnostics as diag
 
 pytestmark = pytest.mark.unit
@@ -4584,6 +4585,39 @@ def test_collect_runtime_state_reports_the_reconnect_loop() -> None:
     assert "- (no source frames yet)" in joined
 
 
+def _limits_line(limits: object) -> str:
+    stats = _stats(video=dict(_stats()["video"], limits=limits))
+    rows = diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats))
+    (line,) = [row for row in rows if row.startswith("    source limits")]
+    return line.removeprefix("    source limits").strip()
+
+
+@pytest.mark.parametrize(
+    ("reading", "expected"),
+    [
+        (
+            SourceReading(3840, 2160, 59.94, (OverLimit.RESOLUTION, OverLimit.FRAME_RATE)),
+            "resolution_over_limit, frame_rate_over_limit "
+            "(measured 3840x2160, 59.9 fps; limit 1920x1080 either orientation, 30 fps)",
+        ),
+        (
+            SourceReading(1920, 1080, None, ()),
+            "within (measured 1920x1080, rate not measured yet; limit 1920x1080 either orientation, 30 fps)",
+        ),
+        (None, "not measured (no source frames yet)"),
+    ],
+    ids=["over", "within", "unmeasured"],
+)
+def test_collect_runtime_state_names_the_source_limits_verdict(reading: SourceReading | None, expected: str) -> None:
+    """Support reads the stable ids without reading the numbers."""
+    assert _limits_line(limits_snapshot(reading)) == expected
+
+
+@pytest.mark.parametrize("limits", [None, "over", ["resolution_over_limit"]])
+def test_collect_runtime_state_survives_a_malformed_limits_entry(limits: object) -> None:
+    assert _limits_line(limits) == "-"
+
+
 def test_collect_runtime_state_redacts_a_credential_in_the_source_label() -> None:
     """Plugins are expected to redact their own labels, but this is the file
     operators attach to public issues – a plugin that forgets must not be the
@@ -6158,7 +6192,7 @@ def test_runtime_state_shows_the_last_camera_latency_under_the_video_block() -> 
     rows = diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats))
     row = "    camera latency        84 ms median (70 to 102 ms), 10 samples, 125 s ago, source rtsp"
     assert row in rows
-    assert rows.index(row) == 1 + next(i for i, r in enumerate(rows) if "source format" in r)
+    assert rows.index(row) == 1 + next(i for i, r in enumerate(rows) if "source limits" in r)
 
 
 @pytest.mark.parametrize("latency", [None, "garbage"], ids=["none", "not-a-result"])

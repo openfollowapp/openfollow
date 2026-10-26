@@ -135,6 +135,11 @@ class VideoInputBase(ABC):
     # "reached, sent nothing usable". ``None`` = no such boundary.
     source_element_name: str | None = None
 
+    # Instance name of the leaky queue that first holds whole video frames; the
+    # receiver measures the source on its sink pad, before it can drop any.
+    # ``None`` = not measured.
+    frame_meter_element_name: str | None = None
+
     # What this input gets its video from, which picks the wording of the
     # advice an operator is given. ``LOCAL`` is the conservative default: it
     # names no address, port or sender, so a plugin that forgets to declare

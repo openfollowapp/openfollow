@@ -46,6 +46,7 @@ from openfollow.video.failure import (
     RESOURCE_NOT_AUTHORIZED,
     RESOURCE_NOT_FOUND,
     RESOURCE_OPEN_READ,
+    RESOURCE_SETTINGS,
     STREAM_CODEC_NOT_FOUND,
     STREAM_DOMAIN,
     ConnectionPhase,
@@ -59,6 +60,8 @@ from openfollow.video.inputs._base import (
     SourceEndpoint,
 )
 from openfollow.video.inputs._pin import PinRefusal
+from openfollow.video.inputs.rtsp import RtspInput
+from tests import _fake_gst as shared_fake_gst
 
 pytestmark = pytest.mark.unit
 
@@ -266,6 +269,7 @@ class FakeGLib:
         self.timers: dict[int, tuple[int, Callable]] = {}
         self._counter = 0
         self.removed: list[int] = []
+        self.idles: list[tuple[Callable, tuple]] = []
 
     def timeout_add(self, delay_ms: int, callback: Callable) -> int:
         self._counter += 1
@@ -275,6 +279,16 @@ class FakeGLib:
     def source_remove(self, source_id: int) -> None:
         self.removed.append(source_id)
         self.timers.pop(source_id, None)
+
+    def idle_add(self, callback: Callable, *args: Any) -> int:
+        self._counter += 1
+        self.idles.append((callback, args))
+        return self._counter
+
+    def run_idles(self) -> None:
+        idles, self.idles = self.idles, []
+        for callback, args in idles:
+            callback(*args)
 
 
 # --------------------------------------------------------------------------- #
@@ -366,6 +380,7 @@ class FakeInput:
         self.segment_done_calls = 0
         self.discover_results: list[list[str]] | None = None
         self.discover_calls: list[float] = []
+        self.bus_errors: list[BusError] = []
 
     def create_pipeline(
         self,
@@ -385,6 +400,9 @@ class FakeInput:
     def on_bus_segment_done(self, pipeline: Any) -> bool:
         self.segment_done_calls += 1
         return True
+
+    def on_bus_error(self, error: BusError) -> None:
+        self.bus_errors.append(error)
 
     def observe_progress(self, pipeline: Any, report: Any) -> None:
         # Hand the reporter to the test so it can drive protocol progress the
@@ -500,6 +518,9 @@ class FakeInputAlt:
 
     def on_bus_async_done(self, pipeline: Any) -> None:
         self.async_done_calls += 1
+
+    def on_bus_error(self, error: BusError) -> None:
+        pass
 
     def observe_progress(self, pipeline: Any, report: Any) -> None:
         self.progress_reporters.append(report)
@@ -5108,6 +5129,137 @@ class TestTheDiagnosisSurvivesToTheStateTheOperatorSees:
         assert r.status_marker.failure == VideoFailure.UNAUTHORIZED
 
 
+class TestAFailedAttemptReachesTheInputBeforeTheRetry:
+    """The input reads what failed before it builds the next attempt."""
+
+    def test_the_error_is_handed_to_the_input(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        error = BusError("Could not open resource", RESOURCE_DOMAIN, RESOURCE_OPEN_READ, "debug text")
+
+        r._handle_bus_error(error)
+
+        assert r._input.bus_errors == [error]
+
+    def test_a_failure_with_no_error_hands_nothing_over(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._on_connection_timeout()
+        assert r._input.bus_errors == []
+
+    def test_an_input_that_raises_still_gets_its_retry(
+        self, fake_gst, fake_glib, fake_input_cls, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+
+        def _boom(_error: BusError) -> None:
+            raise RuntimeError("input bug")
+
+        r._input.on_bus_error = _boom
+        with caplog.at_level(logging.ERROR, logger=receiver_mod.__name__):
+            r._handle_bus_error(BusError("Could not open resource", RESOURCE_DOMAIN, RESOURCE_OPEN_READ))
+
+        assert r._state.reconnect_source_id is not None
+        assert r.status_marker.failure == VideoFailure.UNREACHABLE
+        assert "input bug" in caplog.text
+
+
+class _PlayablePipeline(shared_fake_gst.FakePipeline):
+    """The plugin-side fake pipeline, with the bus and state calls the receiver makes."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__(name)
+        self.bus = FakeBus()
+
+    def get_bus(self) -> FakeBus:
+        return self.bus
+
+    def set_state(self, state: str) -> str:
+        return FakeStateChangeReturn.SUCCESS
+
+    def get_state(self, timeout_ns: int = 0) -> tuple[str, str, str]:
+        return (FakeStateChangeReturn.SUCCESS, FakeState.NULL, FakeState.NULL)
+
+    def get_by_name(self, name: str) -> Any:
+        # Holds the receiver's own sink, a different fake, beside the plugin's elements.
+        return next((elem for elem in self.elements if elem.get_name() == name), None)
+
+
+class TestAnRtspAddressFamilyFailureRetriesOverTcp:
+    """The real RTSP input behind the receiver: the server described its
+    stream, then rtspsrc's UDP ports turned out to be of the other IP family
+    than the address the connection reached. The retry has to run over TCP
+    interleaved, and the operator is told what was observed, not the
+    element's own wording."""
+
+    _ERROR = BusError(
+        message="Could not get/set settings from/on resource.",
+        domain=RESOURCE_DOMAIN,
+        code=RESOURCE_SETTINGS,
+        debug=(
+            "../gst/udp/gstmultiudpsink.c(1229): gst_multiudpsink_configure_client (): "
+            "/GstPipeline:rtsp-sink/GstRTSPSrc:rtspsrc/GstUDPSink:udpsink0:\nInvalid address family (got 10)"
+        ),
+    )
+
+    @pytest.fixture
+    def receiver(self, fake_gst, fake_glib, monkeypatch: pytest.MonkeyPatch) -> receiver_mod.GstNativeSinkReceiver:
+        from gi.repository import Gst  # noqa: F401 - loads the attribute patched below
+
+        plugin_gst = shared_fake_gst.make_fake_gst()
+        plugin_gst.Pipeline = SimpleNamespace(new=_PlayablePipeline)
+        monkeypatch.setattr("gi.repository.Gst", plugin_gst)
+        monkeypatch.setattr(receiver_mod, "get_input_class", lambda input_id: RtspInput if input_id == "rtsp" else None)
+        # An address literal: the build looks nothing up.
+        return receiver_mod.GstNativeSinkReceiver(
+            source_type="rtsp", input_config={"rtsp_url": "rtsp://[2001:db8::10]:554/stream"}, reconnect_delay=0.2
+        )
+
+    @staticmethod
+    def _protocols(r: receiver_mod.GstNativeSinkReceiver) -> object:
+        return r._pipeline.get_by_name("rtspsrc").properties["protocols"]
+
+    @staticmethod
+    def _describe(r: receiver_mod.GstNativeSinkReceiver) -> None:
+        rtspsrc = r._pipeline.get_by_name("rtspsrc")
+        for signal, callback in rtspsrc.signals:
+            if signal == "on-sdp":
+                callback(rtspsrc, None)
+
+    @staticmethod
+    def _retry(r: receiver_mod.GstNativeSinkReceiver, fake_glib: FakeGLib) -> None:
+        _delay, callback = fake_glib.timers[r._state.reconnect_source_id]
+        callback()
+
+    def test_the_retry_runs_over_tcp_interleaved(self, receiver, fake_glib) -> None:
+        receiver.play()
+        assert self._protocols(receiver) == 0x7
+        self._describe(receiver)
+
+        receiver._handle_bus_error(self._ERROR)
+        self._retry(receiver, fake_glib)
+
+        assert self._protocols(receiver) == 0x4
+
+    def test_the_failure_is_classified_not_shown_raw(self, receiver) -> None:
+        receiver.play()
+        self._describe(receiver)
+
+        receiver._handle_bus_error(self._ERROR)
+
+        assert receiver.status_marker.failure == VideoFailure.NO_DATA
+
+    def test_a_failed_tcp_retry_is_classified_and_the_next_stays_on_tcp(self, receiver, fake_glib) -> None:
+        receiver.play()
+        self._describe(receiver)
+        receiver._handle_bus_error(self._ERROR)
+        self._retry(receiver, fake_glib)
+
+        receiver._on_connection_timeout()
+
+        assert receiver.status_marker.failure == VideoFailure.NO_DATA
+        self._retry(receiver, fake_glib)
+        assert self._protocols(receiver) == 0x4
+
+
 class TestRefusalReachesTheClassifier:
     """GStreamer puts the OS wording in the debug string, so a receiver that
     forwarded only ``message`` left REFUSED unreachable for every plugin."""
@@ -5537,3 +5689,177 @@ class TestTheInterfacePinRefusesABuild:
         r.create_pipeline()
 
         assert FakeInput.create_pipeline_call_count == 1
+
+
+# --------------------------------------------------------------------------- #
+# A lost source that is announced again
+# --------------------------------------------------------------------------- #
+
+
+class TestReturningSource:
+    """An input with a picker that gave up returns to its source once discovery announces it again."""
+
+    @pytest.fixture
+    def lost(self, fake_gst, fake_glib, fake_input_cls, monkeypatch):
+        monkeypatch.setattr(
+            FakeInput,
+            "_capabilities",
+            InputCapabilities(has_source_selection=True, has_source_discovery=True, discovery_interval=5.0),
+        )
+        monkeypatch.setattr(
+            FakeInput,
+            "_reconnect_policy",
+            ReconnectPolicy(max_attempts=1, fallback_to_selection=True, connection_timeout=0),
+        )
+        monkeypatch.setattr(threading, "Thread", _SyncSwapThread)
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+        r._state.note_phase(ConnectionPhase.DECODING)  # it was showing video when it went away
+        self._give_up(r, fake_glib)
+        return r
+
+    @staticmethod
+    def _give_up(r, glib, *listed: str) -> None:
+        """Run out of attempts; the discovery pass that follows lists *listed*."""
+        r._state.reconnect_attempt = 1
+        r._input.discover_results = [list(listed)]
+        r._do_reconnect()
+        assert r._state.is_placeholder_pipeline and r.source_selection_active and r._input_config["fake_source"] == ""
+        glib.run_idles()
+
+    @staticmethod
+    def _announce(r, glib, *sources: str) -> None:
+        r._input.discover_results = [list(sources)]
+        r._do_discovery()
+        glib.run_idles()
+
+    def test_the_source_is_reconnected_once_announced_again(self, lost, fake_glib) -> None:
+        FakeInput.create_pipeline_result = FakePipeline()
+        self._announce(lost, fake_glib, "cam-2", "cam-1")
+        assert lost.source_name == "cam-1"
+        assert lost.source_selection_active is False
+        assert lost._pipeline is FakeInput.create_pipeline_result
+
+    def test_nothing_happens_while_it_stays_away(self, lost, fake_glib) -> None:
+        self._announce(lost, fake_glib, "cam-2")
+        assert lost.source_name == ""
+        assert lost._state.is_placeholder_pipeline
+        assert lost.source_selection_active is True
+
+    def test_a_moved_selection_in_the_open_picker_does_not_hold_it_back(self, lost, fake_glib) -> None:
+        self._announce(lost, fake_glib, "cam-2", "cam-3")
+        lost.select_source_down()
+        self._announce(lost, fake_glib, "cam-2", "cam-3", "cam-1")
+        assert lost.source_name == "cam-1"
+        assert lost.source_selection_active is False
+
+    def test_closing_the_picker_keeps_the_wait_and_the_verdict(self, lost, fake_glib) -> None:
+        before = lost._status_marker.snapshot()
+        lost.exit_source_selection()
+        after = lost._status_marker.snapshot()
+        assert after.error_message == before.error_message
+        assert after.failure == before.failure
+        assert lost._discovery_source_id in fake_glib.timers
+        self._announce(lost, fake_glib, "cam-1")
+        assert lost.source_name == "cam-1"
+
+    def test_a_source_the_operator_picks_ends_the_wait(self, lost, fake_glib) -> None:
+        self._announce(lost, fake_glib, "cam-2")
+        assert lost.confirm_source_selection() is True
+        assert lost.source_name == "cam-2"
+        lost._state.set_placeholder_pipeline(True)  # cam-2 failed too: back on No Signal
+        self._announce(lost, fake_glib, "cam-1", "cam-2")
+        assert lost.source_name == "cam-2"
+
+    def test_a_return_queued_before_the_operator_picked_is_dropped(self, lost, fake_glib) -> None:
+        lost._input.discover_results = [["cam-1", "cam-2"]]
+        lost._do_discovery()
+        assert len(fake_glib.idles) == 1
+        lost.set_source("cam-2")
+        lost._state.set_placeholder_pipeline(True)
+        fake_glib.run_idles()
+        assert lost.source_name == "cam-2"
+
+    def test_a_new_source_from_the_config_ends_the_wait(self, lost, fake_glib) -> None:
+        lost.swap_input("fake", {"fake_source": ""})
+        lost._state.set_placeholder_pipeline(True)
+        self._announce(lost, fake_glib, "cam-1")
+        assert lost.source_name == ""
+
+    def test_a_running_pipeline_is_not_replaced(self, lost, fake_glib) -> None:
+        lost._state.set_placeholder_pipeline(False)
+        self._announce(lost, fake_glib, "cam-1")
+        assert lost.source_name == ""
+
+    def test_without_discovery_nothing_is_awaited(self, fake_gst, fake_glib, fake_input_cls, monkeypatch) -> None:
+        monkeypatch.setattr(FakeInput, "_capabilities", InputCapabilities(has_source_selection=True))
+        monkeypatch.setattr(FakeInput, "_reconnect_policy", ReconnectPolicy(max_attempts=1, fallback_to_selection=True))
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+        r._state.reconnect_attempt = 1
+        r._do_reconnect()
+        r.exit_source_selection()
+        assert r._status_marker.snapshot().error_message == "Source selection cancelled"
+
+    def test_closing_a_camera_picker_keeps_the_wait(self, lost, fake_glib, monkeypatch) -> None:
+        # A camera names its default device when none is set, so its label is never empty.
+        monkeypatch.setattr(FakeInput, "get_source_label", classmethod(lambda cls, config: "Camera (1080p@30)"))
+        before = lost._status_marker.snapshot()
+        lost.exit_source_selection()
+        assert lost._state.reconnect_source_id is None
+        assert lost._status_marker.snapshot().error_message == before.error_message
+        self._announce(lost, fake_glib, "cam-1")
+        assert lost._input_config["fake_source"] == "cam-1"
+
+    def test_giving_up_again_keeps_the_name(self, lost, fake_glib) -> None:
+        self._give_up(lost, fake_glib)
+        self._announce(lost, fake_glib, "cam-1")
+        assert lost.source_name == "cam-1"
+
+    def test_a_source_back_before_the_give_up_returns_on_the_first_pass(self, lost, fake_glib) -> None:
+        FakeInput.create_pipeline_result = FakePipeline()
+        self._announce(lost, fake_glib, "cam-1")
+        lost._state.note_phase(ConnectionPhase.DECODING)
+        self._give_up(lost, fake_glib, "cam-1")
+        assert lost.source_name == "cam-1"
+        assert lost.source_selection_active is False
+
+    def test_a_listed_source_that_sent_no_video_is_tried_again_after_a_hold(self, lost, fake_glib) -> None:
+        FakeInput.create_pipeline_result = FakePipeline()
+        self._announce(lost, fake_glib, "cam-1")
+        assert lost.source_name == "cam-1"
+        # Announced but sending nothing: the picker stays up for a while before the next try.
+        self._give_up(lost, fake_glib, "cam-1")
+        for _ in range(receiver_mod._LISTED_RETRY_PASSES - 1):
+            self._announce(lost, fake_glib, "cam-1")
+        assert lost.source_name == ""
+        assert lost.source_selection_active is True
+        self._announce(lost, fake_glib, "cam-1")
+        assert lost.source_name == "cam-1"
+
+    def test_a_source_that_sent_no_video_returns_once_announced_again(self, lost, fake_glib) -> None:
+        FakeInput.create_pipeline_result = FakePipeline()
+        self._announce(lost, fake_glib, "cam-1")
+        self._give_up(lost, fake_glib, "cam-1")
+        self._announce(lost, fake_glib, "cam-2")
+        assert lost.source_name == ""
+        self._announce(lost, fake_glib, "cam-1")
+        assert lost.source_name == "cam-1"
+
+    @pytest.mark.parametrize(
+        "end",
+        [
+            pytest.param(lambda r: r.release_source("Camera released"), id="release_source"),
+            pytest.param(lambda r: r.stop(), id="stop"),
+        ],
+    )
+    def test_a_return_queued_before_the_source_was_released_is_dropped(self, lost, fake_glib, end) -> None:
+        lost._input.discover_results = [["cam-1"]]
+        lost._do_discovery()
+        assert len(fake_glib.idles) == 1
+        end(lost)
+        lost._state.set_placeholder_pipeline(True)
+        builds = FakeInput.create_pipeline_call_count
+        fake_glib.run_idles()
+        assert FakeInput.create_pipeline_call_count == builds
+        assert lost._input_config["fake_source"] == ""

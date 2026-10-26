@@ -20,6 +20,7 @@ import numpy.typing as npt
 
 from openfollow.configuration import CameraConfig
 from openfollow.scene.solver import (
+    apply_overlay_distortion,
     camera_params,
     compute_homography,
     decompose_homography,
@@ -597,3 +598,21 @@ def plausibility(
         if fit.distance_error is not None and fit.distance_error > FLAG_DISTANCE_M:
             out.append({"kind": "distance", "id": fit.id, "m": fit.distance_error})
     return out
+
+
+def pin_errors(cam: CameraConfig, width: float, height: float) -> dict[int, float]:
+    """Each pinned mark's distance in px from where *cam*, lens included, sees it in a *width* x *height* picture.
+
+    A triangulated point counts once its solve placed it; a mark behind the camera has none.
+    """
+    pinned = [(m, [m.x, m.y, m.z] if m.kind == "known" else m.position) for m in cam.calibration_marks if m.pin]
+    pinned = [(m, at) for m, at in pinned if at]
+    if not pinned:
+        return {}
+    screen = project_points(camera_params(cam), np.array([at for _, at in pinned], dtype=np.float64), width, height)
+    seen = apply_overlay_distortion(screen, width, height, cam.lens_k1, cam.lens_k2, cam.lens_cx, cam.lens_cy)
+    return {
+        m.id: math.dist(xy, (m.pin[0] * width, m.pin[1] * height))
+        for (m, _), xy in zip(pinned, seen, strict=True)
+        if np.isfinite(xy).all()
+    }

@@ -55,7 +55,6 @@ from openfollow.web.routes import (
     _as_int_list,
     _as_ip_list,
     _as_network_mode,
-    _as_optional_float,
     _as_optional_int,
     _as_positive_int,
     _as_str,
@@ -91,7 +90,6 @@ _TYPE_ERRORS: dict[_FieldParser, str] = {
     _as_optional_int: "Must be a whole number (or empty).",
     _as_positive_int: "Must be a whole number (1 or greater).",
     _as_float: "Must be a number.",
-    _as_optional_float: "Must be a number (or empty).",
     _as_bool: "Must be one of: true, false, yes, no, on, off.",
     _as_int_list: "Must be a comma-separated list of whole numbers.",
     _as_ip_list: "Each entry must be a valid IPv4 address.",
@@ -418,12 +416,6 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "yaw": FieldRule(_as_float, lo=-180.0, hi=180.0, human_error="Yaw must be between -180° and 180°."),
         "roll": FieldRule(_as_float, lo=-180.0, hi=180.0, human_error="Roll must be between -180° and 180°."),
         "fov": FieldRule(_as_float, lo=1.0, hi=179.0, human_error="FOV must be between 1° and 179°."),
-        "sensor_width_mm": FieldRule(
-            _as_optional_float, lo=0.0, human_error="Sensor width must be a positive number (or empty)."
-        ),
-        "focal_length_mm": FieldRule(
-            _as_optional_float, lo=0.0, human_error="Focal length must be a positive number (or empty)."
-        ),
         # The lens's one rule, that the overlay reaches every corner, is cross-field: ``validate``
         # reads the siblings from the form context, or from the saved config when one is empty.
         "lens_k1": FieldRule(_as_float, human_error="Must be a number."),

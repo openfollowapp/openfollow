@@ -68,8 +68,6 @@ _FIELD_POOL = [
     "pitch",
     "yaw",
     "roll",
-    "sensor_width_mm",
-    "focal_length_mm",
     "width",
     "depth",
     "spacing",

@@ -346,6 +346,53 @@ class TestAnEmptySdpIsNotAGenericSettingsFailure:
         )
 
 
+class TestAnAddressFamilyMismatchIsNotUnknown:
+    """rtspsrc's UDP ports opened for one IP family while the server's address
+    is the other: the RTCP udpsink refuses it with the generic settings code,
+    and only the debug string names the cause."""
+
+    _MESSAGE = "Could not get/set settings from/on resource."
+    _DEBUG = (
+        "../gst/udp/gstmultiudpsink.c(1229): gst_multiudpsink_configure_client (): "
+        "/GstPipeline:rtsp-sink/GstRTSPSrc:rtspsrc/GstUDPSink:udpsink0:\nInvalid address family (got 10)"
+    )
+
+    @pytest.mark.parametrize(
+        ("phase", "expected"),
+        [
+            (ConnectionPhase.STARTING, VideoFailure.UNREACHABLE),
+            (ConnectionPhase.STREAM_DESCRIBED, VideoFailure.NO_DATA),
+            (ConnectionPhase.DATA_ARRIVING, VideoFailure.NO_DATA),
+            (ConnectionPhase.DECODING, VideoFailure.STALLED),
+        ],
+    )
+    def test_it_reads_by_how_far_the_feed_got(self, phase: ConnectionPhase, expected: VideoFailure) -> None:
+        verdict = classify_failure(
+            phase=phase, domain=RESOURCE_DOMAIN, code=RESOURCE_SETTINGS, message=self._MESSAGE, debug=self._DEBUG
+        )
+        assert verdict == expected
+
+    def test_the_marker_is_matched_case_insensitively(self) -> None:
+        verdict = classify_failure(
+            phase=ConnectionPhase.STREAM_DESCRIBED,
+            domain=RESOURCE_DOMAIN,
+            code=RESOURCE_SETTINGS,
+            message=self._MESSAGE,
+            debug="INVALID ADDRESS FAMILY (got 30)",
+        )
+        assert verdict == VideoFailure.NO_DATA
+
+    @pytest.mark.parametrize(
+        ("domain", "code"),
+        [(STREAM_DOMAIN, STREAM_FAILED), ("some-other-quark", RESOURCE_SETTINGS), (RESOURCE_DOMAIN, 1)],
+    )
+    def test_the_wording_under_another_code_is_not_claimed(self, domain: str, code: int) -> None:
+        verdict = classify_failure(
+            phase=ConnectionPhase.STREAM_DESCRIBED, domain=domain, code=code, message=self._MESSAGE, debug=self._DEBUG
+        )
+        assert verdict == VideoFailure.UNKNOWN
+
+
 class TestSourceBytesAreNotDecodedVideo:
     """``DATA_ARRIVING`` is bytes out of the source element. A feed carrying a
     payload this station cannot decode produces them just as readily as a

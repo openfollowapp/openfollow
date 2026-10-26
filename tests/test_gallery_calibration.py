@@ -17,12 +17,10 @@ pytestmark = pytest.mark.unit
 
 PICTURES = [
     pytest.param(ms.STAGE_ASSET_SVG, id="stage"),
-    pytest.param(ms.ARENA_ASSET_JPG, id="arena"),
     pytest.param(ms.CONCERT_ASSET_JPG, id="concert"),
     pytest.param(ms.FESTIVAL_ASSET_JPG, id="festival"),
 ]
 TAPED = [
-    pytest.param(ms.ARENA_ASSET_JPG, id="arena"),
     pytest.param(ms.CONCERT_ASSET_JPG, id="concert"),
     pytest.param(ms.FESTIVAL_ASSET_JPG, id="festival"),
 ]

@@ -56,6 +56,9 @@ class _FakeKeyboardHandler:
     def is_connected(self) -> bool:
         return True
 
+    def status(self) -> dict[str, object]:
+        return {"poller": "evdev", "devices": 1}
+
 
 class _FakeGamepadHandler:
     next_update = GamepadUpdate()
@@ -226,6 +229,7 @@ def test_input_manager_maps_controller_speeds_to_marker_ids(monkeypatch) -> None
 
     assert manager.get_marker_gamepad_speeds() == {10: 2.0, 11: 3.0}
     assert manager.is_keyboard_connected() is True
+    assert manager.keyboard_status() == {"poller": "evdev", "devices": 1}
 
 
 def test_input_manager_passes_marker_resolver_to_gamepad(monkeypatch) -> None:

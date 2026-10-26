@@ -30,7 +30,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib import metadata
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -53,10 +53,13 @@ _RECONNECT_MIN_S = 0.5
 _RECONNECT_MAX_S = 5.0
 _IDLE_POLL_S = 0.005
 _POLL_S = 0.004
-# A 3D mouse reports only while deflected. This long a run of silent (no-report)
-# reads means it's centered, so a latched non-zero reading is a dropped
-# return-to-center report; re-zero it before the marker glides untouched.
+# A 3D mouse reports only while deflected (about every 8 ms, even held still).
+# This long a run of silent (no-report) reads means it's centered, so a latched
+# non-zero reading is a dropped return-to-center report; re-zero it before the
+# marker glides untouched.
 _RECENTER_AFTER_IDLE_S = 0.2
+# pyspacemouse's state stamp before the first report.
+_NO_REPORT_STAMP = -1.0
 # Identify: LED states played this far apart. The LED is lit while the puck is
 # in use, so the blink starts dark and ends lit again.
 _IDENTIFY_BLINKS = (False, True, False, True, False, True)
@@ -84,6 +87,17 @@ _VID_3DCONNEXION = 0x256F
 _VID_LOGITECH_LEGACY = 0x046D
 _SPACEMOUSE_PID_LO = 0xC600
 _SPACEMOUSE_PID_HI = 0xC6FF
+# The HID usage a 6DOF puck declares: Generic Desktop / Multi-axis Controller.
+_PUCK_USAGE = (0x01, 0x08)
+
+# Models pyspacemouse has no profile for, read with a sibling's profile under
+# their own IDs and name: (vid, pid) -> (name, sibling (vid, pid)).
+_LOCAL_PROFILES: dict[tuple[int, int], tuple[str, tuple[int, int]]] = {
+    (0x046D, 0xC628): ("SpaceNavigatorForNotebooks", (0x046D, 0xC626)),
+    (0x256F, 0xC62F): ("SpaceMouseWirelessReceiver", (0x256F, 0xC62E)),
+    (0x256F, 0xC631): ("SpaceMouseProWirelessCabled", (0x256F, 0xC632)),
+    (0x256F, 0xC636): ("SpaceMouseModule", (0x256F, 0xC635)),
+}
 
 # How often the manager re-enumerates connected pucks (hotplug), seconds.
 _ENUMERATE_INTERVAL_S = 1.5
@@ -100,32 +114,27 @@ def _platform_supported() -> bool:
 
 @functools.cache
 def _backend_version() -> str:
-    """The installed pyspacemouse, which decides the models that have a profile."""
+    """The installed pyspacemouse version, reported in the status."""
     try:
         return metadata.version("pyspacemouse")
     except metadata.PackageNotFoundError:
         return ""
 
 
-def _looks_like_puck(vendor_id: int, product_id: int) -> bool:
-    """True for a USB VID/PID in the 3Dconnexion range.
-
-    Recognition only: it says the device is a 3Dconnexion one, not that the
-    backend can read it. :func:`_is_supported_puck` answers that.
-    """
+def _in_3dconnexion_range(vendor_id: int, product_id: int) -> bool:
+    """True for a USB VID/PID 3Dconnexion ships its devices under, pucks or not."""
     if vendor_id == _VID_3DCONNEXION:
         return True
     return vendor_id == _VID_LOGITECH_LEGACY and _SPACEMOUSE_PID_LO <= product_id <= _SPACEMOUSE_PID_HI
 
 
 @functools.cache
-def _backend_puck_ids() -> frozenset[tuple[int, int]] | None:
-    """``(vid, pid)`` pairs the backend holds a device profile for.
+def _device_profiles() -> dict[tuple[int, int], Any] | None:
+    """``(vid, pid)`` -> how to open that model: ``None`` for a built-in profile, else the local spec.
 
-    ``None`` when the table can't be read, which is the signal to fall back to
-    the VID/PID range. Cached because a *failed* import is not cached by Python
-    the way a successful one is, so an uncachable answer would otherwise be
-    re-attempted once per HID device per enumeration pass.
+    ``None`` overall when the backend's table can't be read. Cached because a
+    *failed* import is not cached by Python the way a successful one is, so an
+    uncachable answer would otherwise be re-attempted on every enumeration pass.
     """
     try:
         from pyspacemouse import get_device_specs  # lazy: imports the HID backend
@@ -133,25 +142,21 @@ def _backend_puck_ids() -> frozenset[tuple[int, int]] | None:
         logger.debug("3D Mouse device profiles unavailable: %s", exc)
         return None
     try:
-        specs = get_device_specs()
+        builtin = {(int(spec.vendor_id), int(spec.product_id)): spec for spec in get_device_specs().values()}
     except Exception as exc:  # noqa: BLE001 - an unreadable table must not stop enumeration
         logger.debug("3D Mouse device profiles unreadable: %s", exc)
         return None
-    return frozenset((int(spec.vendor_id), int(spec.product_id)) for spec in specs.values())
-
-
-def _is_supported_puck(vendor_id: int, product_id: int) -> bool:
-    """True for a puck the backend holds a device profile for.
-
-    The backend refuses to open a device it has no profile for, so its own
-    table is the only honest answer to "can this be driven". The VID/PID range
-    stands in only while that table is unreadable, which is the case during
-    enumeration on a host where the HID backend won't import.
-    """
-    ids = _backend_puck_ids()
-    if ids is None:
-        return _looks_like_puck(vendor_id, product_id)
-    return (vendor_id, product_id) in ids
+    profiles: dict[tuple[int, int], Any] = dict.fromkeys(builtin)
+    for ids, (name, sibling) in _LOCAL_PROFILES.items():
+        # A built-in profile wins. Built-in specs are in the LEGACY axis
+        # convention the built-in open applies, so a copy reads like its sibling.
+        if ids in profiles or sibling not in builtin:
+            continue
+        try:
+            profiles[ids] = replace(builtin[sibling], name=name, vendor_id=ids[0], product_id=ids[1])
+        except Exception as exc:  # noqa: BLE001 - a spec this code can't copy leaves that model unprofiled
+            logger.debug("3D Mouse local profile %s not built: %s", name, exc)
+    return profiles
 
 
 @dataclass(frozen=True)
@@ -165,7 +170,7 @@ class Mouse3DDeviceInfo:
     product_id: int = 0
     # The socket the puck is plugged into (see controller_identity), or None.
     port_key: str | None = None
-    # False for a 3Dconnexion device the backend holds no profile for; never opened.
+    # False for a puck with no device profile; never opened.
     profiled: bool = True
 
 
@@ -180,18 +185,23 @@ class Mouse3DBackend(Protocol):
 class _PySpaceMouseBackend:
     """Real backend over ``pyspacemouse`` (2.x) + ``easyhid``.
 
-    ``easyhid`` reports one entry per HID collection, so a single puck appears
-    several times at the same ``/dev/hidraw*`` node; we dedup by path and open
-    each unique node once with ``open_by_path``.
+    ``easyhid`` reports one entry per HID top-level collection, so a single puck
+    appears several times at the same ``/dev/hidraw*`` node; each node is
+    classified across all its entries and opened once with ``open_by_path``.
     """
 
     def __init__(self) -> None:
-        # Devices already reported as undrivable, so a puck the backend has no
-        # profile for is named once rather than on every enumeration pass.
+        # Devices already reported as undrivable, so a puck with no profile is
+        # named once rather than on every enumeration pass.
         self._unprofiled_warned: set[tuple[int, int]] = set()
 
     def enumerate(self) -> list[Mouse3DDeviceInfo]:
         """Every attached puck, profiled or not, one per hidraw node.
+
+        A node is a puck when one of its entries declares the Multi-axis
+        Controller usage under a 3Dconnexion VID/PID. Without a readable profile
+        table every such puck counts as profiled, so a broken table surfaces as
+        an open error rather than a silently missing puck.
 
         Raises when the HID library won't load or can't list devices, so that
         is never mistaken for nothing being plugged in. Without libhidapi,
@@ -200,39 +210,42 @@ class _PySpaceMouseBackend:
         """
         from easyhid import Enumeration  # lazy: dlopens libhidapi
 
-        by_path: dict[str, Mouse3DDeviceInfo] = {}
+        nodes: dict[str, list[Any]] = {}
         for dev in Enumeration().find():
-            vid = int(getattr(dev, "vendor_id", 0) or 0)
-            pid = int(getattr(dev, "product_id", 0) or 0)
-            profiled = _is_supported_puck(vid, pid)
-            if not profiled:
-                if not _looks_like_puck(vid, pid):
-                    continue
-                self._note_unprofiled(vid, pid, dev)
-            path = getattr(dev, "path", None)
-            if isinstance(path, bytes):
-                path = path.decode("utf-8", "replace")
-            if not path or path in by_path:
+            path = _hid_path(dev)
+            if path:
+                nodes.setdefault(path, []).append(dev)
+        profiles = _device_profiles()
+        infos: list[Mouse3DDeviceInfo] = []
+        for path in sorted(nodes):
+            dev = _puck_entry(nodes[path], profiles)
+            if dev is None:
                 continue
-            by_path[path] = Mouse3DDeviceInfo(
-                path=path,
-                product_name=str(getattr(dev, "product_string", "") or ""),
-                serial=str(getattr(dev, "serial_number", "") or ""),
-                vendor_id=vid,
-                product_id=pid,
-                port_key=resolve_key(path),
-                profiled=profiled,
+            vid, pid = _hid_ids(dev)
+            profiled = profiles is None or (vid, pid) in profiles
+            if not profiled:
+                self._note_unprofiled(vid, pid, dev)
+            infos.append(
+                Mouse3DDeviceInfo(
+                    path=path,
+                    product_name=str(getattr(dev, "product_string", "") or ""),
+                    serial=str(getattr(dev, "serial_number", "") or ""),
+                    vendor_id=vid,
+                    product_id=pid,
+                    port_key=resolve_key(path),
+                    profiled=profiled,
+                )
             )
-        return [by_path[p] for p in sorted(by_path)]
+        return infos
 
     def _note_unprofiled(self, vendor_id: int, product_id: int, dev: Any) -> None:
-        """Name a 3Dconnexion device the backend holds no profile for, once."""
+        """Name a puck with no device profile, once."""
         key = (vendor_id, product_id)
         if key in self._unprofiled_warned:
             return
         self._unprofiled_warned.add(key)
         logger.warning(
-            "3D Mouse %04x:%04x (%s) has no device profile in the installed pyspacemouse, so it is skipped.",
+            "3D Mouse %04x:%04x (%s) has no device profile, so it is skipped.",
             vendor_id,
             product_id,
             str(getattr(dev, "product_string", "") or "unnamed"),
@@ -246,14 +259,62 @@ class _PySpaceMouseBackend:
         """
         import pyspacemouse  # lazy
 
+        local_spec = _local_spec_at(path)
         try:
             # ``open_by_path`` prints to stdout on success; keep the log clean.
             with contextlib.redirect_stdout(io.StringIO()):
-                return pyspacemouse.open_by_path(path)
+                if local_spec is None:
+                    return pyspacemouse.open_by_path(path)
+                return pyspacemouse.open_by_path(path, device_spec=local_spec)
         except Exception as exc:
             if os.path.exists(path) and not os.access(path, os.R_OK | os.W_OK):
                 raise PermissionError(f"{path} is not readable and writable by this process") from exc
             raise
+
+
+def _local_spec_at(path: str) -> Any | None:
+    """The local spec for the device at ``path`` now, ``None`` for any other.
+
+    Read from the node's current IDs, never remembered from an enumeration:
+    a custom spec skips pyspacemouse's own ID check, and a hidraw node can be
+    handed to another device between two passes.
+    """
+    profiles = _device_profiles()
+    if profiles is None:
+        return None
+    from easyhid import Enumeration  # lazy: dlopens libhidapi
+
+    for dev in Enumeration().find():
+        if _hid_path(dev) == path:
+            return profiles.get(_hid_ids(dev))
+    return None
+
+
+def _hid_path(dev: Any) -> str | None:
+    path = getattr(dev, "path", None)
+    if isinstance(path, bytes):
+        return path.decode("utf-8", "replace")
+    return path
+
+
+def _hid_ids(dev: Any) -> tuple[int, int]:
+    return int(getattr(dev, "vendor_id", 0) or 0), int(getattr(dev, "product_id", 0) or 0)
+
+
+def _hid_usage(dev: Any) -> tuple[int, int]:
+    return int(getattr(dev, "usage_page", 0) or 0), int(getattr(dev, "usage", 0) or 0)
+
+
+def _puck_entry(entries: list[Any], profiles: dict[tuple[int, int], Any] | None) -> Any | None:
+    """The entry that makes one hidraw node a puck, or ``None`` when it is not one."""
+    for dev in entries:
+        if _hid_usage(dev) == _PUCK_USAGE and _in_3dconnexion_range(*_hid_ids(dev)):
+            return dev
+    if any(_hid_usage(dev) != (0, 0) for dev in entries):
+        return None
+    # An older hidapi reports no usage for any collection: only a profile vouches for the node.
+    dev = entries[0]
+    return dev if profiles is not None and _hid_ids(dev) in profiles else None
 
 
 def check_mouse3d_dependencies() -> list[str]:
@@ -501,11 +562,10 @@ class Mouse3DHandler:
                     state = device.read()
                 except Exception:  # noqa: BLE001 - easyhid's HIDException is not an OSError
                     return None
-                if state is not None:
-                    buttons = tuple(int(bool(b)) for b in (getattr(state, "buttons", None) or ()))
-                    for idx, pressed in enumerate(buttons):
-                        if pressed:
-                            return idx
+                buttons = tuple(int(bool(b)) for b in (getattr(state, "buttons", None) or ()))
+                for idx, pressed in enumerate(buttons):
+                    if pressed:
+                        return idx
                 time.sleep(_DETECT_POLL_S)
             return None
         finally:
@@ -709,9 +769,9 @@ class Mouse3DHandler:
                 if stop.is_set() and self._has_led:
                     _set_led_quietly(device, False)
                 _safe_close(device)
-            # Reset the backoff only once a connection actually delivered a
-            # reading; an open that never reads (immediate read error) backs off
-            # like a failed open so a flaky device can't drive a tight reopen loop.
+            # Reset the backoff only once a read succeeded; an open whose first
+            # read fails backs off like a failed open, so a flaky device can't
+            # drive a tight reopen loop.
             if read_any:
                 backoff = _RECONNECT_MIN_S
             elif stop.wait(backoff):
@@ -781,12 +841,19 @@ class Mouse3DHandler:
     def _pump(self, device: Any, stop: threading.Event) -> bool:
         """Pump device readings into ``_snapshot`` until stop or disconnect.
 
-        Returns whether at least one reading was delivered, so the caller can
-        tell a healthy connection (reset backoff) from an open that immediately
-        failed to read (back off instead of tight-looping).
+        Returns whether a read succeeded, so the caller can tell a healthy
+        connection (reset backoff) from an open that immediately failed to read
+        (back off instead of tight-looping).
         """
         read_any = False
         idle_s = 0.0
+        # pyspacemouse returns the same state on every read and stamps ``t`` only
+        # when a report arrives, so an unchanged stamp is a silent read.
+        last_stamp: object = _NO_REPORT_STAMP
+        # Axes a recenter zeroed, by the value the backend still holds: it keeps
+        # an axis until a report of that axis's own channel, so a button report
+        # must not bring the dropped deflection back.
+        zeroed: dict[str, float] = {}
         while not stop.is_set():
             self._drive_identify(device)
             try:
@@ -795,7 +862,9 @@ class Mouse3DHandler:
                 # easyhid reports an unplugged puck as HIDException, not OSError.
                 logger.info("3D Mouse read failed (disconnect?): %r", exc)
                 return read_any
-            if state is None:
+            read_any = True
+            stamp = getattr(state, "t", None)
+            if stamp == last_stamp:
                 # Sustained silence means the puck is centered. Re-zero a latched
                 # non-zero reading (a dropped return-to-center report) so the
                 # marker can't glide with hands off the device; buttons are kept
@@ -805,19 +874,26 @@ class Mouse3DHandler:
                     with self._lock:
                         latched = self._snapshot
                         if latched is not None and not latched.is_centered():
+                            zeroed.update((axis, v) for axis in _AXIS_SOURCE.values() if (v := getattr(latched, axis)))
                             self._snapshot = _Snapshot(buttons=latched.buttons)
                 if stop.wait(_IDLE_POLL_S):
                     return read_any
                 continue
+            last_stamp = stamp
             idle_s = 0.0
-            read_any = True
+            axes = {axis: _finite_axis(getattr(state, axis, 0.0)) for axis in _AXIS_SOURCE.values()}
+            for axis, held in list(zeroed.items()):
+                if axes[axis] == held:
+                    axes[axis] = 0.0
+                else:
+                    del zeroed[axis]
             snapshot = _Snapshot(
-                x=_finite_axis(getattr(state, "x", 0.0)),
-                y=_finite_axis(getattr(state, "y", 0.0)),
-                z=_finite_axis(getattr(state, "z", 0.0)),
-                roll=_finite_axis(getattr(state, "roll", 0.0)),
-                pitch=_finite_axis(getattr(state, "pitch", 0.0)),
-                yaw=_finite_axis(getattr(state, "yaw", 0.0)),
+                x=axes["x"],
+                y=axes["y"],
+                z=axes["z"],
+                roll=axes["roll"],
+                pitch=axes["pitch"],
+                yaw=axes["yaw"],
                 buttons=tuple(int(bool(b)) for b in (getattr(state, "buttons", None) or ())),
             )
             # Detect button presses at read rate so a tap between two frames is
@@ -1161,11 +1237,10 @@ class Mouse3DManager:
                         state = device.read()
                     except Exception:  # noqa: BLE001 - easyhid's HIDException is not an OSError
                         continue
-                    if state is not None:
-                        buttons = tuple(int(bool(b)) for b in (getattr(state, "buttons", None) or ()))
-                        for idx, pressed in enumerate(buttons):
-                            if pressed:
-                                return idx
+                    buttons = tuple(int(bool(b)) for b in (getattr(state, "buttons", None) or ()))
+                    for idx, pressed in enumerate(buttons):
+                        if pressed:
+                            return idx
                 time.sleep(_DETECT_POLL_S)
             return None
         finally:

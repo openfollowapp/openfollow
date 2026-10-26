@@ -32,10 +32,10 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
 from urllib.parse import quote, urlsplit
 
-from bottle import Bottle, HTTPResponse, abort, redirect, request, response, static_file, template
+from bottle import Bottle, HTTPResponse, abort, request, response, static_file, template
 
 import openfollow
 
@@ -72,6 +72,7 @@ from openfollow.configuration import (
     VALID_BUTTON_NAMES,
     AppConfig,
     CalibrationMarkConfig,
+    CameraConfig,
     ConfigFileEmptyError,
     ConfigFileUnreadableError,
     DetectionMaskConfig,
@@ -522,12 +523,21 @@ def _host_refusal(host: str | None, fqdn: str = "") -> HostRefusal | None:
     if host is None or canonical_host(host) in _allowed_request_hosts(fqdn):
         return None
     address = _connection_address()
-    href = None
-    if address is not None:
-        port = str(request.environ.get("SERVER_PORT") or "80")
-        netloc = f"[{address}]" if ":" in address else address
-        href = f"http://{netloc}{'' if port == '80' else ':' + port}/"
+    href = _station_url(address) if address is not None else None
     return HostRefusal(host=host, address=address, href=href)
+
+
+def _station_url(address: str) -> str:
+    """This station's UI at ``address``, on the scheme and port this connection reached."""
+    port = str(request.environ.get("SERVER_PORT") or "80")
+    netloc = f"[{address}]" if ":" in address else address
+    return f"http://{netloc}{'' if port == '80' else ':' + port}/"
+
+
+def _redirect(location: str) -> NoReturn:
+    """A 303 to ``location`` as given. Bottle's ``redirect`` resolves it against
+    ``request.url``, which takes the host and scheme from client-set X-Forwarded-* headers."""
+    raise HTTPResponse(status=303, headers={"Location": location})
 
 
 def _page_host_context(cfg: AppConfig) -> dict[str, Any]:
@@ -1671,14 +1681,40 @@ def _interface_assignment_rows(
     return rows
 
 
+# What the Setup Wizard's calibration solves; its marks describe these values only.
+_SOLVED_CAMERA_FIELDS = ("pos_x", "pos_y", "pos_z", "pitch", "yaw", "roll", "fov")
+# What describes one calibration's marks: never kept for marks it did not come with.
+_CALIBRATION_RECORD = ("calibration_lens_rating", "calibration_time", "calibration_source")
+_CALIBRATION_FIELDS = ("calibration_mode", "calibration_marks", "calibration_height", *_CALIBRATION_RECORD)
+
+
+def _solved_camera(cfg: AppConfig) -> tuple[float, ...]:
+    return tuple(getattr(cfg.camera, name) for name in _SOLVED_CAMERA_FIELDS)
+
+
 def apply_section_data(cfg: AppConfig, section: str, data: Mapping[str, Any]) -> bool:
     """Apply section updates in-place. Returns False for unknown sections.
 
     A station in Simple keeps no per-plane pin, whichever section a POST names. Simple's corner marks
     follow the grid, and one the grid moved loses its pin, so a write that brings pins for the new grid
-    applies the grid first.
+    applies the grid first. A camera write that changes the pose or FOV without bringing calibration
+    marks clears the calibration, so the next Setup Wizard run cannot solve the old pose back. One that
+    brings marks clears what describes a calibration and it does not bring; a lens changed without its
+    rating clears the rating.
     """
+    solved, lens = _solved_camera(cfg), effective_lens(cfg)
     applied = _apply_section(cfg, section, data)
+    if isinstance(data.get("calibration_marks"), list):
+        stale: Sequence[str] = [name for name in _CALIBRATION_RECORD if not isinstance(data.get(name), str)]
+    elif _solved_camera(cfg) != solved:
+        stale = _CALIBRATION_FIELDS
+    elif effective_lens(cfg) != lens and not isinstance(data.get("calibration_lens_rating"), str):
+        stale = ("calibration_lens_rating",)
+    else:
+        stale = ()
+    blank = CameraConfig()
+    for name in stale:
+        setattr(cfg.camera, name, getattr(blank, name))
     enforce_network_mode(cfg)
     reconcile_simple_corners(cfg)
     return applied
@@ -1927,22 +1963,6 @@ def _as_float_or_zero(value: Any, default: float) -> float:
 def _as_json_list(value: Any, current: Any) -> Any:
     """A JSON list as sent; anything else keeps the current value. The dataclass coerces each entry."""
     return list(value) if isinstance(value, list) else current
-
-
-def _as_optional_float(value: Any, default: float | None) -> float | None:
-    """Parse to float; explicit None or blank string clears to None.
-
-    When the field key is absent from the payload, ``_apply_parsed_updates``
-    skips it entirely, so "preserve existing" is handled there, not here.
-    """
-    if value is None:
-        return None
-    if isinstance(value, str) and not value.strip():
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError, OverflowError):
-        return default
 
 
 def _as_optional_measured(value: Any, current: float | None) -> float | None:
@@ -2221,8 +2241,6 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "yaw": _as_float,
         "roll": _as_float,
         "fov": _as_float,
-        "sensor_width_mm": _as_optional_float,
-        "focal_length_mm": _as_optional_float,
         "lens_k1": _as_float,
         "lens_k2": _as_float,
         "lens_cx": _as_float,
@@ -2230,6 +2248,9 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "calibration_mode": _as_str,
         "calibration_marks": _as_json_list,
         "calibration_height": _as_optional_measured,
+        "calibration_lens_rating": _as_str,
+        "calibration_time": _as_str,
+        "calibration_source": _as_str,
     },
     "grid": {
         "visible": _as_bool,
@@ -2718,6 +2739,19 @@ def _camera_video_size(server: ConfigWebServer) -> tuple[int, int] | None:
     if isinstance(width, int) and isinstance(height, int) and width > 0 and height > 0:
         return width, height
     return None
+
+
+def _shown_source_text(server: ConfigWebServer) -> str:
+    """The video source the station shows, by input name and its credential-free label; "" before any."""
+    from openfollow.video.inputs import get_input_class
+
+    video = server.get_runtime_stats().get("video") or {}
+    label = str(video.get("source_label") or "")
+    input_cls = get_input_class(str(video.get("source_type") or ""))
+    if input_cls is None or not label:
+        return label
+    name = input_cls.display_name
+    return label if label.startswith(name) else f"{name}: {label}"
 
 
 def _mouse3d_status_view(server: ConfigWebServer) -> dict[str, Any]:
@@ -4663,19 +4697,6 @@ _ENV_CONFIG_KEY = "openfollow.loaded_config"
 _CONFIG_CACHE = ParsedConfigCache()
 
 
-def _port_suffix(netloc: str) -> str:
-    """The ``:port`` suffix of a URL netloc, or ``""`` when no explicit port.
-
-    Handles bracketed IPv6 host literals: a bare ``[fe80::1]`` has no port (the
-    trailing hextet must not be read as one) – only ``[fe80::1]:8080`` does.
-    """
-    if netloc.startswith("["):
-        _, sep, port = netloc.rpartition("]:")
-        return f":{port}" if sep else ""
-    _, sep, port = netloc.rpartition(":")
-    return f":{port}" if sep else ""
-
-
 def _last_whole_config(server: ConfigWebServer) -> AppConfig:
     """The config as the file last read whole, read again once it changes.
 
@@ -5910,13 +5931,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         elif request.headers.get("HX-Request"):
             raise HTTPResponse(body="", headers={"HX-Redirect": "/login"})
         else:
-            redirect("/login")
+            _redirect("/login")
 
     @app.get("/login")
     def login_page() -> Any:
         cfg = _request_scoped_config()
         if not cfg.web_pin:
-            redirect("/")
+            _redirect("/")
         return template(
             "login",
             error="",
@@ -5930,7 +5951,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         cfg = _request_scoped_config()
         pin = cfg.web_pin
         if not pin:
-            redirect("/")
+            _redirect("/")
 
         remote = _client_address()
         # Reserve a single guess atomically: refuse while locked out (short-
@@ -6112,7 +6133,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 root=str(license_path.parent),
                 mimetype="text/plain",
             )
-        redirect("https://www.gnu.org/licenses/agpl-3.0.txt")
+        _redirect("https://www.gnu.org/licenses/agpl-3.0.txt")
 
     # --- HTML Page Routes ---
 
@@ -6604,12 +6625,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             net=_build_network_form_context(iface=iface, banner=banner, vlan_form=vlan_form),
         )
 
-    def _network_redirect_url(address: str) -> str:
-        """Build a same-scheme/same-port URL on ``address`` so a static /
-        manual-address apply can reload the UI at the new IP."""
-        parts = request.urlparts
-        return f"{parts.scheme}://{address}{_port_suffix(parts.netloc)}/"
-
     def _parse_network_form() -> tuple[str, str, dict[str, Any]]:
         """Pull (iface, method_value, fields) off the posted form. ``fields``
         carries the raw operator input – re-rendered verbatim on error."""
@@ -6828,7 +6843,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # dead page and the explanation is lost with the response body.
             and not result.pending
         ):
-            response.set_header("HX-Redirect", _network_redirect_url(address))
+            response.set_header("HX-Redirect", _station_url(address))
             return ""
         if result.pending:
             # Deliberately not "applied", and no reconnect advice: the
@@ -9469,11 +9484,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # The schema requires BOTH halves, so this apply path needs no
             # conditional checks – a partial template is rejected by the
             # loader and would have returned 404 / 400 above.
-            from openfollow.configuration import CameraConfig, GridConfig, GroundGridConfig
+            from openfollow.configuration import CameraConfig, GridConfig, GroundGridConfig, without_former_camera_keys
 
             with _config_write_lock:
                 cfg = _config_for_save(server)
-                cfg.camera = CameraConfig(**tpl.payload["camera"])
+                cfg.camera = CameraConfig(**without_former_camera_keys(tpl.payload["camera"]))
                 cfg.grid = GridConfig(**tpl.payload["grid"])
                 reconcile_simple_corners(cfg)
                 if "ground_grid" in tpl.payload:
@@ -10274,6 +10289,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
         pushed_by = _pushed_by()
         scrubbed = strip_device_local_fields(section, data)
+        if section == "camera" and pushed_by is None and "calibration_time" in scrubbed:
+            scrubbed.setdefault("calibration_source", _shown_source_text(server))
         backup: dict[str, str] = {}
         if pushed_by is not None:
             scrubbed = _without_station_name(scrubbed)
@@ -10327,6 +10344,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # Local apply is an operator saving their own form, so overlay the
             # live per-marker speeds like the other section-save flows.
             cfg = _load_config_for_edit()
+            if section == "camera":
+                # The Camera tab only shows the camera: send the saved one, calibration included, as one copy.
+                data = asdict(cfg.camera)
             if not apply_section_data(cfg, section, data):
                 response.status = 404
                 return json.dumps({"error": "Unknown section"})

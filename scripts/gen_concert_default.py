@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""Render the Media Gallery's Concert default: a concert stage seen from a camera on the back truss.
+"""Draw the scene of the Media Gallery's Concert default: a concert stage seen from a camera on the back truss.
 
-The camera hangs on the upstage back truss behind the band riser and looks steeply down over the
-stage into the crowd: dark brown 1 x 2 m stage decks under a white wash, running on, darker, into
-the wings; the band riser with black treads and a white safety edge, and a higher deck with moving
-heads on each side of it; white tape along the lip, the mic stand, pedalboards and setlists at the
-stage edge; two sheer white legs tied back on each side, at the downstage corner and mid-stage;
-sidefills, amp racks, a monitor desk, a guitar world and cases in the wings; front fills in the pit
-before the crowd barrier, and the crowd. The picture is bowed by a barrel lens through the overlay's
-own model, so a station set to the printed camera and lens draws its grid on the deck seams. Tape
-marks the grid's corners and the Reference Point.
+The camera hangs on the upstage back truss over the back of the band riser and looks down over the stage
+into the crowd: dark brown 1 x 2 m stage decks under a white wash, running on, darker, into the wings;
+the band riser with black treads, a white safety edge and a drum kit with a sampling pad, and a higher
+deck with moving heads on each side of it; white tape along the lip, the mic stand, pedalboards and
+setlists at the stage edge; two sheer white legs tied back on each side, at the downstage corner and
+mid-stage, where they hang from a box truss across the stage that carries five spot and six wash moving
+lights; sidefills, amp racks, a monitor desk, a guitar world and cases in the wings; front fills in the
+pit before the crowd barrier, and the crowd. The drawing is bowed by a 2.8 mm M12 lens through the
+overlay's own model, so a station set to the printed camera and lens draws its grid on the deck seams.
+Tape marks the grid's corners and the Reference Point. ``concert_default.jpg`` is a photorealistic
+rendering of this drawing with every line where the drawing puts it, so the calibration the script
+writes beside it holds for it; the drawing itself is written only to a path given on the command line.
 
-Needs ``rsvg-convert`` (librsvg) and Pillow. Prints the camera, the lens pair, the grid and the
-corners' pixels.
+The drawing needs ``rsvg-convert`` (librsvg) and Pillow. Prints the camera, the lens pair, the grid and
+the corners' pixels.
 
-    poetry run python scripts/gen_concert_default.py
+    poetry run python scripts/gen_concert_default.py [drawing.jpg]
 """
 
 from __future__ import annotations
@@ -42,10 +45,10 @@ from openfollow.scene.solver import apply_overlay_distortion, project_points  # 
 ASSET = ROOT / "openfollow" / "video" / "inputs" / "assets" / "concert_default.jpg"
 W, H = 1920.0, 1080.0
 # Back truss upstage of the riser: pos_x, pos_y, pos_z, pitch, yaw, roll, horizontal fov.
-CAMERA = np.array([0.0, 13.0, 12.0, -48.0, 180.0, 0.0, 70.0])
-K1, K2 = -0.2, -0.07  # barrel / fisheye, corner correction
+CAMERA = np.array([0.0, 10.0, 9.0, -48.0, 180.0, 0.0, 82.5])
+K1, K2 = -0.37, -0.17  # barrel / fisheye, corner correction: a 2.8 mm M12 lens
 # Pinhole geometry is cut to this box before the lens bows it, which keeps the SVG small.
-CLIP = (-0.25 * W, -0.25 * H, 1.25 * W, 1.25 * H)
+CLIP = (-1.5 * W, -1.5 * H, 2.5 * W, 2.5 * H)
 STEP_PX = 6.0  # edges are split this finely, so a straight edge bows like the lens bows it
 
 STAGE_X, LIP_Y, STAGE_BACK = 7.0, 0.0, 11.0  # the deck: 14 m across, from the lip back past the riser
@@ -53,12 +56,15 @@ WING_X, OFF_X = STAGE_X + 5.0, 20.0  # the deck runs on, darker, into the wings;
 DECK_W, DECK_D = 1.0, 2.0  # 1 m across the front, 2 m running back
 FLOOR_Z = -1.8  # house floor below the deck
 PIT_Y = LIP_Y - 2.7  # barricade
-LEG_TOP, LEG_KNOT = 11.0, 1.5  # leg height and tie-back height
-# Two tied-back legs per side: plane (y), outer and inner edge at the top, the tie (x, this side), and
-# whether the cloth falls straight from the top and curves only toward the tie (the downstage pair).
+LEG_KNOT = 1.5  # tie-back height
+# The mid truss across the stage: plane (y), bottom chord height, box size and half span, all in metres.
+MID_TRUSS_Y, MID_TRUSS_Z, TRUSS_BOX, TRUSS_HALF_SPAN = 4.6, 7.1, 0.34, 12.5
+# Two tied-back legs per side: plane (y), outer and inner edge at the top, the tie (x, this side), the height
+# they hang from, and whether the cloth falls straight from the top and curves only toward the tie (the
+# downstage pair, from the grid out of the picture; the mid-stage pair hangs from the mid truss).
 LEGS = (
-    (LIP_Y - 0.4, STAGE_X + 2.5, STAGE_X - 1.2, STAGE_X + 0.5, True),
-    (4.6, STAGE_X + 4.5, STAGE_X - 0.4, STAGE_X + 0.3, False),
+    (LIP_Y + 0.3, STAGE_X + 2.5, STAGE_X - 1.2, STAGE_X + 0.5, 11.0, True),
+    (MID_TRUSS_Y, STAGE_X + 4.5, STAGE_X - 0.4, STAGE_X + 0.3, MID_TRUSS_Z, False),
 )
 GRID_W, GRID_D, GRID_SPACING = 12.0, 6.0, 2.0  # grid lines on every second deck seam, lip to riser
 CORNERS = {
@@ -73,8 +79,11 @@ SIDE_RISER = (5.3, 9.3, 8.4, 9.4, 2.0)  # each side of the riser: inner x, outer
 C_BG, C_HOUSE, C_DECK, C_SEAM = "#050507", "#0d0b10", "#3a332d", "#c9c0b5"
 C_OFF, C_WING_DECK, C_RISER_TOP, C_RISER_FACE = "#0c0c0f", "#1f1b18", "#070708", "#0e0f12"
 C_DRAPE, C_DRAPE_DARK, C_BARR = "#e4e2df", "#9a9692", "#b8bcc4"
+C_SILVER = "#c6cad1"  # drum hardware
+C_TRUSS, C_TRUSS_LACING = "#6a6d73", "#53565b"  # aluminium truss chords and lacing, in shadow
 GAMMA = 1.55  # darkens the scene and keeps the tape white
 TAPE = "#ffffff"
+C_EDGE = "#a9a9a6"  # the safety line along the wings' edges, dimmer than the tape
 
 
 def pinhole(pts) -> np.ndarray:
@@ -199,6 +208,20 @@ def house(out: list[str], rng: random.Random) -> None:
             out.append(poly(disc(x + 0.15, y + 0.1, z + 0.35, 0.06, 6), "#e8f0ff"))
 
 
+def crew_member(out: list[str], x: float, y: float) -> None:
+    """A crew member in black standing on the pit floor, facing the crowd: legs, torso, arms, neck and head."""
+    z = FLOOR_Z
+    for dx in (-0.15, 0.03):  # legs
+        box(out, x + dx, x + dx + 0.12, y - 0.07, y + 0.07, z, z + 0.85, "#121216", "#0a0a0d")
+    box(out, x - 0.21, x + 0.21, y - 0.12, y + 0.12, z + 0.8, z + 1.42, "#141418", "#0d0d11")  # torso
+    for x0 in (x - 0.3, x + 0.21):  # arms down at the sides
+        box(out, x0, x0 + 0.09, y - 0.06, y + 0.06, z + 0.72, z + 1.38, "#121216", "#0a0a0d")
+    out.append(poly(disc(x, y, z + 1.45, 0.24, 10), "#101014"))  # shoulders
+    box(out, x - 0.05, x + 0.05, y - 0.05, y + 0.05, z + 1.45, z + 1.55, "#3e3028", "#33271f")  # neck
+    box(out, x - 0.09, x + 0.09, y - 0.11, y + 0.07, z + 1.52, z + 1.7, "#4a3a30", "#2e241d")  # head, hair at the back
+    out.append(poly(disc(x, y - 0.02, z + 1.72, 0.11, 8), "#4a3a30"))
+
+
 def pit(out: list[str], rng: random.Random) -> None:
     out.append(
         poly(
@@ -225,9 +248,7 @@ def pit(out: list[str], rng: random.Random) -> None:
             )
         )
     for x in (-7.5, -4.0, -0.8, 2.6, 6.2):  # security and camera ops in the pit
-        y = PIT_Y + 1.0 + rng.uniform(-0.3, 0.3)
-        out.append(poly(disc(x, y, FLOOR_Z + 1.45, 0.24, 10), "#101014"))
-        out.append(poly(disc(x, y - 0.02, FLOOR_Z + 1.68, 0.11, 8), "#4a3a30"))
+        crew_member(out, x, PIT_Y + 1.0 + rng.uniform(-0.3, 0.3))
     for x0 in np.arange(-6.6, 6.6, 2.2):  # front fills on the pit floor, along the stage front
         box(out, x0 + 0.1, x0 + 1.0, LIP_Y - 1.4, LIP_Y - 0.8, FLOOR_Z, FLOOR_Z + 0.5, "#16161a", "#0b0b0e")
 
@@ -243,6 +264,10 @@ def offstage(out: list[str], rng: random.Random) -> None:
             out.append(line((x, LIP_Y, 0.01), (x, 16.0, 0.01), C_SEAM, 1.6, 0.22))
         for y in np.arange(LIP_Y, 16.0 + 1e-6, DECK_D):
             out.append(line((w0, y, 0.01), (w1, y, 0.01), C_SEAM, 1.6, 0.22))
+        e, outer = 0.06, sgn * WING_X  # a dimmer safety line along the wing's lip and its outer edge
+        out.append(poly([(w0, LIP_Y, 0.01), (w1, LIP_Y, 0.01), (w1, LIP_Y + e, 0.01), (w0, LIP_Y + e, 0.01)], C_EDGE))
+        xe = sorted((outer, outer - sgn * e))
+        out.append(poly([(xe[0], LIP_Y, 0.01), (xe[1], LIP_Y, 0.01), (xe[1], 16.0, 0.01), (xe[0], 16.0, 0.01)], C_EDGE))
         for y0 in (1.0, 3.2, 7.5, 9.8):  # road cases
             xa = sgn * (STAGE_X + 2.2 + rng.uniform(0.0, 0.8))
             xs = sorted((xa, xa + sgn * 1.2))
@@ -365,23 +390,102 @@ def riser(out: list[str]) -> None:
         out.append(poly(strip, "#f4f4f2"))
     for xa in (-4.3, -2.4, 2.4, 4.3):  # backline amps
         box(out, xa - 0.4, xa + 0.4, y1 - 0.8, y1 - 0.2, h, h + 1.2, "#3e4148", "#2b2d32")
-    drum = (0.0, y0 + 2.2)
-    for dx, dy, r, z in (
-        (0.0, 0.2, 0.28, 0.55),
-        (-0.3, -0.2, 0.12, 0.75),
-        (0.3, -0.22, 0.13, 0.75),
-        (0.55, 0.2, 0.2, 0.6),
-        (-0.55, 0.1, 0.17, 0.7),
-    ):
-        out.append(poly(disc(drum[0] + dx, drum[1] + dy, h + z, r, 20), "#e9e4dc", "#7a756c", 1.2))
-    for dx, dy, r, z in (
-        (-0.75, -0.45, 0.23, 1.3),
-        (0.8, -0.4, 0.26, 1.35),
-        (0.25, -0.6, 0.2, 1.15),
-        (-0.35, 0.55, 0.24, 1.45),
-    ):
-        out.append(poly(disc(drum[0] + dx, drum[1] + dy, h + z, r, 24), "#b98a3e", "#6a4a1a", 1.0))
-        out.append(poly(disc(drum[0] + dx, drum[1] + dy, h + z + 0.001, r * 0.35, 12), "#d6aa5a"))
+    drum_kit(out, 0.0, y0 + 1.3, h)
+    for xm in (-3.55, -2.75, 2.75, 3.55):  # two spots on each side of the kit
+        standing_light(out, xm, y0 + 1.7, h, toward_centre=-1 if xm > 0 else 1)
+
+
+# A right-handed metal kit about its centre, in metres; +x is the drummer's left (stage left), -y is toward
+# the audience. Drums and cymbals: (x, y, radius, height, held by the rack rather than a stand of its own).
+KICKS = ((0.3, -0.25), (-0.3, -0.25))  # two 22" bass drums on their sides, batter heads toward the seat
+KICK_R, KICK_DEPTH = 0.28, 0.45
+DRUMS = (
+    (0.12, 0.15, 0.18, 0.66, False),  # snare, between the knees, a little left
+    (0.17, -0.14, 0.13, 0.88, True),  # rack toms, 10" and 12", above the kicks
+    (-0.16, -0.16, 0.15, 0.9, True),
+    (-0.52, 0.28, 0.2, 0.62, False),  # floor tom, 16", on the right beside the seat
+)
+CYMBALS = (
+    (0.48, 0.18, 0.18, 0.95, False),  # hi-hat, left of the snare
+    (0.55, -0.42, 0.23, 1.4, True),  # crashes, 18" and 19"
+    (-0.22, -0.56, 0.24, 1.46, True),
+    (-0.62, -0.32, 0.28, 1.12, False),  # ride, 22", on the right
+    (0.9, -0.1, 0.23, 1.52, True),  # china, 18", at the left edge
+)
+SPD = (-0.82, 0.12, 0.9)  # Roland SPD-SX PRO sampling pad on its stand, right of the floor tom: x, y, height
+SPD_W, SPD_D, SPD_H = 0.36, 0.33, 0.093
+SEAT = (0.0, 0.5, 0.2, 0.58)
+
+
+def drum_kit(out: list[str], cx: float, cy: float, h: float) -> None:
+    """The kit about ``(cx, cy)`` on the riser at ``h``: rack, kicks, stands, then drums, cymbals and the
+    sampling pad, each drawn after what lies further from the camera."""
+    at = lambda dx, dy, z: (cx + dx, cy + dy, h + z)  # noqa: E731
+    # The chrome rack: a curved bar in front of the kit on three legs, an arm out to each piece it holds.
+    arc = [at(0.85 * math.sin(t), -0.62 * math.cos(t) - 0.05, 1.0) for t in np.linspace(-1.3, 1.3, 21)]
+    for p0, p1 in pairwise(arc):
+        out.append(line(p0, p1, C_SILVER, 3.2))
+    for p in arc[::10]:
+        out.append(line((p[0], p[1], h), p, C_SILVER, 2.6))
+    pieces = [(*d, "drum") for d in DRUMS] + [(*c, "cymbal") for c in CYMBALS]
+    for x, y, _r, z, racked, _kind in pieces:
+        if racked:
+            near = min(arc, key=lambda q: (q[0] - cx - x) ** 2 + (q[1] - cy - y) ** 2)
+            out.append(line(near, at(x, y, z - 0.02), C_SILVER, 2.2))
+    for x, y in KICKS:  # shell from above, then the batter head facing the seat
+        box(out, cx + x - KICK_R, cx + x + KICK_R, cy + y - KICK_DEPTH, cy + y, h, h + 2 * KICK_R, "#2c2c33", "#1d1d22")
+        head = [at(x + KICK_R * math.cos(t), y, KICK_R + KICK_R * math.sin(t)) for t in np.linspace(0, 2 * math.pi, 28)]
+        out.append(poly(head, "#e9e4dc", "#7a756c", 1.2))
+    for x, y, _r, z, racked, _kind in pieces:
+        if not racked:
+            stand(out, cx + x, cy + y, h, h + z - 0.02)
+    stand(out, cx + SPD[0], cy + SPD[1], h, h + SPD[2] - SPD_H)
+    stand(out, cx + SEAT[0], cy + SEAT[1], h, h + SEAT[3] - 0.02)
+    pieces.append((SPD[0], SPD[1], 0.0, SPD[2], False, "spd"))
+    eye = CAMERA[:3]
+    for x, y, r, z, _racked, kind in sorted(pieces, key=lambda q: -math.dist(eye, at(q[0], q[1], q[3]))):
+        if kind == "cymbal":
+            out.append(poly(disc(cx + x, cy + y, h + z, r, 24), "#b98a3e", "#6a4a1a", 1.0))
+            out.append(poly(disc(cx + x, cy + y, h + z + 0.001, r * 0.35, 12), "#d6aa5a"))
+        elif kind == "drum":
+            out.append(poly(disc(cx + x, cy + y, h + z, r, 20), "#e9e4dc", "#7a756c", 1.2))
+        else:
+            sampling_pad(out, cx + x, cy + y, h + z)
+    out.append(poly(disc(cx + SEAT[0], cy + SEAT[1], h + SEAT[3], SEAT[2], 20), "#34343a", "#6a6b72", 1.8))
+
+
+def sampling_pad(out: list[str], x: float, y: float, z: float) -> None:
+    """A Roland SPD-SX PRO, its top at ``z``, the pads toward the seat (+y): six large pads in two rows,
+    three shoulder pads across the top, LED strips between them and the screen and controls along the far edge."""
+    x0, x1, y0, y1 = x - SPD_W / 2, x + SPD_W / 2, y - SPD_D / 2, y + SPD_D / 2
+    box(out, x0, x1, y0, y1, z - SPD_H, z, "#1c1d21", "#121316")
+    top = z + 0.001
+    pad_w, gap = 0.1, 0.015
+    xs = [x - 1.5 * pad_w - gap + k * (pad_w + gap) for k in range(3)]
+    rows = (
+        (y1 - 0.02 - 0.085, y1 - 0.02),
+        (y1 - 0.035 - 0.17, y1 - 0.035 - 0.085),
+        (y1 - 0.05 - 0.215, y1 - 0.05 - 0.17),
+    )
+    for ya, yb in rows:  # two rows of large pads nearest the seat, then the narrow shoulder pads
+        for xa in xs:
+            out.append(poly([(xa, ya, top), (xa + pad_w, ya, top), (xa + pad_w, yb, top), (xa, yb, top)], "#3a3c43"))
+    for k, colour in enumerate(("#3fa9f5", "#e8445a", "#5ee08a", "#f5b43f")):  # LED strips between the pads
+        xl = xs[0] + pad_w + gap / 2 if k < 2 else xs[1] + pad_w + gap / 2
+        ya, yb = rows[k % 2]
+        out.append(line((xl, ya, top + 0.001), (xl, yb, top + 0.001), colour, 1.6))
+    out.append(poly([(x - 0.06, y0 + 0.015, top), (x + 0.06, y0 + 0.015, top), (x + 0.06, y0 + 0.075, top),
+                     (x - 0.06, y0 + 0.075, top)], "#2a5d8f"))  # fmt: skip
+    for xk in (x0 + 0.04, x0 + 0.08, x1 - 0.08, x1 - 0.04):  # backlit function buttons beside the screen
+        out.append(poly(disc(xk, y0 + 0.045, top, 0.012, 8), "#c9d2dc"))
+
+
+def stand(out: list[str], x: float, y: float, z0: float, z1: float) -> None:
+    """A silver stand from the floor at ``z0`` up to ``z1``: three feet spread around a post."""
+    hub = (x, y, z0 + 0.12)
+    for t in (0.5, 2.6, 4.7):
+        out.append(line((x + 0.25 * math.cos(t), y + 0.25 * math.sin(t), z0), hub, C_SILVER, 2.2))
+    out.append(line(hub, (x, y, z1), C_SILVER, 2.6))
 
 
 def side_risers(out: list[str]) -> None:
@@ -402,25 +506,37 @@ def side_risers(out: list[str]) -> None:
         out.append(poly([(x0, y0, h), (x1, y0, h), (x1, y0 + e, h), (x0, y0 + e, h)], "#f4f4f2"))
         ie = sorted((inner, inner + sgn * e))
         out.append(poly([(ie[0], y0, h), (ie[1], y0, h), (ie[1], y1, h), (ie[0], y1, h)], "#f4f4f2"))
-        for xm in (sgn * (xi + 0.7), sgn * (xi + 2.0), sgn * (xi + 3.3)):  # moving heads: base, head, lens
-            ym = (y0 + y1) / 2
-            box(out, xm - 0.22, xm + 0.22, ym - 0.22, ym + 0.22, h, h + 0.15, "#1c1d21", "#111215")
-            out.append(poly(disc(xm, ym, h + 0.55, 0.24, 18), "#202126", "#3a3c42", 1.5))
-            out.append(poly(disc(xm, ym - 0.05, h + 0.56, 0.13, 14), "#5a5e66"))
+        for xm in (sgn * (xi + 0.7), sgn * (xi + 2.0), sgn * (xi + 3.3)):
+            standing_light(out, xm, (y0 + y1) / 2, h, toward_centre=-sgn)
 
 
-def leg(out: list[str], sgn: int, y: float, x_out: float, x_in: float, x_tie: float, falls: bool) -> None:
+def standing_light(out: list[str], x: float, y: float, z: float, toward_centre: int) -> None:
+    """A spot standing on the deck at height ``z``, its head aimed at the audience and tilted up: sized as a
+    Martin MAC Viper XIP (SPOT), the base, the yoke and the round head seen from behind."""
+    base_l, base_w, base_h, yoke_w, r, length = SPOT
+    tilt = math.radians(15.0)
+    pivot = np.array([x, y, z + 0.45])
+    aim = np.array([0.0, -math.cos(tilt), math.sin(tilt)])
+    back, front = pivot - 0.4 * length * aim, pivot + 0.6 * length * aim
+    box(out, x - base_l / 2, x + base_l / 2, y - base_w / 2, y + base_w / 2, z, z + base_h, "#303137", "#222328")
+    arms = sorted((x - yoke_w / 2, x + yoke_w / 2 - 0.04), key=lambda xa: toward_centre * xa)
+    box(out, arms[0], arms[0] + 0.04, y - 0.05, y + 0.05, z + base_h, pivot[2] + 0.05, "#303137", "#1b1c20")
+    can(out, back, front, r, "#3a3d44")
+    box(out, arms[1], arms[1] + 0.04, y - 0.05, y + 0.05, z + base_h, pivot[2] + 0.05, "#303137", "#1b1c20")
+
+
+def leg(out: list[str], sgn: int, y: float, x_out: float, x_in: float, x_tie: float, top: float, falls: bool) -> None:
     """A sheer white leg hung above the frame and tied back: drawn as fold strips, lit and shaded in
     turn, that hang from the top, bunch into the tie along a sagging sweep and fall below it in a bell."""
     folds, steps = 18, 40
-    zs = np.linspace(LEG_TOP, 0.0, steps)
+    zs = np.linspace(top, 0.0, steps)
 
     def at(u: float, z: float) -> float:
         """Where the fold ``u`` (0 outer edge, 1 inner edge at the top) hangs at height ``z``."""
         x_top = x_out + (x_in - x_out) * u
         x_knot = x_tie + (u - 0.5) * 0.35  # folds bunched across the tie
         if z >= LEG_KNOT:
-            t = (z - LEG_KNOT) / (LEG_TOP - LEG_KNOT)
+            t = (z - LEG_KNOT) / (top - LEG_KNOT)
             if falls:  # straight down from the top, curving in only toward the tie
                 pull, sag = 1.0 - (1.0 - t) ** 2.2, 0.15 * u * math.sin(math.pi * t)
             else:  # stays near its top position, then sweeps in; the inner folds sag outward on the way
@@ -444,18 +560,131 @@ def leg(out: list[str], sgn: int, y: float, x_out: float, x_in: float, x_tie: fl
         if k % 2 == 0:  # a highlight along every other fold
             for p0, p1 in zip(fold[::3], fold[3::3], strict=False):
                 out.append(line(p0, p1, "#fbfaf8", 1.4, 0.55))
-    xk = sgn * x_tie
-    out.append(line((xk - 0.32, y, LEG_KNOT), (xk + 0.32, y, LEG_KNOT), "#5a5651", 6))
-    out.append(line((xk - sgn * 0.3, y, LEG_KNOT), (xk - sgn * 0.42, y, LEG_KNOT - 0.6), "#5a5651", 3))
+
+
+def mid_truss(out: list[str]) -> None:
+    """A silver box truss across the stage at mid-stage, on hoist chains that run up out of the picture: four
+    chords, and lacing zigzagging along each face."""
+    y0, y1 = MID_TRUSS_Y - TRUSS_BOX / 2, MID_TRUSS_Y + TRUSS_BOX / 2
+    z0, z1 = MID_TRUSS_Z, MID_TRUSS_Z + TRUSS_BOX
+    span = TRUSS_HALF_SPAN
+    # Moving lights between the legs, drawn before the truss that hangs over them, alternating wash, spot, ...:
+    # the spots on the downstage bottom chord first, further from the camera, then the washes on the upstage one.
+    for spot, y in ((True, y0), (False, y1)):
+        for k in range(1 if spot else 0, 11, 2):
+            moving_light(out, -6.0 + 1.2 * k, y, MID_TRUSS_Z, spot=spot)
+    for x in (-9.0, -3.0, 3.0, 9.0):  # hoist chains
+        out.append(line((x, MID_TRUSS_Y, z1), (x, MID_TRUSS_Y, 14.0), "#55575d", 2.0))
+    xs = np.arange(-span, span + 1e-6, TRUSS_BOX)
+    faces = (((y1, z0), (y1, z1)), ((y0, z0), (y1, z0)), ((y0, z1), (y1, z1)))  # upstage, bottom and top
+    for (ya, za), (yb, zb) in faces:
+        for k, (xa, xb) in enumerate(pairwise(xs)):
+            a, b = ((ya, za), (yb, zb)) if k % 2 == 0 else ((yb, zb), (ya, za))
+            out.append(line((xa, a[0], a[1]), (xb, b[0], b[1]), C_TRUSS_LACING, 2.4))
+    for y, z in ((y0, z0), (y0, z1), (y1, z0), (y1, z1)):  # chords
+        out.append(line((-span, y, z), (span, y, z), C_TRUSS, 5.0))
+
+
+# Moving lights hung upside down, in metres: base length x width x height, width across the yoke, head
+# radius and length. Spot: a Martin MAC Viper XIP; wash: a Prolights Astra Wash19Pix.
+SPOT = (0.429, 0.281, 0.15, 0.479, 0.19, 0.59)
+WASH = (0.41, 0.25, 0.13, 0.41, 0.17, 0.3)
+
+
+def moving_light(out: list[str], x: float, y: float, z: float, spot: bool) -> None:
+    """A moving light hung upside down from the chord at height ``z``, its head pointing straight down: the
+    round head in the yoke under the base, whose dimmed display faces the camera; the lens at the bottom
+    faces away from it."""
+    base_l, base_w, base_h, yoke_w, r, length = SPOT if spot else WASH
+    head_top = z - base_h - 0.03
+    cylinder(out, x, y, head_top - length, head_top, r, "#2e2f35", "#1a1b1f")
+    out.append(poly(disc(x, y, head_top, r, 24), "#24252a", "#3e3f46", 1.0))
+    if spot:  # cooling fins around the spot's head
+        for k in range(1, 6):
+            zf = head_top - 0.09 * k
+            out.append(line((x - r * 0.9, y + r * 0.45, zf), (x + r * 0.9, y + r * 0.45, zf), "#3c3d44", 1.2))
+    for xa in (x - yoke_w / 2, x + yoke_w / 2 - 0.04):  # yoke arms down to the head's sides
+        box(out, xa, xa + 0.04, y - 0.05, y + 0.05, head_top - length / 2, z - base_h, "#303137", "#1b1c20")
+    box(out, x - base_l / 2, x + base_l / 2, y - base_w / 2, y + base_w / 2, z - base_h, z - 0.02, "#303137", "#222328")
+    ys, z_hi, z_lo = y + base_w / 2 + 0.001, z - 0.04, z - base_h + 0.04  # the display, dimmed for the show
+    out.append(
+        poly([(x - 0.07, ys, z_hi), (x + 0.07, ys, z_hi), (x + 0.07, ys, z_lo), (x - 0.07, ys, z_lo)], "#1a3550")
+    )
+
+
+def cylinder(out: list[str], x: float, y: float, z0: float, z1: float, r: float, lit: str, dark: str) -> None:
+    """The side of an upright cylinder that faces the camera, as strips shaded from ``lit`` facing it to
+    ``dark`` at its rim."""
+    toward = math.atan2(CAMERA[1] - y, CAMERA[0] - x)
+    n = 24
+    for k in range(n):
+        t0, t1 = 2 * math.pi * k / n, 2 * math.pi * (k + 1) / n
+        facing = math.cos((t0 + t1) / 2 - toward)
+        if facing <= 0:
+            continue
+        a, b = (x + r * math.cos(t0), y + r * math.sin(t0)), (x + r * math.cos(t1), y + r * math.sin(t1))
+        out.append(poly([(*a, z0), (*b, z0), (*b, z1), (*a, z1)], lit if facing > 0.55 else dark))
 
 
 def side_lights(out: list[str]) -> None:
-    """A small white fixture at each side of the stage, with its glow on the deck."""
+    """A GLP JDC1 strobe on its floor bracket at each side of the stage, aimed across the stage at the centre:
+    its beam fans out low through the haze toward the centre and spills onto the deck."""
+    depth, half_long, z0, z1 = 0.15, 0.17, 0.08, 0.24  # the head: 150 mm deep, its face 340 x 160 mm
     for sgn in (-1, 1):
-        x, y = sgn * (STAGE_X - 0.15), 2.6
-        for k in np.linspace(1.0, 0.2, 8):
-            out.append(poly(disc(x, y, 0.02, 1.1 * k, 24), "#ffffff", opacity=0.06))
-        box(out, x - 0.12, x + 0.12, y - 0.25, y + 0.25, 0.0, 0.18, "#e9ecf2", "#5a5d64")
+        x_back, y = sgn * (STAGE_X - 0.1), 2.6
+        x_face = x_back - sgn * depth
+        for k in np.linspace(1.0, 0.25, 7):  # the beam in the haze, widening toward the centre
+            reach, half = 4.5 * k, 1.2 * k
+            tip_x = x_face - sgn * reach
+            beam = [(x_face, y - half_long, (z0 + z1) / 2), (tip_x, y - half, z1 + 0.1), (tip_x, y + half, z1 + 0.1),
+                    (x_face, y + half_long, (z0 + z1) / 2)]  # fmt: skip
+            out.append(poly(beam, "#ffffff", opacity=0.035))
+        for k in np.linspace(1.0, 0.3, 6):  # the spill on the deck in front of the face
+            pool = [(x_face - sgn * (0.2 + 1.6 * k) * (0.5 + 0.5 * math.cos(t)), y + 0.7 * k * math.sin(t), 0.01)
+                    for t in np.linspace(0, 2 * math.pi, 24)]  # fmt: skip
+            out.append(poly(pool, "#ffffff", opacity=0.05))
+        xs = sorted((x_back, x_face))
+        for ya in (y - half_long - 0.03, y + half_long):  # the bracket's arms at both ends of the head
+            box(out, xs[0] + 0.05, xs[1] - 0.05, ya, ya + 0.03, 0.0, (z0 + z1) / 2 + 0.03, "#2a2b30", "#1c1d21")
+        box(out, xs[0], xs[1], y - half_long, y + half_long, z0, z1, "#2c2d33", "#1f2024")
+        out.append(
+            poly(_face(x_face, y, half_long - 0.01, z0 + 0.01, z1 - 0.01), "#cfd8e6")
+        )  # the pixel panels, lit white
+        out.append(
+            poly(_face(x_face, y, half_long - 0.01, (z0 + z1) / 2 - 0.015, (z0 + z1) / 2 + 0.015), "#ffffff")
+        )  # the strobe line
+
+
+def _face(x: float, y: float, half: float, za: float, zb: float) -> list[tuple[float, float, float]]:
+    """A rectangle in the plane x = ``x``, ``half`` either side of ``y``, from ``za`` up to ``zb``."""
+    return [(x, y - half, za), (x, y + half, za), (x, y + half, zb), (x, y - half, zb)]
+
+
+def can(out: list[str], back, front, r: float, lens: str, cap: str = "#24252a") -> None:
+    """A round body from its ``back`` to its ``front`` centre: the side facing the camera shaded, and whichever
+    end faces it, the ``front`` filled with ``lens`` inside a dark rim, the ``back`` with ``cap``."""
+    back, front = np.asarray(back, dtype=float), np.asarray(front, dtype=float)
+    axis = (front - back) / np.linalg.norm(front - back)
+    u = np.cross(axis, (0.0, 0.0, 1.0) if abs(axis[2]) < 0.9 else (1.0, 0.0, 0.0))
+    u /= np.linalg.norm(u)
+    v = np.cross(axis, u)
+    eye = CAMERA[:3]
+    ring = lambda c, rr, t: c + rr * (math.cos(t) * u + math.sin(t) * v)  # noqa: E731
+    ts = np.linspace(0, 2 * math.pi, 25)
+    for t0, t1 in pairwise(ts):
+        tm = (t0 + t1) / 2
+        normal = math.cos(tm) * u + math.sin(tm) * v
+        facing = float(np.dot(normal, (eye - (back + front) / 2) / np.linalg.norm(eye - (back + front) / 2)))
+        if facing <= 0:
+            continue
+        quad = [ring(back, r, t0), ring(front, r, t0), ring(front, r, t1), ring(back, r, t1)]
+        tone = "#44464e" if facing > 0.92 else "#2c2d33" if facing > 0.6 else "#1b1c20"  # a highlight along the top
+        out.append(poly([tuple(q) for q in quad], tone))
+    if np.dot(axis, eye - front) > 0:
+        out.append(poly([tuple(ring(front, r, t)) for t in ts], "#141518"))
+        out.append(poly([tuple(ring(front, 0.8 * r, t)) for t in ts], lens))
+    if np.dot(-axis, eye - back) > 0:
+        out.append(poly([tuple(ring(back, r, t)) for t in ts], cap, "#3e3f46", 1.0))
 
 
 def tape(out: list[str]) -> None:
@@ -485,9 +714,11 @@ def build_svg() -> str:
     side_lights(out)
     riser(out)
     side_risers(out)
-    for y, x_out, x_in, x_tie, falls in LEGS:  # downstage pair first, the nearer pair over it
+    for k, (y, x_out, x_in, x_tie, top, falls) in enumerate(LEGS):  # downstage pair first, the nearer over it
+        if k == 1:
+            mid_truss(out)  # in front of the downstage pair, behind the cloth that hangs from it
         for sgn in (-1, 1):
-            leg(out, sgn, y, x_out, x_in, x_tie, falls)
+            leg(out, sgn, y, x_out, x_in, x_tie, top, falls)
     out.append("</svg>\n")
     return "\n".join(part for part in out if part)
 
@@ -501,8 +732,12 @@ def picture() -> Image.Image:
 
 
 def main() -> None:
+    """Write the calibration beside ``concert_default.jpg``, and the drawing to the path given, if any."""
     assert pull_back_to_valid(K1, K2, 0.0, 0.0) == (K1, K2, 0.0, 0.0), "lens pair cannot reach the corners"
-    picture().save(ASSET, quality=90, optimize=True)
+    if len(sys.argv) > 1:
+        drawing = Path(sys.argv[1])
+        picture().save(drawing, quality=90, optimize=True)
+        print(f"Wrote: {drawing} ({drawing.stat().st_size // 1024} kB)")
     pos = ", ".join(f"{v:g}" for v in CAMERA[:3])
     print(f"Camera: pos=({pos}) pitch={CAMERA[3]:g} yaw={CAMERA[4]:g} roll={CAMERA[5]:g} hfov={CAMERA[6]:g}")
     print(f"Lens:   barrel / fisheye {K1:g}, corner correction {K2:g}")
@@ -510,7 +745,6 @@ def main() -> None:
     for name, corner in CORNERS.items():
         x, y = lens(pinhole([corner]))[0]
         print(f"  {name}: ({x:.1f}, {y:.1f})")
-    print(f"Wrote: {ASSET.relative_to(ROOT)} ({ASSET.stat().st_size // 1024} kB)")
     grid = {"width": GRID_W, "depth": GRID_D, "spacing": GRID_SPACING}
     grid |= {"x_offset": 0.0, "y_offset": GRID_D / 2, "z_offset": 0.0}
     cal = write_calibration(ASSET, "scripts/gen_concert_default.py", camera_from(CAMERA, K1, K2), grid)

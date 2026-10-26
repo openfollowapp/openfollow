@@ -1375,6 +1375,23 @@ class TestBackwardCompat:
         cam = CameraConfig(**tpl.payload["camera"])
         assert cam.fov == CameraConfig().fov
 
+    def test_old_payload_with_former_camera_settings_loads(self) -> None:
+        # A camera_grid template saved with the camera's sensor width and focal length.
+        from dataclasses import asdict
+
+        from openfollow.configuration import CameraConfig, GridConfig
+
+        camera = {**asdict(CameraConfig()), "sensor_width_mm": None, "focal_length_mm": 4.0}
+        tpl = parse_envelope(
+            {
+                "version": TEMPLATE_VERSION,
+                "type": "camera_grid",
+                "name": "Old rig",
+                "payload": {"camera": camera, "grid": asdict(GridConfig())},
+            }
+        )
+        assert tpl.payload["camera"]["focal_length_mm"] == 4.0
+
 
 class TestPathsPayload:
     @pytest.mark.parametrize("payload", [{}, {"slide_time": 1.0}, {"paths": "nope"}, {"paths": {"name": "a"}}])

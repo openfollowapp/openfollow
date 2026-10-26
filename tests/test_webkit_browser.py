@@ -796,8 +796,8 @@ class TestVideoDisconnectBanner:
         )
         app._opened = opened
         app._exited = exited
-        app._enter_settings_menu = lambda *, banner="": opened.append(
-            {"banner": banner},
+        app._enter_settings_menu = lambda *, banner="", action="": opened.append(
+            {"banner": banner, "action": action},
         )
 
         def _exit() -> None:
@@ -931,9 +931,11 @@ class TestVideoDisconnectBanner:
         banner = app._opened[0]["banner"]
         # The banner is the lead line only, as in the web box: the classified
         # sentence already names the source, so a headline repeating the URL
-        # above it was printing the address twice. The next step is drawn
-        # separately, from ``OverlayState.video_failure_action``.
+        # above it was printing the address twice. The next step is its own line.
         assert banner == "Nothing answered at rtsp://10.0.0.5/stream."
+        assert app._opened[0]["action"] == (
+            "Check the camera is powered and on this network, or correct the address under Video Source."
+        )
         assert "Reconnect attempt" not in banner
         assert app._video_disconnect_banner_shown is True
         assert app._video_disconnect_menu_open is True
@@ -948,6 +950,24 @@ class TestVideoDisconnectBanner:
         banner = app._opened[0]["banner"]
         assert "Error:" not in banner
         assert "Reconnect attempt" not in banner
+        assert app._opened[0]["action"] == ""
+
+    def test_the_next_step_speaks_the_source_kind(self) -> None:
+        from openfollow.runtime import app_modes
+        from openfollow.video.failure import SourceKind
+
+        app = self._make_app(
+            connected=False,
+            status_marker=SimpleNamespace(
+                failure=VideoFailure.UNREACHABLE,
+                source_name="CAM-HOST (Camera 1)",
+                error_message="",
+                reconnect_attempt=0,
+            ),
+        )
+        app._video_receiver.source_kind = SourceKind.NAMED
+        app_modes.check_video_disconnect_banner(app)
+        assert app._opened[0]["action"] == "Check the source is running and visible to this station on the network."
 
     def test_latch_blocks_repeat_fire_after_dismiss(self) -> None:
         from openfollow.runtime import app_modes
@@ -1049,9 +1069,13 @@ class TestVideoDisconnectBanner:
                 reconnect_attempt=0,
             ),
         )
+        app._settings_menu_banner_action = ""
         app_modes.check_video_disconnect_banner(app)
         assert app._exited == []  # menu stays open
         assert app._settings_menu_banner == "Nothing answered at rtsp://10.0.0.5/stream."
+        assert app._settings_menu_banner_action == (
+            "Check the camera is powered and on this network, or correct the address under Video Source."
+        )
         assert "(ndi)" not in app._settings_menu_banner
 
     def test_no_close_when_menu_not_auto_opened(self) -> None:
@@ -1136,6 +1160,9 @@ class TestProcessInputAndKeyDispatchShortCircuit:
 
         class _KB:
             def on_key_down(self, _ev) -> None: ...
+
+            def is_late_echo(self, _ev) -> bool:
+                return False
 
         class _IM:
             keyboard_handler = _KB()

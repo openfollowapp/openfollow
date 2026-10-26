@@ -98,12 +98,12 @@ def test_the_camera_tabs_calibration_marks_are_not_gated() -> None:
     """Advanced calibration is always available, so the marks it saved always show."""
     line = _line_with(_read("partials/camera.tpl"), 'id="camera-calibration-marks"')
     assert "data-feature" not in line
-    assert "badge-experimental" not in _line_with(_read("partials/camera.tpl"), "Calibration (")
+    assert "badge-experimental" not in _line_with(_read("partials/camera.tpl"), 'id="camera-calibration"')
 
 
 def test_the_camera_tabs_lens_is_not_gated() -> None:
     text = _read("partials/camera.tpl")
-    group = text[: text.index('<h3 class="group-title">Lens distortion</h3>')].rsplit("<div", 1)[1]
+    group = text[: text.index('<h3 class="group-title">Lens</h3>')].rsplit("<div", 1)[1]
     assert "data-feature" not in group
 
 

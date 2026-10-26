@@ -312,10 +312,10 @@ class TestSettingsMenu:
             def _restart_app(self) -> None:
                 self._restart_called = True
 
-            def _enter_settings_menu(self, *, banner: str = "") -> None:
+            def _enter_settings_menu(self, *, banner: str = "", action: str = "") -> None:
                 from openfollow.runtime.app_modes import enter_settings_menu
 
-                enter_settings_menu(self, banner=banner)
+                enter_settings_menu(self, banner=banner, action=action)
 
         return FakeApp()
 
@@ -339,15 +339,24 @@ class TestSettingsMenu:
         the menu opened (e.g. unreachable network interface). The
         banner is stored on the app for the draw pass to surface."""
         app = self._make_app()
-        enter_settings_menu(app, banner="Configured interface unavailable.")
+        enter_settings_menu(app, banner="Configured interface unavailable.", action="Pick another interface.")
         assert app._settings_menu_active is True
         assert app._settings_menu_banner == "Configured interface unavailable."
+        assert app._settings_menu_banner_action == "Pick another interface."
+
+    def test_a_banner_without_a_step_replaces_the_last_one(self) -> None:
+        app = self._make_app()
+        enter_settings_menu(app, banner="X", action="Do Y.")
+        exit_settings_menu(app)
+        enter_settings_menu(app, banner="Z")
+        assert app._settings_menu_banner_action == ""
 
     def test_exit_clears_banner(self) -> None:
         app = self._make_app()
-        enter_settings_menu(app, banner="X")
+        enter_settings_menu(app, banner="X", action="Do Y.")
         exit_settings_menu(app)
         assert app._settings_menu_banner == ""
+        assert app._settings_menu_banner_action == ""
 
     def test_exit_clears_video_disconnect_menu_flag(self) -> None:
         """Exiting resets the auto-opened bookkeeping so the disconnect
@@ -671,9 +680,10 @@ class TestSourceTypeSelection:
             def _get_config_mtime(self) -> float:
                 return 1234.5
 
-            def _enter_settings_menu(self, *, banner: str = "") -> None:
+            def _enter_settings_menu(self, *, banner: str = "", action: str = "") -> None:
                 self._settings_menu_active = True
                 self._settings_menu_banner = banner
+                self._settings_menu_banner_action = action
 
             def _enter_url_editor(
                 self,
@@ -875,10 +885,10 @@ class TestSourceTypeSelection:
         assert app._swap_calls == ["rtsp"]
         assert app._config.video_source_type == "rtsp"  # it runs
         assert app._settings_menu_active is True
-        assert app._settings_menu_banner == (
-            "RTSP is live but could not be saved. "
-            "The settings file is empty. "
-            "Restart OpenFollow to start again with default settings, then switch again."
+        assert app._settings_menu_banner == "RTSP is live but could not be saved. The settings file is empty."
+        assert (
+            app._settings_menu_banner_action
+            == "Restart OpenFollow to start again with default settings, then switch again."
         )
         assert app._url_editor_calls == []
 
@@ -938,8 +948,8 @@ class TestSourceTypeSelection:
         assert app._config.video_source_type == "ndi"  # rolled back
         assert app._source_type_selection_active is False
         assert app._settings_menu_active is True
-        assert "RTSP" in app._settings_menu_banner
-        assert "server unreachable" in app._settings_menu_banner
+        assert app._settings_menu_banner == "Couldn't switch to RTSP: server unreachable."
+        assert app._settings_menu_banner_action == "Configure it in the web UI, then try again."
 
     def test_keyboard_arrow_down_advances_cursor(self) -> None:
         from openfollow.runtime import app_modes
@@ -1252,9 +1262,10 @@ class TestUrlEditor:
 
                 exit_url_editor(self)
 
-            def _enter_settings_menu(self, *, banner: str = "") -> None:
+            def _enter_settings_menu(self, *, banner: str = "", action: str = "") -> None:
                 self._settings_menu_active = True
                 self._settings_menu_banner = banner
+                self._settings_menu_banner_action = action
 
         return FakeApp()
 
@@ -1394,10 +1405,10 @@ class TestUrlEditor:
         assert app._config.rtsp_url == "rtsp://192.0.2.20/stream"
         assert app._url_editor_active is False
         assert app._settings_menu_active is True
-        assert app._settings_menu_banner == (
-            "RTSP URL is live but could not be saved. "
-            "The settings file is empty. "
-            "Restart OpenFollow to start again with default settings, then enter it again."
+        assert app._settings_menu_banner == "RTSP URL is live but could not be saved. The settings file is empty."
+        assert (
+            app._settings_menu_banner_action
+            == "Restart OpenFollow to start again with default settings, then enter it again."
         )
 
     def test_an_auto_chained_switch_that_runs_but_cannot_be_saved_says_so_in_settings(
@@ -1417,10 +1428,10 @@ class TestUrlEditor:
         app_modes.handle_url_editor_key(app, "Enter")
         assert app._swap_calls == ["rtsp"]
         assert app._config.video_source_type == "rtsp"
-        assert app._settings_menu_banner == (
-            "RTSP is live but could not be saved. "
-            "The settings file is empty. "
-            "Restart OpenFollow to start again with default settings, then switch again."
+        assert app._settings_menu_banner == "RTSP is live but could not be saved. The settings file is empty."
+        assert (
+            app._settings_menu_banner_action
+            == "Restart OpenFollow to start again with default settings, then switch again."
         )
 
     def test_a_plain_edit_for_an_input_no_longer_running_is_saved_without_a_swap(
@@ -1463,10 +1474,10 @@ class TestUrlEditor:
         app_modes.handle_url_editor_key(app, "x")
         app_modes.handle_url_editor_key(app, "Enter")
         assert app._swap_calls == []
-        assert app._settings_menu_banner == (
-            "RTSP URL could not be saved. "
-            "The settings file is empty. "
-            "Restart OpenFollow to start again with default settings, then enter it again."
+        assert app._settings_menu_banner == "RTSP URL could not be saved. The settings file is empty."
+        assert (
+            app._settings_menu_banner_action
+            == "Restart OpenFollow to start again with default settings, then enter it again."
         )
 
     def test_enter_confirms_and_persists(
@@ -1557,8 +1568,8 @@ class TestUrlEditor:
         assert saves == [{"rtsp_url": "garbage"}]
         assert app._url_editor_active is False
         assert app._settings_menu_active is True
-        assert "RTSP URL" in app._settings_menu_banner
-        assert "malformed URL" in app._settings_menu_banner
+        assert app._settings_menu_banner == "Couldn't switch to RTSP: malformed URL."
+        assert app._settings_menu_banner_action == "Configure RTSP URL in the web UI, then try again."
 
     def test_confirm_plain_edit_rebuilds_pipeline(
         self,
@@ -1613,8 +1624,8 @@ class TestUrlEditor:
         assert saves == []
         assert app._url_editor_active is False
         assert app._settings_menu_active is True
-        assert "RTSP URL" in app._settings_menu_banner
-        assert "malformed URL" in app._settings_menu_banner
+        assert app._settings_menu_banner == "Couldn't switch to RTSP: malformed URL."
+        assert app._settings_menu_banner_action == "Configure RTSP URL in the web UI, then try again."
 
     def test_cancel_auto_chained_leaves_the_running_type(self) -> None:
         """Esc on the auto-chain path: the picked type never reached the
@@ -1707,7 +1718,7 @@ class TestUrlEditorInputRouting:
             _browser_active=False,
             _config=AppConfig(),
         )
-        app._enter_settings_menu = lambda *, banner="": setattr(  # noqa: ARG005
+        app._enter_settings_menu = lambda *, banner="", action="": setattr(  # noqa: ARG005
             app,
             "_settings_menu_active",
             True,
@@ -1763,6 +1774,9 @@ class TestUrlEditorInputRouting:
 
         class _KB:
             def on_key_down(self, _ev) -> None: ...
+
+            def is_late_echo(self, _ev) -> bool:
+                return False
 
         class _IM:
             keyboard_handler = _KB()
@@ -1840,8 +1854,8 @@ class TestSourceTypeAutoChainEditor:
                     {"banner": banner, "source_type": source_type},
                 )
 
-            def _enter_settings_menu(self, *, banner: str = "") -> None:
-                self._settings_calls.append({"banner": banner})
+            def _enter_settings_menu(self, *, banner: str = "", action: str = "") -> None:
+                self._settings_calls.append({"banner": banner, "action": action})
 
         return FakeApp()
 
@@ -1962,9 +1976,10 @@ class TestFieldChoicePicker:
             def _get_config_mtime(self) -> float:
                 return 1234.5
 
-            def _enter_settings_menu(self, *, banner: str = "") -> None:
+            def _enter_settings_menu(self, *, banner: str = "", action: str = "") -> None:
                 self._settings_menu_active = True
                 self._settings_menu_banner = banner
+                self._settings_menu_banner_action = action
 
             def _enter_url_editor(
                 self,
@@ -2068,10 +2083,12 @@ class TestFieldChoicePicker:
         assert app._config.v4l2_render_resolution == "2160p"
         assert app._field_choice_active is False
         assert app._settings_menu_active is True
-        assert app._settings_menu_banner == (
-            "Render resolution is live but could not be saved. "
-            "The settings file is empty. "
-            "Restart OpenFollow to start again with default settings, then pick it again."
+        assert (
+            app._settings_menu_banner == "Render resolution is live but could not be saved. The settings file is empty."
+        )
+        assert (
+            app._settings_menu_banner_action
+            == "Restart OpenFollow to start again with default settings, then pick it again."
         )
 
     def test_an_auto_chained_switch_that_runs_but_cannot_be_saved_says_so_in_settings(
@@ -2090,10 +2107,10 @@ class TestFieldChoicePicker:
         app_modes.confirm_field_choice_picker(app)
         assert app._swap_calls == ["v4l2"]
         assert app._config.video_source_type == "v4l2"
-        assert app._settings_menu_banner == (
-            "USB Camera is live but could not be saved. "
-            "The settings file is empty. "
-            "Restart OpenFollow to start again with default settings, then switch again."
+        assert app._settings_menu_banner == "USB Camera is live but could not be saved. The settings file is empty."
+        assert (
+            app._settings_menu_banner_action
+            == "Restart OpenFollow to start again with default settings, then switch again."
         )
 
     def test_a_plain_pick_for_an_input_no_longer_running_that_cannot_be_saved_says_so(
@@ -2113,10 +2130,10 @@ class TestFieldChoicePicker:
         app_modes.confirm_field_choice_picker(app)
         assert app._swap_calls == []
         assert (app._config.video_source_type, app._config.v4l2_render_resolution) == ("rtsp", "2160p")
-        assert app._settings_menu_banner == (
-            "Render resolution could not be saved. "
-            "The settings file is empty. "
-            "Restart OpenFollow to start again with default settings, then pick it again."
+        assert app._settings_menu_banner == "Render resolution could not be saved. The settings file is empty."
+        assert (
+            app._settings_menu_banner_action
+            == "Restart OpenFollow to start again with default settings, then pick it again."
         )
 
     def test_confirm_writes_selected_value_to_config(
@@ -2207,7 +2224,8 @@ class TestFieldChoicePicker:
         assert app._field_choice_active is False
         assert app._settings_menu_active is True
         assert "Couldn't apply" in app._settings_menu_banner
-        assert "pattern rejected" in app._settings_menu_banner
+        assert app._settings_menu_banner.endswith(": pattern rejected.")
+        assert app._settings_menu_banner_action == "Try a different value, or edit in the web UI."
 
     def test_cancel_without_revert_just_closes(
         self,
@@ -2403,7 +2421,9 @@ class TestFieldChoicePicker:
         assert app._field_choice_active is False
         assert app._settings_menu_active is True
         assert "Couldn't switch" in app._settings_menu_banner
-        assert "ndi library missing" in app._settings_menu_banner
+        assert app._settings_menu_banner.endswith(": ndi library missing.")
+        assert app._settings_menu_banner_action.startswith("Configure ")
+        assert app._settings_menu_banner_action.endswith(" in the web UI, then try again.")
 
     def test_process_input_noop_when_input_manager_missing(
         self,
@@ -3141,11 +3161,11 @@ class TestSourcePickSave:
         path = tmp_path / "config.toml"
         for _ in range(2):  # the second save leaves the first as the backup
             save_config(AppConfig(video_source_type="ndi", ndi_source_name="OLD (A)"), str(path))
-        banners: list[str] = []
+        banners: list[tuple[str, str]] = []
         app = SimpleNamespace(
             _config=load_config(str(path), strict=True),
             _config_path=str(path),
-            _enter_settings_menu=lambda banner="": banners.append(banner),
+            _enter_settings_menu=lambda banner="", action="": banners.append((banner, action)),
         )
         return app, path, banners
 
@@ -3170,15 +3190,17 @@ class TestSourcePickSave:
         assert banners == []
 
     @pytest.mark.parametrize(
-        ("content", "why"),
+        ("content", "said", "step"),
         [
-            ("", "is empty. Restart OpenFollow to restore the settings from the latest backup copy"),
-            ("  \n\t\n", "is empty. Restart OpenFollow to restore the settings from the latest backup copy"),
-            ("not [[ toml", "could not be read. Import a settings file to replace it"),
+            ("", "is empty", "Restart OpenFollow to restore the settings from the latest backup copy"),
+            ("  \n\t\n", "is empty", "Restart OpenFollow to restore the settings from the latest backup copy"),
+            ("not [[ toml", "could not be read", "Import a settings file to replace it"),
         ],
         ids=["empty", "whitespace", "unparseable"],
     )
-    def test_a_broken_file_is_left_alone_and_the_operator_told(self, tmp_path, content: str, why: str) -> None:  # noqa: ANN001
+    def test_a_broken_file_is_left_alone_and_the_operator_told(
+        self, tmp_path, content: str, said: str, step: str
+    ) -> None:  # noqa: ANN001
         from openfollow.runtime.app_modes import save_source_pick
 
         app, path, banners = self._station(tmp_path)
@@ -3189,7 +3211,10 @@ class TestSourcePickSave:
         assert path.read_text(encoding="utf-8") == content
         assert app._config.ndi_source_name == "NEW (B)"
         assert banners == [
-            f"The NDI® source is live but could not be saved. The settings file {why}, then pick it again."
+            (
+                f"The NDI® source is live but could not be saved. The settings file {said}.",
+                f"{step}, then pick it again.",
+            )
         ]
 
     def test_a_save_that_failed_for_another_reason_points_at_the_storage(self, tmp_path) -> None:  # noqa: ANN001
@@ -3201,5 +3226,5 @@ class TestSourcePickSave:
         save_source_pick(app, "ndi_source_name", "NEW (B)")
 
         assert banners == [
-            "The NDI® source is live but could not be saved. Check the station's storage, then pick it again."
+            ("The NDI® source is live but could not be saved.", "Check the station's storage, then pick it again.")
         ]

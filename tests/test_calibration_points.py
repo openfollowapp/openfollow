@@ -17,11 +17,12 @@ from openfollow.scene.calibration_points import (
     MarkFit,
     SolveSuperseded,
     look_at,
+    pin_errors,
     plausibility,
     solve_marks,
     trilaterate,
 )
-from openfollow.scene.solver import project_points
+from openfollow.scene.solver import apply_overlay_distortion, project_points
 
 pytestmark = pytest.mark.unit
 
@@ -855,3 +856,76 @@ def test_distances_more_than_12_cm_off_are_named(error, fires) -> None:
     fits = (MarkFit(3, (1.0, 2.0, 0.0), distance_error=error),)
     reasons = plausibility(_camera(), fits, {}, None, per_axis=True)
     assert reasons == ([{"kind": "distance", "id": 3, "m": error}] if fires else [])
+
+
+# pin_errors: how far each saved pin is from where the saved camera sees its mark
+
+_LENS = (-0.2, 0.03, 0.01, -0.02)
+
+
+def _saved_camera(marks: list[dict], lens=_LENS) -> CameraConfig:
+    pose = dict(zip(("pos_x", "pos_y", "pos_z", "pitch", "yaw", "roll", "fov"), TRUE.tolist(), strict=True))
+    k1, k2, cx, cy = lens
+    return CameraConfig(
+        **pose, lens_k1=k1, lens_k2=k2, lens_cx=cx, lens_cy=cy, calibration_mode="advanced", calibration_marks=marks
+    )  # type: ignore[arg-type]
+
+
+def _seen(place, lens=_LENS) -> tuple[float, float]:
+    """Where TRUE sees ``place`` on the Operator Screen, its lens bowing the pinhole picture."""
+    x, y = apply_overlay_distortion(np.array([_pin(place)]), W, H, *lens)[0]
+    return float(x), float(y)
+
+
+def _pinned_at(xy, dx: float = 0.0, dy: float = 0.0) -> list[float]:
+    return [(xy[0] + dx) / W, (xy[1] + dy) / H]
+
+
+def test_a_pin_where_the_camera_sees_its_mark_through_the_lens_has_no_error() -> None:
+    marks = [
+        {"id": i, "kind": "known", "x": p[0], "y": p[1], "z": p[2], "pin": _pinned_at(_seen(p))}
+        for i, p in enumerate((DSL, DSR), 1)
+    ]
+    errors = pin_errors(_saved_camera(marks), W, H)
+    assert errors.keys() == {1, 2} and max(errors.values()) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_a_pin_off_its_mark_counts_the_distance_in_pixels() -> None:
+    marks = [
+        {"id": 1, "kind": "known", "x": DSL[0], "y": DSL[1], "z": DSL[2], "pin": _pinned_at(_seen(DSL), 3.0, -4.0)}
+    ]
+    assert pin_errors(_saved_camera(marks), W, H)[1] == pytest.approx(5.0, abs=1e-6)
+
+
+def test_the_error_counts_the_lens() -> None:
+    # Pinned where a pinhole camera sees the mark: off by as far as this lens bows that point.
+    marks = [{"id": 1, "kind": "known", "x": USR[0], "y": USR[1], "z": USR[2], "pin": _pinned_at(_pin(USR))}]
+    bow = math.dist(_pin(USR), _seen(USR))
+    assert bow > 1.0
+    assert pin_errors(_saved_camera(marks), W, H)[1] == pytest.approx(bow, abs=1e-6)
+
+
+def test_a_distance_point_counts_at_the_position_its_solve_placed_it() -> None:
+    at = (0.0, 3.0, 0.0)
+    base = [{"id": i, "kind": "known", "x": p[0], "y": p[1], "z": p[2], "pin": []} for i, p in enumerate((DSL, DSR), 1)]
+    measured = {
+        "id": 3,
+        "kind": "triangulated",
+        "from_a": 1,
+        "from_b": 2,
+        "distance_a": 6.7,
+        "distance_b": 6.7,
+        "z": 0.0,
+    }
+    placed = {**measured, "pin": _pinned_at(_seen(at), 0.0, 2.0), "position": list(at)}
+    unplaced = {**measured, "id": 4, "pin": _pinned_at(_seen(at))}
+    assert pin_errors(_saved_camera([*base, placed, unplaced]), W, H) == {3: pytest.approx(2.0, abs=1e-6)}
+
+
+def test_unpinned_marks_and_marks_behind_the_camera_have_no_error() -> None:
+    behind = (0.0, 30.0, 0.0)  # upstage of the camera, which looks downstage
+    marks = [
+        {"id": 1, "kind": "known", "x": DSL[0], "y": DSL[1], "z": DSL[2], "pin": []},
+        {"id": 2, "kind": "known", "x": behind[0], "y": behind[1], "z": behind[2], "pin": [0.5, 0.5]},
+    ]
+    assert pin_errors(_saved_camera(marks), W, H) == {}

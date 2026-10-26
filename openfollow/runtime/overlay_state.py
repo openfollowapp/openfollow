@@ -250,6 +250,7 @@ class OverlayState:
     settings_items_submenu: list[bool] = field(default_factory=list)
     settings_selected_index: int = 0
     settings_menu_banner: str = ""
+    settings_menu_banner_action: str = ""
     # About / license screen – read-only, no extra payload.
     about_active: bool = False
     # Drive picker + diagnostics export screen.

@@ -45,6 +45,10 @@ logger = logging.getLogger(__name__)
 # ``swap_input`` raises ``PipelineStuckError``.
 _NULL_CONFIRM_TIMEOUT_NS: int = 2_000_000_000  # 2 s in nanoseconds
 
+# How many discovery passes may list an awaited source that sent no video before
+# it is tried again: about 30 s at the 5 s interval, so the picker stays usable.
+_LISTED_RETRY_PASSES = 6
+
 
 def gst_runtime_available() -> bool:
     return Gst is not None
@@ -137,6 +141,11 @@ class GstNativeSinkReceiver:
         self._selected_source_index: int = 0
         self._discovery_thread: threading.Thread | None = None
         self._discovery_lock = threading.Lock()
+        # The configured source an input with a picker gave up on: reconnected
+        # by itself once discovery announces it again, until another is picked.
+        self._awaited_source = ""
+        # Listed passes to let by before returning to it; a pass that does not list it clears them.
+        self._passes_before_return = 0
         # Why the last build was refused under the interface pin, if it was.
         self._pin_refusal: PinRefusal | None = None
         # How a refusal names the pinned interface: "Lighting (eth1)" when labelled.
@@ -359,6 +368,7 @@ class GstNativeSinkReceiver:
             self._display.release_frames()
 
     def stop(self) -> None:
+        self._awaited_source = ""
         self._cancel_connection_timeout()
         self._cancel_reconnect()
         self._cancel_heal()
@@ -466,6 +476,7 @@ class GstNativeSinkReceiver:
         reach NULL. Raises ``PipelineStuckError`` when this one does not.
         Only runs on GTK main thread.
         """
+        self._awaited_source = ""
         self._cancel_connection_timeout()
         self._cancel_reconnect()
         self._cancel_heal()
@@ -552,6 +563,7 @@ class GstNativeSinkReceiver:
         with self._discovery_lock:
             self._discovered_sources = []
             self._selected_source_index = 0
+        self._awaited_source = ""
         self._state.set_placeholder_pipeline(False)
 
         source_label = self._input.get_source_label(self._input_config)
@@ -906,6 +918,7 @@ class GstNativeSinkReceiver:
     def set_source(self, source_name: str) -> None:
         """Change the source and attempt to connect."""
         source_name = source_name.strip()
+        self._awaited_source = ""
         # Update the primary config field
         if self._input.config_fields():
             primary_field = self._input.config_fields()[0].name
@@ -1003,6 +1016,9 @@ class GstNativeSinkReceiver:
         source_label = self._input.get_source_label(self._input_config)
         if self._state.restore_connection_after_selection():
             self._status_marker.set_connected(source_label)
+        elif self._awaited_source:
+            # Closing the picker keeps the wait for the lost source, and its verdict.
+            self._schedule_discovery()
         elif source_label:
             # No message and no verdict: this is progress, not a failure.
             # A message would be stored as the error, and an input with
@@ -1149,6 +1165,11 @@ class GstNativeSinkReceiver:
         # reason, and published with the verdict it explains.
         failure = self._classify(error) if failure is None else failure
         phase = self._state.phase
+        if error is not None:
+            try:
+                self._input.on_bus_error(error)
+            except Exception:
+                logger.exception("Error handing the failure to the %s input", self._input.display_name)
         self._cancel_connection_timeout()
         self._cancel_reconnect()
         self._cancel_heal()
@@ -1244,6 +1265,11 @@ class GstNativeSinkReceiver:
                 # Clear primary config field for selection-based inputs.
                 if self._input.config_fields():
                     primary_field = self._input.config_fields()[0].name
+                    lost = str(self._input_config.get(primary_field) or "")
+                    if self._input_caps.has_source_discovery and lost:
+                        self._awaited_source = lost
+                        video_seen = self._state.phase >= ConnectionPhase.DECODING
+                        self._passes_before_return = 0 if video_seen else _LISTED_RETRY_PASSES
                     self._input_config[primary_field] = ""
                 self._state.activate_source_selection()
             else:
@@ -1497,9 +1523,25 @@ class GstNativeSinkReceiver:
                 logger.debug("Discovered %d source(s): %s", len(sources), sources)
             else:
                 logger.debug("No sources discovered")
+            awaited = self._awaited_source
+            if awaited:
+                GLib.idle_add(self._on_awaited_pass, awaited, awaited in sources)
         finally:
             with self._discovery_lock:
                 self._discovery_running = False
+
+    def _on_awaited_pass(self, source: str, listed: bool) -> bool:
+        """Main loop: a discovery pass while *source* is awaited; reconnects once it is announced again."""
+        if self._awaited_source != source:
+            return False
+        if not listed:
+            self._passes_before_return = 0
+        elif self._passes_before_return > 0:
+            self._passes_before_return -= 1
+        elif self._state.is_placeholder_pipeline:
+            logger.info("%s source '%s' is back – reconnecting", self._input.display_name, source)
+            self.set_source(source)
+        return False
 
 
 def _source_format(caps: str) -> str:

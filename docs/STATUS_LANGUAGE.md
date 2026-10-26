@@ -317,6 +317,10 @@ attributes, so it spells the token's value.
   its marker-coloured border.
 - Error status rows and the ERROR box lead with the off-white warning sign
   (`draw_warning_sign`).
+- The Settings ERROR box says what was observed on its main line (off-white,
+  bold) and one next step under it (muted), as the web's box. A banner the
+  menu opened with brings its own step (`action=` beside `banner=`) or none;
+  the video failure's step stands only under the video failure.
 - A fault's sentence is a top-right status row, whatever raised it (a video
   failure, a missing controller, an output whose interface has no address, a
   marker another station controls too).

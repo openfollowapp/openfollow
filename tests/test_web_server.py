@@ -15,7 +15,6 @@ import io
 import json
 import os
 import re
-import subprocess
 import sys
 import tarfile
 import time
@@ -23,6 +22,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import wsgiref.util
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -38,9 +38,9 @@ from openfollow.palette import AUTO_PICK_ORDER
 from openfollow.runtime.overlay_links import SUPPORT
 from openfollow.web import diagnostics, peer_auth
 from openfollow.web import whats_new as whats_new_module
+from openfollow.web.routes import apply_section_data
 from openfollow.web.server import ConfigWebServer
 from tests._ports import live_on_free_port, start_on_free_port
-from tests._wizard_js import NODE, needs_node
 
 pytestmark = pytest.mark.integration
 
@@ -2195,8 +2195,8 @@ def _held(cfg_camera) -> list[tuple]:
     return [(m.id, m.x, m.y, m.z, m.pin) for m in cfg_camera.calibration_marks]
 
 
-def test_a_camera_form_save_keeps_the_calibration_marks(live_server) -> None:
-    """The form carries no marks; saving it must not drop what the Setup Wizard saved."""
+def test_a_pose_posted_without_marks_clears_the_calibration(live_server) -> None:
+    """The marks describe the pose the Setup Wizard solved; a pose written by anything else leaves none behind."""
     server, base = live_server
     camera = _held_camera("advanced")
     camera.calibration_height = 9.8
@@ -2204,12 +2204,47 @@ def test_a_camera_form_save_keeps_the_calibration_marks(live_server) -> None:
     status, _body = _post_form(base, "/section/camera", {"pos_x": "1.5", "pos_y": "-5.0", "pos_z": "4.0"})
     assert status == 200
     saved = load_config(server.config_path).camera
-    assert (saved.pos_x, saved.calibration_mode, [m.id for m in saved.calibration_marks]) == (
+    assert (saved.pos_x, saved.calibration_mode, saved.calibration_marks, saved.calibration_height) == (
         1.5,
-        "advanced",
-        [1, 2, 3, 4, 5],
+        "simple",
+        [],
+        None,
     )
-    assert saved.calibration_height == 9.8
+
+
+def test_a_camera_write_that_keeps_the_pose_keeps_the_calibration(live_server) -> None:
+    server, base = live_server
+    camera = _held_camera("advanced")
+    camera.calibration_height = 9.8
+    save_config(AppConfig(camera=camera), server.config_path)
+    status, _body = _post_json(base, "/api/config/camera", {"lens_k1": -0.2, "pos_x": camera.pos_x})
+    assert status == 200
+    saved = load_config(server.config_path).camera
+    assert (saved.lens_k1, saved.calibration_mode, saved.calibration_height) == (-0.2, "advanced", 9.8)
+    assert [m.id for m in saved.calibration_marks] == [1, 2, 3, 4, 5]
+
+
+def test_the_setup_wizard_s_pose_with_its_marks_keeps_them(live_server) -> None:
+    server, base = live_server
+    save_config(AppConfig(camera=_held_camera("advanced")), server.config_path)
+    marks = [asdict(m) for m in _held_camera("advanced").calibration_marks][:4]
+    status, _body = _post_json(
+        base,
+        "/api/config/camera",
+        {"pos_x": 2.0, "yaw": 12.0, "calibration_mode": "advanced", "calibration_marks": marks},
+    )
+    assert status == 200
+    saved = load_config(server.config_path).camera
+    assert (saved.pos_x, saved.yaw, [m.id for m in saved.calibration_marks]) == (2.0, 12.0, [1, 2, 3, 4])
+
+
+def test_an_import_bringing_a_pose_without_marks_clears_the_calibration(live_server) -> None:
+    server, base = live_server
+    save_config(AppConfig(camera=_held_camera("advanced")), server.config_path)
+    status, _ = _post_json(base, "/api/config/import", {"camera": {"pos_x": 3.0, "fov": 40.0}})
+    assert status == 200
+    saved = load_config(server.config_path).camera
+    assert (saved.pos_x, saved.fov, saved.calibration_marks) == (3.0, 40.0, [])
 
 
 def _post_grid(base: str, how: str, fields: dict) -> int:
@@ -2287,7 +2322,7 @@ _WIDE_CORNERS = [(6.0, 0.0, 0.0), (-6.0, 0.0, 0.0), (-6.0, 6.0, 0.0), (6.0, 6.0,
     ("camera", "grid", "marks"),
     [
         # another grid and no marks of its own: this station's corners move and lose their pins
-        ({"pos_x": 1.0}, {"width": 12.0}, _corner_marks([[]] * 4, _WIDE_CORNERS)),
+        ({"lens_k1": -0.1}, {"width": 12.0}, _corner_marks([[]] * 4, _WIDE_CORNERS)),
         # its own marks, on its own grid
         (
             {"calibration_marks": _corner_marks(_ITS_PINS, _WIDE_CORNERS)},
@@ -2295,7 +2330,7 @@ _WIDE_CORNERS = [(6.0, 0.0, 0.0), (-6.0, 0.0, 0.0), (-6.0, 6.0, 0.0), (6.0, 6.0,
             _corner_marks(_ITS_PINS, _WIDE_CORNERS),
         ),
         # the same corners
-        ({"pos_x": 1.0}, {"spacing": 0.5}, _corner_marks()),
+        ({"lens_k1": -0.1}, {"spacing": 0.5}, _corner_marks()),
     ],
 )
 def test_an_import_applies_the_grid_before_the_camera(live_server, camera, grid, marks) -> None:
@@ -2307,20 +2342,18 @@ def test_an_import_applies_the_grid_before_the_camera(live_server, camera, grid,
 
 
 def _calibration_rows(camera_html: str) -> tuple[str, list[list[str]]]:
-    start = camera_html.index('<div class="group" id="camera-calibration-marks">')
+    start = camera_html.index('<details class="inline-advanced" id="camera-calibration-marks">')
     group = camera_html[start : camera_html.index("</table>", start)]
     assert "<input" not in group and "<select" not in group
-    title = re.search(r'<h3 class="group-title">(.*?)</h3>', group)
+    title = re.search(r"<summary>(.*?)</summary>", group)
     assert title is not None
     body = group[group.index("<tbody>") :]
     rows = [re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", row) for row in re.findall(r"<tr>(.*?)</tr>", body, re.S)]
     return title.group(1), rows
 
 
-@pytest.mark.parametrize(
-    ("mode", "title"), [("simple", "Calibration (Simple)"), ("advanced", "Calibration (Advanced)")]
-)
-def test_the_camera_tab_lists_the_calibration_marks_read_only(live_server, mode: str, title: str) -> None:
+@pytest.mark.parametrize(("mode", "kind"), [("simple", "Simple"), ("advanced", "Advanced")])
+def test_the_camera_tab_lists_the_calibration_marks_read_only(live_server, mode: str, kind: str) -> None:
     server, base = live_server
     camera = _held_camera(mode)
     camera.calibration_marks[1].pin = []
@@ -2330,17 +2363,23 @@ def test_the_camera_tab_lists_the_calibration_marks_read_only(live_server, mode:
     status, html_text = _get(base, "/section/camera")
     assert status == 200
     shown_title, rows = _calibration_rows(html_text)
-    assert shown_title == title
-    assert rows[0] == ["DSL", "Known point", "X = 5.000 m<br>Y = 0.000 m<br>Z = 0.000 m", "–", "Yes"]
-    assert rows[1] == ["DSR", "Known point", "X = -5.000 m<br>Y = 0.000 m<br>Z = 0.000 m", "–", "No"]
+    assert shown_title == "Calibration points"
+    readout = _readout(_camera_section(html_text))
+    assert readout["Type"] == kind
+    # Each kind counts its pinned points; Simple's points are its corners.
+    assert readout["Pinned"] == ("3 of 4 corners" if mode == "simple" else "3 of 4 known points, 1 triangulated point")
+    # Without video there is no picture to count an error in.
+    assert rows[0] == ["DSL", "Known point", "X = 5.000 m<br>Y = 0.000 m<br>Z = 0.000 m", "–", "Yes", "–"]
+    assert rows[1] == ["DSR", "Known point", "X = -5.000 m<br>Y = 0.000 m<br>Z = 0.000 m", "–", "No", "–"]
     assert len(rows) == (4 if mode == "simple" else 5)
     if mode == "advanced":
         assert rows[4] == [
             "P5",
-            "Distance point",
+            "Triangulated point",
             "X = 2.500 m<br>Y = 9.000 m<br>Z = 0.000 m",
             "DSL 21.400 m<br>DSR 23.900 m",
             "Yes",
+            "–",
         ]
 
 
@@ -2354,9 +2393,9 @@ def test_the_camera_tab_shows_a_distance_point_no_solve_placed_without_a_positio
 @pytest.mark.parametrize(
     ("units", "height", "shown"),
     [
-        ("metric", 9.8, "Camera height: Fixed at 9.800 m"),
-        ("metric", 12.0, "Camera height: Fixed at 12.000 m"),
-        ("imperial", 9.8, "Camera height: Fixed at 32 ft 1.83 in"),
+        ("metric", 9.8, "Fixed at 9.800 m"),
+        ("metric", 12.0, "Fixed at 12.000 m"),
+        ("imperial", 9.8, "Fixed at 32 ft 1.83 in"),
         ("metric", None, None),
     ],
     ids=["metric", "whole metres", "imperial", "not entered"],
@@ -2369,15 +2408,7 @@ def test_the_camera_tab_shows_the_calibrations_camera_height_read_only(live_serv
     cfg.ui.unit_system = units
     save_config(cfg, server.config_path)
     html_text = _get(base, "/section/camera")[1]
-    group = html_text[html_text.index('id="camera-calibration-marks"') :]
-    group = group[: group.index("</div>")]
-    # In the precision and the size of the table above it.
-    found = re.search(
-        r'<p id="camera-calibration-height" style="margin:0;padding:0.4rem 0.6rem;font-size:var\(--btn-font-sm\);">'
-        r"(.*?)</p>",
-        group,
-    )
-    assert (found.group(1) if found else None) == shown
+    assert _readout(_camera_section(html_text)).get("Camera height") == shown
 
 
 def test_without_marks_the_camera_tab_has_no_calibration_group(live_server) -> None:
@@ -2385,6 +2416,7 @@ def test_without_marks_the_camera_tab_has_no_calibration_group(live_server) -> N
     status, html_text = _get(base, "/section/camera")
     assert status == 200
     assert "camera-calibration-marks" not in html_text
+    assert _readout(_camera_section(html_text))["Type"] == "None"
 
 
 def test_form_post_osc_renders_saved_partial(live_server) -> None:
@@ -5268,6 +5300,64 @@ def test_login_submit_redirects_when_no_pin_configured(live_server) -> None:
     assert location.endswith("/")
 
 
+# Any LAN client can send these; a station is never behind a proxy that sets them.
+_FORGED_FORWARDED = {"X-Forwarded-Host": "attacker.example", "X-Forwarded-Proto": "https"}
+
+
+def _redirect_with_forged_forwarded(
+    base: str, method: str, path: str, form: dict | None = None, cookie: str = ""
+) -> tuple[int, str]:
+    """``(status, Location)`` of a request carrying attacker-set X-Forwarded-* headers."""
+    data = urllib.parse.urlencode(form).encode() if form is not None else None
+    headers = dict(_FORGED_FORWARDED)
+    if cookie:
+        headers["Cookie"] = cookie
+    if data is not None:
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+    req = urllib.request.Request(f"{base}{path}", data=data, headers=headers, method=method)
+    try:
+        with _no_redirect_opener().open(req, timeout=5) as resp:
+            return resp.status, resp.headers.get("Location", "")
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers.get("Location", "")
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "form", "expected"),
+    [
+        ("GET", "/", None, "/login"),
+        ("POST", "/login", {"pin": "sekret"}, "/"),
+    ],
+)
+def test_pin_redirects_ignore_forwarded_headers(pin_protected_server, method, path, form, expected) -> None:
+    """An attacker-set X-Forwarded-Host / -Proto never reaches a Location header."""
+    _, base, _ = pin_protected_server
+    assert _redirect_with_forged_forwarded(base, method, path, form) == (303, expected)
+
+
+def test_logout_redirect_ignores_forwarded_headers(pin_protected_server) -> None:
+    _, base, pin = pin_protected_server
+    cookie = _login_cookie(base, pin)
+    assert _redirect_with_forged_forwarded(base, "POST", "/logout", {}, cookie) == (303, "/login")
+
+
+@pytest.mark.parametrize(("method", "form"), [("GET", None), ("POST", {"pin": "anything"})])
+def test_login_without_pin_redirect_ignores_forwarded_headers(live_server, method, form) -> None:
+    _, base = live_server
+    assert _redirect_with_forged_forwarded(base, method, "/login", form) == (303, "/")
+
+
+def test_license_redirect_ignores_forwarded_headers(live_server, monkeypatch) -> None:
+    import openfollow.web.routes as routes_module
+
+    _, base = live_server
+    monkeypatch.setattr(routes_module, "_license_file_path", lambda: None)
+    assert _redirect_with_forged_forwarded(base, "GET", "/about/license.txt") == (
+        303,
+        "https://www.gnu.org/licenses/agpl-3.0.txt",
+    )
+
+
 def test_login_submit_renders_error_template_on_invalid_pin(pin_protected_server) -> None:
     _, base, _ = pin_protected_server
 
@@ -5438,6 +5528,16 @@ def test_a_forwarded_for_header_does_not_decide_the_on_device_footer(live_server
     with urllib.request.urlopen(req, timeout=5) as resp:
         body = resp.read().decode()
     assert '<footer class="on-device-footer">' in body
+
+
+def test_the_on_device_footer_names_the_controller_button_and_esc(live_server) -> None:
+    """Both ways to close the embedded browser: the mapped cancel button on a controller, Esc on a keyboard."""
+    _, base = live_server
+    with urllib.request.urlopen(f"{base}/", timeout=5) as resp:
+        body = resp.read().decode()
+    footer = body[body.index('<footer class="on-device-footer">') :]
+    footer = footer[: footer.index("</footer>")]
+    assert "<kbd>B</kbd> on a controller or <kbd>Esc</kbd> on a keyboard closes the embedded browser" in footer
 
 
 def test_logout_clears_cookie_and_redirects_to_login(live_server) -> None:
@@ -7141,8 +7241,8 @@ def test_api_broadcast_section_returns_empty_results_when_no_peers(live_server) 
     server, base = live_server
     status, body = _post_json(
         base,
-        "/api/config/camera/broadcast",
-        {"pos_x": 4.5},
+        "/api/config/grid/broadcast",
+        {"width": 12.5},
     )
     assert status == 200
     assert body.get("success") is True
@@ -7150,7 +7250,44 @@ def test_api_broadcast_section_returns_empty_results_when_no_peers(live_server) 
     assert body.get("peer_results") == []
 
     saved = load_config(server.config_path)
-    assert saved.camera.pos_x == pytest.approx(4.5)
+    assert saved.grid.width == pytest.approx(12.5)
+
+
+@pytest.mark.parametrize("posted", [{}, {"pos_x": 4.5, "calibration_marks": []}], ids=["empty", "crafted"])
+def test_the_camera_broadcast_sends_the_saved_camera_with_its_calibration(live_server, monkeypatch, posted) -> None:
+    from types import SimpleNamespace
+
+    from openfollow.web import routes as routes_mod
+
+    sent: list[dict] = []
+    monkeypatch.setattr(
+        routes_mod,
+        "_send_config_to_peer",
+        lambda ip, port, section, data, pin="", **_kw: sent.append(dict(data)) or True,
+    )
+    server, base = live_server
+    monkeypatch.setattr(server, "get_peers", lambda: [SimpleNamespace(name="peer", ip="10.0.0.99", web_port=80)])
+    camera = _held_camera("advanced")
+    camera.pos_x, camera.calibration_height = 1.25, 9.8
+    camera.calibration_lens_rating, camera.calibration_time = "fair", "2026-10-25T11:04:00+01:00"
+    camera.calibration_source = "NDI®: Stage"
+    save_config(AppConfig(camera=camera), server.config_path)
+    status, body = _post_json(base, "/api/config/camera/broadcast", posted)
+    assert status == 200 and body.get("success") is True
+    (data,) = sent
+    assert (data["pos_x"], data["calibration_mode"], data["calibration_height"]) == (1.25, "advanced", 9.8)
+    assert [m["id"] for m in data["calibration_marks"]] == [1, 2, 3, 4, 5]
+    # A station receiving it keeps the pose with its marks and what describes them.
+    receiver = AppConfig()
+    assert apply_section_data(receiver, "camera", data)
+    assert (receiver.camera.pos_x, len(receiver.camera.calibration_marks)) == (1.25, 5)
+    got = receiver.camera
+    assert (got.calibration_lens_rating, got.calibration_time, got.calibration_source) == (
+        "fair",
+        "2026-10-25T11:04:00+01:00",
+        "NDI®: Stage",
+    )
+    assert load_config(server.config_path).camera == camera
 
 
 def test_api_update_section_psn_ignores_psn_source_iface(live_server) -> None:
@@ -7524,7 +7661,7 @@ def test_a_crafted_camera_post_saves_the_lens_centre_as_a_hand_edited_file_would
     assert (camera.lens_k1, camera.lens_k2, camera.lens_cx, camera.lens_cy) == pytest.approx(saved)
 
 
-# The Camera form's lens centre: two pixel fields of the live video writing hidden lens_cx / lens_cy.
+# The Camera tab's lens centre, in pixels of the live video.
 _HD_1080 = 0.5 * (1920**2 + 1080**2) ** 0.5
 _CENTRE = (28 / _HD_1080, -16 / _HD_1080)
 
@@ -7552,211 +7689,266 @@ def video_server(tmp_path, monkeypatch):
         yield server, base, stats
 
 
-def _tag(body: str, element_id: str) -> str:
-    match = re.search(rf'<input [^>]*id="{element_id}"[^>]*>', body)
-    assert match is not None, element_id
-    return match.group(0)
+def _camera_section(body: str) -> str:
+    start = body.index('<form id="camera-section"')
+    return body[start : body.index("</form>", start)]
 
 
-def _attr(tag: str, name: str) -> str | None:
-    match = re.search(rf'\s{name}="([^"]*)"', tag)
-    return match.group(1) if match else None
+def _readout(section: str) -> dict[str, str]:
+    return dict(re.findall(r"<dt>(.*?)</dt>\s*<dd>(.*?)</dd>", section))
 
 
 @pytest.mark.parametrize("path", ["/section/camera", "/"])
-def test_the_camera_form_shows_the_lens_centre_in_pixels_of_the_live_video(video_server, path: str) -> None:
-    _, base, _ = video_server
+def test_the_camera_tab_shows_the_camera_and_edits_nothing(video_server, path: str) -> None:
+    server, base, _ = video_server
+    cfg = load_config(server.config_path)
+    cfg.camera.pos_x, cfg.camera.pos_y, cfg.camera.pos_z = 1.5, -5.0, 4.0
+    cfg.camera.pitch, cfg.camera.yaw, cfg.camera.roll, cfg.camera.fov = -20.25, 3.5, 0.0, 42.0
+    save_config(cfg, server.config_path)
     _, body = _get(base, path)
-    right, above = _tag(body, "camera-lens-cx-px"), _tag(body, "camera-lens-cy-px")
-    # Up is positive on the field, y runs down in the config.
-    assert [_attr(right, "value"), _attr(above, "value")] == ["28", "16"]
-    for tag in (right, above):
-        assert (_attr(tag, "min"), _attr(tag, "max"), _attr(tag, "step")) == ("-275", "275", "1")
-        assert "disabled" not in tag and _attr(tag, "name") is None
-    # The hidden fields carry the saved centre exactly, not the rounded pixels.
-    assert float(_attr(_tag(body, "camera-lens-cx"), "value")) == _CENTRE[0]
-    assert float(_attr(_tag(body, "camera-lens-cy"), "value")) == _CENTRE[1]
-    group = body[body.index('<div class="lens-centre" role="group" aria-labelledby="camera-lens-centre-title">') :]
-    labels = re.findall(
-        r'<label for="camera-lens-(c[xy])-px">(.*?)</label>', group[: group.index("</div>\n    </div>")]
-    )
-    assert labels == [("cx", "Right of the picture centre (px)"), ("cy", "Above the picture centre (px)")]
+    section = _camera_section(body)
+    for editable in ("<input", "<select", "<textarea", '<button type="submit"', "hx-post"):
+        assert editable not in section, editable
+    # Its primary action opens the Setup Wizard, which sets everything shown.
+    assert re.findall(r'class="[^"]*save-btn[^"]*"', section) == ['class="btn-link save-btn"']
+    assert '<a href="/wizard" class="btn-link save-btn">Open Setup Wizard</a>' in section
+    assert _readout(section) == {
+        "Position X": "1.500 m",
+        "Position Y": "-5.000 m",
+        "Position Z": "4.000 m",
+        "Pitch": "-20.25°",
+        "Yaw": "3.50°",
+        "Roll": "0.00°",
+        "Horizontal Field of View": "42.00°",
+        "Barrel / fisheye": "-0.310",
+        "Corner correction": "-0.010",
+        # Up is positive on the screen, y runs down in the config.
+        "Right of the picture centre": "28 px",
+        "Above the picture centre": "16 px",
+        "Type": "None",
+    }
+    assert "onclick=\"broadcastSection('camera', this.form)\"" in section
 
 
-def test_the_camera_form_spans_the_sliders_as_the_setup_wizard_does(video_server) -> None:
-    _, base, _ = video_server
+def test_a_value_that_rounds_to_zero_reads_without_a_sign(video_server) -> None:
+    server, base, _ = video_server
+    cfg = load_config(server.config_path)
+    cfg.camera.roll, cfg.camera.lens_k2 = -0.001, -0.0003
+    save_config(cfg, server.config_path)
     _, body = _get(base, "/section/camera")
-    k1, k2 = _tag(body, "camera-lens-k1-range"), _tag(body, "camera-lens-k2-range")
-    assert (_attr(k1, "min"), _attr(k1, "max"), _attr(k2, "min"), _attr(k2, "max")) == ("-1.0", "0.5", "-0.8", "0.3")
+    readout = _readout(_camera_section(body))
+    assert (readout["Roll"], readout["Corner correction"]) == ("0.00°", "0.000")
+
+
+def test_the_camera_tab_shows_lengths_in_the_station_s_units(video_server) -> None:
+    server, base, _ = video_server
+    cfg = load_config(server.config_path)
+    cfg.ui.unit_system, cfg.camera.pos_x = "imperial", 1.5
+    save_config(cfg, server.config_path)
+    _, body = _get(base, "/section/camera")
+    assert _readout(_camera_section(body))["Position X"] == "4 ft 11.06 in"
+
+
+def test_a_lens_centre_at_the_bound_reads_within_the_setup_wizard_s_bound(video_server) -> None:
+    # At 1280 x 720 the bound is 183.58 px: rounding alone shows 184, one pixel past the Setup Wizard's 183.
+    server, base, stats = video_server
+    cfg = load_config(server.config_path)
+    cfg.camera.lens_k1 = cfg.camera.lens_k2 = 0.0
+    cfg.camera.lens_cx, cfg.camera.lens_cy = 0.25, 0.25
+    save_config(cfg, server.config_path)
+    stats["video"] = {"resolution": {"width": 1280, "height": 720}}
+    _, body = _get(base, "/section/camera")
+    readout = _readout(_camera_section(body))
+    assert (readout["Right of the picture centre"], readout["Above the picture centre"]) == ("183 px", "-183 px")
 
 
 @pytest.mark.parametrize("resolution", [{"width": 0, "height": 0}, None], ids=["no size", "no video stats"])
-def test_without_video_the_lens_centre_fields_are_off_and_save_keeps_the_saved_centre(video_server, resolution) -> None:
-    server, base, stats = video_server
+def test_without_video_the_lens_centre_reads_no_video(video_server, resolution) -> None:
+    _, base, stats = video_server
     stats["video"] = {"resolution": resolution} if resolution else {}
     _, body = _get(base, "/section/camera")
-    for axis in ("cx", "cy"):
-        tag = _tag(body, f"camera-lens-{axis}-px")
-        assert "disabled" in tag and _attr(tag, "placeholder") == "No video" and _attr(tag, "value") == ""
-    # The form posts its named fields: the hidden centre goes back as it came.
-    form = {
-        "lens_k1": "-0.3",
-        "lens_k2": "-0.01",
-        "lens_cx": _attr(_tag(body, "camera-lens-cx"), "value"),
-        "lens_cy": _attr(_tag(body, "camera-lens-cy"), "value"),
-    }
-    status, saved_body = _post_form(base, "/section/camera", form)
-    assert status == 200
-    camera = load_config(server.config_path).camera
-    assert (camera.lens_k1, camera.lens_cx, camera.lens_cy) == (-0.3, *_CENTRE)
-    assert "disabled" in _tag(saved_body, "camera-lens-cx-px")
+    readout = _readout(_camera_section(body))
+    assert (readout["Right of the picture centre"], readout["Above the picture centre"]) == ("No video", "No video")
 
 
-def _camera_script(body: str) -> str:
-    return next(s for s in re.findall(r"<script>(.*?)</script>", body, re.S) if "cameraLensCentreInput" in s)
+def _pinned_camera(cfg: AppConfig, misses: dict[int, float], size: tuple[int, int] = (1920, 1080)) -> CameraConfig:
+    """``cfg``'s camera with the Simple corners pinned where it sees them, lens included, each miss px to the right."""
+    import numpy as np
+
+    from openfollow.scene.solver import apply_overlay_distortion, camera_params, project_points
+
+    cam = cfg.camera
+    marks = _corner_marks()
+    world = np.array([[m["x"], m["y"], m["z"]] for m in marks], dtype=np.float64)
+    seen = apply_overlay_distortion(
+        project_points(camera_params(cam), world, *size), *size, cam.lens_k1, cam.lens_k2, cam.lens_cx, cam.lens_cy
+    )
+    for mark, (x, y) in zip(marks, seen, strict=True):
+        mark["pin"] = [(x + misses.get(mark["id"], 0.0)) / size[0], y / size[1]]
+    return CameraConfig(**{**asdict(cam), "calibration_mode": "simple", "calibration_marks": marks})
 
 
-_CAMERA_PAGE = """
-var window = {}, gated = 0, prevented = 0;
-var els = { 'camera-lens-cx': { value: 'saved-cx' }, 'camera-lens-cy': { value: 'saved-cy' },
-  'camera-lens-cx-error': { innerHTML: '' }, 'camera-lens-cy-error': { innerHTML: '' } };
-var document = { getElementById: function(id) { return els[id] || null; }, body: { addEventListener: function() {} } };
-function refreshFormGate() { gated++; }
-function field(axis, value) {
-  return { value: value, max: '275', disabled: false, form: {},
-    dataset: { hidden: 'camera-lens-' + axis, halfDiag: HD },
-    attrs: {}, setAttribute: function(k, v) { this.attrs[k] = v; },
-    getAttribute: function(k) { return k === 'aria-describedby' ? 'camera-lens-' + axis + '-error' : null; } };
+_RECORDED = {
+    "calibration_lens_rating": "good",
+    "calibration_time": "2026-10-26T09:30:42-02:30",
+    "calibration_source": "RTSP: rtsp://192.0.2.10/stream",
 }
-"""
 
 
-@needs_node
+def test_the_calibration_column_shows_what_the_setup_wizard_recorded(video_server) -> None:
+    server, base, _ = video_server
+    cfg = load_config(server.config_path)
+    cfg.camera = _pinned_camera(cfg, {1: 2.5, 3: 0.6})
+    for name, value in _RECORDED.items():
+        setattr(cfg.camera, name, value)
+    cfg.camera.calibration_marks[1].pin = []
+    save_config(cfg, server.config_path)
+    _, body = _get(base, "/section/camera")
+    section = _camera_section(body)
+    readout = _readout(section[section.index('id="camera-calibration"') :])
+    # The time reads as the browser that saved it wrote it, in its own offset.
+    assert readout == {
+        "Type": "Simple",
+        "Calibrated": "2026-10-26 09:30",
+        "Video source": "RTSP: rtsp://192.0.2.10/stream",
+        "Lens rating": "Good",
+        "Pinned": "3 of 4 corners",
+        "Accuracy": "Within 2.5 px",
+    }
+    _, rows = _calibration_rows(section)
+    assert [row[-1] for row in rows] == ["2.5 px", "–", "0.6 px", "0.0 px"]
+
+
 @pytest.mark.parametrize(
-    ("right", "above", "centre"),
+    ("rating", "shown"),
     [
-        ("42", "18", (42 / _HD_1080, -18 / _HD_1080)),
-        ("-275", "-275", (-275 / _HD_1080, 275 / _HD_1080)),
-        ("0", "0", (0, 0)),
+        ("excellent", "Excellent"),
+        ("good", "Good"),
+        ("fair", "Fair"),
+        ("poor", "Poor"),
+        ("user_input", "User input"),
+        ("loaded", "Loaded"),
     ],
 )
-def test_a_lens_centre_typed_in_pixels_saves_in_half_diagonals(video_server, right, above, centre) -> None:
+def test_the_calibration_column_names_each_lens_rating(video_server, rating: str, shown: str) -> None:
     server, base, _ = video_server
-    _, body = _get(base, "/section/camera")
-    hd = _attr(_tag(body, "camera-lens-cx-px"), "data-half-diag")
-    written = _run_node(
-        _CAMERA_PAGE
-        + f"var HD = {json.dumps(hd)};\n"
-        + _camera_script(body)
-        + f"\nwindow.cameraLensCentreInput(field('cx', {json.dumps(right)}));"
-        + f" window.cameraLensCentreInput(field('cy', {json.dumps(above)}));"
-        + " process.stdout.write(JSON.stringify([els['camera-lens-cx'].value, els['camera-lens-cy'].value]));"
-    )
-    assert _post_form(base, "/section/camera", {"lens_cx": written[0], "lens_cy": written[1]})[0] == 200
-    camera = load_config(server.config_path).camera
-    assert (camera.lens_cx, camera.lens_cy) == pytest.approx(centre)
+    cfg = load_config(server.config_path)
+    cfg.camera = _pinned_camera(cfg, {})
+    cfg.camera.calibration_lens_rating = rating
+    save_config(cfg, server.config_path)
+    assert _readout(_camera_section(_get(base, "/section/camera")[1]))["Lens rating"] == shown
 
 
-@needs_node
-@pytest.mark.parametrize(
-    ("value", "refused"),
-    [("276", True), ("-276", True), ("", True), ("12.5", True), ("-0.5", True), ("12", False), ("12.0", False),
-     ("-275", False)],
-)  # fmt: skip
-def test_a_lens_centre_field_without_whole_pixels_in_range_says_so_and_writes_nothing(
-    video_server, value, refused
-) -> None:
-    _, base, _ = video_server
-    _, body = _get(base, "/section/camera")
-    out = _run_node(
-        _CAMERA_PAGE
-        + f"var HD = {json.dumps(str(_HD_1080))};\n"
-        + _camera_script(body)
-        + f"\nvar el = field('cx', {json.dumps(value)});"
-        + " window.cameraLensCentreInput(el);"
-        + " window.cameraLensCentreChecked(el, { preventDefault: function() { prevented++; } });"
-        + " process.stdout.write(JSON.stringify([els['camera-lens-cx'].value, els['camera-lens-cx-error'].innerHTML,"
-        + " el.attrs['aria-invalid'] || null, prevented, gated]));"
-    )
-    if refused:
-        # The station is not asked: its own bound is in half-diagonals, the field counts pixels.
-        assert out == [
-            "saved-cx",
-            '<span class="field-error-msg" role="alert" aria-live="assertive">'
-            # A minus sign, as the Setup Wizard writes it, not a hyphen.
-            "Must be a whole number from \u2212275 to 275.</span>",
-            "true",
-            1,
-            1,
-        ]
-    else:
-        assert out[0] != "saved-cx" and out[1:] == ["", None, 0, 0]
+def test_a_calibration_without_a_record_shows_none_of_its_rows(video_server) -> None:
+    server, base, _ = video_server
+    cfg = load_config(server.config_path)
+    cfg.camera = _pinned_camera(cfg, {})
+    save_config(cfg, server.config_path)
+    readout = _readout(_camera_section(_get(base, "/section/camera")[1]))
+    assert not {"Calibrated", "Video source", "Lens rating"} & set(readout)
+    assert (readout["Pinned"], readout["Accuracy"]) == ("4 corners", "Within 0.0 px")
 
 
-@pytest.mark.parametrize(("width", "height", "bound"), [(1280, 720, 183), (3840, 2160, 550)])
-def test_a_lens_centre_at_the_bound_shows_within_its_fields_bound(video_server, width, height, bound) -> None:
+def test_the_accuracy_is_counted_in_the_live_video_s_pixels(video_server) -> None:
+    # The pins are fractions of the picture: a 3 px miss at 1920 wide is 2 px at 1280.
     server, base, stats = video_server
-    assert _post_form(base, "/section/camera", {"lens_cx": "0.25", "lens_cy": "-0.25"})[0] == 200
-    stats["video"] = {"resolution": {"width": width, "height": height}}
-    _, body = _get(base, "/section/camera")
-    right, above = _tag(body, "camera-lens-cx-px"), _tag(body, "camera-lens-cy-px")
-    # Rounded alone, 0.25 half-diagonals lands half a pixel past the bound and the field fails itself.
-    assert round(0.25 * 0.5 * (width**2 + height**2) ** 0.5) == bound + 1
-    assert [_attr(right, "value"), _attr(above, "value")] == [str(bound), str(bound)]
-    assert _attr(right, "max") == str(bound)
-    # The hidden fields keep the saved centre exactly.
-    assert float(_attr(_tag(body, "camera-lens-cx"), "value")) == 0.25
+    cfg = load_config(server.config_path)
+    cfg.camera = _pinned_camera(cfg, {2: 3.0})
+    save_config(cfg, server.config_path)
+    stats["video"] = {"resolution": {"width": 1280, "height": 720}}
+    assert _readout(_camera_section(_get(base, "/section/camera")[1]))["Accuracy"] == "Within 2.0 px"
 
 
-@needs_node
-def test_a_disabled_lens_centre_field_lets_the_station_check_the_saved_centre(video_server) -> None:
-    _, base, _ = video_server
-    _, body = _get(base, "/section/camera")
-    out = _run_node(
-        _CAMERA_PAGE
-        + "var HD = '0';\n"
-        + _camera_script(body)
-        + "\nvar el = field('cx', ''); el.disabled = true; el.max = '';"
-        + " window.cameraLensCentreChecked(el, { preventDefault: function() { prevented++; } });"
-        + " process.stdout.write(JSON.stringify([prevented, els['camera-lens-cx-error'].innerHTML]));"
-    )
-    assert out == [0, ""]
+def test_the_accuracy_reads_no_video_without_a_picture(video_server) -> None:
+    server, base, stats = video_server
+    cfg = load_config(server.config_path)
+    cfg.camera = _pinned_camera(cfg, {1: 2.0})
+    save_config(cfg, server.config_path)
+    stats["video"] = {}
+    section = _camera_section(_get(base, "/section/camera")[1])
+    assert _readout(section)["Accuracy"] == "No video"
+    assert [row[-1] for row in _calibration_rows(section)[1]] == ["–"] * 4
 
 
-def _run_node(source: str) -> Any:
-    assert NODE is not None
-    done = subprocess.run([NODE, "-e", source], capture_output=True, text=True, timeout=60, check=True)
-    return json.loads(done.stdout)
+def test_without_pins_there_is_no_accuracy(video_server) -> None:
+    server, base, _ = video_server
+    cfg = load_config(server.config_path)
+    cfg.camera = _pinned_camera(cfg, {})
+    for mark in cfg.camera.calibration_marks:
+        mark.pin = []
+    save_config(cfg, server.config_path)
+    readout = _readout(_camera_section(_get(base, "/section/camera")[1]))
+    assert readout["Pinned"] == "0 of 4 corners" and "Accuracy" not in readout
 
 
-def test_each_lens_value_is_checked_again_when_the_lens_centre_changes(video_server) -> None:
-    # A centre that makes the lens invalid shows under the pair's fields as well, and a fixed one clears them.
-    _, base, _ = video_server
-    _, body = _get(base, "/section/camera")
-    for own in ("k1", "k2"):
-        trigger = _attr(_tag(body, f"camera-lens-{own}"), "hx-trigger") or ""
-        assert {"change from:#camera-lens-cx-px", "change from:#camera-lens-cy-px"} <= {
-            p.strip() for p in trigger.split(",")
-        }
-    for own, other in (("cx", "cy"), ("cy", "cx")):
-        tag = _tag(body, f"camera-lens-{own}-px")
-        assert {p.strip() for p in (_attr(tag, "hx-trigger") or "").split(",")} == {
-            "blur changed delay:200ms",
-            f"change from:#camera-lens-{other}-px",
-            "change from:#camera-lens-k1",
-            "change from:#camera-lens-k1-range",
-            "change from:#camera-lens-k2",
-            "change from:#camera-lens-k2-range",
-        }
+def test_a_recorded_video_source_is_shown_as_text(video_server) -> None:
+    server, base, _ = video_server
+    cfg = load_config(server.config_path)
+    cfg.camera = _pinned_camera(cfg, {})
+    cfg.camera.calibration_source = 'NDI®: <img src=x onerror="alert(1)">'
+    save_config(cfg, server.config_path)
+    section = _camera_section(_get(base, "/section/camera")[1])
+    assert "<img" not in section
+    assert _readout(section)["Video source"] == "NDI®: &lt;img src=x onerror=&quot;alert(1)&quot;&gt;"
 
 
-def test_the_lens_number_fields_take_any_value(video_server) -> None:
-    # A step grid counts from the saved value: after the wizard saves -0.3302, a typed -0.3 would be a step
-    # mismatch and the browser would refuse to submit the form. The sliders keep their 0.005 steps.
-    _, base, _ = video_server
-    _, body = _get(base, "/section/camera")
-    assert [_attr(_tag(body, f"camera-lens-{k}"), "step") for k in ("k1", "k2")] == ["any", "any"]
-    assert [_attr(_tag(body, f"camera-lens-{k}-range"), "step") for k in ("k1", "k2")] == ["0.005", "0.005"]
+_WIZARD_SAVE = {
+    "calibration_mode": "simple",
+    "calibration_marks": _corner_marks(),
+    "calibration_time": "2026-10-25T11:04:00+01:00",
+}
+
+
+@pytest.mark.parametrize(
+    ("source_type", "label", "recorded"),
+    [
+        ("rtsp", "rtsp://192.0.2.10/stream", "RTSP: rtsp://192.0.2.10/stream"),
+        ("srt", "SRT srt://192.0.2.10:5000", "SRT srt://192.0.2.10:5000"),
+        ("ndi", "Stage (Left)", "NDI®: Stage (Left)"),
+        ("testpattern", "Media Gallery (Clip)", "Media Gallery (Clip)"),
+        ("no_such_input", "Something", "Something"),
+        ("rtsp", "", ""),
+    ],
+    ids=["rtsp", "srt", "ndi", "gallery", "unknown input", "no label"],
+)
+def test_a_setup_wizard_save_records_the_video_source_the_station_shows(
+    video_server, source_type: str, label: str, recorded: str
+) -> None:
+    server, base, stats = video_server
+    stats["video"] = {"resolution": {"width": 1920, "height": 1080}, "source_type": source_type, "source_label": label}
+    status, _ = _post_json(base, "/api/config/camera", _WIZARD_SAVE)
+    assert status == 200
+    assert load_config(server.config_path).camera.calibration_source == recorded
+
+
+def test_a_setup_wizard_save_without_video_stats_records_no_source(video_server) -> None:
+    server, base, stats = video_server
+    stats.clear()
+    assert _post_json(base, "/api/config/camera", _WIZARD_SAVE)[0] == 200
+    camera = load_config(server.config_path).camera
+    assert (camera.calibration_time, camera.calibration_source) == ("2026-10-25T11:04:00+01:00", "")
+
+
+@pytest.mark.parametrize(
+    ("path", "data"),
+    [
+        ("/api/config/camera", {**_WIZARD_SAVE, "calibration_source": "SRT srt://192.0.2.20:5000"}),
+        ("/api/config/camera?from=Peer", {**_WIZARD_SAVE, "calibration_source": "SRT srt://192.0.2.20:5000"}),
+        ("/api/config/camera?from=Peer", _WIZARD_SAVE),
+        ("/api/config/camera", {k: v for k, v in _WIZARD_SAVE.items() if k != "calibration_time"}),
+    ],
+    ids=["brought", "pushed", "pushed without", "no time"],
+)
+def test_only_a_setup_wizard_save_is_stamped_with_this_station_s_source(video_server, path: str, data: dict) -> None:
+    """A source brought, or a push from a station that showed another, is never this station's."""
+    server, base, stats = video_server
+    stats["video"] = {
+        "resolution": {"width": 1920, "height": 1080},
+        "source_type": "rtsp",
+        "source_label": "rtsp://192.0.2.10/s",
+    }
+    assert _post_json(base, path, data)[0] == 200
+    assert load_config(server.config_path).camera.calibration_source == data.get("calibration_source", "")
 
 
 def test_validate_endpoint_advisory_note(live_server) -> None:
@@ -8662,7 +8854,7 @@ def test_gallery_list_shows_defaults(gallery_server) -> None:
     assert status == 200
     assert 'id="gallery-grid"' in body
     titles = re.findall(r'class="gallery-select" type="button" title="([^"]+)"', body)
-    assert titles == ["Stage", "Arena", "Concert", "Festival", "Grey"]
+    assert titles == ["Stage", "Concert", "Festival", "Grey"]
     assert "gallery-label" not in body  # no visible per-tile labels
     assert 'title="Stage"' in body  # name kept as hover/aria name only
 
@@ -8770,7 +8962,6 @@ def test_gallery_thumb_stage_serves_asset(gallery_server) -> None:
 @pytest.mark.parametrize(
     ("media_id", "asset"),
     [
-        ("default:arena", "ARENA_ASSET_JPG"),
         ("default:concert", "CONCERT_ASSET_JPG"),
         ("default:festival", "FESTIVAL_ASSET_JPG"),
     ],
@@ -8792,7 +8983,7 @@ def test_gallery_thumb_grey_has_none(gallery_server) -> None:
 
 @pytest.mark.parametrize(
     ("media_id", "label"),
-    [("default:arena", "Arena"), ("default:concert", "Concert"), ("default:festival", "Festival")],
+    [("default:concert", "Concert"), ("default:festival", "Festival")],
 )
 def test_gallery_select_a_bundled_picture_persists(gallery_server, media_id: str, label: str) -> None:
     server, base, _ = gallery_server

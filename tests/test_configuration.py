@@ -3213,7 +3213,8 @@ def test_save_park_changes_builds_on_the_file_and_its_controlled_set(temp_config
     save_config(AppConfig(controlled_marker_ids=[1, 2], parked_marker_ids=[1]), str(temp_config_path))
     stale = AppConfig(controlled_marker_ids=[1, 2, 3])
     assert save_park_changes(stale, str(temp_config_path), {2: True, 3: True}) is True
-    assert load_config(str(temp_config_path)).parked_marker_ids == [1, 2]
+    # Read as written: a load would apply the subset rule again and hide a write that skipped it.
+    assert tomllib.loads(temp_config_path.read_text(encoding="utf-8"))["parked_marker_ids"] == [1, 2]
     assert save_park_changes(stale, str(temp_config_path), {2: True}) is False
 
 

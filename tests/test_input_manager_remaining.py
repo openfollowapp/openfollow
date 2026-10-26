@@ -446,6 +446,16 @@ class TestOscPark:
         assert app._config.parked_marker_ids == []
         assert Path(app._config_path).read_bytes() == before
 
+    def test_a_park_for_a_marker_only_the_file_controls_yet_is_ignored(self, app: _DummyApp) -> None:
+        """The web UI just took marker 12 into control; until the reload brings it here, OSC cannot park it."""
+        on_disk = load_config(app._config_path)
+        on_disk.controlled_marker_ids = [10, 11, 12]
+        save_config(on_disk, app._config_path)
+        manager = InputManager(app)
+        _FakeOscHandler.next_parks = {12: True}
+        manager.update(0.016)
+        assert self._file(app) == []
+
     def test_a_frame_without_a_park_command_saves_nothing(self, app: _DummyApp) -> None:
         manager = InputManager(app)
         _FakeOscHandler.next_parks = {10: True}

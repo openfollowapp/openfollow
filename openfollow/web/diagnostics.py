@@ -475,6 +475,18 @@ def _fmt_source_limits(limits: Any) -> str:
     )
 
 
+def _fmt_latency(latency: Any) -> str:
+    """The last successful camera latency run, or ``not measured``."""
+    if not isinstance(latency, dict):
+        return "not measured"
+    return (
+        f"{float(latency.get('median_ms', 0.0) or 0.0):.0f} ms median "
+        f"({float(latency.get('min_ms', 0.0) or 0.0):.0f} to {float(latency.get('max_ms', 0.0) or 0.0):.0f} ms), "
+        f"{int(latency.get('samples', 0) or 0)} samples, {_fmt_age(latency.get('age_s'))}, "
+        f"source {latency.get('source_type') or '?'}"
+    )
+
+
 def collect_runtime_state(p: DiagnosticsProviders) -> list[str]:
     """Video, frame loop, detection and controllers, from the live snapshot.
 
@@ -519,6 +531,7 @@ def collect_runtime_state(p: DiagnosticsProviders) -> list[str]:
     rows.append(f"    source framerate      {float(video.get('source_fps', 0.0) or 0.0):.1f} fps")
     rows.append(f"    source format         {video.get('source_format') or '-'}")
     rows.append(f"    source limits         {_fmt_source_limits(video.get('limits'))}")
+    rows.append(f"    camera latency        {_fmt_latency(stats.get('latency'))}")
 
     playback = stats.get("playback") or {}
     stale_after = float(playback.get("stale_after_s", 0.0) or 0.0)
@@ -574,6 +587,12 @@ def collect_runtime_state(p: DiagnosticsProviders) -> list[str]:
             rows.append(f"         key {item['port_key']}")
         if item.get("notes"):
             rows.append(f"         notes {', '.join(item['notes'])}")
+    keyboard = stats.get("keyboard") or {}
+    devices = keyboard.get("devices")
+    rows.append(
+        f"  Keyboard poller:        {keyboard.get('poller') or '[not running]'}"
+        f"{'' if devices is None else f', {devices} keyboard(s)'}"
+    )
     conflicts = stats.get("marker_conflicts") or []
     rows.append(f"  Marker conflicts:       {len(conflicts) or '(none)'}")
     for conflict in conflicts:

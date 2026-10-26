@@ -1035,6 +1035,21 @@ class TestBuildMarkerVisualStateTornRead:
 
         assert state.lens == (-0.15, 0.04, 0.03, -0.02)
 
+    @pytest.mark.parametrize("level", [None, 0.0, 1.0])
+    def test_the_latency_probe_s_level_reaches_the_overlay_state(self, level: float | None) -> None:
+        app = _make_visual_app(_TornMarker([(0.0, 0.0, 0.0)]), controlled=False)
+
+        state = build_marker_visual_state(
+            app,
+            system_stats=None,
+            person_detector=None,
+            cam_params_buffer=np.zeros(7),
+            dt=1.0 / 60.0,
+            latency_flash=level,
+        )
+
+        assert state.latency_flash == level
+
     @pytest.mark.parametrize("enabled", [True, False])
     def test_wheel_z_setting_reaches_the_help_overlay_state(self, enabled: bool) -> None:
         # The HUD help shows the scroll-wheel hint only while wheel-Z is on.

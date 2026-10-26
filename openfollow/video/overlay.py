@@ -57,6 +57,9 @@ from openfollow.runtime.overlay_draw_hud import (
 from openfollow.runtime.overlay_draw_messages import (
     draw_operator_messages as draw_operator_messages_pass,
 )
+from openfollow.runtime.overlay_draw_messages import (
+    draw_station_cards as draw_station_cards_pass,
+)
 from openfollow.runtime.overlay_draw_paths import PathCache
 from openfollow.runtime.overlay_draw_paths import draw_paths as draw_paths_pass
 from openfollow.runtime.overlay_draw_scene import (
@@ -77,7 +80,7 @@ from openfollow.runtime.overlay_draw_scene import (
 )
 from openfollow.runtime.overlay_draw_zones import ZoneCache
 from openfollow.runtime.overlay_draw_zones import draw_zones as draw_zones_pass
-from openfollow.runtime.overlay_layers import cairo_context, cut, mark_top
+from openfollow.runtime.overlay_layers import LayerContext, cairo_context, cut, mark_top
 from openfollow.runtime.overlay_picture import PanelCache
 from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
 
@@ -283,12 +286,20 @@ class CairoOverlayRenderer:
         try:
             self._frame_timestamps.append(time.monotonic())
 
+            # The latency probe's black or white covers everything, alone; the GL display draws its own.
+            if (level := state.latency_flash) is not None:
+                if not isinstance(cr, LayerContext):
+                    cr.set_source_rgb(level, level, level)
+                    cr.paint()
+                return
+
             # Button detection wizard takes exclusive visual control
             if state.button_detection is not None and state.button_detection.active:
                 self._grid_cache.clear()
                 self._zone_cache.clear()
                 self._path_cache.clear()
                 self._draw_button_detection_overlay(cr, state, width, height)
+                self._draw_station_cards(cr, state, width, height)
                 return
 
             if self._draw_menu_screen(cr, state, width, height):
@@ -296,6 +307,7 @@ class CairoOverlayRenderer:
                 self._zone_cache.clear()
                 self._path_cache.clear()
                 draw_menu_help_pass(self, cr, state, width, height)
+                self._draw_station_cards(cr, state, width, height)
                 return
 
             if state.camera_params is None:
@@ -524,6 +536,11 @@ class CairoOverlayRenderer:
     # ------------------------------------------------------------------
     # HUD (2D screen-space)
     # ------------------------------------------------------------------
+
+    def _draw_station_cards(self, cr: Any, state: OverlayState, w: int, h: int) -> None:
+        # A hazard warning the station raises stays in sight over a menu screen; OSC cards do not.
+        cut(cr)
+        draw_station_cards_pass(self, cr, state, w, h)
 
     def _draw_hud(self, cr: Any, state: OverlayState, w: int, h: int) -> None:
         draw_hud_pass(self, cr, state, w, h)

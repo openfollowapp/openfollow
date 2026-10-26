@@ -1161,6 +1161,9 @@ class TestProcessInputAndKeyDispatchShortCircuit:
         class _KB:
             def on_key_down(self, _ev) -> None: ...
 
+            def is_late_echo(self, _ev) -> bool:
+                return False
+
         class _IM:
             keyboard_handler = _KB()
 

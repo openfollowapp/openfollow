@@ -773,6 +773,41 @@ class TestSharedSink:
         probe(None, None)
         assert len(frames) == 2
 
+    def test_a_frame_listener_is_handed_each_source_frame_with_its_caps_only_while_set(
+        self, fake_gst, fake_glib, fake_input_cls
+    ) -> None:
+        r = _make_receiver()
+        ((_kind, probe),) = r._get_shared_sink().get_static_pad("sink").probes
+        pad = SimpleNamespace(get_current_caps=lambda: "caps")
+        info = SimpleNamespace(get_buffer=lambda: "buffer")
+        handed: list[tuple[Any, Any]] = []
+        assert probe(pad, info) == FakePadProbeReturn.OK
+        r.set_frame_listener(lambda buf, caps: handed.append((buf, caps)))
+        assert probe(pad, info) == FakePadProbeReturn.OK
+        assert handed == [("buffer", "caps")]
+        r.set_frame_listener(None)
+        probe(pad, info)
+        assert handed == [("buffer", "caps")]
+
+    def test_the_no_signal_placeholder_s_frames_are_not_handed_to_the_frame_listener(
+        self, fake_gst, fake_glib, fake_input_cls
+    ) -> None:
+        r = _make_receiver()
+        ((_kind, probe),) = r._get_shared_sink().get_static_pad("sink").probes
+        handed: list[Any] = []
+        r.set_frame_listener(lambda buf, caps: handed.append(buf))
+        r._state.set_placeholder_pipeline(True)
+        probe(SimpleNamespace(get_current_caps=lambda: None), SimpleNamespace(get_buffer=lambda: "black"))
+        assert handed == []
+
+    def test_every_pipeline_build_counts(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        FakeInput.create_pipeline_result = FakePipeline()
+        before = r.pipeline_builds
+        r.create_pipeline()
+        r.create_pipeline()
+        assert r.pipeline_builds == before + 2
+
     def test_shared_sink_returns_none_when_no_embeddable_sink(self, fake_gst, fake_glib, fake_input_cls) -> None:
         fake_gst.ElementFactory = FakeElementFactory(available_elements=set())
         r = _make_receiver()

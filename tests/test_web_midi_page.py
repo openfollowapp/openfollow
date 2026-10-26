@@ -1074,6 +1074,9 @@ class TestFaderValuesPoll:
         assert 'id="midi-fader-strip-value-2"' in body
         assert "0.17" in body
         assert "not picked up" in body
+        # Every strip keeps the pill's slot, hidden once picked up, so a pickup never resizes the strips.
+        assert re.search(rf'id="midi-fader-strip-value-1"[^>]*>0\.42{re.escape(_PILL_HIDDEN)}</span>', body)
+        assert re.search(rf'id="midi-fader-strip-value-2"[^>]*>0\.17{re.escape(_PILL_SHOWN)}</span>', body)
         # Three OOB swaps per fader × two faders = six total.
         assert body.count('hx-swap-oob="true"') == 6
 
@@ -1147,6 +1150,11 @@ class TestMarkerFaderSectionRender:
             assert 'style="height:25%"' in body
 
 
+# The pickup pill is in every strip; ``data-picked-up`` hides it and keeps its slot.
+_PILL_SHOWN = '<span class="midi-fader-strip-not-picked-up">not picked up</span>'
+_PILL_HIDDEN = '<span class="midi-fader-strip-not-picked-up" data-picked-up>not picked up</span>'
+
+
 class TestVirtualFadersFirstPaint:
     @pytest.mark.parametrize("route", ["/", "/section/midi"], ids=["page", "section"])
     def test_the_strips_render_the_live_values(self, tmp_path, monkeypatch, route: str) -> None:
@@ -1165,9 +1173,9 @@ class TestVirtualFadersFirstPaint:
             n: re.search(rf'id="midi-fader-strip-value-{n}"[^>]*>(.*?)</span>\s*</button>', body, re.S)
             for n in (1, 2, 3)
         }
-        assert strip[1] and strip[1].group(1) == "0.42"
-        assert strip[2] and strip[2].group(1).startswith("0.17") and "not picked up" in strip[2].group(1)
-        assert strip[3] and strip[3].group(1) == "0.00"
+        assert strip[1] and strip[1].group(1) == "0.42" + _PILL_HIDDEN
+        assert strip[2] and strip[2].group(1) == "0.17" + _PILL_SHOWN
+        assert strip[3] and strip[3].group(1) == "0.00" + _PILL_HIDDEN
         assert re.search(r'id="midi-fader-strip-fill-1"\s+class="midi-fader-strip-fill"\s+style="height:42%"', body)
 
 

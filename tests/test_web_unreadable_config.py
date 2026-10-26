@@ -88,6 +88,7 @@ _WRITES: dict[tuple[str, str], tuple[str, str, Any]] = {
     ("POST", "/section/movement"): ("/section/movement", "form", {}),
     ("POST", "/section/network/label"): ("/section/network/label", "form", {"iface": "eth0", "label": "Stage"}),
     ("POST", "/section/network/label/forget"): ("/section/network/label/forget", "form", {"iface": "eth0"}),
+    ("POST", "/section/network/forget"): ("/section/network/forget", "form", {"iface": "enx001122334455"}),
     ("POST", "/section/network/mode"): ("/section/network/mode", "form", {"network_mode": "advanced"}),
     ("POST", "/section/network/station"): ("/section/network/station", "form", {"psn_source_iface": ""}),
     ("POST", "/section/operator_messages"): ("/section/operator_messages", "form", {}),

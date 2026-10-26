@@ -23,12 +23,12 @@ from __future__ import annotations
 import functools
 import re
 import shlex
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import pytest
-import tomllib
 import yaml
 from packaging.markers import Marker
 

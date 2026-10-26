@@ -31,12 +31,11 @@ import sys
 import tarfile
 import tempfile
 import threading
+import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-
-import tomllib
 
 __all__ = [
     "ARCHIVE_SUFFIX",
@@ -117,7 +116,7 @@ def station_label(system_name: object) -> str:
 def archive_name(system_name: object, old_version: str, now: datetime, kind: str = "") -> str:
     """``<station>-v<old>[-<kind>]-<UTC timestamp>.ofbackup``, to the millisecond with a ``kind``."""
     version = safe_component(old_version) or "unknown"
-    utc = now.astimezone(timezone.utc)
+    utc = now.astimezone(UTC)
     stamp = utc.strftime(_TIMESTAMP_FORMAT)
     if kind:
         stamp = f"{stamp[:-1]}.{utc.microsecond // 1000:03d}Z"
@@ -318,8 +317,8 @@ def run_backup(
     write: Callable[[Path, list[tuple[str, Path]], dict[str, object]], None] = _write_archive,
 ) -> BackupRecord:
     """Archive the settings under ``state_dir/backups`` and record the outcome."""
-    moment = now or datetime.now(timezone.utc)
-    ts = moment.astimezone(timezone.utc).isoformat(timespec="seconds")
+    moment = now or datetime.now(UTC)
+    ts = moment.astimezone(UTC).isoformat(timespec="seconds")
     backup_dir = state_dir / BACKUP_DIR_NAME
     config_path = state_dir / "config.toml"
     config = _load_config(config_path)
@@ -355,8 +354,8 @@ def run_web_backup(
     config file that does not read. Leaves :data:`RECORD_NAME` alone: it
     describes the last update's backup.
     """
-    moment = now or datetime.now(timezone.utc)
-    ts = moment.astimezone(timezone.utc).isoformat(timespec="seconds")
+    moment = now or datetime.now(UTC)
+    ts = moment.astimezone(UTC).isoformat(timespec="seconds")
     backup_dir = web_backup_dir(config_path)
     config = _load_config(config_path) if settings is None else settings
     manifest: dict[str, object] = {"kind": kind, "version": version, "created": ts}

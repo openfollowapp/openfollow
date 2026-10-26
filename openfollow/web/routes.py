@@ -29,10 +29,10 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, MutableSequence, Sequence
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
+from typing import TYPE_CHECKING, Any, NoReturn
 from urllib.parse import quote, urlsplit
 
 from bottle import Bottle, HTTPResponse, abort, request, response, static_file, template
@@ -3339,10 +3339,7 @@ def _strip_broadcast_excluded(data: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in data.items() if k not in _BROADCAST_EXCLUDED_SECTIONS}
 
 
-_T = TypeVar("_T")
-
-
-def _find_by_id(items: Sequence[_T], item_id: str) -> tuple[int, _T] | None:
+def _find_by_id[T](items: Sequence[T], item_id: str) -> tuple[int, T] | None:
     """Index-and-item lookup by ``.id`` for the id-keyed config lists (OSC
     transmitters, OSC destinations). ``None`` when nothing matches, so a route
     can 404 on stale UI state (a row deleted in another tab) without crashing.
@@ -4086,7 +4083,7 @@ def build_diagnostics_bundle(server: ConfigWebServer, cfg: AppConfig | None = No
     # Best-effort on-disk copy. Failure (read-only fs, no perms)
     # logs but does not break the download – operators on locked-
     # down deployments still get the bundle through the browser.
-    written_at = datetime.now(timezone.utc)
+    written_at = datetime.now(UTC)
     diagnostics.write_bundle_to_disk(
         text,
         system_name=server.system_name,

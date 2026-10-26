@@ -15,14 +15,14 @@ import re
 import tempfile
 import threading
 import time
+import tomllib
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol
 
 import tomli_w
-import tomllib
 
 from openfollow.binding_conflicts import BindingMove, settle_duplicates
 from openfollow.keyboard_layout import LAYOUT_RE as XKB_LAYOUT_RE
@@ -2790,10 +2790,7 @@ class _Switched(Protocol):
     enabled: bool
 
 
-_SwitchedT = TypeVar("_SwitchedT", bound=_Switched)
-
-
-def feature_gated(section: _SwitchedT, cfg: Any, key: str) -> _SwitchedT:
+def feature_gated[SwitchedT: _Switched](section: SwitchedT, cfg: Any, key: str) -> SwitchedT:
     """``section`` as its subsystem runs it: switched off (``enabled``) while feature ``key`` is off."""
     if not section.enabled or feature_on(cfg, key):
         return section

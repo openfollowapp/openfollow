@@ -18,6 +18,7 @@ import re
 import sys
 import tarfile
 import time
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -27,7 +28,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import tomllib
 
 import openfollow
 import openfollow.services as services_module

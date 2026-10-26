@@ -6,12 +6,12 @@ from __future__ import annotations
 
 import logging
 import os
+import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from types import SimpleNamespace
 
 import pytest
-import tomllib
 
 from openfollow.configuration import (
     CALIBRATION_SOURCE_MAX_LEN,

@@ -5447,7 +5447,7 @@ def test_the_on_device_footer_names_the_controller_button_and_esc(live_server) -
         body = resp.read().decode()
     footer = body[body.index('<footer class="on-device-footer">') :]
     footer = footer[: footer.index("</footer>")]
-    assert "<kbd>B</kbd>on a controller or <kbd>Esc</kbd>on a keyboard closes the embedded browser" in footer
+    assert "<kbd>B</kbd> on a controller or <kbd>Esc</kbd> on a keyboard closes the embedded browser" in footer
 
 
 def test_logout_clears_cookie_and_redirects_to_login(live_server) -> None:

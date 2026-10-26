@@ -1230,7 +1230,6 @@
  .on-device-footer kbd {
  display: inline-block;
  padding: 1px 8px;
- margin-right: 4px;
  border-radius: 0.4rem;
  border: 1px solid rgba(255, 255, 255, 0.18);
  background: rgba(255, 255, 255, 0.08);
@@ -2415,7 +2414,7 @@
  <footer class="on-device-footer">
  %# The operator's own ``btn_menu_cancel`` mapping, which Button Detection can remap;
  %# Esc is fixed, handled by the embedded browser itself.
- <span><kbd>{{cancel_button or 'Cancel'}}</kbd>on a controller or <kbd>Esc</kbd>on a keyboard closes the embedded browser</span>
+ <span><kbd>{{cancel_button or 'Cancel'}}</kbd> on a controller or <kbd>Esc</kbd> on a keyboard closes the embedded browser</span>
  </footer>
  % end
  %# AGPLv3 §5(d) Appropriate Legal Notices. __version__ comes from

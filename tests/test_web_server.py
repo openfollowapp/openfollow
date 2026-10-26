@@ -8822,6 +8822,81 @@ def test_a_malformed_request_line_is_answered_without_a_handler_error(live_serve
     assert errors == []
 
 
+def _quiet_slot(monkeypatch) -> tuple[threading.BoundedSemaphore, list[object]]:
+    """One handler slot, and the handler errors the server reports."""
+    from openfollow.web import server as server_module
+
+    slot = threading.BoundedSemaphore(1)
+    errors: list[object] = []
+    monkeypatch.setattr(server_module, "_request_semaphore", slot)
+    monkeypatch.setattr(server_module._ThreadingWSGIServer, "handle_error", lambda self, *args: errors.append(args))
+    return slot, errors
+
+
+def test_an_idle_connection_is_closed_quietly_after_the_head_timeout(live_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_REQUEST_HEAD_TIMEOUT_S", 0.2)
+    slot, errors = _quiet_slot(monkeypatch)
+    _, base = live_server
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    with socket.create_connection((host, int(port)), timeout=5) as idle:
+        assert idle.recv(1) == b""
+        assert slot.acquire(timeout=5)
+    slot.release()
+    assert errors == []
+
+
+def test_headers_that_trickle_past_the_head_timeout_are_closed(live_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_REQUEST_HEAD_TIMEOUT_S", 0.5)
+    _, errors = _quiet_slot(monkeypatch)
+    _, base = live_server
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    with socket.create_connection((host, int(port)), timeout=5) as sock:
+        sock.sendall(b"GET /api/info HTTP/1.1\r\n")
+        sock.settimeout(0.1)
+        closed = False
+        for _ in range(50):
+            try:
+                sock.sendall(b"X-Slow: 1\r\n")
+                closed = sock.recv(1) == b""
+            except TimeoutError:
+                continue
+            except ConnectionError:
+                closed = True
+            break
+    assert closed
+    assert errors == []
+
+
+def test_a_slow_but_steady_upload_completes(live_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_REQUEST_HEAD_TIMEOUT_S", 1.0)
+    monkeypatch.setattr(server_module, "_REQUEST_BODY_READ_TIMEOUT_S", 1.0)
+    server, base = live_server
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    body = json.dumps({"pos_x": 1.0, "pos_y": 2.0}).encode()
+    pieces = [body[i : i + 3] for i in range(0, len(body), 3)]
+    assert len(pieces) * 0.25 > 2.0  # the body takes longer than both timeouts in total
+    with socket.create_connection((host, int(port)), timeout=5) as sock:
+        sock.sendall(
+            b"POST /api/config/camera HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+            b"Content-Length: %d\r\n\r\n" % len(body)
+        )
+        for piece in pieces:
+            time.sleep(0.25)
+            sock.sendall(piece)
+        answer = b""
+        while chunk := sock.recv(65536):
+            answer += chunk
+    assert answer.startswith(b"HTTP/1.0 200 ")
+    assert json.loads(answer.split(b"\r\n\r\n", 1)[1])["success"] is True
+    assert load_config(server.config_path).camera.pos_y == pytest.approx(2.0)
+
+
 @pytest.mark.parametrize("declared", ["abc", "", "-5"])
 def test_a_refusal_with_a_missing_or_malformed_length_still_refuses(tmp_path, declared: str) -> None:
     assert _refused_login_post(tmp_path, declared, b"pin=sekret").startswith("403")

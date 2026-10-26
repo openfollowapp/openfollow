@@ -34,6 +34,11 @@ _TEMPLATES_DIR = _WEB_HELP_DIR.parent / "templates"
 class TestRenderHelpMarkdown:
     pytestmark = pytest.mark.unit
 
+    def test_a_button_symbols_alt_text_is_escaped_once(self) -> None:
+        html = render_help_markdown("![A & B](button:cross)")
+        assert '<span class="visually-hidden">A &amp; B</span>' in html
+        assert "&amp;amp;" not in html
+
     def test_renders_heading(self) -> None:
         assert "<h1>" in render_help_markdown("# Camera")
 
@@ -81,12 +86,6 @@ class TestRenderHelpMarkdown:
 # ---------------------------------------------------------------------------
 # Section markup + packaging (unit)
 # ---------------------------------------------------------------------------
-
-
-def test_a_button_symbols_alt_text_is_escaped_once() -> None:
-    html = render_help_markdown("![A & B](button:cross)")
-    assert '<span class="visually-hidden">A &amp; B</span>' in html
-    assert "&amp;amp;" not in html
 
 
 class TestSectionHelpAttributes:

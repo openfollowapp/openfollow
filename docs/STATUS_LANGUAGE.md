@@ -438,7 +438,8 @@ outline strokes on a one-em square sitting on the baseline, in the colour of
 the text around them (`currentColor` on the web, the text's source on the
 HUD), at a stroke close to the text's stem. They appear only where a button
 is named (the Operator Screen's help, key hints and Button Detection Wizard,
-the gamepad section's detection table and binding notes, the help drawer),
+the gamepad section's detection table and binding notes, the on-device
+footer's `<kbd>`, the help drawer),
 always with the word for screen readers, and never as a status sign, in a
 chip or in a level's colour.
 

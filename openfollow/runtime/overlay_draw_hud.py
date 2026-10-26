@@ -1810,11 +1810,11 @@ def draw_button_detection_overlay(renderer: Any, cr: Any, state: OverlayState, w
             renderer._set_ui_font(cr, 10, bold=True)
             short_name = hud_label(label, state.button_name_style)
             cr.set_source_rgb(*COLOR_TEXT)
-            name_w = symbols.show_text(cr, short_name, x, y, 10.0) - x
+            symbols.show_text(cr, short_name, x, y, 10.0)
 
             renderer._set_ui_font(cr, 10)
             cr.set_source_rgba(*COLOR_TEXT_MUTED)
-            cr.move_to(x + max(70.0, name_w + 8.0), y)
+            cr.move_to(x + 70.0, y)
             if raw_idx <= -100:
                 axis_idx = -100 - raw_idx
                 cr.show_text(f"\u2192 axis {axis_idx}")

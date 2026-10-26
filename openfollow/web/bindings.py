@@ -54,7 +54,7 @@ _CONTROLLER_GROUPS = (
             dict(labels),
             "",
             str.strip,
-            lambda value, style: button_label(value, style, short=False),
+            lambda value, style: button_label(value, style, short=False, spelled=True),
             display_html=button_html,
         )
         for labels in (GAMEPAD_ACTION_BUTTON_FORM_LABELS, GAMEPAD_MENU_BUTTON_FORM_LABELS)

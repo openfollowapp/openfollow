@@ -113,14 +113,21 @@ def name_style(value: object) -> ButtonNameStyle:
     return ButtonNameStyle(value) if value in BUTTON_NAME_STYLES else ButtonNameStyle.STANDARD
 
 
-def button_label(button: str, style: ButtonNameStyle, *, short: bool = True) -> str:
-    """The button's name in words; an unrecognised stored value as it is."""
+# Marks spelled out where a lone "-" would pass for the web's unbound "–" option.
+_SPELLED: dict[str, str] = {"-": "Minus", "+": "Plus"}
+
+
+def button_label(button: str, style: ButtonNameStyle, *, short: bool = True, spelled: bool = False) -> str:
+    """The button's name in words; an unrecognised stored value as it is.
+
+    ``spelled`` writes Nintendo's ``-`` / ``+`` as Minus / Plus.
+    """
     names = SDL_NAMES.get(button)
     if names is None:
         return button
     printed = PRINTED_NAMES.get(style, {}).get(button)
     if printed is not None:
-        return printed
+        return _SPELLED.get(printed, printed) if spelled else printed
     return names[0] if short else names[1]
 
 

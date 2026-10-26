@@ -105,3 +105,16 @@ def test_anything_else_names_buttons_the_standard_way(value: object) -> None:
 
 def test_the_config_choices_are_the_four_families() -> None:
     assert BUTTON_NAME_STYLES == ("standard", "xbox", "playstation", "nintendo")
+
+
+@pytest.mark.parametrize(("button", "word"), [("BACK", "Minus"), ("START", "Plus")])
+def test_nintendos_marks_are_spelled_where_a_dash_would_mean_unbound(button: str, word: str) -> None:
+    assert button_label(button, ButtonNameStyle.NINTENDO, spelled=True) == word
+    assert button_label(button, ButtonNameStyle.NINTENDO) in ("-", "+")
+
+
+@pytest.mark.parametrize("style", [s for s in ButtonNameStyle if s is not ButtonNameStyle.NINTENDO])
+@pytest.mark.parametrize("button", sorted(VALID_BUTTON_NAMES - {""}))
+def test_spelling_out_changes_no_other_name(style: ButtonNameStyle, button: str) -> None:
+    assert button_label(button, style, spelled=True) == button_label(button, style)
+    assert button_label(button, style, short=False, spelled=True) == button_label(button, style, short=False)

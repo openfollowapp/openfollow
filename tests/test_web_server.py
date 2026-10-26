@@ -2441,7 +2441,11 @@ def test_gamepad_buttons_are_named_the_standard_way_until_a_family_is_chosen(liv
         ),
         (
             "nintendo",
-            ['<option value="BACK" selected>-</option>', '<option value="LB" selected>L</option>'],
+            [
+                '<option value="BACK" selected>Minus</option>',
+                '<option value="START" >Plus</option>',
+                '<option value="LB" selected>L</option>',
+            ],
             "<td>A</td>",
         ),
     ],
@@ -4840,6 +4844,7 @@ _RESTORED_BY_A_FILE_ONLY = (
     "controller.button_raw_indices",
     "controller.swap_triggers",
     "controller.mapped_controller_guid",
+    "controller.button_name_style",
     "ui.developer_mode",
     "paths.show_paths",
     "network.backend",
@@ -4850,7 +4855,11 @@ _RESTORED_BY_A_FILE_ONLY = (
 )
 _CHANGED_STRINGS = ("Cam 2", "192.0.2.10", "#336699", "imperial", "replace", "bottom", "nm", "H265", "720p", "x")
 # Settings the web UI checks harder than a config.toml load does.
-_CHANGED_VALUES = {"update_github_repo": "stage-crew/openfollow", "update_service_name": "openfollow-stage"}
+_CHANGED_VALUES = {
+    "update_github_repo": "stage-crew/openfollow",
+    "update_service_name": "openfollow-stage",
+    "controller.button_name_style": "playstation",
+}
 
 
 def _leaves(tree: dict[str, Any], prefix: tuple[str, ...] = ()) -> Any:
@@ -7999,12 +8008,15 @@ def _get_checked(base: str, path: str, query: dict[str, str]) -> tuple[str, dict
     ("style", "word", "symbol"),
     [("standard", "Y", False), ("nintendo", "Y", False), ("playstation", "Triangle", True)],
 )
-def test_validate_binding_notes_name_the_button_in_the_forms_style(live_server, style, word, symbol) -> None:
+def test_validate_binding_notes_name_the_button_in_the_saved_style(live_server, style, word, symbol) -> None:
+    """The notes use the saved style, as the selectors beside them do, whatever the form's unsaved choice."""
     _, base = live_server
+    _post_form(base, "/section/gamepad", {"enabled": "true", "deadzone": "0.15", "button_name_style": style})
+    unsaved = "playstation" if style != "playstation" else "standard"
     body, event = _get_checked(
         base,
         "/api/validate/gamepad/btn_reset",
-        {"btn_reset": "Y", "btn_toggle_help": "Y", "btn_settings": "BACK", "button_name_style": style},
+        {"btn_reset": "Y", "btn_toggle_help": "Y", "btn_settings": "BACK", "button_name_style": unsaved},
     )
     [moved] = event["moved"]
     assert body.endswith("taken from Toggle Help</span>")
@@ -9703,6 +9715,60 @@ def test_keyboard_variant_blur_validation_reads_the_layout_beside_it(
 
 
 _CONTROLLER_SECTIONS = ["controller", "gamepad", "keyboard", "mouse"]
+
+
+@pytest.mark.parametrize("section", _CONTROLLER_SECTIONS)
+def test_button_names_are_never_broadcast_from_any_controller_section(live_server, monkeypatch, section) -> None:
+    """They describe this station's pads: a DualSense station must not name an Xbox station's buttons."""
+    from types import SimpleNamespace
+
+    from openfollow.web import routes as routes_mod
+
+    sent: list[dict] = []
+
+    def _fake_send(ip, port, section_name, data, pin="", *, expected_port, sender) -> bool:
+        sent.append(dict(data))
+        return True
+
+    monkeypatch.setattr(routes_mod, "_send_config_to_peer", _fake_send)
+    server, base = live_server
+    monkeypatch.setattr(server, "get_peers", lambda: [SimpleNamespace(name="peer", ip="10.0.0.99", web_port=80)])
+    status, body = _post_json(
+        base, f"/api/config/{section}/broadcast", {"button_name_style": "playstation", "key_reset": "c"}
+    )
+    assert status == 200 and body.get("success") is True
+    # The broadcasting station keeps its own choice; the peers are sent none.
+    assert load_config(server.config_path).controller.button_name_style == "playstation"
+    assert [("button_name_style" in data, data.get("key_reset")) for data in sent] == [(False, "c")]
+
+
+@pytest.mark.parametrize("section", _CONTROLLER_SECTIONS)
+def test_button_names_from_a_peer_are_ignored_in_any_controller_section(live_server, section) -> None:
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.controller.button_name_style = "xbox"
+    save_config(cfg, server.config_path)
+    status, body = _post_json(base, f"/api/config/{section}", {"button_name_style": "playstation", "key_reset": "c"})
+    assert status == 200 and body.get("success") is True
+    saved = load_config(server.config_path).controller
+    assert (saved.button_name_style, saved.key_reset) == ("xbox", "c")
+
+
+def test_an_export_carries_the_button_names(live_server) -> None:
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.controller.button_name_style = "nintendo"
+    save_config(cfg, server.config_path)
+    assert _export(base)["controller"]["button_name_style"] == "nintendo"
+
+
+def test_the_gamepad_trigger_state_names_the_triggers_in_the_family(live_server) -> None:
+    _, base = live_server
+    for style, names in (("standard", "LT / RT"), ("playstation", "L2 / R2"), ("nintendo", "ZL / ZR")):
+        _post_form(base, "/section/gamepad", {"enabled": "true", "deadzone": "0.15", "button_name_style": style})
+        status, body = _get(base, "/section/gamepad")
+        assert status == 200
+        assert f'<span style="color:var(--muted);">{names} Triggers:</span>' in body
 
 
 @pytest.mark.parametrize("section", _CONTROLLER_SECTIONS)

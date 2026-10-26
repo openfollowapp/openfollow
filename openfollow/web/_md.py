@@ -10,6 +10,7 @@ the only non-core Markdown construct the help docs use. An image whose URL is
 
 from __future__ import annotations
 
+import html
 from typing import cast
 
 import mistune
@@ -29,7 +30,8 @@ class _Renderer(mistune.HTMLRenderer):
     def image(self, text: str, url: str, title: str | None = None) -> str:
         symbol = url.removeprefix("button:")
         if url.startswith("button:") and symbol in SYMBOL_SHAPES:
-            return symbol_html(symbol, text)
+            # mistune hands the alt text over escaped; symbol_html escapes it itself.
+            return symbol_html(symbol, html.unescape(text))
         return super().image(text, url, title)
 
 

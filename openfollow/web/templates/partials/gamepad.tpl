@@ -1,5 +1,5 @@
 % from openfollow.configuration import GAMEPAD_ACTION_BUTTON_FORM_LABELS, GAMEPAD_MENU_BUTTON_FORM_LABELS, MENU_RESERVED_BUTTONS
-% from openfollow.button_names import STYLE_TITLES, name_style
+% from openfollow.button_names import STYLE_TITLES, button_label, name_style
 % from openfollow.web.button_icons import button_html
 % from openfollow.web.bindings import STICK_FIELD_LABELS
 % names = name_style(config.controller.button_name_style)
@@ -124,7 +124,7 @@
                     </tbody>
                 </table>
                 <div style="margin-top:0.5rem;font-size:0.82em;">
-                    <span style="color:var(--muted);">LT / RT Triggers:</span>
+                    <span style="color:var(--muted);">{{button_label('LT', names)}} / {{button_label('RT', names)}} Triggers:</span>
                     <span style="{{'color:var(--accent);font-weight:600;' if config.controller.swap_triggers else 'color:var(--muted);'}}">
                         {{'Swapped' if config.controller.swap_triggers else 'Normal'}}
                     </span>

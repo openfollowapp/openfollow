@@ -8,7 +8,7 @@
             aria-describedby="{{field_id}}-error" aria-invalid="false">
         <option value="" {{'selected' if not value else ''}}>–</option>
         % for btn in buttons:
-        <option value="{{btn}}" {{'selected' if value == btn else ''}}>{{button_label(btn, names, short=False)}}</option>
+        <option value="{{btn}}" {{'selected' if value == btn else ''}}>{{button_label(btn, names, short=False, spelled=True)}}</option>
         % end
     </select>
     <span id="{{field_id}}-error" class="field-error"></span>

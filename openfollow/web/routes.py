@@ -1163,8 +1163,13 @@ _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
     "paths": frozenset({"show_paths"}),
     # Whether this station takes remote driving from a browser at all.
     "touch_remote": frozenset({"enabled"}),
-    # The keyboard plugged into this station, in every section that writes the controller config.
-    **{section: _KEYBOARD_LAYOUT_FIELDS for section, attr in _SECTION_CONFIG_ATTRS.items() if attr == "controller"},
+    # The keyboard and pads plugged into this station, in every section that writes the controller
+    # config. Button names describe its pads, like the pad map: a file import restores them.
+    **{
+        section: _KEYBOARD_LAYOUT_FIELDS | {"button_name_style"}
+        for section, attr in _SECTION_CONFIG_ATTRS.items()
+        if attr == "controller"
+    },
 }
 
 # Sections that are device-local as a whole. Every row of the Network Interface
@@ -3466,7 +3471,13 @@ def _backup_before(config_path: str, kind: str, named_by: AppConfig | None = Non
 # as a config.toml load does: no section form the import goes through applies them.
 _FILE_IMPORT_FIELDS: dict[str, tuple[str, ...]] = {
     "detection": ("masks", "masks_enabled"),
-    "controller": ("button_raw_indices", "swap_triggers", "mapped_controller_name", "mapped_controller_guid"),
+    "controller": (
+        "button_raw_indices",
+        "swap_triggers",
+        "mapped_controller_name",
+        "mapped_controller_guid",
+        "button_name_style",
+    ),
     "midi": ("patches",),
     "virtual_faders": ("faders",),
     "ui": ("developer_mode",),
@@ -9966,13 +9977,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # A binding the edit clashes with: its input moves here (the page's
         # binding-steal.js applies the ``bindingChecked`` event), or, for the
         # marker-fader stick on the Move X/Y stick, an error.
-        # The form's own Button Names choice, so the note matches what is on screen.
+        # The saved Button Names, as the selectors beside the note show them.
         style = ButtonNameStyle.STANDARD
         if section in CONTROLLER_SECTIONS:
-            chosen = (
-                request.query.get("button_name_style") or (cfg or _request_scoped_config()).controller.button_name_style
-            )
-            style = name_style(chosen)
+            style = name_style((cfg or _request_scoped_config()).controller.button_name_style)
         binding = check_binding(section, field_name, request.query, style)
         if binding is not None:
             if binding.error:

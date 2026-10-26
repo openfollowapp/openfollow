@@ -49,6 +49,6 @@ def symbol_html(symbol: str, word: str) -> str:
 
 def button_html(button: str, style: ButtonNameStyle, *, short: bool = False) -> str:
     """The button's name as safe HTML: its symbol where ``style`` has one, else the escaped word."""
-    word = button_label(button, style, short=short)
+    word = button_label(button, style, short=short, spelled=True)
     symbol = button_symbol(button, style)
     return html.escape(word) if symbol is None else symbol_html(symbol, word)

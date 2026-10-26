@@ -116,7 +116,7 @@
             <option value="" {{'selected' if not current_btn else ''}}>(none)</option>
             % for b in valid_buttons:
                 % if b:
-                <option value="{{b}}" {{'selected' if b == current_btn else ''}}>{{button_label(b, name_style(get('button_name_style', '')), short=False)}}</option>
+                <option value="{{b}}" {{'selected' if b == current_btn else ''}}>{{button_label(b, name_style(get('button_name_style', '')), short=False, spelled=True)}}</option>
                 % end
             % end
         </select>

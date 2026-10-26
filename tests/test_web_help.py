@@ -83,6 +83,12 @@ class TestRenderHelpMarkdown:
 # ---------------------------------------------------------------------------
 
 
+def test_a_button_symbols_alt_text_is_escaped_once() -> None:
+    html = render_help_markdown("![A & B](button:cross)")
+    assert '<span class="visually-hidden">A &amp; B</span>' in html
+    assert "&amp;amp;" not in html
+
+
 class TestSectionHelpAttributes:
     pytestmark = pytest.mark.unit
 

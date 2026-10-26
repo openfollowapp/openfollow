@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 from bottle import TEMPLATE_PATH, Bottle
 
 import openfollow
+from openfollow import net_utils
 from openfollow.net_utils import get_local_ipv4_addresses, get_primary_local_ipv4
 from openfollow.services import WebCommandQueue
 from openfollow.web.discovery import BeaconReceiver, BeaconSender, PeerInfo
@@ -785,7 +786,7 @@ class ConfigWebServer:
         return PeerInfo(
             name=self._system_name,
             ip=self._local_ip,
-            web_port=self._port,
+            web_port=self.display_port,
             version=openfollow.__version__,
             last_seen=time.time(),
         )
@@ -1112,7 +1113,7 @@ class ConfigWebServer:
 
     @staticmethod
     def _can_bind(host: str, port: int) -> bool:
-        """Return True if an IPv4 TCP socket can bind to host:port."""
+        """Return True if an IPv4 TCP socket can bind to host:port and no other socket shares the port there."""
         bind_host = "" if host in {"", "0.0.0.0"} else host
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -1120,7 +1121,10 @@ class ConfigWebServer:
                 sock.bind((bind_host, port))
             except OSError:
                 return False
-        return True
+        shared = net_utils.tcp_port_shared(bind_host, port)
+        if shared:
+            logger.info("Web UI port %d is in use on %s.", port, ", ".join(shared))
+        return not shared
 
     def start(self) -> None:
         """Start web server and beacon threads.
@@ -1172,6 +1176,12 @@ class ConfigWebServer:
             )
             return
 
+        serving = fallback_port if not primary_ok and fallback_port is not None else self._port
+        # Probed before any listener binds: on macOS the station's own wildcard would read as sharing 127.0.0.1.
+        loopback_ok = self._needs_loopback_listener() and self._can_bind("127.0.0.1", serving)
+        self._fallback_port = fallback_port
+        self._advertise_port(serving)
+
         # Start beacon discovery (only once at least one HTTP socket will bind).
         self._beacon_sender.start()
         self._beacon_receiver.start()
@@ -1197,7 +1207,6 @@ class ConfigWebServer:
             )
 
         if fallback_port is not None:
-            self._fallback_port = fallback_port
             self._fallback_thread = threading.Thread(
                 target=self._run,
                 args=(self._host, fallback_port, "fallback"),
@@ -1218,27 +1227,32 @@ class ConfigWebServer:
                     fallback_port,
                 )
 
-        # When the external listener is pinned to a specific (non-loopback)
-        # IP, also serve 127.0.0.1 so the on-screen embedded browser (always
-        # loopback) still reaches the UI. Serves the live display port; a
-        # loopback-bind failure must not take down the pinned listener.
-        loopback_port = self._port if primary_ok else fallback_port
-        if self._needs_loopback_listener() and loopback_port is not None and self._can_bind("127.0.0.1", loopback_port):
+        # The on-screen embedded browser always targets 127.0.0.1, so serve it
+        # there on the live display port; a loopback-bind failure must not
+        # take down the external listener.
+        if loopback_ok:
             self._loopback_thread = threading.Thread(
                 target=self._run,
-                args=("127.0.0.1", loopback_port, "loopback"),
+                args=("127.0.0.1", serving, "loopback"),
                 daemon=True,
                 name="ConfigWebServerLoopback",
             )
             self._loopback_thread.start()
-            logger.info("Config web UI also reachable at http://127.0.0.1:%d (loopback)", loopback_port)
+            logger.info("Config web UI also reachable at http://127.0.0.1:%d (loopback)", serving)
 
     def _needs_loopback_listener(self) -> bool:
-        """True when the external bind pins a specific non-loopback IP, so a
-        separate 127.0.0.1 listener is needed for the on-screen browser.
-        ``0.0.0.0`` and any 127.x / ::1 address already cover loopback."""
+        """True when the external listener does not hold 127.0.0.1 itself: a
+        specific non-loopback IP, or on macOS the wildcard, beside which
+        another process could still bind 127.0.0.1 on the same port."""
         host = self._host
-        return bool(host) and host != "0.0.0.0" and not host.startswith("127.") and host != "::1"
+        if not host or host == "0.0.0.0":
+            return net_utils.BINDS_SHARE_PORTS
+        return not host.startswith("127.") and host != "::1"
+
+    def _advertise_port(self, port: int) -> None:
+        """Point the beacon, and its filter for this station's own, at the port served."""
+        self._beacon_sender.update_web_port(port)
+        self._beacon_receiver.set_local_port(port)
 
     @property
     def bind_host(self) -> str:
@@ -1366,6 +1380,9 @@ class ConfigWebServer:
             else:
                 self._http_server = None
                 self._thread = None
+                fallback = self._fallback_port
+                if fallback is not None:
+                    self._advertise_port(fallback)
 
     def stop(self) -> None:
         """Stop the web server and beacons."""

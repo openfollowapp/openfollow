@@ -4366,12 +4366,13 @@ def _is_private_peer_ip(ip: str) -> bool:
 
 
 # Outbound peer connections may only target a plausible OpenFollow web port.
-# A homogeneous fleet serves on the same configured ``web_port``; the two
-# conventional HTTP ports cover mixed defaults. The beacon-advertised port is
+# A homogeneous fleet serves on the same configured ``web_port``; port 80 and
+# the fallback ports a station serves when its own is taken (``server.
+# _FALLBACK_PORTS``) cover mixed defaults. The beacon-advertised port is
 # otherwise attacker-controlled (any 1..65535) – a port-only SSRF that would
 # steer the probe/broadcast helpers (and any signed config body) at an
 # arbitrary service on the beaconing private host.
-_DEFAULT_PEER_PORTS: frozenset[int] = frozenset({80, 8080})
+_DEFAULT_PEER_PORTS: frozenset[int] = frozenset({80, 8080, 2010})
 
 
 def _is_allowed_peer_port(port: int, expected_port: int) -> bool:
@@ -9918,7 +9919,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             {
                 "name": server.system_name,
                 "ip": server.local_ip,
-                "port": server.port,
+                "port": server.display_port,
                 "version": openfollow.__version__,
                 "instance": server.instance_id,
             }

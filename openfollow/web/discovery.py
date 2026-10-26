@@ -169,6 +169,10 @@ class BeaconSender:
         """Update the beacon name (e.g., after config change)."""
         self._packet.name = name
 
+    def update_web_port(self, port: int) -> None:
+        """Advertise the port the web UI serves on."""
+        self._packet.web_port = port
+
     def update_iface_ip(self, iface_ip: str | None, iface: str = "") -> None:
         """Repoint the multicast send interface after a host IP change.
 

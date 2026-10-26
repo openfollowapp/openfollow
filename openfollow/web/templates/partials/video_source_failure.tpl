@@ -18,7 +18,9 @@
 <div id="video-source-failure"
      hx-get="/section/video_source/failure"
      hx-trigger="every 3s [pollShown(this)], poll-shown[pollShown(this)] from:body"
+% if defined('latency'):
      hx-include="#video-source-latency-key"
+% end
      hx-target="this"
      hx-swap="innerHTML">
 % if show_failure:

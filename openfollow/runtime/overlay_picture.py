@@ -59,9 +59,10 @@ def ink_picture(
 def box_picture(
     paint: Paint, x0: int, y0: int, x1: int, y1: int, scale: tuple[float, float], options: cairo.FontOptions | None
 ) -> cairo.ImageSurface:
-    """``paint`` drawn into a new picture of the canvas from (``x0``, ``y0``) to (``x1``, ``y1``).
+    """``paint`` drawn into a new picture of the canvas from (``x0``, ``y0``) to (``x1``, ``y1``), a non-empty box.
 
-    Pasted at (``x0``, ``y0``), the picture is pixel for pixel what ``paint`` draws inside that box.
+    Pasted at (``x0``, ``y0``) at an integer device scale, the picture is pixel for pixel what ``paint``
+    draws inside that box.
     ``options`` are the target's font options; ``None`` leaves cairo's defaults, for a drawing without text.
     """
     sx, sy = scale

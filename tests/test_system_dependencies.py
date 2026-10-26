@@ -73,3 +73,13 @@ def test_pygobject_floor_does_not_exceed_os_binding() -> None:
         "install imports - build-deb.sh drops the pip-built copy. Raising the floor declares the "
         "shipped configuration unsupported and forces a source build to reach a working state."
     )
+
+
+def test_xkbcommon_binding_has_its_library_in_the_deb_and_the_install_script() -> None:
+    """The keyboard poller's ``xkbcommon`` binding compiles against the -dev headers and loads the runtime library."""
+    dependencies = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))["project"]["dependencies"]
+    assert any(spec.startswith("xkbcommon") for spec in dependencies)
+    install = _INSTALL.read_text().split()
+    assert "libxkbcommon0" in install
+    assert "libxkbcommon-dev" in install
+    assert "libxkbcommon0," in _CONTROL.read_text().split()

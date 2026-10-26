@@ -1737,3 +1737,124 @@ def test_replace_keeps_a_marker_locked_on_a_path_on_it(monkeypatch) -> None:
 
     # The person stands at (5, 1); the path runs along y = 2 at 0.3 m.
     assert app._server.get_marker(0).pos == pytest.approx((5.0, 2.0, 0.3))
+
+
+# ---------------------------------------------------------------------------
+# Parked markers: detection leaves them where they were parked
+# ---------------------------------------------------------------------------
+
+
+def _two_assisted(monkeypatch) -> tuple[SimpleNamespace, object, object]:  # noqa: ANN001
+    from openfollow.psn import Marker
+
+    m1, m2 = Marker(1, ""), Marker(2, "")
+    m2.set_pos(8.0, 0.0, 0.0)
+    app = _make_app(
+        detection_cfg=_assist_cfg(assist_radius_m=50.0),
+        server=_MultiMarkerServer({1: m1, 2: m2}),
+        selected_id=1,
+        controlled_ids=[1, 2],
+        resolution=(1000, 1000),
+    )
+    _seed_anchor(app, 0.0, 0.0, 0.0, mid=1)
+    _seed_anchor(app, 8.0, 0.0, 0.0, mid=2)
+    _run_assist(app, _AssistDetector([]), monkeypatch)
+    return app, m1, m2
+
+
+def test_assist_leaves_a_parked_marker_out_and_drops_its_anchor(monkeypatch) -> None:
+    app, m1, m2 = _two_assisted(monkeypatch)
+    app._parked_ids = frozenset({2})
+    assert is_assist_controlled(app, 2) is False
+    # A person right beside both markers: only the unparked one is pulled onto it.
+    _run_assist(app, _AssistDetector([_det(0.5, 7)]), monkeypatch)
+    assert m1.pos[0] == pytest.approx(5.0)
+    assert m2.pos == (8.0, 0.0, 0.0)
+    assert set(app._assist_manual) == {1}
+    assert set(app._detection_pin_states) == {1}
+
+
+def test_unparking_seeds_a_fresh_anchor_at_the_parked_position(monkeypatch) -> None:
+    app, _m1, m2 = _two_assisted(monkeypatch)
+    app._parked_ids = frozenset({2})
+    _run_assist(app, _AssistDetector([]), monkeypatch)
+    m2.set_pos(3.0, 4.0, 1.0)  # moved by the 2D mouse while parked
+    app._parked_ids = frozenset()
+    _run_assist(app, _AssistDetector([]), monkeypatch)
+    assert app._assist_manual[2].pos == (3.0, 4.0, 1.0)
+    assert m2.pos == pytest.approx((3.0, 4.0, 1.0))
+
+
+def test_a_fully_automatic_pin_on_a_parked_marker_waits_and_releases_its_status(monkeypatch) -> None:
+    marker_5 = _StubMarker(5)
+    app = _make_app(
+        detection_cfg=_status_cfg(pin_marker_id=5),
+        server=_RecordingServer({5: marker_5}),
+        controlled_ids=[3, 5],
+        selected_id=3,
+        resolution=(1000, 1000),
+    )
+    _run(app, _StubDetector(_tracked(0.6)), monkeypatch, unproject=_linear_unproject)
+    assert marker_5.status == pytest.approx(0.75)
+    driven = marker_5.pos
+
+    app._parked_ids = frozenset({5})
+    marker_5.set_pos(1.0, 1.0, 0.0)
+    _run(app, _StubDetector(_tracked(0.9)), monkeypatch, unproject=_linear_unproject)
+    assert marker_5.status == 1.0
+    assert marker_5.pos == (1.0, 1.0, 0.0)
+    assert app._detection_pin_states == {}
+
+    app._parked_ids = frozenset()
+    _run(app, _StubDetector(_tracked(0.6)), monkeypatch, unproject=_linear_unproject)
+    assert marker_5.pos == pytest.approx(driven)
+
+
+def test_a_pin_following_the_selection_waits_after_the_selected_marker_parks(monkeypatch) -> None:
+    """Parking moves the selection on, but that is no choice of the operator's: the pin idles until one is made."""
+    from openfollow.input.parking import select, set_parked
+
+    marker_3, marker_5 = _StubMarker(3), _StubMarker(5)
+    app = _make_app(
+        detection_cfg=_status_cfg(pin_marker_id=-1),
+        server=_RecordingServer({3: marker_3, 5: marker_5}),
+        controlled_ids=[3, 5],
+        selected_id=3,
+        resolution=(1000, 1000),
+    )
+    app._config.ui = SimpleNamespace(shown_features=["detection"])
+    _run(app, _StubDetector(_tracked(0.6)), monkeypatch, unproject=_linear_unproject)
+    assert marker_3.status == pytest.approx(0.75)
+
+    set_parked(app, [3])
+    assert app._selected_id == 5
+    _run(app, _StubDetector(_tracked(0.6)), monkeypatch, unproject=_linear_unproject)
+    assert marker_5.pos == (0.0, 0.0, 0.0)
+    assert marker_3.status == 1.0
+    assert app._detection_pin_states == {}
+
+    # Unparking is no selection either.
+    set_parked(app, [])
+    _run(app, _StubDetector(_tracked(0.6)), monkeypatch, unproject=_linear_unproject)
+    assert app._detection_pin_states == {}
+
+    select(app, 5)
+    _run(app, _StubDetector(_tracked(0.6)), monkeypatch, unproject=_linear_unproject)
+    assert marker_5.pos != (0.0, 0.0, 0.0)
+    assert marker_5.status == pytest.approx(0.75)
+
+
+def test_a_fixed_pin_is_not_held_back_by_a_park_driven_reselection(monkeypatch) -> None:
+    from openfollow.input.parking import set_parked
+
+    marker_3, marker_5 = _StubMarker(3), _StubMarker(5)
+    app = _make_app(
+        detection_cfg=_status_cfg(pin_marker_id=5),
+        server=_RecordingServer({3: marker_3, 5: marker_5}),
+        controlled_ids=[3, 5],
+        selected_id=3,
+        resolution=(1000, 1000),
+    )
+    set_parked(app, [3])
+    _run(app, _StubDetector(_tracked(0.6)), monkeypatch, unproject=_linear_unproject)
+    assert marker_5.status == pytest.approx(0.75)

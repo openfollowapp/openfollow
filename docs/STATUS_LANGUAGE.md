@@ -15,7 +15,7 @@ with the reasoning, before adding the variant.
 |---|---|---|
 | **Error** | It does not work, and will not until someone acts | Video unreachable, a refused save, a missing controller, an OSC binding that can never fire, a marker two stations control, detection or 3D Mouse support unavailable, a power supply under voltage now |
 | **Caution** | It works, with a limitation worth knowing | A feature marked experimental, a marker no station controls, a web UI pin that missed and serves on every interface, an under voltage or throttling since the Pi last started |
-| **Info** | Nothing is wrong; progress or a fact | Starting, idle, restarting, an update is available, a value Save will correct |
+| **Info** | Nothing is wrong; progress or a fact | Starting, idle, restarting, an update is available, a value Save will correct, a parked marker |
 | **Success** | Something just worked, or is healthy | Saved, connected, running, marker added |
 
 A feature that is switched off on purpose is **neutral**, not a level: the grey
@@ -36,11 +36,11 @@ or inline `style` colours.
 
 | Token | Error | Caution | Info | Success |
 |---|---|---|---|---|
-| `--<level>-fill` (box) | `#6b1414` at 80% | `#ffbc00` at 12% | `#2664b0` at 20% | `#3d9a60` at 20% |
-| `--<level>-border` (box) | `#B02626` | `#ffbc00` at 60% | `#2664b0` at 50% | `#3d9a60` at 50% |
-| `--<level>-chip` (chip fill) | `#6b1414` at 80% | `#9b7200` at 80% | `#173d6b` at 80% | `#255e3a` at 80% |
-| `--<level>-line` (solid line) | `#B02626` | `#ffbc00` | `#2664b0` | `#3d9a60` |
-| `--<level>-text` (inline text) | `#f44848` | `#ffbc00` | `#4f8dd9` | `#5cc98c` |
+| `--<level>-fill` (box) | `#6b1414` at 80% | `#ff6600` at 38% | `#2664b0` at 20% | `#3d9a60` at 20% |
+| `--<level>-border` (box) | `#B02626` | `#ff6600` | `#2664b0` at 50% | `#3d9a60` at 50% |
+| `--<level>-chip` (chip fill) | `#6b1414` at 80% | `#9c3e00` at 80% | `#173d6b` at 80% | `#255e3a` at 80% |
+| `--<level>-line` (solid line) | `#B02626` | `#ff6600` | `#2664b0` | `#3d9a60` |
+| `--<level>-text` (inline text) | `#f44848` | `#ff6600` | `#4f8dd9` | `#5cc98c` |
 | `--<level>-mark` (dots) | `#e04848` | none | none | `#5cc98c` |
 | `--<level>-mark-muted` (dot centre or ring) | `#e04848` at 40% | none | none | `#5cc98c` at 40% |
 | `--error-row` (row tint) | `hsl(2 64% 14%)`, opaque | | | |
@@ -55,6 +55,16 @@ the grey neutral chip, so each chip fill is its level colour darkened to 61%
 
 Small marks (dots, rings) use the brighter `--<level>-mark` tones, because the
 surface colours vanish at dot size on the dark page.
+
+Caution is an orange of its own, never the gold `--accent`: the accent marks the
+one commit button, and a warning must read apart from it. Its box is stronger
+than info's and success's, a 38% fill with a solid border, so it does not read
+muted on the dark page. Text on a solid caution fill is the dark `--bg-deep`,
+chosen for contrast (see Contrast); text on the caution box and chip stays
+off-white.
+[`tests/test_status_language.py`](../tests/test_status_language.py) keeps
+the caution line, text and border, and the HUD's caution border, at least 15°
+of hue from the accent.
 
 The HUD carries the error level as `COLOR_WARNING_FILL` and
 `COLOR_WARNING_BORDER` in
@@ -84,15 +94,16 @@ circle with a check for success.
 Progress is an info box led by the spinner (`.modal-spinner`, the one the
 update dialog turns and the HUD's `draw_spinner` copies) in the sign's place:
 `.network-banner-busy`, shown while a slow request runs and hidden when it
-answers.
+answers, or for as long as a camera latency run lasts.
 
 A box says what the station observed on its main line (off-white, 600) and
 one next step on its second line (`--muted`, 400). The two never blur into one
 sentence.
 
 The dialog and diagnostics errors, the Media Gallery error, the network
-result, the Detection progress and result, the Statistics warning and the NDI
-box are all one of these four. Do not add an inline-styled box.
+result, the Detection progress and result, the camera latency progress and
+result, the Statistics warning and the NDI box are all one of these four.
+Do not add an inline-styled box.
 
 A box that a poll re-renders must not carry `role="alert"`: every swap inserts
 it again, and a screen reader announces it again. `hx-preserve` does not help,
@@ -129,7 +140,21 @@ controller's name are caution row pills where they affect control ("Buttons not
 recognised", "Button map is for another model"); "Can't identify" is a fact,
 not a fault, and is plain `--muted` text. An OSC binding whose trigger shares
 its input with a gamepad or keyboard action carries a caution row pill naming
-that action in its summary.
+that action in its summary. A MIDI fader strip whose fader has not picked up the
+stored value carries a "not picked up" caution row pill under its value: moving
+the fader changes nothing until it crosses that value. Caution text would miss
+AA over a light fader tint; the pill holds it over every one.
+
+### Park
+
+A parked marker is a fact, not a fault, so its **P** is the info level
+everywhere it appears. It is square, not a pill: one letter, centred by the box.
+
+| Element | Look |
+|---|---|
+| The P toggle in Marker Control & Visibility (`.park-toggle`, a `<button aria-pressed>`) | Off: the neutral grey of the This Station toggle beside it. On: `--info-line` fill and border, off-white `--text`. Dimmed and inert unless the row is View & Control |
+| The P after a parked slot's marker in Controller Slots (`.park-badge`) | The info chip: `--info-chip` fill, 1px `--info-line` border, off-white text, radius 0.4rem |
+| The P on a parked marker's card on the Operator Screen | `COLOR_INFO_FILL` and `COLOR_INFO_BORDER`, off-white text, `ROW_RADIUS`, right of the `C1` badge |
 
 ### OSC placeholder pills
 
@@ -296,7 +321,9 @@ without the danger button.
 
 Selection is the accent, never a level colour: the selected Media Gallery tile,
 the active Setup Wizard step and the selected Detection Mask take a gold border
-on `--accent-soft`. A finished Setup Wizard step is `--success-text`.
+on `--accent-soft`. A finished Setup Wizard step is `--success-text`. A
+checked choice tile takes the solid accent, so a caution note inside it takes
+the tile's own dark ink while it is checked.
 
 Drawings use the text tones: the Setup Wizard's axes keep X red, Y green,
 Z blue as `#f44848`, `#5cc98c` and `#4f8dd9`, labels at full strength and lines at
@@ -337,14 +364,21 @@ attributes, so it spells the token's value.
   address, so its error row appears on the first poll that finds no address.
   Only stopping the output waits out the gap an Apply or Renew leaves. A
   rebind or stop that fails names the interface and the failure in that row
-  instead, until a later outage of that interface takes the row back. No
-  status row is caution today: the HUD shows faults, progress and results, and
-  a limitation worth knowing lives on the web UI and the on-screen Network
-  screen.
+  instead, until a later outage of that interface takes the row back.
+- Status rows show faults, progress and results. The one caution row is the
+  touch remote's ("Web remote holds marker 2"), shown while a touch remote
+  holds markers, which other input then leaves alone. Any other limitation worth
+  knowing lives on the web UI and the on-screen Network screen.
 - The markers this station controls that another station controls too are
   one error row for all of them: "Control conflict: Marker 3 (Lead)" for one,
   "Control conflict: Markers 3, 4, 5" for several, cut with "…" so it stays on
   one line. Each of those markers' cards turns red.
+- An operator-message card the station makes itself, such as the camera
+  latency test's "Latency test about to start", may carry a headline bar: the
+  bar marker cards carry, in a level's chip fill (`--caution-chip` /
+  `COLOR_CAUTION_FILL` here) with off-white text, like a HUD status row. A
+  warning the station raises reads as a warning, not as a cue someone sent; a
+  card from OSC never carries one.
 - Settings another station pushed here are an info row naming the newest push
   ("Settings pushed from Stage Left (+1 more)"), held until the warning is
   removed, on the web UI or from the Settings menu, whose first entry is
@@ -365,6 +399,8 @@ attributes, so it spells the token's value.
   line (off-white, bold) and the one next step under it (muted), as the web's
   result box. Both wrap at a space and are cut only past two lines.
 - An offline marker shows an off-white disc with a cut-out cross.
+- A parked marker's card carries the info-level **P** beside its controller
+  badge (see Park above); the card is otherwise unchanged.
 - The online dot uses the success mark (`COLOR_OK`, `#5cc98c`). A
   confirmation drawn straight on a panel, such as "Detection Complete!",
   leads with the green success sign (`draw_success_sign`); one in a row of its
@@ -388,10 +424,10 @@ Support OpenFollow edge, so it is the same object on both:
 | `--qr-light` / `--qr-dark` | `#ffffff` / `#000000` | The QR field and modules |
 
 The edge is gold, but it can't pass for a caution box: a caution box has a
-solid border, a gold fill and the "i" sign, while this card is dashed, takes
-the neutral `--surface` fill and leads with a heart. Never give it a level's
-fill, a solid border or a status sign. Its text makes no claim that could go
-stale on a station that never updates.
+solid orange border, an orange fill and the "i" sign, while this card is
+dashed, takes the neutral `--surface` fill and leads with a heart. Never give
+it a level's fill, a solid border or a status sign. Its text makes no claim
+that could go stale on a station that never updates.
 
 ## Corner radius
 
@@ -407,14 +443,33 @@ An inner corner is never rounder than its container.
 
 ## Contrast
 
-Every text colour passes WCAG AA (4.5 : 1) against the background it actually
-sits on. Measure the rendered pixel, not the token: a translucent fill changes
-with whatever is under it. Two numbers that set the tokens:
+Text passes WCAG AA (4.5 : 1) against the background it actually sits on,
+within the known limits at the end of this list. Measure the rendered pixel,
+not the token: a translucent fill changes with whatever is under it. On the web
+UI, measure where an element can sit highest: a `.section` starts just under
+the header, where the page's gold glow is strongest, and the glow grows with
+the viewport's height. The figures are for viewports 768 to 2160 px tall and
+for a dialog (`--bg-soft`). The numbers that set the tokens:
 
-- Red text passes only near full saturation. Pure `#ff0000` reaches 4.14 : 1 on
-  the page, so the error text is `#f44848` (4.6 to 4.9 : 1), not the dot's
-  `#e04848` (4.1 : 1).
+- Red text passes only near full saturation. In a section on a viewport up to
+  1080 px tall, pure `#ff0000` reaches only 4.2 to 4.4 : 1, so the error text
+  is `#f44848` (4.7 to 4.9 : 1), not the dot's `#e04848` (4.1 to 4.3 : 1).
 - Text on a red fill is off-white (15 : 1), not red (4.7 : 1).
+- Caution text `#ff6600` reads 5.4 to 6.0 : 1. Off-white reads at least
+  7.9 : 1 on the caution box and 7.5 : 1 on the caution chip. The caution box's
+  muted second line (`.notice-sub`) reads 4.8 : 1 at 1080 px tall, 4.6 : 1 at
+  2160 px and 4.9 : 1 in a dialog.
+- Text on a solid caution fill is the dark `--bg-deep` (6.6 : 1); off-white
+  reaches only 2.7 : 1 there.
+- Up to 1080 px tall, the tightest web pairing is error text at the top of a
+  section or in a dialog, 4.7 : 1; info text reads 4.9 : 1 there.
+- Known limit: on a viewport taller than about 1600 px, error text at the top
+  of the first section falls under AA, to 4.4 : 1 at 2160 px. Info text holds
+  there at 4.6 : 1.
+- On the HUD, a status row's 80% chip lets the video through. Off-white on the
+  caution chip reads 8.2 : 1 over black and 5.8 : 1 over mid grey, but only
+  4.0 : 1 over pure white video (success 4.3 : 1); error and info hold AA over
+  any frame. This is a known limit of the translucent row.
 
 ## Adding or changing an element
 

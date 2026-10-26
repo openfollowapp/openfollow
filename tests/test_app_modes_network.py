@@ -22,6 +22,7 @@ from openfollow.network.adapter import (
     NetworkAdapter,
     NetworkInterface,
     NetworkState,
+    SavedInterface,
 )
 from openfollow.runtime import ipv4_digit_grid
 
@@ -2982,6 +2983,41 @@ class TestAdaptersByLabel:
         for _ in range(len(rows) * 2):
             anm._pi_network_move(app, 1)
             assert rows[app._pi_network_index].get("key") != "absent:enx00e04c68a1f2"
+
+    def test_an_unplugged_adapter_with_saved_settings_is_listed_labelled_or_not(self) -> None:
+        """The same adapters the web card keeps: each VLAN under its parent, a static one with its address."""
+
+        class _Saved(_FakeAdapter):
+            def read_network(self):
+                return replace(
+                    super().read_network(),
+                    saved=(
+                        SavedInterface("enx0011223344.2", Ipv4Config(Ipv4Method.DHCP), "enx001122334455", 2),
+                        SavedInterface("enx001122334455", Ipv4Config(Ipv4Method.STATIC, "192.0.2.5", 24)),
+                    ),
+                )
+
+        app = _make_app(_Saved())
+        app._config.interface_labels = {"enx001122334455": "Lighting", "enx00e04c68a1f2": "Spare"}
+        anm.enter_pi_network(app)
+        rows = anm.build_pi_network_rows(app)
+        absent = [
+            (r["key"], r["label"], r["value"], r["pill"]) for r in rows if str(r.get("key")).startswith("absent:")
+        ]
+        assert absent == [
+            ("absent:enx001122334455", "Lighting (enx001122334455)", "192.0.2.5", "not connected"),
+            ("absent:enx0011223344.2", "enx0011223344.2", "", "not connected"),
+            ("absent:enx00e04c68a1f2", "Spare (enx00e04c68a1f2)", "", "not connected"),
+        ]
+
+    def test_a_saved_interface_that_is_present_is_not_listed_twice(self) -> None:
+        class _Saved(_FakeAdapter):
+            def read_network(self):
+                return replace(super().read_network(), saved=(SavedInterface("eth0", Ipv4Config(Ipv4Method.DHCP)),))
+
+        app = _make_app(_Saved())
+        anm.enter_pi_network(app)
+        assert "absent:eth0" not in [r.get("key") for r in anm.build_pi_network_rows(app)]
 
     def test_an_interface_screen_names_its_adapter(self, tmp_path) -> None:
         from openfollow import net_adapters

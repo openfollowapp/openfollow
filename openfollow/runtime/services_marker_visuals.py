@@ -20,11 +20,16 @@ from openfollow.configuration import (
     feature_on,
     is_simple_mode,
 )
+from openfollow.input.parking import is_parked
 from openfollow.input.touch_remote import STATUS_FLAG as REMOTE_FLAG
 from openfollow.input.touch_remote import status_row as remote_row
 from openfollow.marker_catalog.control_conflicts import ControlConflict
 from openfollow.network.validate import is_link_local
 from openfollow.palette import AUTO_PICK_ORDER as _PALETTE_AUTO_PICK_ORDER
+from openfollow.runtime.latency_warning import HEADLINE as LATENCY_WARNING_HEADLINE
+from openfollow.runtime.latency_warning import INFO as LATENCY_WARNING_INFO
+from openfollow.runtime.latency_warning import MESSAGE as LATENCY_WARNING_MESSAGE
+from openfollow.runtime.latency_warning import card_showing as latency_card_showing
 from openfollow.runtime.marker_velocity import MarkerVelocityState, estimate_marker_velocity
 from openfollow.runtime.overlay_draw_style import STATUS_LEVELS, status_level
 from openfollow.runtime.overlay_state import (
@@ -492,6 +497,7 @@ def build_marker_visual_state(
     dt: float,
     network_alerts: list[str] | None = None,
     control_conflicts: Sequence[ControlConflict] = (),
+    latency_flash: float | None = None,
 ) -> OverlayState:
     """Build a new OverlayState for the renderer; it is never changed once handed over.
 
@@ -537,7 +543,7 @@ def build_marker_visual_state(
     # The card an Identify has lit this frame, if any.
     flash_marker = app._input_manager.identify_flash_marker() if app._input_manager is not None else None
 
-    state = OverlayState()
+    state = OverlayState(latency_flash=latency_flash)
 
     # The actually-bound port from the running web server so the HUD reflects
     # reachability, not just configuration. Falls back to the configured port
@@ -750,6 +756,7 @@ def build_marker_visual_state(
                 controller_connected=ctrl_conn,
                 identify_flash=marker_id == flash_marker,
                 is_controlled=is_controlled,
+                parked=is_controlled and is_parked(app, marker_id),
                 control_conflict=marker_id in conflict_ids,
                 name=name,
                 marker_fader=marker_fader,
@@ -992,9 +999,26 @@ def build_marker_visual_state(
     # guards windows where services or the store aren't wired yet.
     op_store = getattr(runtime_services, "_operator_message_store", None) if runtime_services is not None else None
     op_cfg = app._config.operator_messages
-    if op_store is not None and op_cfg.enabled:
+    latency_warning = latency_card_showing(app)
+    if latency_warning or (op_store is not None and op_cfg.enabled):
         state.operator_message_position = op_cfg.position
         state.operator_message_scale = op_cfg.scale
+    # The latency test's warning: one card of its own, whether OSC messages are on or not.
+    if latency_warning:
+        state.operator_messages.append(
+            OperatorMessageView(
+                message=LATENCY_WARNING_MESSAGE,
+                info=LATENCY_WARNING_INFO,
+                marker_id=0,
+                marker_name="",
+                marker_color="",
+                is_forever=True,
+                remaining_fraction=1.0,
+                headline=LATENCY_WARNING_HEADLINE,
+                headline_level="caution",
+            )
+        )
+    if op_store is not None and op_cfg.enabled:
         now = time.monotonic()
         messages = op_store.snapshot(now)
         max_visible = op_cfg.max_visible

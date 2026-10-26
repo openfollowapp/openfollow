@@ -35,6 +35,8 @@ class OscMarkerAdapter:
 
     _TRIPLE_PATTERN = "/marker/*"
     _AXIS_PATTERN_FMT = "/marker/*/{axis}"
+    # Park state per address; arguments are ignored, so a press and its release land on one state.
+    _PARK_PATTERNS: dict[str, bool] = {"/marker/*/park": True, "/marker/*/unpark": False}
 
     # Alias kept for external callers that reference ``PATTERN``.
     PATTERN = _TRIPLE_PATTERN
@@ -61,12 +63,14 @@ class OscMarkerAdapter:
         self._multicast_iface_name = multicast_iface_name
         self._lock = threading.Lock()
         self._pending: dict[int, dict[str, float]] = {}
+        self._pending_parks: dict[int, bool] = {}
         self._started = False
 
     def _all_patterns(self) -> tuple[str, ...]:
         return (
             self._TRIPLE_PATTERN,
             *(self._AXIS_PATTERN_FMT.format(axis=a) for a in _AXES),
+            *self._PARK_PATTERNS,
         )
 
     def start(self) -> None:
@@ -82,6 +86,8 @@ class OscMarkerAdapter:
                 self._AXIS_PATTERN_FMT.format(axis=axis),
                 functools.partial(self._handle_axis, axis),
             )
+        for pattern, parked in self._PARK_PATTERNS.items():
+            self._service.subscribe(pattern, functools.partial(self._handle_park, parked))
         try:
             self._service.start_listener(
                 self._port,
@@ -118,6 +124,13 @@ class OscMarkerAdapter:
             updates = {marker_id: dict(axes) for marker_id, axes in self._pending.items()}
             self._pending.clear()
         return updates
+
+    def flush_parks(self) -> dict[int, bool]:
+        """Return the latest park (``True``) or unpark (``False``) per marker and clear them."""
+        with self._lock:
+            parks = dict(self._pending_parks)
+            self._pending_parks.clear()
+        return parks
 
     @property
     def port(self) -> int:
@@ -190,3 +203,15 @@ class OscMarkerAdapter:
         with self._lock:
             self._pending.setdefault(marker_id, {})[axis] = value
         logger.debug("OSC → marker %d  %s=%.3f", marker_id, axis, value)
+
+    def _handle_park(self, parked: bool, address: str, *_args: Any) -> None:
+        parts = address.strip("/").split("/")
+        if len(parts) != 3 or parts[2] != ("park" if parked else "unpark"):
+            return
+        try:
+            marker_id = int(parts[1])
+        except ValueError:
+            return
+        with self._lock:
+            self._pending_parks[marker_id] = parked
+        logger.debug("OSC → marker %d %s", marker_id, parts[2])

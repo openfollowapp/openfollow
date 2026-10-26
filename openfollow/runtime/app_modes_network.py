@@ -28,6 +28,7 @@ from openfollow.network.adapter import (
     Ipv4Method,
     NetworkAdapter,
     NetworkState,
+    SavedInterface,
     format_lease_remaining,
 )
 from openfollow.network.validate import (
@@ -132,6 +133,8 @@ class _NetworkSnapshot:
     auto_iface: str = ""
     # The station interface the read was made for; None when not read for Simple.
     station: str | None = None
+    # Interfaces that are not present but have saved settings.
+    saved: tuple[SavedInterface, ...] = ()
 
 
 def _simple(app: OpenFollowApp) -> bool:
@@ -150,7 +153,7 @@ def _read_pi_network(app: OpenFollowApp) -> _NetworkSnapshot:
     reading = adapter.read_network()
     interfaces = list(reading.interfaces)
     if not interfaces:
-        return _NetworkSnapshot(True, [], "", None, None)
+        return _NetworkSnapshot(True, [], "", None, None, saved=reading.saved)
     active = getattr(app, "_pi_network_active_iface", "") or interfaces[0].name
     auto = ""
     methods = {name: _METHOD_LABELS.get(iface_state.ipv4.method, "") for name, iface_state in reading.states.items()}
@@ -165,7 +168,9 @@ def _read_pi_network(app: OpenFollowApp) -> _NetworkSnapshot:
         target = station or auto
         if target and target not in names:
             # Never another interface in its place: the screen would edit one it does not name.
-            return _NetworkSnapshot(True, interfaces, target, None, None, methods, adapters, auto, station)
+            return _NetworkSnapshot(
+                True, interfaces, target, None, None, methods, adapters, auto, station, reading.saved
+            )
         # Automatic with no address anywhere edits the first interface, never one left over from a visit.
         active = station or auto or interfaces[0].name
     if active not in names:
@@ -174,7 +179,9 @@ def _read_pi_network(app: OpenFollowApp) -> _NetworkSnapshot:
     pending = state.ipv4 if state is not None else Ipv4Config(method=Ipv4Method.DHCP)
     # Three servers are shown and allowed; a fourth would make every apply refused, unseen.
     pending = replace(pending, dns=tuple(pending.dns)[:_MAX_DNS])
-    return _NetworkSnapshot(True, interfaces, active, state, pending, methods, adapters, auto, station_read)
+    return _NetworkSnapshot(
+        True, interfaces, active, state, pending, methods, adapters, auto, station_read, reading.saved
+    )
 
 
 def _apply_pi_network_snapshot(app: OpenFollowApp, snap: _NetworkSnapshot) -> None:
@@ -184,6 +191,7 @@ def _apply_pi_network_snapshot(app: OpenFollowApp, snap: _NetworkSnapshot) -> No
     # it reads is re-taken on the next rebuild rather than waiting out its TTL.
     app._pi_network_addr_ts = 0.0
     app._pi_network_reading = False
+    app._pi_network_saved = snap.saved
     if not snap.has_adapter:
         app._pi_network_state_cache = None
         app._pi_network_pending_config = None
@@ -353,20 +361,30 @@ def _labels(app: OpenFollowApp) -> dict[str, str]:
 
 
 def _absent_rows(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> list[dict[str, object]]:
-    """Labelled adapters that are not plugged in: listed, with nothing to open."""
+    """Adapters that are not plugged in but labelled or with saved settings: listed, with nothing to open.
+
+    A saved one shows the address it comes up with, each VLAN under its parent, as the web card lists them.
+    """
     labels = _labels(app)
     present = {name for name, _address in ifaces}
+    saved = {entry.name: entry for entry in getattr(app, "_pi_network_saved", ())}
+
+    def _order(name: str) -> tuple[str, int]:
+        entry = saved.get(name)
+        if entry is None or entry.vlan_id is None:
+            return (name, -1)
+        return (entry.vlan_parent or name, entry.vlan_id)
+
     return [
         {
             "kind": "display",
             "key": f"absent:{name}",
             "label": display_name(name, labels),
-            "value": "",
+            "value": (entry.ipv4.address or "") if (entry := saved.get(name)) is not None else "",
             "pill": "not connected",
             "pill_level": "",
         }
-        for name in sorted(labels)
-        if name not in present
+        for name in sorted((set(labels) | set(saved)) - present, key=_order)
     ]
 
 

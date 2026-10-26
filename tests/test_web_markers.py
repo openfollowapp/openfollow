@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 import openfollow.web.discovery as discovery_module
-from openfollow.configuration import load_config, save_config
+from openfollow.configuration import load_config, save_config, save_config_fields, save_park_changes
 from openfollow.marker_catalog import MarkerCatalog
 from openfollow.marker_catalog.sync import PeerSelection
 from openfollow.web.server import ConfigWebServer
@@ -475,6 +475,93 @@ class TestSelectionEndpoint:
         assert saved["viewer_marker_ids"] == [2]
 
 
+class TestParkedSelection:
+    def _post(self, base: str, body: dict) -> int:
+        status, _ = _request(base, "/api/markers/selection", method="POST", body=body)
+        return status
+
+    def _catalog(self, catalog: MarkerCatalog) -> None:
+        for mid in (1, 2, 3):
+            catalog.upsert(mid, f"M{mid}", "#ff0000")
+
+    def _parked(self, cfg_path: str) -> list[int]:
+        return tomllib.loads(Path(cfg_path).read_text(encoding="utf-8"))["parked_marker_ids"]
+
+    def test_a_p_click_parks_and_unparks_exactly_that_row(self, live_server) -> None:
+        _, base, cfg_path, catalog, _ = live_server
+        self._catalog(catalog)
+        assert self._post(base, {"controlled_ids": [1, 2, 3], "viewer_ids": [], "park": {"2": True}}) == 200
+        assert self._parked(cfg_path) == [2]
+        assert self._post(base, {"controlled_ids": [1, 2, 3], "viewer_ids": [], "park": {"3": True}}) == 200
+        assert self._parked(cfg_path) == [2, 3]
+        assert self._post(base, {"controlled_ids": [1, 2, 3], "viewer_ids": [], "park": {"2": False}}) == 200
+        assert self._parked(cfg_path) == [3]
+        _, body = _request(base, "/api/markers/catalog")
+        assert json.loads(body)["this_station"]["parked_ids"] == [3]
+
+    def test_an_osc_park_survives_an_unrelated_selection_save(self, live_server) -> None:
+        """The frame thread saves an OSC park on its own; a page that has not seen it yet must not undo it."""
+        _, base, cfg_path, catalog, _ = live_server
+        self._catalog(catalog)
+        self._post(base, {"controlled_ids": [1, 2], "viewer_ids": []})
+        running = load_config(cfg_path)
+        running.parked_marker_ids = [2]
+        save_config_fields(running, cfg_path, ("parked_marker_ids",))
+        assert self._post(base, {"controlled_ids": [1, 2, 3], "viewer_ids": [], "park": {}}) == 200
+        assert self._parked(cfg_path) == [2]
+        assert self._post(base, {"controlled_ids": [1, 2, 3], "viewer_ids": [], "park": {"1": True}}) == 200
+        assert self._parked(cfg_path) == [2, 1]
+
+    def test_a_p_click_survives_an_osc_park_saved_from_a_stale_running_config(self, live_server) -> None:
+        """The frame thread's config lags the file by up to a reload poll; its save must build on the file."""
+        _, base, cfg_path, catalog, _ = live_server
+        self._catalog(catalog)
+        self._post(base, {"controlled_ids": [1, 2, 3], "viewer_ids": []})
+        running = load_config(cfg_path)
+        assert self._post(base, {"controlled_ids": [1, 2, 3], "viewer_ids": [], "park": {"2": True}}) == 200
+        assert save_park_changes(running, cfg_path, {3: True}) is True
+        assert self._parked(cfg_path) == [2, 3]
+
+    def test_only_a_controlled_marker_stays_parked(self, live_server) -> None:
+        _, base, cfg_path, catalog, _ = live_server
+        self._catalog(catalog)
+        body = {"controlled_ids": [1, 2], "viewer_ids": [3], "park": {"1": True, "2": True, "3": True}}
+        assert self._post(base, body) == 200
+        assert self._parked(cfg_path) == [1, 2]
+        assert self._post(base, {"controlled_ids": [1], "viewer_ids": [2, 3]}) == 200
+        assert self._parked(cfg_path) == [1]
+
+    @pytest.mark.parametrize(
+        "park",
+        [
+            "2",
+            None,
+            True,
+            [2],
+            {"2": 1},
+            {"2": "true"},
+            {"2": None},
+            {"x": True},
+            {"0": True},
+            {"99": True},
+            {"-1": True},
+        ],
+    )
+    def test_a_malformed_park_change_is_rejected(self, live_server, park: object) -> None:
+        _, base, cfg_path, catalog, _ = live_server
+        self._catalog(catalog)
+        assert self._post(base, {"controlled_ids": [1, 2], "viewer_ids": [], "park": park}) == 400
+        assert load_config(cfg_path).parked_marker_ids == []
+
+    def test_deleting_a_parked_marker_drops_its_park(self, live_server) -> None:
+        _, base, cfg_path, catalog, _ = live_server
+        self._catalog(catalog)
+        self._post(base, {"controlled_ids": [1, 2], "viewer_ids": [], "park": {"1": True, "2": True}})
+        status, _ = _request(base, "/api/markers/catalog/2", method="DELETE")
+        assert status == 200
+        assert self._parked(cfg_path) == [1]
+
+
 class TestCatalogPolling:
     def test_peer_selections_surface_in_payload(self, live_server) -> None:
         _, base, _, catalog, sync = live_server
@@ -594,6 +681,7 @@ class TestCatalogUnavailable:
         assert data["entries"] == []
         assert data["peer_selections"] == []
         assert data["marker_conflicts"] == []
+        assert data["this_station"]["parked_ids"] == []
         assert "next_free_id" not in data
 
     def test_put_503_when_catalog_absent(self, live_server_no_providers) -> None:

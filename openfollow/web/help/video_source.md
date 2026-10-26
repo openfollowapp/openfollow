@@ -77,4 +77,20 @@ NDI and the cameras (USB, Pi Camera, macOS) recover differently. When their sour
 
 **Preview** – an inline snapshot of the current video input, refreshed every two seconds while the section is open and in view.
 
+## Camera Latency
+
+The row shows the last successful measurement: its round trip, the shortest and longest change beside it, and when it was measured, in the station's time. **Measure latency** opens the **Measure Camera Latency** dialog.
+
+The dialog opens on two warnings: the Operator Screen will flash black and white, which can trigger seizures in people sensitive to flashing light, and it shows no video and no markers while it does, so a measurement never belongs in a show. While the dialog shows them, the Operator Screen shows a **WARNING** card, "Latency test about to start", at the position and size set for operator messages, even when operator messages are switched off; it goes when the dialog is closed or measuring starts, and a few seconds after the browser leaves the page.
+
+**Start** times the round trip from this station's Operator Screen through the camera and back, with the camera pointed at the Operator Screen. The screen shows plain black and then flashes white five times, for about 5 s with a camera of usual latency and longer with a slow one: each change is waited for up to 3 s, so a measurement never lasts more than about 35 s. Video and HUD are hidden until it ends. Only the overall brightness of the picture is read, so the screen does not need to fill the frame, and focus, stage light and the camera's auto exposure hardly matter. A measurement cannot be cut short: it always ends by itself, and the dialog cannot be closed meanwhile.
+
+Each change of the screen, white and back to black, is timed from the display refresh that showed it to the first decoded frame in which the picture changed: ten changes in all. The result is the median of the ten, with the shortest and longest beside it. It includes everything between the screen and the decoded frame: the camera's exposure and processing, encoding, the network, buffering in the stream and in the station, decoding, and the delay of the screen itself, so the same camera can read differently on another monitor.
+
+The result is green below 120 ms, amber from 120 to 250 ms and red from 250 ms. At walking pace, about 1.5 m/s, a performer moves about 15 cm in 100 ms before the Operator Screen shows it. **Measure again**, and **Try again** after a measurement that failed, measure straight away, without the warnings.
+
+**No flash seen in the video within 3 s** means the picture never got brighter after the screen turned white: the camera does not see the Operator Screen, or the screen is too small a part of its picture to change the brightness. **The video did not go dark again within 3 s of the flash** means the picture stayed bright after the screen turned black. A measurement also ends when the video source changes, its video is rebuilt (the station reconnecting, or the Operator Screen changing how it draws) or it stops while the measurement lasts.
+
+The button is unavailable while no screen shows the Operator Screen or no video is decoded, and the row is hidden for the Media Gallery, which plays stored pictures. The last successful result is listed in the diagnostics bundle and stays there until a later measurement succeeds: one that fails neither replaces nor clears it.
+
 **Save** – write and apply the settings; the pipeline restarts with the new source within about a second.

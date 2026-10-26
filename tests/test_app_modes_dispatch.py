@@ -1862,6 +1862,9 @@ def test_on_key_up_forwards_event_to_keyboard_handler() -> None:
         def on_key_up(self, event):
             captured.append(event)
 
+        def end_echo(self, event):
+            pass
+
     class _IM:
         keyboard_handler = _KB()
 
@@ -1892,6 +1895,9 @@ def test_on_key_up_skipped_while_url_editor_active() -> None:
         def on_key_up(self, event):
             captured.append(event)
 
+        def end_echo(self, event):
+            pass
+
     class _IM:
         keyboard_handler = _KB()
 
@@ -1911,6 +1917,9 @@ def test_on_key_up_skipped_while_browser_active() -> None:
     class _KB:
         def on_key_up(self, event):
             captured.append(event)
+
+        def end_echo(self, event):
+            pass
 
     class _IM:
         keyboard_handler = _KB()

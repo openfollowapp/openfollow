@@ -43,6 +43,7 @@ is Pi-only).
 | `packaging/debian/control.in` | Package metadata; `@VERSION@/@ARCH@/@PYTHON_DEP@/@ALSA_DEP@` are filled in by the build from the build host. |
 | `packaging/debian/openfollow.service` | Main systemd unit (Cage Wayland kiosk, runs the bundled venv). |
 | `packaging/debian/openfollow-splash.service` + `splash.sh` | Boot splash unit + KMS launcher. |
+| `packaging/debian/stop-splash.sh` | `openfollow.service`'s one start step. It stops the splash so DRM is free for Cage once the splash has been up 1.5 s, which on a boot is at once; a restart of the unit starts the splash again, so a restart shows it 1.5 s. No fixed sleep for USB devices: the unit starts after udev settles, and the inputs pick up later devices on hotplug. |
 | `packaging/debian/render-splash.sh` | Pre-renders the splash PNG at build time. |
 | `packaging/debian/{postinst,prerm,postrm}` | Create the `openfollow` user + linger, enable/disable the units. |
 | `packaging/debian/preinst.in` + `render-preinst.sh` | On upgrade, back up the station's settings before the new files unpack (see [Settings backups](#settings-backups)). |
@@ -54,7 +55,7 @@ is Pi-only).
 /opt/openfollow/venv/                      all Python deps + the openfollow package (incl. the detection backend: onnxruntime + opencv)
 /usr/lib/systemd/system/openfollow.service
 /usr/lib/systemd/system/openfollow-splash.service
-/usr/share/openfollow/{openfollow.svg,splash.png,splash.sh,config.example.toml,install-ndi.sh,install-detection.sh}
+/usr/share/openfollow/{openfollow.svg,splash.png,splash.sh,stop-splash.sh,config.example.toml,install-ndi.sh,install-detection.sh}
 /usr/share/openfollow/scripts/export_onnx.py   model-export script (Download Model action shells out to it)
 /usr/share/openfollow/models/{yolo26n,yolo26s,yolo26m}.onnx   pre-shipped quality tiers (Fastest/Fast/Balanced)
 /usr/share/openfollow/write-to-media         root helper: saves one file to an unmounted USB drive (media.write)
@@ -87,7 +88,7 @@ Wayland session. The unit binds web port 80 via `AmbientCapabilities=CAP_NET_BIN
 `openfollow/privilege/media_writer.py`, run by root as `python3 -I` so it never
 imports from the venv. The `media.write` grant in the sudoers drop-in (rendered
 from the capability registry) admits exactly one form:
-`write-to-media write ^/dev/sd[a-z]+[0-9]*$` – USB mass storage, card readers
+`write-to-media ^write /dev/sd[a-z]+[0-9]*$` – USB mass storage, card readers
 included – with the file name and bytes on stdin. The helper checks the drive
 again itself (USB, not a disk carrying `/`, `/boot/firmware` or `/mnt/nvme`,
 unmounted, FAT32 / exFAT / NTFS / ext4), mounts it `nosuid,nodev,noexec` under
@@ -254,7 +255,8 @@ NetworkManager must own the links – on a `systemd-networkd` image the `nmcli` 
 is absent, the privilege broker's `network.nm.*` rows read as `unavailable`, and the
 Network page silently falls back to a read-only view. This also matches the Ansible
 deploy path, which already assumes NetworkManager. The `.deb`'s
-`NetworkManager-wait-online` timeout drop-in bounds a cable-less boot to ~15 s.
+`NetworkManager-wait-online` drop-in replaces its wait (see **Boot wait for the
+network** below).
 
 NetworkManager also owns tagged-VLAN sub-interfaces, which the Network page creates
 and removes via two sudoers grants beside the existing `nmcli con mod` / `up` / `down`
@@ -322,6 +324,37 @@ at `<hostname>.local` or at the address on the on-screen HUD;
 against each other and asserts nothing in the app sets these properties at
 runtime; `tests/test_image_layer.py` fails if the image writes any file the
 `.deb` declares a conffile.
+
+**Boot wait for the network.** `openfollow.service` is ordered after
+`network-online.target`, so the app starts with a LAN address rather than
+loopback. The stock `NetworkManager-wait-online` runs `nm-online -s`, which
+waits for NetworkManager's *startup* to complete: every auto-activated profile
+activated or given up on. The infinite `dhcp-timeout` above means an unanswered
+DHCP activation never gives up, so on a LAN without DHCP startup never
+completes: that wait would run out on every boot, fail the unit and leave
+`systemctl is-system-running` at `degraded`, though the fallback address is up
+within seconds. Plain `nm-online` (without `-s`) does not help: it waits for an
+activated connection, and that profile stays activating.
+
+The `.deb`'s drop-in
+(`/usr/lib/systemd/system/NetworkManager-wait-online.service.d/10-openfollow-timeout.conf`)
+runs `/usr/share/openfollow/nm-wait-online.sh 20` instead. About four times a second
+(`nm-online -s --timeout=0` answers at once) it succeeds when that does, or when
+at least one device is activating and every activating device (loopback aside)
+holds an IPv4 address. A lease counts at once. A device holding only its 169.254
+fallback counts once it has held it for 3 s, on the time since boot (`grace_ms`
+in the script), and starts over if it loses it, so a DHCP server that answers
+within 3 s of the fallback still gives the station its lease before the app
+starts. Requiring an activating device keeps the start of a boot, before any
+carrier, waiting for startup as before, so a NIC that will get a lease is not
+raced. After 20 s with a device still addressless, or on a fallback held for
+less than the grace, the unit fails, as it should: the station has no settled
+address there. On a cable-less boot nothing activates, and the wait passes as
+soon as startup completes.
+
+On a LAN whose DHCP answers later than the grace, the wait passes on the
+169.254 address. The app rebinds each plane when its address changes, so the
+lease that follows is picked up as on any replug.
 
 **Single account.** `rpi-image-gen`'s `rpi-user-credentials` layer creates the
 `openfollow` login user (password `openfollow`, **passwordless sudo**, in the

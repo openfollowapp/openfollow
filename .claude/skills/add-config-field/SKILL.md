@@ -27,7 +27,6 @@ helpers (don't hand-roll coercion):
 
 - `_coerce_float(value, default, *, lo=None, hi=None)` – catches `OverflowError`, rejects `inf`/`nan`.
 - `_coerce_int(value, default, *, lo=None, hi=None)` – rejects `bool` (it's an `int` subclass).
-- `_coerce_optional_float(value, default, *, lo=None, hi=None)` – allows empty/None.
 - `_coerce_hex_color(value, default)` – normalises to lowercase `#rrggbb`.
 - `_coerce_choice(value, valid_choices, default)` – enum-like validation.
 - `_coerce_multicast_ipv4(value, default="")` – IPv4 multicast (empty = off).

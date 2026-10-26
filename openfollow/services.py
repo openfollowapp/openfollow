@@ -112,6 +112,8 @@ _MOUSE3D_WEB_DETECT_BUDGET_S = 0.35
 # How long one network backend reading serves the web UI after it completes, so
 # every section one render asks for shares it.
 _NETWORK_READING_MAX_AGE_S = 1.0
+# The OSC listener binds the wildcard; the plane's address while no pin governs it.
+_OSC_LISTENER_ANY = "0.0.0.0"
 # The window hooks the GL Operator Screen needs: one to show it, the rest to fall back to Cairo.
 _GL_CANVAS_HOOKS = ("attach_gl_display", "detach_gl_display", "attach_hud", "gdk_window")
 
@@ -1382,7 +1384,26 @@ class AppRuntimeServices:
             if self._osc_service.listener_status()["port"] is None and self._app._input_manager is not None:
                 self._app._input_manager.resume_osc()
 
+        _resolve_osc_input_iface = _resolver(lambda: self._app._config.osc.listen_iface, follows_station=True)
+
+        def _osc_input_follows_iface() -> bool:
+            # Config only. Unpinned, the membership is the routing table's to
+            # choose; with no group configured the pin governs nothing. Either
+            # way the plane follows the wildcard listener instead.
+            cfg = self._app._config.osc
+            pinned = plane_source_iface(cfg.listen_iface, self._app._config.psn_source_iface)
+            return bool(cfg.multicast_group and pinned)
+
+        def _resolve_osc_input() -> tuple[str, ResolveStatus, str]:
+            if _osc_input_follows_iface():
+                return _resolve_osc_input_iface()
+            # Bound on every interface: nothing to resolve and never down.
+            return _OSC_LISTENER_ANY, "primary", ""
+
         def _apply_osc_input(address: str) -> None:
+            if not _osc_input_follows_iface():
+                _start_osc_listener()
+                return
             # Rebinds the listener so the group follows the interface. The
             # membership cannot be dropped once the address it was taken on is
             # gone - the kernel calls that drop a success and releases nothing
@@ -1401,6 +1422,8 @@ class AppRuntimeServices:
 
         def _current_osc_input() -> str | None:
             status = self._osc_service.listener_status()
+            if not _osc_input_follows_iface():
+                return None if status["port"] is None else _OSC_LISTENER_ANY
             if not status["multicast_joined"]:
                 return None
             iface = status["multicast_iface"]
@@ -1410,15 +1433,6 @@ class AppRuntimeServices:
             # Unicast and broadcast keep arriving without the membership.
             _start_osc_listener()
             self._osc_service.set_multicast_iface(None)
-
-        def _osc_input_pinned() -> bool:
-            # Config only. Unpinned, the membership is the routing table's to
-            # choose and there is no interface to follow; with no group
-            # configured the pin governs nothing. A listener that is not running
-            # stays a plane, so its failure is reported and retried.
-            cfg = self._app._config.osc
-            pinned = plane_source_iface(cfg.listen_iface, self._app._config.psn_source_iface)
-            return bool(cfg.enabled and cfg.multicast_group and pinned)
 
         return [
             Plane(
@@ -1449,11 +1463,13 @@ class AppRuntimeServices:
             ),
             Plane(
                 label="OSC input",
-                resolve=_resolver(lambda: self._app._config.osc.listen_iface, follows_station=True),
+                resolve=_resolve_osc_input,
                 current=_current_osc_input,
                 apply=_apply_osc_input,
                 suspend=_suspend_osc_input,
-                enabled=_osc_input_pinned,
+                # A listener that is not running stays a plane, pinned or not,
+                # so its failure is reported and retried.
+                enabled=lambda: self._app._config.osc.enabled,
             ),
             Plane(
                 label="Video input",
@@ -4069,6 +4085,7 @@ class AppRuntimeServices:
                 "marker_choices": [],
             },
             "mouse3d": idle_mouse3d_status(cfg.mouse3d.enabled).to_dict(),
+            "keyboard": {"poller": None, "devices": None},
             "playback": self._frame_metrics.snapshot(),
             "tracking": {
                 "enabled": bool(self.detection_config().enabled),
@@ -4242,6 +4259,9 @@ class AppRuntimeServices:
             if input_manager is not None
             else idle_mouse3d_status(cfg.mouse3d.enabled)
         )
+        keyboard_status = (
+            input_manager.keyboard_status() if input_manager is not None else {"poller": None, "devices": None}
+        )
         if input_manager is not None:
             for item in input_manager.get_controller_info():
                 since = item.get("seconds_since_input")
@@ -4321,6 +4341,7 @@ class AppRuntimeServices:
                 "marker_choices": [int(mid) for mid in getattr(app, "_controlled_ids", ())],
             },
             "mouse3d": mouse3d_status.to_dict(),
+            "keyboard": keyboard_status,
             "playback": playback_snapshot,
             "tracking": detection_snapshot,
             "hud": self._hud_render.stats() if self._hud_render is not None else None,

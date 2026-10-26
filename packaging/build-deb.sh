@@ -16,6 +16,7 @@
 # Build prerequisites (run scripts/install-system-deps.sh first, plus the -dev set):
 #   python3-venv python3-dev build-essential pkg-config dpkg-dev
 #   libgirepository-2.0-dev libcairo2-dev libasound2-dev   (compile PyGObject/rtmidi)
+#   libxkbcommon-dev                                        (compile xkbcommon; in install-system-deps.sh)
 #   librsvg2-bin                                            (render the splash)
 set -euo pipefail
 umask 022  # 755 dirs / 644 files in the staged tree (clean package perms)
@@ -194,6 +195,18 @@ assert origin and os.path.realpath(origin).startswith(prefix + os.sep), (
     f"PyOpenGL not bundled in venv: {origin}"
 )
 
+# The Operator Screen's keyboard poller and its layout map; without evdev the Pi
+# falls back to GTK key events, without xkbcommon it polls US letter positions.
+import evdev  # noqa: F401
+from xkbcommon import xkb  # noqa: F401
+for module in (evdev, xkb):
+    assert os.path.realpath(module.__file__).startswith(prefix + os.sep), f"not bundled in venv: {module.__file__}"
+# The binding's API as the poller calls it, against this host's xkb-data: QWERTZ
+# puts z on the key US prints Y. A mismatch would silently poll US positions.
+from openfollow.input.keyboard import _build_linux_layout_keycode_map
+qwertz = _build_linux_layout_keycode_map({"layout": "de", "variant": "", "model": "", "options": ""})
+assert qwertz and qwertz["z"] == evdev.ecodes.KEY_Y, f"xkb layout map broken: {qwertz}"
+
 # Detection backend must be bundled (import from the venv prefix); the AGPL
 # export toolchain (torch / ultralytics) must not be – the SBOM gate's boundary,
 # verified here at build time.
@@ -253,6 +266,7 @@ install -d -m 0755 "$STAGE/lib/udev/rules.d"
 install -m 0644 "$REPO_ROOT/packaging/udev/99-openfollow-3dmouse.rules" \
   "$STAGE/lib/udev/rules.d/99-openfollow-3dmouse.rules"
 install -m 0755 "$DEBIAN_DIR/splash.sh"                           "$SHARE/splash.sh"
+install -m 0755 "$DEBIAN_DIR/stop-splash.sh"                      "$SHARE/stop-splash.sh"
 install -m 0755 "$DEBIAN_DIR/session.sh"                          "$SHARE/session.sh"
 install -m 0755 "$DEBIAN_DIR/apply-update.sh"                     "$SHARE/apply-update.sh"
 # Root helper for the web Pi camera setup (sudoers: camera.* capabilities): a
@@ -314,8 +328,10 @@ install -m 0644 "$REPO_ROOT/THIRD_PARTY_NOTICES.md"              "$SHARE/THIRD_P
 install -m 0644 "$REPO_ROOT/WRITTEN_OFFER.md"                    "$SHARE/WRITTEN_OFFER.md"
 install -m 0644 "$DEBIAN_DIR/openfollow.service"                 "$UNIT_DIR/openfollow.service"
 install -m 0644 "$DEBIAN_DIR/openfollow-splash.service"          "$UNIT_DIR/openfollow-splash.service"
-# Vendor drop-in bounding NetworkManager-wait-online so a slow/network-less boot
-# doesn't hold the kiosk GUI behind the splash for ~60s (see the .conf header).
+# Vendor drop-in replacing NetworkManager-wait-online's wait, so a LAN without
+# DHCP or a network-less boot doesn't hold the kiosk GUI behind the splash or
+# fail the unit (see the .conf header).
+install -m 0755 "$DEBIAN_DIR/nm-wait-online.sh"                   "$SHARE/nm-wait-online.sh"
 install -d -m 0755 "$UNIT_DIR/NetworkManager-wait-online.service.d"
 install -m 0644 "$DEBIAN_DIR/nm-wait-online-timeout.conf" \
   "$UNIT_DIR/NetworkManager-wait-online.service.d/10-openfollow-timeout.conf"

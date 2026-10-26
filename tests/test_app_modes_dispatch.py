@@ -8,7 +8,7 @@ and legacy shortcut regression guards. This file fills in:
 - ``cycle_marker`` edge cases (empty list, current==None, wrap-around)
 - ``enter_source_selection`` gating on ``has_source_selection``
 - ``enter_button_detection`` refusal paths + ``process_button_detection``
-- ``on_key_down`` digit shortcuts and Ctrl/Meta+S save flow
+- ``on_key_down`` digit shortcuts, and no Ctrl/Meta+S save
 - ``process_input`` guard paths (button-detection, settings menu, source,
   key_settings edge gating)
 - ``process_source_selection_input``
@@ -225,7 +225,7 @@ def test_process_button_detection_done_with_no_results_clears_wizard() -> None:
 
 
 # ---------------------------------------------------------------------------
-# on_key_down – digit shortcut + Ctrl+S save
+# on_key_down – digit shortcut, no Ctrl/Cmd+S save
 # ---------------------------------------------------------------------------
 
 
@@ -275,49 +275,24 @@ def test_on_key_down_digit_key_out_of_range_is_noop() -> None:
     assert app._selected_id == 1
 
 
-def test_on_key_down_ctrl_s_saves_the_camera_pose_only(tmp_path) -> None:
-    from openfollow.configuration import AppConfig, CameraConfig, load_config, save_config
+@pytest.mark.parametrize("modifier", ["Control", "Meta"])
+def test_ctrl_or_cmd_s_saves_nothing(modifier: str, monkeypatch, tmp_path) -> None:
+    # The camera pose is the Setup Wizard's alone.
+    from openfollow.configuration import AppConfig, CameraConfig
 
-    lens = {"lens_k1": -0.3, "lens_k2": 0.1, "sensor_width_mm": 6.17, "focal_length_mm": 4.0}
-    # The file holds edits the running config never took in.
-    config_path = str(tmp_path / "c.toml")
-    save_config(AppConfig(web_port=8080, ndi_source_name="Edited", camera=CameraConfig(**lens)), config_path)
-
-    class _KeyboardHandler:
-        keys: set[str] = {"Control"}
-
-        def on_key_down(self, event) -> None:  # noqa: ANN001
-            pass
-
-    class _InputManager:
-        keyboard_handler = _KeyboardHandler()
-
-    class _Camera:
-        def to_config(self):  # noqa: ANN201
-            return CameraConfig(fov=42.0)
-
-    app = SimpleNamespace(
-        _input_manager=_InputManager(),
-        _controlled_ids=[],
-        _selected_id=None,
-        _config=AppConfig(camera=CameraConfig(**lens)),
-        _config_path=config_path,
+    writes: list = []
+    monkeypatch.setattr(app_modes, "save_config_fields", lambda *args, **kwargs: writes.append(args))
+    camera = CameraConfig(pos_x=1.0, fov=50.0)
+    app = _key_app(
+        _config=AppConfig(camera=camera),
+        _config_path=str(tmp_path / "c.toml"),
         _config_mtime=0,
-        _camera=_Camera(),
-        _url_editor_active=False,
-        _field_choice_active=False,
-        _browser_active=False,
+        _camera=SimpleNamespace(to_config=lambda: CameraConfig(pos_x=9.0, fov=42.0)),
     )
-    app._normalize_key = app_modes.normalize_key
+    app._input_manager.keyboard_handler.keys = {modifier}
     app_modes.on_key_down(app, {"key": "s"})
-    assert app._config.camera.fov == pytest.approx(42.0)
-    saved = load_config(config_path)
-    assert saved.camera.fov == pytest.approx(42.0)
-    assert (saved.web_port, saved.ndi_source_name) == (8080, "Edited")
-    # The camera object carries no lens: the calibration stays, in memory and on disk.
-    for name, value in lens.items():
-        assert getattr(app._config.camera, name) == pytest.approx(value)
-        assert getattr(saved.camera, name) == pytest.approx(value)
+    assert writes == []
+    assert app._config.camera == camera
 
 
 def test_on_key_down_without_input_manager() -> None:
@@ -362,90 +337,6 @@ def test_on_key_down_digit_gated_while_modal_open() -> None:
     app = _key_app(_settings_menu_active=True)
     app_modes.on_key_down(app, {"key": "2"})
     assert app._selected_id == 10  # unchanged
-
-
-def test_ctrl_s_saves_the_pose_and_keeps_what_the_setup_wizard_saved(monkeypatch, tmp_path) -> None:
-    from openfollow.configuration import AppConfig, CalibrationMarkConfig, CameraConfig
-
-    monkeypatch.setattr(app_modes, "save_config_fields", lambda *_args, **_kwargs: None)
-    marks = [
-        CalibrationMarkConfig(id=1, kind="known", x=5.0, y=0.0, z=0.0, pin=[0.8, 0.9]),
-        CalibrationMarkConfig(id=2, kind="known", x=-5.0, y=0.0, z=0.0, pin=[0.2, 0.9]),
-        CalibrationMarkConfig(
-            id=3,
-            kind="triangulated",
-            from_a=1,
-            from_b=2,
-            distance_a=21.4,
-            distance_b=23.9,
-            z=0.0,
-            pin=[0.4, 0.2],
-            position=[2.5, 9.0, 0.0],
-        ),
-    ]
-    camera = CameraConfig(lens_k1=-0.2, lens_k2=0.05, calibration_mode="advanced", calibration_marks=marks)
-    config = AppConfig(camera=camera)
-    pose = CameraConfig(pos_x=1.0, pos_y=-9.0, pos_z=5.0, pitch=-20.0, yaw=3.0, roll=0.5, fov=42.0)
-    app = SimpleNamespace(
-        _input_manager=SimpleNamespace(keyboard_handler=SimpleNamespace(keys={"Meta"}, on_key_down=lambda e: None)),
-        _controlled_ids=[],
-        _selected_id=None,
-        _config=config,
-        _config_path=str(tmp_path / "c.toml"),
-        _config_mtime=0,
-        _camera=SimpleNamespace(to_config=lambda: pose),
-        _url_editor_active=False,
-        _field_choice_active=False,
-        _browser_active=False,
-    )
-    app._normalize_key = app_modes.normalize_key
-    app._get_config_mtime = lambda: 1
-    app_modes.on_key_down(app, {"key": "s"})
-    cam = app._config.camera
-    assert (cam.pos_x, cam.pos_y, cam.pos_z, cam.pitch, cam.yaw, cam.roll, cam.fov) == (
-        1.0,
-        -9.0,
-        5.0,
-        -20.0,
-        3.0,
-        0.5,
-        42.0,
-    )
-    assert (cam.lens_k1, cam.lens_k2, cam.calibration_mode, cam.calibration_marks) == (-0.2, 0.05, "advanced", marks)
-
-
-def test_on_key_down_ctrl_s_gated_while_modal_open(monkeypatch) -> None:
-    # #551: Ctrl/Cmd+S must not write config from under a modal.
-    writes: list = []
-    monkeypatch.setattr(app_modes, "save_config_fields", lambda cfg, path, names, **_kw: writes.append(path))
-    app = _key_app(_about_active=True, _camera=object())
-    app._input_manager.keyboard_handler.keys = {"Control"}
-    app_modes.on_key_down(app, {"key": "s"})
-    assert writes == []  # save suppressed while modal owns the screen
-
-
-def test_on_key_down_ctrl_s_save_failure_is_swallowed(monkeypatch, tmp_path) -> None:
-    # #551 Low: a save failure routes through _persist_config (logged, not raised).
-    from openfollow.configuration import AppConfig, CameraConfig
-
-    def _boom(cfg, path, names, **_kw) -> None:  # noqa: ANN001
-        raise OSError("read-only fs")
-
-    monkeypatch.setattr(app_modes, "save_config_fields", _boom)
-
-    class _Camera:
-        def to_config(self):  # noqa: ANN201
-            return CameraConfig(fov=42.0)
-
-    app = _key_app(
-        _config=AppConfig(),
-        _config_path=str(tmp_path / "c.toml"),
-        _config_mtime=0,
-        _camera=_Camera(),
-    )
-    app._input_manager.keyboard_handler.keys = {"Meta"}
-    app_modes.on_key_down(app, {"key": "s"})  # must not raise
-    assert app._config.camera.fov == pytest.approx(42.0)
 
 
 def test_on_key_down_digit_gated_during_button_detection() -> None:
@@ -1971,6 +1862,9 @@ def test_on_key_up_forwards_event_to_keyboard_handler() -> None:
         def on_key_up(self, event):
             captured.append(event)
 
+        def end_echo(self, event):
+            pass
+
     class _IM:
         keyboard_handler = _KB()
 
@@ -2001,6 +1895,9 @@ def test_on_key_up_skipped_while_url_editor_active() -> None:
         def on_key_up(self, event):
             captured.append(event)
 
+        def end_echo(self, event):
+            pass
+
     class _IM:
         keyboard_handler = _KB()
 
@@ -2020,6 +1917,9 @@ def test_on_key_up_skipped_while_browser_active() -> None:
     class _KB:
         def on_key_up(self, event):
             captured.append(event)
+
+        def end_echo(self, event):
+            pass
 
     class _IM:
         keyboard_handler = _KB()

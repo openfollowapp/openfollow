@@ -18,6 +18,13 @@ from unittest.mock import patch
 import pytest
 
 from openfollow.net_utils import BoundedResolver
+from openfollow.runtime.receiver_bus import BusError
+from openfollow.video.failure import (
+    RESOURCE_DOMAIN,
+    RESOURCE_NOT_AUTHORIZED,
+    RESOURCE_OPEN_READ_WRITE,
+    RESOURCE_SETTINGS,
+)
 from openfollow.video.inputs import _pin
 from openfollow.video.inputs.rtsp import RtspInput
 from tests._fake_gst import FakeElement, FakePad, FakePipeline, make_fake_gst
@@ -177,6 +184,116 @@ class TestCreatePipeline:
         post = pipeline.get_by_name("post_queue")
         assert post is not None
         assert post.properties["leaky"] == 2
+
+
+_SETTINGS_MESSAGE = "Could not get/set settings from/on resource."
+
+# What rtspsrc posts when its UDP ports were opened for IPv4 and the server's
+# address is IPv6: its RTCP udpsink refuses the destination.
+_ADDRESS_FAMILY_ERROR = BusError(
+    message=_SETTINGS_MESSAGE,
+    domain=RESOURCE_DOMAIN,
+    code=RESOURCE_SETTINGS,
+    debug=(
+        "../gst/udp/gstmultiudpsink.c(1229): gst_multiudpsink_configure_client (): "
+        "/GstPipeline:rtsp-sink/GstRTSPSrc:rtspsrc/GstUDPSink:udpsink0:\nInvalid address family (got 10)"
+    ),
+)
+
+
+class TestAnAddressFamilyFailureMovesTheHostToTcp:
+    """A dual-stack name whose IPv4 address is refused lands on IPv6 after the
+    transport was chosen, so the UDP ports and the server's address disagree.
+    Only the failure says so, and the retry must not repeat it."""
+
+    _URL = "rtsp://camera.example:554/stream"
+
+    @staticmethod
+    def _protocols(plugin: RtspInput, url: str) -> object:
+        from gi.repository import Gst  # noqa: F401
+
+        sink = FakeElement("shared_videosink")
+        with patch("gi.repository.Gst", make_fake_gst()):
+            pipeline = plugin.create_pipeline(
+                config={"rtsp_url": url},
+                sink=sink,
+                build_overlay_tail=lambda *a: None,
+                prepare_sink=lambda: sink,
+            )
+        return pipeline.get_by_name("rtspsrc").properties["protocols"]
+
+    def test_the_attempts_after_it_run_over_tcp_interleaved(
+        self, names: _Names, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        names.answers["camera.example"] = ["192.0.2.10", "2001:db8::10"]
+        plugin = RtspInput()
+        assert self._protocols(plugin, self._URL) == 0x7
+
+        plugin.on_bus_error(_ADDRESS_FAMILY_ERROR)
+
+        with caplog.at_level("INFO", logger="openfollow.video.inputs.rtsp"):
+            assert self._protocols(plugin, self._URL) == 0x4
+        assert "tcp interleaved" in caplog.text
+        assert self._protocols(plugin, self._URL) == 0x4
+
+    def test_an_ipv6_literal_is_moved_too(self) -> None:
+        """The UDP family follows the server's session description, not the
+        URL, so a literal is no protection."""
+        url = "rtsp://[2001:db8::10]:554/stream"
+        plugin = RtspInput()
+        assert self._protocols(plugin, url) == 0x7
+        plugin.on_bus_error(_ADDRESS_FAMILY_ERROR)
+        assert self._protocols(plugin, url) == 0x4
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            BusError(
+                "Could not open resource for reading and writing.",
+                RESOURCE_DOMAIN,
+                RESOURCE_OPEN_READ_WRITE,
+                "gstrtspsrc.c(7469): gst_rtspsrc_send (): Connection refused",
+            ),
+            BusError(_SETTINGS_MESSAGE, RESOURCE_DOMAIN, RESOURCE_SETTINGS, "SDP contains no streams"),
+            BusError("Unauthorized", RESOURCE_DOMAIN, RESOURCE_NOT_AUTHORIZED, "Unauthorized (401)"),
+            BusError("No video received (connection timeout)"),
+        ],
+        ids=["refused", "empty-sdp", "unauthorized", "no-identity"],
+    )
+    def test_any_other_failure_keeps_every_transport(self, names: _Names, error: BusError) -> None:
+        names.answers["camera.example"] = ["192.0.2.10", "2001:db8::10"]
+        plugin = RtspInput()
+        self._protocols(plugin, self._URL)
+
+        plugin.on_bus_error(error)
+
+        assert self._protocols(plugin, self._URL) == 0x7
+
+    def test_another_host_keeps_every_transport(self, names: _Names) -> None:
+        """The source picked afterwards is a different server with its own answer."""
+        names.answers["camera.example"] = ["192.0.2.10", "2001:db8::10"]
+        names.answers["other.example"] = ["192.0.2.20", "2001:db8::20"]
+        plugin = RtspInput()
+        self._protocols(plugin, self._URL)
+        plugin.on_bus_error(_ADDRESS_FAMILY_ERROR)
+
+        assert self._protocols(plugin, "rtsp://other.example:554/stream") == 0x7
+        assert self._protocols(plugin, self._URL) == 0x4
+
+    def test_a_url_naming_no_host_is_never_moved(self) -> None:
+        plugin = RtspInput()
+        assert self._protocols(plugin, "rtsp://0.0.0.0:554/stream") == 0x7
+        plugin.on_bus_error(_ADDRESS_FAMILY_ERROR)
+        assert self._protocols(plugin, "rtsp://0.0.0.0:554/stream") == 0x7
+
+    def test_a_rebuilt_input_starts_with_every_transport(self, names: _Names) -> None:
+        """A saved change to the source's settings builds a new input, which tries UDP again."""
+        names.answers["camera.example"] = ["192.0.2.10", "2001:db8::10"]
+        plugin = RtspInput()
+        self._protocols(plugin, self._URL)
+        plugin.on_bus_error(_ADDRESS_FAMILY_ERROR)
+
+        assert self._protocols(RtspInput(), self._URL) == 0x7
 
 
 class TestRtspCredentials:

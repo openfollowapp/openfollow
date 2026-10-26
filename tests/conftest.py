@@ -10,6 +10,7 @@ vanish from both ``-m unit`` and ``-m "integration or smoke"`` selections.
 
 import os
 import socket
+import sys
 import warnings
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -141,6 +142,23 @@ def _no_host_keyboard(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.
     monkeypatch.setattr(keyboard_layout, "XKB_ROOT", absent)
     monkeypatch.setattr(keyboard_layout, "EVDEV_LST", absent / "rules" / "evdev.lst")
     monkeypatch.setattr(keyboard_layout, "SYSTEM_KEYBOARD", absent / "keyboard")
+
+
+@pytest.fixture(autouse=True)
+def _no_host_input_devices(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
+    """No test may open the host's evdev devices, read its sysfs or compile its xkb keymap; one that cares
+    installs fakes."""
+    from openfollow.input import keyboard
+
+    monkeypatch.setitem(sys.modules, "evdev", None)
+    monkeypatch.setitem(sys.modules, "xkbcommon", None)
+    monkeypatch.setattr(keyboard, "_SYSFS_INPUT_DIR", str(tmp_path_factory.getbasetemp() / "no-sysfs"))
+
+
+@pytest.fixture(autouse=True)
+def _no_host_camera_modes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test may read the mode list of a camera on the host; one that cares installs its own."""
+    monkeypatch.setattr("openfollow.video.inputs.v4l2._read_capture_modes", lambda device: None)
 
 
 @pytest.fixture(autouse=True)

@@ -108,7 +108,7 @@ dataclasses, the directions are deliberately asymmetric:
 
 | Direction | Result |
 |---|---|
-| **Old template → newer build** (upgrade) | Loads cleanly. Missing fields fall back to dataclass defaults; older enum values stay valid. This is a **guaranteed, tested contract**. |
+| **Old template → newer build** (upgrade) | Loads cleanly. Missing fields fall back to dataclass defaults; older enum values stay valid; a former setting the build names (`configuration.without_former_camera_keys`) is dropped. This is a **guaranteed, tested contract**. |
 | **New template → older build** (downgrade) | **Rejected, never silently degraded.** An unknown field or enum fails validation – applying it half-way would silently drop operator intent, which is worse than refusing. |
 
 When a downgrade rejection happens and the file's `app_version` is newer than

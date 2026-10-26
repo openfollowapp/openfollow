@@ -14,6 +14,7 @@ import pytest
 import tomllib
 
 from openfollow.configuration import (
+    CALIBRATION_SOURCE_MAX_LEN,
     DEFAULT_UPDATE_SERVICE_NAME,
     FEATURE_KEYS,
     MOUSE3D_AXES,
@@ -3239,8 +3240,8 @@ def test_a_switch_that_could_not_be_saved_is_saved_by_switching_again_once_the_f
     good = AppConfig(video_source_type="ndi", ndi_source_name="CAM-HOST (Camera 1)", rtsp_url="rtsp://192.0.2.20/a")
     save_config(good, path)
     app = _app_on_file(path)
-    banners: list[str] = []
-    app._enter_settings_menu = lambda **kw: banners.append(kw.get("banner", ""))
+    banners: list[tuple[str, str]] = []
+    app._enter_settings_menu = lambda **kw: banners.append((kw.get("banner", ""), kw.get("action", "")))
     app._enter_url_editor = lambda **_kw: None
     app._available_source_types = [("rtsp", "RTSP")]
     app._selected_source_type_index = 0
@@ -3249,8 +3250,10 @@ def test_a_switch_that_could_not_be_saved_is_saved_by_switching_again_once_the_f
     app_modes.confirm_source_type_selection(app)
     assert app._config.video_source_type == "rtsp"
     assert banners == [
-        "RTSP is live but could not be saved. The settings file could not be read. "
-        "Import a settings file to replace it, then switch again."
+        (
+            "RTSP is live but could not be saved. The settings file could not be read.",
+            "Import a settings file to replace it, then switch again.",
+        )
     ]
 
     save_config(good, path, replace_unreadable=True)  # the operator repairs it
@@ -3918,12 +3921,6 @@ def test_camera_config_clamps_fov_to_nondegenerate_range(bad_fov: object, expect
     assert cfg.fov == expected
 
 
-def test_camera_config_preserves_optional_float_none() -> None:
-    cfg = CameraConfig(sensor_width_mm=None, focal_length_mm=None)
-    assert cfg.sensor_width_mm is None
-    assert cfg.focal_length_mm is None
-
-
 def test_camera_config_lens_distortion_defaults_to_pinhole() -> None:
     # A config without lens keys draws exactly what a pinhole camera sees.
     cfg = CameraConfig()
@@ -4183,14 +4180,6 @@ def test_grid_config_rejects_nan_spacing_to_default() -> None:
     assert cfg.spacing == 1.0
 
 
-def test_camera_config_rejects_nan_sensor_width_to_default() -> None:
-    # Optional lens hint: ``nan`` would divide inside the lens helper and
-    # persist as a garbage number. The coercer must drop it to the declared
-    # default (``None``).
-    cfg = CameraConfig(sensor_width_mm=float("nan"))
-    assert cfg.sensor_width_mm is None
-
-
 # --- Boolean coercion for hand-edited config.toml -------------------------
 # ``bool("false") is True`` – without explicit coercion, a hand-edited
 # ``origin_visible = "false"`` (string) silently flips to truthy and the
@@ -4361,19 +4350,6 @@ def test_marker_config_control_heading_wraps_to_one_turn(raw: object, expected: 
 @pytest.mark.parametrize("raw", ["abc", None, True, float("nan"), float("inf"), [90.0]])
 def test_marker_config_bad_control_heading_falls_back_to_zero(raw: object) -> None:
     assert MarkerConfig(control_heading=raw).control_heading == 0.0  # type: ignore[arg-type]
-
-
-@pytest.mark.parametrize("bad_value", ["abc", "", [1.0]])
-def test_camera_config_optional_float_invalid_stays_none(bad_value: object) -> None:
-    # When the default is ``None`` (unset lens hint), invalid input must stay
-    # ``None`` – silently substituting ``0.0`` would change semantics from
-    # "not set, use explicit fov" to a misleading persisted zero-value hint.
-    # The wizard JS guards against falsy values before doing the division, so
-    # the concrete risk is semantic confusion (and any other tool reading the
-    # TOML that doesn't apply the same guard), not a runtime crash.
-    cfg = CameraConfig(sensor_width_mm=bad_value, focal_length_mm=bad_value)  # type: ignore[arg-type]
-    assert cfg.sensor_width_mm is None
-    assert cfg.focal_length_mm is None
 
 
 # --- MarkerConfig --------------------------------------------------------
@@ -5461,6 +5437,22 @@ def test_legacy_git_pull_keys_are_dropped_on_load(temp_config_path) -> None:
     assert "update_repo_branch" not in written
     assert "update_repo_url" not in written
     assert "update_allowed_hosts" not in written
+
+
+def test_camera_sensor_and_focal_keys_are_dropped_on_load(temp_config_path) -> None:
+    """A camera section carrying sensor_width_mm / focal_length_mm loads like one without them."""
+    camera = "[camera]\nfov = 52.5\npos_z = 7.0\n"
+    temp_config_path.write_text(camera, encoding="utf-8")
+    expected = load_config(str(temp_config_path))
+    temp_config_path.write_text(camera + "sensor_width_mm = 6.17\nfocal_length_mm = 4.0\n", encoding="utf-8")
+
+    cfg = load_config(str(temp_config_path))
+
+    assert cfg == expected
+    save_config(cfg, str(temp_config_path))
+    written = temp_config_path.read_text(encoding="utf-8")
+    assert "sensor_width_mm" not in written
+    assert "focal_length_mm" not in written
 
 
 # ---------------------------------------------------------------------------
@@ -9898,6 +9890,132 @@ def test_a_hand_edited_calibration_height_is_read_through_load_config(tmp_path, 
     assert load_config(str(path)).camera.calibration_height is None
     path.write_text("[camera]\ncalibration_height = 7.25\n", encoding="utf-8")
     assert load_config(str(path)).camera.calibration_height == 7.25
+
+
+# CameraConfig's calibration record: the lens rating, time and video source of the Setup Wizard's save
+
+
+@pytest.mark.parametrize("rating", ["excellent", "good", "fair", "poor", "user_input", "loaded", ""])
+def test_a_calibration_lens_rating_on_the_list_is_kept(rating: str) -> None:
+    assert CameraConfig(calibration_lens_rating=rating).calibration_lens_rating == rating
+
+
+# A fit rated Not usable is never applied, so no saved lens carries that rating.
+@pytest.mark.parametrize(
+    "raw",
+    ["Good", "okay", "medium", "low", "not_usable", " good"],
+    ids=["case", "okay", "medium", "low", "not usable", "pad"],
+)
+def test_a_calibration_lens_rating_off_the_list_reads_as_none(raw: str) -> None:
+    assert CameraConfig(calibration_lens_rating=raw).calibration_lens_rating == ""
+
+
+@pytest.mark.parametrize("raw", [None, 3, True, ["good"]], ids=["none", "number", "bool", "list"])
+def test_a_calibration_lens_rating_of_the_wrong_type_reads_as_none(raw: object) -> None:
+    assert CameraConfig(calibration_lens_rating=raw).calibration_lens_rating == ""  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("2026-10-25T11:04:00+01:00", "2026-10-25T11:04:00+01:00"),
+        ("2026-10-26T09:30:00-02:30", "2026-10-26T09:30:00-02:30"),
+        ("2026-10-25T10:04:00Z", "2026-10-25T10:04:00+00:00"),
+        ("2026-10-25T11:04:05.678+01:00", "2026-10-25T11:04:05+01:00"),
+        (" 2026-10-25 11:04+01:00 ", "2026-10-25T11:04:00+01:00"),
+    ],
+    ids=["offset", "negative half hour", "z", "fraction", "space"],
+)
+def test_a_calibration_time_with_its_offset_is_kept_to_the_second(raw: str, expected: str) -> None:
+    assert CameraConfig(calibration_time=raw).calibration_time == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["2026-10-25T11:04:00", "2026-10-25", "2026-13-01T00:00:00+00:00", "yesterday", ""],
+    ids=["no offset", "date only", "no such month", "text", "empty"],
+)
+def test_a_calibration_time_without_an_offset_or_unreadable_reads_as_none(raw: str) -> None:
+    assert CameraConfig(calibration_time=raw).calibration_time == ""
+
+
+@pytest.mark.parametrize(
+    "raw", [None, 1761386640, True, ["2026-10-25T11:04:00+01:00"]], ids=["none", "number", "bool", "list"]
+)
+def test_a_calibration_time_of_the_wrong_type_reads_as_none(raw: object) -> None:
+    assert CameraConfig(calibration_time=raw).calibration_time == ""  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("RTSP: rtsp://192.0.2.10/stream", "RTSP: rtsp://192.0.2.10/stream"),
+        ("RTSP: rtsp://user:pw@192.0.2.10/stream", "RTSP: rtsp://192.0.2.10/stream"),
+        ("SRT srt://192.0.2.1:5000?passphrase=secret123", "SRT srt://192.0.2.1:5000?passphrase=***"),
+        ("NDI®: Stage\x00 \x1b[31mLeft\u202e", "NDI®: Stage [31mLeft"),
+        ("SRT srt://192.0.2.1:5000?pass\x00phrase=secret123", "SRT srt://192.0.2.1:5000?passphrase=***"),
+        ("9\x00rtsp://user:secret@cam/s", "9rtsp://cam/s"),
+        ("_\u200ertsp://user:secret@cam/s", "_rtsp://cam/s"),
+        ("  Media Gallery (Clip)  ", "Media Gallery (Clip)"),
+    ],
+    ids=[
+        "plain",
+        "credentials",
+        "passphrase",
+        "control characters",
+        "split passphrase",
+        "joined digit",
+        "joined underscore",
+        "pad",
+    ],
+)
+def test_a_calibration_source_is_kept_without_credentials_or_control_characters(raw: str, expected: str) -> None:
+    assert CameraConfig(calibration_source=raw).calibration_source == expected
+
+
+def test_a_calibration_source_past_its_length_is_cut() -> None:
+    source = CameraConfig(calibration_source="NDI®: " + "x" * 400).calibration_source
+    assert source == ("NDI®: " + "x" * 400)[:CALIBRATION_SOURCE_MAX_LEN]
+
+
+@pytest.mark.parametrize("raw", [None, 3, True, ["NDI®: Stage"]], ids=["none", "number", "bool", "list"])
+def test_a_calibration_source_of_the_wrong_type_reads_as_none(raw: object) -> None:
+    assert CameraConfig(calibration_source=raw).calibration_source == ""  # type: ignore[arg-type]
+
+
+def test_a_calibration_record_survives_a_toml_round_trip(tmp_path) -> None:
+    path = tmp_path / "config.toml"
+    record = {
+        "calibration_lens_rating": "poor",
+        "calibration_time": "2026-10-26T09:30:00-02:30",
+        "calibration_source": "USB Camera: Webcam (1280x720@30)",
+    }
+    camera = CameraConfig(calibration_mode="advanced", calibration_marks=[_DSL, _DSR], **record)  # type: ignore[arg-type]
+    save_config(AppConfig(camera=camera), path)
+    loaded = load_config(str(path)).camera
+    assert {name: getattr(loaded, name) for name in record} == record
+
+
+def test_an_unquoted_calibration_time_in_a_hand_edited_file_is_read(tmp_path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text("[camera]\ncalibration_time = 2026-10-25T11:04:00+01:00\n", encoding="utf-8")
+    assert load_config(str(path)).camera.calibration_time == "2026-10-25T11:04:00+01:00"
+    path.write_text("[camera]\ncalibration_time = 2026-10-25T11:04:00\n", encoding="utf-8")
+    assert load_config(str(path)).camera.calibration_time == ""
+
+
+def test_a_hand_edited_calibration_record_is_read_through_load_config(tmp_path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[camera]\ncalibration_lens_rating = "Good"\ncalibration_time = 3\ncalibration_source = "rtsp://u:p@192.0.2.1/s"\n',
+        encoding="utf-8",
+    )
+    camera = load_config(str(path)).camera
+    assert (camera.calibration_lens_rating, camera.calibration_time, camera.calibration_source) == (
+        "",
+        "",
+        "rtsp://192.0.2.1/s",
+    )
 
 
 _FILE_GRID = "[grid]\nwidth = 12.0\ndepth = 6.0\nx_offset = 1.0\ny_offset = 4.0\nz_offset = 0.5\n"

@@ -308,7 +308,6 @@ the position delta, and the bookkeeping writes that feed
 Run: 423 covered mutants, ~306 killed + 9 timeouts + 26 no-tests,
 **~75 survivors** after PR-F kill tests in
 `tests/test_configuration_mutation.py`. Kills target
-`_coerce_optional_float` (None-check inversion + forced `float(None)`),
 `save_config` default path, and `apply_runtime_config_changes`
 field-propagation on `video_source_type` / `controlled_marker_ids`
 / `psn_system_name`.

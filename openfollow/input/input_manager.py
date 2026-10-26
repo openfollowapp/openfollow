@@ -1023,6 +1023,10 @@ class InputManager:
         """Return whether keyboard guidance should be shown in the overlay."""
         return self.keyboard_handler.is_connected()
 
+    def keyboard_status(self) -> dict[str, Any]:
+        """The keyboard poller kind and its device count, for ``/api/stats``."""
+        return self.keyboard_handler.status()
+
     def restart_osc(
         self,
         enabled: bool,

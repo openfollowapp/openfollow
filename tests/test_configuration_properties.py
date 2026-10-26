@@ -35,7 +35,6 @@ from openfollow.configuration import (
     _coerce_float,
     _coerce_hex_color,
     _coerce_int,
-    _coerce_optional_float,
     _coerce_optional_marker_id,
     _coerce_str,
     load_config,
@@ -113,25 +112,6 @@ def test_coerce_int_is_pure_int_and_in_range(value: object, bounds: tuple[int, i
 def test_coerce_int_rejects_bool_input(value: bool, bounds: tuple[int, int, int]) -> None:
     lo, hi, default = bounds
     assert _coerce_int(value, default, lo=lo, hi=hi) == default
-
-
-# --- _coerce_optional_float --------------------------------------------------
-
-
-@given(value=_ANY, bounds=_float_bounds())
-def test_coerce_optional_float_is_none_or_finite_in_range(
-    value: object,
-    bounds: tuple[float, float, float],
-) -> None:
-    lo, hi, default = bounds  # non-None default
-    out = _coerce_optional_float(value, default, lo=lo, hi=hi)
-    assert out is None or (isinstance(out, float) and math.isfinite(out) and lo <= out <= hi)
-
-
-@given(value=_ANY)
-def test_coerce_optional_float_with_none_default_never_leaks_nonfinite(value: object) -> None:
-    out = _coerce_optional_float(value, None)
-    assert out is None or (isinstance(out, float) and math.isfinite(out))
 
 
 # --- _coerce_optional_marker_id ----------------------------------------------

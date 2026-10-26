@@ -253,6 +253,7 @@ def validate_payload(template_type: str, payload: Mapping[str, Any]) -> None:
         GroundGridConfig,
         PathsConfig,
         TriggerZonesConfig,
+        without_former_camera_keys,
     )
 
     if template_type == "osc_output":
@@ -337,7 +338,7 @@ def validate_payload(template_type: str, payload: Mapping[str, Any]) -> None:
                 f"camera_grid payload 'camera' must be object, got {type(camera_dict).__name__}",
             )
         try:
-            CameraConfig(**camera_dict)
+            CameraConfig(**without_former_camera_keys(camera_dict))
         except TypeError as exc:
             raise TemplateValidationError(
                 f"camera_grid payload 'camera' invalid: {exc}",

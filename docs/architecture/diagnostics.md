@@ -26,6 +26,10 @@ The diagnostics bundle (and later settings / templates) can be saved to the top 
 
 Section A5 of the bundle ([`web/diagnostics.py`](../../openfollow/web/diagnostics.py)) makes a single bounded TCP connect to the host the *operator's own* video input is configured to dial, plus a bounded DNS lookup for it. It answers the most common support question there is, whether the station can reach its camera at all, which no amount of local state can. It is one of the four outbound exceptions to the offline runtime contract: operator-click-gated (a bundle download, or a save of the bundle to a drive from the web UI or the Operator Screen), sends no stream data and reads nothing back, is capped at ~2.5 s total, is never scheduled and never runs at startup or on the render path. When the resolved address is public rather than LAN, the section says so in the output.
 
+## USB table (E8)
+
+Section E8 lists every USB device and, in its OpenFollow column, what OpenFollow picks up on it. Exact evidence decides first: a gamepad by the USB ids in its SDL GUID, a 3D mouse by the USB ids its status reports, storage by the disks under it, a camera by the V4L2 devices under it (`/sys/class/video4linux/*` resolved up to the USB device, Linux only) when the USB Camera input lists that name. Only then does a name decide: MIDI ports, gamepads without USB ids, and cameras found under no USB device (every camera on macOS). A shared word is weak evidence, so a camera placed through sysfs is never offered to the name match, and another device sharing its vendor or model word stays unclaimed.
+
 ## Power supply and throttling (`power_health.py`)
 
 A Raspberry Pi on a weak supply freezes and drops USB devices; one that runs hot slows its CPU. Both are read by `PowerMonitor`, owned by the `SystemStatsCollector` and read with the other system stats once a second:

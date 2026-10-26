@@ -646,6 +646,7 @@ def build_marker_visual_state(
         state.settings_items_submenu = submenu
         state.settings_selected_index = app._settings_menu_index
         state.settings_menu_banner = app._settings_menu_banner
+        state.settings_menu_banner_action = app._settings_menu_banner_action
     else:
         state.settings_items = []
         state.settings_items_enabled = []
@@ -653,6 +654,7 @@ def build_marker_visual_state(
         state.settings_items_submenu = []
         state.settings_selected_index = 0
         state.settings_menu_banner = ""
+        state.settings_menu_banner_action = ""
 
     state.about_active = getattr(app, "_about_active", False)
     _populate_media_overlay(app, state)

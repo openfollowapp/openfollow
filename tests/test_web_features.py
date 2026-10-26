@@ -337,9 +337,9 @@ class TestLens:
         cfg.ui.shown_features = shown
         save_config(cfg, server.config_path)
         _, body = _get(base, "/section/camera")
-        heading = body.index('<h3 class="group-title">Lens distortion</h3>')
+        heading = body.index('<h3 class="group-title">Lens</h3>')
         assert body[:heading].rsplit("<div", 1)[1].strip() == 'class="group">'
-        assert 'id="camera-lens-k1"' in body
+        assert 'id="camera-lens"' in body
 
 
 class TestTouchRemote:

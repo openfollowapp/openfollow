@@ -26,6 +26,7 @@ class FakePad:
         self._link_returns = link_returns
         self.linked_to: FakePad | None = None
         self._linked_into = False
+        self.probes: list[tuple[Any, Any]] = []
 
     def get_name(self) -> str:
         return self._name
@@ -38,6 +39,10 @@ class FakePad:
         if isinstance(other, FakePad):
             other._linked_into = True
         return self._link_returns
+
+    def add_probe(self, probe_type: Any, callback: Any) -> int:
+        self.probes.append((probe_type, callback))
+        return len(self.probes)
 
     def get_current_caps(self) -> FakeCaps:
         return FakeCaps(f"video/{self._name}")
@@ -236,6 +241,13 @@ def make_fake_gst(
         SEGMENT_DONE = "segment-done"
         STATE_CHANGED = "state-changed"
 
+    class FakePadProbeType:
+        BUFFER = "buffer"
+
+    class FakePadProbeReturn:
+        OK = "ok"
+        REMOVE = "remove"
+
     class FakeGst:
         Pipeline = FakePipelineNs
         ElementFactory = FakeElementFactory
@@ -246,6 +258,8 @@ def make_fake_gst(
         SeekFlags = FakeSeekFlags
         SeekType = FakeSeekType
         MessageType = FakeMessageType
+        PadProbeType = FakePadProbeType
+        PadProbeReturn = FakePadProbeReturn
         Rank = _Rank
 
         @staticmethod

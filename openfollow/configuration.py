@@ -3535,10 +3535,10 @@ _DEPRECATED_WARNED: set[str] = set()
 def apply_renamed_marker_keys(marker_data: dict[str, Any]) -> None:
     """Read ``invert_control_direction`` as the control frame, in place.
 
-    Every route into a marker section goes through here - config file, JSON
-    config API, peer broadcast - so a station still sending the former names
-    during a rolling upgrade is understood rather than accepted and silently
-    discarded. The current name wins wherever both appear.
+    Every route into a marker section goes through here - config file, web
+    form, JSON config API, import, peer broadcast - so a station still sending
+    ``invert_control_direction`` during a rolling upgrade is understood rather
+    than accepted and silently discarded. A ``control_frame`` beside it wins.
     """
     # invert_control_direction is stage axes, or when true the heading of a camera looking downstage.
     if "invert_control_direction" in marker_data:

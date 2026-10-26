@@ -22,13 +22,13 @@ The first line is the station's reading of how far the connection got before it 
 - **Not configured** – no source has been set.
 - **Failed** – the pipeline reported something this station has no reading for. Here, and only here, its own wording is shown instead, because it is the whole story. **Signal** reads `Disconnected` for this case rather than inventing a label.
 
-A second red box appears while the video arriving is more than the station is sized for: over Full HD (the longer side over 1920 or the shorter over 1080 pixels) or over 30 fps. It names what arrives beside the limit, then the one thing to change. The video keeps playing; the box says why the picture or the markers may lag. Its frame rate is counted from the frames that arrive, so it can differ from **Frame Rate (source)**, which is what the source advertises. **Video Source** explains the limits.
-
 - **Source** – the configured source name or type (for example the RTSP URL label or NDI source name). Confirms which input the pipeline is reading from.
 - **Signal** – `Connected` with a live feed. Otherwise it carries the reading above rather than a bare `Disconnected`, so the state names which piece of equipment is involved; an unrecognised failure stays `Disconnected`. The panel header chip mirrors this.
 - **Input resolution** – pixel dimensions (width × height) of the frames arriving from the source. `N/A` until one actually connects; the *No Signal* picture is generated here and reports no geometry of its own.
 - **Frame Rate (source)** – frame rate the source advertises. `N/A` while nothing is connected, for the same reason.
 - **Pipeline** – the connection attempt in more detail: `Connecting`, `Reconnecting`, `Connected`, or `Disconnected` once the retries have run out. It is where retry state lives: the banner deliberately carries no attempt counter, because a figure that changes every few seconds moves the box without telling you anything.
+
+A red box also appears while the video arriving is more than the station is sized for: over Full HD (the longer side over 1920 or the shorter over 1080 pixels) or over 30 fps. It names what arrives beside the limit, then the one thing to change. The video keeps playing; the box says why the picture or the markers may lag. Its frame rate is counted from the frames that arrive, so it can differ from **Frame Rate (source)**, which is what the source advertises. **Video Source** explains the limits.
 
 ## Device
 

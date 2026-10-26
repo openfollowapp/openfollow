@@ -157,6 +157,35 @@ def test_default_config_dir_under_home(launcher, monkeypatch, tmp_path) -> None:
     assert launcher.default_config_dir() == tmp_path / "Library" / "Application Support" / "OpenFollow"
 
 
+def test_default_log_file_under_home_library_logs(launcher, monkeypatch, tmp_path) -> None:
+    """Console lists ~/Library/Logs, the usual place for a macOS app's own log."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert launcher.default_log_file() == tmp_path / "Library" / "Logs" / "OpenFollow" / "openfollow.log"
+
+
+def test_run_gui_logs_to_the_log_file_with_crash_tracebacks_on_stderr(launcher, monkeypatch, tmp_path) -> None:
+    """stderr becomes the log file once logging starts, so faulthandler writes there."""
+    import faulthandler
+
+    import openfollow.main
+
+    seen: dict[str, object] = {}
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(launcher, "seed_user_data", lambda config_dir, resources: config_dir / "config.toml")
+    monkeypatch.setattr(launcher.sys, "argv", ["OpenFollow"])
+    monkeypatch.setattr(faulthandler, "enable", lambda **kw: seen.update(faulthandler=kw))
+    monkeypatch.setattr(openfollow.main, "main", lambda **kw: seen.update(main=kw))
+
+    assert launcher.run_gui() == 0
+
+    assert seen["faulthandler"] == {"file": 2, "all_threads": True}
+    assert seen["main"] == {"log_file": tmp_path / "Library" / "Logs" / "OpenFollow" / "openfollow.log"}
+    assert launcher.sys.argv == [
+        "OpenFollow",
+        str(tmp_path / "Library" / "Application Support" / "OpenFollow" / "config.toml"),
+    ]
+
+
 def test_resource_root_prefers_meipass(launcher, monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(launcher.sys, "_MEIPASS", str(tmp_path), raising=False)
     assert launcher.resource_root() == tmp_path

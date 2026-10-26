@@ -12,18 +12,26 @@ The handler is small and pure-Python; tests focus on:
 from __future__ import annotations
 
 import logging
+import os
+import re
 import threading
 from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
 
 import pytest
 
 from openfollow.logging_setup import (
     DEFAULT_RING_CAPACITY,
+    LOG_FILE_BACKUPS,
+    LogFileHandler,
     RingBufferLogHandler,
     ThrottledExceptionLogger,
     _JournalPriorityFormatter,
     _sd_priority,
     _under_systemd,
+    active_log_file,
+    read_log_file,
     setup_logging,
 )
 
@@ -191,6 +199,293 @@ def test_setup_logging_extra_handlers_round_trip() -> None:
     # And it carries the managed flag – so the next setup call
     # would clean it up alongside the built-in handlers.
     assert getattr(custom, "_openfollow_managed", False) is True
+
+
+# ---------------------------------------------------------------------------
+# Log file (the macOS app)
+# ---------------------------------------------------------------------------
+
+_FILE_LINE_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \[(?P<level>[A-Z]+)\] (?P<name>[\w.]+): (?P<msg>.*)$")
+
+
+@pytest.fixture
+def std_fds(tmp_path: Path) -> Iterator[tuple[int, int]]:
+    """Stand-ins for stdout and stderr, so no test redirects the worker's own.
+
+    Closes every log file handler a test left on the root logger first: the
+    root-logger fixture removes handlers but does not close them."""
+    fds = (
+        os.open(tmp_path / "stdout.stand-in", os.O_WRONLY | os.O_CREAT, 0o600),
+        os.open(tmp_path / "stderr.stand-in", os.O_WRONLY | os.O_CREAT, 0o600),
+    )
+    yield fds
+    for h in logging.getLogger().handlers:
+        if isinstance(h, LogFileHandler):
+            h.close()
+    for fd in fds:
+        os.close(fd)
+
+
+def _lines(path: Path) -> list[str]:
+    return path.read_text(encoding="utf-8").splitlines()
+
+
+def test_setup_logging_writes_dated_records_to_the_log_file(tmp_path: Path, std_fds: tuple[int, int]) -> None:
+    log_file = tmp_path / "Logs" / "OpenFollow" / "openfollow.log"
+    ring = setup_logging(level=logging.INFO, log_file=log_file, std_fds=std_fds)
+    logging.getLogger("openfollow.test.file").warning("disk nearly full")
+    # The file spans days and restarts, so each line carries its date as well as its time.
+    matches = [m for m in map(_FILE_LINE_RE.match, _lines(log_file)) if m]
+    assert ("WARNING", "openfollow.test.file", "disk nearly full") in [
+        (m["level"], m["name"], m["msg"]) for m in matches
+    ]
+    assert any("disk nearly full" in line for line in ring.snapshot())
+
+
+def test_setup_logging_marks_where_each_process_starts_in_the_log_file(
+    tmp_path: Path, std_fds: tuple[int, int]
+) -> None:
+    log_file = tmp_path / "openfollow.log"
+    setup_logging(log_file=log_file, std_fds=std_fds)
+    setup_logging(log_file=log_file, std_fds=std_fds)
+    starts = [line for line in _lines(log_file) if f"Process {os.getpid()} logging to {log_file}" in line]
+    assert len(starts) == 2
+
+
+def test_setup_logging_with_a_log_file_leaves_stderr_to_the_file(
+    tmp_path: Path, std_fds: tuple[int, int], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The file takes stderr over, so a stderr handler on top would write each record twice."""
+    setup_logging(log_file=tmp_path / "openfollow.log", std_fds=std_fds)
+    logging.getLogger("openfollow.test.file").warning("written once")
+    assert "written once" not in capsys.readouterr().err
+
+
+def test_the_log_file_takes_what_the_process_writes_to_stdout_and_stderr(
+    tmp_path: Path, std_fds: tuple[int, int]
+) -> None:
+    """GLib and GStreamer warnings, uncaught thread exceptions and faulthandler
+    write straight to the standard streams, past the logging module."""
+    log_file = tmp_path / "openfollow.log"
+    setup_logging(log_file=log_file, std_fds=std_fds)
+    os.write(std_fds[0], b"printed to stdout\n")
+    os.write(std_fds[1], b"(OpenFollow:42): GStreamer-CRITICAL **: native warning\n")
+    lines = _lines(log_file)
+    assert "printed to stdout" in lines
+    assert "(OpenFollow:42): GStreamer-CRITICAL **: native warning" in lines
+
+
+def _file_handler(path: Path, std_fds: tuple[int, int], *, max_bytes: int = 200) -> LogFileHandler:
+    handler = LogFileHandler(path, max_bytes=max_bytes, backup_count=2, std_fds=std_fds)
+    handler.setFormatter(_formatter())
+    return handler
+
+
+def test_the_log_file_rotates_by_size_and_keeps_its_copies_bounded(tmp_path: Path, std_fds: tuple[int, int]) -> None:
+    log_file = tmp_path / "openfollow.log"
+    handler = _file_handler(log_file, std_fds)
+    try:
+        for i in range(40):
+            handler.emit(_record(f"record {i:02d} " + "x" * 40))
+    finally:
+        handler.close()
+    assert sorted(p.name for p in tmp_path.glob("openfollow.log*")) == [
+        "openfollow.log",
+        "openfollow.log.1",
+        "openfollow.log.2",
+    ]
+    for path in tmp_path.glob("openfollow.log*"):
+        # One record past the cap at most: a rotation happens before the record that would cross it.
+        assert path.stat().st_size < 200 + 60
+    assert _lines(log_file)[-1].startswith("record 39")
+
+
+def test_the_process_output_follows_the_log_file_through_a_rotation(tmp_path: Path, std_fds: tuple[int, int]) -> None:
+    log_file = tmp_path / "openfollow.log"
+    handler = _file_handler(log_file, std_fds)
+    try:
+        while not (tmp_path / "openfollow.log.1").exists():
+            handler.emit(_record("filler " + "x" * 40))
+        os.write(std_fds[1], b"after the rotation\n")
+    finally:
+        handler.close()
+    assert "after the rotation" in _lines(log_file)
+    assert "after the rotation" not in _lines(tmp_path / "openfollow.log.1")
+
+
+def test_the_log_file_counts_process_output_towards_its_size(tmp_path: Path, std_fds: tuple[int, int]) -> None:
+    log_file = tmp_path / "openfollow.log"
+    handler = _file_handler(log_file, std_fds)
+    try:
+        handler.emit(_record("first"))
+        os.write(std_fds[1], b"n" * 300 + b"\n")
+        handler.emit(_record("second"))
+    finally:
+        handler.close()
+    assert _lines(log_file) == ["second"]
+    assert _lines(tmp_path / "openfollow.log.1")[0] == "first"
+
+
+def test_the_log_file_rotates_on_process_output_alone(tmp_path: Path, std_fds: tuple[int, int]) -> None:
+    """A GLib warning repeated every frame fills the file with no record to trigger a size check."""
+    log_file = tmp_path / "openfollow.log"
+    handler = _file_handler(log_file, std_fds)
+    try:
+        os.write(std_fds[1], b"n" * 100 + b"\n")
+        handler.roll_over_if_full()
+        assert not (tmp_path / "openfollow.log.1").exists()
+        os.write(std_fds[1], b"n" * 100 + b"\n")
+        handler.roll_over_if_full()
+    finally:
+        handler.close()
+    assert (tmp_path / "openfollow.log.1").stat().st_size == 202
+    assert log_file.stat().st_size == 0
+
+
+class _SignallingLogFileHandler(LogFileHandler):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.rolled = threading.Event()
+        super().__init__(*args, **kwargs)
+
+    def doRollover(self) -> None:
+        super().doRollover()
+        self.rolled.set()
+
+
+def test_the_log_file_checks_its_size_in_the_background(tmp_path: Path, std_fds: tuple[int, int]) -> None:
+    handler = _SignallingLogFileHandler(
+        tmp_path / "openfollow.log", max_bytes=200, backup_count=2, std_fds=std_fds, check_every_s=0.01
+    )
+    try:
+        os.write(std_fds[1], b"n" * 300 + b"\n")
+        assert handler.rolled.wait(timeout=10)
+    finally:
+        handler.close()
+
+
+def test_closing_the_log_file_stops_its_size_checks(tmp_path: Path, std_fds: tuple[int, int]) -> None:
+    before = set(threading.enumerate())
+    handler = _file_handler(tmp_path / "openfollow.log", std_fds)
+    (watcher,) = set(threading.enumerate()) - before
+    handler.close()
+    watcher.join(timeout=10)
+    assert not watcher.is_alive()
+
+
+def test_logging_shutdown_closes_the_log_file_while_a_size_check_waits(
+    tmp_path: Path, std_fds: tuple[int, int]
+) -> None:
+    """``logging.shutdown`` holds the handler lock across ``close``: a size check
+    waiting for that lock must neither hold ``close`` up nor fail once it runs."""
+    # A zero interval keeps the background check queued on the lock as often as not.
+    handler = LogFileHandler(
+        tmp_path / "openfollow.log", max_bytes=200, backup_count=2, std_fds=std_fds, check_every_s=0.0
+    )
+    errors: list[BaseException] = []
+
+    def check() -> None:
+        try:
+            handler.roll_over_if_full()
+        except BaseException as exc:  # noqa: BLE001 - reported by the assertion below
+            errors.append(exc)
+
+    checking = threading.Thread(target=check, daemon=True)
+
+    def shut_down() -> None:
+        handler.acquire()
+        try:
+            checking.start()
+            handler.close()
+        finally:
+            handler.release()
+
+    closer = threading.Thread(target=shut_down, daemon=True)
+    closer.start()
+    closer.join(timeout=10)
+    checking.join(timeout=10)
+    assert not closer.is_alive()
+    assert not checking.is_alive()
+    assert errors == []
+
+
+def test_setup_logging_falls_back_to_stderr_when_the_log_file_cannot_open(
+    tmp_path: Path, std_fds: tuple[int, int], capsys: pytest.CaptureFixture[str]
+) -> None:
+    blocker = tmp_path / "Logs"
+    blocker.write_text("a file where the log directory belongs", encoding="utf-8")
+    ring = setup_logging(log_file=blocker / "OpenFollow" / "openfollow.log", std_fds=std_fds)
+    logging.getLogger("openfollow.test.file").warning("still reported")
+    assert "still reported" in capsys.readouterr().err
+    assert any("[WARNING]" in line and "Cannot write the log file" in line for line in ring.snapshot())
+    assert active_log_file() is None
+
+
+def test_active_log_file_names_the_file_setup_logging_installed(tmp_path: Path, std_fds: tuple[int, int]) -> None:
+    setup_logging()
+    assert active_log_file() is None
+    log_file = tmp_path / "openfollow.log"
+    setup_logging(log_file=log_file, std_fds=std_fds)
+    assert active_log_file() == log_file
+    # Re-entry without one closes the file handler with the other managed handlers.
+    setup_logging()
+    assert active_log_file() is None
+
+
+def _write_kept_files(log_file: Path, *contents: str) -> None:
+    """``contents`` oldest first: the last one is the current file, the rest its rotated copies."""
+    names = [f"{log_file.name}.{i}" for i in range(len(contents) - 1, 0, -1)] + [log_file.name]
+    for name, text in zip(names, contents, strict=True):
+        (log_file.parent / name).write_text(text, encoding="utf-8")
+
+
+def test_read_log_file_joins_the_rotated_copies_oldest_first(tmp_path: Path) -> None:
+    log_file = tmp_path / "openfollow.log"
+    _write_kept_files(log_file, "a1\na2\n", "b1\nb2\n", "c1\n")
+    assert read_log_file(log_file) == ["a1", "a2", "b1", "b2", "c1"]
+
+
+@pytest.mark.parametrize(
+    ("last_n", "expected"),
+    [
+        (1, ["c1"]),
+        (2, ["b2", "c1"]),
+        (4, ["a2", "b1", "b2", "c1"]),
+        (99, ["a1", "a2", "b1", "b2", "c1"]),
+        (0, []),
+    ],
+)
+def test_read_log_file_tail_spans_the_rotated_copies(tmp_path: Path, last_n: int, expected: list[str]) -> None:
+    log_file = tmp_path / "openfollow.log"
+    _write_kept_files(log_file, "a1\na2\n", "b1\nb2\n", "c1\n")
+    assert read_log_file(log_file, last_n=last_n) == expected
+
+
+def test_read_log_file_reads_only_the_copies_rotation_keeps(tmp_path: Path) -> None:
+    log_file = tmp_path / "openfollow.log"
+    # The oldest is one copy more than rotation keeps.
+    _write_kept_files(log_file, *(f"file {i}\n" for i in range(LOG_FILE_BACKUPS + 2)))
+    assert read_log_file(log_file) == [f"file {i}" for i in range(1, LOG_FILE_BACKUPS + 2)]
+
+
+def test_read_log_file_reads_no_copy_past_a_missing_one(tmp_path: Path) -> None:
+    """Rotation fills ``.1``, ``.2``, … in order, so a gap ends the kept set."""
+    log_file = tmp_path / "openfollow.log"
+    _write_kept_files(log_file, "stale\n", "missing\n", "current\n")
+    (tmp_path / "openfollow.log.1").unlink()
+    assert read_log_file(log_file) == ["current"]
+
+
+def test_read_log_file_raises_without_the_current_file(tmp_path: Path) -> None:
+    (tmp_path / "openfollow.log.1").write_text("orphaned copy\n", encoding="utf-8")
+    with pytest.raises(FileNotFoundError):
+        read_log_file(tmp_path / "openfollow.log")
+
+
+def test_read_log_file_replaces_bytes_that_are_not_utf8(tmp_path: Path) -> None:
+    """Native output is not guaranteed to be UTF-8."""
+    log_file = tmp_path / "openfollow.log"
+    log_file.write_bytes(b"ok\nbad \xff byte\n")
+    assert read_log_file(log_file) == ["ok", "bad \ufffd byte"]
 
 
 # ---------------------------------------------------------------------------

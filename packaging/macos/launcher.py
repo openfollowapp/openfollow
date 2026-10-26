@@ -14,7 +14,7 @@ the in-app model export, and the build-time self-check all run from one bundle:
   resolves from the bundle, then exit. Used by the DMG build's post-bundle
   verifier without opening a window.
 - default: seed a per-user config + the bundled default model on first run, then
-  launch the GUI.
+  launch the GUI, logging to ``~/Library/Logs/OpenFollow/openfollow.log``.
 
 Imports are lazy so the module loads (and its seed logic stays unit-testable)
 without GTK / GStreamer / torch present.
@@ -22,6 +22,7 @@ without GTK / GStreamer / torch present.
 
 from __future__ import annotations
 
+import faulthandler
 import os
 import shutil
 import sys
@@ -29,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 APP_NAME = "OpenFollow"
+LOG_FILE_NAME = "openfollow.log"
 SEED_CONFIG_NAME = "config.seed.toml"
 STORAGE_PLACEHOLDER = "@STORAGE_PATH@"
 
@@ -87,6 +89,11 @@ REQUIRED_GST_ELEMENTS = (
 def default_config_dir() -> Path:
     """Per-user, writable config home for the bundled app."""
     return Path.home() / "Library" / "Application Support" / APP_NAME
+
+
+def default_log_file() -> Path:
+    """Per-user log file, where macOS keeps an app's own logs (listed by Console)."""
+    return Path.home() / "Library" / "Logs" / APP_NAME / LOG_FILE_NAME
 
 
 def resource_root() -> Path:
@@ -269,12 +276,17 @@ def run_selfcheck() -> int:
 
 
 def run_gui() -> int:
-    """Seed per-user data, then hand off to the normal GUI entry point."""
+    """Seed per-user data, then hand off to the normal GUI entry point.
+
+    A Finder launch has no terminal, so the log goes to the log file, which takes
+    stderr over: faulthandler writes a native crash's traceback there.
+    """
     config_path = seed_user_data(default_config_dir(), resource_root())
     sys.argv = [sys.argv[0], str(config_path)]
+    faulthandler.enable(file=2, all_threads=True)
     from openfollow.main import main
 
-    main()
+    main(log_file=default_log_file())
     return 0
 
 

@@ -342,3 +342,15 @@ def test_crash_restart_count_reaches_each_app_generation(patched_main) -> None:
     # First generation is a cold start; each later one carries the count of
     # crashes that preceded it.
     assert fake_app.crash_restarts_seen == [0, 1, 2]
+
+
+def test_main_logs_to_stderr_unless_handed_a_log_file(patched_main, monkeypatch, tmp_path) -> None:
+    """The console-script entry (the Pi) passes no log file; the macOS app's launcher passes one."""
+    seen: list[object] = []
+    patched_main(behaviours=[lambda: None, lambda: None], times=[0.0])
+    monkeypatch.setattr(main_module, "setup_logging", lambda **kw: seen.append(kw["log_file"]))
+
+    main_module.main()
+    main_module.main(log_file=tmp_path / "openfollow.log")
+
+    assert seen == [None, tmp_path / "openfollow.log"]

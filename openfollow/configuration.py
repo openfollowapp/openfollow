@@ -3473,8 +3473,8 @@ def _config_from_data(path: str, data: dict[str, Any]) -> AppConfig:
             if _old in _ctrl and _new not in _ctrl:
                 _ctrl[_new] = _ctrl[_old]
 
-    # Back-compat: read the marker's settings under their former names
-    # BEFORE ``_filter_known`` drops them, so an existing config keeps them.
+    # Back-compat: read ``invert_control_direction`` as the control frame
+    # BEFORE ``_filter_known`` drops it, so an existing config keeps it.
     _marker = data.get("marker")
     if isinstance(_marker, dict):
         apply_renamed_marker_keys(_marker)
@@ -3533,7 +3533,7 @@ _DEPRECATED_WARNED: set[str] = set()
 
 
 def apply_renamed_marker_keys(marker_data: dict[str, Any]) -> None:
-    """Read the marker's settings under their former names, in place.
+    """Read ``invert_control_direction`` as the control frame, in place.
 
     Every route into a marker section goes through here - config file, JSON
     config API, peer broadcast - so a station still sending the former names

@@ -66,7 +66,7 @@ origin_length = 1.0
 origin_thickness = 3
 
 # Experimental: a second floor, one polygon at its own absolute Z. A marker
-# inside it draws its dropline, ground circle and cone base at z_offset.
+# inside it draws its Z line, ground circle and cone base at z_offset.
 [ground_grid]
 enabled = false
 visible = true

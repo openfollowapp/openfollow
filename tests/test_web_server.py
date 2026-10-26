@@ -2370,6 +2370,15 @@ def test_form_post_movement_renders_saved_partial(live_server) -> None:
     assert "movement-section" in body
 
 
+def test_form_post_movement_reads_the_former_invert_flag_as_the_control_frame(live_server) -> None:
+    """A page served before the control frame posts the flag; it lands as a camera looking downstage."""
+    server, base = live_server
+    status, _body = _post_form(base, "/section/movement", {"invert_control_direction": "on"})
+    assert status == 200
+    cfg = load_config(server.config_path)
+    assert (cfg.marker.control_frame, cfg.marker.control_heading) == ("heading", 180.0)
+
+
 def test_form_post_gamepad_renders_saved_partial(live_server) -> None:
     _, base = live_server
     status, body = _post_form(base, "/section/gamepad", {"enabled": "true", "deadzone": "0.1"})

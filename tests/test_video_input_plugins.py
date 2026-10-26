@@ -585,7 +585,7 @@ class TestFrameMeterDeclaration:
         if name is None:
             # Only the Media Gallery, which plays nothing past the limits.
             assert plugin.input_id == "testpattern"
-            return
+            pytest.skip("the Media Gallery is not metered")
         element = _build_pipeline(plugin).get_by_name(name)
         assert element is not None, f"{plugin.input_id} meters {name!r} but builds no element with that name"
         assert element.properties.get("leaky") == 2
@@ -596,7 +596,7 @@ class TestFrameMeterDeclaration:
         MJPEG camera before ``jpegdec`` is one whole frame, so that is fine."""
         name = plugin.frame_meter_element_name
         if name is None:
-            return
+            pytest.skip("the Media Gallery is not metered")
         element = _build_pipeline(plugin).get_by_name(name)
         assert element is not None
         assert element.properties.get("max-size-time") != PRE_DECODE_QUEUE_NS

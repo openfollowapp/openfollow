@@ -17,6 +17,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from openfollow.configuration import config_file_problem, config_problem_words, is_simple_mode, save_config_fields
+from openfollow.input.keyboard import text_entry_owns_input
 from openfollow.input.touch_remote import holds
 from openfollow.runtime import paths_runtime
 from openfollow.video.failure import SourceKind, VideoFailure, failure_action, failure_sentence
@@ -130,8 +131,9 @@ def process_input(app: OpenFollowApp, dt: float) -> None:
     # instead of drifting the marker. Reads are defensive so partial test apps
     # don't trip; the clear runs only on the modal->marker-control transition,
     # where ``_input_manager`` is guaranteed present. Mirrors the early-return
-    # guards below – keep in sync when adding a modal. (A key-up dropped during
-    # continuous control is out of scope; that awaits the planned evdev poller.)
+    # guards below – keep in sync when adding a modal. (On the GTK fallback a
+    # key-up dropped during continuous control is not recovered here; the
+    # hardware pollers read held keys directly.)
     modal_active = on_screen_mode_active(app)
     if modal_active:
         app._marker_control_suspended = True
@@ -938,12 +940,7 @@ def on_key_up(app: OpenFollowApp, event: dict[str, Any]) -> None:
     # arrives after the overlay closes can't clear a key it never saw
     # pressed (which would otherwise underflow ``keys`` or strand a
     # different key as latched-pressed).
-    if (
-        app._url_editor_active
-        or app._browser_active
-        or app._field_choice_active
-        or getattr(app, "_pi_network_field_edit_active", False)
-    ):
+    if text_entry_owns_input(app) or app._field_choice_active:
         return
     if app._input_manager is not None:
         app._input_manager.keyboard_handler.on_key_up(event)

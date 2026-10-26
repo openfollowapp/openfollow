@@ -1066,3 +1066,15 @@ def test_the_real_xkbcommon_moves_the_letters(
     assert f"Keyboard layout {layout} (from session); using layout-aware keycodes" in caplog.text
     assert _letter_keys(poller, node, clock, KEY_CODES[z_key]) == {"z"}
     assert _letter_keys(poller, node, clock, KEY_CODES[y_key]) == {"y"}
+
+
+def test_the_real_evdev_names_every_polled_key(
+    input_dir: Path, sysfs_dir: Path, clock: _Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every ``ecodes`` name the poller looks up exists in the real python-evdev; no device is opened."""
+    if sys.platform != "linux":
+        pytest.skip("python-evdev is a Linux-only dependency")
+    monkeypatch.delitem(sys.modules, "evdev")
+    poller = LinuxEvdevKeyboardPoller(input_dir=str(input_dir), clock=clock, sysfs_dir=str(sysfs_dir))
+    assert poller.is_available() is True
+    assert poller.get_pressed_keys(POLLED_KEYS) == set()

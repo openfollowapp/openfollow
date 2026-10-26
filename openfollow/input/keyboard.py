@@ -689,6 +689,20 @@ class FallbackKeyboardPoller(KeyboardPoller):
         self._pressed.clear()
 
 
+def text_entry_owns_input(app: Any) -> bool:
+    """True while a screen the operator types into owns the keyboard.
+
+    The URL editor, the Pi-network field editor and the browser overlay take
+    their keys from GTK events; the GTK path stops forwarding keys to the
+    poller while one is open, and a hardware poller is gated by the same test.
+    """
+    return bool(
+        getattr(app, "_url_editor_active", False)
+        or getattr(app, "_pi_network_field_edit_active", False)
+        or getattr(app, "_browser_active", False)
+    )
+
+
 def create_keyboard_poller() -> KeyboardPoller:
     """Create the appropriate keyboard poller for the current platform."""
     system = platform.system()
@@ -791,6 +805,10 @@ class KeyboardHandler:
         # an identity check is a correct, allocation-free invalidation signal.
         self._discrete_keys_cc: ControllerConfig | None = None
         self._discrete_keys_cache: frozenset[str] = frozenset()
+        # A hardware poller sees keys typed into a text-entry screen. Keys held
+        # while one owns input, or as it closes, stay invisible until released.
+        self._swallowed: set[str] = set()
+        self._gated_last_poll = False
         if self._is_fallback:
             logger.warning("Using fallback keyboard tracking – key events may be lost")
 
@@ -810,7 +828,14 @@ class KeyboardHandler:
     @property
     def keys(self) -> set[str]:
         """Return set of currently pressed keys (for compatibility)."""
-        return self._poller.get_pressed_keys(POLLED_KEYS)
+        return {key for key in POLLED_KEYS if self._held(key)}
+
+    def _gated(self) -> bool:
+        return not self._is_fallback and text_entry_owns_input(self.app)
+
+    def _held(self, key: str) -> bool:
+        """Whether ``key`` is held, as the app may act on it."""
+        return key not in self._swallowed and not self._gated() and self._poller.is_key_pressed(key)
 
     def is_connected(self) -> bool:
         """Return whether a keyboard appears to be connected and usable."""
@@ -883,9 +908,7 @@ class KeyboardHandler:
         contract – modifier flicker faster than 60 Hz isn't
         observable through this interface anyway.
         """
-        return frozenset(
-            canonical for key, canonical in self._MODIFIER_KEY_TO_NAME.items() if self._poller.is_key_pressed(key)
-        )
+        return frozenset(canonical for key, canonical in self._MODIFIER_KEY_TO_NAME.items() if self._held(key))
 
     def poll_discrete_keys(self) -> None:
         """Poll keyboard state and detect press / release edges.
@@ -916,6 +939,12 @@ class KeyboardHandler:
         drops edge state for any key no longer in ``keys_to_poll`` so a
         later re-add re-sees the press edge instead of a phantom held state.
         """
+        gated = self._gated()
+        self._swallowed = {key for key in self._swallowed if self._poller.is_key_pressed(key)}
+        if gated or self._gated_last_poll:
+            # A screen closed by a GTK key event leaves that key held: no press edge for it underneath.
+            self._swallowed |= self._poller.get_pressed_keys(POLLED_KEYS)
+        self._gated_last_poll = gated
         discrete = self._discrete_polled_keys()
         if self._event_bus is not None:
             modifiers = self._current_modifiers()
@@ -925,7 +954,7 @@ class KeyboardHandler:
             modifiers = frozenset()
             keys_to_poll = discrete
         for key in keys_to_poll:
-            is_pressed = self._poller.is_key_pressed(key)
+            is_pressed = self._held(key)
             was_pressed = self._prev_key_state.get(key, False)
             if is_pressed and not was_pressed:
                 if key in discrete:
@@ -1036,7 +1065,7 @@ class KeyboardHandler:
         move_speed = self.app.get_marker_move_speed(self.app._selected_id)
 
         def pressed(key: str) -> bool:
-            return bool(key) and self._poller.is_key_pressed(key)
+            return bool(key) and self._held(key)
 
         layout = MOVEMENT_LAYOUTS.get(cc.key_move_layout, MOVEMENT_LAYOUTS["wasd"])
         vx = vy = vz = 0.0

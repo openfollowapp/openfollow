@@ -1250,9 +1250,11 @@ class TestControllerBindingOnMarkerCard:
         assert state.markers[0].is_controlled is False
         assert state.markers[0].controller_idx is None
 
-    @pytest.mark.parametrize(("backend", "kind"), [("pygame", "gamepad"), ("mouse3d", "mouse3d")])
-    def test_unbound_controllers_collected_with_their_kind(self, backend: str, kind: str) -> None:
-        """A 3D mouse with no marker is as unbound as a gamepad, and named as one."""
+    @pytest.mark.parametrize(
+        ("slot_kind", "kind"), [("gamepad", "gamepad"), ("mouse3d", "mouse3d"), ("joystick", "gamepad")]
+    )
+    def test_unbound_controllers_collected_with_their_kind(self, slot_kind: str, kind: str) -> None:
+        """A 3D mouse with no marker is as unbound as a gamepad, named by its slot kind; any other kind is a gamepad."""
         app = _build_app(
             controlled=[1],
             viewer=[1],
@@ -1273,7 +1275,7 @@ class TestControllerBindingOnMarkerCard:
                         "name": "Y",
                         "controller_index": 2,
                         "effective_speed": 1.0,
-                        "backend": backend,
+                        "kind": slot_kind,
                     },
                 ]
             ),

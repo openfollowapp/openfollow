@@ -8,19 +8,23 @@ when GStreamer video pipelines are running).
 
 Platform support:
 - macOS: Uses Quartz CGEventSourceKeyState
-- Linux/Windows: Falls back to event-based tracking
+- Linux: Reads each keyboard's held-key bitmap through evdev (``EVIOCGKEY``)
+- Elsewhere, or when neither is usable: Falls back to event-based tracking
 """
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import glob
 import logging
 import math
+import os
 import platform
 import time
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Literal
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp
@@ -158,6 +162,27 @@ _MAC_KEY_CODES: dict[str, int] = {
     "Numpad9": 0x5C,
 }
 
+# ``evdev.ecodes`` names per polled key (US positions); a modifier lists both
+# sides, and Enter its keypad twin, as GTK reports both as one key.
+_EVDEV_KEY_NAMES: dict[str, tuple[str, ...]] = {
+    **{letter: (f"KEY_{letter.upper()}",) for letter in "abcdefghijklmnopqrstuvwxyz"},
+    "Tab": ("KEY_TAB",),
+    "Enter": ("KEY_ENTER", "KEY_KPENTER"),
+    "Escape": ("KEY_ESC",),
+    "Shift": ("KEY_LEFTSHIFT", "KEY_RIGHTSHIFT"),
+    "Control": ("KEY_LEFTCTRL", "KEY_RIGHTCTRL"),
+    "Alt": ("KEY_LEFTALT", "KEY_RIGHTALT"),
+    "Meta": ("KEY_LEFTMETA", "KEY_RIGHTMETA"),
+    "Space": ("KEY_SPACE",),
+    "ArrowUp": ("KEY_UP",),
+    "ArrowDown": ("KEY_DOWN",),
+    "ArrowLeft": ("KEY_LEFT",),
+    "ArrowRight": ("KEY_RIGHT",),
+    **{f"Numpad{n}": (f"KEY_KP{n}",) for n in range(10)},
+}
+
+_INPUT_DIR = "/dev/input"
+
 
 # ---------------------------------------------------------------------------
 # Keyboard Pollers (Platform Abstraction)
@@ -166,6 +191,9 @@ _MAC_KEY_CODES: dict[str, int] = {
 
 class KeyboardPoller(ABC):
     """Abstract base class for keyboard state polling."""
+
+    # Wire value published in ``/api/stats`` (``keyboard.poller``).
+    kind: ClassVar[str]
 
     @abstractmethod
     def is_key_pressed(self, key: str) -> bool:
@@ -280,6 +308,7 @@ def _build_layout_keycode_map() -> dict[str, int] | None:
 class MacOSKeyboardPoller(KeyboardPoller):
     """macOS keyboard poller using Quartz CGEventSourceKeyState."""
 
+    kind = "quartz"
     _STATE_ID = 1  # kCGEventSourceStateHIDSystemState
 
     def __init__(self) -> None:
@@ -377,8 +406,139 @@ class MacOSKeyboardPoller(KeyboardPoller):
         return bool(result)
 
 
+def _input_devices_accessible(input_dir: str) -> bool:
+    """Whether this user may open every evdev node in ``input_dir`` (the service user is in ``input``)."""
+    try:
+        names = os.listdir(input_dir)
+    except OSError:
+        return False
+    return all(
+        os.access(os.path.join(input_dir, name), os.R_OK | os.W_OK) for name in names if name.startswith("event")
+    )
+
+
+class LinuxEvdevKeyboardPoller(KeyboardPoller):
+    """Linux poller reading the kernel's held-key bitmap (``EVIOCGKEY``) of every keyboard.
+
+    Available means evdev is usable, not that a keyboard is attached: the
+    poller is chosen once, so a unit booted headless picks a keyboard up
+    through the rescan.
+    """
+
+    kind = "evdev"
+    # One frame's many ``is_key_pressed`` calls share one read of the devices.
+    _SNAPSHOT_TTL_S = 0.004
+    _RESCAN_INTERVAL_S = 1.0
+
+    def __init__(self, input_dir: str = _INPUT_DIR, clock: Callable[[], float] = time.monotonic) -> None:
+        self._input_dir = input_dir
+        self._clock = clock
+        self._available = False
+        self._evdev: Any = None
+        self._key_codes: dict[str, tuple[int, ...]] = {}
+        self._devices: dict[str, Any] = {}
+        # Nodes that are not keyboards, by inode, so a rescan opens each node once.
+        self._rejected: dict[str, int] = {}
+        self._held: frozenset[int] = frozenset()
+        self._held_at = -math.inf
+        self._next_scan_at = -math.inf
+
+        try:
+            import evdev
+        except ImportError as exc:
+            logger.warning("evdev keyboard poller unavailable: %s", exc)
+            return
+        if not _input_devices_accessible(input_dir):
+            logger.warning("evdev keyboard poller unavailable: cannot open the devices in %s", input_dir)
+            return
+        self._evdev = evdev
+        ecodes = evdev.ecodes
+        self._key_codes = {key: tuple(getattr(ecodes, n) for n in names) for key, names in _EVDEV_KEY_NAMES.items()}
+        self._key_a: int = ecodes.KEY_A
+        self._ev_key: int = ecodes.EV_KEY
+        self._available = True
+        self._maybe_rescan(self._clock())
+        logger.info("evdev keyboard poller initialized (%d keyboard(s))", len(self._devices))
+
+    def is_available(self) -> bool:
+        return self._available
+
+    def device_count(self) -> int:
+        """Number of keyboards open right now."""
+        if self._available:
+            self._maybe_rescan(self._clock())
+        return len(self._devices)
+
+    def is_key_pressed(self, key: str) -> bool:
+        codes = self._key_codes.get(key)
+        if codes is None:
+            return False
+        held = self._snapshot()
+        return any(code in held for code in codes)
+
+    def _snapshot(self) -> frozenset[int]:
+        now = self._clock()
+        self._maybe_rescan(now)
+        if now - self._held_at < self._SNAPSHOT_TTL_S:
+            return self._held
+        held: set[int] = set()
+        for path, device in list(self._devices.items()):
+            try:
+                held.update(device.active_keys())
+            except OSError:
+                self._drop(path)
+        self._held = frozenset(held)
+        self._held_at = now
+        return self._held
+
+    def _maybe_rescan(self, now: float) -> None:
+        if now < self._next_scan_at:
+            return
+        self._next_scan_at = now + self._RESCAN_INTERVAL_S
+        try:
+            paths = list(self._evdev.list_devices(self._input_dir))
+        except OSError:
+            return
+        for path in [path for path in self._devices if path not in paths]:
+            self._drop(path)
+        self._rejected = {path: inode for path, inode in self._rejected.items() if path in paths}
+        for path in paths:
+            if path in self._devices:
+                continue
+            try:
+                inode = os.stat(path).st_ino
+            except OSError:
+                continue
+            if self._rejected.get(path) == inode:
+                continue
+            try:
+                device = self._evdev.InputDevice(path)
+            except OSError:
+                continue
+            try:
+                is_keyboard = self._key_a in device.capabilities().get(self._ev_key, ())
+            except OSError:
+                _close_quietly(device)
+                continue
+            if is_keyboard:
+                self._devices[path] = device
+            else:
+                self._rejected[path] = inode
+                _close_quietly(device)
+
+    def _drop(self, path: str) -> None:
+        _close_quietly(self._devices.pop(path))
+
+
+def _close_quietly(device: Any) -> None:
+    with contextlib.suppress(OSError):
+        device.close()
+
+
 class FallbackKeyboardPoller(KeyboardPoller):
     """Fallback poller that tracks key state via events."""
+
+    kind = "fallback"
 
     def __init__(self) -> None:
         self._pressed: set[str] = set()
@@ -412,6 +572,11 @@ def create_keyboard_poller() -> KeyboardPoller:
         if poller.is_available():
             return poller
         logger.warning("macOS native poller unavailable, using fallback")
+    elif system == "Linux":
+        evdev_poller = LinuxEvdevKeyboardPoller()
+        if evdev_poller.is_available():
+            return evdev_poller
+        logger.warning("evdev keyboard poller unavailable, using fallback")
 
     return FallbackKeyboardPoller()
 
@@ -424,8 +589,8 @@ def create_keyboard_poller() -> KeyboardPoller:
 class KeyboardHandler:
     """Handles keyboard input for marker and camera control.
 
-    Uses direct hardware polling (macOS) or event-based tracking (fallback)
-    to get reliable keyboard state, bypassing GTK's event system which can
+    Uses direct hardware polling (macOS Quartz, Linux evdev) or event-based
+    tracking (fallback) to get reliable keyboard state, bypassing GTK's event system which can
     drop events under heavy GStreamer video load.
     """
 
@@ -527,7 +692,14 @@ class KeyboardHandler:
         self._keyboard_connected_cache = self._probe_keyboard_connected()
         return self._keyboard_connected_cache
 
+    def status(self) -> dict[str, Any]:
+        """The poller in use and, for evdev, how many keyboards it reads (``/api/stats`` ``keyboard``)."""
+        devices = self._poller.device_count() if isinstance(self._poller, LinuxEvdevKeyboardPoller) else None
+        return {"poller": self._poller.kind, "devices": devices}
+
     def _probe_keyboard_connected(self) -> bool:
+        if isinstance(self._poller, LinuxEvdevKeyboardPoller):
+            return self._poller.device_count() > 0
         system = platform.system()
         if system == "Darwin":
             # On macOS, Quartz polling only works when a keyboard input source exists.
@@ -704,12 +876,12 @@ class KeyboardHandler:
         marker once control comes back. Resets
         the fallback poller's pressed set and the handler's edge state together
         so the next poll sees no stale ``was_pressed`` (no spurious release
-        edge). The macOS poller reads hardware directly and has no ``clear``;
-        only its edge state is reset.
+        edge). The hardware pollers (macOS, evdev) read the keyboard directly
+        and have no ``clear``; only their edge state is reset.
 
-        Note: this recovers on a context switch, not mid-gameplay – a dropped
-        key-up during continuous control still relies on the operator tapping
-        the key, pending the planned hardware-level evdev poller.
+        On the fallback this recovers on a context switch, not mid-gameplay: a
+        dropped key-up during continuous control still needs the operator to
+        tap the key.
         """
         clear_fn = getattr(self._poller, "clear", None)
         if callable(clear_fn):

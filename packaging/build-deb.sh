@@ -194,6 +194,10 @@ assert origin and os.path.realpath(origin).startswith(prefix + os.sep), (
     f"PyOpenGL not bundled in venv: {origin}"
 )
 
+# The Operator Screen's keyboard poller; without it the Pi falls back to GTK key events.
+import evdev  # noqa: F401
+assert os.path.realpath(evdev.__file__).startswith(prefix + os.sep), f"evdev not bundled in venv: {evdev.__file__}"
+
 # Detection backend must be bundled (import from the venv prefix); the AGPL
 # export toolchain (torch / ultralytics) must not be – the SBOM gate's boundary,
 # verified here at build time.

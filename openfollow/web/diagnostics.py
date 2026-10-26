@@ -557,6 +557,12 @@ def collect_runtime_state(p: DiagnosticsProviders) -> list[str]:
             rows.append(f"         key {item['port_key']}")
         if item.get("notes"):
             rows.append(f"         notes {', '.join(item['notes'])}")
+    keyboard = stats.get("keyboard") or {}
+    devices = keyboard.get("devices")
+    rows.append(
+        f"  Keyboard poller:        {keyboard.get('poller') or '[not running]'}"
+        f"{'' if devices is None else f', {devices} keyboard(s)'}"
+    )
     conflicts = stats.get("marker_conflicts") or []
     rows.append(f"  Marker conflicts:       {len(conflicts) or '(none)'}")
     for conflict in conflicts:

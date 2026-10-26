@@ -18,8 +18,9 @@ APT_PACKAGES=(
   python3-venv
   # Source-build toolchain. Several native deps ship no cp313/aarch64 wheel and
   # compile from source during ``poetry install`` on the Pi (python-rtmidi,
-  # pycairo, pygobject, netifaces). Their meson/setuptools builds need a C/C++
-  # compiler and pkg-config, which a minimal Pi OS Lite image may not preinstall.
+  # pycairo, pygobject, netifaces, evdev). Their meson/setuptools builds need a
+  # C/C++ compiler and pkg-config, which a minimal Pi OS Lite image may not
+  # preinstall; evdev reads ``linux/input.h`` from the ``linux-libc-dev`` it pulls.
   build-essential
   pkg-config
   python3-gi

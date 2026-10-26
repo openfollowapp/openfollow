@@ -4508,6 +4508,22 @@ def test_collect_runtime_state_lists_every_marker_conflict() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("block", "expected"),
+    [
+        ({"poller": "evdev", "devices": 2}, "  Keyboard poller:        evdev, 2 keyboard(s)"),
+        ({"poller": "evdev", "devices": 0}, "  Keyboard poller:        evdev, 0 keyboard(s)"),
+        ({"poller": "fallback", "devices": None}, "  Keyboard poller:        fallback"),
+        ({"poller": None, "devices": None}, "  Keyboard poller:        [not running]"),
+        (None, "  Keyboard poller:        [not running]"),
+    ],
+)
+def test_collect_runtime_state_names_the_keyboard_poller(block: dict[str, Any] | None, expected: str) -> None:
+    stats = _stats()
+    stats["keyboard"] = block
+    assert expected in diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats))
+
+
 def test_collect_runtime_state_says_when_no_marker_conflicts() -> None:
     assert "  Marker conflicts:       (none)" in diag.collect_runtime_state(
         diag.DiagnosticsProviders(runtime_stats=_stats)

@@ -4068,6 +4068,7 @@ class AppRuntimeServices:
                 "items": [],
             },
             "mouse3d": idle_mouse3d_status(cfg.mouse3d.enabled).to_dict(),
+            "keyboard": {"poller": None, "devices": None},
             "playback": self._frame_metrics.snapshot(),
             "tracking": {
                 "enabled": bool(self.detection_config().enabled),
@@ -4240,6 +4241,9 @@ class AppRuntimeServices:
             if input_manager is not None
             else idle_mouse3d_status(cfg.mouse3d.enabled)
         )
+        keyboard_status = (
+            input_manager.keyboard_status() if input_manager is not None else {"poller": None, "devices": None}
+        )
         if input_manager is not None:
             for item in input_manager.get_controller_info():
                 since = item.get("seconds_since_input")
@@ -4314,6 +4318,7 @@ class AppRuntimeServices:
                 "items": controller_items,
             },
             "mouse3d": mouse3d_status.to_dict(),
+            "keyboard": keyboard_status,
             "playback": playback_snapshot,
             "tracking": detection_snapshot,
             "hud": self._hud_render.stats() if self._hud_render is not None else None,

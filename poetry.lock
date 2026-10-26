@@ -926,6 +926,18 @@ files = [
 cffi = "*"
 
 [[package]]
+name = "evdev"
+version = "2.0.0"
+description = "Bindings to the Linux input handling subsystem"
+optional = false
+python-versions = ">=3.11"
+groups = ["main"]
+markers = "sys_platform == \"linux\""
+files = [
+    {file = "evdev-2.0.0.tar.gz", hash = "sha256:442fb3f4c8dfc9e61e901133c356220c02d663eca8f34722e0cecdd637eba504"},
+]
+
+[[package]]
 name = "execnet"
 version = "2.1.2"
 description = "execnet: rapid multi-Python deployment"
@@ -4384,4 +4396,4 @@ export = ["ultralytics"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13,<3.14"
-content-hash = "ea9f5e32efe99ff188216b33fa9451c1ae5dc09086d99ed42e8abadcedb1321a"
+content-hash = "453406b1b0f1f26fad1fa6b37711b4f603f793cf7690c6bf10619515b27fabd7"

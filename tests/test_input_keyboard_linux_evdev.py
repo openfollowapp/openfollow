@@ -441,7 +441,7 @@ def test_an_unplugged_keyboard_is_dropped_and_the_others_keep_their_keys(
     assert poller.device_count() == 1
 
 
-# What python-evdev raises for a node the kernel lost: its C extension can return NULL without an exception set.
+# What a read of a node the kernel lost can raise; python-evdev's C extension can return NULL without an exception set.
 _LOST_DEVICE_ERRORS = [
     pytest.param(
         SystemError("<built-in function ioctl_EVIOCG_bits> returned NULL without setting an exception"),

@@ -9078,6 +9078,7 @@ def _busy(monkeypatch, drain_places: int = 1) -> tuple[threading.BoundedSemaphor
     assert slot.acquire(blocking=False)
     drains = threading.BoundedSemaphore(drain_places)
     monkeypatch.setattr(server_module, "_busy_drain_semaphore", drains)
+    monkeypatch.setattr(server_module, "_busy_log", server_module._BusyLog())
     return slot, drains
 
 
@@ -9102,12 +9103,15 @@ def _busy_answer(sock: socket.socket) -> bytes:
     return answer
 
 
-def test_a_busy_station_s_answer_reaches_a_client_still_sending(live_server, monkeypatch, caplog) -> None:
+def test_a_busy_answer_reaches_a_client_still_sending(live_server, monkeypatch, caplog) -> None:
     import logging
 
+    from openfollow.web import server as server_module
+
+    caplog.set_level(logging.INFO, logger="openfollow.web.server")
     _, base = live_server
     slot, _ = _busy(monkeypatch, drain_places=4)
-    body = b"x" * (4 * 1024 * 1024)
+    body = b"x" * (server_module._BUSY_DRAIN_MAX_BYTES - 4096)  # the head fits under the cap too
     failures: list[str] = []
     try:
         for _ in range(30):
@@ -9123,7 +9127,28 @@ def test_a_busy_station_s_answer_reaches_a_client_still_sending(live_server, mon
     finally:
         slot.release()
     assert failures == []
-    assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
+    assert [r.levelno for r in caplog.records if r.name == "openfollow.web.server"] == [logging.WARNING]
+
+
+def test_a_station_that_accepts_again_after_a_quiet_interval_says_so(live_server, monkeypatch, caplog) -> None:
+    import logging
+
+    from openfollow.web import server as server_module
+
+    caplog.set_level(logging.INFO, logger="openfollow.web.server")
+    _, base = live_server
+    slot, _ = _busy(monkeypatch)
+    now = [0.0]
+    monkeypatch.setattr(server_module, "_busy_log", server_module._BusyLog(clock=lambda: now[0]))
+    try:
+        assert _get(base, "/api/info")[0] == 503
+    finally:
+        slot.release()
+    now[0] = server_module._BUSY_LOG_INTERVAL_S
+    assert _get(base, "/api/info")[0] == 200
+    lines = [(r.levelno, r.getMessage()) for r in caplog.records if r.name == "openfollow.web.server"]
+    assert [level for level, _ in lines] == [logging.WARNING, logging.INFO]
+    assert "accepts requests again; 0 refused" in lines[1][1]
 
 
 def test_a_busy_drain_ends_at_its_deadline_and_frees_its_place(live_server, monkeypatch) -> None:
@@ -9149,7 +9174,7 @@ def test_a_busy_drain_stops_at_its_byte_cap(live_server, monkeypatch) -> None:
     from openfollow.web import server as server_module
 
     monkeypatch.setattr(server_module, "_BUSY_DRAIN_TIMEOUT_S", 60.0)
-    monkeypatch.setattr(server_module, "_UNREAD_BODY_MAX_BYTES", 64 * 1024)
+    monkeypatch.setattr(server_module, "_BUSY_DRAIN_MAX_BYTES", 64 * 1024)
     _, base = live_server
     slot, drains = _busy(monkeypatch)
     host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)

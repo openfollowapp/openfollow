@@ -11,6 +11,7 @@ network.  Integration-style tests (against a live server) live in
 
 from __future__ import annotations
 
+import logging
 import socket
 import threading
 import time
@@ -911,12 +912,17 @@ def test_configwebserver_on_peer_discovered_logs(tmp_path, monkeypatch, caplog) 
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture()
-def rejected_client():
+def _half_closed_pair() -> tuple[socket.socket, socket.socket]:
     """A rejected connection whose client sent its request and half-closed: the station's end, the client's end."""
     ours, theirs = socket.socketpair()
     theirs.shutdown(socket.SHUT_WR)
     theirs.settimeout(5)
+    return ours, theirs
+
+
+@pytest.fixture()
+def rejected_client():
+    ours, theirs = _half_closed_pair()
     yield ours, theirs
     ours.close()
     theirs.close()
@@ -987,7 +993,7 @@ def test_threading_wsgi_server_swallows_shutdown_exception(monkeypatch, rejected
     srv.process_request_thread(rejected_client[0], ("127.0.0.1", 40002))
 
 
-def test_threading_wsgi_server_counts_rejection(monkeypatch, rejected_client) -> None:
+def test_threading_wsgi_server_counts_rejection(monkeypatch) -> None:
     """A 503 rejection must bump the module-level rejection counter so the
     diagnostics bundle reports the cap being hit instead of a constant 0."""
     from openfollow.web import server as server_mod
@@ -1001,10 +1007,120 @@ def test_threading_wsgi_server_counts_rejection(monkeypatch, rejected_client) ->
     srv = server_mod._ThreadingWSGIServer.__new__(server_mod._ThreadingWSGIServer)
     srv.shutdown_request = lambda req: None  # type: ignore[assignment]
 
-    srv.process_request_thread(rejected_client[0], ("127.0.0.1", 40010))
-    srv.process_request_thread(rejected_client[0], ("127.0.0.1", 40011))
+    pairs = [_half_closed_pair(), _half_closed_pair()]
+    try:
+        srv.process_request_thread(pairs[0][0], ("127.0.0.1", 40010))
+        srv.process_request_thread(pairs[1][0], ("127.0.0.1", 40011))
+    finally:
+        for sock in (s for pair in pairs for s in pair):
+            sock.close()
 
     assert server_mod._request_semaphore_rejections == 2
+
+
+def test_threading_wsgi_server_closes_a_refused_connection_whatever_the_drain_raises(
+    monkeypatch, rejected_client
+) -> None:
+    from openfollow.web import server as server_mod
+
+    exhausted = threading.BoundedSemaphore(1)
+    exhausted.acquire()
+    monkeypatch.setattr(server_mod, "_request_semaphore", exhausted)
+
+    def _boom(_request: object) -> None:
+        raise RuntimeError("drain failed")
+
+    monkeypatch.setattr(server_mod, "_discard_busy_request", _boom)
+    shutdowns: list[object] = []
+    srv = server_mod._ThreadingWSGIServer.__new__(server_mod._ThreadingWSGIServer)
+    srv.shutdown_request = lambda req: shutdowns.append(req)  # type: ignore[assignment]
+
+    with pytest.raises(RuntimeError):
+        srv.process_request_thread(rejected_client[0], ("127.0.0.1", 40013))
+    assert shutdowns == [rejected_client[0]]
+
+
+class _FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _busy_lines(caplog) -> list[tuple[int, str]]:
+    return [(r.levelno, r.getMessage()) for r in caplog.records if r.name == "openfollow.web.server"]
+
+
+@pytest.fixture()
+def busy_log(caplog):
+    from openfollow.web import server as server_mod
+
+    caplog.set_level("INFO", logger="openfollow.web.server")
+    clock = _FakeClock()
+    return server_mod._BusyLog(clock=clock), clock
+
+
+def test_a_burst_of_refusals_logs_one_line(busy_log, caplog) -> None:
+    log, clock = busy_log
+    for i in range(50):
+        clock.now = i
+        log.refused("192.0.2.7")
+    lines = _busy_lines(caplog)
+    assert len(lines) == 1
+    assert lines[0][0] == logging.WARNING
+    assert "192.0.2.7" in lines[0][1]
+
+
+def test_a_reminder_comes_after_the_interval_and_carries_the_count(busy_log, caplog) -> None:
+    from openfollow.web import server as server_mod
+
+    log, clock = busy_log
+    log.refused("192.0.2.7")
+    for _ in range(49):
+        clock.now = server_mod._BUSY_LOG_INTERVAL_S - 0.1
+        log.refused("192.0.2.7")
+    assert len(_busy_lines(caplog)) == 1
+    clock.now = server_mod._BUSY_LOG_INTERVAL_S
+    log.refused("192.0.2.7")
+    clock.now = server_mod._BUSY_LOG_INTERVAL_S + 1
+    log.refused("192.0.2.7")
+    lines = _busy_lines(caplog)
+    assert [level for level, _ in lines] == [logging.WARNING, logging.WARNING]
+    assert "refused 50 more requests" in lines[1][1]
+
+
+def test_an_accept_during_a_busy_streak_does_not_end_it(busy_log, caplog) -> None:
+    from openfollow.web import server as server_mod
+
+    log, clock = busy_log
+    log.refused("192.0.2.7")
+    clock.now = server_mod._BUSY_LOG_INTERVAL_S - 1
+    log.refused("192.0.2.7")
+    clock.now = server_mod._BUSY_LOG_INTERVAL_S + 1
+    log.accepted()
+    log.refused("192.0.2.7")
+    lines = _busy_lines(caplog)
+    assert [level for level, _ in lines] == [logging.WARNING, logging.WARNING]
+    assert "refused 2 more requests" in lines[1][1]
+
+
+def test_an_accept_after_a_quiet_interval_ends_the_streak(busy_log, caplog) -> None:
+    from openfollow.web import server as server_mod
+
+    log, clock = busy_log
+    log.accepted()
+    log.refused("192.0.2.7")
+    clock.now = 1
+    log.refused("192.0.2.7")
+    clock.now = 1 + server_mod._BUSY_LOG_INTERVAL_S
+    log.accepted()
+    log.accepted()
+    log.refused("192.0.2.8")
+    lines = _busy_lines(caplog)
+    assert [level for level, _ in lines] == [logging.WARNING, logging.INFO, logging.WARNING]
+    assert "accepts requests again; 1 refused" in lines[1][1]
+    assert "192.0.2.8" in lines[2][1]
 
 
 def test_configwebserver_rejection_count_surfaces_via_property(tmp_path, monkeypatch, rejected_client) -> None:

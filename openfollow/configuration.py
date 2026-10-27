@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 import tomli_w
 
 from openfollow.binding_conflicts import BindingMove, settle_duplicates
+from openfollow.button_names import BUTTON_NAME_STYLES
 from openfollow.keyboard_layout import LAYOUT_RE as XKB_LAYOUT_RE
 from openfollow.keyboard_layout import VARIANT_RE as XKB_VARIANT_RE
 from openfollow.lens_model import C_BOUND, pull_back_to_valid
@@ -2317,6 +2318,8 @@ class ControllerConfig:
     deadzone: float = 0.15
     invert_y: bool = False
     curve: str = "logarithmic"
+    # Which pad family's printed names buttons are shown by (button_names.py).
+    button_name_style: str = "standard"
     # Normal mode button mappings
     btn_reset: str = "X"
     btn_toggle_help: str = "Y"
@@ -2431,6 +2434,7 @@ class ControllerConfig:
                 self.curve,
             )
             self.curve = "logarithmic"
+        self.button_name_style = _coerce_choice(self.button_name_style, BUTTON_NAME_STYLES, "standard")
         if self.move_xy_stick not in VALID_STICKS:
             logger.warning(
                 "Invalid move_xy_stick %r, falling back to 'left'",

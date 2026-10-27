@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import pytest
 
+from openfollow.button_names import SYMBOL_CHARS, ButtonNameStyle
 from openfollow.runtime.overlay_layout import (
     bottom_left_info_panel_layout,
     build_help_sections,
@@ -725,3 +726,63 @@ def test_build_help_sections_lists_the_toggles_as_one_group(section: str) -> Non
     assert rows == list(range(rows[0], rows[0] + len(labels))), lines
     settings = [i for i, line in enumerate(lines) if "Settings menu" in line]
     assert all(i > rows[-1] for i in settings), lines
+
+
+_CROSS, _CIRCLE, _SQUARE, _TRIANGLE = (SYMBOL_CHARS[k] for k in ("cross", "circle", "square", "triangle"))
+
+
+@pytest.mark.parametrize(
+    ("style", "lines"),
+    [
+        (ButtonNameStyle.STANDARD, ["A: Confirm", "B: Back", "Back: Close all menus"]),
+        (ButtonNameStyle.XBOX, ["A: Confirm", "B: Back", f"{SYMBOL_CHARS['view']}: Close all menus"]),
+        (ButtonNameStyle.PLAYSTATION, [f"{_CROSS}: Confirm", f"{_CIRCLE}: Back", "Create: Close all menus"]),
+        (ButtonNameStyle.NINTENDO, ["A: Confirm", "B: Back", "-: Close all menus"]),
+    ],
+)
+def test_the_menus_list_names_buttons_in_the_stations_style(style: ButtonNameStyle, lines: list[str]) -> None:
+    sections = build_help_sections(
+        mode="menus", keyboard_connected=False, controller_connected=True, button_name_style=style
+    )
+    controller = dict(sections)["Controller"]
+    assert [controller[0], controller[1], controller[-1]] == lines
+
+
+@pytest.mark.parametrize(
+    ("style", "expected"),
+    [
+        (ButtonNameStyle.STANDARD, ["RT: Z+", "LB/RB: Speed - / +", "X: Reset marker", "Back: Settings menu"]),
+        (
+            ButtonNameStyle.XBOX,
+            ["RT: Z+", "LB/RB: Speed - / +", "X: Reset marker", f"{SYMBOL_CHARS['view']}: Settings menu"],
+        ),
+        (
+            ButtonNameStyle.PLAYSTATION,
+            [
+                "R2: Z+",
+                "L2: Z-",
+                "L1/R1: Speed - / +",
+                f"{_SQUARE}: Reset marker",
+                f"{_TRIANGLE}: Toggle Help (this overlay)",
+                "Create: Settings menu",
+            ],
+        ),
+        (
+            ButtonNameStyle.NINTENDO,
+            [
+                "ZR: Z+",
+                "ZL: Z-",
+                "L/R: Speed - / +",
+                "X: Reset marker",
+                "Y: Toggle Help (this overlay)",
+                "-: Settings menu",
+            ],
+        ),
+    ],
+)
+def test_the_controller_help_names_buttons_in_the_stations_style(style: ButtonNameStyle, expected: list[str]) -> None:
+    sections = build_help_sections(
+        mode="normal", keyboard_connected=False, controller_connected=True, button_name_style=style
+    )
+    controller = dict(sections)["Controller"]
+    assert all(line in controller for line in expected), controller

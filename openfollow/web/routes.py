@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from openfollow.web.discovery import PeerInfo
     from openfollow.web.server import ConfigWebServer
 
+from openfollow.button_names import ButtonNameStyle, name_style
 from openfollow.configuration import (
     CALIBRATION_CORNERS,
     CALIBRATION_MODES,
@@ -166,7 +167,8 @@ from openfollow.templates.writer import (
 from openfollow.units import UnitSystem, parse_length, parse_speed
 from openfollow.web import diagnostics, lens_calibrations, peer_auth
 from openfollow.web._md import render_help_markdown
-from openfollow.web.bindings import check_binding, osc_row_overlap, osc_trigger_overlap
+from openfollow.web.bindings import CONTROLLER_SECTIONS, check_binding, osc_row_overlap, osc_trigger_overlap
+from openfollow.web.button_icons import button_html
 from openfollow.web.config_cache import ParsedConfigCache
 from openfollow.web.discovery import clean_peer_name
 from openfollow.web.keyboard_layout_view import build_keyboard_layout_view, station_catalog, variant_options
@@ -566,12 +568,14 @@ def _is_navigation() -> bool:
 
 
 def _cancel_button_label(cfg: AppConfig) -> str:
-    """Return the gamepad button label bound to cancel, for the footer hint.
+    """Return the gamepad button bound to cancel, as HTML for the footer hint.
 
-    Mirrors ``controller.btn_menu_cancel`` (default ``"B"``); falls back to
-    ``"Cancel"`` when the binding is cleared so the hint stays non-empty.
+    Names ``controller.btn_menu_cancel`` (default ``"B"``) in the station's
+    button names; falls back to ``"Cancel"`` when the binding is cleared so the
+    hint stays non-empty.
     """
-    return (cfg.controller.btn_menu_cancel or "").strip() or "Cancel"
+    button = (cfg.controller.btn_menu_cancel or "").strip()
+    return button_html(button, name_style(cfg.controller.button_name_style), short=True) if button else "Cancel"
 
 
 def _get_detection_missing_deps(config: AppConfig | None = None) -> list[str]:
@@ -1169,8 +1173,13 @@ _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
     "paths": frozenset({"show_paths"}),
     # Whether this station takes remote driving from a browser at all.
     "touch_remote": frozenset({"enabled"}),
-    # The keyboard plugged into this station, in every section that writes the controller config.
-    **{section: _KEYBOARD_LAYOUT_FIELDS for section, attr in _SECTION_CONFIG_ATTRS.items() if attr == "controller"},
+    # The keyboard and pads plugged into this station, in every section that writes the controller
+    # config. Button names describe its pads, like the pad map: a file import restores them.
+    **{
+        section: _KEYBOARD_LAYOUT_FIELDS | {"button_name_style"}
+        for section, attr in _SECTION_CONFIG_ATTRS.items()
+        if attr == "controller"
+    },
 }
 
 # Sections that are device-local as a whole. Every row of the Network Interface
@@ -2342,6 +2351,7 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "deadzone": _as_float,
         "invert_y": _as_bool,
         "curve": _as_str,
+        "button_name_style": _as_str,
         "btn_reset": _as_str,
         "btn_toggle_help": _as_str,
         "btn_speed_down": _as_str,
@@ -3482,7 +3492,13 @@ def _backup_before(config_path: str, kind: str, named_by: AppConfig | None = Non
 # as a config.toml load does: no section form the import goes through applies them.
 _FILE_IMPORT_FIELDS: dict[str, tuple[str, ...]] = {
     "detection": ("masks", "masks_enabled"),
-    "controller": ("button_raw_indices", "swap_triggers", "mapped_controller_name", "mapped_controller_guid"),
+    "controller": (
+        "button_raw_indices",
+        "swap_triggers",
+        "mapped_controller_name",
+        "mapped_controller_guid",
+        "button_name_style",
+    ),
     "midi": ("patches",),
     "virtual_faders": ("faders",),
     "ui": ("developer_mode",),
@@ -9087,6 +9103,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             row=row,
             kind=kind,
             binding_overlap=functools.partial(osc_trigger_overlap, cfg.controller),
+            button_name_style=cfg.controller.button_name_style,
             valid_rates=VALID_OSC_TRANSMITTER_RATES,
             valid_edges=VALID_TRIGGER_EDGES,
             valid_modifiers=VALID_TRIGGER_MODIFIERS,
@@ -9966,7 +9983,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # A binding the edit clashes with: its input moves here (the page's
         # binding-steal.js applies the ``bindingChecked`` event), or, for the
         # marker-fader stick on the Move X/Y stick, an error.
-        binding = check_binding(section, field_name, request.query)
+        # The saved Button Names, as the selectors beside the note show them.
+        style = ButtonNameStyle.STANDARD
+        if section in CONTROLLER_SECTIONS:
+            style = name_style((cfg or _request_scoped_config()).controller.button_name_style)
+        binding = check_binding(section, field_name, request.query, style)
         if binding is not None:
             if binding.error:
                 return (
@@ -9975,10 +9996,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 )
             response.set_header("HX-Trigger", json.dumps(binding.event(field_name)))
             if binding.note:
-                return (
-                    f'<span class="field-note-msg" role="status" aria-live="polite">'
-                    f"{html_mod.escape(binding.note, quote=True)}</span>"
-                )
+                note_html = binding.note_html or html_mod.escape(binding.note, quote=True)
+                return f'<span class="field-note-msg" role="status" aria-live="polite">{note_html}</span>'
             return ""
         # An OSC trigger on a claimed input: a movement key is an error, an
         # input a gamepad or keyboard action also uses is a caution. OSC rows

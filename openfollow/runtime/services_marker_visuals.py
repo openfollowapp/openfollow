@@ -12,6 +12,7 @@ from typing import Any
 
 import numpy.typing as npt
 
+from openfollow.button_names import name_style
 from openfollow.configuration import (
     MOUSE3D_AXES,
     MOUSE3D_BUTTON_FIELDS,
@@ -821,6 +822,7 @@ def build_marker_visual_state(
     # While paths are off their bindings do nothing, so help names none.
     paths_engine = getattr(app, "_paths", None)
     paths_on = paths_engine is not None and paths_engine.enabled
+    state.button_name_style = name_style(cc.button_name_style)
     state.button_labels = {
         "reset": cc.btn_reset,
         "toggle_help": cc.btn_toggle_help,

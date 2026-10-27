@@ -928,6 +928,7 @@ def _make_visual_app(marker: object, *, controlled: bool) -> SimpleNamespace:
             btn_settings="",
             btn_menu_confirm="",
             btn_menu_cancel="",
+            button_name_style="standard",
             move_xy_stick="",
             key_move_layout="",
             key_move_z_up="",

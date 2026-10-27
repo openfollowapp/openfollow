@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy.typing as npt
 
+from openfollow.button_names import ButtonNameStyle
 from openfollow.configuration import (
     _GRID_COLOR_DEFAULT,
     _GRID_THICKNESS_DEFAULT,
@@ -288,6 +289,8 @@ class OverlayState:
     latency_flash: float | None = None
     # Configurable button labels for help overlay (action -> button name)
     button_labels: dict[str, str] = field(default_factory=dict)
+    # Pad family the station names buttons after (controller.button_name_style)
+    button_name_style: ButtonNameStyle = ButtonNameStyle.STANDARD
     # Configurable keyboard labels for help overlay (action -> key name)
     keyboard_labels: dict[str, str] = field(default_factory=dict)
     # 3D Mouse bindings for the help overlay: axis -> target, action -> button

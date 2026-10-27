@@ -2442,6 +2442,87 @@ def test_form_post_gamepad_persists_new_button_fields(live_server) -> None:
     assert saved.controller.btn_menu_cancel == "B"
 
 
+def test_gamepad_buttons_are_named_the_standard_way_until_a_family_is_chosen(live_server) -> None:
+    _, base = live_server
+    status, body = _get(base, "/section/gamepad")
+    assert status == 200
+    assert '<option value="standard" selected>Standard</option>' in body
+    assert '<option value="BACK" selected>Back</option>' in body
+    assert '<option value="LB" selected>Left Bumper</option>' in body
+    assert "<td>A</td>" in body
+    assert "btn-symbol" not in body
+
+
+@pytest.mark.parametrize(
+    ("style", "options", "cell"),
+    [
+        (
+            "playstation",
+            ['<option value="X" selected>Square</option>', '<option value="LB" selected>L1</option>'],
+            '<td><span class="btn-symbol">',
+        ),
+        (
+            "xbox",
+            ['<option value="BACK" selected>View</option>', '<option value="LB" selected>LB</option>'],
+            "<td>A</td>",
+        ),
+        (
+            "nintendo",
+            [
+                '<option value="BACK" selected>Minus</option>',
+                '<option value="START" >Plus</option>',
+                '<option value="LB" selected>L</option>',
+            ],
+            "<td>A</td>",
+        ),
+    ],
+)
+def test_a_saved_button_name_style_names_the_buttons_and_keeps_the_bindings(
+    live_server, style: str, options: list[str], cell: str
+) -> None:
+    server, base = live_server
+    status, body = _post_form(
+        base,
+        "/section/gamepad",
+        {"enabled": "true", "deadzone": "0.15", "button_name_style": style, "btn_reset": "X", "btn_settings": "BACK"},
+    )
+    assert status == 200
+    saved = load_config(server.config_path).controller
+    assert (saved.button_name_style, saved.btn_reset, saved.btn_settings) == (style, "X", "BACK")
+    assert f'<option value="{style}" selected>' in body
+    assert all(option in body for option in options)
+    assert cell in body
+
+
+def test_the_detection_table_shows_a_symbol_with_its_word_for_screen_readers(live_server) -> None:
+    _, base = live_server
+    _post_form(base, "/section/gamepad", {"enabled": "true", "deadzone": "0.15", "button_name_style": "playstation"})
+    status, body = _get(base, "/section/gamepad")
+    assert status == 200
+    row = body[body.index("<tbody>") :]
+    row = row[: row.index("</tr>")]
+    assert '<svg class="btn-symbol-icon"' in row
+    assert 'aria-hidden="true"' in row
+    assert '<span class="visually-hidden">Cross</span>' in row
+    # The select options for the same button stay words.
+    assert '<option value="A" >Cross</option>' in body
+
+
+@pytest.mark.parametrize("bad", ["ps5", "Xbox", "", "1"])
+def test_form_post_gamepad_unknown_button_name_style_saves_standard(live_server, bad: str) -> None:
+    server, base = live_server
+    _post_form(base, "/section/gamepad", {"enabled": "true", "deadzone": "0.15", "button_name_style": bad})
+    assert load_config(server.config_path).controller.button_name_style == "standard"
+
+
+@pytest.mark.parametrize("bad", ["ps5", "Xbox", "1"])
+def test_validate_gamepad_button_name_style_refuses_an_unknown_family(live_server, bad: str) -> None:
+    _, base = live_server
+    status, body = _get(base, f"/api/validate/gamepad/button_name_style?button_name_style={bad}")
+    assert status == 200
+    assert "field-error-msg" in body
+
+
 def test_form_post_gamepad_invalid_button_falls_back_to_default(live_server) -> None:
     server, base = live_server
     status, _ = _post_form(
@@ -4790,6 +4871,7 @@ _RESTORED_BY_A_FILE_ONLY = (
     "controller.button_raw_indices",
     "controller.swap_triggers",
     "controller.mapped_controller_guid",
+    "controller.button_name_style",
     "ui.developer_mode",
     "paths.show_paths",
     "network.backend",
@@ -4800,7 +4882,11 @@ _RESTORED_BY_A_FILE_ONLY = (
 )
 _CHANGED_STRINGS = ("Cam 2", "192.0.2.10", "#336699", "imperial", "replace", "bottom", "nm", "H265", "720p", "x")
 # Settings the web UI checks harder than a config.toml load does.
-_CHANGED_VALUES = {"update_github_repo": "stage-crew/openfollow", "update_service_name": "openfollow-stage"}
+_CHANGED_VALUES = {
+    "update_github_repo": "stage-crew/openfollow",
+    "update_service_name": "openfollow-stage",
+    "controller.button_name_style": "playstation",
+}
 
 
 def _leaves(tree: dict[str, Any], prefix: tuple[str, ...] = ()) -> Any:
@@ -5488,6 +5574,18 @@ def test_the_on_device_footer_names_the_controller_button_and_esc(live_server) -
     footer = body[body.index('<footer class="on-device-footer">') :]
     footer = footer[: footer.index("</footer>")]
     assert "<kbd>B</kbd> on a controller or <kbd>Esc</kbd> on a keyboard closes the embedded browser" in footer
+
+
+def test_the_on_device_footer_draws_the_cancel_buttons_symbol(live_server) -> None:
+    server, base = live_server
+    _post_form(base, "/section/gamepad", {"enabled": "true", "deadzone": "0.15", "button_name_style": "playstation"})
+    with urllib.request.urlopen(f"{base}/", timeout=5) as resp:
+        body = resp.read().decode()
+    footer = body[body.index('<footer class="on-device-footer">') :]
+    footer = footer[: footer.index("</footer>")]
+    kbd = footer[footer.index("<kbd>") : footer.index("</kbd>")]
+    assert '<svg class="btn-symbol-icon"' in kbd
+    assert '<span class="visually-hidden">Circle</span>' in kbd
 
 
 def test_logout_clears_cookie_and_redirects_to_login(live_server) -> None:
@@ -7990,11 +8088,56 @@ def test_validate_endpoint_inference_size_snap_note(live_server) -> None:
     assert 'class="field-note-msg"' in body
 
 
+_SYMBOL_HTML = '<svg class="btn-symbol-icon"'
+
+
 def _get_checked(base: str, path: str, query: dict[str, str]) -> tuple[str, dict | None]:
     """Body plus the ``bindingChecked`` event of an ``HX-Trigger`` header, if any."""
     with urllib.request.urlopen(f"{base}{path}?{urllib.parse.urlencode(query)}", timeout=5) as r:
         header = r.headers.get("HX-Trigger")
         return r.read().decode(), (json.loads(header)["bindingChecked"] if header else None)
+
+
+@pytest.mark.parametrize(
+    ("style", "word", "symbol"),
+    [("standard", "Y", False), ("nintendo", "Y", False), ("playstation", "Triangle", True)],
+)
+def test_validate_binding_notes_name_the_button_in_the_saved_style(live_server, style, word, symbol) -> None:
+    """The notes use the saved style, as the selectors beside them do, whatever the form's unsaved choice."""
+    _, base = live_server
+    _post_form(base, "/section/gamepad", {"enabled": "true", "deadzone": "0.15", "button_name_style": style})
+    unsaved = "playstation" if style != "playstation" else "standard"
+    body, event = _get_checked(
+        base,
+        "/api/validate/gamepad/btn_reset",
+        {"btn_reset": "Y", "btn_toggle_help": "Y", "btn_settings": "BACK", "button_name_style": unsaved},
+    )
+    [moved] = event["moved"]
+    assert body.endswith("taken from Toggle Help</span>")
+    assert (_SYMBOL_HTML in body) is symbol
+    assert (_SYMBOL_HTML in moved["html"]) is symbol
+    if symbol:
+        assert f'<span class="visually-hidden">{word}</span>' in body
+    else:
+        assert f"{word} taken from Toggle Help" in body
+    # Once the button moves on, the note reads as plain words.
+    assert f'data-lost-text="{word} was taken"' in moved["html"]
+
+
+@pytest.mark.parametrize(("button", "word"), [("BACK", "Minus"), ("START", "Plus")])
+def test_a_nintendo_mark_in_a_binding_note_is_spelled_out(live_server, button: str, word: str) -> None:
+    """A lone "-" in the red note would read as the unbound option's dash."""
+    _, base = live_server
+    _post_form(base, "/section/gamepad", {"enabled": "true", "deadzone": "0.15", "button_name_style": "nintendo"})
+    body, event = _get_checked(
+        base,
+        "/api/validate/gamepad/btn_reset",
+        {"btn_reset": button, "btn_toggle_help": button, "btn_settings": "" if button == "BACK" else "BACK"},
+    )
+    [moved] = event["moved"]
+    assert f"{word} taken from Toggle Help" in body
+    assert f"{word} moved to Reset Marker" in moved["html"]
+    assert f'data-lost-text="{word} was taken"' in moved["html"]
 
 
 def test_validate_binding_takes_a_shared_button_and_names_both_fields(live_server) -> None:
@@ -9931,6 +10074,60 @@ def test_keyboard_variant_blur_validation_reads_the_layout_beside_it(
 
 
 _CONTROLLER_SECTIONS = ["controller", "gamepad", "keyboard", "mouse"]
+
+
+@pytest.mark.parametrize("section", _CONTROLLER_SECTIONS)
+def test_button_names_are_never_broadcast_from_any_controller_section(live_server, monkeypatch, section) -> None:
+    """They describe this station's pads: a DualSense station must not name an Xbox station's buttons."""
+    from types import SimpleNamespace
+
+    from openfollow.web import routes as routes_mod
+
+    sent: list[dict] = []
+
+    def _fake_send(ip, port, section_name, data, pin="", *, expected_port, sender) -> bool:
+        sent.append(dict(data))
+        return True
+
+    monkeypatch.setattr(routes_mod, "_send_config_to_peer", _fake_send)
+    server, base = live_server
+    monkeypatch.setattr(server, "get_peers", lambda: [SimpleNamespace(name="peer", ip="10.0.0.99", web_port=80)])
+    status, body = _post_json(
+        base, f"/api/config/{section}/broadcast", {"button_name_style": "playstation", "key_reset": "c"}
+    )
+    assert status == 200 and body.get("success") is True
+    # The broadcasting station keeps its own choice; the peers are sent none.
+    assert load_config(server.config_path).controller.button_name_style == "playstation"
+    assert [("button_name_style" in data, data.get("key_reset")) for data in sent] == [(False, "c")]
+
+
+@pytest.mark.parametrize("section", _CONTROLLER_SECTIONS)
+def test_button_names_from_a_peer_are_ignored_in_any_controller_section(live_server, section) -> None:
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.controller.button_name_style = "xbox"
+    save_config(cfg, server.config_path)
+    status, body = _post_json(base, f"/api/config/{section}", {"button_name_style": "playstation", "key_reset": "c"})
+    assert status == 200 and body.get("success") is True
+    saved = load_config(server.config_path).controller
+    assert (saved.button_name_style, saved.key_reset) == ("xbox", "c")
+
+
+def test_an_export_carries_the_button_names(live_server) -> None:
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.controller.button_name_style = "nintendo"
+    save_config(cfg, server.config_path)
+    assert _export(base)["controller"]["button_name_style"] == "nintendo"
+
+
+def test_the_gamepad_trigger_state_names_the_triggers_in_the_family(live_server) -> None:
+    _, base = live_server
+    for style, names in (("standard", "LT / RT"), ("playstation", "L2 / R2"), ("nintendo", "ZL / ZR")):
+        _post_form(base, "/section/gamepad", {"enabled": "true", "deadzone": "0.15", "button_name_style": style})
+        status, body = _get(base, "/section/gamepad")
+        assert status == 200
+        assert f'<span style="color:var(--muted);">{names} Triggers:</span>' in body
 
 
 @pytest.mark.parametrize("section", _CONTROLLER_SECTIONS)

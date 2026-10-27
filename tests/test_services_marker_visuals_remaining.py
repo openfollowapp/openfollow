@@ -29,6 +29,7 @@ import numpy as np
 import pypsn
 import pytest
 
+from openfollow.button_names import ButtonNameStyle
 from openfollow.configuration import AppConfig
 from openfollow.marker_catalog.control_conflicts import ControlConflict
 from openfollow.psn.marker import Marker
@@ -1042,6 +1043,28 @@ class TestExternalStateSnapshots:
 # --------------------------------------------------------------------------- #
 # Input-state flags
 # --------------------------------------------------------------------------- #
+
+
+class TestButtonNameStyle:
+    @pytest.mark.parametrize(
+        ("configured", "style"),
+        [
+            ("standard", ButtonNameStyle.STANDARD),
+            ("xbox", ButtonNameStyle.XBOX),
+            ("playstation", ButtonNameStyle.PLAYSTATION),
+            ("nintendo", ButtonNameStyle.NINTENDO),
+        ],
+    )
+    def test_the_hud_names_buttons_in_the_configured_style(self, configured: str, style: ButtonNameStyle) -> None:
+        app = _build_app()
+        app._config.controller.button_name_style = configured
+        assert _build(app).button_name_style is style
+
+    def test_a_saved_change_reaches_the_next_frame(self) -> None:
+        app = _build_app()
+        assert _build(app).button_name_style is ButtonNameStyle.STANDARD
+        app._config.controller.button_name_style = "playstation"
+        assert _build(app).button_name_style is ButtonNameStyle.PLAYSTATION
 
 
 class TestInputFlags:

@@ -17,12 +17,17 @@ by public entry point so each section reads as an independent spec:
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from openfollow.button_names import SYMBOL_STROKE, ButtonNameStyle
+from openfollow.runtime import overlay_draw_hud as hud_mod
 from openfollow.runtime.overlay_draw_hud import (
     draw_about_overlay,
     draw_about_screen,
@@ -119,6 +124,11 @@ def _marker(
         controller_connected=controller_connected,
         is_controlled=is_controlled,
     )
+
+
+def _symbols_drawn(cr: FakeCairo, size: float) -> int:
+    """Button symbols the painter stroked at font ``size`` (each sets its own stroke width)."""
+    return sum(1 for call in cr.calls if call == ("line_width", SYMBOL_STROKE * size / 16.0))
 
 
 def _base_state(**kw: object) -> OverlayState:
@@ -969,6 +979,55 @@ class TestDrawHud:
         draw_hud(FakeRenderer(state=state), cr, state, 1920, 1080)
         # "Keyboard" section heading renders in ALL CAPS by the help block.
         assert "KEYBOARD" in cr.show_text_strings()
+
+    @pytest.mark.parametrize(
+        ("style", "texts", "symbols"),
+        [
+            (ButtonNameStyle.STANDARD, ["H / Y: help"], 0),
+            (ButtonNameStyle.NINTENDO, ["H / Y: help"], 0),
+            (ButtonNameStyle.XBOX, ["H / Y: help"], 0),
+            (ButtonNameStyle.PLAYSTATION, ["H / ", ": help"], 1),
+        ],
+    )
+    def test_the_help_hint_names_the_button_in_the_stations_style(self, style, texts, symbols: int) -> None:
+        state = _base_state(show_hud_help=False, button_name_style=style)
+        state.keyboard_labels = {"toggle_help": "h"}
+        state.button_labels = {"toggle_help": "Y"}
+        cr = FakeCairo()
+        draw_hud(FakeRenderer(state=state), cr, state, 1920, 1080)
+        assert all(t in cr.show_text_strings() for t in texts)
+        assert _symbols_drawn(cr, 9.0) == symbols
+
+    @pytest.mark.parametrize(
+        ("style", "line", "symbols"),
+        [
+            (ButtonNameStyle.STANDARD, "• Back: Settings menu", 0),
+            (ButtonNameStyle.PLAYSTATION, "• Create: Settings menu", 2),
+            (ButtonNameStyle.XBOX, ": Settings menu", 1),
+        ],
+    )
+    def test_the_help_panel_draws_symbols_in_place_of_their_names(self, style, line: str, symbols: int) -> None:
+        state = _base_state(show_hud_help=True, controller_connected=True, button_name_style=style)
+        state.button_labels = {"settings": "BACK", "reset": "X", "toggle_help": "Y"}
+        cr = FakeCairo()
+        draw_hud(FakeRenderer(state=state), cr, state, 1920, 1080)
+        texts = cr.show_text_strings()
+        assert line in texts
+        assert not any(0xE000 <= ord(ch) <= 0xF8FF for t in texts for ch in t)
+        # PlayStation: Square (reset) and Triangle (help); Xbox: View (settings).
+        assert _symbols_drawn(cr, 10.0) == symbols
+
+    def test_the_help_panel_follows_a_change_of_style(self) -> None:
+        state = _base_state(show_hud_help=True, controller_connected=True, button_name_style=ButtonNameStyle.STANDARD)
+        state.button_labels = {"settings": "BACK"}
+        renderer = FakeRenderer(state=state)
+        cr = FakeCairo()
+        draw_hud(renderer, cr, state, 1920, 1080)
+        state.button_name_style = ButtonNameStyle.PLAYSTATION
+        cr_after = FakeCairo()
+        draw_hud(renderer, cr_after, state, 1920, 1080)
+        assert "• Back: Settings menu" in cr.show_text_strings()
+        assert "• Create: Settings menu" in cr_after.show_text_strings()
 
     def test_hud_help_off_shows_hint_next_to_icon(self) -> None:
         state = _base_state(show_hud_help=False)
@@ -2175,6 +2234,58 @@ class TestButtonDetectionOverlay:
         # Axis (raw_idx = -105 → axis 5).
         assert any(t == "→ axis 5" for t in texts)
         assert any(t == "→ axis 100" for t in texts)
+
+    @pytest.mark.parametrize(
+        ("style", "label", "word", "symbols"),
+        [
+            (ButtonNameStyle.STANDARD, "BACK", "Back", 0),
+            (ButtonNameStyle.STANDARD, "RB", "Right Bumper", 0),
+            (ButtonNameStyle.XBOX, "BACK", None, 1),
+            (ButtonNameStyle.XBOX, "RB", "RB", 0),
+            (ButtonNameStyle.PLAYSTATION, "A", None, 1),
+            (ButtonNameStyle.PLAYSTATION, "BACK", "Create", 0),
+            (ButtonNameStyle.NINTENDO, "LT", "ZL", 0),
+            (ButtonNameStyle.NINTENDO, "DPAD_UP", "D-Pad Up", 0),
+        ],
+    )
+    def test_the_prompt_names_the_button_in_the_stations_style(self, style, label, word, symbols: int) -> None:
+        bd = ButtonDetectionState(active=True, current_label=label, step=0, total_steps=4)
+        state = _base_state(button_detection=bd, button_name_style=style)
+        cr = FakeCairo()
+        draw_button_detection_overlay(FakeRenderer(state=state), cr, state, 1600, 900)
+        if word is not None:
+            assert word in cr.show_text_strings()
+        assert _symbols_drawn(cr, 42.0) == symbols
+
+    def test_a_symbol_prompt_is_centred_by_its_width(self) -> None:
+        bd = ButtonDetectionState(active=True, current_label="A", step=0, total_steps=4)
+        state = _base_state(button_detection=bd, button_name_style=ButtonNameStyle.PLAYSTATION)
+        cr = FakeCairo()
+        draw_button_detection_overlay(FakeRenderer(state=state), cr, state, 1600, 900)
+        width = hud_mod.panel_width(1600)
+        left = (1600 - width) / 2.0 + (width - 42.0) / 2.0
+        unit = 42.0 / 16.0
+        # Cross's first stroke starts 4.5 units into the em square.
+        assert (left + 4.5 * unit) in [x for x, _y in cr.move_tos]
+
+    def test_a_long_prompt_is_set_smaller_to_fit_the_panel(self) -> None:
+        bd = ButtonDetectionState(active=True, current_label="RT", step=0, total_steps=4)
+        state = _base_state(button_detection=bd)
+        cr = FakeCairo()
+        draw_button_detection_overlay(FakeRenderer(state=state), cr, state, 300, 900)
+        prompt = next(t for t in cr.texts if t.text == "Right Trigger")
+        assert len(prompt.text) * prompt.font_size * 0.6 == pytest.approx(hud_mod.panel_width(300) - 48.0)
+
+    def test_the_detected_list_draws_symbols_and_keeps_the_index_clear(self) -> None:
+        bd = ButtonDetectionState(active=True, current_label="X", step=2, total_steps=4, completed={"A": 0, "BACK": 6})
+        state = _base_state(button_detection=bd, button_name_style=ButtonNameStyle.PLAYSTATION)
+        cr = FakeCairo()
+        draw_button_detection_overlay(FakeRenderer(state=state), cr, state, 1600, 900)
+        assert _symbols_drawn(cr, 10.0) == 1
+        assert "Create" in cr.show_text_strings()
+        name = next(t for t in cr.texts if t.text == "Create")
+        index = next(t for t in cr.texts if t.text == "\u2192 btn 6")
+        assert index.x == name.x + 70.0
 
     def test_short_names_used_in_completed_list(self) -> None:
         bd = ButtonDetectionState(
@@ -3610,3 +3721,32 @@ class TestNetworkScreenTitle:
         cr = FakeCairo()
         draw_pi_network_screen(FakeRenderer(state=state), cr, state, 1600, 900)
         assert "ETH0" in cr.show_text_strings()
+
+
+@pytest.mark.parametrize("module", ["openfollow.runtime.overlay_draw_hud", "openfollow.video.overlay"])
+def test_the_hud_loads_no_input_device_library(module: str) -> None:
+    """The HUD bench worker speaks JSON on stdout; pygame prints a banner there on import."""
+    code = f"import sys, {module}; print('pygame' in sys.modules)"
+    repo = Path(__file__).resolve().parents[1]
+    done = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=repo,
+        env={**os.environ, "PYTHONPATH": str(repo)},
+    )
+    assert done.stdout == "False\n"
+
+
+def test_a_help_line_wraps_by_its_symbols_width() -> None:
+    """A symbol is one em wide: a line that fits as plain text can need two lines."""
+    from openfollow.button_names import SYMBOL_CHARS
+    from openfollow.runtime.overlay_draw_hud import help_block_height
+
+    sections = [("Controller", [f"{SYMBOL_CHARS['cross']}: Confirm"])]
+    renderer = FakeRenderer()
+    # Bullet 12 px; the line is 10 (symbol) + 54 px, 60 px if the symbol were a 6 px character.
+    narrow = help_block_height(renderer, FakeCairo(), 12.0 + 62.0, sections)
+    wide = help_block_height(renderer, FakeCairo(), 12.0 + 70.0, sections)
+    assert narrow > wide

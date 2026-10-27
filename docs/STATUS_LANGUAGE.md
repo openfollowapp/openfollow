@@ -435,6 +435,20 @@ dashed, takes the neutral `--surface` fill and leads with a heart. Never give
 it a level's fill, a solid border or a status sign. Its text makes no claim
 that could go stale on a station that never updates.
 
+## Not a status: gamepad button symbols
+
+The PlayStation face buttons (Cross, Circle, Square, Triangle) and the Xbox
+View and Menu buttons are names, not states, so they take no level. They are
+drawn from one geometry in `button_names.SYMBOL_SHAPES`, never from a font:
+outline strokes on a one-em square sitting on the baseline, in the colour of
+the text around them (`currentColor` on the web, the text's source on the
+HUD), at a stroke close to the text's stem. They appear only where a button
+is named (the Operator Screen's help, key hints and Button Detection Wizard,
+the gamepad section's detection table and binding notes, the on-device
+footer's `<kbd>`, the help drawer),
+always with the word for screen readers, and never as a status sign, in a
+chip or in a level's colour.
+
 ## Corner radius
 
 - **Web boxes:** 6px, every level and every box.

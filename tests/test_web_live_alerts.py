@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from bottle import html_escape, template
 
+from openfollow.video.source_limits import OverLimit, SourceReading, limits_snapshot
 from openfollow.web import server as _server_module  # noqa: F401 - registers tpl path
 from openfollow.web.live_alerts import statistics_alerts
 
@@ -230,3 +231,50 @@ def test_the_announcer_speaks_the_power_alerts_after_the_controllers() -> None:
 def test_the_key_changes_when_a_power_alert_ends() -> None:
     live = statistics_alerts(_power(under_voltage=True, under_voltage_since_boot=True)).key()
     assert statistics_alerts(_power(under_voltage_since_boot=True)).key() != live
+
+
+_OVER = limits_snapshot(SourceReading(3840, 2160, 60.0, (OverLimit.RESOLUTION, OverLimit.FRAME_RATE)))
+
+
+def _over_limits(**video: Any) -> dict[str, Any]:
+    return _stats(video={"connected": True, "limits": _OVER, **video})
+
+
+def test_a_source_over_the_limits_is_a_box_beside_the_video_panel() -> None:
+    html = template("partials/statistics", stats=_over_limits())
+    video = html[: html.index('<h3 class="stat-panel-title">Device</h3>')]
+    assert video.count('class="notice error"') == 1
+    assert "<div>Video arrives at 3840×2160 and 60 fps, over Full HD (1920×1080) and 30 fps.</div>" in video
+    assert '<div class="notice-sub">Set the camera or encoder to 1920×1080 at 30 fps or less.</div>' in video
+    assert 'id="video-error-stats-limits-' in video
+    assert "role=" not in video
+
+
+@pytest.mark.parametrize(
+    "limits",
+    [None, {}, limits_snapshot(None), limits_snapshot(SourceReading(1920, 1080, 30.0, ()))],
+    ids=["absent", "empty", "unmeasured", "within"],
+)
+def test_a_source_within_the_limits_raises_no_box(limits: dict[str, Any] | None) -> None:
+    stats = _stats(video={"connected": True, "limits": limits})
+    assert statistics_alerts(stats).video_limits is None
+    assert 'class="notice error"' not in template("partials/statistics", stats=stats)
+
+
+def test_the_announcer_speaks_the_limits_after_the_video_failure() -> None:
+    stats = _over_limits(
+        connected=False,
+        failure="stalled",
+        failure_text="Video stopped arriving.",
+        failure_action="Check the camera.",
+    )
+    assert statistics_alerts(stats).spoken()[:2] == [
+        "Video stopped arriving. Check the camera.",
+        "Video arrives at 3840×2160 and 60 fps, over Full HD (1920×1080) and 30 fps. "
+        "Set the camera or encoder to 1920×1080 at 30 fps or less.",
+    ]
+
+
+def test_the_key_changes_when_the_source_comes_within_the_limits() -> None:
+    over = statistics_alerts(_over_limits()).key()
+    assert statistics_alerts(_stats(video={"connected": True, "limits": limits_snapshot(None)})).key() != over

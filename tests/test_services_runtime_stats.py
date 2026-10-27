@@ -31,6 +31,7 @@ from openfollow.marker_catalog.sync import PeerSelection
 from openfollow.power_health import PowerState
 from openfollow.services import AppRuntimeServices
 from openfollow.video.failure import ConnectionPhase, SourceKind, VideoFailure
+from openfollow.video.source_limits import OverLimit, SourceReading, limits_snapshot
 
 pytestmark = pytest.mark.unit
 
@@ -107,6 +108,7 @@ class _FakeReceiver:
         self.source_framerate = 59.94
         self.source_format = "I420"
         self.source_kind = SourceKind.REMOTE
+        self.source_limits: SourceReading | None = None
 
 
 class _FakeDetector:
@@ -233,6 +235,7 @@ class TestDefaultRuntimeStatsSnapshot:
             "marker_choices": [],
         }
         assert snap["video"]["source_format"] == ""
+        assert snap["video"]["limits"] == limits_snapshot(None)
         # Nothing scanned yet, so the 3D Mouse section claims neither a fault nor "none connected".
         assert snap["mouse3d"]["scanned"] is False
         assert snap["mouse3d"]["devices"] == []
@@ -473,6 +476,43 @@ class TestPublishRuntimeStats:
         assert video["failure"] == "unauthorized"
         assert video["failure_text"] == "CAM1 rejected the login."
         assert video["phase"] == "decoding"
+        # A receiver that has measured nothing publishes no verdict.
+        assert video["limits"]["exceeded"] == []
+
+    def test_a_source_over_the_limits_is_published_with_its_ids(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receiver = _FakeReceiver()
+        receiver.source_limits = SourceReading(3840, 2160, 59.94, (OverLimit.RESOLUTION, OverLimit.FRAME_RATE))
+        self._prime(services, receiver=receiver)
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+
+        services.publish_runtime_stats(force=True)
+        limits = services.get_runtime_stats_snapshot()["video"]["limits"]
+        assert limits["exceeded"] == ["resolution_over_limit", "frame_rate_over_limit"]
+        assert (limits["width"], limits["height"], limits["fps"]) == (3840, 2160, 59.94)
+        assert limits["text"] == "Video arrives at 3840×2160 and 60 fps, over Full HD (1920×1080) and 30 fps."
+        assert limits["action"] == "Set the camera or encoder to 1920×1080 at 30 fps or less."
+
+    def test_a_local_camera_over_the_limits_is_pointed_at_the_station_s_settings(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receiver = _FakeReceiver()
+        receiver.source_kind = SourceKind.LOCAL
+        receiver.source_limits = SourceReading(3840, 2160, None, (OverLimit.RESOLUTION,))
+        self._prime(services, receiver=receiver)
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+
+        services.publish_runtime_stats(force=True)
+        limits = services.get_runtime_stats_snapshot()["video"]["limits"]
+        assert limits["action"] == (
+            "Set the camera, or the signal into the capture card, to 1920×1080 at 30 fps or less, "
+            "or lower the resolution and frame rate under Video Source."
+        )
 
     def test_receiver_absent_uses_default_video_shape(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
@@ -492,6 +532,7 @@ class TestPublishRuntimeStats:
         assert video["failure"] == "none"
         assert video["failure_text"] == ""
         assert video["phase"] == "starting"
+        assert video["limits"] == limits_snapshot(None)
 
     def test_controller_counts_aggregate_mapped_vs_connected(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch

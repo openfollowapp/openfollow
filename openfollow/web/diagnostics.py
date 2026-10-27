@@ -29,10 +29,10 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any
 
 import openfollow
 from openfollow import keyboard_layout
@@ -49,7 +49,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_T = TypeVar("_T")
 
 # Cap each stat-style probe (os.stat / os.statvfs / psutil.disk_usage). These
 # block uninterruptibly in the kernel on a hung NFS/CIFS/USB mount, and
@@ -63,14 +62,14 @@ _STAT_PROBE_MAX_INFLIGHT = 16
 _stat_probe_sem = threading.BoundedSemaphore(_STAT_PROBE_MAX_INFLIGHT)
 
 
-def _bounded_probe(
-    fn: Callable[[], _T],
+def _bounded_probe[T](
+    fn: Callable[[], T],
     timeout_s: float,
-    timeout_value: _T,
+    timeout_value: T,
     *,
     pool: threading.BoundedSemaphore | None = None,
-    busy_value: _T | None = None,
-) -> _T:
+    busy_value: T | None = None,
+) -> T:
     """Run ``fn()`` on a daemon thread; return its result, or ``timeout_value``
     if it hasn't returned within ``timeout_s``.
 
@@ -85,7 +84,7 @@ def _bounded_probe(
         # Too many probes already orphaned on a hung mount – fail fast instead
         # of leaking yet another thread.
         return timeout_value if busy_value is None else busy_value
-    box: list[_T] = [timeout_value]
+    box: list[T] = [timeout_value]
     done = threading.Event()
 
     def _run() -> None:
@@ -335,7 +334,7 @@ def describe_file(path: Path) -> str:
         stat = path.stat()
     except OSError as exc:
         return f"[unavailable: {exc.strerror or exc}]"
-    when = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(timespec="seconds")
+    when = datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(timespec="seconds")
     return f"{stat.st_size} B, modified {when}"
 
 
@@ -459,6 +458,22 @@ def _fmt_resolution(res: Any) -> str:
     return f"{width}x{height}" if width > 0 and height > 0 else "- (no source frames yet)"
 
 
+def _fmt_source_limits(limits: Any) -> str:
+    """The verdict's stable ids (or ``within``), then what the arriving frames measured and the limit."""
+    if not isinstance(limits, dict):
+        return "-"
+    width, height = int(limits.get("width", 0) or 0), int(limits.get("height", 0) or 0)
+    if width <= 0 or height <= 0:
+        return "not measured (no source frames yet)"
+    fps = limits.get("fps")
+    rate = f"{float(fps):.1f} fps" if isinstance(fps, (int, float)) else "rate not measured yet"
+    verdict = ", ".join(str(cause) for cause in limits.get("exceeded") or ()) or "within"
+    return (
+        f"{verdict} (measured {width}x{height}, {rate}; limit {limits.get('max_long_side', '?')}x"
+        f"{limits.get('max_short_side', '?')} either orientation, {limits.get('max_fps', '?')} fps)"
+    )
+
+
 def _fmt_latency(latency: Any) -> str:
     """The last successful camera latency run, or ``not measured``."""
     if not isinstance(latency, dict):
@@ -514,6 +529,7 @@ def collect_runtime_state(p: DiagnosticsProviders) -> list[str]:
     rows.append(f"    input resolution      {_fmt_resolution(video.get('resolution'))}")
     rows.append(f"    source framerate      {float(video.get('source_fps', 0.0) or 0.0):.1f} fps")
     rows.append(f"    source format         {video.get('source_format') or '-'}")
+    rows.append(f"    source limits         {_fmt_source_limits(video.get('limits'))}")
     rows.append(f"    camera latency        {_fmt_latency(stats.get('latency'))}")
 
     playback = stats.get("playback") or {}
@@ -2279,9 +2295,7 @@ def collect_system_health() -> list[str]:
 
     rows: list[str] = []
     bt = psutil.boot_time()
-    rows.append(
-        f"  boot time (UTC)              {datetime.fromtimestamp(bt, tz=timezone.utc).isoformat(timespec='seconds')}"
-    )
+    rows.append(f"  boot time (UTC)              {datetime.fromtimestamp(bt, tz=UTC).isoformat(timespec='seconds')}")
     rows.append(f"  uptime                       {(time.time() - bt) / 3600:.1f} h")
     rows.append(f"  throttling                   {_collect_throttle_state()}")
     # ``sensors_temperatures`` doesn't exist on macOS at all
@@ -3332,7 +3346,7 @@ def collect_bundle(
         "f_io": lambda: collect_recent_io(p),
         "g_permissions": lambda: collect_device_permissions(p),
     }
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     bundle = DiagnosticsBundle(
         generated_at=now.isoformat(timespec="seconds"),
         log_times=station_zone(now.astimezone()),
@@ -3439,7 +3453,7 @@ def write_bundle_to_disk(
     except OSError as exc:
         logger.warning("diagnostics: cannot create %s (%s)", root, exc)
         return None
-    fname = bundle_filename(system_name, ts or datetime.now(timezone.utc))
+    fname = bundle_filename(system_name, ts or datetime.now(UTC))
     path = root / fname
     try:
         path.write_text(text, encoding="utf-8")

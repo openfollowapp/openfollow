@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from openfollow.button_names import ButtonNameStyle, hud_label
+
 
 @dataclass(frozen=True)
 class CenteredPanelLayout:
@@ -65,28 +67,9 @@ _MOUSE3D_BTN_LABELS: tuple[tuple[str, str], ...] = (
 _PATH_HELP: tuple[tuple[str, str], ...] = (("pathfinder", "Toggle Pathfinder"), ("toggle_paths", "Toggle paths"))
 
 
-# Friendly short names shown in the help overlay for each button code.
-_BUTTON_HELP_NAMES: dict[str, str] = {
-    "A": "A",
-    "B": "B",
-    "X": "X",
-    "Y": "Y",
-    "LB": "LB",
-    "RB": "RB",
-    "LT": "LT",
-    "RT": "RT",
-    "BACK": "Back",
-    "START": "Start",
-    "DPAD_UP": "D-Up",
-    "DPAD_DOWN": "D-Down",
-    "DPAD_LEFT": "D-Left",
-    "DPAD_RIGHT": "D-Right",
-}
-
-
-def friendly_button_label(raw: str) -> str:
-    """Map button codes like DPAD_RIGHT to short labels like D-Right."""
-    return _BUTTON_HELP_NAMES.get(raw, raw)
+def friendly_button_label(raw: str, style: ButtonNameStyle = ButtonNameStyle.STANDARD) -> str:
+    """Short name for a stored button in ``style``; a symbol as its stand-in character."""
+    return hud_label(raw, style)
 
 
 # Type alias for help sections: list of (title, lines) pairs.
@@ -183,6 +166,7 @@ def build_help_sections(
     mouse3d_axis_map: dict[str, str] | None = None,
     mouse3d_buttons: dict[str, int] | None = None,
     marker_cycle_enabled: bool = True,
+    button_name_style: ButtonNameStyle = ButtonNameStyle.STANDARD,
 ) -> HelpSections:
     """Build titled help-line sections for overlay display."""
     keyboard: list[str] = []
@@ -198,7 +182,7 @@ def build_help_sections(
         raw = bl.get(action, default)
         if raw == "":
             return ""
-        return friendly_button_label(raw)
+        return friendly_button_label(raw, button_name_style)
 
     if mode == "normal":
         if keyboard_connected:
@@ -271,7 +255,7 @@ def build_help_sections(
             for action, label in _PATH_HELP:
                 if bl.get(action):
                     controller.append(f"{_btn(action, '')}: {label}")
-            settings_btn = _btn("settings", "Back")
+            settings_btn = _btn("settings", "BACK")
             if settings_btn:
                 controller.append(f"{settings_btn}: Settings menu")
         if mouse_enabled:
@@ -304,7 +288,7 @@ def build_help_sections(
         # steps back one screen; the button that opened the menus leaves them
         # all, which an operator three screens down has no other way to know.
         settings_key = kl.get("settings", "m")
-        settings_btn = _btn("settings", "Back")
+        settings_btn = _btn("settings", "BACK")
         if keyboard_connected:
             keyboard = ["Enter: Confirm", "Esc: Back", "Arrow Up/Down: Move", "Backspace: Delete in a text field"]
             if settings_key:

@@ -29,10 +29,10 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, MutableSequence, Sequence
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
+from typing import TYPE_CHECKING, Any, NoReturn
 from urllib.parse import quote, urlsplit
 
 from bottle import Bottle, HTTPResponse, abort, request, response, static_file, template
@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from openfollow.web.discovery import PeerInfo
     from openfollow.web.server import ConfigWebServer
 
+from openfollow.button_names import ButtonNameStyle, name_style
 from openfollow.configuration import (
     CALIBRATION_CORNERS,
     CALIBRATION_MODES,
@@ -166,11 +167,11 @@ from openfollow.templates.writer import (
 from openfollow.units import UnitSystem, parse_length, parse_speed
 from openfollow.web import diagnostics, lens_calibrations, peer_auth
 from openfollow.web._md import render_help_markdown
-from openfollow.web.bindings import check_binding, osc_row_overlap, osc_trigger_overlap
+from openfollow.web.bindings import CONTROLLER_SECTIONS, check_binding, osc_row_overlap, osc_trigger_overlap
+from openfollow.web.button_icons import button_html
 from openfollow.web.config_cache import ParsedConfigCache
 from openfollow.web.discovery import clean_peer_name
 from openfollow.web.keyboard_layout_view import build_keyboard_layout_view, station_catalog, variant_options
-from openfollow.web.labels import video_error_token
 from openfollow.web.latency_view import latency_dialog_view, latency_row_view, latency_unavailable
 from openfollow.web.live_alerts import statistics_alerts
 from openfollow.web.login_throttle import LoginThrottle
@@ -567,12 +568,14 @@ def _is_navigation() -> bool:
 
 
 def _cancel_button_label(cfg: AppConfig) -> str:
-    """Return the gamepad button label bound to cancel, for the footer hint.
+    """Return the gamepad button bound to cancel, as HTML for the footer hint.
 
-    Mirrors ``controller.btn_menu_cancel`` (default ``"B"``); falls back to
-    ``"Cancel"`` when the binding is cleared so the hint stays non-empty.
+    Names ``controller.btn_menu_cancel`` (default ``"B"``) in the station's
+    button names; falls back to ``"Cancel"`` when the binding is cleared so the
+    hint stays non-empty.
     """
-    return (cfg.controller.btn_menu_cancel or "").strip() or "Cancel"
+    button = (cfg.controller.btn_menu_cancel or "").strip()
+    return button_html(button, name_style(cfg.controller.button_name_style), short=True) if button else "Cancel"
 
 
 def _get_detection_missing_deps(config: AppConfig | None = None) -> list[str]:
@@ -994,14 +997,24 @@ def _build_input_template_data(cfg: AppConfig, video_stats: Mapping[str, Any] | 
     for iid, cls in sorted(registry.items()):
         values = cls.get_config_field_values(cfg)
         input_html_fragments[iid] = cls.web_ui_html(values)
-    video = dict(video_stats or {})
     return {
         "available_inputs": available_inputs,
         "input_html_fragments": input_html_fragments,
+        **_video_box_data(video_stats),
+    }
+
+
+def _video_box_data(video_stats: Mapping[str, Any] | None) -> dict[str, str]:
+    """What the Video Source boxes show, from ``/api/stats``'s ``video`` section."""
+    video = dict(video_stats or {})
+    limits = video.get("limits") or {}
+    return {
         "video_failure": video.get("failure") or "none",
         "video_failure_text": video.get("failure_text") or "",
         "video_error_message": video.get("error_message") or "",
         "video_failure_action": video.get("failure_action") or "",
+        "video_limits_text": str(limits.get("text") or ""),
+        "video_limits_action": str(limits.get("action") or ""),
     }
 
 
@@ -1160,9 +1173,10 @@ _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
     "paths": frozenset({"show_paths"}),
     # Whether this station takes remote driving from a browser at all.
     "touch_remote": frozenset({"enabled"}),
-    # The keyboard, USB sockets and slot picks of this station, in every section that writes the controller config.
+    # The keyboard, pads, USB sockets and slot picks of this station, in every section that writes the
+    # controller config. Button names describe its pads, like the pad map: a file import restores them.
     **{
-        section: _KEYBOARD_LAYOUT_FIELDS | {"slot_pins", "slot_markers"}
+        section: _KEYBOARD_LAYOUT_FIELDS | {"button_name_style", "slot_pins", "slot_markers"}
         for section, attr in _SECTION_CONFIG_ATTRS.items()
         if attr == "controller"
     },
@@ -2337,6 +2351,7 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "deadzone": _as_float,
         "invert_y": _as_bool,
         "curve": _as_str,
+        "button_name_style": _as_str,
         "btn_reset": _as_str,
         "btn_toggle_help": _as_str,
         "btn_speed_down": _as_str,
@@ -3341,10 +3356,7 @@ def _strip_broadcast_excluded(data: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in data.items() if k not in _BROADCAST_EXCLUDED_SECTIONS}
 
 
-_T = TypeVar("_T")
-
-
-def _find_by_id(items: Sequence[_T], item_id: str) -> tuple[int, _T] | None:
+def _find_by_id[T](items: Sequence[T], item_id: str) -> tuple[int, T] | None:
     """Index-and-item lookup by ``.id`` for the id-keyed config lists (OSC
     transmitters, OSC destinations). ``None`` when nothing matches, so a route
     can 404 on stale UI state (a row deleted in another tab) without crashing.
@@ -3489,7 +3501,13 @@ def _backup_before(config_path: str, kind: str, named_by: AppConfig | None = Non
 # as a config.toml load does: no section form the import goes through applies them.
 _FILE_IMPORT_FIELDS: dict[str, tuple[str, ...]] = {
     "detection": ("masks", "masks_enabled"),
-    "controller": ("button_raw_indices", "swap_triggers", "mapped_controller_name", "mapped_controller_guid"),
+    "controller": (
+        "button_raw_indices",
+        "swap_triggers",
+        "mapped_controller_name",
+        "mapped_controller_guid",
+        "button_name_style",
+    ),
     "midi": ("patches",),
     "virtual_faders": ("faders",),
     "ui": ("developer_mode",),
@@ -4090,7 +4108,7 @@ def build_diagnostics_bundle(server: ConfigWebServer, cfg: AppConfig | None = No
     # Best-effort on-disk copy. Failure (read-only fs, no perms)
     # logs but does not break the download – operators on locked-
     # down deployments still get the bundle through the browser.
-    written_at = datetime.now(timezone.utc)
+    written_at = datetime.now(UTC)
     diagnostics.write_bundle_to_disk(
         text,
         system_name=server.system_name,
@@ -5189,6 +5207,8 @@ def _register_gallery_routes(app: Bottle, server: ConfigWebServer) -> None:
             media_store.save_upload(Path(staged))
         except MediaStoreError as exc:
             return _render_gallery_grid(server, error=exc.message)
+        except HTTPResponse:  # the station's own answer, e.g. 408 for a body that stopped arriving
+            raise
         except Exception:
             logger.exception("Media upload failed")
             return _render_gallery_grid(server, error="Upload failed.")
@@ -5853,14 +5873,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     def _refused(refusal: HostRefusal) -> HTTPResponse:
         """The 403 for a change made through a refused name, in the shape its caller reads."""
-        # Closing with unread request data resets the connection, which can drop
-        # this answer before the browser reads it. Past the pre-auth cap, leave it.
-        try:
-            length = request.content_length
-        except ValueError:  # a malformed Content-Length: read nothing, still refuse
-            length = -1
-        if 0 < length <= peer_auth.MAX_SIGNED_BODY_SIZE:
-            request.body.read()
         if not _is_navigation():
             body = json.dumps({"error": refusal.message, "action": refusal.action, "href": refusal.href})
             return HTTPResponse(body=body, status=403, headers={"Content-Type": "application/json"})
@@ -6381,29 +6393,20 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         The Camera & Grid tab sends the Measure latency row's key too; between
         runs a changed row rides along out of band.
         """
-        return _video_source_failure_box() + _latency_row_if_changed(request.query.get("latency"))
+        return _video_source_boxes() + _latency_row_if_changed(request.query.get("latency"))
 
-    def _video_source_failure_box() -> str:
-        video = server.get_runtime_stats().get("video") or {}
-        failure_text = str(video.get("failure_text") or "")
-        error_message = str(video.get("error_message") or "")
-        # Keyed on what there is to show, not on whether a classification
-        # exists: several receiver paths publish an error with no verdict, and
-        # Statistics renders that raw text. Dropping it here would leave this
-        # box empty while the other said something.
-        if not (failure_text or error_message):
+    def _video_source_boxes() -> str:
+        data = _video_box_data(server.get_runtime_stats().get("video"))
+        if not (data["video_failure_text"] or data["video_error_message"] or data["video_limits_text"]):
             return ""
-        action = str(video.get("failure_action") or "")
-        token = video_error_token(failure_text, error_message, action)
         return str(
             template(
-                "partials/video_error_box",
-                failure_text=failure_text,
-                error_message=error_message,
-                action=action,
-                token=token,
-                scope="source",
-                live="status",
+                "partials/video_source_boxes",
+                failure_text=data["video_failure_text"],
+                error_message=data["video_error_message"],
+                failure_action=data["video_failure_action"],
+                limits_text=data["video_limits_text"],
+                limits_action=data["video_limits_action"],
             )
         )
 
@@ -7795,6 +7798,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     "downgrade": not _is_newer(version.replace("~", ""), openfollow.__version__),
                 }
             )
+        except HTTPResponse:  # the station's own answer, e.g. 408 for a body that stopped arriving
+            _discard_staged(staged_path)
+            raise
         except Exception as exc:  # validation / stream failure
             _discard_staged(staged_path)
             return json.dumps({"ok": False, "error": str(exc)})
@@ -9115,6 +9121,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             row=row,
             kind=kind,
             binding_overlap=functools.partial(osc_trigger_overlap, cfg.controller),
+            button_name_style=cfg.controller.button_name_style,
             valid_rates=VALID_OSC_TRANSMITTER_RATES,
             valid_edges=VALID_TRIGGER_EDGES,
             valid_modifiers=VALID_TRIGGER_MODIFIERS,
@@ -9994,7 +10001,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # A binding the edit clashes with: its input moves here (the page's
         # binding-steal.js applies the ``bindingChecked`` event), or, for the
         # marker-fader stick on the Move X/Y stick, an error.
-        binding = check_binding(section, field_name, request.query)
+        # The saved Button Names, as the selectors beside the note show them.
+        style = ButtonNameStyle.STANDARD
+        if section in CONTROLLER_SECTIONS:
+            style = name_style((cfg or _request_scoped_config()).controller.button_name_style)
+        binding = check_binding(section, field_name, request.query, style)
         if binding is not None:
             if binding.error:
                 return (
@@ -10003,10 +10014,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 )
             response.set_header("HX-Trigger", json.dumps(binding.event(field_name)))
             if binding.note:
-                return (
-                    f'<span class="field-note-msg" role="status" aria-live="polite">'
-                    f"{html_mod.escape(binding.note, quote=True)}</span>"
-                )
+                note_html = binding.note_html or html_mod.escape(binding.note, quote=True)
+                return f'<span class="field-note-msg" role="status" aria-live="polite">{note_html}</span>'
             return ""
         # An OSC trigger on a claimed input: a movement key is an error, an
         # input a gamepad or keyboard action also uses is a caution. OSC rows

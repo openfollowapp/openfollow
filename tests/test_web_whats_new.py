@@ -6,10 +6,10 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
-import tomllib
 
 from openfollow.web import whats_new as whats_new_module
 from openfollow.web.whats_new import load_backup_note, load_whats_new

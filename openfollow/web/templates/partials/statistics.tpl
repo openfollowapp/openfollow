@@ -72,6 +72,9 @@
 % if alerts.video is not None:
 %     include('partials/video_error_box.tpl', failure_text=alerts.video[0], error_message='', action=alerts.video[1], token=video_error_token(alerts.video[0], '', alerts.video[1]), scope='stats', live='')
 % end
+% if alerts.video_limits is not None:
+%     include('partials/video_error_box.tpl', failure_text=alerts.video_limits[0], error_message='', action=alerts.video_limits[1], token=video_error_token(alerts.video_limits[0], '', alerts.video_limits[1]), scope='stats-limits', live='')
+% end
         <dl class="metric-list">
             <div class="metric-row">
                 <dt class="metric-label">Source</dt>

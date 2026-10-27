@@ -44,7 +44,7 @@
             fb.textContent = msg;
         };
         // Source Type drives which controls apply: capture (live sources only),
-        // connection recovery (network sources only), preview and latency (not the gallery).
+        // healing (network sources only), preview and latency (not the gallery).
         window.ofVideoSourceToggle = function(value){
             document.querySelectorAll('[data-input-type]').forEach(function(el){
                 el.style.display = el.dataset.inputType === value ? '' : 'none';
@@ -52,7 +52,7 @@
             var net = (value === 'rtsp' || value === 'srt' || value === 'rtp');
             function vis(id, on){ var el = document.getElementById(id); if(el) el.style.display = on ? '' : 'none'; }
             vis('capture-frame-row', value !== 'testpattern');
-            vis('recovery-row', net);
+            vis('heal-field', net);
             vis('preview-row', value !== 'testpattern');
             vis('video-source-latency', value !== 'testpattern');
         };
@@ -102,14 +102,14 @@
             target.focus();
         };
         </script>
-        <!-- Connection recovery applies to network inputs only (RTSP/SRT/RTP). -->
-        <div class="row" id="recovery-row" style="display:{{'' if config.video_source_type in ('rtsp', 'srt', 'rtp') else 'none'}}">
+        <!-- Every source's video can stall; only the network inputs (RTSP/SRT/RTP) heal. -->
+        <div class="row" id="recovery-row">
             <div class="field">
                 <label>Stall Timeout (s)</label>
                 <input type="number" name="stall_timeout" value="{{config.stall_timeout}}"
                        min="0" step="0.1" placeholder="3.0">
             </div>
-            <div class="field">
+            <div class="field" id="heal-field" style="display:{{'' if config.video_source_type in ('rtsp', 'srt', 'rtp') else 'none'}}">
                 <label>Heal Interval (s)</label>
                 <input type="number" name="heal_interval" value="{{config.heal_interval}}"
                        min="0" step="0.1" placeholder="5.0">

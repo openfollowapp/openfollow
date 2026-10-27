@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 import secrets
@@ -23,7 +24,7 @@ if TYPE_CHECKING:
     from openfollow.runtime.latency_warning import LatencyWarning
     from openfollow.runtime.removable_media import Media
 
-from bottle import TEMPLATE_PATH, Bottle
+from bottle import TEMPLATE_PATH, Bottle, HTTPError
 
 import openfollow
 from openfollow.net_utils import get_local_ipv4_addresses, get_primary_local_ipv4
@@ -82,15 +83,133 @@ _REQUEST_BUSY_RESPONSE = (
 )
 
 
+# How long a connection may idle: the request line and headers in total, then
+# each read of the body, so a slow upload lives as long as it keeps moving.
+_REQUEST_HEAD_TIMEOUT_S = 10.0
+_REQUEST_BODY_READ_TIMEOUT_S = 60.0
+
+# Unread request data at close makes the kernel reset the connection and can drop the
+# answer, so an unread body is discarded first, within these bounds.
+_UNREAD_BODY_MAX_BYTES = 16 * 1024 * 1024
+_UNREAD_BODY_TIMEOUT_S = 5.0
+_UNREAD_BODY_CHUNK = 64 * 1024
+
+
+class _RequestStream(socket.SocketIO):
+    """The connection's reads, each bounded by a deadline when one is set, else by ``read_timeout``."""
+
+    def __init__(self, connection: socket.socket) -> None:
+        super().__init__(connection, "rb")
+        self._connection = connection
+        self.deadline: float | None = None
+        self.read_timeout: float | None = None
+
+    def readinto(self, buffer: Any) -> int | None:
+        timeout = self.read_timeout
+        if self.deadline is not None:
+            timeout = max(self.deadline - time.monotonic(), 1e-3)
+        self._connection.settimeout(timeout)
+        try:
+            return super().readinto(buffer)
+        except TimeoutError:
+            if self.deadline is not None:
+                raise
+            # A body that stops arriving: Bottle answers this rather than a 500 with a traceback.
+            logger.info("Config web UI gave up on a request body that stopped arriving.")
+            raise HTTPError(408, "Request body timed out") from None
+        finally:
+            # Writes stay unbounded: a socket timeout would cap a whole sendall.
+            self._connection.settimeout(None)
+
+
+class _CountingReader:
+    """The request stream, counting the bytes wsgiref and Bottle read through it."""
+
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+        self.count = 0
+
+    def read(self, size: int | None = -1) -> bytes:
+        data: bytes = self._stream.read(size)
+        self.count += len(data)
+        return data
+
+    def read1(self, size: int = -1) -> bytes:
+        data: bytes = self._stream.read1(size)
+        self.count += len(data)
+        return data
+
+    def readline(self, size: int | None = -1) -> bytes:
+        data: bytes = self._stream.readline(size)
+        self.count += len(data)
+        return data
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._stream, name)
+
+
 class _QuietHandler(WSGIRequestHandler):
     def log_request(self, *args: object, **kwargs: object) -> None:
         pass
+
+    def setup(self) -> None:
+        super().setup()
+        self.rfile.close()
+        self._stream = _RequestStream(self.connection)
+        self._stream.deadline = time.monotonic() + _REQUEST_HEAD_TIMEOUT_S
+        self._counted = _CountingReader(io.BufferedReader(self._stream))
+        self.rfile = self._counted  # type: ignore[assignment]
+        self._body_start: int | None = None
 
     def get_environ(self) -> dict[str, Any]:
         env = super().get_environ()
         # The station address this connection arrived on: one the browser can reach.
         env["SERVER_ADDR"] = str(self.connection.getsockname()[0])
         return env
+
+    def parse_request(self) -> bool:
+        parsed = super().parse_request()
+        if parsed:
+            self._body_start = self._counted.count
+            self._stream.deadline = None
+            self._stream.read_timeout = _REQUEST_BODY_READ_TIMEOUT_S
+        return parsed
+
+    def handle(self) -> None:
+        try:
+            super().handle()
+        except TimeoutError:
+            logger.debug(
+                "Config web UI closed a connection from %s that sent no request in time.", self.client_address[0]
+            )
+            return
+        self._discard_unread_body()
+
+    def _discard_unread_body(self) -> None:
+        """Read what is left of the request body once the answer is sent."""
+        if self._body_start is None:
+            return
+        if "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
+            # Its end is not known without decoding it: read until the client closes.
+            left = _UNREAD_BODY_MAX_BYTES
+        else:
+            try:
+                declared = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                return
+            left = declared - (self._counted.count - self._body_start)
+            if left <= 0 or left > _UNREAD_BODY_MAX_BYTES:
+                return
+        self._stream.deadline = time.monotonic() + _UNREAD_BODY_TIMEOUT_S
+        try:
+            self.connection.shutdown(socket.SHUT_WR)
+            while left > 0:
+                data = self._counted.read1(min(left, _UNREAD_BODY_CHUNK))
+                if not data:
+                    return
+                left -= len(data)
+        except OSError:
+            pass
 
 
 class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):

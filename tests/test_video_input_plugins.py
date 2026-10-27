@@ -19,6 +19,7 @@ from openfollow.configuration import AppConfig
 from openfollow.video.failure import SourceKind
 from openfollow.video.inputs import get_registry
 from openfollow.video.inputs._base import (
+    PRE_DECODE_QUEUE_NS,
     ConfigField,
     InputCapabilities,
     ReconnectPolicy,
@@ -567,6 +568,46 @@ class TestSourceElementDeclaration:
     def test_declared_name_is_not_blank(self, plugin: type[VideoInputBase]) -> None:
         name = plugin.source_element_name
         assert name is None or (name and name == name.strip())
+
+
+@pytest.mark.parametrize("plugin", _plugin_params())
+class TestFrameMeterDeclaration:
+    """``frame_meter_element_name`` names the queue the source limits are measured
+    on. A rename would leave a 4K feed unreported; a queue that never drops would
+    let a station that cannot keep up read under the limit."""
+
+    def test_every_plugin_declares_it(self, plugin: type[VideoInputBase]) -> None:
+        """Inherited, it is None and the input is silently never measured."""
+        assert "frame_meter_element_name" in vars(plugin)
+
+    def test_the_metered_element_is_a_leaky_queue_in_the_built_pipeline(self, plugin: type[VideoInputBase]) -> None:
+        name = plugin.frame_meter_element_name
+        if name is None:
+            # Only the Media Gallery, which plays nothing past the limits.
+            assert plugin.input_id == "testpattern"
+            pytest.skip("the Media Gallery is not metered")
+        element = _build_pipeline(plugin).get_by_name(name)
+        assert element is not None, f"{plugin.input_id} meters {name!r} but builds no element with that name"
+        assert element.properties.get("leaky") == 2
+
+    def test_the_metered_element_holds_whole_frames(self, plugin: type[VideoInputBase]) -> None:
+        """SRT's and RTP's queue before ``decodebin`` is leaky too, but holds stream
+        bytes: metered there, packets would be counted as frames. A buffer of an
+        MJPEG camera before ``jpegdec`` is one whole frame, so that is fine."""
+        name = plugin.frame_meter_element_name
+        if name is None:
+            pytest.skip("the Media Gallery is not metered")
+        element = _build_pipeline(plugin).get_by_name(name)
+        assert element is not None
+        assert element.properties.get("max-size-time") != PRE_DECODE_QUEUE_NS
+        downstream, seen = list(element.links), set()
+        while downstream:
+            nxt = downstream.pop()
+            if id(nxt) in seen:
+                continue
+            seen.add(id(nxt))
+            assert nxt.name != "decodebin", f"{plugin.input_id} meters {name!r}, upstream of decodebin"
+            downstream.extend(nxt.links)
 
 
 # --------------------------------------------------------------------------- #

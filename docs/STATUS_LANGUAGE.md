@@ -13,7 +13,7 @@ with the reasoning, before adding the variant.
 
 | Level | Means | Examples |
 |---|---|---|
-| **Error** | It does not work, and will not until someone acts | Video unreachable, a refused save, a missing controller, an OSC binding that can never fire, a marker two stations control, detection or 3D Mouse support unavailable, a power supply under voltage now |
+| **Error** | It does not work, and will not until someone acts | Video unreachable, a source over Full HD or 30 fps, a refused save, a missing controller, an OSC binding that can never fire, a marker two stations control, detection or 3D Mouse support unavailable, a power supply under voltage now |
 | **Caution** | It works, with a limitation worth knowing | A feature marked experimental, a marker no station controls, a web UI pin that missed and serves on every interface, an under voltage or throttling since the Pi last started |
 | **Info** | Nothing is wrong; progress or a fact | Starting, idle, restarting, an update is available, a value Save will correct, a parked marker |
 | **Success** | Something just worked, or is healthy | Saved, connected, running, marker added |
@@ -348,8 +348,14 @@ attributes, so it spells the token's value.
   bold) and one next step under it (muted), as the web's box. A banner the
   menu opened with brings its own step (`action=` beside `banner=`) or none;
   the video failure's step stands only under the video failure.
+- The Settings info box sits below the station card, under the ERROR box when
+  one shows, in the info fill and border (`COLOR_INFO_FILL` /
+  `COLOR_INFO_BORDER`), led by the off-white "i" (`draw_level_sign`). It names
+  the connected controllers that drive no marker by kind and as the marker
+  cards do ("Gamepad C2 is connected but drives no marker.", "Gamepad C2 and
+  3D Mouse C3 are connected but drive no marker.").
 - A fault's sentence is a top-right status row, whatever raised it (a video
-  failure, a missing controller, an output whose interface has no address, a
+  failure, a source over Full HD or 30 fps, a missing controller, an output whose interface has no address, a
   marker another station controls too).
   The bottom-left panel only turns red; it never carries the sentence.
 - A status row takes its level's chip colours from `STATUS_LEVEL_COLORS`,
@@ -433,6 +439,20 @@ solid orange border, an orange fill and the "i" sign, while this card is
 dashed, takes the neutral `--surface` fill and leads with a heart. Never give
 it a level's fill, a solid border or a status sign. Its text makes no claim
 that could go stale on a station that never updates.
+
+## Not a status: gamepad button symbols
+
+The PlayStation face buttons (Cross, Circle, Square, Triangle) and the Xbox
+View and Menu buttons are names, not states, so they take no level. They are
+drawn from one geometry in `button_names.SYMBOL_SHAPES`, never from a font:
+outline strokes on a one-em square sitting on the baseline, in the colour of
+the text around them (`currentColor` on the web, the text's source on the
+HUD), at a stroke close to the text's stem. They appear only where a button
+is named (the Operator Screen's help, key hints and Button Detection Wizard,
+the gamepad section's detection table and binding notes, the on-device
+footer's `<kbd>`, the help drawer),
+always with the word for screen readers, and never as a status sign, in a
+chip or in a level's colour.
 
 ## Corner radius
 

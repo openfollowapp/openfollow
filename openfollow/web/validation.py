@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from openfollow.button_names import BUTTON_NAME_STYLES
 from openfollow.configuration import (
     _DEFAULT_PSN_MCAST_IP,
     _DEFAULT_PSN_SYSTEM_NAME,
@@ -524,6 +525,11 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "invert_y": FieldRule(_as_bool),
         "curve": FieldRule(
             _as_str, choices=VALID_CURVES, human_error=f"Curve must be one of: {', '.join(VALID_CURVES)}."
+        ),
+        "button_name_style": FieldRule(
+            _as_str,
+            choices=BUTTON_NAME_STYLES,
+            human_error="Button names must be Standard, Xbox, PlayStation or Nintendo.",
         ),
         "btn_reset": _button_rule(),
         "btn_toggle_help": _button_rule(),

@@ -29,6 +29,7 @@ import numpy as np
 import pypsn
 import pytest
 
+from openfollow.button_names import ButtonNameStyle
 from openfollow.configuration import AppConfig
 from openfollow.marker_catalog.control_conflicts import ControlConflict
 from openfollow.psn.marker import Marker
@@ -1044,6 +1045,28 @@ class TestExternalStateSnapshots:
 # --------------------------------------------------------------------------- #
 
 
+class TestButtonNameStyle:
+    @pytest.mark.parametrize(
+        ("configured", "style"),
+        [
+            ("standard", ButtonNameStyle.STANDARD),
+            ("xbox", ButtonNameStyle.XBOX),
+            ("playstation", ButtonNameStyle.PLAYSTATION),
+            ("nintendo", ButtonNameStyle.NINTENDO),
+        ],
+    )
+    def test_the_hud_names_buttons_in_the_configured_style(self, configured: str, style: ButtonNameStyle) -> None:
+        app = _build_app()
+        app._config.controller.button_name_style = configured
+        assert _build(app).button_name_style is style
+
+    def test_a_saved_change_reaches_the_next_frame(self) -> None:
+        app = _build_app()
+        assert _build(app).button_name_style is ButtonNameStyle.STANDARD
+        app._config.controller.button_name_style = "playstation"
+        assert _build(app).button_name_style is ButtonNameStyle.PLAYSTATION
+
+
 class TestInputFlags:
     def test_no_input_manager_flags_all_false(self) -> None:
         app = _build_app(input_manager=None)
@@ -1250,7 +1273,11 @@ class TestControllerBindingOnMarkerCard:
         assert state.markers[0].is_controlled is False
         assert state.markers[0].controller_idx is None
 
-    def test_unbound_controller_indices_collected(self) -> None:
+    @pytest.mark.parametrize(
+        ("slot_kind", "kind"), [("gamepad", "gamepad"), ("mouse3d", "mouse3d"), ("joystick", "gamepad")]
+    )
+    def test_unbound_controllers_collected_with_their_kind(self, slot_kind: str, kind: str) -> None:
+        """A 3D mouse with no marker is as unbound as a gamepad, named by its slot kind; any other kind is a gamepad."""
         app = _build_app(
             controlled=[1],
             viewer=[1],
@@ -1271,13 +1298,13 @@ class TestControllerBindingOnMarkerCard:
                         "name": "Y",
                         "controller_index": 2,
                         "effective_speed": 1.0,
-                        "backend": "pygame",
+                        "kind": slot_kind,
                     },
                 ]
             ),
         )
         state = _build(app)
-        assert state.unbound_controller_indices == [2]
+        assert state.unbound_controllers == [(2, kind)]
 
     def test_disconnected_unbound_controller_is_dropped(self) -> None:
         """A pad that's both disconnected AND unbound carries no actionable
@@ -1298,7 +1325,7 @@ class TestControllerBindingOnMarkerCard:
             ),
         )
         state = _build(app)
-        assert state.unbound_controller_indices == []
+        assert state.unbound_controllers == []
 
 
 class TestControllerTextAndHelp:

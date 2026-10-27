@@ -343,6 +343,12 @@ attributes, so it spells the token's value.
   bold) and one next step under it (muted), as the web's box. A banner the
   menu opened with brings its own step (`action=` beside `banner=`) or none;
   the video failure's step stands only under the video failure.
+- The Settings info box sits below the station card, under the ERROR box when
+  one shows, in the info fill and border (`COLOR_INFO_FILL` /
+  `COLOR_INFO_BORDER`), led by the off-white "i" (`draw_level_sign`). It names
+  the connected controllers that drive no marker by kind and as the marker
+  cards do ("Gamepad C2 is connected but drives no marker.", "Gamepad C2 and
+  3D Mouse C3 are connected but drive no marker.").
 - A fault's sentence is a top-right status row, whatever raised it (a video
   failure, a source over Full HD or 30 fps, a missing controller, an output whose interface has no address, a
   marker another station controls too).

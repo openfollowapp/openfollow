@@ -48,6 +48,7 @@ class SrtInput(VideoInputBase):
     input_id = "srt"
     display_name = "SRT"
     source_element_name = "srtsrc"
+    frame_meter_element_name = "post_queue"
     source_kind = SourceKind.REMOTE
     pins_interface = True
 

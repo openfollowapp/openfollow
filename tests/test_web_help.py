@@ -15,6 +15,7 @@ import pytest
 from bottle import template
 
 import openfollow.web.discovery as discovery_module
+from openfollow.button_names import STYLE_TITLES, SYMBOL_SHAPES, ButtonNameStyle, button_label, button_symbol
 from openfollow.configuration import AppConfig
 from openfollow.web import server as _server_module  # noqa: F401 – registers tpl path
 from openfollow.web._md import render_help_markdown
@@ -32,6 +33,11 @@ _TEMPLATES_DIR = _WEB_HELP_DIR.parent / "templates"
 
 class TestRenderHelpMarkdown:
     pytestmark = pytest.mark.unit
+
+    def test_a_button_symbols_alt_text_is_escaped_once(self) -> None:
+        html = render_help_markdown("![A & B](button:cross)")
+        assert '<span class="visually-hidden">A &amp; B</span>' in html
+        assert "&amp;amp;" not in html
 
     def test_renders_heading(self) -> None:
         assert "<h1>" in render_help_markdown("# Camera")
@@ -162,7 +168,11 @@ class TestHelpDocImageAssets:
         offenders: dict[str, list[str]] = {}
         for doc in sorted(_WEB_HELP_DIR.glob("*.md")):
             for src in self._IMG_RE.findall(doc.read_text(encoding="utf-8")):
-                if not src.startswith("/assets/"):
+                if src.startswith("button:"):
+                    # A gamepad button symbol, drawn inline: no asset to fetch.
+                    if src.removeprefix("button:") not in SYMBOL_SHAPES:
+                        offenders.setdefault(doc.name, []).append(f"unknown symbol: {src}")
+                elif not src.startswith("/assets/"):
                     offenders.setdefault(doc.name, []).append(f"non-local: {src}")
                 elif not (_WEB_STATIC_DIR / src[len("/assets/") :]).is_file():
                     offenders.setdefault(doc.name, []).append(f"missing: {src}")
@@ -202,6 +212,44 @@ def live_server(tmp_path, monkeypatch):
         yield base
 
 
+class TestGamepadButtonNameTable:
+    """The drawer's reference table says what each Button Names choice shows."""
+
+    pytestmark = pytest.mark.unit
+
+    _ROWS = ("A", "B", "X", "Y", "LB", "RB", "LT", "RT", "BACK", "START")
+    _STYLES = (ButtonNameStyle.STANDARD, ButtonNameStyle.XBOX, ButtonNameStyle.PLAYSTATION, ButtonNameStyle.NINTENDO)
+
+    @staticmethod
+    def _cells() -> list[list[str]]:
+        text = (_WEB_HELP_DIR / "gamepad.md").read_text(encoding="utf-8")
+        section = text.split("## Button Names", 1)[1].split("\n## ", 1)[0]
+        rows = [line for line in section.splitlines() if line.startswith("|")]
+        return [[c.strip() for c in r.strip("|").split("|")] for r in rows]
+
+    def test_the_columns_are_the_four_choices(self) -> None:
+        assert self._cells()[0] == [STYLE_TITLES[style] for style in self._STYLES]
+
+    @pytest.mark.parametrize("row", range(10))
+    @pytest.mark.parametrize("column", range(4))
+    def test_each_cell_names_the_button_as_that_choice_shows_it(self, row: int, column: int) -> None:
+        cell = self._cells()[row + 2][column]
+        button, style = self._ROWS[row], self._STYLES[column]
+        word = button_label(button, style, short=style is not ButtonNameStyle.STANDARD)
+        symbol = button_symbol(button, style)
+        if symbol is not None:
+            assert cell == f"![](button:{symbol}) {word}"
+        elif (
+            spelled := button_label(button, style, short=style is not ButtonNameStyle.STANDARD, spelled=True)
+        ) != word:
+            # Nintendo's marks, spelled as the web shows them.
+            assert cell == f"{spelled} ({word})"
+        elif style is ButtonNameStyle.STANDARD and button_label(button, style) != word:
+            assert cell == f"{word} ({button_label(button, style)})"
+        else:
+            assert cell == word
+
+
 class TestHelpRoute:
     pytestmark = pytest.mark.integration
 
@@ -210,6 +258,15 @@ class TestHelpRoute:
         assert status == 200
         assert "text/html" in ctype
         assert "<h1>Camera &amp; Lens Calibration</h1>" in body
+
+    def test_the_gamepad_doc_draws_button_symbols_inline(self, live_server) -> None:
+        status, body, _ = _get(live_server, "/help/gamepad.html")
+        assert status == 200
+        names = body.split("<h2>Button Names</h2>", 1)[1].split("<h2>", 1)[0]
+        assert names.count('<svg class="btn-symbol-icon"') == 6
+        assert '<td><span class="btn-symbol"><svg' in names
+        assert "</svg></span> Cross</td>" in names
+        assert "<img" not in names
 
     def test_underscore_id_doc(self, live_server) -> None:
         # Slug allow-list permits underscores (e.g. video_source).

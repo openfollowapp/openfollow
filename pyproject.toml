@@ -139,16 +139,17 @@ mutmut = "^3.8"
 
 # Linting: ruff check/format (faster pyflakes/pycodestyle/isort/pyupgrade bundle).
 # line-length=120 matches old flake8 setting.
+# target-version=py313 matches requires-python.
 [tool.ruff]
 line-length = 120
-target-version = "py310"
+target-version = "py313"
 
 # Selected rule sets:
 #   E/W  pycodestyle   – style errors + warnings (flake8 parity)
 #   F    pyflakes      – real bugs: undefined names, unused imports, bad f-strings
 #   B    flake8-bugbear      – likely-bug patterns (zip w/o strict, mutable defaults)
 #   I    isort               – import ordering / grouping
-#   UP   pyupgrade           – modernise syntax to the py310 floor
+#   UP   pyupgrade           – modernise syntax to the py313 floor
 #   C4   flake8-comprehensions – simpler/faster comprehension forms
 #   SIM  flake8-simplify     – clarity simplifications, CURATED subset (see ``ignore``)
 #

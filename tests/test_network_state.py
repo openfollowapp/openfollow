@@ -46,3 +46,8 @@ class TestAddressSource:
     )
     def test_operator_chosen_address_reports_static(self, method: Ipv4Method) -> None:
         assert _state(method, "10.20.0.5").address_source == "static"
+
+
+@pytest.mark.parametrize("member", list(Ipv4Method))
+def test_ipv4_method_renders_as_its_value(member: Ipv4Method) -> None:
+    assert str(member) == f"{member}" == format(member) == member.value

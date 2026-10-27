@@ -68,6 +68,7 @@ from openfollow.video.failure import ConnectionPhase, VideoFailure, failure_acti
 from openfollow.video.hud_render import HudRenderThread
 from openfollow.video.overlay import CairoOverlayRenderer
 from openfollow.video.receiver import GstNativeSinkReceiver, gst_runtime_available
+from openfollow.video.source_limits import limits_snapshot
 from openfollow.window import GtkNativeSinkWindow
 
 if TYPE_CHECKING:
@@ -4223,6 +4224,7 @@ class AppRuntimeServices:
                 "source_selection_active": False,
                 "source_fps": 0.0,
                 "source_format": "",
+                "limits": limits_snapshot(None),
             },
             "controllers": {
                 "connected_count": 0,
@@ -4348,6 +4350,7 @@ class AppRuntimeServices:
             "source_selection_active": False,
             "source_fps": 0.0,
             "source_format": "",
+            "limits": limits_snapshot(None),
         }
         receiver = getattr(app, "_video_receiver", None)
         if receiver is not None:
@@ -4397,6 +4400,7 @@ class AppRuntimeServices:
                 "source_selection_active": bool(receiver.source_selection_active),
                 "source_fps": float(getattr(receiver, "source_framerate", 0.0)),
                 "source_format": str(getattr(receiver, "source_format", "") or ""),
+                "limits": limits_snapshot(getattr(receiver, "source_limits", None), receiver.source_kind),
             }
 
         controller_items: list[dict[str, Any]] = []

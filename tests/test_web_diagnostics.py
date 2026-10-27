@@ -18,7 +18,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timedelta, timezone, tzinfo
+from datetime import UTC, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -29,6 +29,7 @@ import openfollow
 from openfollow import net_utils
 from openfollow.logging_setup import RingBufferLogHandler
 from openfollow.runtime.removable_media import Media
+from openfollow.video.source_limits import OverLimit, SourceReading, limits_snapshot
 from openfollow.web import diagnostics as diag
 
 pytestmark = pytest.mark.unit
@@ -2032,7 +2033,7 @@ def test_format_bundle_header_says_which_zone_the_log_times_are_in(monkeypatch) 
         @classmethod
         def now(cls, tz=None):  # noqa: ANN001, ANN206
             cls.calls += 1
-            return datetime(2026, 9, 28, 16, 53, cls.calls, tzinfo=timezone.utc).astimezone(tz)
+            return datetime(2026, 9, 28, 16, 53, cls.calls, tzinfo=UTC).astimezone(tz)
 
     monkeypatch.setattr(diag, "station_zone", zone)
     monkeypatch.setattr(diag, "datetime", _Ticking)
@@ -2042,7 +2043,7 @@ def test_format_bundle_header_says_which_zone_the_log_times_are_in(monkeypatch) 
     # Read at the moment the bundle is stamped, so the two lines describe one clock reading.
     (local,) = seen
     assert local.utcoffset() is not None
-    assert local.astimezone(timezone.utc).isoformat(timespec="seconds") == bundle.generated_at
+    assert local.astimezone(UTC).isoformat(timespec="seconds") == bundle.generated_at
 
 
 # ---------------------------------------------------------------------------
@@ -2341,13 +2342,13 @@ def test_write_bundle_to_disk_round_trip(tmp_path) -> None:
 
 
 def test_write_bundle_to_disk_uses_the_timestamp_it_is_given(tmp_path) -> None:
-    ts = datetime(2026, 9, 28, 10, 15, 0, tzinfo=timezone.utc)
+    ts = datetime(2026, 9, 28, 10, 15, 0, tzinfo=UTC)
     path = diag.write_bundle_to_disk("x", system_name="rig", root=tmp_path, ts=ts)
     assert path is not None and path.name == diag.bundle_filename("rig", ts)
 
 
 def test_write_bundle_to_disk_retention_prunes(tmp_path) -> None:
-    base_ts = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    base_ts = datetime(2026, 1, 1, tzinfo=UTC)
     # Pre-populate the dir with five "old" bundles for one system.
     for i in range(5):
         f = tmp_path / diag.bundle_filename(
@@ -2373,7 +2374,7 @@ def test_retention_counts_every_station_name_newest_by_timestamp(tmp_path) -> No
     """A renamed station's bundles are pruned too, oldest first by the time in
     the name: its old name sorts after the new one, so a sort by name would
     delete the bundle just written."""
-    base_ts = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    base_ts = datetime(2026, 1, 1, tzinfo=UTC)
     for i in range(4):
         (tmp_path / diag.bundle_filename("Zulu-Rig", base_ts.replace(hour=i))).write_text("old")
     new = diag.write_bundle_to_disk("new", system_name="Alpha", root=tmp_path, retention=2, ts=base_ts.replace(day=2))
@@ -2422,7 +2423,7 @@ def test_default_disk_root_falls_back_to_home(monkeypatch, tmp_path) -> None:
 
 
 def test_bundle_filename_shape() -> None:
-    ts = datetime(2026, 5, 7, 12, 34, 56, tzinfo=timezone.utc)
+    ts = datetime(2026, 5, 7, 12, 34, 56, tzinfo=UTC)
     assert diag.bundle_filename("Rig One", ts) == "ofdiag-Rig_One-20260507T123456Z.txt"
 
 
@@ -3526,7 +3527,7 @@ def test_prune_old_bundles_handles_iterdir_oserror(monkeypatch, tmp_path) -> Non
 
 
 def test_prune_old_bundles_handles_unlink_oserror(monkeypatch, tmp_path) -> None:
-    base_ts = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    base_ts = datetime(2026, 1, 1, tzinfo=UTC)
     for i in range(3):
         (tmp_path / diag.bundle_filename("rig", base_ts.replace(hour=i))).write_text("x")
 
@@ -3540,7 +3541,7 @@ def test_prune_old_bundles_handles_unlink_oserror(monkeypatch, tmp_path) -> None
 
 
 def test_prune_old_bundles_negative_retention_clamped_to_zero(tmp_path) -> None:
-    base_ts = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    base_ts = datetime(2026, 1, 1, tzinfo=UTC)
     for i in range(2):
         (tmp_path / diag.bundle_filename("rig", base_ts.replace(hour=i))).write_text("x")
     diag._prune_old_bundles(tmp_path, -5)
@@ -4582,6 +4583,39 @@ def test_collect_runtime_state_reports_the_reconnect_loop() -> None:
     assert "reconnect attempt 2" in joined
     assert "No video received (connection timeout)" in joined
     assert "- (no source frames yet)" in joined
+
+
+def _limits_line(limits: object) -> str:
+    stats = _stats(video=dict(_stats()["video"], limits=limits))
+    rows = diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats))
+    (line,) = [row for row in rows if row.startswith("    source limits")]
+    return line.removeprefix("    source limits").strip()
+
+
+@pytest.mark.parametrize(
+    ("reading", "expected"),
+    [
+        (
+            SourceReading(3840, 2160, 59.94, (OverLimit.RESOLUTION, OverLimit.FRAME_RATE)),
+            "resolution_over_limit, frame_rate_over_limit "
+            "(measured 3840x2160, 59.9 fps; limit 1920x1080 either orientation, 30 fps)",
+        ),
+        (
+            SourceReading(1920, 1080, None, ()),
+            "within (measured 1920x1080, rate not measured yet; limit 1920x1080 either orientation, 30 fps)",
+        ),
+        (None, "not measured (no source frames yet)"),
+    ],
+    ids=["over", "within", "unmeasured"],
+)
+def test_collect_runtime_state_names_the_source_limits_verdict(reading: SourceReading | None, expected: str) -> None:
+    """Support reads the stable ids without reading the numbers."""
+    assert _limits_line(limits_snapshot(reading)) == expected
+
+
+@pytest.mark.parametrize("limits", [None, "over", ["resolution_over_limit"]])
+def test_collect_runtime_state_survives_a_malformed_limits_entry(limits: object) -> None:
+    assert _limits_line(limits) == "-"
 
 
 def test_collect_runtime_state_redacts_a_credential_in_the_source_label() -> None:
@@ -6158,7 +6192,7 @@ def test_runtime_state_shows_the_last_camera_latency_under_the_video_block() -> 
     rows = diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats))
     row = "    camera latency        84 ms median (70 to 102 ms), 10 samples, 125 s ago, source rtsp"
     assert row in rows
-    assert rows.index(row) == 1 + next(i for i, r in enumerate(rows) if "source format" in r)
+    assert rows.index(row) == 1 + next(i for i, r in enumerate(rows) if "source limits" in r)
 
 
 @pytest.mark.parametrize("latency", [None, "garbage"], ids=["none", "not-a-result"])

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import tomllib
 from dataclasses import fields
 from pathlib import Path
 
 import numpy as np
 import pytest
-import tomllib
 
 from openfollow.configuration import CameraConfig, GridConfig, load_config
 from openfollow.scene.solver import apply_overlay_distortion, project_points

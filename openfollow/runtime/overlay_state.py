@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy.typing as npt
 
+from openfollow.button_names import ButtonNameStyle
 from openfollow.configuration import (
     _GRID_COLOR_DEFAULT,
     _GRID_THICKNESS_DEFAULT,
@@ -182,8 +183,9 @@ class OverlayState:
     # HUD
     controller_connected: bool = False
     keyboard_connected: bool = False
-    # Indices of connected gamepads not bound to any marker; shown in Settings info card.
-    unbound_controller_indices: list[int] = field(default_factory=list)
+    # (index, kind) of connected controllers that drive no marker, kind "gamepad" or "mouse3d";
+    # shown in the Settings info box.
+    unbound_controllers: list[tuple[int, str]] = field(default_factory=list)
     mouse_enabled: bool = False
     mouse_double_click_reset: bool = True
     mouse_wheel_z_enabled: bool = True
@@ -287,6 +289,8 @@ class OverlayState:
     latency_flash: float | None = None
     # Configurable button labels for help overlay (action -> button name)
     button_labels: dict[str, str] = field(default_factory=dict)
+    # Pad family the station names buttons after (controller.button_name_style)
+    button_name_style: ButtonNameStyle = ButtonNameStyle.STANDARD
     # Configurable keyboard labels for help overlay (action -> key name)
     keyboard_labels: dict[str, str] = field(default_factory=dict)
     # 3D Mouse bindings for the help overlay: axis -> target, action -> button

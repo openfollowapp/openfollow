@@ -327,6 +327,7 @@ class V4l2Input(VideoInputBase):
     input_id = "v4l2"
     display_name = "USB Camera"
     source_element_name = "v4l2src"
+    frame_meter_element_name = "post_queue"
     source_kind = SourceKind.LOCAL
 
     def __init__(self) -> None:

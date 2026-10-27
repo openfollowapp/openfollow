@@ -12,6 +12,7 @@ from typing import Any
 
 import numpy.typing as npt
 
+from openfollow.button_names import name_style
 from openfollow.configuration import (
     MOUSE3D_AXES,
     MOUSE3D_BUTTON_FIELDS,
@@ -44,6 +45,7 @@ from openfollow.runtime.state_maps import get_or_create, prune_to_keep
 from openfollow.station_fqdn import web_ui_host
 from openfollow.units import UnitSystem
 from openfollow.video.failure import SourceKind, VideoFailure, failure_action, failure_chip, failure_sentence
+from openfollow.video.source_limits import limits_row
 
 
 def _receiver_kind(video_receiver: Any) -> SourceKind:
@@ -820,6 +822,7 @@ def build_marker_visual_state(
     # While paths are off their bindings do nothing, so help names none.
     paths_engine = getattr(app, "_paths", None)
     paths_on = paths_engine is not None and paths_engine.enabled
+    state.button_name_style = name_style(cc.button_name_style)
     state.button_labels = {
         "reset": cc.btn_reset,
         "toggle_help": cc.btn_toggle_help,
@@ -862,11 +865,11 @@ def build_marker_visual_state(
     state.controller_connected = cfg.controller.enabled and any(
         bool(info["connected"]) for info in controller_info if info.get("backend") != "mouse3d"
     )
-    # Connected pads that map to no marker (more pads than
-    # ``controlled_marker_ids``) are surfaced in the Settings menu's info
-    # card; there is no bottom-center status panel.
-    state.unbound_controller_indices = [
-        int(info["controller_index"])
+    # Connected controllers that map to no marker (more than
+    # ``controlled_marker_ids``) go to the Settings menu's info box by slot
+    # kind; any kind but a 3D mouse is a gamepad, the two the HUD names.
+    state.unbound_controllers = [
+        (int(info["controller_index"]), "mouse3d" if info.get("kind") == "mouse3d" else "gamepad")
         for info in controller_info
         if info["marker_id"] is None and bool(info["connected"])
     ]
@@ -933,6 +936,8 @@ def build_marker_visual_state(
             if status.failure not in (VideoFailure.NONE, VideoFailure.NOT_CONFIGURED)
             else None
         )
+        limits = limits_row(getattr(video_receiver, "source_limits", None))
+        flags_dict["video_limits"] = ("error", limits) if limits else None
         flags_dict[RECORDING_FLAG] = recording_row(app) if paths_on else None
         flags_dict[REMOTE_FLAG] = remote_row(app)
         flags_dict["power"] = ("error", power_warning) if power_warning else None

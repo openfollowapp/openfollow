@@ -1150,6 +1150,8 @@
  .midi-fader-detail .mf-default { flex: 0 1 150px; }
  .midi-fader-detail .mf-color-field { flex: 0 0 auto; min-width: 0; }
  .midi-fader-detail .mf-color-field .color-swatch-trigger { margin-top: 0.2rem; }
+ /* Gamepad button symbol (button_icons.py): one em, on the baseline like a capital. */
+ .btn-symbol-icon { width: 1em; height: 1em; vertical-align: -0.1875em; }
  /* Standard "visually hidden but exposed to AT" pattern: hide
  content visually while exposing it to assistive technology. */
  .visually-hidden {
@@ -2437,7 +2439,7 @@
  <footer class="on-device-footer">
  %# The operator's own ``btn_menu_cancel`` mapping, which Button Detection can remap;
  %# Esc is fixed, handled by the embedded browser itself.
- <span><kbd>{{cancel_button or 'Cancel'}}</kbd> on a controller or <kbd>Esc</kbd> on a keyboard closes the embedded browser</span>
+ <span><kbd>{{!cancel_button or 'Cancel'}}</kbd> on a controller or <kbd>Esc</kbd> on a keyboard closes the embedded browser</span>
  </footer>
  % end
  %# AGPLv3 §5(d) Appropriate Legal Notices. __version__ comes from

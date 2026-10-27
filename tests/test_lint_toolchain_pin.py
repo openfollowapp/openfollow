@@ -21,11 +21,11 @@ So these hooks run out of the poetry env instead and there is only one pin.
 from __future__ import annotations
 
 import re
+import tomllib
 from pathlib import Path
 from typing import Any
 
 import pytest
-import tomllib
 import yaml
 
 pytestmark = pytest.mark.unit

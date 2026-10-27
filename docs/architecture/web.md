@@ -156,6 +156,8 @@ Peer-to-peer config broadcast is HMAC-signed. The web PIN is the HMAC key; the P
 ## Connection timeouts (`web/server.py`)
 The request line and headers must arrive within `_REQUEST_HEAD_TIMEOUT_S` (10 s) in total, then each read of the body within `_REQUEST_BODY_READ_TIMEOUT_S` (60 s), so a slow upload lasts as long as it keeps moving. A connection that sends no request in time is closed with only a DEBUG line. A body that stops arriving is answered 408; a route that catches broadly re-raises Bottle's `HTTPResponse` first (the gallery and `.ofupdate` uploads), keeping its staged-file cleanup. Writes are not bounded: a socket timeout would cap a whole response.
 
+A connection refused because every handler slot is taken gets the 503, a half-close, and the same discard of what the client still sends, so the answer is not lost to a reset: no slot is held, the read is bounded by `_BUSY_DRAIN_TIMEOUT_S` (2 s) and `_UNREAD_BODY_MAX_BYTES`, and at most `_BUSY_DRAIN_MAX_CONCURRENT` (8) such connections drain at once; past that one closes at once.
+
 ## Browser auth (`_check_auth` + `login_submit`)
 - `web_pin` non-empty → every non-asset route requires either a valid HMAC signature (peer path above) or the `_openfollow_auth` cookie.
 - Cookie is set with `httponly=True`, `path="/"`, **`samesite="strict"`**. Strict blocks the browser from attaching the cookie to any cross-site request, which defeats CSRF without a separate token layer. OpenFollow is LAN-only so the reduced cross-site ergonomics are acceptable.

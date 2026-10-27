@@ -94,6 +94,12 @@ _UNREAD_BODY_MAX_BYTES = 16 * 1024 * 1024
 _UNREAD_BODY_TIMEOUT_S = 5.0
 _UNREAD_BODY_CHUNK = 64 * 1024
 
+# A busy answer is followed by a discard too, briefly and for a few connections at once;
+# past that bound the connection closes at once.
+_BUSY_DRAIN_TIMEOUT_S = 2.0
+_BUSY_DRAIN_MAX_CONCURRENT = 8
+_busy_drain_semaphore = threading.BoundedSemaphore(_BUSY_DRAIN_MAX_CONCURRENT)
+
 
 class _RequestStream(socket.SocketIO):
     """The connection's reads, each bounded by a deadline when one is set, else by ``read_timeout``."""
@@ -120,6 +126,19 @@ class _RequestStream(socket.SocketIO):
         finally:
             # Writes stay unbounded: a socket timeout would cap a whole sendall.
             self._connection.settimeout(None)
+
+    def discard(self, read: Callable[[int], bytes | None], left: int, timeout: float) -> None:
+        """Half-close, then drop up to ``left`` bytes from ``read`` until the client closes or ``timeout`` passes."""
+        self.deadline = time.monotonic() + timeout
+        try:
+            self._connection.shutdown(socket.SHUT_WR)
+            while left > 0:
+                data = read(min(left, _UNREAD_BODY_CHUNK))
+                if not data:
+                    return
+                left -= len(data)
+        except OSError:
+            pass
 
 
 class _CountingReader:
@@ -200,16 +219,19 @@ class _QuietHandler(WSGIRequestHandler):
             left = declared - (self._counted.count - self._body_start)
             if left <= 0 or left > _UNREAD_BODY_MAX_BYTES:
                 return
-        self._stream.deadline = time.monotonic() + _UNREAD_BODY_TIMEOUT_S
-        try:
-            self.connection.shutdown(socket.SHUT_WR)
-            while left > 0:
-                data = self._counted.read1(min(left, _UNREAD_BODY_CHUNK))
-                if not data:
-                    return
-                left -= len(data)
-        except OSError:
-            pass
+        self._stream.discard(self._counted.read1, left, _UNREAD_BODY_TIMEOUT_S)
+
+
+def _discard_busy_request(request: socket.socket) -> None:
+    """Let the busy answer arrive: discard what the client still sends, unless every drain place is taken."""
+    drains = _busy_drain_semaphore
+    if not drains.acquire(blocking=False):
+        return
+    try:
+        stream = _RequestStream(request)
+        stream.discard(stream.read, _UNREAD_BODY_MAX_BYTES, _BUSY_DRAIN_TIMEOUT_S)
+    finally:
+        drains.release()
 
 
 class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
@@ -222,9 +244,9 @@ class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
         # ThreadingMixIn has already spawned this worker thread. Gate
         # actual request handling on a global bounded semaphore so a
         # flood of concurrent slow requests cannot pile up real work.
-        # Rejected threads send a short 503 and terminate within a few
-        # ms; the total number of threads doing WSGI work at once is
-        # capped at ``_REQUEST_MAX_CONCURRENT``.
+        # Rejected threads send a short 503 and end within
+        # ``_BUSY_DRAIN_TIMEOUT_S``; the total number of threads doing WSGI
+        # work at once is capped at ``_REQUEST_MAX_CONCURRENT``.
         #
         # Capture the semaphore reference once so acquire and release
         # always target the same object – tests monkeypatch the module
@@ -240,6 +262,8 @@ class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
                 request.sendall(_REQUEST_BUSY_RESPONSE)
             except OSError:
                 pass
+            else:
+                _discard_busy_request(request)
             try:
                 self.shutdown_request(request)
             except Exception:

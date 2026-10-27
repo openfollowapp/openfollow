@@ -8875,8 +8875,8 @@ def _refused_login_post(tmp_path, declared_length: int | str, body: bytes) -> st
     return status[0]
 
 
-def _post_unauthenticated(base: str, *, chunked: bool, body: bytes) -> bytes:
-    """Send a whole POST the PIN check refuses unread, then read the answer to EOF."""
+def _post_whole(base: str, *, chunked: bool, body: bytes) -> bytes:
+    """Send a whole POST to a settings route, then read the answer to EOF."""
     host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
     if chunked:
         framing = b"Transfer-Encoding: chunked\r\n"
@@ -8904,7 +8904,7 @@ def test_a_refusal_before_the_body_is_read_reaches_the_client(pin_protected_serv
     failures: list[str] = []
     for _ in range(50):
         try:
-            answer = _post_unauthenticated(base, chunked=chunked, body=body)
+            answer = _post_whole(base, chunked=chunked, body=body)
         except OSError as exc:
             failures.append(repr(exc))
             continue
@@ -9068,6 +9068,114 @@ def test_a_body_that_stops_arriving_is_answered_and_frees_its_slot(live_server, 
         b"Content-Length: %d\r\n\r\n%s" % (len(body), body[: len(body) // 2])
     )
     assert _slot_freed_after(base, monkeypatch, request, b"408 ")
+
+
+def _busy(monkeypatch, drain_places: int = 1) -> tuple[threading.BoundedSemaphore, threading.BoundedSemaphore]:
+    """Every handler slot taken: the slot, held, and the busy drain's places."""
+    from openfollow.web import server as server_module
+
+    slot, _ = _quiet_slot(monkeypatch)
+    assert slot.acquire(blocking=False)
+    drains = threading.BoundedSemaphore(drain_places)
+    monkeypatch.setattr(server_module, "_busy_drain_semaphore", drains)
+    return slot, drains
+
+
+def _reset_within(sock: socket.socket, seconds: float, chunk: bytes = b"x") -> bool:
+    """Keep sending until the station's close resets the connection."""
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        try:
+            sock.sendall(chunk)
+        except ConnectionError:
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def _busy_answer(sock: socket.socket) -> bytes:
+    """Send the start of a request and read the answer to the station's half-close."""
+    sock.sendall(b"POST /api/config/camera HTTP/1.1\r\nHost: x\r\nContent-Length: 1000000\r\n\r\n")
+    answer = b""
+    while chunk := sock.recv(65536):
+        answer += chunk
+    return answer
+
+
+def test_a_busy_station_s_answer_reaches_a_client_still_sending(live_server, monkeypatch, caplog) -> None:
+    import logging
+
+    _, base = live_server
+    slot, _ = _busy(monkeypatch, drain_places=4)
+    body = b"x" * (4 * 1024 * 1024)
+    failures: list[str] = []
+    try:
+        for _ in range(30):
+            try:
+                answer = _post_whole(base, chunked=False, body=body)
+            except OSError as exc:
+                failures.append(repr(exc))
+                continue
+            if not answer.startswith(b"HTTP/1.1 503 Service Unavailable\r\n") or not answer.endswith(
+                b"Server busy; retry"
+            ):
+                failures.append(repr(answer[:40]))
+    finally:
+        slot.release()
+    assert failures == []
+    assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
+
+
+def test_a_busy_drain_ends_at_its_deadline_and_frees_its_place(live_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_BUSY_DRAIN_TIMEOUT_S", 0.4)
+    _, base = live_server
+    slot, drains = _busy(monkeypatch)
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    try:
+        with socket.create_connection((host, int(port)), timeout=5) as sock:
+            started = time.monotonic()
+            assert _busy_answer(sock).startswith(b"HTTP/1.1 503 ")
+            assert _reset_within(sock, 3.0)
+            elapsed = time.monotonic() - started
+        assert 0.3 < elapsed < 3.0
+        assert drains.acquire(timeout=5)
+    finally:
+        slot.release()
+
+
+def test_a_busy_drain_stops_at_its_byte_cap(live_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_BUSY_DRAIN_TIMEOUT_S", 60.0)
+    monkeypatch.setattr(server_module, "_UNREAD_BODY_MAX_BYTES", 64 * 1024)
+    _, base = live_server
+    slot, drains = _busy(monkeypatch)
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    try:
+        with socket.create_connection((host, int(port)), timeout=5) as sock:
+            assert _busy_answer(sock).startswith(b"HTTP/1.1 503 ")
+            assert _reset_within(sock, 3.0, chunk=b"x" * 4096)
+        assert drains.acquire(timeout=5)
+    finally:
+        slot.release()
+
+
+def test_a_busy_station_with_no_drain_place_closes_at_once(live_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_BUSY_DRAIN_TIMEOUT_S", 60.0)
+    _, base = live_server
+    slot, drains = _busy(monkeypatch)
+    assert drains.acquire(blocking=False)
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    try:
+        with socket.create_connection((host, int(port)), timeout=5) as sock:
+            assert _reset_within(sock, 2.0)
+    finally:
+        drains.release()
+        slot.release()
 
 
 class _FixedToken:

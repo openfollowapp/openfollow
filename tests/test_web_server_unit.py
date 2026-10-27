@@ -11,6 +11,7 @@ network.  Integration-style tests (against a live server) live in
 
 from __future__ import annotations
 
+import socket
 import threading
 import time
 
@@ -910,29 +911,35 @@ def test_configwebserver_on_peer_discovered_logs(tmp_path, monkeypatch, caplog) 
 # ---------------------------------------------------------------------------
 
 
-def test_threading_wsgi_server_returns_503_when_semaphore_full(monkeypatch) -> None:
+@pytest.fixture()
+def rejected_client():
+    """A rejected connection whose client sent its request and half-closed: the station's end, the client's end."""
+    ours, theirs = socket.socketpair()
+    theirs.shutdown(socket.SHUT_WR)
+    theirs.settimeout(5)
+    yield ours, theirs
+    ours.close()
+    theirs.close()
+
+
+def test_threading_wsgi_server_returns_503_when_semaphore_full(monkeypatch, rejected_client) -> None:
     from openfollow.web import server as server_mod
 
     # Swap in a pre-exhausted semaphore so the first acquire attempt fails.
     exhausted = threading.BoundedSemaphore(1)
     exhausted.acquire()  # leaves zero permits
     monkeypatch.setattr(server_mod, "_request_semaphore", exhausted)
+    ours, theirs = rejected_client
 
-    sent: list[bytes] = []
     shutdowns: list[object] = []
-
-    class _FakeRequest:
-        def sendall(self, data: bytes) -> None:
-            sent.append(data)
-
     srv = server_mod._ThreadingWSGIServer.__new__(server_mod._ThreadingWSGIServer)
     srv.shutdown_request = lambda req: shutdowns.append(req)  # type: ignore[assignment]
 
-    srv.process_request_thread(_FakeRequest(), ("127.0.0.1", 40000))
+    srv.process_request_thread(ours, ("127.0.0.1", 40000))
 
-    assert len(sent) == 1
-    assert sent[0].startswith(b"HTTP/1.1 503")
-    assert len(shutdowns) == 1
+    assert theirs.recv(65536) == server_mod._REQUEST_BUSY_RESPONSE
+    assert theirs.recv(65536) == b""
+    assert shutdowns == [ours]
 
 
 def test_threading_wsgi_server_swallows_sendall_oserror(monkeypatch) -> None:
@@ -942,9 +949,14 @@ def test_threading_wsgi_server_swallows_sendall_oserror(monkeypatch) -> None:
     exhausted.acquire()
     monkeypatch.setattr(server_mod, "_request_semaphore", exhausted)
 
+    half_closed: list[int] = []
+
     class _FlakyRequest:
         def sendall(self, data: bytes) -> None:
             raise OSError("broken pipe")
+
+        def shutdown(self, how: int) -> None:
+            half_closed.append(how)
 
     shutdowns: list[object] = []
     srv = server_mod._ThreadingWSGIServer.__new__(server_mod._ThreadingWSGIServer)
@@ -954,18 +966,15 @@ def test_threading_wsgi_server_swallows_sendall_oserror(monkeypatch) -> None:
     srv.process_request_thread(_FlakyRequest(), ("127.0.0.1", 40001))
 
     assert len(shutdowns) == 1
+    assert half_closed == []  # no answer went out, so there is nothing to wait for
 
 
-def test_threading_wsgi_server_swallows_shutdown_exception(monkeypatch) -> None:
+def test_threading_wsgi_server_swallows_shutdown_exception(monkeypatch, rejected_client) -> None:
     from openfollow.web import server as server_mod
 
     exhausted = threading.BoundedSemaphore(1)
     exhausted.acquire()
     monkeypatch.setattr(server_mod, "_request_semaphore", exhausted)
-
-    class _FakeRequest:
-        def sendall(self, data: bytes) -> None:
-            pass
 
     srv = server_mod._ThreadingWSGIServer.__new__(server_mod._ThreadingWSGIServer)
 
@@ -975,10 +984,10 @@ def test_threading_wsgi_server_swallows_shutdown_exception(monkeypatch) -> None:
     srv.shutdown_request = _boom  # type: ignore[assignment]
 
     # Must not raise – exception is swallowed at lines 80-81.
-    srv.process_request_thread(_FakeRequest(), ("127.0.0.1", 40002))
+    srv.process_request_thread(rejected_client[0], ("127.0.0.1", 40002))
 
 
-def test_threading_wsgi_server_counts_rejection(monkeypatch) -> None:
+def test_threading_wsgi_server_counts_rejection(monkeypatch, rejected_client) -> None:
     """A 503 rejection must bump the module-level rejection counter so the
     diagnostics bundle reports the cap being hit instead of a constant 0."""
     from openfollow.web import server as server_mod
@@ -989,20 +998,16 @@ def test_threading_wsgi_server_counts_rejection(monkeypatch) -> None:
     # Reset the cumulative counter so the assertion is order-independent.
     monkeypatch.setattr(server_mod, "_request_semaphore_rejections", 0)
 
-    class _FakeRequest:
-        def sendall(self, data: bytes) -> None:
-            pass
-
     srv = server_mod._ThreadingWSGIServer.__new__(server_mod._ThreadingWSGIServer)
     srv.shutdown_request = lambda req: None  # type: ignore[assignment]
 
-    srv.process_request_thread(_FakeRequest(), ("127.0.0.1", 40010))
-    srv.process_request_thread(_FakeRequest(), ("127.0.0.1", 40011))
+    srv.process_request_thread(rejected_client[0], ("127.0.0.1", 40010))
+    srv.process_request_thread(rejected_client[0], ("127.0.0.1", 40011))
 
     assert server_mod._request_semaphore_rejections == 2
 
 
-def test_configwebserver_rejection_count_surfaces_via_property(tmp_path, monkeypatch) -> None:
+def test_configwebserver_rejection_count_surfaces_via_property(tmp_path, monkeypatch, rejected_client) -> None:
     """The ``request_semaphore_rejections`` property must report the live
     counter, not a placeholder zero, so diagnostics reflect rejections."""
     from openfollow.web import server as server_mod
@@ -1015,13 +1020,9 @@ def test_configwebserver_rejection_count_surfaces_via_property(tmp_path, monkeyp
     exhausted.acquire()
     monkeypatch.setattr(server_mod, "_request_semaphore", exhausted)
 
-    class _FakeRequest:
-        def sendall(self, data: bytes) -> None:
-            pass
-
     wsgi = server_mod._ThreadingWSGIServer.__new__(server_mod._ThreadingWSGIServer)
     wsgi.shutdown_request = lambda req: None  # type: ignore[assignment]
-    wsgi.process_request_thread(_FakeRequest(), ("127.0.0.1", 40012))
+    wsgi.process_request_thread(rejected_client[0], ("127.0.0.1", 40012))
 
     assert srv.request_semaphore_rejections == 1
 

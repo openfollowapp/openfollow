@@ -37,14 +37,15 @@ from openfollow.scene.solver import apply_overlay_distortion
 FloatArray = npt.NDArray[np.float64]
 BoolArray = npt.NDArray[np.bool_]
 
-# Far larger than any calibration file (about 1 kB); bounds the parse.
-MAX_FILE_BYTES = 64 * 1024
+# A calibration is about 1 kB, or tens of kB with the detected points and views a tool may write; bounds the parse.
+MAX_FILE_BYTES = 1024 * 1024
 # The largest calibrated image side a file may state.
 MAX_SIDE = 65536
 _STANDARD_COUNTS = (4, 5, 8, 12, 14)
 _FISHEYE_COUNT = 4
 _MATRIX_KEYS = ("cameraMatrix", "camera_matrix")
 _DIST_KEYS = ("dist_coeffs", "distCoeffs", "distortion_coefficients")
+_FISHEYE_KEYS = ("isFisheye", "fisheye_model")
 # Same picture shape: the sides' ratios within this fraction, as the Lens step's saved list judges it.
 SHAPE_TOLERANCE = 0.01
 # Toward 90 degrees the pinhole picture runs off to infinity; a stage overlay ends well before.
@@ -158,7 +159,7 @@ def parse_opencv_calibration(text: str) -> OpenCvCalibration:
     if re.search(r"<!(DOCTYPE|ENTITY)", text, re.IGNORECASE):
         raise OpenCvLensError("This XML file declares a document type, which a calibration file never does.")
     try:
-        root = ET.fromstring(text)  # nosec B314
+        root = ET.fromstring(head)  # nosec B314
     except ET.ParseError as exc:
         raise OpenCvLensError("This is not a readable XML file.") from exc
     if root.tag != "opencv_storage":
@@ -176,7 +177,8 @@ def parse_opencv_calibration(text: str) -> OpenCvCalibration:
     if dist_node is None:
         raise OpenCvLensError("The calibration file has no distortion values, so it gives no lens.")
     coeffs = tuple(_matrix(dist_node, "distortion values"))
-    flag = _numbers(root.findtext("isFisheye")) if root.find("isFisheye") is not None else []
+    flag_node = _first(root, _FISHEYE_KEYS)
+    flag = _numbers(flag_node.text) if flag_node is not None else []
     if flag not in ([], [0.0], [1.0]):
         raise OpenCvLensError("The calibration file's fisheye flag is neither 0 nor 1.")
     fisheye = flag == [1.0]

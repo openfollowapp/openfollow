@@ -8573,11 +8573,11 @@ def test_save_under_the_choices_backs_up_the_cameras_own_calibration(save: str, 
         ({"rms_px": 1.234, "corner_px": 3.45, "coverage": 1.0}, "Typical error 1.2 px, corners 3.5 px."),
         (
             {"rms_px": 0.8, "corner_px": None, "coverage": 0.912},
-            "Typical error 0.8 px. The file describes 91 % of the picture, not its corners.",
+            "Typical error 0.8 px. The file describes 91% of the picture, not its corners.",
         ),
         (
             {"rms_px": 0.8, "corner_px": None, "coverage": 0.997},
-            "Typical error 0.8 px. The file describes 99 % of the picture, not its corners.",
+            "Typical error 0.8 px. The file describes 99% of the picture, not its corners.",
         ),
     ],
     ids=["reaches the corners", "stops short of them", "short of the corners only"],
@@ -8586,11 +8586,18 @@ def test_a_converted_lens_names_its_corner_error_only_where_the_file_reaches_the
     assert run_wizard_js("lensOpencvAccuracy(c)", functions=("fmt", "lensOpencvAccuracy"), c=fit) == text
 
 
+# The page's reading of a refusal: the station's JSON reason, else what it said.
+_FROM_TEXT = (
+    "window.OpenFollow.saveError.fromText = function(status, text) {"
+    " try { var d = JSON.parse(text); if (d && d.error) return { error: d.error }; } catch (e) {}"
+    " return { error: 'HTTP ' + status + ': ' + text }; };"
+)
 _OPENCV_FETCH = {
-    "fit": "ok: true, json: function() { return Promise.resolve({ k1: -0.2 }); }",
-    "needs size": "ok: false, json: function() { return Promise.resolve({ error: 'No size.', needs_size: true }); }",
-    "refused": "ok: false, json: function() { return Promise.resolve({ error: 'Not XML.' }); }",
-    "not json": "ok: false, json: function() { return Promise.reject(new SyntaxError('x')); }",
+    "fit": "ok: true, status: 200, text: function() { return Promise.resolve('{\"k1\": -0.2}'); }",
+    "needs size": "ok: false, status: 422,"
+    ' text: function() { return Promise.resolve(\'{"error": "No size.", "needs_size": true}\'); }',
+    "refused": 'ok: false, status: 422, text: function() { return Promise.resolve(\'{"error": "Not XML."}\'); }',
+    "not json": "ok: false, status: 503, text: function() { return Promise.resolve('Busy.'); }",
 }
 
 
@@ -8600,7 +8607,7 @@ _OPENCV_FETCH = {
         ("fit", {"fit": {"k1": -0.2}}),
         ("needs size", {"needsSize": True, "error": "No size."}),
         ("refused", {"error": "Not XML."}),
-        ("not json", {"error": "The station did not answer."}),
+        ("not json", {"error": "HTTP 503: Busy."}),
         ("down", {"error": "The station did not answer."}),
     ],
 )
@@ -8614,6 +8621,7 @@ def test_the_station_converts_an_opencv_file_for_the_snapshot(answer: str, got: 
         "(async function() { var r = await lensFromOpencv('<x/>', [3840, 2160]); return [r, sent]; })()",
         functions=("lensFromOpencv",),
         prelude=_SAVE_ERROR
+        + _FROM_TEXT
         + "var imageWidth = 1920, imageHeight = 1080, sent = null;"
         + " function fetch(url, o) { sent = [url, JSON.parse(o.body)]; return "
         + reply
@@ -8656,7 +8664,8 @@ function fetch(url, o) {
   if (!o) return Promise.resolve({ ok: true, json: function() { return Promise.resolve({ calibrations: [] }); } });
   var sent = JSON.parse(o.body); posts.push(sent);
   var answer = answers.shift();
-  return Promise.resolve({ ok: answer.ok, json: function() { return Promise.resolve(answer.data); } });
+  return Promise.resolve({ ok: answer.ok, status: answer.ok ? 200 : 422,
+    text: function() { return Promise.resolve(JSON.stringify(answer.data)); } });
 }
 function tick() { return new Promise(function(r) { setImmediate(r); }); }
 async function choose(name) {
@@ -8671,6 +8680,7 @@ def _opencv_dialog(script: str, answers: list, **values: object) -> object:
         "(async function() { lensLoadDialog(); await tick(); " + script + " })()",
         functions=(*_DIALOG_FUNCTIONS, "lensFromOpencv", "lensOpencvAccuracy", "lensFromSettings"),
         prelude=_SAVE_ERROR
+        + _FROM_TEXT
         + _DOM
         + _DIALOG_PAGE
         + _OPENCV_DIALOG
@@ -8689,7 +8699,7 @@ def test_an_opencv_file_is_offered_with_its_accuracy_and_loads_as_one() -> None:
         [{"ok": True, "data": _CONVERTED}],
     )
     offered, size_hidden, posts, applied = out
-    assert "Typical error 0.8 px. The file describes 90 % of the picture, not its corners." in offered
+    assert "Typical error 0.8 px. The file describes 90% of the picture, not its corners." in offered
     assert size_hidden is True and posts == [{"xml": "<opencv_storage/>", "image_width": 1920, "image_height": 1080}]
     ((lens, src),) = applied
     assert src == "From the OpenCV calibration file Wide 2.8.xml"
@@ -8796,11 +8806,17 @@ def test_a_late_answer_for_an_earlier_file_does_not_replace_the_file_chosen_afte
         " return [$('ll-file-opt').innerHTML.indexOf('B.ofsettings') >= 0, $('ll-file-opt').innerHTML.indexOf('A.xml'),"
         " $('ll-size').hidden]; })()",
         functions=(*_DIALOG_FUNCTIONS, *_LENS_MODEL, "lensFromOpencv", "lensOpencvAccuracy", "lensFromSettings"),
-        prelude=_SAVE_ERROR + _DOM + _DIALOG_PAGE + _OPENCV_DIALOG + "var gates = []; fetch = function(url, o) {"
+        prelude=_SAVE_ERROR
+        + _FROM_TEXT
+        + _DOM
+        + _DIALOG_PAGE
+        + _OPENCV_DIALOG
+        + "var gates = []; fetch = function(url, o) {"
         " if (!o) return Promise.resolve({ ok: true,"
         " json: function() { return Promise.resolve({ calibrations: [] }); } });"
         " return new Promise(function(done) { gates.push(function() {"
-        " done({ ok: false, json: function() { return Promise.resolve({ error: 'No size.', needs_size: true }); } });"
+        " done({ ok: false, status: 422,"
+        " text: function() { return Promise.resolve(JSON.stringify({ error: 'No size.', needs_size: true })); } });"
         " }); }); };\n" + wizard_window_function("lensLoadDialog") + "\nvar lensLoadDialog = window.lensLoadDialog;",
         LENS_C_BOUND=C_BOUND,
         settings=settings,
@@ -8815,3 +8831,163 @@ def test_a_second_file_the_station_refuses_leaves_no_offer_of_the_first() -> Non
         [{"ok": True, "data": _CONVERTED}, {"ok": False, "data": {"error": "Not XML."}}],
     )
     assert out == [True, "", True, "Not XML."]
+
+
+def test_the_conversion_s_accuracy_goes_once_user_input_changes_the_lens() -> None:
+    out = run_wizard_js(
+        "(function() { renderLensResult(); return $('lens-result-hint').innerHTML; })()",
+        functions=(
+            *_LINE_FUNCTIONS,
+            *_CENTRE_PX,
+            "lensMiddleOnly",
+            "lensShownRating",
+            "lensHandTuned",
+            "lensOpencvAccuracy",
+            "renderLensResult",
+        ),
+        variables=("LENS_RATING_LEVEL", "LENS_RATING_LABEL"),
+        prelude=_DOM
+        + _RESULT_PAGE
+        + "document.getElementById = function(id) { var el = $(id); el.querySelector = function() { return $('m'); };"
+        " return el; };"
+        + "var lensFit = null, S = { lensLoaded: { name: 'Wide', src: 'From the OpenCV calibration file Wide.xml',"
+        " k1: -0.2, k2: -0.07, cx: 0, cy: 0, kind: 'opencv', rms_px: 1.04, corner_px: 2.5, coverage: 1 } };"
+        + " wizLens = function() { return [-0.25, -0.07, 0, 0]; };",
+        LENS_C_BOUND=C_BOUND,
+    )
+    assert out == "Changed by user input after loading. From the OpenCV calibration file Wide.xml."
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "said"),
+    [
+        (503, "The station is busy. Try again in a moment.", "The station is busy. Try again in a moment."),
+        (413, "<html><body><pre>Request entity too large</pre></body></html>", "Request entity too large."),
+        (502, "", "The station answered with an error (HTTP 502)."),
+    ],
+    ids=["busy", "html", "empty"],
+)
+def test_a_refusal_that_is_no_json_says_what_the_station_answered(status: int, body: str, said: str) -> None:
+    out = run_wizard_js(
+        "(async function() { return await lensFromOpencv('<x/>', null); })()",
+        functions=("lensFromOpencv",),
+        prelude="var window = { OpenFollow: { saveError: { UNREACHABLE: { error: 'The station did not answer.' },"
+        " fromText: function(status, text) { return { error: fromText(status, text) }; } } } };"
+        " function fromText(status, text) { var m = /<pre>(.*)<\\/pre>/.exec(text);"
+        " if (m) return m[1] + '.'; return text || 'The station answered with an error (HTTP ' + status + ').'; }"
+        " var imageWidth = 1920, imageHeight = 1080;"
+        " function fetch() { return Promise.resolve({ ok: false, status: status,"
+        " text: function() { return Promise.resolve(body); } }); }",
+        status=status,
+        body=body,
+    )
+    assert out == {"error": said}
+
+
+def test_the_station_s_json_refusal_and_size_question_read_from_its_text() -> None:
+    out = run_wizard_js(
+        "(async function() { var got = []; for (var i = 0; i < bodies.length; i++) {"
+        " current = bodies[i]; got.push(await lensFromOpencv('<x/>', null)); } return got; })()",
+        functions=("lensFromOpencv",),
+        prelude=_SAVE_ERROR
+        + "window.OpenFollow.saveError.fromText = function(s, t) { return { error: JSON.parse(t).error + '.' }; };"
+        " var imageWidth = 1920, imageHeight = 1080, current = null;"
+        " function fetch() { return Promise.resolve({ ok: current[0], status: current[0] ? 200 : 422,"
+        " text: function() { return Promise.resolve(current[1]); } }); }",
+        bodies=[
+            [True, json.dumps({"k1": -0.2})],
+            [False, json.dumps({"error": "No size.", "needs_size": True})],
+            [False, json.dumps({"error": "Not XML"})],
+            [True, "not json"],
+        ],
+    )
+    assert out == [
+        {"fit": {"k1": -0.2}},
+        {"needsSize": True, "error": "No size."},
+        {"error": "Not XML."},
+        {"error": "The station did not answer."},
+    ]
+
+
+@pytest.mark.parametrize("name", ["tele.yml", "tele.yaml", "tele.txt"])
+def test_a_yaml_calibration_goes_to_the_station_to_say_why_it_cannot_be_read(name: str) -> None:
+    text = "%YAML:1.0\n---\ncamera_matrix: !!opencv-matrix\n"
+    out = run_wizard_js(
+        "(async function() { lensLoadDialog(); await tick();"
+        " $('ll-body').onchange({ target: { id: 'll-file', files: [{ name: name, text: text }] } });"
+        " await tick(); await tick(); return [posts.length, $('ll-file-error').textContent]; })()",
+        functions=(*_DIALOG_FUNCTIONS, "lensFromOpencv", "lensOpencvAccuracy", "lensFromSettings"),
+        prelude=_SAVE_ERROR
+        + _FROM_TEXT
+        + _DOM
+        + _DIALOG_PAGE
+        + _OPENCV_DIALOG
+        + "\n"
+        + wizard_window_function("lensLoadDialog")
+        + "\nvar lensLoadDialog = window.lensLoadDialog;",
+        answers=[{"ok": False, "data": {"error": "Only XML calibration files can be read."}}],
+        name=name,
+        text=text,
+    )
+    assert out == [1, "Only XML calibration files can be read."]
+
+
+@pytest.mark.parametrize("answer", ["empty", "refused"])
+def test_the_load_dialog_s_first_control_is_one_the_operator_can_reach(answer: str) -> None:
+    out = run_wizard_js(
+        "(async function() { lensLoadDialog(); await new Promise(function(r) { setImmediate(r); }); return body; })()",
+        functions=_DIALOG_FUNCTIONS,
+        prelude=_SAVE_ERROR
+        + _DOM
+        + _DIALOG_PAGE
+        + _fetch_answering(answer)
+        + "\n"
+        + wizard_window_function("lensLoadDialog")
+        + "\nvar lensLoadDialog = window.lensLoadDialog;",
+    )
+    # The dialog focuses its first control, hidden or not: with nothing saved that is the file button.
+    first = re.search(r"<(input|textarea|select|button)\b[^>]*>", out)
+    assert first is not None and 'id="ll-file-btn"' in first.group(0)
+
+
+_OPENCV_LOADED = {
+    "name": "Wide",
+    "src": "From the OpenCV calibration file Wide.xml",
+    "k1": -0.2,
+    "k2": -0.07,
+    "cx": 0.0,
+    "cy": 0.0,
+    "kind": "opencv",
+    "rms_px": 1.0,
+    "corner_px": None,
+    "coverage": 0.95,
+}
+
+
+@pytest.mark.parametrize(
+    ("loaded", "kind"),
+    [
+        (_OPENCV_LOADED, "opencv"),
+        ({**_OPENCV_LOADED, "corner_px": 2.5}, "opencv"),
+        ({**_OPENCV_LOADED, "rms_px": None}, None),
+        ({**_OPENCV_LOADED, "coverage": "most"}, None),
+        ({**_OPENCV_LOADED, "corner_px": "2"}, None),
+        ({k: v for k, v in _OPENCV_LOADED.items() if k != "rms_px"}, None),
+    ],
+    ids=["as saved", "with corners", "no rms", "coverage text", "corner text", "rms missing"],
+)
+def test_a_converted_lens_survives_a_reload_only_with_numbers_that_read(loaded: dict, kind: str | None) -> None:
+    raw = {"units": "metric", "lensLoaded": loaded}
+    out = run_wizard_js(
+        "(function() { restoreFromSession(); return [S.lensLoaded.name, S.lensLoaded.kind || null]; })()",
+        functions=("pairOk", "fracPinOk", "restoreFromSession", "lensHasCurrent"),
+        variables=("CORNERS",),
+        prelude=length_page("metric", {})
+        + _DOM
+        + _SESSION_PAGE
+        + f"var raw = {json.dumps(json.dumps(raw))}; var SAVED = {{ lens: [0, 0, 0, 0] }};"
+        " var imageWidth = 1920, imageHeight = 1080;"
+        " var S = { mode: 'simple', simpleLoc: '', rect: { origin: 'dsc' }, pinSize: null, nextId: 1, points: [],"
+        " cornerPins: {}, cornerMoved: {}, lensChoice: '', lensTouched: false, lensLoaded: null };",
+    )
+    assert out == ["Wide", kind]

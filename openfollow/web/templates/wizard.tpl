@@ -260,7 +260,7 @@
   .modal-body .tier-list { max-width: none; max-height: 16rem; overflow-y: auto; padding: 4px; margin: -4px; }
   .lens-dlg-title { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 0.2rem 0 0.45rem; }
   .lens-dlg-sep { height: 1px; background: var(--border-soft); margin: 1rem 0 0.8rem; }
-  #ll-size { margin: 0 0 0.8rem; }
+  #ll-size { margin: 0.8rem 0 0; }
   .ll-size-row { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
   .ll-size-row input { width: 6.5rem; }
   /* Camera Calibration: pins, the drawn rectangle, the origin and the distance lines. */
@@ -2323,7 +2323,7 @@
       var tuned = !lensSame(l, [ld.k1, ld.k2, ld.cx, ld.cy]);
       box.style.display = ''; box.className = 'notice'; meter.style.display = 'none';
       setLive($('lens-result-text'), esc('Loaded \u201c' + ld.name + '\u201d \u2013 barrel / fisheye ' + fmt(l[0], 3) + ', corner correction ' + fmt(l[1], 3) + lensCentreSuffix([l[2], l[3]])));
-      setLive($('lens-result-hint'), esc((tuned ? 'Changed by user input after loading. ' : '') + S.lensLoaded.src + '.' + (ld.kind === 'opencv' ? ' ' + lensOpencvAccuracy(ld) : '')));
+      setLive($('lens-result-hint'), esc((tuned ? 'Changed by user input after loading. ' : '') + S.lensLoaded.src + '.' + (ld.kind === 'opencv' && !tuned ? ' ' + lensOpencvAccuracy(ld) : '')));
       return;
     }
     meter.style.display = '';
@@ -2792,7 +2792,7 @@
   function lensOpencvAccuracy(c) {
     var text = 'Typical error ' + fmt(c.rms_px, 1) + ' px';
     if (c.corner_px !== null && c.corner_px !== undefined) return text + ', corners ' + fmt(c.corner_px, 1) + ' px.';
-    return text + '. The file describes ' + Math.floor(100 * c.coverage) + ' % of the picture, not its corners.';
+    return text + '. The file describes ' + Math.floor(100 * c.coverage) + '% of the picture, not its corners.';
   }
   // The station converts an OpenCV calibration for this snapshot: ``{ fit }``, ``{ needsSize }`` or ``{ error }``.
   function lensFromOpencv(text, size) {
@@ -2801,9 +2801,12 @@
     var body = { xml: text, image_width: imageWidth, image_height: imageHeight };
     if (size) { body.calibration_width = size[0]; body.calibration_height = size[1]; }
     return fetch('/api/wizard/lens/opencv', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(function(r) {
-      return r.json().then(function(data) {
-        if (r.ok) return { fit: data };
-        return data && data.needs_size ? { needsSize: true, error: data.error } : { error: (data && data.error) || saveError.UNREACHABLE.error };
+      return r.text().then(function(text) {
+        var data = null;
+        try { data = JSON.parse(text); } catch (e) { /* the station's own text */ }
+        if (r.ok) return data && typeof data === 'object' ? { fit: data } : { error: saveError.UNREACHABLE.error };
+        if (data && data.needs_size) return { needsSize: true, error: data.error };
+        return { error: saveError.fromText(r.status, text).error };
       }, function() { return { error: saveError.UNREACHABLE.error }; });
     }, function() { return { error: saveError.UNREACHABLE.error }; });
   }
@@ -2852,11 +2855,11 @@
         '<div class="lens-dlg-sep"></div><div class="lens-dlg-title">From a file</div>' +
         '<p>Only the lens values of an exported <code>.ofsettings</code> file or of an OpenCV calibration (<code>.xml</code>) are loaded.</p>' +
         '<div class="tier-list" id="ll-file-opt" hidden></div>' +
-        '<div id="ll-size" hidden><label for="ll-size-w">Calibrated picture size</label>' +
-        '<div class="ll-size-row"><input type="number" id="ll-size-w" min="1" step="1" aria-label="Width"> \u00d7 <input type="number" id="ll-size-h" min="1" step="1" aria-label="Height"> ' +
-        '<button type="button" class="secondary" id="ll-size-btn">Convert</button></div></div>' +
         '<button type="button" class="secondary" id="ll-file-btn">Choose file&hellip;</button>' +
-        '<input type="file" id="ll-file" accept=".ofsettings,.openfollowsettings,.xml" hidden>' +
+        '<input type="file" id="ll-file" accept=".ofsettings,.openfollowsettings,.xml,.yml,.yaml" hidden>' +
+        '<div id="ll-size" hidden><div class="lens-dlg-title" id="ll-size-label">Calibrated picture size</div>' +
+        '<div class="ll-size-row" role="group" aria-labelledby="ll-size-label"><input type="number" id="ll-size-w" min="1" step="1" aria-label="Calibrated width"> \u00d7 <input type="number" id="ll-size-h" min="1" step="1" aria-label="Calibrated height"> ' +
+        '<button type="button" class="secondary" id="ll-size-btn">Convert</button></div></div>' +
         '<div class="wizard-field-error" id="ll-file-error" role="alert" hidden></div>' +
         (lines.length ? '<p style="margin-top:0.8rem;">Loading removes the ' + lines.length + ' line' + (lines.length === 1 ? '' : 's') + ' on the picture.</p>' : '') + '</div>';
     }
@@ -2887,8 +2890,8 @@
           var text = String(rd.result);
           seq++; fromFile = null; pendingXml = null;
           $('ll-file-opt').hidden = true; $('ll-file-opt').innerHTML = ''; $('ll-size').hidden = true; sync();
-          // An XML file is an OpenCV calibration, converted by the station; anything else a settings file.
-          if (/\.xml$/i.test(f.name) || /^\s*</.test(text)) { pendingXml = { text: text, file: f.name }; convert(null); }
+          // An XML or YAML file is an OpenCV calibration, for the station; anything else a settings file.
+          if (/\.(xml|ya?ml)$/i.test(f.name) || /^\s*(<|%YAML)/.test(text)) { pendingXml = { text: text, file: f.name }; convert(null); }
           else show(lensFromSettings(text), f.name, null);
           e.target.value = '';
         };
@@ -2898,7 +2901,7 @@
         var err = $('ll-file-error');
         err.hidden = !res.error; err.textContent = res.error || '';
         if (res.error) return;
-        fromFile = { name: file.replace(/\.(ofsettings|openfollowsettings|xml)$/i, ''), file: file, k1: res.k1, k2: res.k2, cx: res.cx, cy: res.cy };
+        fromFile = { name: file.replace(/\.(ofsettings|openfollowsettings|xml|ya?ml)$/i, ''), file: file, k1: res.k1, k2: res.k2, cx: res.cx, cy: res.cy };
         if (opencv) Object.assign(fromFile, { kind: 'opencv', rms_px: res.rms_px, corner_px: res.corner_px, coverage: res.coverage });
         var box = $('ll-file-opt'); box.hidden = false;
         box.innerHTML = lensOption('file', file, lensVals(res.k1, res.k2, res.cx, res.cy, imageWidth, imageHeight) + (opencv ? ' · ' + lensOpencvAccuracy(res) : ''), true);
@@ -4257,7 +4260,11 @@
       if (pairOk(raw.lensCentre)) S.lensCentre = raw.lensCentre.slice();
       S.lensTouched = raw.lensTouched === true;
       if (['keep', 'clear', 'load'].indexOf(raw.lensChoice) >= 0 && lensHasCurrent()) S.lensChoice = raw.lensChoice;
-      if (raw.lensLoaded && typeof raw.lensLoaded.name === 'string' && [raw.lensLoaded.k1, raw.lensLoaded.k2, raw.lensLoaded.cx, raw.lensLoaded.cy].every(isFinite)) S.lensLoaded = raw.lensLoaded;
+      if (raw.lensLoaded && typeof raw.lensLoaded.name === 'string' && [raw.lensLoaded.k1, raw.lensLoaded.k2, raw.lensLoaded.cx, raw.lensLoaded.cy].every(isFinite)) {
+        S.lensLoaded = raw.lensLoaded;
+        var ld = S.lensLoaded;
+        if (ld.kind === 'opencv' && !(typeof ld.rms_px === 'number' && isFinite(ld.rms_px) && typeof ld.coverage === 'number' && isFinite(ld.coverage) && (ld.corner_px === null || (typeof ld.corner_px === 'number' && isFinite(ld.corner_px))))) delete ld.kind;
+      }
       if (sameUnits && (raw.mode === 'simple' || raw.mode === 'advanced')) {
         S.mode = raw.mode;
         S.simpleLoc = CAM_PRESETS.some(function(p) { return p[0] === raw.simpleLoc; }) ? raw.simpleLoc : '';

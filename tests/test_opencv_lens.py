@@ -106,6 +106,11 @@ def test_the_fisheye_flag_picks_the_model(flag: str | None, fisheye: bool) -> No
     assert parse_opencv_calibration(opencv_xml(dist=dist, fisheye=flag)).fisheye is fisheye
 
 
+def test_the_fisheye_flag_reads_under_the_name_opencv_s_sample_program_writes() -> None:
+    text = opencv_xml(dist=[-0.05, 0.01, -0.006, 0.001], extra="<fisheye_model>1</fisheye_model>")
+    assert parse_opencv_calibration(text).fisheye is True
+
+
 def test_four_values_marked_not_fisheye_are_the_standard_model() -> None:
     cal = parse_opencv_calibration(opencv_xml(dist=[-0.1, 0.02, 0.001, 0.0], fisheye="0"))
     assert (cal.fisheye, cal.coeffs) == (False, (-0.1, 0.02, 0.001, 0.0))
@@ -180,6 +185,19 @@ def test_a_tilted_sensor_is_refused(tilt: tuple[float, float]) -> None:
     dist = [-0.1, 0.02] + [0.0] * 10 + list(tilt)
     with pytest.raises(OpenCvLensError, match="tilted sensor"):
         parse_opencv_calibration(opencv_xml(dist=dist))
+
+
+@pytest.mark.parametrize("lead", ["\n", "  \r\n", "\ufeff"], ids=["newline", "spaces", "byte order mark"])
+def test_a_file_with_something_before_its_declaration_still_reads(lead: str) -> None:
+    assert parse_opencv_calibration(lead + opencv_xml()).fx == 1500.0
+
+
+def test_a_file_carrying_its_detected_points_reads() -> None:
+    # Calibration tools may also write every view's detected points: tens to hundreds of kB.
+    points = opencv_matrix("image_points", 40 * 54, 2, [float(i % 1900) for i in range(40 * 54 * 2)])
+    text = opencv_xml(extra=points)
+    assert len(text.encode()) > 64 * 1024
+    assert parse_opencv_calibration(text).fx == 1500.0
 
 
 def test_a_file_past_the_size_cap_is_refused() -> None:

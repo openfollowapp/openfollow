@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from openfollow.web.discovery import PeerInfo
     from openfollow.web.server import ConfigWebServer
 
+from openfollow import config_restore
 from openfollow.button_names import ButtonNameStyle, name_style
 from openfollow.configuration import (
     CALIBRATION_CORNERS,
@@ -3420,6 +3421,15 @@ def restore_device_identity(cfg: AppConfig, snapshot: Mapping[str, Any]) -> None
         setattr(owner, name, value)
 
 
+def restored_from_backup(restored: AppConfig, current: AppConfig) -> AppConfig:
+    """*restored* with this station's identity, name and network access kept from *current*."""
+    restore_device_identity(restored, capture_device_identity(current))
+    restored.psn_system_name = current.psn_system_name
+    # The kept mode decides: a Simple station never takes a pin back from its past.
+    enforce_network_mode(restored)
+    return restored
+
+
 def reset_config_to_defaults(current_cfg: AppConfig) -> AppConfig:
     """Return a fresh ``AppConfig()`` carrying this device's identity over.
 
@@ -4060,6 +4070,9 @@ def _export_status(status: ExportStatus) -> dict[str, Any]:
 
 
 _UPDATE_RUNNING = "An update is running."
+_BACKUPS_UNREADABLE = "The backups on this station could not be read."
+
+
 _RESTART_AFTER_UPDATE = "Restart once it has finished."
 
 
@@ -4078,6 +4091,11 @@ def _save_failed(status: int, error: str, action: str = "", **detail: str) -> HT
     """A refused or failed save, in the ``{error, action}`` shape the save-feedback line reads."""
     body = json.dumps({"error": error, "action": action, **detail})
     return HTTPResponse(body=body, status=status, headers={"Content-Type": "application/json"})
+
+
+def _restore_not_written(name: str, error: OSError) -> HTTPResponse:
+    logger.warning("Settings backup %s not restored: %s", name, error)
+    return _save_failed(500, "The settings could not be written.", "Details in Logs.")
 
 
 def build_diagnostics_bundle(server: ConfigWebServer, cfg: AppConfig | None = None) -> tuple[str, str]:
@@ -10462,6 +10480,84 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # Checked again with the write: an update queued during the backup leaves the settings as they are.
         if not server.restart_after(write_defaults):
             return _save_failed(409, _UPDATE_RUNNING, after_update)
+        response.content_type = "application/json"
+        return json.dumps(
+            {"success": True, "needs_restart": True, "restarting": True, "instance": server.instance_id, **backup}
+        )
+
+    @app.get("/api/config/backups")
+    def api_config_backups() -> Any:
+        """This station's settings backups, newest first: names, kinds, versions and times only."""
+        try:
+            rows = config_restore.list_backups(server.config_path, openfollow.__version__)
+        except config_restore.BackupsUnreadableError as exc:
+            logger.warning("Settings backups not listed: %s", exc)
+            return _save_failed(500, _BACKUPS_UNREADABLE, "Details in Logs.")
+        response.content_type = "application/json"
+        return json.dumps({"backups": [row.as_json() for row in rows]})
+
+    @app.post("/api/config/backups/restore")
+    def api_config_backups_restore() -> Any:
+        """Restore one of this station's own settings backups, keeping its identity, then restart.
+
+        The name is matched against the listing, never joined into a path. The
+        archive is read whole and checked before the backup of the current
+        settings is made, so a refused restore leaves nothing behind.
+        """
+        data = _load_json_body()
+        name = data.get("name") if isinstance(data, dict) else None
+        if not isinstance(name, str) or not name:
+            return _save_failed(400, "The request named no backup.")
+        after_update = "Restore the backup once it has finished."
+        if server.is_update_busy():
+            return _save_failed(409, _UPDATE_RUNNING, after_update)
+        base, replacing = _import_base(may_replace=True)
+        try:
+            found = config_restore.find_backup(server.config_path, name, openfollow.__version__)
+        except config_restore.BackupsUnreadableError as exc:
+            logger.warning("Settings backup not restored: %s", exc)
+            return _save_failed(500, _BACKUPS_UNREADABLE, "Details in Logs.")
+        if found is None:
+            return _save_failed(404, "This backup is no longer on the station.", "Reload the page.")
+        if found.newer:
+            return _save_failed(
+                409,
+                f"This backup was made by OpenFollow {config_restore.shown_version(found.version)}, which is "
+                f"newer than this station ({config_restore.shown_version(openfollow.__version__)}).",
+                "Update the station first.",
+            )
+        try:
+            contents = config_restore.read_backup(found.path)
+            restored = config_restore.load_backup_config(contents)
+        except config_restore.BackupDamagedError as exc:
+            logger.warning("Settings backup %s not restored: %s", found.name, exc)
+            return _save_failed(422, "This backup could not be read.", "Choose another one.")
+
+        backup = _backup_before(server.config_path, "restore", base if replacing else None)
+        catalog_path = Path(_resolve_marker_catalog_path(server.config_path, base.markers_catalog_path))
+        try:
+            staged = config_restore.stage_restore(contents, catalog_path, Path(server.config_path).parent)
+        except OSError as exc:
+            return _restore_not_written(found.name, exc)
+
+        def write_backup() -> None:
+            with _config_write_lock:
+                current, replacing_now = _import_base(may_replace=True)
+                save_config(
+                    restored_from_backup(restored, current), server.config_path, replace_unreadable=replacing_now
+                )
+                staged.commit()
+
+        try:
+            # Checked again with the write: an update queued during the backup leaves the settings as they are.
+            restarting = server.restart_after(write_backup)
+        except OSError as exc:
+            return _restore_not_written(found.name, exc)
+        finally:
+            staged.discard()
+        if not restarting:
+            return _save_failed(409, _UPDATE_RUNNING, after_update)
+        logger.info("Restored settings backup %s; restarting", found.name)
         response.content_type = "application/json"
         return json.dumps(
             {"success": True, "needs_restart": True, "restarting": True, "instance": server.instance_id, **backup}

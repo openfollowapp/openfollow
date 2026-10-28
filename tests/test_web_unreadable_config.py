@@ -124,6 +124,9 @@ _WRITES: dict[tuple[str, str], tuple[str, str, Any]] = {
     ),
 }
 
+# Writes that replace a file that does not read and refuse only an empty one, in test_web_config_restore.py.
+_REPLACES = {("POST", "/api/config/backups/restore")}
+
 # Writes that read the file to hand it on, or that land in more than one way.
 _EXTRA = [
     ("POST", "/api/config/grid?from=Other%20Station", "json", _GRID),
@@ -162,7 +165,7 @@ def _writing_routes() -> set[tuple[str, str]]:
 def test_every_route_that_writes_the_config_is_in_the_matrix() -> None:
     found = _writing_routes()
     assert len(found) >= 60, "the scan no longer finds the writing routes"
-    assert found == set(_WRITES)
+    assert found == set(_WRITES) | _REPLACES
 
 
 def _request(base: str, method: str, path: str, kind: str, body: Any) -> tuple[int, str]:

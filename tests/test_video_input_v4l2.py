@@ -864,7 +864,10 @@ class TestV4l2Pipeline:
         assert "framerate=(fraction)30/1" in caps
 
     @pytest.mark.parametrize(("render", "pinned"), [("1080p", True), ("720p", True), ("native", False)])
-    def test_a_fixed_render_size_pins_square_pixels(self, render: str, pinned: bool) -> None:
+    def test_a_fixed_render_size_pins_square_pixels(
+        self, render: str, pinned: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(v4l2_module, "_read_capture_modes", lambda path: None)
         caps = _build_v4l2({"v4l2_render_resolution": render}).get_by_name("capsfilter").properties["caps"]
         # Scaled to a size, a mode of another shape keeps its shape in bars; native has no scaler to do it.
         assert ("pixel-aspect-ratio=(fraction)1/1" in caps.to_string()) is pinned

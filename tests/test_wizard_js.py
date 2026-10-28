@@ -2643,14 +2643,14 @@ def _hint_state(**kw: object) -> dict:
             "Check the suggested lines.",
             "Confirm each of the lines that is straight in reality by pressing ✔. Reject the others, such as a curtain,"
             " a cloth or a cable, by pressing ✖."
-            " 1 left to check. Or load a saved lens calibration.",
+            " 1 left to check. Or load a lens calibration.",
         ),
         (
             _hint_state(open=[1, 4, 7]),
             "Check the suggested lines.",
             "Confirm each of the lines that is straight in reality by pressing ✔. Reject the others, such as a curtain,"
             " a cloth or a cable, by pressing ✖."
-            " 3 left to check. Or load a saved lens calibration.",
+            " 3 left to check. Or load a lens calibration.",
         ),
         (
             _hint_state(loaded={"name": "FOH"}),
@@ -2666,7 +2666,7 @@ def _hint_state(**kw: object) -> dict:
             _hint_state(),
             "Draw straight lines on the picture.",
             "Click the start and the end of an edge that is straight in reality, such as a stage edge, a tape line"
-            " or a truss. Then move its points exactly onto the edge. Or load a saved lens calibration.",
+            " or a truss. Then move its points exactly onto the edge. Or load a lens calibration.",
         ),
         (
             _hint_state(lines=[_LINE, _LINE, _LINE, _MISFIT], fit={"rating": "good", "hint": ""}),

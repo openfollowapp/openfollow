@@ -2185,9 +2185,9 @@
     lensHintLines = lines ? lensLinesHint() : null;
     if (lensPending) { h = 'Click the other end of the straight edge.'; sub = 'Esc cancels the line.'; }
     else if (lensHold && lensSelected && lensSelected.point != null) { h = 'Move the point exactly onto the edge.'; sub = 'Drag it, or use the arrow keys while the loupe shows the edge. Press Enter when it is in the right place.'; }
-    else if (open) { h = 'Check the suggested lines.'; sub = 'Confirm each of the lines that is straight in reality by pressing ✔. Reject the others, such as a curtain, a cloth or a cable, by pressing ✖. ' + open + ' left to check. Or load a saved lens calibration.'; }
+    else if (open) { h = 'Check the suggested lines.'; sub = 'Confirm each of the lines that is straight in reality by pressing ✔. Reject the others, such as a curtain, a cloth or a cable, by pressing ✖. ' + open + ' left to check. Or load a lens calibration.'; }
     else if (!lines && S.lensLoaded) { h = 'A lens calibration is loaded.'; sub = lensHasCurrent() ? 'Press Next, or choose Clear it and measure the lens again.' : 'Press Next, or draw straight lines to measure the lens again.'; }
-    else if (!lines) { h = 'Draw straight lines on the picture.'; sub = 'Click the start and the end of an edge that is straight in reality, such as a stage edge, a tape line or a truss. Then move its points exactly onto the edge. Or load a saved lens calibration.'; }
+    else if (!lines) { h = 'Draw straight lines on the picture.'; sub = 'Click the start and the end of an edge that is straight in reality, such as a stage edge, a tape line or a truss. Then move its points exactly onto the edge. Or load a lens calibration.'; }
     else { h = lensHintLines[0]; sub = lensHintLines[1]; }
     // A started line keeps the box's height, so the picture stays put between the line's two taps.
     var box = $('lens-hint');
@@ -2860,7 +2860,7 @@
         '<button type="button" class="secondary" id="ll-file-btn">Choose file&hellip;</button>' +
         '<input type="file" id="ll-file" accept=".ofsettings,.openfollowsettings,.xml,.yml,.yaml" hidden>' +
         '<div id="ll-size" hidden><div class="lens-dlg-title" id="ll-size-label">Calibrated picture size</div><p id="ll-size-note"></p>' +
-        '<div class="ll-size-row" role="group" aria-labelledby="ll-size-label" aria-describedby="ll-size-note"><input type="number" id="ll-size-w" min="1" step="1" aria-label="Calibrated width"> \u00d7 <input type="number" id="ll-size-h" min="1" step="1" aria-label="Calibrated height"> ' +
+        '<div class="ll-size-row" role="group" aria-labelledby="ll-size-label" aria-describedby="ll-size-note"><input type="number" id="ll-size-w" min="1" step="1" aria-label="Calibrated width" aria-describedby="ll-size-note"> \u00d7 <input type="number" id="ll-size-h" min="1" step="1" aria-label="Calibrated height" aria-describedby="ll-size-note"> ' +
         '<button type="button" class="secondary" id="ll-size-btn">Convert</button></div></div>' +
         '<div class="wizard-field-error" id="ll-file-error" role="alert" hidden></div>' +
         (lines.length ? '<p style="margin-top:0.8rem;">Loading removes the ' + lines.length + ' line' + (lines.length === 1 ? '' : 's') + ' on the picture.</p>' : '') + '</div>';

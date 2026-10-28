@@ -4,7 +4,7 @@
 
 An OpenCV ``FileStorage`` XML file carries a camera matrix and distortion
 coefficients in pixels of the image it was calibrated on: the standard model
-(``k1, k2, p1, p2, k3`` and the rational and thin-prism terms after them) or,
+(``k1, k2, p1, p2, k3`` and the rational and thin-prism terms after them, never a tilted sensor) or,
 with ``isFisheye``, the equidistant fisheye model (``k1..k4``). Neither maps
 one to one onto :mod:`openfollow.lens_model`, so the lens centre is taken from
 the file and ``k1`` / ``k2`` are fitted to the file's whole mapping: screen
@@ -134,7 +134,7 @@ def _first(root: ET.Element, keys: tuple[str, ...]) -> ET.Element | None:
 def _size(root: ET.Element) -> tuple[int | None, int | None]:
     node = root.find("cameraResolution")
     if node is not None:
-        values = _numbers(node.text)
+        values = _matrix(node, "image size")
     else:
         values = _numbers(root.findtext("image_width")) + _numbers(root.findtext("image_height"))
     if not values:
@@ -146,7 +146,11 @@ def _size(root: ET.Element) -> tuple[int | None, int | None]:
 
 def parse_opencv_calibration(text: str) -> OpenCvCalibration:
     """The calibration in an OpenCV ``FileStorage`` XML file; anything that gives no lens raises with the reason."""
-    if len(text.encode("utf-8", "surrogatepass")) > MAX_FILE_BYTES:
+    try:
+        size = len(text.encode("utf-8"))
+    except UnicodeEncodeError as exc:
+        raise OpenCvLensError("This is not a readable XML file.") from exc
+    if size > MAX_FILE_BYTES:
         raise OpenCvLensError("This file is too large for a lens calibration.")
     head = text.lstrip("﻿ \t\r\n")
     if not head.startswith("<"):
@@ -184,6 +188,8 @@ def parse_opencv_calibration(text: str) -> OpenCvCalibration:
         raise OpenCvLensError(
             "The calibration file has 4 distortion values and does not say whether it is a fisheye calibration."
         )
+    if len(coeffs) == 14 and (coeffs[12] or coeffs[13]):
+        raise OpenCvLensError("The calibration models a tilted sensor, which the overlay cannot follow.")
     offset_node = root.find("cxcy_offset")
     offset = _matrix(offset_node, "lens centre offset") if offset_node is not None else [0.0, 0.0]
     if len(offset) != 2:
@@ -302,11 +308,14 @@ def fit_opencv_lens(
     little of the picture.
     """
     cal_w, cal_h = calibrated_size(cal, width, height, size)
+    # The width sets the scale: within the shape tolerance, sides differ by a crop, not a resample.
     scale = width / cal_w
     half_diag = 0.5 * math.hypot(width, height)
     # OpenCV puts pixel centres on whole numbers, the snapshot puts pixel edges there.
     ox, oy = (cal.cx + 0.5) * scale, (cal.cy + 0.5) * scale
     fx, fy = cal.fx * scale, cal.fy * scale
+    if not all(math.isfinite(v) for v in (ox, oy, fx, fy)):
+        raise OpenCvLensError("The calibration file's camera matrix is out of range.")
     cx, cy = (ox - width / 2.0) / half_diag, (oy - height / 2.0) / half_diag
     if abs(cx) > C_BOUND or abs(cy) > C_BOUND:
         raise OpenCvLensError("The calibration's lens centre is too far from the centre of the picture.")

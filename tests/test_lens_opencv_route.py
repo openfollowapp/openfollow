@@ -86,8 +86,10 @@ def test_a_file_without_its_size_asks_for_one_then_takes_it(base: str) -> None:
             "calibrated on a 1440 x 1080 picture, this one is 1920 x 1080",
         ),
         (opencv_xml(dist=[-0.1, 0.02, 0.0, 0.0]), "does not say whether it is a fisheye calibration"),
+        ("<opencv_storage>\ud800</opencv_storage>", "not a readable XML file"),
+        (opencv_xml(1.7e308, (479.5, 269.5), size=(960, 540)), "camera matrix is out of range"),
     ],
-    ids=["yaml", "other shape", "four bare values"],
+    ids=["yaml", "other shape", "four bare values", "lone surrogate", "overflowing matrix"],
 )
 def test_a_file_that_gives_no_lens_is_refused_with_the_reason(base: str, text: str, reason: str) -> None:
     status, data = _send(base, {"xml": text, **_SNAP})

@@ -2792,7 +2792,7 @@
   function lensOpencvAccuracy(c) {
     var text = 'Typical error ' + fmt(c.rms_px, 1) + ' px';
     if (c.corner_px !== null && c.corner_px !== undefined) return text + ', corners ' + fmt(c.corner_px, 1) + ' px.';
-    return text + '. The file describes ' + Math.round(100 * c.coverage) + ' % of the picture, not its corners.';
+    return text + '. The file describes ' + Math.floor(100 * c.coverage) + ' % of the picture, not its corners.';
   }
   // The station converts an OpenCV calibration for this snapshot: ``{ fit }``, ``{ needsSize }`` or ``{ error }``.
   function lensFromOpencv(text, size) {
@@ -2842,7 +2842,8 @@
     return '<div class="notice error" id="lens-list-error" role="alert">The saved lens calibrations could not be read.' + (sub ? '<div class="notice-sub">' + esc(sub) + '</div>' : '') + '</div>';
   }
   window.lensLoadDialog = function(loaded) {
-    var fromFile = null, saved = [], failed = null, pendingXml = null;
+    // ``seq`` numbers every file choice and conversion; only the latest one's answer lands.
+    var fromFile = null, saved = [], failed = null, pendingXml = null, seq = 0;
     function render() {
       var lines = lensLines;
       return '<div id="ll-body"><div class="lens-dlg-title">Saved on this station</div>' +
@@ -2884,7 +2885,8 @@
         var rd = new FileReader();
         rd.onload = function() {
           var text = String(rd.result);
-          fromFile = null; $('ll-file-opt').hidden = true; $('ll-size').hidden = true; sync();
+          seq++; fromFile = null; pendingXml = null;
+          $('ll-file-opt').hidden = true; $('ll-file-opt').innerHTML = ''; $('ll-size').hidden = true; sync();
           // An XML file is an OpenCV calibration, converted by the station; anything else a settings file.
           if (/\.xml$/i.test(f.name) || /^\s*</.test(text)) { pendingXml = { text: text, file: f.name }; convert(null); }
           else show(lensFromSettings(text), f.name, null);
@@ -2904,9 +2906,9 @@
         sync();
       }
       function convert(size) {
-        var file = pendingXml.file;
+        var mine = ++seq, file = pendingXml.file;
         lensFromOpencv(pendingXml.text, size).then(function(got) {
-          if (!pendingXml || pendingXml.file !== file) return;
+          if (mine !== seq) return;
           var asking = !!got.needsSize || (!!size && !!got.error);
           $('ll-size').hidden = !asking;
           if (got.needsSize && !size) { $('ll-size-w').value = imageWidth; $('ll-size-h').value = imageHeight; }

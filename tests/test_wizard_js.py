@@ -8575,8 +8575,12 @@ def test_save_under_the_choices_backs_up_the_cameras_own_calibration(save: str, 
             {"rms_px": 0.8, "corner_px": None, "coverage": 0.912},
             "Typical error 0.8 px. The file describes 91 % of the picture, not its corners.",
         ),
+        (
+            {"rms_px": 0.8, "corner_px": None, "coverage": 0.997},
+            "Typical error 0.8 px. The file describes 99 % of the picture, not its corners.",
+        ),
     ],
-    ids=["reaches the corners", "stops short of them"],
+    ids=["reaches the corners", "stops short of them", "short of the corners only"],
 )
 def test_a_converted_lens_names_its_corner_error_only_where_the_file_reaches_the_corners(fit: dict, text: str) -> None:
     assert run_wizard_js("lensOpencvAccuracy(c)", functions=("fmt", "lensOpencvAccuracy"), c=fit) == text
@@ -8779,3 +8783,35 @@ def test_loading_a_converted_lens_keeps_what_it_is() -> None:
         },  # fmt: skip
     )
     assert (out["kind"], out["rms_px"], out["corner_px"], out["coverage"]) == ("opencv", 1.0, None, 0.95)
+
+
+def test_a_late_answer_for_an_earlier_file_does_not_replace_the_file_chosen_after_it() -> None:
+    settings = json.dumps({"camera": {"lens_k1": -0.1, "lens_k2": 0.0, "lens_cx": 0.0, "lens_cy": 0.0}})
+    out = run_wizard_js(
+        "(async function() { lensLoadDialog(); await tick();"
+        " $('ll-body').onchange({ target: { id: 'll-file', files: [{ name: 'A.xml', text: '<opencv_storage/>' }] } });"
+        " await tick();"
+        " $('ll-body').onchange({ target: { id: 'll-file', files: [{ name: 'B.ofsettings', text: settings }] } });"
+        " gates[0](); await tick(); await tick();"
+        " return [$('ll-file-opt').innerHTML.indexOf('B.ofsettings') >= 0, $('ll-file-opt').innerHTML.indexOf('A.xml'),"
+        " $('ll-size').hidden]; })()",
+        functions=(*_DIALOG_FUNCTIONS, *_LENS_MODEL, "lensFromOpencv", "lensOpencvAccuracy", "lensFromSettings"),
+        prelude=_SAVE_ERROR + _DOM + _DIALOG_PAGE + _OPENCV_DIALOG + "var gates = []; fetch = function(url, o) {"
+        " if (!o) return Promise.resolve({ ok: true,"
+        " json: function() { return Promise.resolve({ calibrations: [] }); } });"
+        " return new Promise(function(done) { gates.push(function() {"
+        " done({ ok: false, json: function() { return Promise.resolve({ error: 'No size.', needs_size: true }); } });"
+        " }); }); };\n" + wizard_window_function("lensLoadDialog") + "\nvar lensLoadDialog = window.lensLoadDialog;",
+        LENS_C_BOUND=C_BOUND,
+        settings=settings,
+    )
+    assert out == [True, -1, True]
+
+
+def test_a_second_file_the_station_refuses_leaves_no_offer_of_the_first() -> None:
+    out = _opencv_dialog(
+        "await choose('A.xml'); var first = $('ll-file-opt').innerHTML.length > 0; await choose('B.xml');"
+        " return [first, $('ll-file-opt').innerHTML, $('ll-file-opt').hidden, $('ll-file-error').textContent];",
+        [{"ok": True, "data": _CONVERTED}, {"ok": False, "data": {"error": "Not XML."}}],
+    )
+    assert out == [True, "", True, "Not XML."]

@@ -39,12 +39,12 @@ def _opencv_distort(x: Floats, y: Floats, dist: list[float], fisheye: bool) -> t
         thd = th * (1 + k1 * th**2 + k2 * th**4 + k3 * th**6 + k4 * th**8)
         s = np.where(r > 0, thd / np.where(r > 0, r, 1), 1.0)
         return x * s, y * s
-    k1, k2, p1, p2, k3 = (list(dist) + [0.0] * 5)[:5]
+    k1, k2, p1, p2, k3, k4, k5, k6, s1, s2, s3, s4 = (list(dist) + [0.0] * 12)[:12]
     r2 = r * r
-    radial = 1 + k1 * r2 + k2 * r2**2 + k3 * r2**3
+    radial = (1 + k1 * r2 + k2 * r2**2 + k3 * r2**3) / (1 + k4 * r2 + k5 * r2**2 + k6 * r2**3)
     return (
-        x * radial + 2 * p1 * x * y + p2 * (r2 + 2 * x * x),
-        y * radial + p1 * (r2 + 2 * y * y) + 2 * p2 * x * y,
+        x * radial + 2 * p1 * x * y + p2 * (r2 + 2 * x * x) + s1 * r2 + s2 * r2**2,
+        y * radial + p1 * (r2 + 2 * y * y) + 2 * p2 * x * y + s3 * r2 + s4 * r2**2,
     )
 
 
@@ -165,6 +165,23 @@ def test_a_file_that_is_no_xml_calibration_is_refused(text: str, reason: str) ->
         parse_opencv_calibration(text)
 
 
+def test_a_file_with_a_lone_surrogate_is_no_readable_file() -> None:
+    with pytest.raises(OpenCvLensError, match="not a readable XML file"):
+        parse_opencv_calibration(opencv_xml(extra="<note>\ud800</note>"))
+
+
+def test_a_size_written_as_a_matrix_reads() -> None:
+    text = opencv_xml(size=None, extra=opencv_matrix("cameraResolution", 1, 2, [3840, 2160]))
+    assert (parse_opencv_calibration(text).width, parse_opencv_calibration(text).height) == (3840, 2160)
+
+
+@pytest.mark.parametrize("tilt", [(0.05, 0.0), (0.0, -0.05)], ids=["tau x", "tau y"])
+def test_a_tilted_sensor_is_refused(tilt: tuple[float, float]) -> None:
+    dist = [-0.1, 0.02] + [0.0] * 10 + list(tilt)
+    with pytest.raises(OpenCvLensError, match="tilted sensor"):
+        parse_opencv_calibration(opencv_xml(dist=dist))
+
+
 def test_a_file_past_the_size_cap_is_refused() -> None:
     with pytest.raises(OpenCvLensError, match="too large"):
         parse_opencv_calibration(opencv_xml(extra="<!-- " + "x" * MAX_FILE_BYTES + " -->"))
@@ -263,6 +280,10 @@ _LENSES = {
     "tangential": opencv_xml(1500.0, (959.5, 539.5), [-0.12, 0.03, 0.004, -0.003, 0.0]),
     "fisheye": opencv_xml(1300.0, (950.5, 545.5), [-0.04, 0.008, -0.004, 0.0005], fisheye="1"),
     "4K": opencv_xml(3000.0, (1919.5, 1079.5), [-0.12, 0.03, 0.0, 0.0, 0.0], size=(3840, 2160)),
+    "rational": opencv_xml(1500.0, (959.5, 539.5), [-0.1, 0.02, 0.0, 0.0, 0.0, 0.2, -0.05, 0.01]),
+    "thin prism": opencv_xml(
+        1500.0, (959.5, 539.5), [-0.12, 0.03, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.003, -0.001, -0.002, 0.0005]
+    ),
 }
 
 
@@ -330,6 +351,12 @@ def test_the_corner_error_waits_for_every_corner() -> None:
     text = opencv_xml(1250.0, (1159.5, 539.5), [-0.42, 0.16, 0.0, 0.0, -0.03])
     fit = fit_opencv_lens(parse_opencv_calibration(text), _W, _H)
     assert fit.coverage < 1.0 and fit.corner_px is None
+
+
+def test_a_camera_matrix_that_overflows_once_scaled_is_refused() -> None:
+    cal = parse_opencv_calibration(opencv_xml(1.7e308, (479.5, 269.5), size=(960, 540)))
+    with pytest.raises(OpenCvLensError, match="camera matrix is out of range"):
+        fit_opencv_lens(cal, _W, _H)
 
 
 def test_a_calibration_that_describes_little_of_the_picture_is_refused() -> None:

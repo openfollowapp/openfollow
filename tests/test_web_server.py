@@ -1906,6 +1906,35 @@ def test_api_info_returns_expected_fields(live_server) -> None:
     assert data["version"] == openfollow.__version__
 
 
+def test_api_info_and_peers_name_the_fallback_port_served(tmp_path, monkeypatch) -> None:
+    from openfollow.web import server as server_mod
+
+    monkeypatch.setattr(discovery_module.BeaconSender, "start", lambda self: None)
+    monkeypatch.setattr(discovery_module.BeaconSender, "stop", lambda self: None)
+    monkeypatch.setattr(discovery_module.BeaconReceiver, "start", lambda self: None)
+    monkeypatch.setattr(discovery_module.BeaconReceiver, "stop", lambda self: None)
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
+        taken.bind(("127.0.0.1", 0))
+        taken.listen(1)
+        configured = taken.getsockname()[1]
+
+        def _factory(port: int) -> ConfigWebServer:
+            monkeypatch.setattr(server_mod, "_FALLBACK_PORTS", (port,))
+            return ConfigWebServer(
+                config_path=str(tmp_path / "config.toml"), host="127.0.0.1", port=configured, system_name="TestSystem"
+            )
+
+        with live_on_free_port(_factory) as (_server, base):
+            _status, info = _get_json(base, "/api/info")
+            _status, peers = _get_json(base, "/api/peers")
+
+    served = int(base.rsplit(":", 1)[1])
+    assert served != configured
+    assert info["port"] == served
+    assert peers["local"]["port"] == served
+
+
 def test_api_stats_returns_json(live_server) -> None:
     _, base = live_server
     status, data = _get_json(base, "/api/stats")

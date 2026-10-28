@@ -11,6 +11,7 @@ network.  Integration-style tests (against a live server) live in
 
 from __future__ import annotations
 
+import errno
 import logging
 import socket
 import threading
@@ -21,6 +22,7 @@ import pytest
 import openfollow
 import openfollow.web.discovery as discovery_module
 from openfollow.web.server import ConfigWebServer
+from tests._port_sharing import STATION_ADDRESS, SharingKernel, share_ports
 
 pytestmark = pytest.mark.unit
 
@@ -1877,3 +1879,173 @@ def test_suspend_beacons_stops_both(tmp_path, monkeypatch) -> None:
 
     assert srv._beacon_sender.iface_ip is None
     assert srv._beacon_receiver.iface_ip is None
+
+
+# ---------------------------------------------------------------------------
+# The port the station serves is the port it advertises
+# ---------------------------------------------------------------------------
+
+
+def _advertised_port(srv: ConfigWebServer) -> int:
+    packet = discovery_module.BeaconPacket.from_bytes(srv._beacon_sender._packet.to_bytes())
+    assert packet is not None
+    return packet.web_port
+
+
+def _start_where_free(srv: ConfigWebServer, monkeypatch, free: set[int]) -> None:
+    monkeypatch.setattr(srv, "_can_bind", lambda _host, port: port in free)
+    monkeypatch.setattr(threading.Thread, "start", lambda self: None)
+    srv.start()
+
+
+@pytest.mark.parametrize(
+    ("free", "served"),
+    [({80, 8080}, 80), ({8080}, 8080), ({2010}, 2010)],
+    ids=["primary", "first-fallback", "second-fallback"],
+)
+def test_the_beacon_advertises_the_port_the_station_serves(tmp_path, monkeypatch, free, served) -> None:
+    srv = _make_quiet_server(tmp_path, monkeypatch, port=80)
+    _start_where_free(srv, monkeypatch, free)
+    assert _advertised_port(srv) == served
+
+
+def test_the_station_skips_only_its_own_beacon_on_the_fallback_port(tmp_path, monkeypatch) -> None:
+    """Its own beacon carries the fallback port; another station on the same
+    host serving the configured port is a peer, not this station."""
+    monkeypatch.setattr(discovery_module, "get_local_ipv4_addresses", lambda: {"192.0.2.10"})
+    srv = _make_quiet_server(tmp_path, monkeypatch, port=80)
+    _start_where_free(srv, monkeypatch, {8080})
+
+    srv._beacon_receiver._handle_packet(srv._beacon_sender._packet.to_bytes(), "192.0.2.10")
+    other = discovery_module.BeaconPacket(name="Other", web_port=80).to_bytes()
+    srv._beacon_receiver._handle_packet(other, "192.0.2.10")
+
+    assert [peer.address for peer in srv.get_peers()] == ["192.0.2.10:80"]
+
+
+def _fail_bind(monkeypatch) -> None:
+    import wsgiref.simple_server as wsgi_mod
+
+    def _taken(*_a, **_kw):
+        raise OSError(errno.EADDRINUSE, "Address already in use")
+
+    monkeypatch.setattr(wsgi_mod, "make_server", _taken)
+
+
+def test_a_primary_that_stops_hands_the_beacon_to_the_fallback(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(discovery_module, "get_local_ipv4_addresses", lambda: {"192.0.2.10"})
+    srv = _make_quiet_server(tmp_path, monkeypatch, port=80)
+    _start_where_free(srv, monkeypatch, {80, 8080})
+
+    _fail_bind(monkeypatch)
+    srv._run(srv._host, 80, "primary")
+
+    assert _advertised_port(srv) == 8080
+    srv._beacon_receiver._handle_packet(srv._beacon_sender._packet.to_bytes(), "192.0.2.10")
+    assert srv.get_peers() == []
+
+
+def test_a_primary_that_stops_with_no_fallback_keeps_its_port(tmp_path, monkeypatch) -> None:
+    srv = _make_quiet_server(tmp_path, monkeypatch, port=2010)
+    _start_where_free(srv, monkeypatch, {2010})
+
+    _fail_bind(monkeypatch)
+    srv._run(srv._host, 2010, "primary")
+
+    assert _advertised_port(srv) == 2010
+
+
+def test_the_station_row_names_the_port_it_serves(tmp_path, monkeypatch) -> None:
+    srv = _make_quiet_server(tmp_path, monkeypatch, port=80)
+    srv._fallback_http_server = object()
+    srv._fallback_port = 8080
+    assert srv.get_local_peer_info().web_port == 8080
+
+
+# ---------------------------------------------------------------------------
+# macOS: a port shared with another socket is not the station's
+# ---------------------------------------------------------------------------
+
+
+def _start_on(kernel: SharingKernel, srv: ConfigWebServer, monkeypatch) -> list[tuple[str, int, str]]:
+    """Start ``srv`` on ``kernel``; each listener thread binds as it starts."""
+    started: list[tuple[str, int, str]] = []
+
+    def _start(thread: threading.Thread) -> None:
+        host, port, slot = thread._args  # type: ignore[attr-defined]
+        kernel.listen_on(host, port)
+        started.append((host, port, slot))
+
+    monkeypatch.setattr(threading.Thread, "start", _start)
+    srv.start()
+    return started
+
+
+@pytest.mark.parametrize("holder", ["127.0.0.1", STATION_ADDRESS])
+def test_macos_never_serves_a_port_another_socket_holds_on_an_address_of_this_host(
+    tmp_path, monkeypatch, caplog, holder: str
+) -> None:
+    kernel = SharingKernel(held={(holder, 8080)})
+    share_ports(monkeypatch, kernel)
+    srv = _make_quiet_server(tmp_path, monkeypatch, port=8080, host="0.0.0.0")
+
+    with caplog.at_level("INFO", logger="openfollow.web.server"):
+        started = _start_on(kernel, srv, monkeypatch)
+
+    assert [port for _host, port, slot in started if slot != "loopback"] == [2010]
+    assert _advertised_port(srv) == 2010
+    assert f"Web UI port 8080 is in use on {holder}" in caplog.text
+
+
+def test_macos_pinned_station_never_serves_a_port_another_socket_holds_on_the_wildcard(tmp_path, monkeypatch) -> None:
+    kernel = SharingKernel(held={("", 8080)})
+    share_ports(monkeypatch, kernel)
+    srv = _make_quiet_server(tmp_path, monkeypatch, port=8080, host=STATION_ADDRESS)
+
+    started = _start_on(kernel, srv, monkeypatch)
+
+    assert (STATION_ADDRESS, 2010, "fallback") in started
+    assert all(port != 8080 for _host, port, _slot in started)
+
+
+def test_macos_falls_back_past_a_fallback_another_socket_holds(tmp_path, monkeypatch) -> None:
+    kernel = SharingKernel(held={("127.0.0.1", 80), ("127.0.0.1", 8080)})
+    share_ports(monkeypatch, kernel)
+    srv = _make_quiet_server(tmp_path, monkeypatch, port=80, host="0.0.0.0")
+
+    started = _start_on(kernel, srv, monkeypatch)
+
+    assert ("0.0.0.0", 2010, "fallback") in started
+    assert _advertised_port(srv) == 2010
+
+
+def test_macos_holds_loopback_beside_the_wildcard(tmp_path, monkeypatch) -> None:
+    """Open Web UI opens 127.0.0.1: the station binds it too, so no process
+    started later can take it - even though its own wildcard is up first."""
+    kernel = SharingKernel()
+    share_ports(monkeypatch, kernel)
+    srv = _make_quiet_server(tmp_path, monkeypatch, port=8080, host="0.0.0.0")
+
+    started = _start_on(kernel, srv, monkeypatch)
+
+    assert ("0.0.0.0", 8080, "primary") in started
+    assert ("127.0.0.1", 8080, "loopback") in started
+
+
+@pytest.mark.parametrize(
+    ("host", "expected"),
+    [("0.0.0.0", True), ("", True), ("127.0.0.1", False), ("::1", False), (STATION_ADDRESS, True)],
+)
+def test_macos_needs_a_loopback_listener_unless_it_serves_loopback(tmp_path, monkeypatch, host, expected) -> None:
+    share_ports(monkeypatch, SharingKernel())
+    assert _make_quiet_server(tmp_path, monkeypatch, host=host)._needs_loopback_listener() is expected
+
+
+def test_linux_wildcard_serves_loopback_itself(tmp_path, monkeypatch) -> None:
+    kernel = SharingKernel()
+    monkeypatch.setattr("openfollow.net_utils.socket.socket", kernel.socket)
+    srv = _make_quiet_server(tmp_path, monkeypatch, port=8080, host="0.0.0.0")
+
+    started = _start_on(kernel, srv, monkeypatch)
+
+    assert [slot for _host, _port, slot in started] == ["primary", "fallback"]

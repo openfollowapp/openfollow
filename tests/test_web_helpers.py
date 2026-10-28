@@ -3567,6 +3567,12 @@ class TestPeerPortAllowlist:
         assert _is_allowed_peer_port(31337, 8080) is False  # arbitrary beacon port
         assert _is_allowed_peer_port(22, 8080) is False  # internal-service probe
 
+    def test_a_peer_serving_any_fallback_port_is_reachable(self) -> None:
+        from openfollow.web.routes import _is_allowed_peer_port
+        from openfollow.web.server import _FALLBACK_PORTS
+
+        assert all(_is_allowed_peer_port(port, 80) for port in _FALLBACK_PORTS)
+
     def test_probe_peer_refuses_unexpected_port(self) -> None:
         from openfollow.web.routes import _probe_peer
 

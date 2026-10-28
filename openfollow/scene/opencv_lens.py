@@ -298,8 +298,9 @@ def calibrated_size(
     cal_w, cal_h = got
     here = width / height
     if abs(cal_w / cal_h - here) > SHAPE_TOLERANCE * here:
+        said = "The lens was calibrated on a" if cal.width and cal.height else "The size given is a"
         raise OpenCvLensError(
-            f"The lens was calibrated on a {cal_w} \u00d7 {cal_h} picture, this one is {width:g} \u00d7 {height:g}. "
+            f"{said} {cal_w} \u00d7 {cal_h} picture, this one is {width:g} \u00d7 {height:g}. "
             "A calibration only fits a picture of the same shape."
         )
     return cal_w, cal_h

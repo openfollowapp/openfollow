@@ -2860,7 +2860,7 @@
         '<button type="button" class="secondary" id="ll-file-btn">Choose file&hellip;</button>' +
         '<input type="file" id="ll-file" accept=".ofsettings,.openfollowsettings,.xml,.yml,.yaml" hidden>' +
         '<div id="ll-size" hidden><div class="lens-dlg-title" id="ll-size-label">Calibrated picture size</div><p id="ll-size-note"></p>' +
-        '<div class="ll-size-row" role="group" aria-labelledby="ll-size-label"><input type="number" id="ll-size-w" min="1" step="1" aria-label="Calibrated width"> \u00d7 <input type="number" id="ll-size-h" min="1" step="1" aria-label="Calibrated height"> ' +
+        '<div class="ll-size-row" role="group" aria-labelledby="ll-size-label" aria-describedby="ll-size-note"><input type="number" id="ll-size-w" min="1" step="1" aria-label="Calibrated width"> \u00d7 <input type="number" id="ll-size-h" min="1" step="1" aria-label="Calibrated height"> ' +
         '<button type="button" class="secondary" id="ll-size-btn">Convert</button></div></div>' +
         '<div class="wizard-field-error" id="ll-file-error" role="alert" hidden></div>' +
         (lines.length ? '<p style="margin-top:0.8rem;">Loading removes the ' + lines.length + ' line' + (lines.length === 1 ? '' : 's') + ' on the picture.</p>' : '') + '</div>';
@@ -2888,21 +2888,17 @@
       dialog.onchange = function(e) {
         if (e.target.id !== 'll-file') { sync(); return; }
         var f = e.target.files[0]; if (!f) return;
-        // The station reads at most LENS_FILE_MAX bytes; a larger file is refused before it is sent.
-        if (f.size > LENS_FILE_MAX) {
-          seq++; fromFile = null; pendingXml = null;
-          $('ll-file-opt').hidden = true; $('ll-file-opt').innerHTML = ''; $('ll-size').hidden = true; sync();
-          show({ error: 'This file is too large for a lens calibration.' }, f.name, null);
-          e.target.value = '';
-          return;
-        }
         var rd = new FileReader();
         rd.onload = function() {
           var text = String(rd.result);
           seq++; fromFile = null; pendingXml = null;
           $('ll-file-opt').hidden = true; $('ll-file-opt').innerHTML = ''; $('ll-size').hidden = true; sync();
           // An XML or YAML file is an OpenCV calibration, for the station; anything else a settings file.
-          if (/\.(xml|ya?ml)$/i.test(f.name) || /^\s*(<|%YAML)/.test(text)) { pendingXml = { text: text, file: f.name }; convert(null); }
+          // The station reads at most LENS_FILE_MAX bytes; a larger calibration is refused before it is sent.
+          if (/\.(xml|ya?ml)$/i.test(f.name) || /^\s*(<|%YAML)/.test(text)) {
+            if (f.size > LENS_FILE_MAX) show({ error: 'This file is too large for a lens calibration.' }, f.name, null);
+            else { pendingXml = { text: text, file: f.name }; convert(null); }
+          }
           else show(lensFromSettings(text), f.name, null);
           e.target.value = '';
         };
@@ -2930,6 +2926,8 @@
             $('ll-size-note').textContent = got.error;
             $('ll-size-w').value = imageWidth; $('ll-size-h').value = imageHeight;
             var err = $('ll-file-error'); err.hidden = true; err.textContent = '';
+            // Focus brings the question to a screen reader, through the row's description.
+            $('ll-size-w').focus(); $('ll-size-w').select();
             return;
           }
           show(got.fit ? got.fit : { error: got.error }, file, true);

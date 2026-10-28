@@ -421,6 +421,13 @@ def test_a_calibration_of_another_picture_shape_is_refused_naming_both(size: tup
         fit_opencv_lens(cal, _W, _H)
 
 
+def test_a_typed_size_of_another_shape_is_named_as_the_size_given() -> None:
+    cal = parse_opencv_calibration(opencv_xml(size=None, c=(719.5, 539.5)))
+    reason = "The size given is a 1440 × 1080 picture, this one is 1920 × 1080."
+    with pytest.raises(OpenCvLensError, match=reason):
+        fit_opencv_lens(cal, _W, _H, (1440, 1080))
+
+
 @pytest.mark.parametrize("axis", ["x", "y"])
 def test_a_lens_centre_beyond_the_bound_is_refused(axis: str) -> None:
     half_diag = 0.5 * math.hypot(_W, _H)

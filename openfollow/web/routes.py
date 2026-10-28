@@ -3824,15 +3824,13 @@ def _json_point(value: Any, name: str) -> list[float]:
 
 def _parse_lens_opencv_body(data: Any) -> tuple[str, float, float, tuple[int, int] | None]:
     """Validate a ``/api/wizard/lens/opencv`` body; raises for the endpoint's 400."""
-    from openfollow.scene.opencv_lens import MAX_FILE_BYTES, MAX_SIDE
+    from openfollow.scene.opencv_lens import MAX_SIDE
 
     if not isinstance(data, dict):
         raise TypeError("body must be an object")
     text = data["xml"]
     if not isinstance(text, str):
         raise TypeError("xml must be text")
-    if len(text) > MAX_FILE_BYTES:
-        raise ValueError("This file is too large for a lens calibration.")
     img_w, img_h = _json_canvas(data)
     if "calibration_width" not in data and "calibration_height" not in data:
         return text, img_w, img_h, None

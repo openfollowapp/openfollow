@@ -1363,6 +1363,7 @@ var els = {};
 function $(id) {
   if (!els[id]) els[id] = { id: id, hidden: false, disabled: false, innerHTML: '', textContent: '', className: '',
     value: '', style: {}, open: false, lastChild: {}, appendChild: function() {}, setAttribute: function() {},
+    focus: function() { document.activeElement = els[id]; }, select: function() {},
     getBoundingClientRect: function() { return { width: 0 }; }, classList: { toggle: function() {} } };
   return els[id];
 }
@@ -8710,14 +8711,15 @@ def test_an_opencv_file_is_offered_with_its_accuracy_and_loads_as_one() -> None:
 def test_a_file_without_its_size_asks_for_it_prefilled_with_the_snapshot_s() -> None:
     out = _opencv_dialog(
         "await choose('tele.xml'); var asked = [$('ll-size').hidden, $('ll-size-w').value, $('ll-size-h').value,"
-        " $('ll-file-opt').hidden, $('ll-size-note').textContent, $('ll-file-error').hidden];"
+        " $('ll-file-opt').hidden, $('ll-size-note').textContent, $('ll-file-error').hidden,"
+        " document.activeElement && document.activeElement.id];"
         " $('ll-size-w').value = '3840'; $('ll-size-h').value = '2160';"
         " $('ll-size-btn').onclick(); await tick(); await tick();"
         " return [asked, posts[1], $('ll-size').hidden, $('ll-file-opt').hidden];",
         [{"ok": False, "data": {"error": "No size.", "needs_size": True}}, {"ok": True, "data": _CONVERTED}],
     )
     asked, second, size_hidden, option_hidden = out
-    assert asked == [False, 1920, 1080, True, "No size.", True]
+    assert asked == [False, 1920, 1080, True, "No size.", True, "ll-size-w"]
     assert (second["calibration_width"], second["calibration_height"]) == (3840, 2160)
     assert (size_hidden, option_hidden) == (True, False)
 
@@ -9044,21 +9046,24 @@ def test_a_typed_size_the_station_refuses_keeps_the_fields_as_typed() -> None:
     assert out == [False, "1280", "720", "Check the calibrated picture size.", False, True]
 
 
-def test_a_file_past_the_station_s_cap_is_refused_before_it_is_sent() -> None:
-    out = run_wizard_js(
-        "(async function() { lensLoadDialog(); await tick();"
-        " $('ll-body').onchange({ target: { id: 'll-file',"
-        " files: [{ name: 'huge.xml', size: 1048577, text: '<x/>' }] } });"
-        " await tick(); return [posts.length, $('ll-file-error').textContent, $('ll-file-opt').hidden]; })()",
-        functions=(*_DIALOG_FUNCTIONS, "lensFromOpencv", "lensOpencvAccuracy", "lensFromSettings"),
-        prelude=_SAVE_ERROR
-        + _FROM_TEXT
-        + _DOM
-        + _DIALOG_PAGE
-        + _OPENCV_DIALOG
-        + "\n"
-        + wizard_window_function("lensLoadDialog")
-        + "\nvar lensLoadDialog = window.lensLoadDialog;",
-        answers=[],
+@pytest.mark.parametrize(
+    ("second", "posted", "said"),
+    [
+        ({"name": "huge.xml", "size": 1048577}, 1, "This file is too large for a lens calibration."),
+        ({"name": "exact.xml", "size": 1048576}, 2, ""),
+        ({"name": "big.ofsettings", "size": 2000000, "text": "{}"}, 1, "This is not an OpenFollow settings file."),
+    ],
+    ids=["past the cap", "at the cap", "a settings file"],
+)
+def test_only_a_calibration_past_the_station_s_cap_is_refused_before_it_is_sent(
+    second: dict, posted: int, said: str
+) -> None:
+    out = _opencv_dialog(
+        "await choose('A.xml'); var first = $('ll-file-opt').innerHTML !== '';"
+        " $('ll-body').onchange({ target: { id: 'll-file', files: [Object.assign({ text: '<x/>' }, second)] } });"
+        " await tick(); await tick();"
+        " return [first, posts.length, $('ll-file-error').textContent, $('ll-file-opt').innerHTML.indexOf('A.xml')];",
+        [{"ok": True, "data": _CONVERTED}, {"ok": True, "data": _CONVERTED}],
+        second=second,
     )
-    assert out == [0, "This file is too large for a lens calibration.", True]
+    assert out == [True, posted, said, -1]

@@ -194,7 +194,7 @@ def test_a_file_with_something_before_its_declaration_still_reads(lead: str) -> 
 
 def test_a_file_carrying_its_detected_points_reads() -> None:
     # Calibration tools may also write every view's detected points: tens to hundreds of kB.
-    points = opencv_matrix("image_points", 40 * 54, 2, [float(i % 1900) for i in range(40 * 54 * 2)])
+    points = opencv_matrix("image_points", 60 * 54, 2, [i * 0.7071 % 1900 for i in range(60 * 54 * 2)])
     text = opencv_xml(extra=points)
     assert len(text.encode()) > 64 * 1024
     assert parse_opencv_calibration(text).fx == 1500.0

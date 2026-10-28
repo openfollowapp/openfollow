@@ -34,7 +34,7 @@ to the web UI, each with a Restore button. Issue #422.
 
 ## Work items
 
-- [ ] Plan approved, UI mockup approved (Artifact).
+- [x] Plan approved, UI mockup approved (Artifact). A backup from a newer version stays in the list with its Restore button off and the row saying "Newer than this station"; the server refuses it too.
 - [ ] Listing: route, kind and version per archive, newest first, both folders; tests for each kind, a missing manifest, an unreadable folder.
 - [ ] Restore: route, name check, member filter and caps, version refusal, identity kept, catalog / templates / lens calibrations written, restart through `restart_after`; tests for each refusal (400, 404, 409 busy, 409 newer, a damaged archive) and each restored part.
 - [ ] Backup before restore (kind `restore`), and the restore going ahead when it fails.

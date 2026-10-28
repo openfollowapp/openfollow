@@ -8654,7 +8654,7 @@ def test_an_opencv_file_waits_for_the_picture() -> None:
 
 _CONVERTED = {"k1": -0.31, "k2": -0.12, "cx": 0.0, "cy": 0.0, "rms_px": 0.84, "corner_px": None, "coverage": 0.9}
 _OPENCV_DIALOG = """
-var buttons = [], applied = [], posts = [];
+var buttons = [], applied = [], posts = [], LENS_FILE_MAX = 1048576;
 openModal = function(o) { body = o.bodyHTML; buttons = o.footerButtons; };
 function closeModal() {}
 function lensApplyLoaded(c, src) { applied.push([c, src]); }
@@ -8710,14 +8710,14 @@ def test_an_opencv_file_is_offered_with_its_accuracy_and_loads_as_one() -> None:
 def test_a_file_without_its_size_asks_for_it_prefilled_with_the_snapshot_s() -> None:
     out = _opencv_dialog(
         "await choose('tele.xml'); var asked = [$('ll-size').hidden, $('ll-size-w').value, $('ll-size-h').value,"
-        " $('ll-file-opt').hidden, $('ll-file-error').textContent];"
+        " $('ll-file-opt').hidden, $('ll-size-note').textContent, $('ll-file-error').hidden];"
         " $('ll-size-w').value = '3840'; $('ll-size-h').value = '2160';"
         " $('ll-size-btn').onclick(); await tick(); await tick();"
         " return [asked, posts[1], $('ll-size').hidden, $('ll-file-opt').hidden];",
         [{"ok": False, "data": {"error": "No size.", "needs_size": True}}, {"ok": True, "data": _CONVERTED}],
     )
     asked, second, size_hidden, option_hidden = out
-    assert asked == [False, 1920, 1080, True, "No size."]
+    assert asked == [False, 1920, 1080, True, "No size.", True]
     assert (second["calibration_width"], second["calibration_height"]) == (3840, 2160)
     assert (size_hidden, option_hidden) == (True, False)
 
@@ -9028,3 +9028,37 @@ def test_enter_in_a_size_field_converts_with_that_size() -> None:
         [{"ok": False, "data": {"error": "No size.", "needs_size": True}}, {"ok": True, "data": _CONVERTED}],
     )
     assert out == [True, 2, 3840, 2160]
+
+
+def test_a_typed_size_the_station_refuses_keeps_the_fields_as_typed() -> None:
+    out = _opencv_dialog(
+        "await choose('tele.xml'); $('ll-size-w').value = '1280'; $('ll-size-h').value = '720';"
+        " $('ll-size-btn').onclick(); await tick(); await tick();"
+        " return [$('ll-size').hidden, $('ll-size-w').value, $('ll-size-h').value, $('ll-file-error').textContent,"
+        " $('ll-file-error').hidden, $('ll-file-opt').hidden];",
+        [
+            {"ok": False, "data": {"error": "No size.", "needs_size": True}},
+            {"ok": False, "data": {"error": "Check the calibrated picture size."}},
+        ],
+    )
+    assert out == [False, "1280", "720", "Check the calibrated picture size.", False, True]
+
+
+def test_a_file_past_the_station_s_cap_is_refused_before_it_is_sent() -> None:
+    out = run_wizard_js(
+        "(async function() { lensLoadDialog(); await tick();"
+        " $('ll-body').onchange({ target: { id: 'll-file',"
+        " files: [{ name: 'huge.xml', size: 1048577, text: '<x/>' }] } });"
+        " await tick(); return [posts.length, $('ll-file-error').textContent, $('ll-file-opt').hidden]; })()",
+        functions=(*_DIALOG_FUNCTIONS, "lensFromOpencv", "lensOpencvAccuracy", "lensFromSettings"),
+        prelude=_SAVE_ERROR
+        + _FROM_TEXT
+        + _DOM
+        + _DIALOG_PAGE
+        + _OPENCV_DIALOG
+        + "\n"
+        + wizard_window_function("lensLoadDialog")
+        + "\nvar lensLoadDialog = window.lensLoadDialog;",
+        answers=[],
+    )
+    assert out == [0, "This file is too large for a lens calibration.", True]

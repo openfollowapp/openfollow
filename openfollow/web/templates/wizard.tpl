@@ -8,6 +8,7 @@
 % import json
 % from openfollow.configuration import MAX_CALIBRATION_MARKS
 % from openfollow.lens_model import C_BOUND
+% from openfollow.scene.opencv_lens import MAX_FILE_BYTES
 % _cam = config.camera
 % _lens_k1, _lens_k2, _lens_cx, _lens_cy = _cam.lens_k1, _cam.lens_k2, _cam.lens_cx, _cam.lens_cy
 % _suggest_on = config.ui.feature_on('lens_suggestions')
@@ -863,6 +864,7 @@
   // The lens: Barrel / fisheye and Corner correction in their fields, the lens centre in S.lensCentre (half-diagonals
   // from the picture centre, x right, y down), shown in whole pixels of the snapshot. Mirrors openfollow.lens_model.
   var LENS_C_BOUND = {{C_BOUND}};
+  var LENS_FILE_MAX = {{MAX_FILE_BYTES}};
   // Smallest positive root of 1 + b s + a s^2, Infinity when none.
   function wizLensRoot(a, b) {
     if (a === 0) return b < 0 ? -1 / b : Infinity;
@@ -2857,7 +2859,7 @@
         '<div class="tier-list" id="ll-file-opt" hidden></div>' +
         '<button type="button" class="secondary" id="ll-file-btn">Choose file&hellip;</button>' +
         '<input type="file" id="ll-file" accept=".ofsettings,.openfollowsettings,.xml,.yml,.yaml" hidden>' +
-        '<div id="ll-size" hidden><div class="lens-dlg-title" id="ll-size-label">Calibrated picture size</div>' +
+        '<div id="ll-size" hidden><div class="lens-dlg-title" id="ll-size-label">Calibrated picture size</div><p id="ll-size-note"></p>' +
         '<div class="ll-size-row" role="group" aria-labelledby="ll-size-label"><input type="number" id="ll-size-w" min="1" step="1" aria-label="Calibrated width"> \u00d7 <input type="number" id="ll-size-h" min="1" step="1" aria-label="Calibrated height"> ' +
         '<button type="button" class="secondary" id="ll-size-btn">Convert</button></div></div>' +
         '<div class="wizard-field-error" id="ll-file-error" role="alert" hidden></div>' +
@@ -2886,6 +2888,14 @@
       dialog.onchange = function(e) {
         if (e.target.id !== 'll-file') { sync(); return; }
         var f = e.target.files[0]; if (!f) return;
+        // The station reads at most LENS_FILE_MAX bytes; a larger file is refused before it is sent.
+        if (f.size > LENS_FILE_MAX) {
+          seq++; fromFile = null; pendingXml = null;
+          $('ll-file-opt').hidden = true; $('ll-file-opt').innerHTML = ''; $('ll-size').hidden = true; sync();
+          show({ error: 'This file is too large for a lens calibration.' }, f.name, null);
+          e.target.value = '';
+          return;
+        }
         var rd = new FileReader();
         rd.onload = function() {
           var text = String(rd.result);
@@ -2915,7 +2925,13 @@
           if (mine !== seq || $('ll-body') !== dialog) return;
           var asking = !!got.needsSize || (!!size && !!got.error);
           $('ll-size').hidden = !asking;
-          if (got.needsSize && !size) { $('ll-size-w').value = imageWidth; $('ll-size-h').value = imageHeight; }
+          // Asked only when no size was sent; the question is no error, so it stays with the fields.
+          if (got.needsSize) {
+            $('ll-size-note').textContent = got.error;
+            $('ll-size-w').value = imageWidth; $('ll-size-h').value = imageHeight;
+            var err = $('ll-file-error'); err.hidden = true; err.textContent = '';
+            return;
+          }
           show(got.fit ? got.fit : { error: got.error }, file, true);
         });
       }

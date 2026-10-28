@@ -439,6 +439,12 @@ class TestWizardPage:
         script = _wizard_script(body)
         assert "window.lensLoadDialog = function" in script and "window.lensSaveDialog = function" in script
 
+    def test_the_page_refuses_a_calibration_file_past_the_station_s_cap(self, live_server) -> None:
+        from openfollow.scene.opencv_lens import MAX_FILE_BYTES
+
+        script = _wizard_script(_get(live_server[1], "/wizard")[1])
+        assert f"var LENS_FILE_MAX = {MAX_FILE_BYTES};" in script
+
     def test_the_lens_step_asks_what_to_do_with_the_cameras_calibration_above_the_picture(self, live_server) -> None:
         _, body = _get(live_server[1], "/wizard")
         step = _wizard_step(body, "lens")

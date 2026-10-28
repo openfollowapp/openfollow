@@ -8,9 +8,11 @@ coefficients in pixels of the image it was calibrated on: the standard model
 with ``isFisheye``, the equidistant fisheye model (``k1..k4``). Neither maps
 one to one onto :mod:`openfollow.lens_model`, so the lens centre is taken from
 the file and ``k1`` / ``k2`` are fitted to the file's whole mapping: screen
-points over the snapshot are undistorted by OpenCV's model, and the valid pair
-(with a free pinhole scale, which the camera solve owns) that lands them back
-nearest, by RMS, is kept. The field of view in the camera matrix is not used.
+points over the snapshot are undistorted by OpenCV's model, and Levenberg-Marquardt
+from a few starts finds the valid pair (with a free pinhole scale, which the camera
+solve owns) that lands them back nearest by RMS. Where the best pair lies past the
+valid region, as for a fisheye of about 170 degrees or more, the fit stops at the
+region's edge, and its error says so. The field of view in the camera matrix is not used.
 
 A calibration describes the picture only as far as its pattern reached: past
 the radius where its polynomial stops rising, and past 90 degrees off the axis

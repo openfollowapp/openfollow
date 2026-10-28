@@ -244,7 +244,7 @@ class TestMidiSectionRender:
                     "serial": None,
                 },
                 {
-                    "identifier": "serial:ABC123",
+                    "identifier": "serial:ABC123|X-Touch",
                     "port_name": "X-Touch",
                     "product": "X-Touch Mini",
                     "serial": "ABC123",
@@ -262,13 +262,97 @@ class TestMidiSectionRender:
             # the patch row's Device select, keyed by identifier.
             assert 'name="device"' in body
             assert 'value="port:MIDI Mix|MIDI Mix"' in body
-            assert 'value="serial:ABC123"' in body
+            assert 'value="serial:ABC123|X-Touch"' in body
             assert "MIDI Mix" in body
             assert "X-Touch" in body
             # The serial annotation is appended to the option label.
             assert "ABC123" in body
             # With a patch present the no-patches banner is gone.
             assert "No MIDI patches yet" not in body
+
+
+_TWO_UNITS = [
+    {"identifier": "serial:S1|XTM", "port_name": "XTM", "product": "XTM", "serial": "S1"},
+    {"identifier": "serial:S2|XTM", "port_name": "XTM", "product": "XTM", "serial": "S2"},
+]
+
+
+def _selected_device(body: str, patch_id: int = 1) -> list[str]:
+    select = re.search(rf'<select form="patch-{patch_id}-form" name="device">(.*?)</select>', body, re.S)
+    assert select is not None
+    return re.findall(r'<option value="([^"]*)" selected>', select.group(1))
+
+
+class TestPatchDeviceSelection:
+    """The Device dropdown selects the unit the patch opens on."""
+
+    @pytest.mark.parametrize("route", ["/section/midi", "/"])
+    def test_a_patch_with_a_serial_selects_its_own_unit(self, tmp_path, monkeypatch, route: str) -> None:
+        with _live_server_with_midi_providers(tmp_path, monkeypatch, discovered=_TWO_UNITS) as (_, base, cfg_path):
+            cfg = load_config(cfg_path)
+            cfg.midi = MidiConfig(patches=[MidiPatch(id=1, serial="S2", port_name="XTM")])
+            save_config(cfg, cfg_path)
+            status, body = _get(base, route)
+            assert status == 200
+            assert _selected_device(body) == ["serial:S2|XTM"]
+            assert "(not connected)" not in body
+
+    def test_a_patch_saved_without_a_serial_shows_its_device_connected(self, tmp_path, monkeypatch) -> None:
+        with _live_server_with_midi_providers(tmp_path, monkeypatch, discovered=_TWO_UNITS[:1]) as (_, base, cfg_path):
+            cfg = load_config(cfg_path)
+            cfg.midi = MidiConfig(patches=[MidiPatch(id=1, alias="Desk", port_name="XTM")])
+            save_config(cfg, cfg_path)
+            _, body = _get(base, "/section/midi")
+            assert _selected_device(body) == ["serial:S1|XTM"]
+            assert "(not connected)" not in body
+            # Saving the row as shown binds the patch to that unit's serial.
+            status, _ = _post_form(base, "/section/midi/patches/1", {"alias": "Desk", "device": "serial:S1|XTM"})
+            assert status == 200
+            patch = load_config(cfg_path).midi.patches[0]
+            assert (patch.serial, patch.port_name) == ("S1", "XTM")
+
+    def test_a_patch_whose_unit_is_absent_never_shows_the_other_unit(self, tmp_path, monkeypatch) -> None:
+        with _live_server_with_midi_providers(tmp_path, monkeypatch, discovered=_TWO_UNITS[1:]) as (_, base, cfg_path):
+            cfg = load_config(cfg_path)
+            cfg.midi = MidiConfig(
+                patches=[
+                    MidiPatch(id=1, alias="Left", serial="S1", port_name="XTM"),
+                    MidiPatch(id=2, alias="Right", serial="S2", port_name="XTM"),
+                ]
+            )
+            save_config(cfg, cfg_path)
+            _, body = _get(base, "/section/midi")
+            assert _selected_device(body, 1) == ["serial:S1|XTM"]
+            assert _selected_device(body, 2) == ["serial:S2|XTM"]
+            assert body.count("XTM (not connected)") == 1
+            # Saving only the alias re-submits the row's own unit, so it keeps S1.
+            status, _ = _post_form(base, "/section/midi/patches/1", {"alias": "Stage left", "device": "serial:S1|XTM"})
+            assert status == 200
+            patch = load_config(cfg_path).midi.patches[0]
+            assert (patch.alias, patch.serial) == ("Stage left", "S1")
+
+    def test_saving_a_patch_that_uses_a_spare_moves_it_to_the_spare(self, tmp_path, monkeypatch) -> None:
+        with _live_server_with_midi_providers(tmp_path, monkeypatch, discovered=_TWO_UNITS[1:]) as (_, base, cfg_path):
+            cfg = load_config(cfg_path)
+            cfg.midi = MidiConfig(patches=[MidiPatch(id=1, alias="Left", serial="S1", port_name="XTM")])
+            save_config(cfg, cfg_path)
+            _, body = _get(base, "/section/midi")
+            assert _selected_device(body) == ["serial:S2|XTM"]
+            assert "(not connected)" not in body
+            status, _ = _post_form(base, "/section/midi/patches/1", {"alias": "Stage left", "device": "serial:S2|XTM"})
+            assert status == 200
+            patch = load_config(cfg_path).midi.patches[0]
+            assert (patch.alias, patch.serial, patch.port_name) == ("Stage left", "S2", "XTM")
+
+    def test_a_patch_whose_unit_is_absent_shows_not_connected(self, tmp_path, monkeypatch) -> None:
+        devices = [{"identifier": "port:Keys|Keys", "port_name": "Keys", "product": "Keys", "serial": None}]
+        with _live_server_with_midi_providers(tmp_path, monkeypatch, discovered=devices) as (_, base, cfg_path):
+            cfg = load_config(cfg_path)
+            cfg.midi = MidiConfig(patches=[MidiPatch(id=1, serial="S2", port_name="XTM")])
+            save_config(cfg, cfg_path)
+            _, body = _get(base, "/section/midi")
+            assert _selected_device(body) == ["serial:S2|XTM"]
+            assert "XTM (not connected)" in body
 
 
 # ---------------------------------------------------------------------------
@@ -1074,6 +1158,9 @@ class TestFaderValuesPoll:
         assert 'id="midi-fader-strip-value-2"' in body
         assert "0.17" in body
         assert "not picked up" in body
+        # Every strip keeps the pill's slot, hidden once picked up, so a pickup never resizes the strips.
+        assert re.search(rf'id="midi-fader-strip-value-1"[^>]*>0\.42{re.escape(_PILL_HIDDEN)}</span>', body)
+        assert re.search(rf'id="midi-fader-strip-value-2"[^>]*>0\.17{re.escape(_PILL_SHOWN)}</span>', body)
         # Three OOB swaps per fader × two faders = six total.
         assert body.count('hx-swap-oob="true"') == 6
 
@@ -1147,6 +1234,11 @@ class TestMarkerFaderSectionRender:
             assert 'style="height:25%"' in body
 
 
+# The pickup pill is in every strip; ``data-picked-up`` hides it and keeps its slot.
+_PILL_SHOWN = '<span class="midi-fader-strip-not-picked-up">not picked up</span>'
+_PILL_HIDDEN = '<span class="midi-fader-strip-not-picked-up" data-picked-up>not picked up</span>'
+
+
 class TestVirtualFadersFirstPaint:
     @pytest.mark.parametrize("route", ["/", "/section/midi"], ids=["page", "section"])
     def test_the_strips_render_the_live_values(self, tmp_path, monkeypatch, route: str) -> None:
@@ -1165,9 +1257,9 @@ class TestVirtualFadersFirstPaint:
             n: re.search(rf'id="midi-fader-strip-value-{n}"[^>]*>(.*?)</span>\s*</button>', body, re.S)
             for n in (1, 2, 3)
         }
-        assert strip[1] and strip[1].group(1) == "0.42"
-        assert strip[2] and strip[2].group(1).startswith("0.17") and "not picked up" in strip[2].group(1)
-        assert strip[3] and strip[3].group(1) == "0.00"
+        assert strip[1] and strip[1].group(1) == "0.42" + _PILL_HIDDEN
+        assert strip[2] and strip[2].group(1) == "0.17" + _PILL_SHOWN
+        assert strip[3] and strip[3].group(1) == "0.00" + _PILL_HIDDEN
         assert re.search(r'id="midi-fader-strip-fill-1"\s+class="midi-fader-strip-fill"\s+style="height:42%"', body)
 
 

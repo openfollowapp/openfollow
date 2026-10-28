@@ -8,9 +8,8 @@ import os
 import pickle  # nosec B403 - only ever loads what it just dumped in this process
 import threading
 import time
-from collections.abc import Callable
-
 import tomllib
+from collections.abc import Callable
 
 from openfollow.configuration import AppConfig, load_config
 

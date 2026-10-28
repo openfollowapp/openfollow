@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -47,6 +48,8 @@ from openfollow.input.midi import (
     MidiEvent,
     MidiSubsystem,
     _normalize_port_name,
+    bound_identifiers,
+    match_patches,
 )
 
 # Fake mido harness shared with ``tests/test_midi_alias_hot_reload.py``.
@@ -76,9 +79,12 @@ def fake_mido(monkeypatch: pytest.MonkeyPatch) -> _FakeMido:
 
 
 class TestDiscoveredDevice:
-    def test_identifier_uses_serial_when_present(self) -> None:
-        d = DiscoveredDevice(serial="ABC123", port_name="X", product="X")
-        assert d.identifier == "serial:ABC123"
+    def test_identifier_uses_serial_and_port_when_serial_present(self) -> None:
+        # One device's ports share its serial, so the port name keeps them apart.
+        first = DiscoveredDevice(serial="ABC123", port_name="X", product="X")
+        second = DiscoveredDevice(serial="ABC123", port_name="Y", product="Y")
+        assert first.identifier == "serial:ABC123|X"
+        assert first.identifier != second.identifier
 
     def test_identifier_falls_back_to_composite_without_serial(self) -> None:
         d = DiscoveredDevice(serial=None, port_name="MIDI Mix", product="MIDI Mix")
@@ -874,6 +880,14 @@ class TestPollHotplug:
 # ---------------------------------------------------------------------------
 
 
+def _matched(patch: MidiPatch, discovered: list[DiscoveredDevice]) -> DiscoveredDevice | None:
+    return match_patches([patch], discovered).get(patch.id)
+
+
+def _xtm(serial: str | None, port: str = "XTM") -> DiscoveredDevice:
+    return DiscoveredDevice(serial=serial, port_name=port, product=port)
+
+
 class TestMatch:
     def test_serial_match_wins(self) -> None:
         patch = MidiPatch(id=1, alias="A", serial="ABC", port_name="X")
@@ -881,7 +895,7 @@ class TestMatch:
             DiscoveredDevice(serial="ABC", port_name="Y", product="Y"),
             DiscoveredDevice(serial=None, port_name="X", product="X"),
         ]
-        match = MidiSubsystem._match(patch, discovered)
+        match = _matched(patch, discovered)
         assert match is not None and match.port_name == "Y"
 
     def test_falls_through_to_composite_when_no_serial_match(self) -> None:
@@ -894,7 +908,7 @@ class TestMatch:
         discovered = [
             DiscoveredDevice(serial=None, port_name="MIDI Mix", product="MIDI Mix"),
         ]
-        match = MidiSubsystem._match(patch, discovered)
+        match = _matched(patch, discovered)
         assert match is not None
         assert match.port_name == "MIDI Mix"
 
@@ -912,7 +926,7 @@ class TestMatch:
                 product="MIDI Mix",
             ),
         ]
-        match = MidiSubsystem._match(patch, discovered)
+        match = _matched(patch, discovered)
         assert match is not None
         assert match.port_name == "MIDI Mix"
 
@@ -923,7 +937,7 @@ class TestMatch:
             port_name="X",
             product="Y",
         )
-        match = MidiSubsystem._match(patch, [])
+        match = _matched(patch, [])
         assert match is None
 
     def test_port_name_fallback_skipped_when_patch_has_none(self) -> None:
@@ -933,7 +947,7 @@ class TestMatch:
         discovered = [
             DiscoveredDevice(serial=None, port_name="X", product="X"),
         ]
-        match = MidiSubsystem._match(patch, discovered)
+        match = _matched(patch, discovered)
         assert match is None
 
     def test_port_name_fallback_loop_continues_on_mismatch(self) -> None:
@@ -950,25 +964,448 @@ class TestMatch:
             DiscoveredDevice(serial=None, port_name="Y", product="Y"),
             DiscoveredDevice(serial=None, port_name="Z", product="Z"),
         ]
-        match = MidiSubsystem._match(patch, discovered)
+        match = _matched(patch, discovered)
         assert match is None
 
-    def test_serial_mismatch_falls_through(self) -> None:
-        # Patch has a serial, but no discovered device has that serial.
-        # Falls through to composite – and matches because port+product
-        # line up.
-        patch = MidiPatch(
-            id=1,
-            alias="A",
-            serial="OLD",
-            port_name="MIDI Mix",
-            product="MIDI Mix",
-        )
-        discovered = [
-            DiscoveredDevice(serial="NEW", port_name="MIDI Mix", product="MIDI Mix"),
+    @pytest.mark.parametrize(
+        ("other_serial", "matches"),
+        [
+            ("ELSEWHERE", True),  # an unclaimed spare of the same model
+            ("NEW", False),  # another patch's unit
+        ],
+    )
+    def test_an_absent_serial_falls_through_only_to_an_unclaimed_unit(self, other_serial: str, matches: bool) -> None:
+        patches = [
+            MidiPatch(id=1, alias="A", serial="OLD", port_name="MIDI Mix", product="MIDI Mix"),
+            MidiPatch(id=2, alias="B", serial=other_serial, port_name="MIDI Mix", product="MIDI Mix"),
         ]
-        match = MidiSubsystem._match(patch, discovered)
-        assert match is not None
+        discovered = [DiscoveredDevice(serial="NEW", port_name="MIDI Mix", product="MIDI Mix")]
+        assert (1 in match_patches(patches, discovered)) is matches
+
+    def test_the_port_name_only_fallback_skips_a_claimed_unit(self) -> None:
+        patches = [
+            MidiPatch(id=1, alias="A", serial="OLD", port_name="MIDI Mix", product="Other"),
+            MidiPatch(id=2, alias="B", serial="NEW", port_name="Elsewhere"),
+        ]
+        discovered = [DiscoveredDevice(serial="NEW", port_name="MIDI Mix", product="MIDI Mix")]
+        assert 1 not in match_patches(patches, discovered)
+
+    def test_a_device_without_a_serial_is_shared(self) -> None:
+        patches = [
+            MidiPatch(id=1, alias="A", serial="OLD", port_name="MIDI Mix"),
+            MidiPatch(id=2, alias="B", serial="OTHER", port_name="MIDI Mix"),
+            MidiPatch(id=3, alias="C", port_name="MIDI Mix"),
+        ]
+        device = DiscoveredDevice(serial=None, port_name="MIDI Mix", product="MIDI Mix")
+        assert match_patches(patches, [device]) == {1: device, 2: device, 3: device}
+
+
+class TestMatchAllocation:
+    """A unit (by serial) stands in for at most one patch's unit."""
+
+    @pytest.mark.parametrize(("first", "second"), [("F1", "F2"), ("", "")])
+    def test_patches_from_another_station_spread_over_its_units(self, first: str, second: str) -> None:
+        # An imported config (serials F1 / F2), or one saved before serials existed.
+        patches = [MidiPatch(id=1, serial=first, port_name="XTM"), MidiPatch(id=2, serial=second, port_name="XTM")]
+        l1, l2 = _xtm("L1"), _xtm("L2")
+        assert match_patches(patches, [l1, l2]) == {1: l1, 2: l2}
+
+    def test_one_spare_serves_the_lower_patch_id_only(self) -> None:
+        patches = [MidiPatch(id=2, serial="F2", port_name="XTM"), MidiPatch(id=1, serial="F1", port_name="XTM")]
+        spare = _xtm("SPARE")
+        assert match_patches(patches, [spare]) == {1: spare}
+
+    def test_a_spare_serves_every_port_of_the_absent_unit(self) -> None:
+        patches = [
+            MidiPatch(id=1, serial="F", port_name="Pad MIDI 1"),
+            MidiPatch(id=2, serial="F", port_name="Pad MIDI 2"),
+            MidiPatch(id=3, serial="G", port_name="Pad MIDI 1"),
+        ]
+        one, two = _xtm("SPARE", "Pad MIDI 1"), _xtm("SPARE", "Pad MIDI 2")
+        assert match_patches(patches, [one, two]) == {1: one, 2: two}
+
+    def test_patches_saved_without_a_serial_share_a_unit_port_by_port(self) -> None:
+        patches = [
+            MidiPatch(id=1, port_name="Pad MIDI 1"),
+            MidiPatch(id=2, port_name="Pad MIDI 2"),
+            MidiPatch(id=3, port_name="Pad MIDI 1"),
+        ]
+        one, two = _xtm("U", "Pad MIDI 1"), _xtm("U", "Pad MIDI 2")
+        assert match_patches(patches, [one, two]) == {1: one, 2: two}
+
+    def test_a_unit_taken_port_by_port_is_no_spare(self) -> None:
+        patches = [MidiPatch(id=1, port_name="Pad MIDI 1"), MidiPatch(id=2, serial="F", port_name="Pad MIDI 2")]
+        one, two = _xtm("U", "Pad MIDI 1"), _xtm("U", "Pad MIDI 2")
+        assert match_patches(patches, [one, two]) == {1: one}
+
+    def test_a_patch_saved_without_a_serial_never_takes_a_claimed_unit(self) -> None:
+        patches = [MidiPatch(id=1, port_name="XTM"), MidiPatch(id=2, serial="S2", port_name="XTM")]
+        s2, s1 = _xtm("S2"), _xtm("S1")
+        assert match_patches(patches, [s2, s1]) == {1: s1, 2: s2}
+
+    def test_a_device_without_a_serial_stands_in_for_no_unit(self) -> None:
+        # The absent unit's next patch may still take a spare with a serial.
+        patches = [
+            MidiPatch(id=1, serial="F", port_name="Pad MIDI 1"),
+            MidiPatch(id=2, serial="F", port_name="Pad MIDI 2"),
+        ]
+        shared, spare = _xtm(None, "Pad MIDI 1"), _xtm("U", "Pad MIDI 2")
+        assert match_patches(patches, [shared, spare]) == {1: shared, 2: spare}
+
+    def test_a_saved_sibling_patch_claims_the_unit_until_the_other_is_saved(self) -> None:
+        one, two = _xtm("U", "Pad MIDI 1"), _xtm("U", "Pad MIDI 2")
+        saved = MidiPatch(id=1, serial="U", port_name="Pad MIDI 1")
+        unsaved = MidiPatch(id=2, port_name="Pad MIDI 2")
+        assert match_patches([saved, unsaved], [one, two]) == {1: one}
+        unsaved.serial = "U"
+        assert match_patches([saved, unsaved], [one, two]) == {1: one, 2: two}
+
+    def test_a_patch_saved_onto_a_spare_claims_it_until_its_sibling_is_saved(self) -> None:
+        one, two = _xtm("SPARE", "Pad MIDI 1"), _xtm("SPARE", "Pad MIDI 2")
+        saved = MidiPatch(id=1, serial="SPARE", port_name="Pad MIDI 1")
+        unsaved = MidiPatch(id=2, serial="F", port_name="Pad MIDI 2")
+        assert match_patches([saved, unsaved], [one, two]) == {1: one}
+        unsaved.serial = "SPARE"
+        assert match_patches([saved, unsaved], [one, two]) == {1: one, 2: two}
+
+    def test_a_patch_without_a_device_is_never_matched(self) -> None:
+        assert match_patches([MidiPatch(id=1, product="XTM")], [_xtm(None)]) == {}
+
+
+class TestMatchSerialPorts:
+    """One USB device may carry several ports, all with its serial."""
+
+    def test_the_patch_port_wins_among_one_devices_ports(self) -> None:
+        patch = MidiPatch(id=1, serial="S", port_name="Pad:Pad MIDI 2")
+        discovered = [
+            DiscoveredDevice(serial="S", port_name="Pad:Pad MIDI 1", product="Pad:Pad MIDI 1"),
+            DiscoveredDevice(serial="S", port_name="Pad:Pad MIDI 2", product="Pad:Pad MIDI 2"),
+        ]
+        match = _matched(patch, discovered)
+        assert match is not None and match.port_name == "Pad:Pad MIDI 2"
+
+    def test_a_renamed_port_never_takes_a_port_another_patch_names(self) -> None:
+        patches = [
+            MidiPatch(id=1, serial="S", port_name="Pad MIDI 1"),
+            MidiPatch(id=2, serial="S", port_name="Pad MIDI 2 (old name)"),
+        ]
+        one, two = _xtm("S", "Pad MIDI 1"), _xtm("S", "Pad MIDI 2")
+        assert match_patches(patches, [one, two]) == {1: one, 2: two}
+
+    def test_a_renamed_port_takes_the_first_when_every_port_is_named(self) -> None:
+        patches = [MidiPatch(id=1, serial="S", port_name="Pad MIDI 1"), MidiPatch(id=2, serial="S", port_name="Gone")]
+        one = _xtm("S", "Pad MIDI 1")
+        assert match_patches(patches, [one]) == {1: one, 2: one}
+
+    def test_a_device_whose_port_is_renamed_still_matches_by_serial(self) -> None:
+        patch = MidiPatch(id=1, serial="S", port_name="Old name")
+        discovered = [
+            DiscoveredDevice(serial="T", port_name="Old name", product="Old name"),
+            DiscoveredDevice(serial="S", port_name="New name", product="New name"),
+        ]
+        match = _matched(patch, discovered)
+        assert match is not None and match.serial == "S"
+
+
+class TestBoundIdentifiers:
+    """What each patch row's Device dropdown shows as selected."""
+
+    _DEVICES = [
+        {"identifier": "serial:S1|XTM", "port_name": "XTM", "product": "XTM", "serial": "S1"},
+        {"identifier": "serial:S2|XTM", "port_name": "XTM", "product": "XTM", "serial": "S2"},
+    ]
+
+    def test_an_unbound_patch_selects_nothing(self) -> None:
+        assert bound_identifiers([MidiPatch(id=1)], self._DEVICES) == {1: ""}
+
+    def test_each_patch_selects_its_own_unit(self) -> None:
+        patches = [MidiPatch(id=1, serial="S2", port_name="XTM"), MidiPatch(id=2, serial="S1", port_name="XTM")]
+        assert bound_identifiers(patches, self._DEVICES) == {1: "serial:S2|XTM", 2: "serial:S1|XTM"}
+
+    def test_a_patch_saved_without_a_serial_selects_the_device_it_opens(self) -> None:
+        patch = MidiPatch(id=1, port_name="XTM")
+        assert bound_identifiers([patch], self._DEVICES) == {1: "serial:S1|XTM"}
+
+    def test_a_patch_whose_device_is_absent_keeps_its_own(self) -> None:
+        patch = MidiPatch(id=1, port_name="Gone")
+        assert bound_identifiers([patch], self._DEVICES) == {1: "port:Gone|Gone"}
+
+    def test_a_patch_whose_unit_is_absent_never_selects_another_patchs_unit(self) -> None:
+        patches = [MidiPatch(id=1, serial="S3", port_name="XTM"), MidiPatch(id=2, serial="S1", port_name="XTM")]
+        devices = self._DEVICES[:1]
+        assert bound_identifiers(patches, devices) == {1: "serial:S3|XTM", 2: "serial:S1|XTM"}
+
+    def test_a_patch_whose_unit_is_absent_selects_an_unclaimed_spare(self) -> None:
+        patches = [MidiPatch(id=1, serial="S3", port_name="XTM"), MidiPatch(id=2, serial="S1", port_name="XTM")]
+        assert bound_identifiers(patches, self._DEVICES)[1] == "serial:S2|XTM"
+
+    @pytest.mark.parametrize(("first", "second"), [("F1", "F2"), ("", "")])
+    def test_patches_from_another_station_select_one_unit_each(self, first: str, second: str) -> None:
+        patches = [MidiPatch(id=1, serial=first, port_name="XTM"), MidiPatch(id=2, serial=second, port_name="XTM")]
+        assert bound_identifiers(patches, self._DEVICES) == {1: "serial:S1|XTM", 2: "serial:S2|XTM"}
+
+    def test_one_spare_is_selected_by_the_lower_patch_id_only(self) -> None:
+        patches = [MidiPatch(id=1, serial="F1", port_name="XTM"), MidiPatch(id=2, serial="F2", port_name="XTM")]
+        assert bound_identifiers(patches, self._DEVICES[:1]) == {1: "serial:S1|XTM", 2: "serial:F2|XTM"}
+
+
+# ---------------------------------------------------------------------------
+# USB serial on Linux: port name -> ALSA card -> USB device -> serial
+# ---------------------------------------------------------------------------
+
+_XHCI = Path("platform") / "axi" / "1000120000.pcie" / "1f00200000.usb" / "xhci-hcd.0" / "usb1"
+
+
+def _usb_midi(sysfs: Path, usb_name: str, cards: dict[int, str], serial: str | None) -> None:
+    """A USB device ``usb_name`` with one sound card per ``{card: interface}``."""
+    device = sysfs / "devices" / _XHCI / usb_name
+    device.mkdir(parents=True, exist_ok=True)
+    (device / "devpath").write_text(usb_name.split("-", 1)[1] + "\n")
+    (device / "busnum").write_text("1\n")
+    if serial is not None:
+        (device / "serial").write_text(serial + "\n")
+    for card, interface in cards.items():
+        target = device / f"{usb_name}:{interface}"
+        target.mkdir(parents=True, exist_ok=True)
+        entry = sysfs / "class" / "sound" / f"card{card}"
+        entry.mkdir(parents=True)
+        (entry / "device").symlink_to(target)
+
+
+@pytest.fixture
+def linux_sysfs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setattr(midi_mod, "_SYSFS", tmp_path)
+    monkeypatch.setattr(midi_mod.sys, "platform", "linux")
+    return tmp_path
+
+
+@pytest.fixture
+def serial_reads(monkeypatch: pytest.MonkeyPatch) -> list[str | None]:
+    """The sound cards whose USB serial discovery looks up, in order."""
+    reads: list[str | None] = []
+    real = midi_mod.usb_serial
+
+    def counting(node: str | None, **kwargs: object) -> str | None:
+        reads.append(node)
+        return real(node, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(midi_mod, "usb_serial", counting)
+    return reads
+
+
+class TestDiscoverUsbSerial:
+    def test_a_port_carries_the_serial_of_its_usb_device(self, fake_mido: _FakeMido, linux_sysfs: Path) -> None:
+        # Cards 0 and 1 are a Pi's HDMI outputs, so a USB device is card 2: client 24.
+        _usb_midi(linux_sysfs, "1-1", {2: "1.0"}, "MM-0042")
+        fake_mido.input_names = ["MIDI Mix:MIDI Mix MIDI 1 24:0"]
+        (device,) = MidiSubsystem().discover()
+        assert device.serial == "MM-0042"
+        assert device.port_name == "MIDI Mix:MIDI Mix MIDI 1"
+        assert device.raw_port_name == "MIDI Mix:MIDI Mix MIDI 1 24:0"
+
+    @pytest.mark.parametrize("first", ["S1", "S2"])
+    def test_two_devices_of_one_model_each_keep_their_patch(
+        self, fake_mido: _FakeMido, linux_sysfs: Path, first: str
+    ) -> None:
+        # Plug-in order decides which unit becomes card 2.
+        second = "S2" if first == "S1" else "S1"
+        _usb_midi(linux_sysfs, "1-1", {2: "1.0"}, first)
+        _usb_midi(linux_sysfs, "1-2", {3: "1.0"}, second)
+        fake_mido.input_names = ["X-TOUCH MINI:X-TOUCH MINI MIDI 1 24:0", "X-TOUCH MINI:X-TOUCH MINI MIDI 1 28:0"]
+        port = "X-TOUCH MINI:X-TOUCH MINI MIDI 1"
+        sub = MidiSubsystem()
+        sub.apply_config(
+            [
+                MidiPatch(id=1, alias="Left", serial="S1", port_name=port),
+                MidiPatch(id=2, alias="Right", serial="S2", port_name=port),
+            ]
+        )
+        address = {first: "24:0", second: "28:0"}
+        assert sub._open_ports[1].port_name == f"{port} {address['S1']}"
+        assert sub._open_ports[2].port_name == f"{port} {address['S2']}"
+
+    def test_a_patch_whose_unit_is_unplugged_never_takes_the_other_unit(
+        self, fake_mido: _FakeMido, linux_sysfs: Path
+    ) -> None:
+        _usb_midi(linux_sysfs, "1-1", {2: "1.0"}, "S1")
+        _usb_midi(linux_sysfs, "1-2", {3: "1.0"}, "S2")
+        port = "X-TOUCH MINI:X-TOUCH MINI MIDI 1"
+        fake_mido.input_names = [f"{port} 24:0", f"{port} 28:0"]
+        sub = MidiSubsystem()
+        sub.apply_config(
+            [
+                MidiPatch(id=1, alias="Left", serial="S1", port_name=port),
+                MidiPatch(id=2, alias="Right", serial="S2", port_name=port),
+            ]
+        )
+        left = sub._open_ports[1].port
+        # S1 unplugged.
+        fake_mido.input_names = [f"{port} 28:0"]
+        sub.apply_config(sub._patches)
+        assert 1 not in sub._open_ports
+        assert left.closed
+        assert sub._open_ports[2].port_name == f"{port} 28:0"
+        assert sub._status_flags["midi_patch_missing"] == "MIDI patch(es) without a connected device: 1 – Left"
+        # S1 back, now as card 4.
+        _usb_midi(linux_sysfs, "1-1", {4: "1.0"}, "S1")
+        fake_mido.input_names = [f"{port} 28:0", f"{port} 32:0"]
+        sub.apply_config(sub._patches)
+        assert sub._open_ports[1].port_name == f"{port} 32:0"
+        assert sub._open_ports[2].port_name == f"{port} 28:0"
+        assert sub._status_flags["midi_patch_missing"] is None
+
+    @pytest.mark.parametrize(("first", "second"), [("F1", "F2"), ("", "")])
+    def test_patches_from_another_station_open_one_unit_each(
+        self, fake_mido: _FakeMido, linux_sysfs: Path, first: str, second: str
+    ) -> None:
+        _usb_midi(linux_sysfs, "1-1", {2: "1.0"}, "L1")
+        _usb_midi(linux_sysfs, "1-2", {3: "1.0"}, "L2")
+        port = "X-TOUCH MINI:X-TOUCH MINI MIDI 1"
+        fake_mido.input_names = [f"{port} 24:0", f"{port} 28:0"]
+        sub = MidiSubsystem()
+        sub.apply_config(
+            [
+                MidiPatch(id=1, alias="Left", serial=first, port_name=port),
+                MidiPatch(id=2, alias="Right", serial=second, port_name=port),
+            ]
+        )
+        assert sub._open_ports[1].port_name == f"{port} 24:0"
+        assert sub._open_ports[2].port_name == f"{port} 28:0"
+        assert sub._status_flags["midi_patch_missing"] is None
+
+    def test_one_spare_opens_for_the_lower_patch_id_only(self, fake_mido: _FakeMido, linux_sysfs: Path) -> None:
+        _usb_midi(linux_sysfs, "1-3", {2: "1.0"}, "S3")
+        port = "X-TOUCH MINI:X-TOUCH MINI MIDI 1"
+        fake_mido.input_names = [f"{port} 24:0"]
+        sub = MidiSubsystem()
+        sub.apply_config(
+            [
+                MidiPatch(id=2, alias="Right", serial="S2", port_name=port),
+                MidiPatch(id=1, alias="Left", serial="S1", port_name=port),
+            ]
+        )
+        assert sub._open_ports[1].port_name == f"{port} 24:0"
+        assert 2 not in sub._open_ports
+        assert sub._status_flags["midi_patch_missing"] == "MIDI patch(es) without a connected device: 2 – Right"
+
+    def test_a_patch_whose_unit_is_absent_opens_an_unclaimed_spare(
+        self, fake_mido: _FakeMido, linux_sysfs: Path
+    ) -> None:
+        _usb_midi(linux_sysfs, "1-3", {2: "1.0"}, "S3")
+        port = "X-TOUCH MINI:X-TOUCH MINI MIDI 1"
+        fake_mido.input_names = [f"{port} 24:0"]
+        sub = MidiSubsystem()
+        sub.apply_config([MidiPatch(id=1, alias="Left", serial="S1", port_name=port)])
+        assert sub._open_ports[1].port_name == f"{port} 24:0"
+        assert sub._status_flags["midi_patch_missing"] is None
+
+    def test_a_device_without_a_serial_matches_by_port_name(self, fake_mido: _FakeMido, linux_sysfs: Path) -> None:
+        _usb_midi(linux_sysfs, "1-1", {2: "1.0"}, None)
+        fake_mido.input_names = ["nanoKONTROL2:nanoKONTROL2 _ CTRL 24:0"]
+        sub = MidiSubsystem()
+        (device,) = sub.discover()
+        assert device.serial is None
+        sub.apply_config([MidiPatch(id=1, alias="K", port_name="nanoKONTROL2:nanoKONTROL2 _ CTRL")])
+        assert [p.name for p in fake_mido.opened] == ["nanoKONTROL2:nanoKONTROL2 _ CTRL 24:0"]
+
+    def test_every_card_of_one_device_carries_its_serial(self, fake_mido: _FakeMido, linux_sysfs: Path) -> None:
+        _usb_midi(linux_sysfs, "1-1", {2: "1.0", 3: "1.3"}, "ONE")
+        fake_mido.input_names = ["Dev:Dev MIDI 1 24:0", "Dev MIDI:Dev MIDI MIDI 1 28:0"]
+        assert [d.serial for d in MidiSubsystem().discover()] == ["ONE", "ONE"]
+
+    def test_each_port_of_one_device_keeps_its_own_patch(self, fake_mido: _FakeMido, linux_sysfs: Path) -> None:
+        _usb_midi(linux_sysfs, "1-1", {2: "1.0"}, "LP-7")
+        fake_mido.input_names = ["Launchpad:Launchpad MIDI 1 24:0", "Launchpad:Launchpad MIDI 2 24:1"]
+        sub = MidiSubsystem()
+        devices = sub.discover()
+        assert len({d.identifier for d in devices}) == 2
+        sub.apply_config(
+            [
+                MidiPatch(id=1, alias="Notes", serial="LP-7", port_name="Launchpad:Launchpad MIDI 1"),
+                MidiPatch(id=2, alias="Lights", serial="LP-7", port_name="Launchpad:Launchpad MIDI 2"),
+            ]
+        )
+        assert sub._open_ports[1].port_name == "Launchpad:Launchpad MIDI 1 24:0"
+        assert sub._open_ports[2].port_name == "Launchpad:Launchpad MIDI 2 24:1"
+
+    def test_a_card_is_read_once_for_all_its_ports(
+        self, fake_mido: _FakeMido, linux_sysfs: Path, serial_reads: list[str | None]
+    ) -> None:
+        _usb_midi(linux_sysfs, "1-1", {2: "1.0"}, "LP-7")
+        fake_mido.input_names = ["Launchpad:Launchpad MIDI 1 24:0", "Launchpad:Launchpad MIDI 2 24:1"]
+        assert [d.serial for d in MidiSubsystem().discover()] == ["LP-7", "LP-7"]
+        assert serial_reads == ["card2"]
+
+    @pytest.mark.parametrize(
+        ("name", "card"),
+        [
+            ("Card Zero:Card Zero MIDI 1 16:0", 0),
+            ("Card Zero:Card Zero MIDI 2 19:0", 0),
+            ("Card One:Card One MIDI 1 20:0", 1),
+            ("Card Last:Card Last MIDI 1 127:0", 27),
+        ],
+    )
+    def test_the_static_client_range_maps_to_its_card(
+        self, fake_mido: _FakeMido, linux_sysfs: Path, name: str, card: int
+    ) -> None:
+        for n in range(29):
+            _usb_midi(linux_sysfs, f"1-{n + 1}", {n: "1.0"}, f"CARD{n}")
+        fake_mido.input_names = [name]
+        assert [d.serial for d in MidiSubsystem().discover()] == [f"CARD{card}"]
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "MIDI Mix",  # no sequencer address (macOS / Windows shape)
+            "MIDI Mix:MIDI Mix MIDI 1 24",  # no port number
+            "MIDI Mix:MIDI Mix MIDI 1 24:x",
+            "MIDI Mix:MIDI Mix MIDI 1 24:0 extra",
+            "Midi Through:Midi Through Port-0 14:0",  # a global client, no card
+            "Virtual:Virtual out 128:0",  # an application's client
+        ],
+    )
+    def test_a_port_name_that_names_no_card_has_no_serial(
+        self, fake_mido: _FakeMido, linux_sysfs: Path, serial_reads: list[str | None], name: str
+    ) -> None:
+        # Every card a wrong parse could land on reports a serial.
+        for card in range(29):
+            _usb_midi(linux_sysfs, f"1-{card + 1}", {card: "1.0"}, f"WRONG{card}")
+        fake_mido.input_names = [name]
+        (device,) = MidiSubsystem().discover()
+        assert device.serial is None
+        assert serial_reads == []
+
+    def test_a_card_missing_from_sysfs_has_no_serial(self, fake_mido: _FakeMido, linux_sysfs: Path) -> None:
+        fake_mido.input_names = ["MIDI Mix:MIDI Mix MIDI 1 24:0"]
+        (device,) = MidiSubsystem().discover()
+        assert device.serial is None
+        assert device.port_name == "MIDI Mix:MIDI Mix MIDI 1"
+
+    def test_an_unreadable_sysfs_never_fails_discovery(
+        self, fake_mido: _FakeMido, linux_sysfs: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _usb_midi(linux_sysfs, "1-1", {2: "1.0"}, "MM-0042")
+        real_resolve = Path.resolve
+
+        def denied(self: Path, *args: object, **kwargs: object) -> Path:
+            if self.name == "device":
+                raise PermissionError(13, "Permission denied", str(self))
+            return real_resolve(self, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(Path, "resolve", denied)
+        fake_mido.input_names = ["MIDI Mix:MIDI Mix MIDI 1 24:0"]
+        (device,) = MidiSubsystem().discover()
+        assert device.serial is None
+
+    def test_off_linux_no_port_has_a_serial(
+        self, fake_mido: _FakeMido, linux_sysfs: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _usb_midi(linux_sysfs, "1-1", {2: "1.0"}, "MM-0042")
+        monkeypatch.setattr(midi_mod.sys, "platform", "darwin")
+        fake_mido.input_names = ["MIDI Mix:MIDI Mix MIDI 1 24:0"]
+        (device,) = MidiSubsystem().discover()
+        assert device.serial is None
+        assert device.identifier == "port:MIDI Mix:MIDI Mix MIDI 1|MIDI Mix:MIDI Mix MIDI 1"
 
 
 # ---------------------------------------------------------------------------

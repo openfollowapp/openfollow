@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 import secrets
@@ -20,9 +21,10 @@ if TYPE_CHECKING:
     from openfollow.logging_setup import RingBufferLogHandler
     from openfollow.network.adapter import ApplyResult
     from openfollow.runtime.diagnostics_export import DiagnosticsExport
+    from openfollow.runtime.latency_warning import LatencyWarning
     from openfollow.runtime.removable_media import Media
 
-from bottle import TEMPLATE_PATH, Bottle
+from bottle import TEMPLATE_PATH, Bottle, HTTPError
 
 import openfollow
 from openfollow.net_utils import get_local_ipv4_addresses, get_primary_local_ipv4
@@ -81,15 +83,211 @@ _REQUEST_BUSY_RESPONSE = (
 )
 
 
+# How long a connection may idle: the request line and headers in total, then
+# each read of the body, so a slow upload lives as long as it keeps moving.
+_REQUEST_HEAD_TIMEOUT_S = 10.0
+_REQUEST_BODY_READ_TIMEOUT_S = 60.0
+
+# Unread request data at close makes the kernel reset the connection and can drop the
+# answer, so an unread body is discarded first, within these bounds.
+_UNREAD_BODY_MAX_BYTES = 16 * 1024 * 1024
+_UNREAD_BODY_TIMEOUT_S = 5.0
+_UNREAD_BODY_CHUNK = 64 * 1024
+
+# A busy answer is followed by a discard too, briefly and for a few connections at once;
+# past that bound the connection closes at once.
+_BUSY_DRAIN_TIMEOUT_S = 2.0
+_BUSY_DRAIN_MAX_BYTES = 4 * 1024 * 1024
+_BUSY_DRAIN_MAX_CONCURRENT = 8
+_busy_drain_semaphore = threading.BoundedSemaphore(_BUSY_DRAIN_MAX_CONCURRENT)
+
+
+class _RequestStream(socket.SocketIO):
+    """The connection's reads, each bounded by a deadline when one is set, else by ``read_timeout``."""
+
+    def __init__(self, connection: socket.socket) -> None:
+        super().__init__(connection, "rb")
+        self._connection = connection
+        self.deadline: float | None = None
+        self.read_timeout: float | None = None
+
+    def readinto(self, buffer: Any) -> int | None:
+        timeout = self.read_timeout
+        if self.deadline is not None:
+            timeout = max(self.deadline - time.monotonic(), 1e-3)
+        self._connection.settimeout(timeout)
+        try:
+            return super().readinto(buffer)
+        except TimeoutError:
+            if self.deadline is not None:
+                raise
+            # A body that stops arriving: Bottle answers this rather than a 500 with a traceback.
+            logger.info("Config web UI gave up on a request body that stopped arriving.")
+            raise HTTPError(408, "Request body timed out") from None
+        finally:
+            # Writes stay unbounded: a socket timeout would cap a whole sendall.
+            self._connection.settimeout(None)
+
+    def discard(self, read: Callable[[int], bytes | None], left: int, timeout: float) -> None:
+        """Half-close, then drop up to ``left`` bytes from ``read`` until the client closes or ``timeout`` passes."""
+        self.deadline = time.monotonic() + timeout
+        try:
+            self._connection.shutdown(socket.SHUT_WR)
+            while left > 0:
+                data = read(min(left, _UNREAD_BODY_CHUNK))
+                if not data:
+                    return
+                left -= len(data)
+        except OSError:
+            pass
+
+
+class _CountingReader:
+    """The request stream, counting the bytes wsgiref and Bottle read through it."""
+
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+        self.count = 0
+
+    def read(self, size: int | None = -1) -> bytes:
+        data: bytes = self._stream.read(size)
+        self.count += len(data)
+        return data
+
+    def read1(self, size: int = -1) -> bytes:
+        data: bytes = self._stream.read1(size)
+        self.count += len(data)
+        return data
+
+    def readline(self, size: int | None = -1) -> bytes:
+        data: bytes = self._stream.readline(size)
+        self.count += len(data)
+        return data
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._stream, name)
+
+
 class _QuietHandler(WSGIRequestHandler):
     def log_request(self, *args: object, **kwargs: object) -> None:
         pass
+
+    def setup(self) -> None:
+        super().setup()
+        self.rfile.close()
+        self._stream = _RequestStream(self.connection)
+        self._stream.deadline = time.monotonic() + _REQUEST_HEAD_TIMEOUT_S
+        self._counted = _CountingReader(io.BufferedReader(self._stream))
+        self.rfile = self._counted  # type: ignore[assignment]
+        self._body_start: int | None = None
 
     def get_environ(self) -> dict[str, Any]:
         env = super().get_environ()
         # The station address this connection arrived on: one the browser can reach.
         env["SERVER_ADDR"] = str(self.connection.getsockname()[0])
         return env
+
+    def parse_request(self) -> bool:
+        parsed = super().parse_request()
+        if parsed:
+            self._body_start = self._counted.count
+            self._stream.deadline = None
+            self._stream.read_timeout = _REQUEST_BODY_READ_TIMEOUT_S
+        return parsed
+
+    def handle(self) -> None:
+        try:
+            super().handle()
+        except TimeoutError:
+            logger.debug(
+                "Config web UI closed a connection from %s that sent no request in time.", self.client_address[0]
+            )
+            return
+        self._discard_unread_body()
+
+    def _discard_unread_body(self) -> None:
+        """Read what is left of the request body once the answer is sent."""
+        if self._body_start is None:
+            return
+        if "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
+            # Its end is not known without decoding it: read until the client closes.
+            left = _UNREAD_BODY_MAX_BYTES
+        else:
+            try:
+                declared = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                return
+            left = declared - (self._counted.count - self._body_start)
+            if left <= 0 or left > _UNREAD_BODY_MAX_BYTES:
+                return
+        self._stream.discard(self._counted.read1, left, _UNREAD_BODY_TIMEOUT_S)
+
+
+def _discard_busy_request(request: socket.socket) -> None:
+    """Let the busy answer arrive: discard what the client still sends, unless every drain place is taken."""
+    drains = _busy_drain_semaphore
+    if not drains.acquire(blocking=False):
+        return
+    try:
+        stream = _RequestStream(request)
+        try:
+            stream.discard(stream.read, _BUSY_DRAIN_MAX_BYTES, _BUSY_DRAIN_TIMEOUT_S)
+        finally:
+            stream.close()
+    finally:
+        drains.release()
+
+
+# Refusals at the handler cap log a streak's start, then at most one reminder per interval;
+# a streak ends once a request is accepted after an interval without refusals.
+_BUSY_LOG_INTERVAL_S = 60.0
+
+
+class _BusyLog:
+    """The log lines for refusals at the handler cap, so a reload storm stays a few lines."""
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._logged_at: float | None = None  # None: no streak
+        self._refused_at = 0.0
+        self._unlogged = 0
+
+    def refused(self, client: str) -> None:
+        now = self._clock()
+        with self._lock:
+            logged_at = self._logged_at
+            self._refused_at = now
+            if logged_at is not None:
+                self._unlogged += 1
+                if now - logged_at < _BUSY_LOG_INTERVAL_S:
+                    return
+            self._logged_at = now
+            count, self._unlogged = self._unlogged, 0
+        if logged_at is None:
+            logger.warning(
+                "Config web UI is refusing requests: concurrent handler cap %d reached (first from %s).",
+                _REQUEST_MAX_CONCURRENT,
+                client,
+            )
+        else:
+            logger.warning(
+                "Config web UI refused %d more requests at its concurrent handler cap %d since its last warning.",
+                count,
+                _REQUEST_MAX_CONCURRENT,
+            )
+
+    def accepted(self) -> None:
+        now = self._clock()
+        with self._lock:
+            if self._logged_at is None or now - self._refused_at < _BUSY_LOG_INTERVAL_S:
+                return
+            self._logged_at = None
+            count, self._unlogged = self._unlogged, 0
+        logger.info("Config web UI accepts requests again; %d refused since its last warning.", count)
+
+
+_busy_log = _BusyLog()
 
 
 class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
@@ -102,9 +300,9 @@ class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
         # ThreadingMixIn has already spawned this worker thread. Gate
         # actual request handling on a global bounded semaphore so a
         # flood of concurrent slow requests cannot pile up real work.
-        # Rejected threads send a short 503 and terminate within a few
-        # ms; the total number of threads doing WSGI work at once is
-        # capped at ``_REQUEST_MAX_CONCURRENT``.
+        # Rejected threads send a short 503 and end within
+        # ``_BUSY_DRAIN_TIMEOUT_S``; the total number of threads doing WSGI
+        # work at once is capped at ``_REQUEST_MAX_CONCURRENT``.
         #
         # Capture the semaphore reference once so acquire and release
         # always target the same object – tests monkeypatch the module
@@ -116,21 +314,22 @@ class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
             global _request_semaphore_rejections
             with _request_rejections_lock:
                 _request_semaphore_rejections += 1
+            _busy_log.refused(str(client_address[0]))
             try:
-                request.sendall(_REQUEST_BUSY_RESPONSE)
-            except OSError:
-                pass
-            try:
-                self.shutdown_request(request)
-            except Exception:
-                pass
-            logger.warning(
-                "Config web UI rejected a request from %s: concurrent handler cap %d reached.",
-                client_address,
-                _REQUEST_MAX_CONCURRENT,
-            )
+                try:
+                    request.sendall(_REQUEST_BUSY_RESPONSE)
+                except OSError:
+                    pass
+                else:
+                    _discard_busy_request(request)
+            finally:
+                try:
+                    self.shutdown_request(request)
+                except Exception:
+                    pass
             return
         try:
+            _busy_log.accepted()
             super().process_request_thread(request, client_address)
         finally:
             sem.release()
@@ -224,6 +423,9 @@ class ConfigWebServer:
         network_vlan_provider: Callable[[], dict[str, Any]] | None = None,
         network_vlan_create_handler: Callable[[str, int], ApplyResult] | None = None,
         network_vlan_delete_handler: Callable[[str], ApplyResult] | None = None,
+        # Interfaces that are not present but have saved settings, and deleting those settings.
+        network_saved_provider: Callable[[], list[dict[str, Any]]] | None = None,
+        network_forget_handler: Callable[[str], ApplyResult] | None = None,
         # Scan: drop the network reading the sections share, so the next read asks the backend.
         network_rescan_handler: Callable[[], None] | None = None,
         # Privilege capability snapshot for the diagnostics bundle; optional for tests.
@@ -333,6 +535,8 @@ class ConfigWebServer:
         self._network_vlan_provider = network_vlan_provider
         self._network_vlan_create_handler = network_vlan_create_handler
         self._network_vlan_delete_handler = network_vlan_delete_handler
+        self._network_saved_provider = network_saved_provider
+        self._network_forget_handler = network_forget_handler
         self._network_rescan_handler = network_rescan_handler
         self._psn_source_advisory_provider = psn_source_advisory_provider
         self._web_bind_advisory_provider = web_bind_advisory_provider
@@ -648,6 +852,28 @@ class ConfigWebServer:
             logger.exception("network_vlan_delete handler raised")
             return ApplyResult(ok=False, message=str(exc))
 
+    def get_network_saved(self) -> list[dict[str, Any]]:
+        """Every interface that is not present but has saved settings; empty when unwired or unreadable."""
+        if self._network_saved_provider is None:
+            return []
+        try:
+            return self._network_saved_provider()
+        except Exception:  # noqa: BLE001
+            logger.exception("Network saved-settings provider raised")
+            return []
+
+    def forget_network_interface(self, name: str) -> ApplyResult:
+        """Delete the saved settings of the absent interface ``name``; always returns ApplyResult."""
+        from openfollow.network.adapter import ApplyResult
+
+        if self._network_forget_handler is None:
+            return ApplyResult(ok=False, message="Network writes are not available on this build.")
+        try:
+            return self._network_forget_handler(name)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("network_forget handler raised")
+            return ApplyResult(ok=False, message=str(exc))
+
     def get_psn_source_advisory(self) -> dict[str, str]:
         """Startup advisory when pinned PSN source iface unavailable; returns status/banner/resolved_ip."""
         empty = {"status": "", "banner": "", "resolved_ip": ""}
@@ -851,6 +1077,19 @@ class ConfigWebServer:
     def request_slot_action(self, action: str, index: int, ref: str) -> None:
         """Queue a controller-slot action (``identify`` / ``forget``) for the main loop."""
         self._command_queue.request_slot_action(action, index, ref)
+
+    def request_latency(self) -> None:
+        """Queue the start of a camera latency run for the main loop."""
+        self._command_queue.request_latency()
+
+    @property
+    def latency_warning(self) -> LatencyWarning:
+        """The Operator Screen's warning card, held up by Measure dialogs showing their warnings."""
+        return self._command_queue.latency_warning
+
+    def get_latency_status(self) -> dict[str, Any]:
+        """The camera latency run as the main loop last reported it."""
+        return self._command_queue.get_latency_status()
 
     def whats_new_pending(self) -> bool:
         """True when the page should open the updater's What's new step."""

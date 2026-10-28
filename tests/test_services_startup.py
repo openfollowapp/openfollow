@@ -701,6 +701,7 @@ class _FakeWritableAdapter(NetworkAdapter):
         self.vlans: list = []
         self.vlans_created: list = []
         self.vlans_deleted: list = []
+        self.forgotten: list = []
         self.vlan_support = True
         self.vlan_list_raises = False
 
@@ -743,6 +744,12 @@ class _FakeWritableAdapter(NetworkAdapter):
         from openfollow.network.adapter import ApplyResult
 
         self.vlans_deleted.append(name)
+        return ApplyResult(ok=True)
+
+    def forget_interface(self, name):
+        from openfollow.network.adapter import ApplyResult
+
+        self.forgotten.append(name)
         return ApplyResult(ok=True)
 
 
@@ -1439,6 +1446,7 @@ def test_a_vlan_list_that_cannot_be_read_keeps_the_vlan_controls(counted) -> Non
         lambda s: s._handle_network_renew("eth0"),
         lambda s: s._handle_network_vlan_create("eth0", 10),
         lambda s: s._handle_network_vlan_delete("eth0.10"),
+        lambda s: s._handle_network_forget("enx001122334455"),
     ],
 )
 def test_a_change_from_the_web_ui_is_read_back_at_once(counted, change) -> None:
@@ -1839,36 +1847,48 @@ def test_osc_input_plane_follows_its_own_and_the_station_interface(monkeypatch) 
     assert resolved["OSC input"] == ("192.168.1.5", "station", "eth0")
 
 
-@pytest.mark.parametrize(
-    ("label", "setup"),
-    [
-        ("nothing pinned", lambda cfg: None),
-        (
-            "no multicast group",
-            lambda cfg: (setattr(cfg, "psn_source_iface", "eth0"), setattr(cfg.osc, "multicast_group", "")),
-        ),
-        ("osc disabled", lambda cfg: (setattr(cfg, "psn_source_iface", "eth0"), setattr(cfg.osc, "enabled", False))),
-    ],
-)
-def test_osc_input_is_only_a_plane_when_a_pin_governs_something(monkeypatch, label, setup) -> None:
-    """Three ways there is nothing to follow. Unpinned the membership is the
-    routing table's to choose; with no group the pin governs nothing; switched
-    off it is not broken. Any of them alerting would put a fault on the HUD for
-    a station behaving exactly as configured."""
-    services = _build_services_with_psutil_backend(monkeypatch)
-    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-    setup(services._app._config)
-    assert _osc_plane(services, _RecordingOscService()).enabled() is False
-
-
-def test_osc_input_stays_a_plane_while_its_listener_is_down(monkeypatch) -> None:
-    """A listener that did not bind (port in use) is OSC input that is not
-    running. Dropping the plane then took it off every status surface and out of
-    every retry until the next OSC save."""
+def test_switched_off_osc_input_is_not_followed(monkeypatch) -> None:
     services = _build_services_with_psutil_backend(monkeypatch)
     _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
     services._app._config.psn_source_iface = "eth0"
-    assert _osc_plane(services, _RecordingOscService(port=None)).enabled() is True
+    services._app._config.osc.enabled = False
+    assert _osc_plane(services, _RecordingOscService()).enabled() is False
+
+
+_NO_PIN_GOVERNS = pytest.mark.parametrize(
+    "setup",
+    [
+        pytest.param(lambda cfg: None, id="nothing pinned"),
+        pytest.param(
+            lambda cfg: (setattr(cfg, "psn_source_iface", "eth0"), setattr(cfg.osc, "multicast_group", "")),
+            id="no multicast group",
+        ),
+    ],
+)
+
+
+@_NO_PIN_GOVERNS
+def test_osc_input_with_no_pin_to_follow_follows_its_listener(monkeypatch, setup) -> None:
+    """The membership is the routing table's, or there is none: the plane is the
+    wildcard listener, running or not, and never an interface outage."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    setup(services._app._config)
+    service = _RecordingOscService()
+    plane = _osc_plane(services, service)
+
+    assert plane.enabled() is True
+    assert plane.resolve() == ("0.0.0.0", "primary", "")
+    assert plane.current() == "0.0.0.0"
+    service.port = None
+    assert plane.current() is None
+
+
+def test_osc_input_with_no_pin_to_follow_never_reads_as_down(monkeypatch) -> None:
+    """A station with no address at all still holds its wildcard listener."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {})
+    assert _osc_plane(services, _RecordingOscService()).resolve() == ("0.0.0.0", "primary", "")
 
 
 class _ResumingInput:
@@ -1965,10 +1985,64 @@ def test_osc_input_that_cannot_bind_is_reported_and_retried_with_the_backoff(mon
     assert service.listener_status()["multicast_joined"] is True
 
 
+def _unpinned_osc_plane(monkeypatch, setup, error: OSError | None = None):
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    setup(services._app._config)
+    service = _RecordingOscService(port=None)
+    manager = _ResumingInput(service, error)
+    services._app._input_manager = manager
+    return _osc_plane(services, service), service, manager
+
+
+@_NO_PIN_GOVERNS
+def test_osc_input_with_no_pin_to_follow_that_cannot_bind_is_reported_and_retried(monkeypatch, setup) -> None:
+    """No interface to name, so the row carries the reason alone. The listener
+    comes back without a membership move: the plane pins none."""
+    from openfollow.runtime.network_observer import NetworkPlaneObserver
+
+    plane, service, manager = _unpinned_osc_plane(monkeypatch, setup, OSError(98, "Address already in use"))
+    now = [0.0]
+    observer = NetworkPlaneObserver(planes=[plane], clock=lambda: now[0])
+
+    observer.poll()
+    assert observer.alerts() == ["OSC input: [Errno 98] Address already in use"]
+    (status,) = observer.snapshot()
+    assert (status.state, status.bound) == ("failing", None)
+    now[0] += 1.0
+    observer.poll()
+    assert manager.resumes == 1, "retried inside the backoff"
+
+    manager.error = None
+    now[0] += 120.0
+    observer.poll()
+    assert manager.resumes == 2
+    assert observer.alerts() == []
+    assert observer.snapshot()[0].state == "ok"
+    assert service.calls == []
+
+
+@_NO_PIN_GOVERNS
+def test_a_running_osc_listener_with_no_pin_to_follow_is_left_alone(monkeypatch, setup) -> None:
+    from openfollow.runtime.network_observer import NetworkPlaneObserver
+
+    plane, service, manager = _unpinned_osc_plane(monkeypatch, setup)
+    service.port = 8765
+    now = [0.0]
+    observer = NetworkPlaneObserver(planes=[plane], clock=lambda: now[0])
+
+    for _ in range(3):
+        observer.poll()
+        now[0] += 1.0
+
+    assert (manager.resumes, service.calls, observer.alerts()) == (0, [], [])
+
+
 def test_osc_input_plane_reports_the_live_membership_not_the_pin(monkeypatch) -> None:
     """``current`` drives the observer's "already correct" short-circuit. Read
     from config it would report an interface the socket never subscribed on."""
     services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._config.osc.listen_iface = "eth1"
     service = _RecordingOscService()
     plane = _osc_plane(services, service)
 
@@ -3465,3 +3539,79 @@ def test_a_removal_brought_in_line_at_startup_is_named_as_one(fqdn_services, cap
     with caplog.at_level("INFO", logger="openfollow.services"):
         services.reconcile_station_fqdn("").join(timeout=5)
     assert "Station FQDN removal brought in line with DHCP" in caplog.text
+
+
+def test_each_saved_interface_is_listed_as_the_card_shows_it(monkeypatch) -> None:
+    from openfollow.network.adapter import (
+        Ipv4Config,
+        Ipv4Method,
+        NetworkReading,
+        SavedInterface,
+    )
+
+    services = _build_services_with_psutil_backend(monkeypatch)
+    fake = _FakeWritableAdapter([_iface()], None)
+    fake.read_network = lambda: NetworkReading(
+        saved=(
+            SavedInterface(
+                "enx001122334455", Ipv4Config(Ipv4Method.STATIC, "192.0.2.5", 24, "192.0.2.1", ("192.0.2.53",))
+            ),
+            SavedInterface("enx001122334455.2", Ipv4Config(Ipv4Method.DHCP), "enx001122334455", 2),
+        )
+    )
+    services._network_adapter = fake
+    assert services._network_saved_provider() == [
+        {
+            "name": "enx001122334455",
+            "kind": None,
+            "address": "192.0.2.5",
+            "prefix": 24,
+            "subnet_mask": "255.255.255.0",
+            "method": "static",
+            "router": "192.0.2.1",
+            "dns": ["192.0.2.53"],
+            "lease_display": None,
+            "vlan_parent": "",
+            "vlan_id": None,
+        },
+        {
+            "name": "enx001122334455.2",
+            "kind": "vlan",
+            "address": "",
+            "prefix": None,
+            "subnet_mask": "",
+            "method": "dhcp",
+            "router": "",
+            "dns": [],
+            "lease_display": None,
+            "vlan_parent": "enx001122334455",
+            "vlan_id": 2,
+        },
+    ]
+
+
+def test_no_adapter_lists_no_saved_interfaces(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._network_adapter = None
+    assert services._network_saved_provider() == []
+
+
+def test_forget_calls_the_adapter(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    fake = _FakeWritableAdapter([_iface()], None)
+    services._network_adapter = fake
+    assert services._handle_network_forget("enx001122334455").ok is True
+    assert fake.forgotten == ["enx001122334455"]
+
+
+def test_forget_refused_on_a_read_only_host(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    result = services._handle_network_forget("enx001122334455")
+    assert result.ok is False and "Read-only" in result.message
+
+
+def test_forget_refused_without_adapter(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._network_adapter = None
+    result = services._handle_network_forget("enx001122334455")
+    assert result.ok is False and "No network adapter" in result.message

@@ -28,13 +28,15 @@ The first line is the station's reading of how far the connection got before it 
 - **Frame Rate (source)** – frame rate the source advertises. `N/A` while nothing is connected, for the same reason.
 - **Pipeline** – the connection attempt in more detail: `Connecting`, `Reconnecting`, `Connected`, or `Disconnected` once the retries have run out. It is where retry state lives: the banner deliberately carries no attempt counter, because a figure that changes every few seconds moves the box without telling you anything.
 
+A red box also appears while the video arriving is more than the station is sized for: over Full HD (the longer side over 1920 or the shorter over 1080 pixels) or over 30 fps. It names what arrives beside the limit, then the one thing to change. The video keeps playing; the box says why the picture or the markers may lag. Its frame rate is counted from the frames that arrive, so it can differ from **Frame Rate (source)**, which is what the source advertises. **Video Source** explains the limits.
+
 ## Device
 
 System health for the station hardware.
 
 A red box above the list means the Raspberry Pi is short of power or slowed down right now: **under voltage** when the power supply cannot hold 5 V, which leads to freezes and USB devices dropping out, or **CPU throttled** when the Pi has slowed its processor because it is too hot. An under voltage slows the processor too, so while one lasts only the power supply is named. The second line is the usual fix.
 
-Once it passes, a yellow box says it was reported since the station last started. It stays until the Pi restarts, because that is how long the Pi itself keeps the record, so an intermittent fault is still visible after the moment has gone. The Operator Screen shows the live state only, as a red row in the top right that stays 10 s after the state passes, so a run of short dips reads as one warning.
+Once it passes, an orange box says it was reported since the station last started. It stays until the Pi restarts, because that is how long the Pi itself keeps the record, so an intermittent fault is still visible after the moment has gone. The Operator Screen shows the live state only, as a red row in the top right that stays 10 s after the state passes, so a run of short dips reads as one warning.
 
 A station that is not a Raspberry Pi, or cannot read these, shows neither box; `/api/stats` reports them as not available.
 

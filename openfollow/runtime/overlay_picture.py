@@ -1,18 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""Kept Operator Screen pictures: a drawing cropped to its ink, and the HUD panels kept that way."""
+"""Kept Operator Screen pictures: how one is drawn and pasted, a drawing cropped to its ink, and the HUD panels."""
 
 from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from typing import Any, TypeAlias
+from typing import Any
 
 import cairo
 
 from openfollow.runtime.overlay_layers import keep
 
-Paint: TypeAlias = "Callable[[cairo.Context[Any]], None]"
+type Paint = Callable[[cairo.Context[Any]], None]
 
 
 def target_font_options(cr: Any) -> cairo.FontOptions:
@@ -52,15 +52,36 @@ def ink_picture(
         y1 = min(h, math.ceil((iy + ih) / sy) + 1)
         if x1 <= x0 or y1 <= y0:
             return None, 0, 0
+    # Painted again rather than replayed: a replayed recording lands text differently on a HiDPI picture.
+    return box_picture(paint, x0, y0, x1, y1, scale, options), x0, y0
+
+
+def box_picture(
+    paint: Paint, x0: int, y0: int, x1: int, y1: int, scale: tuple[float, float], options: cairo.FontOptions | None
+) -> cairo.ImageSurface:
+    """``paint`` drawn into a new picture of the canvas from (``x0``, ``y0``) to (``x1``, ``y1``), a non-empty box.
+
+    Pasted at (``x0``, ``y0``) at an integer device scale, the picture is pixel for pixel what ``paint``
+    draws inside that box.
+    ``options`` are the target's font options; ``None`` leaves cairo's defaults, for a drawing without text.
+    """
+    sx, sy = scale
     # Drawn at the target's device scale, so a HiDPI screen gets a sharp picture.
     picture = cairo.ImageSurface(cairo.FORMAT_ARGB32, math.ceil((x1 - x0) * sx), math.ceil((y1 - y0) * sy))
     picture.set_device_scale(sx, sy)
-    # Painted again rather than replayed: a replayed recording lands text differently on a HiDPI picture.
     ctx = cairo.Context(picture)
-    ctx.set_font_options(options)
+    if options is not None:
+        ctx.set_font_options(options)
     ctx.translate(-x0, -y0)
     paint(ctx)
-    return picture, x0, y0
+    return picture
+
+
+def paste(cr: Any, picture: cairo.ImageSurface | None, x0: int, y0: int) -> None:
+    """Put a kept picture on ``cr`` at (``x0``, ``y0``): a layer on a layered canvas, else one paint."""
+    if picture is not None and not keep(cr, picture, x0, y0):
+        cr.set_source_surface(picture, x0, y0)
+        cr.paint()
 
 
 class PanelCache:
@@ -83,6 +104,4 @@ class PanelCache:
             entry = (full_key, *ink_picture(paint, w, h, scale, options))
             self._entries[slot] = entry
         _, picture, x0, y0 = entry
-        if picture is not None and not keep(cr, picture, x0, y0):
-            cr.set_source_surface(picture, x0, y0)
-            cr.paint()
+        paste(cr, picture, x0, y0)

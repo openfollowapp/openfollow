@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 import cairo
 
 from openfollow.logging_setup import ThrottledExceptionLogger
+from openfollow.runtime.latency_probe import monotonic_us
 from openfollow.runtime.overlay_layers import LayerContext, Layers
 from openfollow.runtime.overlay_state import OverlayState
 from openfollow.video.hud_metrics import HudMetrics
@@ -108,9 +109,14 @@ class HudRenderThread:
         cpu_clock: Callable[[], float] = time.thread_time,
         *,
         layered: bool = False,
+        refresh_us: Callable[[], int] = monotonic_us,
     ) -> None:
         self._renderer = renderer
         self._clock = clock
+        # The latency probe's clock, in µs, for the refresh that shows a picture.
+        self._refresh_us = refresh_us
+        # Told on the Cairo Operator Screen when a picture carrying a latency flash goes on screen.
+        self.on_flash_shown: Callable[[float, int], None] | None = None
         # CPU time of the calling thread, for what a picture and a repaint cost.
         self._cpu_clock = cpu_clock
         self.metrics = HudMetrics(clock())
@@ -124,6 +130,8 @@ class HudRenderThread:
         self._busy = False
         # Finished and waiting for the refresh that shows it; on screen; free to draw into.
         self._ready: cairo.ImageSurface | Layers | None = None
+        # The latency flash the ready picture carries.
+        self._ready_flash: float | None = None
         # Only the GTK main thread (tick and paint) touches the shown picture.
         self._shown: cairo.ImageSurface | Layers | None = None
         # Counts pictures put on screen, so a reader can tell a new one in a reused surface.
@@ -160,7 +168,10 @@ class HudRenderThread:
             self._pacing.refreshed(now)
             self._held += 1
             ready = self._ready if self._held >= self._pacing.refreshes else None
+            flash = None
             if ready is not None:
+                # The GL display reports its own flash, drawn over everything at its render.
+                flash = None if self._layered else self._ready_flash
                 self._ready = None
                 self._spare, self._shown = self._shown, ready
                 self._shown_serial += 1
@@ -174,6 +185,8 @@ class HudRenderThread:
                 self._held = 0
                 self._started_at = now
                 self._cond.notify()
+        if flash is not None and (shown := self.on_flash_shown) is not None:
+            shown(flash, self._refresh_us())
         return ready is not None
 
     def paint(self, cr: Any, width: int, height: int) -> None:
@@ -240,6 +253,7 @@ class HudRenderThread:
             with self._cond:
                 self._busy = False
                 self._ready = ready
+                self._ready_flash = state.latency_flash
                 self._finished_at = self._clock()
 
     def _take(self) -> tuple[tuple[_Canvas, OverlayState], cairo.ImageSurface | Layers | None] | None:

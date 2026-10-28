@@ -19,6 +19,7 @@ from openfollow.network.adapter import (
     NetworkInterface,
     NetworkReading,
     NetworkState,
+    SavedInterface,
     VlanInterface,
 )
 from openfollow.network.nm_adapter import NetworkManagerAdapter
@@ -1444,6 +1445,8 @@ class _Saved:
     profile_uuid: str = ""
     kind: str = "802-3-ethernet"
     vlan: tuple[str, str] | None = None
+    gateway: str = ""
+    dns: str = ""  # ipv4.dns as nmcli -t prints it, comma-separated
 
     @property
     def uuid(self) -> str:
@@ -1496,13 +1499,13 @@ class _Station:
                 out.append(
                     {"name": d.profile, "uuid": d.uuid, "kind": kind, "device": d.name, "rank": "yes:0:0"}
                     | {"interface": d.name, "method": d.method, "addresses": d.addresses, "vlan": d.vlan}
-                    | {"fqdn": d.fqdn}
+                    | {"fqdn": d.fqdn, "gateway": "", "dns": ""}
                 )
         for p in self.saved:
             out.append(
                 {"name": p.name, "uuid": p.uuid, "kind": p.kind, "device": "", "rank": p.rank}
                 | {"interface": p.interface, "method": p.method, "addresses": p.addresses, "vlan": p.vlan}
-                | {"fqdn": p.fqdn}
+                | {"fqdn": p.fqdn, "gateway": p.gateway, "dns": p.dns}
             )
         return out
 
@@ -1546,6 +1549,7 @@ class _Station:
                 record = (
                     f"connection.uuid:{uuid}\nconnection.interface-name:{p['interface']}\n"
                     f"ipv4.method:{p['method']}\nipv4.addresses:{p['addresses']}\n"
+                    f"ipv4.gateway:{p['gateway']}\nipv4.dns:{p['dns']}\n"
                 )
                 if p["vlan"]:
                     record += f"vlan.parent:{p['vlan'][0]}\nvlan.id:{p['vlan'][1]}\n"
@@ -1575,6 +1579,24 @@ def _profile_detail(argv: list[str]) -> bool:
 
 
 _NOT_RUNNING = "Error: NetworkManager is not running."
+
+
+# What nmcli 1.52 printed on the bench, exit status 10, for one UUID of several already gone.
+_ONE_GONE = make_nonzero(rc=10, stderr="Error: cannot delete unknown connection(s): uuid 'uuid-copy'.")
+
+
+def _delete_then(a, nmcli, **after) -> None:
+    """Apply *after* to the fake nmcli once the delete has run, as NetworkManager would."""
+    run = a._broker.run
+
+    def _run(*args, **kwargs):
+        try:
+            return run(*args, **kwargs)
+        finally:
+            for key, value in after.items():
+                setattr(nmcli, key, value)
+
+    a._broker.run = _run
 
 
 @pytest.fixture
@@ -2036,27 +2058,11 @@ class TestProfilesSharingAName:
         assert a.delete_vlan("eth0.10").ok
         assert [call.argv[3:] for call in a._broker.calls] == [["uuid", "uuid-eth0.10"]]
 
-    # What nmcli 1.52 printed on the bench, exit status 10, for one UUID of several already gone.
-    _ONE_GONE = make_nonzero(rc=10, stderr="Error: cannot delete unknown connection(s): uuid 'uuid-copy'.")
-
-    def _delete_then(self, a, nmcli, **after) -> None:
-        """Apply *after* to the fake nmcli once the delete has run, as NetworkManager would."""
-        run = a._broker.run
-
-        def _run(*args, **kwargs):
-            try:
-                return run(*args, **kwargs)
-            finally:
-                for key, value in after.items():
-                    setattr(nmcli, key, value)
-
-        a._broker.run = _run
-
     def test_a_copy_gone_before_the_delete_still_reports_the_vlan_removed(self, station) -> None:
         """nmcli deletes every UUID it finds and exits 10 for one already gone."""
         a, nmcli = self._vlan_and_namesakes(station)
-        a._broker.responses = [self._ONE_GONE]
-        self._delete_then(a, nmcli, devices=nmcli.devices[:1], saved=())
+        a._broker.responses = [_ONE_GONE]
+        _delete_then(a, nmcli, devices=nmcli.devices[:1], saved=())
         result = a.delete_vlan("eth0.10")
         assert (result.ok, result.message) == (True, "Removed VLAN interface eth0.10.")
 
@@ -2064,9 +2070,9 @@ class TestProfilesSharingAName:
     def test_a_partial_delete_is_a_failure_unless_the_vlan_is_gone(self, station, after: str) -> None:
         """Exit 10 may name the active profile itself, replaced since it was read."""
         a, nmcli = self._vlan_and_namesakes(station)
-        a._broker.responses = [self._ONE_GONE]
+        a._broker.responses = [_ONE_GONE]
         if after == "unreadable":
-            self._delete_then(a, nmcli, fail={_profile_list: _NOT_RUNNING})
+            _delete_then(a, nmcli, fail={_profile_list: _NOT_RUNNING})
         result = a.delete_vlan("eth0.10")
         assert result.ok is False
         assert "unknown connection" in result.message
@@ -2113,4 +2119,242 @@ class TestWhichProfileAWriteAddresses:
         assert not a.apply_ipv4("", Ipv4Config(method=Ipv4Method.DHCP)).ok
         assert not a.renew_lease("").ok
         assert not a.delete_vlan("").ok
+        # Every unbound profile would match: ``con delete`` is a wildcarded grant.
+        assert a.forget_interface("").message == "No interface was named; nothing was deleted."
         assert a._broker.calls == []
+
+
+class TestAnUnpluggedAdapterKeepsItsSettings:
+    """An interface that is gone but has saved settings: listed, editable and forgettable."""
+
+    def _station(self, station, **kwargs):
+        return station(
+            _Device("eth0", "192.0.2.10/24", "Wired connection 1"),
+            saved=(
+                _Saved(
+                    "Wired connection 3",
+                    "enx001122334455",
+                    method="manual",
+                    addresses="198.51.100.5/24, 203.0.113.5/24",
+                    gateway="198.51.100.1",
+                    dns="198.51.100.53,198.51.100.54,198.51.100.55,198.51.100.56",
+                ),
+                _Saved("enx0011223344.2", "enx0011223344.2", kind="vlan", vlan=("enx001122334455", "2")),
+                _Saved("By profile", "enx0011223344.3", kind="vlan", vlan=("uuid-Wired connection 3", "3")),
+                _Saved("Spare", "eth0"),
+                _Saved("Any adapter", ""),
+                _Saved("Bridge", "br9", kind="bridge"),
+                _Saved("Tunnel", "wg0", kind="wireguard"),
+                _Saved("Dongle", "wlx001122334466", kind="802-11-wireless"),
+            ),
+            **kwargs,
+        )
+
+    def test_lists_each_absent_interface_with_its_saved_settings(self, station) -> None:
+        """Bound ethernet, Wi-Fi and VLAN profiles only: a present interface, a profile
+        naming no interface, a bridge and a tunnel are not adapters that went away."""
+        a, nmcli = self._station(station)
+        reading = a.read_network()
+        # In name order: the card places each VLAN under its parent itself.
+        assert reading.saved == (
+            SavedInterface("enx0011223344.2", Ipv4Config(Ipv4Method.DHCP), vlan_parent="enx001122334455", vlan_id=2),
+            SavedInterface("enx0011223344.3", Ipv4Config(Ipv4Method.DHCP), vlan_parent="enx001122334455", vlan_id=3),
+            SavedInterface(
+                "enx001122334455",
+                Ipv4Config(
+                    Ipv4Method.STATIC,
+                    "198.51.100.5",
+                    24,
+                    "198.51.100.1",
+                    ("198.51.100.53", "198.51.100.54", "198.51.100.55"),
+                ),
+            ),
+            SavedInterface("wlx001122334466", Ipv4Config(Ipv4Method.DHCP)),
+        )
+        assert len(nmcli.calls) == 3
+
+    def test_the_profile_autoconnect_prefers_is_the_one_shown(self, station) -> None:
+        a, _ = station(
+            saved=(
+                _Saved("Old", "enx001122334455", method="manual", addresses="192.0.2.5/24", rank="yes:0:100"),
+                _Saved("Off", "enx001122334455", method="manual", addresses="192.0.2.6/24", rank="no:9:900"),
+                _Saved("Newer", "enx001122334455", method="manual", addresses="192.0.2.7/24", rank="yes:0:900"),
+            )
+        )
+        assert [s.ipv4.address for s in a.read_network().saved] == ["192.0.2.7"]
+
+    def test_the_listed_settings_are_those_an_apply_writes(self, station) -> None:
+        """When autoconnect prefers a profile of another kind, the adapter is not listed: Edit would show one
+        profile's settings and write the other's."""
+        a, _ = station(
+            saved=(
+                _Saved("Wired", "enx001122334455", rank="yes:0:100"),
+                _Saved("Dial-up", "enx001122334455", kind="pppoe", rank="yes:9:900"),
+            )
+        )
+        assert a.read_network().saved == ()
+        assert a._profile_for("enx001122334455").name == "Dial-up"
+
+    def test_a_failed_profile_read_lists_none(self, station) -> None:
+        a, _ = self._station(station, fail={_profile_list: _NOT_RUNNING})
+        assert a.read_network().saved == ()
+
+    @pytest.mark.parametrize(
+        "config",
+        [Ipv4Config(method=Ipv4Method.DHCP), Ipv4Config(method=Ipv4Method.STATIC, address="192.0.2.50", prefix=24)],
+        ids=["dhcp", "static"],
+    )
+    def test_an_apply_is_saved_for_when_it_is_plugged_in(self, station, config) -> None:
+        """Nothing to bring up or down: NetworkManager activates the profile when the adapter appears."""
+        a, _ = self._station(station)
+        result = a.apply_ipv4("enx001122334455", config)
+        assert (result.ok, result.pending, result.partial_failures) == (True, True, ())
+        assert result.message == "Saved; the settings take effect when enx001122334455 is plugged in."
+        assert [call.argv[1:5] for call in a._broker.calls] == [["con", "mod", "uuid", "uuid-Wired connection 3"]]
+
+    def test_a_vlan_on_an_unplugged_parent_is_saved_for_it(self, station) -> None:
+        """It comes up when its parent is plugged in, so the result names the parent."""
+        a, _ = self._station(station)
+        result = a.apply_ipv4("enx0011223344.2", Ipv4Config(method=Ipv4Method.DHCP))
+        assert (result.ok, result.pending) == (True, True)
+        assert result.message == "Saved; the settings take effect when enx001122334455 is plugged in."
+        assert [call.argv[2] for call in a._broker.calls] == ["mod"]
+
+    @pytest.mark.parametrize(
+        "vlan", [("eth0", "10"), ("uuid-Wired connection 1", "10")], ids=["parent-by-name", "parent-by-profile"]
+    )
+    def test_a_vlan_whose_parent_is_present_is_brought_up_now(self, station, vlan) -> None:
+        """Nothing is plugged in for it later: NetworkManager would leave it down."""
+        a, _ = station(
+            _Device("eth0", "192.0.2.10/24", "Wired connection 1"),
+            saved=(_Saved("eth0.10", "eth0.10", kind="vlan", vlan=vlan),),
+        )
+        a._broker.responses = [_OK, _NOT_ACTIVE, _OK]
+        result = a.apply_ipv4("eth0.10", Ipv4Config(method=Ipv4Method.DHCP))
+        assert (result.ok, result.pending, result.message) == (True, False, "Applied.")
+        assert [call.argv[2] for call in a._broker.calls] == ["mod", "down", "up"]
+
+    def test_a_vlan_whose_parent_cannot_be_read_is_brought_up_and_reported(self, station, monkeypatch) -> None:
+        """Pending would tell the operator to plug in an adapter that may be in; bringing it up says what fails."""
+        a, _ = station(
+            _Device("eth0", "192.0.2.10/24", "Wired connection 1"),
+            saved=(_Saved("eth0.10", "eth0.10", kind="vlan", vlan=("eth0", "10")),),
+        )
+        monkeypatch.setattr(a, "_device_state", lambda name: "" if name == "eth0.10" else None)
+        a._broker.responses = [_OK, _NOT_ACTIVE, _OK]
+        result = a.apply_ipv4("eth0.10", Ipv4Config(method=Ipv4Method.DHCP))
+        assert (result.ok, result.pending) == (True, False)
+        assert [call.argv[2] for call in a._broker.calls] == ["mod", "down", "up"]
+
+    @pytest.mark.parametrize("case", ["unplaceable", "profiles-unreadable"])
+    def test_a_vlan_that_cannot_be_placed_waits_for_its_adapter(self, station, case) -> None:
+        """Bringing it up could only fail: it is saved, as for an absent adapter."""
+        vlan = ("eth0", "ten") if case == "unplaceable" else ("eth0", "10")
+        a, nmcli = station(
+            _Device("eth0", "192.0.2.10/24", "Wired connection 1"),
+            saved=(_Saved("eth0.10", "eth0.10", kind="vlan", vlan=vlan),),
+        )
+        if case == "profiles-unreadable":
+            _delete_then(a, nmcli, fail={_profile_list: _NOT_RUNNING})
+        result = a.apply_ipv4("eth0.10", Ipv4Config(method=Ipv4Method.DHCP))
+        assert (result.ok, result.pending) == (True, True)
+        assert [call.argv[2] for call in a._broker.calls] == ["mod"]
+
+    def test_an_unreadable_device_list_is_not_taken_for_an_unplugged_adapter(self, station) -> None:
+        """Bringing it up reports the failure; a reassuring pending would hide it."""
+        a, _ = self._station(station, fail={lambda argv: argv[3] == "DEVICE,STATE": _NOT_RUNNING})
+        a._broker.responses = [_OK, _NOT_ACTIVE, _NO_SUITABLE_DEVICE]
+        result = a.apply_ipv4("enx001122334455", Ipv4Config(method=Ipv4Method.DHCP))
+        assert (result.ok, result.pending) == (False, False)
+        assert "could not be brought up" in result.message
+
+    def test_an_inactive_profile_on_a_present_adapter_is_still_brought_up(self, station) -> None:
+        a, _ = station(
+            _Device("eth1", profile="", state="30 (disconnected)"),
+            saved=(_Saved("Stage", "eth1"),),
+        )
+        a._broker.responses = [_OK, _NOT_ACTIVE, _OK]
+        result = a.apply_ipv4("eth1", Ipv4Config(method=Ipv4Method.DHCP))
+        assert (result.ok, result.pending, result.message) == (True, False, "Applied.")
+        assert [call.argv[2] for call in a._broker.calls] == ["mod", "down", "up"]
+
+    def test_forget_deletes_its_profiles_and_its_vlans_by_uuid(self, station) -> None:
+        a, _ = self._station(station)
+        # Bound to the same name but no row of its own: the card never showed it.
+        a._run.saved = (*a._run.saved, _Saved("Dial-up", "enx001122334455", kind="pppoe", rank="yes:0:1"))
+        result = a.forget_interface("enx001122334455")
+        assert (result.ok, result.message) == (True, "Deleted the saved settings of enx001122334455.")
+        assert [call.argv for call in a._broker.calls] == [
+            ["/usr/bin/nmcli", "con", "delete"]
+            + ["uuid", "uuid-Wired connection 3", "uuid", "uuid-enx0011223344.2", "uuid", "uuid-By profile"]
+        ]
+        assert a._broker.calls[0].capability == NETWORK_NM_CON_DELETE
+
+    def test_forget_leaves_a_vlan_profile_that_names_no_interface(self, station) -> None:
+        """Never claimed: it is no row on the card, so the confirmation could not name it."""
+        a, _ = self._station(station)
+        nmcli_saved = a._run.saved
+        a._run.saved = (*nmcli_saved, _Saved("Hand-made", "", kind="vlan", vlan=("enx001122334455", "7")))
+        assert a.forget_interface("enx001122334455").ok
+        assert "uuid-Hand-made" not in a._broker.calls[0].argv
+
+    def test_forgetting_a_vlan_deletes_only_its_own(self, station) -> None:
+        a, _ = self._station(station)
+        assert a.forget_interface("enx0011223344.2").ok
+        assert [call.argv[3:] for call in a._broker.calls] == [["uuid", "uuid-enx0011223344.2"]]
+
+    @pytest.mark.parametrize(
+        ("name", "fail", "message"),
+        [
+            ("eth0", {}, "eth0 is plugged in; its settings were not deleted."),
+            (
+                "enx001122334455",
+                {lambda argv: argv[3] == "DEVICE,STATE": _NOT_RUNNING},
+                "Could not read enx001122334455 from NetworkManager; nothing was deleted.",
+            ),
+            (
+                "enx001122334455",
+                {_profile_detail: _NOT_RUNNING},
+                "Could not read the profiles of enx001122334455; nothing was deleted.",
+            ),
+            ("enx665544332211", {}, "enx665544332211 has no saved settings."),
+        ],
+        ids=["present", "device-unreadable", "profiles-unreadable", "nothing-saved"],
+    )
+    def test_forget_deletes_nothing_it_cannot_vouch_for(self, station, name, fail, message) -> None:
+        """``con delete`` is a wildcarded grant: a present adapter's profile is never one it names."""
+        a, _ = self._station(station, fail=fail)
+        result = a.forget_interface(name)
+        assert (result.ok, result.message) == (False, message)
+        assert a._broker.calls == []
+
+    def test_an_adapter_plugged_in_between_the_reads_keeps_its_profile(self, station, monkeypatch) -> None:
+        """Its profile is active by the time the profiles are read: not one for the delete to name."""
+        a, _ = station(_Device("enx001122334455", "192.0.2.5/24", "Wired connection 3"))
+        monkeypatch.setattr(a, "_device_state", lambda _name: "")
+        result = a.forget_interface("enx001122334455")
+        assert (result.ok, result.message) == (False, "enx001122334455 has no saved settings.")
+        assert a._broker.calls == []
+
+    def test_a_profile_gone_before_the_delete_still_reports_it_forgotten(self, station) -> None:
+        a, nmcli = self._station(station)
+        a._broker.responses = [_ONE_GONE]
+        _delete_then(a, nmcli, saved=nmcli.saved[3:])
+        assert a.forget_interface("enx001122334455").ok
+
+    @pytest.mark.parametrize("after", ["still saved", "unreadable"])
+    def test_a_partial_delete_is_a_failure_unless_nothing_is_left(self, station, after: str) -> None:
+        a, nmcli = self._station(station)
+        a._broker.responses = [_ONE_GONE]
+        if after == "unreadable":
+            _delete_then(a, nmcli, fail={_profile_list: _NOT_RUNNING})
+        result = a.forget_interface("enx001122334455")
+        assert result.ok is False
+        assert "unknown connection" in result.message
+
+    def test_a_refused_delete_says_so(self, station) -> None:
+        a, _ = self._station(station)
+        a._broker.responses = [make_nonzero(rc=1, stderr="Error: not authorized to delete connection.")]
+        result = a.forget_interface("enx001122334455")
+        assert result.ok is False
+        assert "not authorized to delete connection" in result.message

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from openfollow.privilege.camera_config import AUTOMATIC, CAMERA_TOKEN_RE, CHOICE_TOKEN_RE, HELPER_PATH
 from openfollow.privilege.media_writer import DEVICE_RE
@@ -38,7 +38,7 @@ def _regex_args(*tokens: str) -> str:
     return "^" + " ".join([*words, arg_re.removeprefix("^")])
 
 
-class CapabilityState(str, Enum):
+class CapabilityState(StrEnum):
     """Result of probing whether the host can run a capability silently."""
 
     PASSWORDLESS = "passwordless"
@@ -163,9 +163,10 @@ NETWORK_NM_CON_DOWN = Capability(
 
 # VLAN sub-interfaces are created and removed as NetworkManager profiles. The
 # grants are wildcarded like ``con mod``: ``add`` takes an operator-influenced
-# name, ``delete`` the UUIDs of the VLAN's profiles. The app layer refuses to
-# delete anything that is not a VLAN, or the interface the request arrived on,
-# before either is invoked.
+# name, ``delete`` the UUIDs of a VLAN's profiles or of an unplugged adapter's.
+# Before either is invoked, VLAN removal refuses a non-VLAN or the interface the
+# request arrived on, and Forget refuses any interface NetworkManager lists and
+# deletes only inactive profiles.
 NETWORK_NM_CON_ADD = Capability(
     name="network.nm.con_add",
     probe_argv=("/usr/bin/nmcli", "con", "add", _PROBE_PLACEHOLDER),
@@ -176,7 +177,7 @@ NETWORK_NM_CON_ADD = Capability(
 NETWORK_NM_CON_DELETE = Capability(
     name="network.nm.con_delete",
     probe_argv=("/usr/bin/nmcli", "con", "delete", _PROBE_PLACEHOLDER),
-    description="Delete a NetworkManager connection profile (VLAN)",
+    description="Delete a NetworkManager connection profile (VLAN or unplugged adapter)",
     sudoers_pattern="/usr/bin/nmcli con delete *",
 )
 

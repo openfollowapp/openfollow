@@ -8,19 +8,25 @@ when GStreamer video pipelines are running).
 
 Platform support:
 - macOS: Uses Quartz CGEventSourceKeyState
-- Linux/Windows: Falls back to event-based tracking
+- Linux: Reads each keyboard's held-key bitmap through evdev (``EVIOCGKEY``)
+- Elsewhere, or when neither is usable: Falls back to event-based tracking
 """
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import glob
 import logging
 import math
+import os
 import platform
 import time
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Literal
+from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
+
+from openfollow import keyboard_layout
 
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp
@@ -158,6 +164,43 @@ _MAC_KEY_CODES: dict[str, int] = {
     "Numpad9": 0x5C,
 }
 
+# ``evdev.ecodes`` names per polled key (US positions); a modifier lists both
+# sides, and Enter its keypad twin, as GTK reports both as one key.
+_EVDEV_KEY_NAMES: dict[str, tuple[str, ...]] = {
+    **{letter: (f"KEY_{letter.upper()}",) for letter in "abcdefghijklmnopqrstuvwxyz"},
+    "Tab": ("KEY_TAB",),
+    "Enter": ("KEY_ENTER", "KEY_KPENTER"),
+    "Escape": ("KEY_ESC",),
+    "Shift": ("KEY_LEFTSHIFT", "KEY_RIGHTSHIFT"),
+    "Control": ("KEY_LEFTCTRL", "KEY_RIGHTCTRL"),
+    "Alt": ("KEY_LEFTALT", "KEY_RIGHTALT"),
+    "Meta": ("KEY_LEFTMETA", "KEY_RIGHTMETA"),
+    "Space": ("KEY_SPACE",),
+    "ArrowUp": ("KEY_UP",),
+    "ArrowDown": ("KEY_DOWN",),
+    "ArrowLeft": ("KEY_LEFT",),
+    "ArrowRight": ("KEY_RIGHT",),
+    **{f"Numpad{n}": (f"KEY_KP{n}",) for n in range(10)},
+}
+
+_POLLED_LETTERS = frozenset(key for key in POLLED_KEYS if len(key) == 1)
+_INPUT_DIR = "/dev/input"
+_SYSFS_INPUT_DIR = "/sys/class/input"
+# An xkb keycode is the evdev code plus 8.
+_XKB_EVDEV_OFFSET = 8
+_XKB_SESSION_ENV = (
+    ("layout", "XKB_DEFAULT_LAYOUT"),
+    ("variant", "XKB_DEFAULT_VARIANT"),
+    ("model", "XKB_DEFAULT_MODEL"),
+    ("options", "XKB_DEFAULT_OPTIONS"),
+)
+_XKB_SYSTEM_KEYS = (
+    ("layout", "XKBLAYOUT"),
+    ("variant", "XKBVARIANT"),
+    ("model", "XKBMODEL"),
+    ("options", "XKBOPTIONS"),
+)
+
 
 # ---------------------------------------------------------------------------
 # Keyboard Pollers (Platform Abstraction)
@@ -166,6 +209,9 @@ _MAC_KEY_CODES: dict[str, int] = {
 
 class KeyboardPoller(ABC):
     """Abstract base class for keyboard state polling."""
+
+    # Wire value published in ``/api/stats`` (``keyboard.poller``).
+    kind: ClassVar[str]
 
     @abstractmethod
     def is_key_pressed(self, key: str) -> bool:
@@ -280,6 +326,7 @@ def _build_layout_keycode_map() -> dict[str, int] | None:
 class MacOSKeyboardPoller(KeyboardPoller):
     """macOS keyboard poller using Quartz CGEventSourceKeyState."""
 
+    kind = "quartz"
     _STATE_ID = 1  # kCGEventSourceStateHIDSystemState
 
     def __init__(self) -> None:
@@ -377,8 +424,269 @@ class MacOSKeyboardPoller(KeyboardPoller):
         return bool(result)
 
 
+def _linux_layout_names(environ: Mapping[str, str]) -> tuple[dict[str, str], str]:
+    """The RMLVO names the compositor compiled, and where they came from.
+
+    The kiosk session exports ``XKB_DEFAULT_*`` to Cage and the app alike, so
+    they come first; ``/etc/default/keyboard`` only stands in when the session
+    exported none, then ``us``. Never the station's ``keyboard_layout`` field:
+    a saved layout applies at the next restart, so it can differ from the one
+    GTK and the compositor are typing in.
+    """
+    session = {name: environ.get(var, "") for name, var in _XKB_SESSION_ENV}
+    if any(session.values()):
+        return session, "session"
+    system = keyboard_layout.read_system_keyboard()
+    names = {name: system.get(key, "") for name, key in _XKB_SYSTEM_KEYS}
+    if names["layout"]:
+        return names, "system"
+    return {**names, "layout": keyboard_layout.DEFAULT_LAYOUT, "variant": ""}, "default"
+
+
+def _build_linux_layout_keycode_map(names: Mapping[str, str]) -> dict[str, int] | None:
+    """``{polled letter: evdev code}`` for the keymap ``names`` compile to; ``None`` on any failure.
+
+    evdev reports physical positions: on QWERTZ the key printed ``Z`` is
+    ``KEY_Y``. Each key's level-0 keysym in the first layout names the letter
+    it types; the lowest keycode wins a letter reachable from several keys.
+    """
+    try:
+        from xkbcommon import xkb
+
+        context = xkb.Context(no_environment_names=True)
+        keymap = context.keymap_new_from_names(**{name: value or None for name, value in names.items()})
+        mapping: dict[str, int] = {}
+        for keycode in keymap:
+            syms = keymap.key_get_syms_by_level(keycode, 0, 0)
+            if len(syms) != 1:
+                continue
+            char = xkb.keysym_to_string(syms[0])
+            if char in _POLLED_LETTERS and char not in mapping:
+                mapping[char] = keycode - _XKB_EVDEV_OFFSET
+        return mapping or None
+    except Exception:
+        return None
+
+
+def _layout_label(names: Mapping[str, str]) -> str:
+    layout = names["layout"] or "(xkb default)"
+    return f"{layout} ({names['variant']})" if names["variant"] else layout
+
+
+def _sysfs_has_key(sysfs_dir: str, node: str, code: int) -> bool | None:
+    """Whether the kernel lists key ``code`` (< 32) for evdev ``node``; ``None`` when sysfs cannot tell.
+
+    The world-readable bitmap is hex words, most significant first, so the
+    lowest codes sit in the last word.
+    """
+    try:
+        with open(os.path.join(sysfs_dir, node, "device", "capabilities", "key"), encoding="ascii") as handle:
+            words = handle.read().split()
+        return bool(words) and bool(int(words[-1], 16) >> code & 1)
+    except (OSError, ValueError):
+        return None
+
+
+def _keyboards_accessible(input_dir: str, sysfs_dir: str, key_a: int) -> bool:
+    """Whether this user may open every node that is, or may be, a keyboard (the service user is in ``input``).
+
+    Read and write, as ``evdev.list_devices`` lists only nodes it may open both ways.
+    """
+    try:
+        names = os.listdir(input_dir)
+    except OSError:
+        return False
+    return all(
+        os.access(os.path.join(input_dir, name), os.R_OK | os.W_OK)
+        for name in names
+        if name.startswith("event") and _sysfs_has_key(sysfs_dir, name, key_a) is not False
+    )
+
+
+class LinuxEvdevKeyboardPoller(KeyboardPoller):
+    """Linux poller reading the kernel's held-key bitmap (``EVIOCGKEY``) of every keyboard.
+
+    Available means evdev is usable, not that a keyboard is attached: the
+    poller is chosen once, so a unit booted headless picks a keyboard up
+    through the rescan.
+    """
+
+    kind = "evdev"
+    # One frame's many ``is_key_pressed`` calls share one read of the devices.
+    _SNAPSHOT_TTL_S = 0.004
+    _RESCAN_INTERVAL_S = 1.0
+
+    def __init__(
+        self,
+        input_dir: str = _INPUT_DIR,
+        clock: Callable[[], float] = time.monotonic,
+        sysfs_dir: str | None = None,
+    ) -> None:
+        # Read when built, not when defined, so the default can be redirected.
+        sysfs_dir = _SYSFS_INPUT_DIR if sysfs_dir is None else sysfs_dir
+        self._input_dir = input_dir
+        self._sysfs_dir = sysfs_dir
+        self._clock = clock
+        self._available = False
+        self._evdev: Any = None
+        self._key_codes: dict[str, tuple[int, ...]] = {}
+        self._devices: dict[str, Any] = {}
+        self._inodes: dict[str, int] = {}
+        # Inodes whose read failed since the last rescan, and the reopened paths not yet read cleanly since.
+        self._lost: dict[str, int] = {}
+        self._suspect: set[str] = set()
+        # By inode: nodes sysfs could not classify that are not keyboards, nodes python-evdev cannot read,
+        # and keyboards whose read failed again after a reopen.
+        self._rejected: dict[str, int] = {}
+        self._held: frozenset[int] = frozenset()
+        self._held_at = -math.inf
+        self._next_scan_at = -math.inf
+
+        try:
+            import evdev
+        except ImportError as exc:
+            logger.warning("evdev keyboard poller unavailable: %s", exc)
+            return
+        ecodes = evdev.ecodes
+        self._key_a: int = ecodes.KEY_A
+        self._ev_key: int = ecodes.EV_KEY
+        if not _keyboards_accessible(input_dir, sysfs_dir, self._key_a):
+            logger.warning("evdev keyboard poller unavailable: cannot open the keyboards in %s", input_dir)
+            return
+        self._evdev = evdev
+        self._key_codes = {key: tuple(getattr(ecodes, n) for n in names) for key, names in _EVDEV_KEY_NAMES.items()}
+        self._available = True
+        self._apply_layout()
+        self._maybe_rescan(self._clock())
+        logger.info("evdev keyboard poller initialized (%d keyboard(s))", len(self._devices))
+
+    def _apply_layout(self) -> None:
+        """Move the letters to the keys the session's layout prints them on."""
+        names, source = _linux_layout_names(os.environ)
+        layout_map = _build_linux_layout_keycode_map(names)
+        if not layout_map:
+            logger.warning(
+                "Could not resolve keyboard layout %s (from %s); falling back to "
+                "US QWERTY keycodes (Z/Y may not match a QWERTZ layout).",
+                _layout_label(names),
+                source,
+            )
+            return
+        self._key_codes.update({char: (code,) for char, code in layout_map.items()})
+        logger.info(
+            "Keyboard layout %s (from %s); using layout-aware keycodes for letter polling.",
+            _layout_label(names),
+            source,
+        )
+
+    def is_available(self) -> bool:
+        return self._available
+
+    def device_count(self) -> int:
+        """Number of keyboards open right now."""
+        if self._available:
+            self._maybe_rescan(self._clock())
+        return len(self._devices)
+
+    def is_key_pressed(self, key: str) -> bool:
+        codes = self._key_codes.get(key)
+        if codes is None:
+            return False
+        held = self._snapshot()
+        return any(code in held for code in codes)
+
+    def _snapshot(self) -> frozenset[int]:
+        now = self._clock()
+        self._maybe_rescan(now)
+        if now - self._held_at < self._SNAPSHOT_TTL_S:
+            return self._held
+        held: set[int] = set()
+        for path, device in list(self._devices.items()):
+            try:
+                held.update(device.active_keys())
+            # python-evdev's C extension can raise SystemError, not OSError, for a device the kernel lost.
+            except Exception as exc:
+                inode = self._inodes[path]
+                again = path in self._suspect
+                self._drop(path)
+                if again:
+                    self._reject_broken(path, inode, exc)
+                else:
+                    logger.info("evdev keyboard poller drops %s: %r", path, exc)
+                    self._lost[path] = inode
+            else:
+                self._suspect.discard(path)
+        self._held = frozenset(held)
+        self._held_at = now
+        return self._held
+
+    def _maybe_rescan(self, now: float) -> None:
+        if now < self._next_scan_at:
+            return
+        self._next_scan_at = now + self._RESCAN_INTERVAL_S
+        try:
+            paths = list(self._evdev.list_devices(self._input_dir))
+        except OSError:
+            return
+        lost, self._lost = self._lost, {}
+        for path in [path for path in self._devices if path not in paths]:
+            self._drop(path)
+        self._rejected = {path: inode for path, inode in self._rejected.items() if path in paths}
+        for path in paths:
+            if path in self._devices or _sysfs_has_key(self._sysfs_dir, os.path.basename(path), self._key_a) is False:
+                continue
+            try:
+                inode = os.stat(path).st_ino
+            except OSError:
+                continue
+            if self._rejected.get(path) == inode:
+                continue
+            try:
+                device = self._evdev.InputDevice(path)
+            except OSError:
+                continue
+            except Exception as exc:
+                self._reject_broken(path, inode, exc)
+                continue
+            try:
+                is_keyboard = self._key_a in device.capabilities().get(self._ev_key, ())
+            except OSError:
+                _close_quietly(device)
+                continue
+            except Exception as exc:
+                _close_quietly(device)
+                self._reject_broken(path, inode, exc)
+                continue
+            if is_keyboard:
+                self._devices[path] = device
+                self._inodes[path] = inode
+                # Still there after a failed read: one more failure before a clean read skips it.
+                if lost.get(path) == inode:
+                    self._suspect.add(path)
+            else:
+                self._rejected[path] = inode
+                _close_quietly(device)
+
+    def _reject_broken(self, path: str, inode: int, exc: Exception) -> None:
+        """Skip a node python-evdev cannot read (e.g. a name that is not UTF-8) until it is replaced."""
+        self._rejected[path] = inode
+        logger.warning("evdev keyboard poller skips %s: %r", path, exc)
+
+    def _drop(self, path: str) -> None:
+        self._inodes.pop(path, None)
+        self._suspect.discard(path)
+        _close_quietly(self._devices.pop(path))
+
+
+def _close_quietly(device: Any) -> None:
+    with contextlib.suppress(Exception):
+        device.close()
+
+
 class FallbackKeyboardPoller(KeyboardPoller):
     """Fallback poller that tracks key state via events."""
+
+    kind = "fallback"
 
     def __init__(self) -> None:
         self._pressed: set[str] = set()
@@ -403,6 +711,21 @@ class FallbackKeyboardPoller(KeyboardPoller):
         self._pressed.clear()
 
 
+def text_entry_owns_input(app: Any) -> bool:
+    """True while a screen the operator types into owns the keyboard.
+
+    The URL editor, the Pi-network field editor and the browser overlay take
+    their keys from GTK events. ``on_key_down`` / ``on_key_up`` check this
+    first and stop forwarding keys to the poller, and a hardware poller is
+    gated by the same test.
+    """
+    return bool(
+        getattr(app, "_url_editor_active", False)
+        or getattr(app, "_pi_network_field_edit_active", False)
+        or getattr(app, "_browser_active", False)
+    )
+
+
 def create_keyboard_poller() -> KeyboardPoller:
     """Create the appropriate keyboard poller for the current platform."""
     system = platform.system()
@@ -412,6 +735,15 @@ def create_keyboard_poller() -> KeyboardPoller:
         if poller.is_available():
             return poller
         logger.warning("macOS native poller unavailable, using fallback")
+    elif system == "Linux":
+        try:
+            evdev_poller = LinuxEvdevKeyboardPoller()
+        except Exception:
+            logger.exception("evdev keyboard poller failed to start, using fallback")
+        else:
+            if evdev_poller.is_available():
+                return evdev_poller
+            logger.warning("evdev keyboard poller unavailable, using fallback")
 
     return FallbackKeyboardPoller()
 
@@ -424,9 +756,9 @@ def create_keyboard_poller() -> KeyboardPoller:
 class KeyboardHandler:
     """Handles keyboard input for marker and camera control.
 
-    Uses direct hardware polling (macOS) or event-based tracking (fallback)
-    to get reliable keyboard state, bypassing GTK's event system which can
-    drop events under heavy GStreamer video load.
+    Uses direct hardware polling (macOS Quartz, Linux evdev) or event-based
+    tracking (fallback) to get reliable keyboard state, bypassing GTK's event
+    system which can drop events under heavy GStreamer video load.
     """
 
     # Modal/navigation keys polled regardless of user mapping (used by
@@ -496,6 +828,13 @@ class KeyboardHandler:
         # an identity check is a correct, allocation-free invalidation signal.
         self._discrete_keys_cc: ControllerConfig | None = None
         self._discrete_keys_cache: frozenset[str] = frozenset()
+        # A hardware poller sees keys typed into a text-entry screen. Keys held
+        # while one owns input, or as it closes, stay invisible until released.
+        self._swallowed: set[str] = set()
+        self._gated_last_poll = False
+        # Keys held at the last poll before a text screen opened: the press that
+        # opened it, whose GTK key_down can still arrive after it is open.
+        self._echoes: set[str] = set()
         if self._is_fallback:
             logger.warning("Using fallback keyboard tracking – key events may be lost")
 
@@ -515,7 +854,32 @@ class KeyboardHandler:
     @property
     def keys(self) -> set[str]:
         """Return set of currently pressed keys (for compatibility)."""
-        return self._poller.get_pressed_keys(POLLED_KEYS)
+        if self._gated():
+            return set()
+        return {key for key in POLLED_KEYS if self._held(key)}
+
+    def _gated(self) -> bool:
+        return not self._is_fallback and text_entry_owns_input(self.app)
+
+    def _held(self, key: str) -> bool:
+        """Whether ``key`` is held and not swallowed; callers check the gate first."""
+        return key not in self._swallowed and self._poller.is_key_pressed(key)
+
+    @staticmethod
+    def _event_key(event: dict[str, Any]) -> str:
+        """The polled name of a GTK key event (GTK delivers the space bar as ``" "``)."""
+        key = str(event.get("key", ""))
+        if key == " ":
+            return "Space"
+        return key.lower() if len(key) == 1 else key
+
+    def is_late_echo(self, event: dict[str, Any]) -> bool:
+        """Whether a GTK key_down repeats a press the hardware poller acted on before a text screen opened."""
+        return self._event_key(event) in self._echoes
+
+    def end_echo(self, event: dict[str, Any]) -> None:
+        """A GTK key_up ends that key's echo."""
+        self._echoes.discard(self._event_key(event))
 
     def is_connected(self) -> bool:
         """Return whether a keyboard appears to be connected and usable."""
@@ -527,7 +891,14 @@ class KeyboardHandler:
         self._keyboard_connected_cache = self._probe_keyboard_connected()
         return self._keyboard_connected_cache
 
+    def status(self) -> dict[str, Any]:
+        """The poller in use and, for evdev, how many keyboards it reads (``/api/stats`` ``keyboard``)."""
+        devices = self._poller.device_count() if isinstance(self._poller, LinuxEvdevKeyboardPoller) else None
+        return {"poller": self._poller.kind, "devices": devices}
+
     def _probe_keyboard_connected(self) -> bool:
+        if isinstance(self._poller, LinuxEvdevKeyboardPoller):
+            return self._poller.device_count() > 0
         system = platform.system()
         if system == "Darwin":
             # On macOS, Quartz polling only works when a keyboard input source exists.
@@ -614,8 +985,18 @@ class KeyboardHandler:
         drops edge state for any key no longer in ``keys_to_poll`` so a
         later re-add re-sees the press edge instead of a phantom held state.
         """
+        gated = self._gated()
+        if not self._is_fallback:
+            held = self._poller.get_pressed_keys(POLLED_KEYS)
+            self._swallowed &= held
+            if gated or self._gated_last_poll:
+                # A screen closed by a GTK key event leaves that key held: no press edge for it underneath.
+                self._swallowed |= held
+            self._echoes = self._echoes & held if gated else held
+            self._gated_last_poll = gated
         discrete = self._discrete_polled_keys()
         if self._event_bus is not None:
+            # Physically held modifiers, swallowed or gated or not.
             modifiers = self._current_modifiers()
             keys_to_poll: list[str] | frozenset[str] = POLLED_KEYS
         else:
@@ -623,7 +1004,7 @@ class KeyboardHandler:
             modifiers = frozenset()
             keys_to_poll = discrete
         for key in keys_to_poll:
-            is_pressed = self._poller.is_key_pressed(key)
+            is_pressed = not gated and self._held(key)
             was_pressed = self._prev_key_state.get(key, False)
             if is_pressed and not was_pressed:
                 if key in discrete:
@@ -704,12 +1085,12 @@ class KeyboardHandler:
         marker once control comes back. Resets
         the fallback poller's pressed set and the handler's edge state together
         so the next poll sees no stale ``was_pressed`` (no spurious release
-        edge). The macOS poller reads hardware directly and has no ``clear``;
-        only its edge state is reset.
+        edge). The hardware pollers (macOS, evdev) read the keyboard directly
+        and have no ``clear``; only their edge state is reset.
 
-        Note: this recovers on a context switch, not mid-gameplay – a dropped
-        key-up during continuous control still relies on the operator tapping
-        the key, pending the planned hardware-level evdev poller.
+        On the fallback this recovers on a context switch, not mid-gameplay: a
+        dropped key-up during continuous control still needs the operator to
+        tap the key.
         """
         clear_fn = getattr(self._poller, "clear", None)
         if callable(clear_fn):
@@ -733,8 +1114,10 @@ class KeyboardHandler:
         # tests that don't go through that gate.
         move_speed = self.app.get_marker_move_speed(self.app._selected_id)
 
+        gated = self._gated()
+
         def pressed(key: str) -> bool:
-            return bool(key) and self._poller.is_key_pressed(key)
+            return bool(key) and not gated and self._held(key)
 
         layout = MOVEMENT_LAYOUTS.get(cc.key_move_layout, MOVEMENT_LAYOUTS["wasd"])
         vx = vy = vz = 0.0

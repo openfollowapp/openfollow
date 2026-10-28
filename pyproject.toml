@@ -47,6 +47,12 @@ dependencies = [
     # The GL Operator Screen's OpenGL ES calls. Pure Python over the system libEGL and
     # libGLESv2 (both .deb Depends); imported only when the GL display starts.
     "PyOpenGL>=3.1.7",
+    # The Operator Screen's keyboard state on Linux (``EVIOCGKEY``). C extension
+    # built from sdist against the kernel's ``linux/input.h`` (``linux-libc-dev``).
+    "evdev>=1.6; sys_platform == 'linux'",
+    # Maps that poller's letters to the session's keyboard layout. cffi binding
+    # built from sdist against ``libxkbcommon-dev``; loads ``libxkbcommon0``.
+    "xkbcommon>=1.0,<2; sys_platform == 'linux'",
 ]
 
 [project.optional-dependencies]
@@ -133,16 +139,17 @@ mutmut = "^3.8"
 
 # Linting: ruff check/format (faster pyflakes/pycodestyle/isort/pyupgrade bundle).
 # line-length=120 matches old flake8 setting.
+# target-version=py313 matches requires-python.
 [tool.ruff]
 line-length = 120
-target-version = "py310"
+target-version = "py313"
 
 # Selected rule sets:
 #   E/W  pycodestyle   – style errors + warnings (flake8 parity)
 #   F    pyflakes      – real bugs: undefined names, unused imports, bad f-strings
 #   B    flake8-bugbear      – likely-bug patterns (zip w/o strict, mutable defaults)
 #   I    isort               – import ordering / grouping
-#   UP   pyupgrade           – modernise syntax to the py310 floor
+#   UP   pyupgrade           – modernise syntax to the py313 floor
 #   C4   flake8-comprehensions – simpler/faster comprehension forms
 #   SIM  flake8-simplify     – clarity simplifications, CURATED subset (see ``ignore``)
 #
@@ -174,6 +181,8 @@ module = [
     "pyspacemouse",
     "easyhid",
     "OpenGL",
+    "evdev",
+    "xkbcommon.*",
 ]
 ignore_missing_imports = true
 

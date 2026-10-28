@@ -118,6 +118,7 @@ class AvfInput(VideoInputBase):
     input_id = "avf"
     display_name = "USB Camera (AVFoundation)"
     source_element_name = "avfvideosrc"
+    frame_meter_element_name = "post_queue"
     source_kind = SourceKind.LOCAL
 
     # -- Declarations ---------------------------------------------------

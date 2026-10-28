@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 import threading
 import time
@@ -20,6 +21,7 @@ from openfollow.video.failure import ConnectionPhase, SourceKind, VideoFailure, 
 from openfollow.video.inputs import get_input_class
 from openfollow.video.inputs._base import InputCapabilities, ReconnectPolicy
 from openfollow.video.inputs._pin import PinRefusal, config_pin
+from openfollow.video.source_limits import FrameMeter, SourceReading
 
 if TYPE_CHECKING:
     from openfollow.video.detection import PersonDetector
@@ -130,11 +132,18 @@ class GstNativeSinkReceiver:
         self._pipeline = None
         self._discovery_source_id: int | None = None
         self._heal_source_id: int | None = None
+        # Parked on the placeholder by the reconnect fallback, which a heal brings back from.
+        self._parked = False
         self._watchdog_source_id: int | None = None
+        # The streaming thread arms the watchdog on the first frame while a save may re-arm it here.
+        self._watchdog_lock = threading.RLock()
         # Monotonic timestamp of the last decoded frame seen at the sink,
         # written by the BUFFER pad probe (streaming thread) and read by the
         # silent-stall watchdog (main thread). 0.0 until the first frame.
         self._last_frame_monotonic: float = 0.0
+        # This attempt's frames against the source limits. A new attempt gets a
+        # new meter, so an old pipeline's late probe only writes to its own.
+        self._frame_meter: FrameMeter | None = None
 
         # Source discovery and selection
         self._discovered_sources: list[str] = []
@@ -168,6 +177,8 @@ class GstNativeSinkReceiver:
         self._shared_sink = None
         # Told of every frame that reaches the display sink, from its streaming thread.
         self._display_frame_listener: Callable[[], None] | None = None
+        # Handed each source frame reaching the display sink, with its caps, only while set.
+        self._frame_listener: Callable[[Any, Any], None] | None = None
         # The gtksink is shared across pipeline rebuilds, and pad probes live
         # on its (persistent) sink pad – so attach them exactly once. Without
         # this guard every reconnect/heal rebuild would stack another pair of
@@ -244,10 +255,20 @@ class GstNativeSinkReceiver:
         """Call ``listener`` (from the sink's streaming thread) for each frame that reaches the display."""
         self._display_frame_listener = listener
 
-    def _on_display_frame(self, _pad: Any, _info: Any) -> Any:
+    def set_frame_listener(self, listener: Callable[[Any, Any], None] | None) -> None:
+        """Hand ``listener`` (on the sink's streaming thread) each source frame's buffer and caps; None stops.
+
+        The No Signal placeholder's frames are not handed over.
+        """
+        self._frame_listener = listener
+
+    def _on_display_frame(self, pad: Any, info: Any) -> Any:
         listener = self._display_frame_listener
         if listener is not None:
             listener()
+        frames = self._frame_listener
+        if frames is not None and not self._state.is_placeholder_pipeline:
+            frames(info.get_buffer(), pad.get_current_caps())
         return Gst.PadProbeReturn.OK
 
     def _get_shared_sink(self) -> Any:
@@ -301,8 +322,21 @@ class GstNativeSinkReceiver:
         return self._state.source_format
 
     @property
+    def source_limits(self) -> SourceReading | None:
+        """This attempt's arriving frames against the source limits; None before the first or on the placeholder."""
+        meter = self._frame_meter
+        if meter is None or self._state.is_placeholder_pipeline:
+            return None
+        return meter.reading
+
+    @property
     def status_marker(self) -> NdiStatusMarker:
         return self._status_marker
+
+    @property
+    def pipeline_builds(self) -> int:
+        """How many pipelines this receiver has built; a reconnect, heal or source swap counts one more."""
+        return self._pipeline_builds
 
     @property
     def source_name(self) -> str:
@@ -332,6 +366,7 @@ class GstNativeSinkReceiver:
     def _reset_video_flow_state(self) -> None:
         self._state.reset_video_flow()
         self._pin_refusal = None
+        self._frame_meter = None
 
     def _handle_video_connected(self) -> None:
         """Mark feed connected on first real frame from non-placeholder pipeline.
@@ -477,6 +512,7 @@ class GstNativeSinkReceiver:
         Only runs on GTK main thread.
         """
         self._awaited_source = ""
+        self._parked = False
         self._cancel_connection_timeout()
         self._cancel_reconnect()
         self._cancel_heal()
@@ -652,6 +688,7 @@ class GstNativeSinkReceiver:
     def create_pipeline(self) -> None:
         """Build the GStreamer pipeline via the active input plugin."""
         Gst.init(None)
+        self._parked = False
         # The input resolves what it plays as it builds; the label follows it.
         self._pipeline_builds += 1
         self._reset_video_flow_state()
@@ -672,6 +709,13 @@ class GstNativeSinkReceiver:
         except Exception as e:  # noqa: BLE001 - an unchecked pin must not dial
             logger.exception("%s interface check failed", self._input.display_name)
             refusal = PinRefusal(VideoFailure.UNKNOWN, f"the interface pin could not be checked: {e}")
+        if refusal is not None and refusal.retry_s > 0:
+            # No failure yet: the source's name is still within its time to resolve.
+            logger.debug("%s waits for its name: %s", self._input.display_name, refusal.detail)
+            self._pin_refusal = refusal
+            self._status_marker.set_connecting(self._input.get_source_label(self._input_config))
+            self._state.set_placeholder_pipeline(True)
+            return
         if refusal is not None:
             # Nothing is built, so nothing leaves on another interface; the
             # caller schedules the retry.
@@ -726,6 +770,7 @@ class GstNativeSinkReceiver:
         # Per pipeline, unlike the sink probes: the source element is rebuilt
         # on every reconnect.
         self._attach_source_probe()
+        self._attach_frame_meter()
         try:
             self._input.observe_progress(self._pipeline, self._state.note_phase)
         except Exception:
@@ -784,6 +829,21 @@ class GstNativeSinkReceiver:
         if source_format and self._state.set_source_format(source_format):
             logger.info("Video source format: %s", source_format)
         return cast(int, Gst.PadProbeReturn.REMOVE)
+
+    def _attach_frame_meter(self) -> None:
+        """Measure this attempt's frames on the sink pad of the plugin's first frame-dropping queue."""
+        name = self._input.frame_meter_element_name
+        if name is None or self._pipeline is None:
+            return
+        element = self._pipeline.get_by_name(name)
+        pad = element.get_static_pad("sink") if element is not None else None
+        if pad is None:
+            logger.debug("No %r sink pad to measure %s frames on", name, self._input.display_name)
+            return
+        meter = FrameMeter()
+        pad.add_probe(Gst.PadProbeType.EVENT_DOWNSTREAM, _meter_caps_probe(meter))
+        pad.add_probe(Gst.PadProbeType.BUFFER, _meter_frame_probe(meter))
+        self._frame_meter = meter
 
     def _handle_refused_start(self, pipeline: Any) -> None:
         """``set_state(PLAYING)`` failed: classify from the error the element posted, if any."""
@@ -847,8 +907,8 @@ class GstNativeSinkReceiver:
             if self._pipeline is None and self._pin_refusal is None:
                 self.create_pipeline()
             if self._pin_refusal is not None:
-                # Retried on the normal backoff, so a returning interface is picked up.
-                self._schedule_reconnect(self._refusal_text(self._pin_refusal), failure=self._pin_refusal.failure)
+                # Retried on the backoff, so a returning interface is picked up.
+                self._retry_refused(self._pin_refusal)
                 return
             if self._pipeline is not None:
                 result = self._pipeline.set_state(Gst.State.PLAYING)
@@ -1041,6 +1101,8 @@ class GstNativeSinkReceiver:
 
     def _create_placeholder_pipeline(self) -> None:
         """Build a black-frame pipeline for the 'No Signal' overlay."""
+        # Only the fallback parks a feed, and it marks it after this.
+        self._parked = False
         # Dispose any live pipeline first: ``self._pipeline`` is overwritten
         # below, so without this an existing pipeline (and its bus signal watch
         # + sockets) would be orphaned – a file-descriptor leak. Route through
@@ -1185,6 +1247,8 @@ class GstNativeSinkReceiver:
             finally:
                 self._pipeline = None
 
+        # Looked up again during the backoff when the answer has expired.
+        self._input.__class__.prefetch(self._input_config)
         schedule = self._state.build_reconnect_schedule(self._reconnect_policy)
         self._status_marker.set_reconnecting(schedule.attempt, error_message, failure=failure, phase=phase)
 
@@ -1196,6 +1260,18 @@ class GstNativeSinkReceiver:
             max_attempts if max_attempts > 0 else "unlimited",
         )
         self._state.reconnect_source_id = GLib.timeout_add(schedule.delay_ms, self._do_reconnect)
+
+    def _retry_refused(self, refusal: PinRefusal) -> None:
+        """Retry a refused build; one still waiting on its name is checked again unannounced."""
+        if refusal.retry_s > 0:
+            self._cancel_reconnect()
+            delay_ms = math.ceil(refusal.retry_s * 1000)
+            self._state.reconnect_source_id = GLib.timeout_add(delay_ms, self._recheck_name)
+            return
+        self._schedule_reconnect(self._refusal_text(refusal), failure=refusal.failure)
+
+    def _recheck_name(self) -> bool:
+        return self._do_reconnect(quiet=True)
 
     def _cancel_reconnect(self) -> None:
         if self._state.reconnect_source_id is not None:
@@ -1229,7 +1305,8 @@ class GstNativeSinkReceiver:
             self._schedule_reconnect("No video received (connection timeout)")
         return False  # one-shot
 
-    def _do_reconnect(self) -> bool:
+    def _do_reconnect(self, *, quiet: bool = False) -> bool:
+        """Build again; *quiet* for a check that only waited on the source's name, which is no reconnect."""
         self._state.clear_reconnect_source()
 
         if self._pipeline is not None:
@@ -1285,6 +1362,7 @@ class GstNativeSinkReceiver:
             elif self._has_configured_source():
                 # Fixed-URL input with no discovery: keep probing the URL
                 # in the background so the feed self-heals when it returns.
+                self._parked = True
                 self._schedule_heal()
 
             widget = self.get_sink_widget()
@@ -1306,7 +1384,10 @@ class GstNativeSinkReceiver:
             self.play()  # play() will show placeholder
             return False
 
-        logger.info("Reconnecting pipeline (attempt %d)...", self._state.reconnect_attempt)
+        if quiet:
+            logger.debug("Checking the %s source's name again", self._input.display_name)
+        else:
+            logger.info("Reconnecting pipeline (attempt %d)...", self._state.reconnect_attempt)
         try:
             self.create_pipeline()
             # ``create_pipeline`` swallows a build failure and installs the
@@ -1318,7 +1399,7 @@ class GstNativeSinkReceiver:
             # reconnect so the source keeps being retried (and eventually falls
             # through to the max-attempts heal path).
             if self._pin_refusal is not None:
-                self._schedule_reconnect(self._refusal_text(self._pin_refusal), failure=self._pin_refusal.failure)
+                self._retry_refused(self._pin_refusal)
                 return False
             if self._state.is_placeholder_pipeline:
                 logger.warning("Pipeline build failed during reconnect – rescheduling")
@@ -1390,15 +1471,30 @@ class GstNativeSinkReceiver:
         stall_timeout: float | None = None,
         heal_interval: float | None = None,
     ) -> None:
-        """Live-update stall_timeout and heal_interval without pipeline rebuild."""
+        """Live-update stall_timeout and heal_interval without pipeline rebuild.
+
+        Acts on the feed as it is now: a running feed is watched at the new
+        timeout (armed if it was off, stopped at 0), and a feed the fallback
+        parked heals at a changed interval.
+        """
+        heal_changed = heal_interval is not None and heal_interval != self._reconnect_policy.heal_interval
         if stall_timeout is not None:
             self._stall_timeout_override = stall_timeout
             self._reconnect_policy.stall_timeout = stall_timeout
         if heal_interval is not None:
             self._heal_interval_override = heal_interval
             self._reconnect_policy.heal_interval = heal_interval
-        if self._watchdog_source_id is not None and self._state.connected:
+        if self._state.connected:
+            # Every buffer stamps the frame clock, so a watchdog armed now judges the feed as it is.
             self._start_watchdog(reseed=False)
+        elif heal_changed and self._waiting_on_heal():
+            # Cancelled first: an interval of 0 schedules nothing, and stops the healing.
+            self._cancel_heal()
+            self._schedule_heal()
+
+    def _waiting_on_heal(self) -> bool:
+        """Parked by the fallback, with no reconnect or connection timeout pending to bring it back first."""
+        return self._parked and self._state.reconnect_source_id is None and self._state.connection_timeout_id is None
 
     # -- Silent-stall watchdog -------------------------------------------------
 
@@ -1408,19 +1504,22 @@ class GstNativeSinkReceiver:
         reseed=True sets last-frame clock to now (skip false positives on
         fresh connect); reseed=False preserves timestamp (live config changes).
         """
-        timeout = self._reconnect_policy.stall_timeout
-        if timeout <= 0:
-            return
-        self._cancel_watchdog()
-        if reseed:
-            self._last_frame_monotonic = time.monotonic()
-        check_ms = max(500, int(timeout * 1000 / 3))
-        self._watchdog_source_id = GLib.timeout_add(check_ms, self._do_watchdog)
+        with self._watchdog_lock:
+            # Read under the lock: a save may change it between the first frame and this arm.
+            timeout = self._reconnect_policy.stall_timeout
+            self._cancel_watchdog()
+            if timeout <= 0:
+                return
+            if reseed:
+                self._last_frame_monotonic = time.monotonic()
+            check_ms = max(500, int(timeout * 1000 / 3))
+            self._watchdog_source_id = GLib.timeout_add(check_ms, self._do_watchdog)
 
     def _cancel_watchdog(self) -> None:
-        if self._watchdog_source_id is not None:
-            GLib.source_remove(self._watchdog_source_id)
-            self._watchdog_source_id = None
+        with self._watchdog_lock:
+            if self._watchdog_source_id is not None:
+                GLib.source_remove(self._watchdog_source_id)
+                self._watchdog_source_id = None
 
     def _do_watchdog(self) -> bool:
         """Periodic check for stalled live feeds."""
@@ -1559,3 +1658,40 @@ def _source_format(caps: str) -> str:
         if match:
             return match.group(1)
     return media
+
+
+def _caps_dimensions(caps: str) -> tuple[int, int] | None:
+    """``width`` and ``height`` from a caps string; ``None`` unless both are positive."""
+    width = re.search(r"[\s,]width=(?:\(int\))?(\d+)", caps)
+    height = re.search(r"[\s,]height=(?:\(int\))?(\d+)", caps)
+    if width is None or height is None:
+        return None
+    w, h = int(width.group(1)), int(height.group(1))
+    return (w, h) if w > 0 and h > 0 else None
+
+
+def _meter_caps_probe(meter: FrameMeter) -> Callable[[Any, Any], int]:
+    """A pad probe telling *meter* the size of the frames that follow a CAPS event."""
+
+    def on_event(_pad: Any, info: Any) -> int:
+        event = info.get_event()
+        if event is not None and event.type == Gst.EventType.CAPS:
+            caps = event.parse_caps()
+            dims = _caps_dimensions(caps.to_string()) if caps is not None else None
+            if dims is not None:
+                meter.note_caps(*dims)
+        return cast(int, Gst.PadProbeReturn.OK)
+
+    return on_event
+
+
+def _meter_frame_probe(meter: FrameMeter) -> Callable[[Any, Any], int]:
+    """A pad probe counting each frame into *meter*; runs per buffer, so it does nothing else."""
+    note_frame = meter.note_frame
+    ok = cast(int, Gst.PadProbeReturn.OK)
+
+    def on_buffer(_pad: Any, _info: Any) -> int:
+        note_frame()
+        return ok
+
+    return on_buffer

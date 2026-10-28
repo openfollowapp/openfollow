@@ -78,6 +78,11 @@ class FakeNetwork:
         self.config_lock_held: list[bool] = []
         self.vlan_create_result = ApplyResult(ok=True, message="Created.")
         self.vlan_delete_result = ApplyResult(ok=True, message="Deleted.")
+        # Interfaces that are not present but have saved settings, as the services layer lists them.
+        self.saved: list[dict] = []
+        self.forgotten: list[str] = []
+        self.forget_result = ApplyResult(ok=True, message="Deleted the saved settings.")
+        self.forget_leaves: set[str] = set()  # saved rows a successful forget does not reach
         # Which interface is answering the browser. Loopback in a test, so the
         # real lookup can never report one; the fixture patches it to this.
         self.session_iface = ""
@@ -172,6 +177,20 @@ class FakeNetwork:
         self.config_lock_held.append(config_write_lock.locked())
         return self.vlan_delete_result
 
+    def saved_provider(self) -> list[dict]:
+        return [dict(row) for row in self.saved]
+
+    def forget_handler(self, name: str) -> ApplyResult:
+        self.forgotten.append(name)
+        self.config_lock_held.append(config_write_lock.locked())
+        if self.forget_result.ok:
+            self.saved = [
+                row
+                for row in self.saved
+                if row["name"] in self.forget_leaves or name not in (row["name"], row.get("vlan_parent"))
+            ]
+        return self.forget_result
+
 
 def _get(base: str, path: str) -> tuple[int, str]:
     try:
@@ -259,6 +278,8 @@ def net_server(tmp_path, monkeypatch):
             network_vlan_provider=fake.vlan_provider,
             network_vlan_create_handler=fake.vlan_create_handler,
             network_vlan_delete_handler=fake.vlan_delete_handler,
+            network_saved_provider=fake.saved_provider,
+            network_forget_handler=fake.forget_handler,
         )
     ) as (_server, base):
         yield fake, base
@@ -1743,4 +1764,28 @@ def test_delete_network_vlan_swallows_handler_error(tmp_path) -> None:
 
     srv = _make_server(tmp_path, network_vlan_delete_handler=_boom)
     result = srv.delete_network_vlan("eth0.10")
+    assert result.ok is False and "kaboom" in result.message
+
+
+def test_get_network_saved_without_provider_is_empty(tmp_path) -> None:
+    assert _make_server(tmp_path).get_network_saved() == []
+
+
+def test_get_network_saved_swallows_provider_error(tmp_path) -> None:
+    def _boom():
+        raise RuntimeError("provider down")
+
+    assert _make_server(tmp_path, network_saved_provider=_boom).get_network_saved() == []
+
+
+def test_forget_network_interface_without_handler_is_unavailable(tmp_path) -> None:
+    result = _make_server(tmp_path).forget_network_interface("enx001122334455")
+    assert result.ok is False and "not available" in result.message
+
+
+def test_forget_network_interface_swallows_handler_error(tmp_path) -> None:
+    def _boom(name):
+        raise RuntimeError("kaboom")
+
+    result = _make_server(tmp_path, network_forget_handler=_boom).forget_network_interface("enx001122334455")
     assert result.ok is False and "kaboom" in result.message

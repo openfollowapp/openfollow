@@ -10,6 +10,7 @@ vanish from both ``-m unit`` and ``-m "integration or smoke"`` selections.
 
 import os
 import socket
+import sys
 import warnings
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -144,6 +145,17 @@ def _no_host_keyboard(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.
 
 
 @pytest.fixture(autouse=True)
+def _no_host_input_devices(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
+    """No test may open the host's evdev devices, read its sysfs or compile its xkb keymap; one that cares
+    installs fakes."""
+    from openfollow.input import keyboard
+
+    monkeypatch.setitem(sys.modules, "evdev", None)
+    monkeypatch.setitem(sys.modules, "xkbcommon", None)
+    monkeypatch.setattr(keyboard, "_SYSFS_INPUT_DIR", str(tmp_path_factory.getbasetemp() / "no-sysfs"))
+
+
+@pytest.fixture(autouse=True)
 def _no_host_camera_modes(monkeypatch: pytest.MonkeyPatch) -> None:
     """No test may read the mode list of a camera on the host; one that cares installs its own."""
     monkeypatch.setattr("openfollow.video.inputs.v4l2._read_capture_modes", lambda device: None)
@@ -165,7 +177,7 @@ def _no_host_cgroup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _no_real_midi_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+def _no_real_midi_backend(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
     """Force the MIDI backend absent by default in every test.
 
     ``mido`` / ``python-rtmidi`` are base deps, so
@@ -188,6 +200,8 @@ def _no_real_midi_backend(monkeypatch: pytest.MonkeyPatch) -> None:
         "ImportError: no MIDI backend (test default)",
         raising=False,
     )
+    # Nor read the serial number of a sound card on the host.
+    monkeypatch.setattr("openfollow.input.midi._SYSFS", tmp_path_factory.getbasetemp() / "no-sysfs", raising=False)
 
 
 @pytest.fixture

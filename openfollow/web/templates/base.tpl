@@ -62,11 +62,11 @@
  --error-mark: #e04848;
  --error-mark-muted: rgba(224, 72, 72, 0.4);
  --error-row: hsl(2deg 64% 14%);
- --caution-fill: rgba(255, 188, 0, 0.12);
- --caution-border: rgba(255, 188, 0, 0.6);
- --caution-chip: rgba(155, 114, 0, 0.8);
- --caution-line: #ffbc00;
- --caution-text: #ffbc00;
+ --caution-fill: rgba(255, 102, 0, 0.38);
+ --caution-border: #ff6600;
+ --caution-chip: rgba(156, 62, 0, 0.8);
+ --caution-line: #ff6600;
+ --caution-text: #ff6600;
  --info-fill: rgba(38, 100, 176, 0.2);
  --info-border: rgba(38, 100, 176, 0.5);
  --info-chip: rgba(23, 61, 107, 0.8);
@@ -1105,14 +1105,16 @@
  font-variant-numeric: tabular-nums;
  text-align: center;
  }
+ /* A caution row pill: caution text would miss AA over a light fader tint. Every strip
+ keeps the pill's slot, hidden once picked up, so a pickup never changes the strip height. */
  .midi-fader-strip-not-picked-up {
- display: block;
- font-size: 0.62rem;
- color: var(--accent, #ffbc00);
- font-style: italic;
- line-height: 1;
- margin-top: 2px;
+ display: block; width: fit-content; max-width: 100%; margin: 2px auto 0;
+ /* 0.35rem, not 0.45rem: at 0.45rem "picked" breaks mid-word in the 50.8 px strip in Inter and Noto. */
+ border-radius: 0.4rem; --pill-pad-y: 0.1rem; padding-inline: 0.35rem; font-size: 0.7rem; font-weight: 500;
+ line-height: 1.2; overflow-wrap: anywhere;
+ color: var(--text); background: var(--caution-chip); border: 1px solid var(--caution-line);
  }
+ .midi-fader-strip-not-picked-up[data-picked-up] { visibility: hidden; }
  /* Read-only marker-fader strips: gamepad-driven, not clickable. */
  .midi-fader-strip--readonly { cursor: default; }
  .midi-fader-strip--readonly:hover { background: transparent; }
@@ -1148,6 +1150,8 @@
  .midi-fader-detail .mf-default { flex: 0 1 150px; }
  .midi-fader-detail .mf-color-field { flex: 0 0 auto; min-width: 0; }
  .midi-fader-detail .mf-color-field .color-swatch-trigger { margin-top: 0.2rem; }
+ /* Gamepad button symbol (button_icons.py): one em, on the baseline like a capital. */
+ .btn-symbol-icon { width: 1em; height: 1em; vertical-align: -0.1875em; }
  /* Standard "visually hidden but exposed to AT" pattern: hide
  content visually while exposing it to assistive technology. */
  .visually-hidden {
@@ -1230,7 +1234,6 @@
  .on-device-footer kbd {
  display: inline-block;
  padding: 1px 8px;
- margin-right: 4px;
  border-radius: 0.4rem;
  border: 1px solid rgba(255, 255, 255, 0.18);
  background: rgba(255, 255, 255, 0.08);
@@ -1352,6 +1355,12 @@
  .slot-marker { display: inline-flex; align-items: center; gap: 0.45rem; }
  /* The marker's own colour, as on its HUD card and catalog swatch. */
  .slot-marker-dot { flex: none; width: 0.7rem; height: 0.7rem; border-radius: 50%; background: var(--marker-color, var(--muted)); }
+ /* A parked marker: the info chip, square, as the P on its HUD card. */
+ .park-badge {
+ display: inline-flex; align-items: center; justify-content: center; flex: none; width: 1.1rem; height: 1.1rem;
+ border-radius: 0.4rem; font-size: 0.7rem; font-weight: 700;
+ color: var(--text); background: var(--info-chip); border: 1px solid var(--info-line);
+ }
  .peer-item.offline .peer-status {
  width: 8px; height: 8px;
  border: 3px solid var(--error-mark); background-color: var(--error-mark-muted);
@@ -1372,6 +1381,14 @@
  .ndi-row { align-items: flex-end; }
  /* A setting shown, not edited here: sized like an input beside it. */
  .value-box { display: block; border-radius: 0.75rem; border: 1px solid var(--border); background: var(--surface); padding: 0.62rem 0.72rem; font-size: 0.93rem; line-height: 1.25; }
+ /* Camera Latency: the last result beside the button that opens the Measure dialog. */
+ .latency-row { align-items: flex-end; }
+ .latency-row .notice { margin: 0; }
+ .latency-value { font-weight: 600; font-variant-numeric: tabular-nums; }
+ .latency-value small { display: block; font-weight: 400; color: var(--muted); font-size: 0.82rem; }
+ .latency-hazard { letter-spacing: 0.02em; }
+ .modal-body ol { margin: 0 0 0.7rem; padding-left: 1.3rem; line-height: 1.45; }
+ .modal-body .modal-note { color: var(--muted); font-size: 0.82rem; }
  .inset-panel { padding: 0.9rem; border-radius: 0.9rem; border: 1px solid var(--border); background: var(--surface); }
  /* A block loaded between a fragment's rows: its parts and the row after it keep the row gap. */
  .camera-block { display: flex; flex-direction: column; gap: 0.72rem; margin-bottom: 0.72rem; }
@@ -1947,6 +1964,7 @@
  .fields-grid { grid-template-columns: 1fr; }
  .fields-grid .field.span-2, .fields-grid .field.span-3 { grid-column: auto; }
  .actions button { width: 100%; }
+ .actions > form { width: 100%; }
  .peer-item { flex-wrap: wrap; }
  .peer-address { width: 100%; }
  .tab-btn { padding: 0.45rem 0.7rem; font-size: 0.78rem; }
@@ -2277,7 +2295,7 @@
  background: var(--info-sign) no-repeat center / contain;
  }
  /* Progress: an info box led by the spinner in the sign's place. */
- .network-banner.network-banner-busy::before { content: none; }
+ .network-banner.network-banner-busy::before, .notice.network-banner-busy::before { content: none; }
  .network-banner-busy .modal-spinner { position: absolute; left: 12px; top: 11px; width: 16px; height: 16px; box-sizing: border-box; }
  .notice.error, .update-notice.error, .modal-error, .diag-error, .gallery-error, .network-banner.network-banner-error {
  border-color: var(--error-border);
@@ -2301,13 +2319,13 @@
  height and baseline centres the label whatever the fallback font's ascent. */
  .stat-chip, .diag-status-pill, .slot-state, .slot-note, .badge-experimental, .net-iface-method-badge,
  .osc-binding-fault, .osc-binding-caution, .modal-list-item-badge, .update-flag, .osc-pill:not([data-invalid="true"]),
- .osc-pill[data-invalid="true"][data-unresolved="true"] {
+ .osc-pill[data-invalid="true"][data-unresolved="true"], .midi-fader-strip-not-picked-up {
  padding-block: var(--pill-pad-y);
  }
  @supports (text-box: trim-both cap alphabetic) {
  .stat-chip, .diag-status-pill, .slot-state, .slot-note, .badge-experimental, .net-iface-method-badge,
  .osc-binding-fault, .osc-binding-caution, .modal-list-item-badge, .update-flag, .osc-pill:not([data-invalid="true"]),
- .osc-pill[data-invalid="true"][data-unresolved="true"] {
+ .osc-pill[data-invalid="true"][data-unresolved="true"], .midi-fader-strip-not-picked-up {
  text-box: trim-both cap alphabetic;
  padding-block: calc((1lh - 1cap) / 2 + var(--pill-pad-y));
  }
@@ -2413,12 +2431,9 @@
  {{!base}}
  % if defined('on_device') and on_device:
  <footer class="on-device-footer">
- %# Render the operator's actual ``btn_menu_cancel`` mapping, not
- %# a hardcoded "B" – Settings → Button Detection can remap this
- %# to any of A/B/X/Y/etc., and a stale hint here would tell
- %# operators to press a button that no longer dismisses the
- %# overlay.
- <span><kbd>{{cancel_button or 'Cancel'}}</kbd>Close embedded browser</span>
+ %# The operator's own ``btn_menu_cancel`` mapping, which Button Detection can remap;
+ %# Esc is fixed, handled by the embedded browser itself.
+ <span><kbd>{{!cancel_button or 'Cancel'}}</kbd> on a controller or <kbd>Esc</kbd> on a keyboard closes the embedded browser</span>
  </footer>
  % end
  %# AGPLv3 §5(d) Appropriate Legal Notices. __version__ comes from
@@ -2957,6 +2972,15 @@
  lastFocus.focus();
  }
  if (handler) handler();
+ }
+ // Lock an open modal (× hidden; ESC, the backdrop and the page behind it do nothing) or release it.
+ function modalLock(locked) {
+ const root = document.getElementById('modal-root');
+ if (!root || root.hidden) return;
+ _modalDismissable = !locked;
+ _lockModalBackground(locked);
+ const closeBtn = root.querySelector('.modal-close');
+ if (closeBtn) closeBtn.hidden = locked;
  }
  function openModal(opts) {
  // ``opts`` keys: ``title`` (string), ``bodyHTML`` (string OR

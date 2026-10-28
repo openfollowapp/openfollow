@@ -15,9 +15,12 @@ import io
 import json
 import os
 import re
+import socket
 import sys
 import tarfile
+import threading
 import time
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -27,7 +30,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import tomllib
 
 import openfollow
 import openfollow.services as services_module
@@ -403,6 +405,19 @@ def test_controller_slots_name_each_marker_in_its_colour(slots_server, path: str
     assert f'<span class="slot-marker-dot" style="--marker-color: {palette}"></span>Marker 11</span>' in unnamed
     assert "slot-marker" not in empty
     assert "<td>-</td>" in empty
+
+
+def test_a_parked_slot_marker_carries_the_p_badge(slots_server) -> None:
+    """The slot keeps its marker; a blue P after it says the controller in that slot idles."""
+    _, base, stats = slots_server
+    stats["controllers"]["items"] = [dict(_SLOT_ITEMS[0], parked=True), dict(_SLOT_ITEMS[1], parked=False)]
+    _, body = _get(base, "/section/controller_slots")
+    parked, free = _row(body, "C1"), _row(body, "C2")
+    assert (
+        'Lead &amp; &lt;Keys&gt; (10)<span class="park-badge"><span aria-hidden="true">P</span>'
+        '<span class="visually-hidden">Parked</span></span></span>' in parked
+    )
+    assert "park-badge" not in free
 
 
 def test_controller_slots_table_shows_every_state(slots_server) -> None:
@@ -999,6 +1014,22 @@ def test_video_source_failure_fragment_carries_the_box(live_server, monkeypatch)
     assert 'role="status" aria-live="polite" aria-atomic="true"' in body
     # The pipeline's own wording is not shown where there is a classification.
     assert "Could not open resource." not in body
+
+
+def test_video_source_failure_fragment_carries_the_limits_box(live_server, monkeypatch) -> None:
+    """A source over the limits plays on, so it has no failure; the fragment still swaps its box in."""
+    from openfollow.video.source_limits import OverLimit, SourceReading, limits_snapshot
+
+    server, base = live_server
+    limits = limits_snapshot(SourceReading(1920, 1080, 60.0, (OverLimit.FRAME_RATE,)))
+    monkeypatch.setattr(server, "get_runtime_stats", lambda: {"video": {"connected": True, "limits": limits}})
+    status, body = _get(base, "/section/video_source/failure")
+
+    assert status == 200
+    assert "Video arrives at 60 fps, over 30 fps." in body
+    assert "Set the camera or encoder to 1920×1080 at 30 fps or less." in body
+    assert 'id="video-error-source-limits-' in body
+    assert body.count('class="notice error"') == 1
 
 
 def test_unknown_section_returns_404(live_server) -> None:
@@ -2370,6 +2401,15 @@ def test_form_post_movement_renders_saved_partial(live_server) -> None:
     assert "movement-section" in body
 
 
+def test_form_post_movement_reads_the_former_invert_flag_as_the_control_frame(live_server) -> None:
+    """A page served before the control frame posts the flag; it lands as a camera looking downstage."""
+    server, base = live_server
+    status, _body = _post_form(base, "/section/movement", {"invert_control_direction": "on"})
+    assert status == 200
+    cfg = load_config(server.config_path)
+    assert (cfg.marker.control_frame, cfg.marker.control_heading) == ("heading", 180.0)
+
+
 def test_form_post_gamepad_renders_saved_partial(live_server) -> None:
     _, base = live_server
     status, body = _post_form(base, "/section/gamepad", {"enabled": "true", "deadzone": "0.1"})
@@ -2400,6 +2440,87 @@ def test_form_post_gamepad_persists_new_button_fields(live_server) -> None:
     assert saved.controller.btn_settings == "START"
     assert saved.controller.btn_menu_confirm == "A"
     assert saved.controller.btn_menu_cancel == "B"
+
+
+def test_gamepad_buttons_are_named_the_standard_way_until_a_family_is_chosen(live_server) -> None:
+    _, base = live_server
+    status, body = _get(base, "/section/gamepad")
+    assert status == 200
+    assert '<option value="standard" selected>Standard</option>' in body
+    assert '<option value="BACK" selected>Back</option>' in body
+    assert '<option value="LB" selected>Left Bumper</option>' in body
+    assert "<td>A</td>" in body
+    assert "btn-symbol" not in body
+
+
+@pytest.mark.parametrize(
+    ("style", "options", "cell"),
+    [
+        (
+            "playstation",
+            ['<option value="X" selected>Square</option>', '<option value="LB" selected>L1</option>'],
+            '<td><span class="btn-symbol">',
+        ),
+        (
+            "xbox",
+            ['<option value="BACK" selected>View</option>', '<option value="LB" selected>LB</option>'],
+            "<td>A</td>",
+        ),
+        (
+            "nintendo",
+            [
+                '<option value="BACK" selected>Minus</option>',
+                '<option value="START" >Plus</option>',
+                '<option value="LB" selected>L</option>',
+            ],
+            "<td>A</td>",
+        ),
+    ],
+)
+def test_a_saved_button_name_style_names_the_buttons_and_keeps_the_bindings(
+    live_server, style: str, options: list[str], cell: str
+) -> None:
+    server, base = live_server
+    status, body = _post_form(
+        base,
+        "/section/gamepad",
+        {"enabled": "true", "deadzone": "0.15", "button_name_style": style, "btn_reset": "X", "btn_settings": "BACK"},
+    )
+    assert status == 200
+    saved = load_config(server.config_path).controller
+    assert (saved.button_name_style, saved.btn_reset, saved.btn_settings) == (style, "X", "BACK")
+    assert f'<option value="{style}" selected>' in body
+    assert all(option in body for option in options)
+    assert cell in body
+
+
+def test_the_detection_table_shows_a_symbol_with_its_word_for_screen_readers(live_server) -> None:
+    _, base = live_server
+    _post_form(base, "/section/gamepad", {"enabled": "true", "deadzone": "0.15", "button_name_style": "playstation"})
+    status, body = _get(base, "/section/gamepad")
+    assert status == 200
+    row = body[body.index("<tbody>") :]
+    row = row[: row.index("</tr>")]
+    assert '<svg class="btn-symbol-icon"' in row
+    assert 'aria-hidden="true"' in row
+    assert '<span class="visually-hidden">Cross</span>' in row
+    # The select options for the same button stay words.
+    assert '<option value="A" >Cross</option>' in body
+
+
+@pytest.mark.parametrize("bad", ["ps5", "Xbox", "", "1"])
+def test_form_post_gamepad_unknown_button_name_style_saves_standard(live_server, bad: str) -> None:
+    server, base = live_server
+    _post_form(base, "/section/gamepad", {"enabled": "true", "deadzone": "0.15", "button_name_style": bad})
+    assert load_config(server.config_path).controller.button_name_style == "standard"
+
+
+@pytest.mark.parametrize("bad", ["ps5", "Xbox", "1"])
+def test_validate_gamepad_button_name_style_refuses_an_unknown_family(live_server, bad: str) -> None:
+    _, base = live_server
+    status, body = _get(base, f"/api/validate/gamepad/button_name_style?button_name_style={bad}")
+    assert status == 200
+    assert "field-error-msg" in body
 
 
 def test_form_post_gamepad_invalid_button_falls_back_to_default(live_server) -> None:
@@ -4750,6 +4871,7 @@ _RESTORED_BY_A_FILE_ONLY = (
     "controller.button_raw_indices",
     "controller.swap_triggers",
     "controller.mapped_controller_guid",
+    "controller.button_name_style",
     "ui.developer_mode",
     "paths.show_paths",
     "network.backend",
@@ -4760,7 +4882,11 @@ _RESTORED_BY_A_FILE_ONLY = (
 )
 _CHANGED_STRINGS = ("Cam 2", "192.0.2.10", "#336699", "imperial", "replace", "bottom", "nm", "H265", "720p", "x")
 # Settings the web UI checks harder than a config.toml load does.
-_CHANGED_VALUES = {"update_github_repo": "stage-crew/openfollow", "update_service_name": "openfollow-stage"}
+_CHANGED_VALUES = {
+    "update_github_repo": "stage-crew/openfollow",
+    "update_service_name": "openfollow-stage",
+    "controller.button_name_style": "playstation",
+}
 
 
 def _leaves(tree: dict[str, Any], prefix: tuple[str, ...] = ()) -> Any:
@@ -5440,6 +5566,28 @@ def test_a_forwarded_for_header_does_not_decide_the_on_device_footer(live_server
     assert '<footer class="on-device-footer">' in body
 
 
+def test_the_on_device_footer_names_the_controller_button_and_esc(live_server) -> None:
+    """Both ways to close the embedded browser: the mapped cancel button on a controller, Esc on a keyboard."""
+    _, base = live_server
+    with urllib.request.urlopen(f"{base}/", timeout=5) as resp:
+        body = resp.read().decode()
+    footer = body[body.index('<footer class="on-device-footer">') :]
+    footer = footer[: footer.index("</footer>")]
+    assert "<kbd>B</kbd> on a controller or <kbd>Esc</kbd> on a keyboard closes the embedded browser" in footer
+
+
+def test_the_on_device_footer_draws_the_cancel_buttons_symbol(live_server) -> None:
+    server, base = live_server
+    _post_form(base, "/section/gamepad", {"enabled": "true", "deadzone": "0.15", "button_name_style": "playstation"})
+    with urllib.request.urlopen(f"{base}/", timeout=5) as resp:
+        body = resp.read().decode()
+    footer = body[body.index('<footer class="on-device-footer">') :]
+    footer = footer[: footer.index("</footer>")]
+    kbd = footer[footer.index("<kbd>") : footer.index("</kbd>")]
+    assert '<svg class="btn-symbol-icon"' in kbd
+    assert '<span class="visually-hidden">Circle</span>' in kbd
+
+
 def test_logout_clears_cookie_and_redirects_to_login(live_server) -> None:
     """POST /logout deletes the auth cookie and 303s to /login. Even on a
     PIN-less server the route must exist and behave. ``delete_cookie``
@@ -5505,6 +5653,95 @@ def test_update_video_source_post_renders_video_source_partial(live_server) -> N
 
     saved = load_config(server.config_path)
     assert saved.video_source_type == "rtsp"
+
+
+class _LookupsStarted:
+    """A resolver that records each lookup started and has answered none."""
+
+    def __init__(self) -> None:
+        self.started: list[str] = []
+
+    def prefetch(self, host: str) -> None:
+        self.started.append(host)
+
+    def lookup(self, host: str, wait_s: float) -> Any:
+        from openfollow.net_utils import HostLookup
+
+        return HostLookup("pending")
+
+    def cached(self, host: str) -> tuple[str, ...]:
+        return ()
+
+
+@pytest.mark.parametrize(("pin", "started"), [("eth1", ["camera.example"]), ("", [])], ids=["pinned", "unpinned"])
+def test_saving_a_source_starts_the_lookup_its_pin_check_reads(
+    live_server, monkeypatch: pytest.MonkeyPatch, pin: str, started: list[str]
+) -> None:
+    """The name resolves before the saved source is applied, so its first build reads the answer."""
+    from openfollow.video.inputs import _pin
+
+    resolver = _LookupsStarted()
+    monkeypatch.setattr(_pin, "_resolver", resolver)
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
+    cfg.psn_source_iface = ""
+    cfg.video_input_iface = pin
+    save_config(cfg, server.config_path)
+
+    status, _body = _post_form(
+        base, "/section/video_source", {"video_source_type": "rtsp", "rtsp_url": "rtsp://camera.example:554/stream"}
+    )
+
+    assert status == 200
+    assert resolver.started == started
+
+
+@pytest.mark.parametrize(("pin", "started"), [("eth1", ["camera.example"]), ("", [])], ids=["pinned", "unpinned"])
+def test_pinning_the_video_input_starts_the_lookup_its_pin_check_reads(
+    live_server, monkeypatch: pytest.MonkeyPatch, pin: str, started: list[str]
+) -> None:
+    """A pin saved in the Assignment panel resolves its camera before the input is rebuilt under it."""
+    from openfollow.video.inputs import _pin
+    from openfollow.web import routes as routes_module
+
+    resolver = _LookupsStarted()
+    monkeypatch.setattr(_pin, "_resolver", resolver)
+    # The panel's own Address column asks the shared resolver; it must not reach the network.
+    monkeypatch.setattr(routes_module, "HOST_RESOLVER", _LookupsStarted())
+    _patch_ifaces(monkeypatch, {"eth0": "192.0.2.10", "eth1": "198.51.100.10"})
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
+    cfg.psn_source_iface = ""
+    cfg.video_source_type = "rtsp"
+    cfg.rtsp_url = "rtsp://camera.example:554/stream"
+    save_config(cfg, server.config_path)
+
+    status, _body = _post_form(base, "/section/interface_assignment", {"video_input_iface": pin})
+
+    assert status == 200
+    assert load_config(server.config_path).video_input_iface == pin
+    assert resolver.started == started
+
+
+def test_a_pin_saved_for_an_unregistered_source_type_starts_no_lookup(
+    live_server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openfollow.video.inputs import _pin
+
+    resolver = _LookupsStarted()
+    monkeypatch.setattr(_pin, "_resolver", resolver)
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
+    cfg.video_source_type = "not-an-input"
+    save_config(cfg, server.config_path)
+
+    status, _body = _post_form(base, "/section/interface_assignment", {"video_input_iface": "eth1"})
+
+    assert status == 200
+    assert resolver.started == []
 
 
 def test_deb_update_dispatches_request(live_server, monkeypatch) -> None:
@@ -7356,28 +7593,6 @@ def test_update_marker_post_persists_visual_booleans(live_server) -> None:
     assert saved.marker.ground_circle is False
 
 
-def test_marker_form_accepts_the_former_z_line_checkbox_name(live_server) -> None:
-    """A page rendered before the rename posts the checkbox under its former name.
-
-    The bool fields are synthesised from what the form did *not* send, so without
-    translating first the synthesised ``False`` would win over the ticked box and
-    silently switch the line off - while the thickness beside it, not being a
-    bool, would translate and carry over. The two halves of one rename must not
-    disagree on the same POST.
-    """
-    server, base = live_server
-    status, _ = _post_form(
-        base,
-        "/section/marker",
-        {"drop_line": "on", "drop_line_thickness": "7"},
-    )
-    assert status == 200
-
-    saved = load_config(server.config_path)
-    assert saved.marker.z_line is True
-    assert saved.marker.z_line_thickness == 7
-
-
 def test_marker_save_preserves_the_control_frame(live_server) -> None:
     """The control frame lives on MarkerConfig but is rendered by the *movement*
     section, so saving a visual toggle must not reset the operator's controls."""
@@ -7873,11 +8088,56 @@ def test_validate_endpoint_inference_size_snap_note(live_server) -> None:
     assert 'class="field-note-msg"' in body
 
 
+_SYMBOL_HTML = '<svg class="btn-symbol-icon"'
+
+
 def _get_checked(base: str, path: str, query: dict[str, str]) -> tuple[str, dict | None]:
     """Body plus the ``bindingChecked`` event of an ``HX-Trigger`` header, if any."""
     with urllib.request.urlopen(f"{base}{path}?{urllib.parse.urlencode(query)}", timeout=5) as r:
         header = r.headers.get("HX-Trigger")
         return r.read().decode(), (json.loads(header)["bindingChecked"] if header else None)
+
+
+@pytest.mark.parametrize(
+    ("style", "word", "symbol"),
+    [("standard", "Y", False), ("nintendo", "Y", False), ("playstation", "Triangle", True)],
+)
+def test_validate_binding_notes_name_the_button_in_the_saved_style(live_server, style, word, symbol) -> None:
+    """The notes use the saved style, as the selectors beside them do, whatever the form's unsaved choice."""
+    _, base = live_server
+    _post_form(base, "/section/gamepad", {"enabled": "true", "deadzone": "0.15", "button_name_style": style})
+    unsaved = "playstation" if style != "playstation" else "standard"
+    body, event = _get_checked(
+        base,
+        "/api/validate/gamepad/btn_reset",
+        {"btn_reset": "Y", "btn_toggle_help": "Y", "btn_settings": "BACK", "button_name_style": unsaved},
+    )
+    [moved] = event["moved"]
+    assert body.endswith("taken from Toggle Help</span>")
+    assert (_SYMBOL_HTML in body) is symbol
+    assert (_SYMBOL_HTML in moved["html"]) is symbol
+    if symbol:
+        assert f'<span class="visually-hidden">{word}</span>' in body
+    else:
+        assert f"{word} taken from Toggle Help" in body
+    # Once the button moves on, the note reads as plain words.
+    assert f'data-lost-text="{word} was taken"' in moved["html"]
+
+
+@pytest.mark.parametrize(("button", "word"), [("BACK", "Minus"), ("START", "Plus")])
+def test_a_nintendo_mark_in_a_binding_note_is_spelled_out(live_server, button: str, word: str) -> None:
+    """A lone "-" in the red note would read as the unbound option's dash."""
+    _, base = live_server
+    _post_form(base, "/section/gamepad", {"enabled": "true", "deadzone": "0.15", "button_name_style": "nintendo"})
+    body, event = _get_checked(
+        base,
+        "/api/validate/gamepad/btn_reset",
+        {"btn_reset": button, "btn_toggle_help": button, "btn_settings": "" if button == "BACK" else "BACK"},
+    )
+    [moved] = event["moved"]
+    assert f"{word} taken from Toggle Help" in body
+    assert f"{word} moved to Reset Marker" in moved["html"]
+    assert f'data-lost-text="{word} was taken"' in moved["html"]
 
 
 def test_validate_binding_takes_a_shared_button_and_names_both_fields(live_server) -> None:
@@ -8592,7 +8852,7 @@ def test_a_refused_unlock_says_why_on_the_login_page(pin_protected_server) -> No
     assert "Set-Cookie" not in response_headers
 
 
-def _refused_login_post(tmp_path, declared_length: int | str, body: bytes) -> tuple[str, io.BytesIO]:
+def _refused_login_post(tmp_path, declared_length: int | str, body: bytes) -> str:
     """POST the login form through a refused name straight into the WSGI app."""
     server = ConfigWebServer(config_path=str(tmp_path / "config.toml"))
     stream = io.BytesIO(body)
@@ -8612,29 +8872,410 @@ def _refused_login_post(tmp_path, declared_length: int | str, body: bytes) -> tu
     )
     status: list[str] = []
     b"".join(server._app(environ, lambda s, _headers, _exc=None: status.append(s)))
-    return status[0], stream
+    return status[0]
 
 
-def test_a_refusal_reads_the_body_first_so_closing_does_not_reset_its_answer(tmp_path) -> None:
-    # Closing a connection with unread request data resets it, which can drop
-    # the refusal before the browser reads it.
-    body = b"pin=sekret"
-    status, stream = _refused_login_post(tmp_path, len(body), body)
-    assert status.startswith("403")
-    assert stream.tell() == len(body)
+def _post_whole(base: str, *, chunked: bool, body: bytes) -> bytes:
+    """Send a whole POST to a settings route, then read the answer to EOF."""
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    if chunked:
+        framing = b"Transfer-Encoding: chunked\r\n"
+        payload = b"%x\r\n%s\r\n0\r\n\r\n" % (len(body), body)
+    else:
+        framing = b"Content-Length: %d\r\n" % len(body)
+        payload = body
+    head = b"POST /api/config/camera HTTP/1.1\r\nHost: %s\r\nContent-Type: application/json\r\n%s\r\n" % (
+        host.encode(),
+        framing,
+    )
+    with socket.create_connection((host, int(port)), timeout=5) as sock:
+        sock.sendall(head + payload)
+        answer = b""
+        while chunk := sock.recv(65536):
+            answer += chunk
+    return answer
 
 
-def test_a_refusal_does_not_read_a_body_past_the_pre_auth_cap(tmp_path) -> None:
-    status, stream = _refused_login_post(tmp_path, peer_auth.MAX_SIGNED_BODY_SIZE + 1, b"pin=sekret")
-    assert status.startswith("403")
-    assert stream.tell() == 0
+@pytest.mark.parametrize("chunked", [False, True], ids=["content-length", "chunked"])
+def test_a_refusal_before_the_body_is_read_reaches_the_client(pin_protected_server, chunked: bool) -> None:
+    # Closing with the body still arriving would reset the connection and drop the answer.
+    _, base, _ = pin_protected_server
+    body = b"x" * (4 * 1024 * 1024)
+    failures: list[str] = []
+    for _ in range(50):
+        try:
+            answer = _post_whole(base, chunked=chunked, body=body)
+        except OSError as exc:
+            failures.append(repr(exc))
+            continue
+        if not answer.startswith(b"HTTP/1.0 401 "):
+            failures.append(repr(answer[:40]))
+    assert failures == []
+
+
+def _slot_freed_after(base: str, monkeypatch, request: bytes, status: bytes) -> bool:
+    """Send ``request`` and hold the connection open once answered: is its handler slot freed?"""
+    from openfollow.web import server as server_module
+
+    slot = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(server_module, "_request_semaphore", slot)
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    with socket.create_connection((host, int(port)), timeout=5) as held:
+        held.sendall(request)
+        assert held.recv(65536).startswith(b"HTTP/1.0 " + status)
+        freed = slot.acquire(timeout=5)
+    if freed:
+        slot.release()
+    return freed
+
+
+def _owed_body(declared: str) -> bytes:
+    """A POST the PIN check refuses, declaring a body it never sends."""
+    return b"POST /api/config/camera HTTP/1.1\r\nHost: x\r\nContent-Length: %s\r\n\r\n" % declared.encode()
+
+
+def test_a_body_that_never_arrives_does_not_hold_the_connection(pin_protected_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_UNREAD_BODY_TIMEOUT_S", 0.2)
+    _, base, _ = pin_protected_server
+    assert _slot_freed_after(base, monkeypatch, _owed_body("1000"), b"401 ")
+
+
+@pytest.mark.parametrize("declared", ["1025", "abc", "-5"], ids=["past-the-cap", "malformed", "negative"])
+def test_a_body_with_no_length_to_wait_for_is_not_waited_for(pin_protected_server, monkeypatch, declared) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_UNREAD_BODY_TIMEOUT_S", 60.0)
+    monkeypatch.setattr(server_module, "_UNREAD_BODY_MAX_BYTES", 1024)
+    _, base, _ = pin_protected_server
+    assert _slot_freed_after(base, monkeypatch, _owed_body(declared), b"401 ")
+
+
+def test_a_body_the_route_read_is_not_waited_for(live_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_UNREAD_BODY_TIMEOUT_S", 60.0)
+    _, base = live_server
+    body = json.dumps({"pos_x": 1.0}).encode()
+    request = (
+        b"POST /api/config/camera HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+        b"Content-Length: %d\r\n\r\n%s" % (len(body), body)
+    )
+    assert _slot_freed_after(base, monkeypatch, request, b"200 ")
+
+
+def test_a_malformed_request_line_is_answered_without_a_handler_error(live_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    errors: list[object] = []
+    monkeypatch.setattr(server_module._ThreadingWSGIServer, "handle_error", lambda self, *args: errors.append(args))
+    _, base = live_server
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    with socket.create_connection((host, int(port)), timeout=5) as sock:
+        sock.sendall(b"POST / HTTP/1.x\r\nContent-Length: 4\r\n\r\nbody")
+        answer = b""
+        while chunk := sock.recv(65536):
+            answer += chunk
+    assert b"Error code: 400" in answer
+    assert errors == []
+
+
+def _quiet_slot(monkeypatch) -> tuple[threading.BoundedSemaphore, list[object]]:
+    """One handler slot, and the handler errors the server reports."""
+    from openfollow.web import server as server_module
+
+    slot = threading.BoundedSemaphore(1)
+    errors: list[object] = []
+    monkeypatch.setattr(server_module, "_request_semaphore", slot)
+    monkeypatch.setattr(server_module._ThreadingWSGIServer, "handle_error", lambda self, *args: errors.append(args))
+    return slot, errors
+
+
+def test_an_idle_connection_is_closed_quietly_after_the_head_timeout(live_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_REQUEST_HEAD_TIMEOUT_S", 0.2)
+    slot, errors = _quiet_slot(monkeypatch)
+    _, base = live_server
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    with socket.create_connection((host, int(port)), timeout=5) as idle:
+        assert idle.recv(1) == b""
+        assert slot.acquire(timeout=5)
+    slot.release()
+    assert errors == []
+
+
+def test_headers_that_trickle_past_the_head_timeout_are_closed(live_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_REQUEST_HEAD_TIMEOUT_S", 0.5)
+    _, errors = _quiet_slot(monkeypatch)
+    _, base = live_server
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    with socket.create_connection((host, int(port)), timeout=5) as sock:
+        sock.sendall(b"GET /api/info HTTP/1.1\r\n")
+        sock.settimeout(0.1)
+        closed = False
+        for _ in range(50):
+            try:
+                sock.sendall(b"X-Slow: 1\r\n")
+                closed = sock.recv(1) == b""
+            except TimeoutError:
+                continue
+            except ConnectionError:
+                closed = True
+            break
+    assert closed
+    assert errors == []
+
+
+def test_a_slow_but_steady_upload_completes(live_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_REQUEST_HEAD_TIMEOUT_S", 1.0)
+    monkeypatch.setattr(server_module, "_REQUEST_BODY_READ_TIMEOUT_S", 1.0)
+    server, base = live_server
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    body = json.dumps({"pos_x": 1.0, "pos_y": 2.0}).encode()
+    pieces = [body[i : i + 3] for i in range(0, len(body), 3)]
+    assert len(pieces) * 0.25 > 2.0  # the body takes longer than both timeouts in total
+    with socket.create_connection((host, int(port)), timeout=5) as sock:
+        sock.sendall(
+            b"POST /api/config/camera HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+            b"Content-Length: %d\r\n\r\n" % len(body)
+        )
+        for piece in pieces:
+            time.sleep(0.25)
+            sock.sendall(piece)
+        answer = b""
+        while chunk := sock.recv(65536):
+            answer += chunk
+    assert answer.startswith(b"HTTP/1.0 200 ")
+    assert json.loads(answer.split(b"\r\n\r\n", 1)[1])["success"] is True
+    assert load_config(server.config_path).camera.pos_y == pytest.approx(2.0)
+
+
+def test_a_body_that_stops_arriving_is_answered_and_frees_its_slot(live_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_REQUEST_BODY_READ_TIMEOUT_S", 0.3)
+    monkeypatch.setattr(server_module, "_UNREAD_BODY_TIMEOUT_S", 60.0)
+    _, base = live_server
+    body = json.dumps({"pos_x": 1.0, "pos_y": 2.0}).encode()
+    request = (
+        b"POST /api/config/camera HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+        b"Content-Length: %d\r\n\r\n%s" % (len(body), body[: len(body) // 2])
+    )
+    assert _slot_freed_after(base, monkeypatch, request, b"408 ")
+
+
+def _busy(monkeypatch, drain_places: int = 1) -> tuple[threading.BoundedSemaphore, threading.BoundedSemaphore]:
+    """Every handler slot taken: the slot, held, and the busy drain's places."""
+    from openfollow.web import server as server_module
+
+    slot, _ = _quiet_slot(monkeypatch)
+    assert slot.acquire(blocking=False)
+    drains = threading.BoundedSemaphore(drain_places)
+    monkeypatch.setattr(server_module, "_busy_drain_semaphore", drains)
+    monkeypatch.setattr(server_module, "_busy_log", server_module._BusyLog())
+    return slot, drains
+
+
+def _reset_within(sock: socket.socket, seconds: float, chunk: bytes = b"x") -> bool:
+    """Keep sending until the station's close resets the connection."""
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        try:
+            sock.sendall(chunk)
+        except ConnectionError:
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def _busy_answer(sock: socket.socket) -> bytes:
+    """Send the start of a request and read the answer to the station's half-close."""
+    sock.sendall(b"POST /api/config/camera HTTP/1.1\r\nHost: x\r\nContent-Length: 1000000\r\n\r\n")
+    answer = b""
+    while chunk := sock.recv(65536):
+        answer += chunk
+    return answer
+
+
+def test_a_busy_answer_reaches_a_client_still_sending(live_server, monkeypatch, caplog) -> None:
+    import logging
+
+    from openfollow.web import server as server_module
+
+    caplog.set_level(logging.INFO, logger="openfollow.web.server")
+    _, base = live_server
+    slot, drains = _busy(monkeypatch)
+    body = b"x" * (server_module._BUSY_DRAIN_MAX_BYTES - 4096)  # the head fits under the cap too
+    failures: list[str] = []
+    try:
+        for _ in range(30):
+            # A drain frees its place once the client's close reaches it, which can trail the client.
+            assert drains.acquire(timeout=5)
+            drains.release()
+            try:
+                answer = _post_whole(base, chunked=False, body=body)
+            except OSError as exc:
+                failures.append(repr(exc))
+                continue
+            if not answer.startswith(b"HTTP/1.1 503 Service Unavailable\r\n") or not answer.endswith(
+                b"Server busy; retry"
+            ):
+                failures.append(repr(answer[:40]))
+    finally:
+        slot.release()
+    assert failures == []
+    assert [r.levelno for r in caplog.records if r.name == "openfollow.web.server"] == [logging.WARNING]
+
+
+def test_a_station_that_accepts_again_after_a_quiet_interval_says_so(live_server, monkeypatch, caplog) -> None:
+    import logging
+
+    from openfollow.web import server as server_module
+
+    caplog.set_level(logging.INFO, logger="openfollow.web.server")
+    _, base = live_server
+    slot, _ = _busy(monkeypatch)
+    now = [0.0]
+    monkeypatch.setattr(server_module, "_busy_log", server_module._BusyLog(clock=lambda: now[0]))
+    try:
+        assert _get(base, "/api/info")[0] == 503
+    finally:
+        slot.release()
+    now[0] = server_module._BUSY_LOG_INTERVAL_S
+    assert _get(base, "/api/info")[0] == 200
+    lines = [(r.levelno, r.getMessage()) for r in caplog.records if r.name == "openfollow.web.server"]
+    assert [level for level, _ in lines] == [logging.WARNING, logging.INFO]
+    assert "accepts requests again; 0 refused" in lines[1][1]
+
+
+def test_a_busy_drain_ends_at_its_deadline_and_frees_its_place(live_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_BUSY_DRAIN_TIMEOUT_S", 0.4)
+    _, base = live_server
+    slot, drains = _busy(monkeypatch)
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    try:
+        with socket.create_connection((host, int(port)), timeout=5) as sock:
+            started = time.monotonic()
+            assert _busy_answer(sock).startswith(b"HTTP/1.1 503 ")
+            assert _reset_within(sock, 3.0)
+            elapsed = time.monotonic() - started
+        assert 0.3 < elapsed < 3.0
+        assert drains.acquire(timeout=5)
+    finally:
+        slot.release()
+
+
+def test_a_busy_drain_stops_at_its_byte_cap(live_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_BUSY_DRAIN_TIMEOUT_S", 60.0)
+    monkeypatch.setattr(server_module, "_BUSY_DRAIN_MAX_BYTES", 64 * 1024)
+    _, base = live_server
+    slot, drains = _busy(monkeypatch)
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    try:
+        with socket.create_connection((host, int(port)), timeout=5) as sock:
+            assert _busy_answer(sock).startswith(b"HTTP/1.1 503 ")
+            assert _reset_within(sock, 3.0, chunk=b"x" * 4096)
+        assert drains.acquire(timeout=5)
+    finally:
+        slot.release()
+
+
+def test_a_busy_station_with_no_drain_place_closes_at_once(live_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_BUSY_DRAIN_TIMEOUT_S", 60.0)
+    _, base = live_server
+    slot, drains = _busy(monkeypatch)
+    assert drains.acquire(blocking=False)
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    try:
+        with socket.create_connection((host, int(port)), timeout=5) as sock:
+            assert _reset_within(sock, 2.0)
+    finally:
+        drains.release()
+        slot.release()
+
+
+class _FixedToken:
+    """``secrets`` with a known ``token_hex``, so a test can name the file a route stages."""
+
+    def __init__(self, token: str) -> None:
+        self._token = token
+
+    def token_hex(self, _nbytes: int | None = None) -> str:
+        return self._token
+
+    def __getattr__(self, name: str) -> Any:
+        import secrets
+
+        return getattr(secrets, name)
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/video-input/testpattern/upload", "/section/general/deb-upload?filename=a.ofupdate"],
+    ids=["gallery", "ofupdate"],
+)
+def test_an_upload_that_stops_arriving_is_answered_408_and_leaves_nothing_staged(
+    live_server, monkeypatch, caplog, path
+) -> None:
+    import glob
+    import logging
+
+    import openfollow.web.routes as routes_module
+    from openfollow.web import server as server_module
+
+    token = f"stall{os.getpid()}{time.monotonic_ns()}"
+    monkeypatch.setattr(routes_module, "secrets", _FixedToken(token))
+    monkeypatch.setattr(server_module, "_REQUEST_BODY_READ_TIMEOUT_S", 0.3)
+    caplog.set_level(logging.INFO)
+    _, base = live_server
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    with socket.create_connection((host, int(port)), timeout=5) as sock:
+        sock.sendall(
+            b"POST %s HTTP/1.1\r\nHost: x\r\nContent-Type: application/octet-stream\r\n"
+            b"Content-Length: 1000\r\n\r\n%s" % (path.encode(), b"x" * 10)
+        )
+        answer = b""
+        while chunk := sock.recv(65536):
+            answer += chunk
+    assert answer.startswith(b"HTTP/1.0 408 ")
+    assert glob.glob(f"/tmp/*{token}*") == []  # nosec B108 - where the routes stage uploads
+    assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
+
+
+def test_a_large_answer_reaches_a_client_that_reads_late(live_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_REQUEST_HEAD_TIMEOUT_S", 0.3)
+    server, base = live_server
+    jpeg = b"x" * (12 * 1024 * 1024)
+    monkeypatch.setattr(server, "_full_snapshot_provider", lambda: jpeg)
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    with socket.create_connection((host, int(port)), timeout=5) as sock:
+        sock.sendall(b"GET /api/video/snapshot/full HTTP/1.0\r\n\r\n")
+        time.sleep(1.0)  # past the head timeout before reading any of the answer
+        answer = b""
+        while chunk := sock.recv(1 << 20):
+            answer += chunk
+    head, _, received = answer.partition(b"\r\n\r\n")
+    assert head.startswith(b"HTTP/1.0 200 ")
+    assert len(received) == len(jpeg)
 
 
 @pytest.mark.parametrize("declared", ["abc", "", "-5"])
 def test_a_refusal_with_a_missing_or_malformed_length_still_refuses(tmp_path, declared: str) -> None:
-    status, stream = _refused_login_post(tmp_path, declared, b"pin=sekret")
-    assert status.startswith("403")
-    assert stream.tell() == 0
+    assert _refused_login_post(tmp_path, declared, b"pin=sekret").startswith("403")
 
 
 def test_the_refused_name_is_escaped(live_server) -> None:
@@ -8898,9 +9539,10 @@ def test_video_source_section_hides_capture_for_gallery(live_server) -> None:
     status, body = _get(base, "/section/video_source")
     assert status == 200
     assert 'id="gallery-grid"' in body  # grid container loads via HTMX
-    # Capture, connection recovery, and preview don't apply to the gallery.
+    # Capture, healing and preview don't apply to the gallery; a clip can still stall.
     assert 'id="capture-frame-row" style="margin-top:0.5rem;display:none"' in body
-    assert 'id="recovery-row" style="display:none"' in body
+    assert '<div class="row" id="recovery-row">' in body and 'name="stall_timeout"' in body
+    assert 'id="heal-field" style="display:none"' in body
     assert 'id="preview-row" style="margin-top:0.5rem;display:none"' in body
 
 
@@ -8914,20 +9556,23 @@ def test_video_source_section_shows_capture_for_live_source(live_server) -> None
     assert status == 200
     assert "Capture frame to gallery" in body  # live sources offer capture
     assert 'id="capture-frame-row" style="margin-top:0.5rem;display:"' in body  # shown
-    assert 'id="recovery-row" style="display:"' in body  # network source -> recovery shown
+    assert 'id="heal-field" style="display:"' in body  # network source -> healing shown
     assert 'id="preview-row" style="margin-top:0.5rem;display:"' in body  # preview shown
 
 
-def test_video_source_section_camera_hides_recovery_keeps_preview(live_server) -> None:
-    # A non-network, non-gallery source (NDI uses its own reconnect): recovery
-    # hidden, but capture + preview still apply.
+def test_video_source_section_camera_hides_healing_keeps_stall_and_preview(live_server) -> None:
+    # A non-network, non-gallery source (NDI uses its own reconnect): healing
+    # hidden, but the stall timeout, capture and preview still apply.
     server, base = live_server
     cfg = load_config(server.config_path)
     cfg.video_source_type = "ndi"
     save_config(cfg, server.config_path)
     status, body = _get(base, "/section/video_source")
     assert status == 200
-    assert 'id="recovery-row" style="display:none"' in body
+    assert 'id="heal-field" style="display:none"' in body
+    assert '<div class="row" id="recovery-row">' in body
+    # The Source Type toggle shows and hides the same field the server rendered.
+    assert "vis('heal-field', net);" in body
     assert 'id="preview-row" style="margin-top:0.5rem;display:"' in body
     assert 'id="capture-frame-row" style="margin-top:0.5rem;display:"' in body
 
@@ -9568,6 +10213,60 @@ _CONTROLLER_SECTIONS = ["controller", "gamepad", "keyboard", "mouse"]
 
 
 @pytest.mark.parametrize("section", _CONTROLLER_SECTIONS)
+def test_button_names_are_never_broadcast_from_any_controller_section(live_server, monkeypatch, section) -> None:
+    """They describe this station's pads: a DualSense station must not name an Xbox station's buttons."""
+    from types import SimpleNamespace
+
+    from openfollow.web import routes as routes_mod
+
+    sent: list[dict] = []
+
+    def _fake_send(ip, port, section_name, data, pin="", *, expected_port, sender) -> bool:
+        sent.append(dict(data))
+        return True
+
+    monkeypatch.setattr(routes_mod, "_send_config_to_peer", _fake_send)
+    server, base = live_server
+    monkeypatch.setattr(server, "get_peers", lambda: [SimpleNamespace(name="peer", ip="10.0.0.99", web_port=80)])
+    status, body = _post_json(
+        base, f"/api/config/{section}/broadcast", {"button_name_style": "playstation", "key_reset": "c"}
+    )
+    assert status == 200 and body.get("success") is True
+    # The broadcasting station keeps its own choice; the peers are sent none.
+    assert load_config(server.config_path).controller.button_name_style == "playstation"
+    assert [("button_name_style" in data, data.get("key_reset")) for data in sent] == [(False, "c")]
+
+
+@pytest.mark.parametrize("section", _CONTROLLER_SECTIONS)
+def test_button_names_from_a_peer_are_ignored_in_any_controller_section(live_server, section) -> None:
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.controller.button_name_style = "xbox"
+    save_config(cfg, server.config_path)
+    status, body = _post_json(base, f"/api/config/{section}", {"button_name_style": "playstation", "key_reset": "c"})
+    assert status == 200 and body.get("success") is True
+    saved = load_config(server.config_path).controller
+    assert (saved.button_name_style, saved.key_reset) == ("xbox", "c")
+
+
+def test_an_export_carries_the_button_names(live_server) -> None:
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.controller.button_name_style = "nintendo"
+    save_config(cfg, server.config_path)
+    assert _export(base)["controller"]["button_name_style"] == "nintendo"
+
+
+def test_the_gamepad_trigger_state_names_the_triggers_in_the_family(live_server) -> None:
+    _, base = live_server
+    for style, names in (("standard", "LT / RT"), ("playstation", "L2 / R2"), ("nintendo", "ZL / ZR")):
+        _post_form(base, "/section/gamepad", {"enabled": "true", "deadzone": "0.15", "button_name_style": style})
+        status, body = _get(base, "/section/gamepad")
+        assert status == 200
+        assert f'<span style="color:var(--muted);">{names} Triggers:</span>' in body
+
+
+@pytest.mark.parametrize("section", _CONTROLLER_SECTIONS)
 def test_keyboard_layout_is_never_broadcast_from_any_controller_section(live_server, monkeypatch, section) -> None:
     """Echoing ``GET /api/config/<section>`` back as a broadcast must not set every peer's layout."""
     from types import SimpleNamespace
@@ -9648,3 +10347,360 @@ def test_requests_share_one_parse_of_an_unchanged_config(live_server, monkeypatc
         status, _body = _get(base, "/api/info")
         assert status == 200
     assert parses == [server.config_path]
+
+
+# ---------------------------------------------------------------------------
+# Measure latency (Video Source)
+# ---------------------------------------------------------------------------
+
+_DECODING = {"video": {"source_type": "rtsp", "connected": True, "phase": "decoding"}, "hud": {"window_s": 2.0}}
+_NO_VIDEO = {**_DECODING, "video": {**_DECODING["video"], "connected": False}}
+
+
+def _latency_stats(monkeypatch, server, stats: dict) -> None:
+    monkeypatch.setattr(server, "get_runtime_stats", lambda: stats)
+
+
+def _get_full(base: str, path: str) -> tuple[int, str, Any]:
+    """Status, body and the headers, which read without regard to case."""
+    with urllib.request.urlopen(f"{base}{path}", timeout=5) as r:
+        return r.status, r.read().decode(), r.headers
+
+
+def _latency_row(body: str) -> str:
+    """The Camera Latency row up to its button."""
+    row = body[body.index('id="video-source-latency"') :]
+    return row[: row.index("</button>")]
+
+
+def _footer(body: str) -> str:
+    """The dialog's actions, which the page moves into the modal's footer."""
+    footer = body[body.index("data-latency-footer") :]
+    return footer[: footer.index("</div>")]
+
+
+def _rtsp(server) -> None:
+    save_config(AppConfig(video_source_type="rtsp"), server.config_path)
+
+
+def test_the_row_shows_the_last_successful_result_and_when(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _rtsp(server)
+    last = {"median_ms": 64.2, "min_ms": 37.0, "max_ms": 79.4, "samples": 10, "finished_at": time.time() - 60.0}
+    _latency_stats(monkeypatch, server, {**_DECODING, "latency": last})
+    _, body = _get(base, "/section/video_source")
+    row = _latency_row(body)
+    assert "Round trip 64 ms (37 to 79 ms)<small>Measured " in row
+    assert re.search(r'onclick="ofLatencyDialog\(\)"\s*>Measure latency', row)
+
+
+def test_the_row_without_a_result_says_not_measured_yet(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _rtsp(server)
+    _latency_stats(monkeypatch, server, _DECODING)
+    _, body = _get(base, "/section/video_source/latency")
+    assert "Not measured yet." in _latency_row(body)
+
+
+@pytest.mark.parametrize(
+    ("stats", "reason"),
+    [
+        ({**_DECODING, "hud": None}, "No Operator Screen is showing on this station."),
+        (_NO_VIDEO, "No video is arriving."),
+    ],
+    ids=["no-display", "no-video"],
+)
+def test_the_row_says_why_it_cannot_measure_and_disables_its_button(
+    live_server, monkeypatch, stats: dict, reason: str
+) -> None:
+    server, base = live_server
+    _rtsp(server)
+    last = {"median_ms": 64.0, "min_ms": 37.0, "max_ms": 79.0, "samples": 10, "finished_at": time.time()}
+    _latency_stats(monkeypatch, server, {**stats, "latency": last})
+    for path in ("/", "/section/video_source"):
+        _, body = _get(base, path)
+        row = _latency_row(body)
+        assert reason in row
+        assert "Round trip" not in row
+        assert re.search(r"<button[^>]*\sdisabled\s*>Measure latency", row)
+
+
+def test_the_row_is_hidden_for_the_media_gallery(live_server, monkeypatch) -> None:
+    server, base = live_server
+    save_config(AppConfig(video_source_type="testpattern"), server.config_path)
+    _latency_stats(monkeypatch, server, _DECODING)
+    _, body = _get(base, "/section/video_source")
+    row = _latency_row(body)
+    assert 'style="display:none"' in row[: row.index(">")]
+    # Switching the source type on the page hides and shows it too.
+    assert "vis('video-source-latency', value !== 'testpattern');" in body
+
+
+def _warning_token(body: str) -> str:
+    token = re.search(r"ofLatencyDialogShown\(false, '([A-Za-z0-9_-]+)'\)", body)
+    assert token, "the warnings carry their token"
+    return token.group(1)
+
+
+def test_the_dialog_opens_on_its_warnings_and_its_renewal_puts_the_card_up(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    status, body = _get(base, "/section/video_source/latency/dialog")
+    assert status == 200
+    # A GET changes nothing on the station: the card goes up when the dialog's renewal posts.
+    assert not server.latency_warning.showing()
+    hazard = body.index("WARNING: PHOTOSENSITIVITY / EPILEPSY SEIZURES")
+    show = body.index("Never during a show.")
+    assert "For about 5 seconds, longer with a slow camera, the Operator Screen shows no video and no markers" in body
+    assert hazard < show < body.index("The station flashes its Operator Screen")
+    assert body.count('<div class="notice warning">') == 2
+    footer = _footer(body)
+    assert "hx-swap-oob" not in body
+    assert re.search(r'onclick="closeModal\(\)" data-autofocus>Cancel</button>', footer)
+    assert re.search(r'class="primary" hx-post="/section/video_source/latency"', footer)
+    assert 'data-error-lead="Not started."' in footer
+    # Free to close; the card is put up and renewed while the warnings show in an open dialog.
+    token = _warning_token(body)
+    renew = body[body.index('id="latency-warning-renewal"') :]
+    renew = renew[: renew.index("></div>")]
+    assert 'hx-post="/section/video_source/latency/warning"' in renew
+    assert f"""hx-vals='{{"token": "{token}"}}'""" in renew
+    assert "data-error-quiet" in renew
+    assert (
+        'hx-trigger="load[ofLatencyWarningLive(this)], every 1s [!document.hidden && ofLatencyWarningLive(this)],'
+        ' poll-shown[ofLatencyWarningLive(this)] from:body"'
+    ) in renew
+    assert _post_form(base, "/section/video_source/latency/warning", {"token": token})[0] == 204
+    assert server.latency_warning.showing()
+    assert 'role="alert"' not in body
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        {
+            "state": "done",
+            "measured": 10,
+            "result": {"median_ms": 64.0, "min_ms": 37.0, "max_ms": 79.0, "level": "success"},
+        },
+        {"state": "failed", "measured": 0, "failure": {"reason": "no_rise", "text": "No flash seen.", "action": ""}},
+    ],
+    ids=["after-a-result", "after-a-failure"],
+)
+def test_the_dialog_opens_on_its_warnings_again_after_a_run(live_server, monkeypatch, status: dict) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    server._command_queue.set_latency_status(status)
+    _, body = _get(base, "/section/video_source/latency/dialog")
+    assert "WARNING: PHOTOSENSITIVITY / EPILEPSY SEIZURES" in body
+    assert "Round trip" not in body and "No flash seen." not in body
+    assert _warning_token(body)
+
+
+def test_a_run_started_elsewhere_shows_measuring_with_no_way_out(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    server._command_queue.set_latency_status({"state": "running", "measured": 4})
+    _, body = _get(base, "/section/video_source/latency/dialog")
+    assert "Measuring: 4 of 10 changes seen." in body
+    assert "The Operator Screen is flashing." in body
+    assert "<button" not in _footer(body)
+    assert "ofLatencyDialogShown(true, '')" in body
+    assert not server.latency_warning.showing()
+    progress = body[body.index('id="latency-progress"') :]
+    progress = progress[: progress.index(">")]
+    assert 'hx-get="/section/video_source/latency/dialog?poll=1"' in progress
+    assert 'hx-trigger="every 1s [!document.hidden], poll-shown from:body"' in progress
+    assert 'role="alert"' not in body
+
+
+def test_a_run_s_progress_answers_alone_while_it_lasts(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    server._command_queue.set_latency_status({"state": "running", "measured": 7})
+    status, body, headers = _get_full(base, "/section/video_source/latency/dialog?poll=1")
+    assert status == 200
+    assert "Measuring: 7 of 10 changes seen." in body
+    assert "data-latency-footer" not in body
+    assert "HX-Retarget" not in headers
+
+
+@pytest.mark.parametrize(
+    ("median", "level", "notice", "sub"),
+    [
+        (64.0, "success", "notice success", "Measured over 10 changes."),
+        (180.0, "caution", "notice warning", "Lower the buffering of the camera and the stream, then measure again."),
+        (420.0, "error", "notice error", "Lower the buffering of the camera and the stream, then measure again."),
+    ],
+)
+def test_the_run_s_end_turns_the_dialog_to_its_result(
+    live_server, monkeypatch, median: float, level: str, notice: str, sub: str
+) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    result = {"median_ms": median, "min_ms": median - 10, "max_ms": median + 12.4, "samples": 10, "level": level}
+    server._command_queue.set_latency_status({"state": "done", "measured": 10, "result": result})
+    _, body, headers = _get_full(base, "/section/video_source/latency/dialog?poll=1")
+    assert headers.get("HX-Retarget") == "#latency-dialog" and headers.get("HX-Reswap") == "outerHTML"
+    assert f'<div class="{notice}">' in body
+    assert f"Round trip {median:.0f} ms ({median - 10:.0f} to {median + 12.4:.0f} ms)." in body
+    assert sub in body
+    footer = _footer(body)
+    assert re.search(r'hx-post="/section/video_source/latency"[^>]*>Measure again</button>', footer)
+    # Focus lands on Close, so one Enter never starts another flashing run.
+    assert re.search(r'class="primary" onclick="closeModal\(\)" data-autofocus>Close</button>', footer)
+    assert footer.count("data-autofocus") == 1
+    assert "ofLatencyDialogShown(false, '')" in body
+    assert not server.latency_warning.showing()
+
+
+def test_a_failed_run_turns_the_dialog_to_what_was_seen(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    failure = {"reason": "no_rise", "text": "No flash seen in the video within 3 s.", "action": "Point the camera."}
+    server._command_queue.set_latency_status({"state": "failed", "measured": 0, "failure": failure})
+    _, body, _headers = _get_full(base, "/section/video_source/latency/dialog?poll=1")
+    assert '<div class="notice error">' in body
+    assert "No flash seen in the video within 3 s." in body and "Point the camera." in body
+    footer = _footer(body)
+    assert re.search(r'hx-post="/section/video_source/latency"[^>]*>Try again</button>', footer)
+    assert ">Close</button>" in footer
+
+
+def test_start_runs_the_measurement_and_takes_the_card_down(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    _, intro = _get(base, "/section/video_source/latency/dialog")
+    token = _warning_token(intro)
+    _post_form(base, "/section/video_source/latency/warning", {"token": token})
+    assert server.latency_warning.showing()
+    status, body = _post_form(base, "/section/video_source/latency", {"token": token})
+    assert status == 200
+    assert server._command_queue.consume_latency_requested()
+    assert not server.latency_warning.showing()
+    assert "Measuring: 0 of 10 changes seen." in body
+    assert "<button" not in _footer(body)
+    # A renewal still on its way never brings the card back.
+    _post_form(base, "/section/video_source/latency/warning", {"token": token})
+    assert not server.latency_warning.showing()
+
+
+def test_measure_again_starts_at_once_without_the_warnings(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    result = {"median_ms": 64.0, "min_ms": 37.0, "max_ms": 79.0, "samples": 10, "level": "success"}
+    server._command_queue.set_latency_status({"state": "done", "measured": 10, "result": result})
+    status, body = _post_form(base, "/section/video_source/latency", {})
+    assert status == 200
+    assert server._command_queue.consume_latency_requested()
+    assert "Measuring:" in body and "PHOTOSENSITIVITY" not in body
+    assert not server.latency_warning.showing()
+
+
+@pytest.mark.parametrize(
+    ("stats", "reason"),
+    [
+        ({**_DECODING, "hud": None}, "No Operator Screen is showing on this station."),
+        (_NO_VIDEO, "No video is arriving."),
+        ({**_DECODING, "video": {**_DECODING["video"], "phase": "data_arriving"}}, "No video is arriving."),
+        ({**_DECODING, "video": {**_DECODING["video"], "source_type": "testpattern"}}, "The Media Gallery plays"),
+        ({}, "No Operator Screen is showing on this station."),
+    ],
+    ids=["no-display", "not-connected", "not-decoding", "gallery", "no-stats"],
+)
+def test_start_while_it_cannot_run_answers_409_with_the_reason(
+    live_server, monkeypatch, stats: dict, reason: str
+) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, stats)
+    status, body = _post_form(base, "/section/video_source/latency", {})
+    assert status == 409
+    answer = json.loads(body)
+    assert answer["error"].startswith(reason) and answer["action"]
+    assert not server._command_queue.consume_latency_requested()
+
+
+def test_the_warning_card_is_put_up_and_taken_down_by_its_token(live_server) -> None:
+    server, base = live_server
+    token = "Abc_DEF-123456789"
+    assert not server.latency_warning.showing()
+    status, _body = _post_form(base, "/section/video_source/latency/warning", {"token": token})
+    assert status == 204 and server.latency_warning.showing()
+    status, _body = _post_form(base, f"/section/video_source/latency/warning/close?token={token}", {})
+    assert status == 204 and not server.latency_warning.showing()
+
+
+@pytest.mark.parametrize("token", ["", "short", "x" * 65, "bad token!!!!!!!!"])
+def test_a_malformed_warning_token_is_refused(live_server, token: str) -> None:
+    _, base = live_server
+    query = urllib.parse.urlencode({"token": token})
+    assert _post_form(base, "/section/video_source/latency/warning", {"token": token})[0] == 400
+    assert _post_form(base, f"/section/video_source/latency/warning/close?{query}", {})[0] == 400
+
+
+def test_a_renewal_from_another_site_is_refused_and_a_get_puts_nothing_up(live_server) -> None:
+    server, base = live_server
+    status, _body, _headers = _post_form_full(
+        base,
+        "/section/video_source/latency/warning",
+        {"token": "Abc_DEF-123456789"},
+        headers={"Origin": "http://203.0.113.9", "Referer": "http://203.0.113.9/"},
+    )
+    assert status == 403
+    assert _get(base, "/section/video_source/latency/warning?token=Abc_DEF-123456789")[0] == 405
+    assert not server.latency_warning.showing()
+
+
+def _latency_key(body: str) -> str:
+    match = re.search(r'id="video-source-latency-key" name="latency" value="(\d+)"', body)
+    assert match, "the row carries its key"
+    return match.group(1)
+
+
+def test_the_idle_latency_row_turns_on_once_video_is_decoding_without_a_reload(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _rtsp(server)
+    _latency_stats(monkeypatch, server, _NO_VIDEO)
+    _, section = _get(base, "/section/video_source")
+    shown = _latency_key(section)
+    poll = section[section.index('id="video-source-failure"') :]
+    assert 'hx-include="#video-source-latency-key"' in poll[: poll.index(">")]
+    # Nothing changed: the source-status poll leaves the row alone.
+    _, body = _get(base, f"/section/video_source/failure?latency={shown}")
+    assert "video-source-latency" not in body
+    _latency_stats(monkeypatch, server, _DECODING)
+    _, body = _get(base, f"/section/video_source/failure?latency={shown}")
+    row = _latency_row(body)
+    assert 'hx-swap-oob="true"' in row[: row.index(">")]
+    assert re.search(r'onclick="ofLatencyDialog\(\)"\s*>Measure latency', row)
+    assert "No video is arriving." not in row
+    _, again = _get(base, f"/section/video_source/failure?latency={_latency_key(body)}")
+    assert "video-source-latency" not in again
+
+
+def test_a_new_latency_result_reaches_the_row_through_the_status_poll(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _rtsp(server)
+    _latency_stats(monkeypatch, server, _DECODING)
+    _, section = _get(base, "/section/video_source")
+    last = {"median_ms": 64.0, "min_ms": 37.0, "max_ms": 79.0, "samples": 10, "finished_at": time.time()}
+    _latency_stats(monkeypatch, server, {**_DECODING, "latency": last})
+    _, body = _get(base, f"/section/video_source/failure?latency={_latency_key(section)}")
+    assert "Round trip 64 ms (37 to 79 ms)" in _latency_row(body)
+
+
+def test_the_setup_wizard_s_status_poll_gets_no_latency_row(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    _, body = _get(base, "/section/video_source/failure")
+    assert "video-source-latency" not in body
+
+
+def test_the_latency_key_is_never_saved_with_the_video_source_form(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    _, body = _get(base, "/section/video_source")
+    key = body[body.rindex("<", 0, body.index('id="video-source-latency-key"')) :]
+    # Owned by a form id that does not exist, so the form leaves it out.
+    assert 'form="video-source-latency-unsaved"' in key[: key.index(">")]
+    assert 'id="video-source-latency-unsaved"' not in body

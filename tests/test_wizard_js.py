@@ -1738,6 +1738,41 @@ def test_a_snapshot_of_another_size_stores_the_pins_as_the_same_fractions() -> N
     assert out["points"][0]["pin"] == [0.5, 0.25]
 
 
+# A new snapshot keeps the dragged corners, in its own pixels; an undragged corner follows the starting quad.
+@pytest.mark.parametrize(
+    ("size", "pin_size", "dragged", "expected"),
+    [
+        ([1920, 1080], [1920, 1080], [[700, 800], [1300, 790]], [[700, 800], [1300, 790]]),
+        ([1280, 720], [1920, 1080], [[960, 540], [1440, 810]], [[640, 360], [960, 540]]),
+        ([1920, 1080], None, [[0.5, 0.5], [0.25, 0.75]], [[960, 540], [480, 810]]),
+    ],
+    ids=["same size", "another size", "restored session"],
+)
+def test_a_new_snapshot_keeps_the_corners_the_operator_dragged(
+    size: list, pin_size: list | None, dragged: list, expected: list
+) -> None:
+    out = run_wizard_js(
+        "(function() { imageWidth = size[0]; imageHeight = size[1];"
+        " S = { mode: 'simple', pinSize: pinSize,"
+        " cornerPins: { DSL: dragged[0], DSR: dragged[1], USR: [20, 10], USL: [10, 10] },"
+        " cornerMoved: { DSL: true, DSR: true, USR: false, USL: false }, points: [] };"
+        " showSnapshotOnCurrentStep('blob:x', {}); return S.cornerPins; })()",
+        functions=("pinsToSnapshot", "placeStartQuad", "showSnapshotOnCurrentStep"),
+        variables=("CORNERS",),
+        prelude=_DOM + "var imageWidth = 1920, imageHeight = 1080, snapshotCanvas = null, FS = false;"
+        " var WIZ = { calib: 2, review: 3 }, currentStep = WIZ.calib;"
+        " document.createElement = function() {"
+        " return { getContext: function() { return { drawImage: function() {} }; } }; };"
+        " function setPreviewVisibility() {} function renderCalibOverlay() {} function runSolve() {}"
+        " function lensOnSnapshot() {}"
+        " function startQuad() { return [[10, 10], [20, 10], [20, 20], [10, 20]]; } var S;",
+        size=size,
+        pinSize=pin_size,
+        dragged=dragged,
+    )
+    assert out == {"DSL": expected[0], "DSR": expected[1], "USR": [20, 20], "USL": [10, 20]}
+
+
 def test_pins_are_stored_as_fractions_of_the_snapshot_they_are_in() -> None:
     # Between a new snapshot's size arriving and the pins following it, they are still the old snapshot's pixels.
     out = run_wizard_js(
@@ -3001,6 +3036,16 @@ def test_only_a_misfit_lines_glow_is_painted_and_it_never_takes_a_click() -> Non
         r"\.lens-line\.misfit \.lens-halo \{ stroke: var\(--caution-line\); stroke-opacity: 0\.4; \}", style
     )
     assert re.search(r"\.lens-tag \{ pointer-events: none; \}", style)
+    # Dark ink on the solid caution fill: off-white would miss AA.
+    assert re.search(r"\.lens-tag text \{ fill: var\(--bg-deep\);", style)
+
+
+def test_a_caution_note_in_a_checked_tile_takes_the_tiles_dark_ink() -> None:
+    """A checked tile is the solid accent, on which caution orange reads 1.74:1; the tile's own ink reads 11:1."""
+    style = WIZARD_TEMPLATE.read_text(encoding="utf-8")
+    assert re.search(r"\.tier-option input:checked \+ span \.caution-text \{ color: inherit; \}", style)
+    # Unchecked, the tile's small-text fade would take the orange under AA.
+    assert re.search(r"\.tier-option > span small\.caution-text \{ opacity: 1; \}", style)
 
 
 # A fit sent from a page of traced lines, whose answer ``renderLens`` draws and the hint names. The second line is too

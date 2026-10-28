@@ -34,6 +34,7 @@ import openfollow.services as services_module
 from openfollow.configuration import AppConfig, DetectionConfig
 from openfollow.power_health import PowerMonitor
 from openfollow.runtime.overlay_layers import LayerContext
+from openfollow.runtime.overlay_state import OverlayState
 from openfollow.services import AppRuntimeServices
 from tests._fake_cairo import FakeCairo
 from tests._fake_gtk import FakeCanvas
@@ -61,7 +62,7 @@ class _FakeOverlayRenderer:
 def _assert_hud_drawn_on_its_thread(services: AppRuntimeServices) -> None:
     """The display refresh hands the renderer's current state to the HUD render thread."""
     renderer = services._overlay_renderer
-    renderer.state = sentinel = object()
+    renderer.state = sentinel = OverlayState()
     canvas = services._app._canvas
     canvas.hud_draw_fn(FakeCairo(), 640, 360)
     canvas.hud_tick()  # the display refresh starts the picture
@@ -144,6 +145,7 @@ class _FakeReceiver:
         self.stall_timeout = stall_timeout
         self.heal_interval = heal_interval
         self.create_called = False
+        self.prefetched_before_build: list[dict[str, Any]] | None = None
         self.started = False
         self.widget: Any = object()
         self.display_frame_listener: Any = None
@@ -157,6 +159,8 @@ class _FakeReceiver:
 
     def create_pipeline(self) -> None:
         self.create_called = True
+        # Whether startup had started the source's name lookup by the first build.
+        self.prefetched_before_build = list(_FakeInputCls.prefetched)
         if self._raise_on_create is not None:
             raise self._raise_on_create
 
@@ -207,6 +211,13 @@ class _FakeInputCls:
     @classmethod
     def runtime_config(cls, cfg: Any) -> dict[str, Any]:
         return cls.get_config_field_values(cfg)
+
+    # Every config whose name lookup startup started.
+    prefetched: list[dict[str, Any]] = []
+
+    @classmethod
+    def prefetch(cls, config: dict[str, Any]) -> None:
+        cls.prefetched.append(dict(config))
 
 
 # --------------------------------------------------------------------------- #
@@ -288,6 +299,7 @@ def _reset_fake_instances() -> None:
     _FakePreviewProvider.instances = []
     _FakeSnapshotProvider.instances = []
     _FakePersonDetector.instances = []
+    _FakeInputCls.prefetched = []
 
 
 @pytest.fixture
@@ -312,6 +324,20 @@ def patched_subsystems(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestInitVideoDetectionDisabled:
+    def test_startup_starts_the_lookup_of_the_source_it_builds(
+        self,
+        services: AppRuntimeServices,
+        recv_factory: _RecordingReceiverFactory,
+        patched_subsystems: None,
+    ) -> None:
+        """The name resolves while video comes up, so the first build's pin check reads the answer."""
+        services.init_video()
+
+        recv = recv_factory.last
+        assert recv is not None
+        assert recv.create_called is True
+        assert recv.prefetched_before_build == [recv.input_config]
+
     def test_wires_renderer_stats_preview_receiver_and_starts(
         self,
         services: AppRuntimeServices,
@@ -642,6 +668,25 @@ class TestInitVideoCanvasWithoutAttachHud:
             _assert_hud_drawn_on_its_thread(services)
         # Either Operator Screen counts the video frames reaching its sink.
         assert recv_factory.last.display_frame_listener == services._hud_render.video_frame
+
+    @pytest.mark.parametrize("blocker", [None, "no GL display on darwin"], ids=["gl", "cairo"])
+    def test_either_operator_screen_tells_the_latency_probe_when_its_flash_shows(
+        self,
+        services: AppRuntimeServices,
+        recv_factory: _RecordingReceiverFactory,
+        patched_subsystems: None,
+        monkeypatch: pytest.MonkeyPatch,
+        blocker: str | None,
+    ) -> None:
+        from openfollow.video import gl_display
+
+        self._gl_world(monkeypatch, services._app._canvas, blocker=blocker, probe=None)
+        services.init_video()
+
+        assert services._hud_render.on_flash_shown == services._latency_probe.presented
+        display = recv_factory.last.display
+        if blocker is None:
+            assert isinstance(display.flash, gl_display.ScreenFlash)
 
     def test_the_gl_display_can_fall_back_from_the_moment_its_area_is_embedded(
         self,

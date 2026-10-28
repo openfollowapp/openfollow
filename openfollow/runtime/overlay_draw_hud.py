@@ -10,17 +10,21 @@ from __future__ import annotations
 
 import math
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, cast
 
 import cairo
 
+from openfollow.button_names import hud_label
+from openfollow.runtime import overlay_button_symbols as symbols
 from openfollow.runtime.overlay_draw_style import (
     CHEVRON_SIZE,
     COLOR_ACCENT,
     COLOR_ACCENT_SOFT,
     COLOR_BG_BASE,
     COLOR_BORDER_SOFT,
+    COLOR_INFO_BORDER,
+    COLOR_INFO_FILL,
     COLOR_OK,
     COLOR_SUPPORT_BORDER,
     COLOR_TEXT,
@@ -38,7 +42,6 @@ from openfollow.runtime.overlay_draw_style import (
     draw_level_sign,
     draw_rounded_rect,
     draw_success_sign,
-    draw_warning_sign,
     parse_hex,
     speed_color,
     status_level,
@@ -91,6 +94,7 @@ def _help_sections_for(
         tuple(sorted((state.mouse3d_axis_map or {}).items())),
         tuple(sorted((state.mouse3d_buttons or {}).items())),
         state.marker_cycle_enabled,
+        state.button_name_style,
     )
     cached = renderer._help_sections_cache
     if cached is not None and cached[0] == key:
@@ -108,6 +112,7 @@ def _help_sections_for(
         mouse3d_axis_map=state.mouse3d_axis_map,
         mouse3d_buttons=state.mouse3d_buttons,
         marker_cycle_enabled=state.marker_cycle_enabled,
+        button_name_style=state.button_name_style,
     )
     renderer._help_sections_cache = (key, result)
     return result
@@ -121,8 +126,18 @@ def _wrapped_help(renderer: Any, cr: Any, width: float, sections: HelpSections) 
     """Each line wrapped after its bullet to *width*: a help line is never cut."""
     renderer._set_ui_font(cr, _HELP_FONT)
     text_w = width - cr.text_extents(_HELP_BULLET).x_advance
+
+    def measure(text: str) -> float:
+        return symbols.text_advance(cr, text, _HELP_FONT)
+
     return [
-        (title, [_wrap_error_message(renderer, cr, line, text_w, _HELP_FONT, bold=False) for line in lines])
+        (
+            title,
+            [
+                _wrap_error_message(renderer, cr, line, text_w, _HELP_FONT, bold=False, measure=measure)
+                for line in lines
+            ],
+        )
         for title, lines in sections
     ]
 
@@ -156,8 +171,9 @@ def draw_help_block(
         for parts in lines:
             # A wrapped line continues under its own text, not under the bullet.
             for i, part in enumerate(parts):
-                cr.move_to(x + indent if i else x, y_cursor)
-                cr.show_text(part if i else f"{_HELP_BULLET}{part}")
+                symbols.show_text(
+                    cr, part if i else f"{_HELP_BULLET}{part}", x + indent if i else x, y_cursor, _HELP_FONT
+                )
                 y_cursor += 14.0
 
         if idx < len(wrapped) - 1:
@@ -672,7 +688,7 @@ def draw_url_editor_overlay(
 
 
 def draw_settings_menu(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
-    """Render Settings menu modal with info card and error box."""
+    """Render Settings menu modal with the station card, then the error box and the unbound-controllers box."""
     labels = list(state.settings_items)
     enabled = list(state.settings_items_enabled)
     reasons = list(state.settings_items_disabled_reasons)
@@ -685,7 +701,7 @@ def draw_settings_menu(renderer: Any, cr: Any, state: OverlayState, w: int, h: i
         else:
             items.append(f"{label} ({reason or 'unavailable'})")
 
-    # Modal shell; recovery context (banner/error_message) in red-bordered box below for prominence.
+    # Modal shell; notice boxes (the error, then unbound controllers) below the station card.
     panel_w = panel_width(w)
     panel_h = screen_height(h)
     panel_x, panel_y, panel_w, panel_h = draw_modal_shell(
@@ -719,15 +735,19 @@ def draw_settings_menu(renderer: Any, cr: Any, state: OverlayState, w: int, h: i
     # brings its own next step; the video's goes only under the video failure.
     error_text = state.settings_menu_banner or state.video_failure_text or state.error_message
     if error_text:
-        cursor_y = _draw_settings_error_box(
+        cursor_y = _draw_settings_notice_box(
             renderer,
             cr,
+            "error",
             error_text,
             state.settings_menu_banner_action if state.settings_menu_banner else state.video_failure_action,
             content_x,
             cursor_y,
             content_w,
         )
+    unbound_text = _unbound_controllers_text(state.unbound_controllers)
+    if unbound_text:
+        cursor_y = _draw_settings_notice_box(renderer, cr, "info", unbound_text, "", content_x, cursor_y, content_w)
 
     # The list takes the height its rows need, not everything left over, so the
     # documentation pointer below it is on screen rather than under the panel.
@@ -833,11 +853,6 @@ def _draw_settings_info_card(
     # The card is wider than the bottom-left panel, so the source string gets
     # a longer budget here.
     rows = build_info_panel_rows(state, source_max_len=64)
-    # Surface unbound controller pads so operators can spot stray input.
-    # 1-based to match the marker-card badge + OSC ``:cN``.
-    if state.unbound_controller_indices:
-        joined = ", ".join(f"Ctrl{i + 1}" for i in state.unbound_controller_indices)
-        rows.append(("Unbound controllers:", joined))
     row_h = 20.0
     card_h = row_h * len(rows) + 14.0
     draw_panel_background(renderer, cr, x, y, w, card_h, radius=PANEL_RADIUS)
@@ -858,23 +873,48 @@ def _draw_settings_info_card(
     return y + card_h + 10.0
 
 
-def _draw_settings_error_box(
+# Singular and plural name of each controller kind.
+_CONTROLLER_KIND_NAMES = {"gamepad": ("Gamepad", "Gamepads"), "mouse3d": ("3D Mouse", "3D Mice")}
+
+
+def _unbound_controllers_text(controllers: list[tuple[int, str]]) -> str:
+    """The Settings info line for connected controllers that drive no marker; empty when there are none.
+
+    One group per kind, in order of first appearance, each slot 1-based as the
+    marker-card badge and OSC ``:cN``: "Gamepads C2, C4 and 3D Mouse C3".
+    """
+    if not controllers:
+        return ""
+    groups: dict[str, list[int]] = {}
+    for index, kind in controllers:
+        groups.setdefault(kind, []).append(index)
+    named = []
+    for kind, indices in groups.items():
+        singular, plural = _CONTROLLER_KIND_NAMES[kind]
+        slots = ", ".join(f"C{i + 1}" for i in indices)
+        named.append(f"{singular if len(indices) == 1 else plural} {slots}")
+    if len(controllers) == 1:
+        return f"{named[0]} is connected but drives no marker."
+    return f"{' and '.join(named)} are connected but drive no marker."
+
+
+def _draw_settings_notice_box(
     renderer: Any,
     cr: Any,
+    level: str,
     message: str,
     action: str,
     x: float,
     y: float,
     w: float,
 ) -> float:
-    """Render the red-bordered failure box for the Settings modal.
+    """Render a Settings modal notice box in *level*'s fill and border, led by its sign.
 
-    Two weights, matching the web UI's ``.notice.error`` and its
-    ``.notice-sub``: what the station saw carries the emphasis, the step to try
-    sits under it, lighter. The text keeps the HUD's normal colours; the box
-    carries the red.
+    Two weights, matching the web UI's ``.notice`` and its ``.notice-sub``:
+    what the station saw carries the emphasis, the step to try sits under it,
+    lighter. The text keeps the HUD's normal colours; the box carries the level.
     """
-    label = "ERROR"
+    label = level.upper()
     pad = 12.0
     title_size = 11.0
     body_size = 13.0
@@ -894,9 +934,9 @@ def _draw_settings_error_box(
         body_h += 4.0
     card_h = pad * 2 + title_size + 6.0 + body_h
 
-    draw_level_box(cr, "error", x, y, w, card_h, radius=PANEL_RADIUS, line_width=2.0)
+    draw_level_box(cr, level, x, y, w, card_h, radius=PANEL_RADIUS, line_width=2.0)
 
-    draw_warning_sign(cr, x + pad + sign_size / 2, y + pad + sign_size / 2, size=sign_size)
+    draw_level_sign(cr, level, x + pad + sign_size / 2, y + pad + sign_size / 2, size=sign_size)
 
     renderer._set_ui_font(cr, title_size, bold=True)
     cr.set_source_rgba(*COLOR_TEXT_MUTED)
@@ -929,13 +969,15 @@ def _wrap_error_message(
     max_w: float,
     font_size: float,
     bold: bool = True,
+    measure: Callable[[str], float] | None = None,
 ) -> list[str]:
     """Greedy word-wrap respecting ``max_w`` at the given font size and weight.
 
-    ``bold`` must match the render weight (bold glyphs are wider). Returns at
-    least one line.
+    ``bold`` must match the render weight (bold glyphs are wider); ``measure``
+    replaces the plain text width (button symbols). Returns at least one line.
     """
     renderer._set_ui_font(cr, font_size, bold=bold)
+    width = measure or (lambda text: cr.text_extents(text).width)
     if not message:
         return [""]
     words = message.split()
@@ -944,13 +986,13 @@ def _wrap_error_message(
 
     # Hard-wrap single tokens wider than max_w to prevent overflow.
     def _split_long(token: str) -> list[str]:
-        if cr.text_extents(token).width <= max_w:
+        if width(token) <= max_w:
             return [token]
         chunks: list[str] = []
         buf = ""
         for ch in token:
             candidate = buf + ch
-            if cr.text_extents(candidate).width <= max_w:
+            if width(candidate) <= max_w:
                 buf = candidate
             else:
                 if buf:
@@ -969,7 +1011,7 @@ def _wrap_error_message(
                 continue
             sep = "" if i > 0 else " "
             candidate = f"{current}{sep}{piece}"
-            if cr.text_extents(candidate).width <= max_w:
+            if width(candidate) <= max_w:
                 current = candidate
             else:
                 lines.append(current)
@@ -1187,7 +1229,7 @@ def draw_menu_help(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) 
 
 
 def draw_hud(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
-    # Controller badges render per-marker card; unbound pads in Settings menu.
+    # Controller badges render per-marker card; unbound controllers in the Settings info box.
     panels = renderer._panel_cache
     info_key = (tuple(build_info_panel_rows(state)), info_panel_in_error(state))
     panels.draw(cr, "info", info_key, lambda ctx: draw_bottom_left_info_panel(renderer, ctx, state, w, h), w, h)
@@ -1203,12 +1245,11 @@ def draw_hud(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> Non
         renderer._set_ui_font(cr, 9)
         cr.set_source_rgba(*COLOR_TEXT_MUTED)
         help_key = key_label(state.keyboard_labels.get("toggle_help") or "h", fallback="")
-        help_btn = friendly_button_label(state.button_labels.get("toggle_help") or "Y")
+        help_btn = friendly_button_label(state.button_labels.get("toggle_help") or "Y", state.button_name_style)
         parts = [p for p in (help_key, help_btn) if p]
         if parts:
             hint = f"{' / '.join(parts)}: help"
-            cr.move_to(icon_x + icon_size + 4.0, icon_y + icon_size * 0.7)
-            cr.show_text(hint)
+            symbols.show_text(cr, hint, icon_x + icon_size + 4.0, icon_y + icon_size * 0.7, 9.0)
 
     stats_text = build_system_stats_text(state.cpu_percent, state.ram_percent, state.temperature)
     panels.draw(cr, "stats", stats_text, lambda ctx: draw_system_stats(renderer, ctx, state, w), w, h)
@@ -1385,6 +1426,28 @@ _CARD_BORDER_W_SELECTED = 4.0
 _CARD_GROUP_MARGIN = 4.0
 
 
+# Side of the square P badge on a parked marker's card.
+_PARK_BADGE_SIZE = 12.0
+
+
+def _draw_park_badge(renderer: Any, cr: Any, left: float, top: float) -> float:
+    """The info-level P badge of a parked marker; returns its right edge."""
+    size = _PARK_BADGE_SIZE
+    cr.set_source_rgba(*COLOR_INFO_FILL)
+    draw_rounded_rect(cr, left, top, size, size, ROW_RADIUS)
+    cr.fill()
+    cr.set_source_rgb(*COLOR_INFO_BORDER)
+    cr.set_line_width(1.0)
+    draw_rounded_rect(cr, left + 0.5, top + 0.5, size - 1.0, size - 1.0, ROW_RADIUS)
+    cr.stroke()
+    renderer._set_ui_font(cr, 9, bold=True)
+    cr.set_source_rgb(*COLOR_TEXT)
+    ext = cr.text_extents("P")
+    cr.move_to(left + (size - ext.width) / 2 - ext.x_bearing, top + (size + ext.height) / 2)
+    cr.show_text("P")
+    return left + size
+
+
 def draw_marker_card(
     renderer: Any,
     cr: Any,
@@ -1469,6 +1532,8 @@ def draw_marker_card(
             cr.move_to(x + 8, y + 14)
             cr.show_text(badge)
             badge_right = x + 8 + cr.text_extents(badge).width
+        if t.is_controlled and t.parked:
+            badge_right = _draw_park_badge(renderer, cr, badge_right + 4 if badge_right is not None else x + 8, y + 5)
 
         if selected:
             cr.set_source_rgb(*COLOR_ACCENT)
@@ -1654,40 +1719,6 @@ def draw_virtual_fader_card(
     cr.show_text(value_text)
 
 
-_BUTTON_DISPLAY_NAMES: dict[str, str] = {
-    "A": "A",
-    "B": "B",
-    "X": "X",
-    "Y": "Y",
-    "LB": "Left Bumper",
-    "RB": "Right Bumper",
-    "LT": "Left Trigger",
-    "RT": "Right Trigger",
-    "BACK": "Back / Select",
-    "START": "Start / Menu",
-    "DPAD_UP": "D-Pad Up",
-    "DPAD_DOWN": "D-Pad Down",
-    "DPAD_LEFT": "D-Pad Left",
-    "DPAD_RIGHT": "D-Pad Right",
-}
-
-_BUTTON_SHORT_NAMES: dict[str, str] = {
-    "A": "A",
-    "B": "B",
-    "X": "X",
-    "Y": "Y",
-    "LB": "LB",
-    "RB": "RB",
-    "LT": "LT",
-    "RT": "RT",
-    "BACK": "Back",
-    "START": "Start",
-    "DPAD_UP": "D-Up",
-    "DPAD_DOWN": "D-Down",
-    "DPAD_LEFT": "D-Left",
-    "DPAD_RIGHT": "D-Right",
-}
-
 _HAT_RESULT_NAMES: dict[int, str] = {
     -1: "hat Up",
     -2: "hat Down",
@@ -1742,13 +1773,18 @@ def draw_button_detection_overlay(renderer: Any, cr: Any, state: OverlayState, w
         cr.show_text(prompt_text)
         cursor_y += 10.0
 
-        display_name = _BUTTON_DISPLAY_NAMES.get(bd.current_label, bd.current_label)
-        renderer._set_ui_font(cr, 42 if h >= 720 else 32, bold=True)
+        display_name = hud_label(bd.current_label, state.button_name_style, short=False)
+        size = 42.0 if h >= 720 else 32.0
+        renderer._set_ui_font(cr, size, bold=True)
+        name_w = symbols.text_advance(cr, display_name, size)
+        if name_w > content_w:
+            size *= content_w / name_w
+            renderer._set_ui_font(cr, size, bold=True)
+            name_w = symbols.text_advance(cr, display_name, size)
+        cap_h = cr.text_extents("H").height
         cr.set_source_rgb(*COLOR_ACCENT)
-        ext = cr.text_extents(display_name)
-        cr.move_to(panel_x + (panel_w - ext.width) / 2.0 - ext.x_bearing, cursor_y + ext.height)
-        cr.show_text(display_name)
-        cursor_y += ext.height + 24.0
+        symbols.show_text(cr, display_name, panel_x + (panel_w - name_w) / 2.0, cursor_y + cap_h, size)
+        cursor_y += cap_h + 24.0
     else:
         renderer._set_ui_font(cr, 18, bold=True)
         done_text = "Detection Complete!"
@@ -1794,11 +1830,10 @@ def draw_button_detection_overlay(renderer: Any, cr: Any, state: OverlayState, w
             x = content_x + col * col_w
             y = cursor_y + row * row_h
 
-            short_name = _BUTTON_SHORT_NAMES.get(label, label)
             renderer._set_ui_font(cr, 10, bold=True)
+            short_name = hud_label(label, state.button_name_style)
             cr.set_source_rgb(*COLOR_TEXT)
-            cr.move_to(x, y)
-            cr.show_text(short_name)
+            symbols.show_text(cr, short_name, x, y, 10.0)
 
             renderer._set_ui_font(cr, 10)
             cr.set_source_rgba(*COLOR_TEXT_MUTED)

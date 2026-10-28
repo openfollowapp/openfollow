@@ -30,10 +30,12 @@ from openfollow.configuration import (
     effective_lens,
     feature_gated,
     is_simple_mode,
+    parked_within,
     viewed_with_controlled,
 )
 from openfollow.input import InputManager
 from openfollow.input.mouse3d import idle_mouse3d_status
+from openfollow.input.parking import set_parked
 from openfollow.marker_catalog.control_conflicts import ControlConflict, find_control_conflicts
 from openfollow.net_adapters import display_name
 from openfollow.net_egress import Egress, is_loopback_host, resolve_egress
@@ -46,6 +48,8 @@ from openfollow.psn import MARKER_STALE_AFTER_S, PsnReceiver, PsnServer
 from openfollow.psn.server import _UNCHANGED, _Unchanged
 from openfollow.rttrpm import RttrpmServer
 from openfollow.runtime.frame_timing import NOMINAL_FRAME_DT
+from openfollow.runtime.latency_probe import MEDIA_GALLERY, FailureReason, LatencyProbe, monotonic_us
+from openfollow.runtime.latency_warning import LatencyWarning
 from openfollow.runtime.network_observer import DOWN_POLLS_BEFORE_SUSPEND, NetworkPlaneObserver, Plane
 from openfollow.runtime.services_detection_pin import (
     apply_detection_pin as apply_detection_pin_helper,
@@ -64,6 +68,7 @@ from openfollow.video.failure import ConnectionPhase, VideoFailure, failure_acti
 from openfollow.video.hud_render import HudRenderThread
 from openfollow.video.overlay import CairoOverlayRenderer
 from openfollow.video.receiver import GstNativeSinkReceiver, gst_runtime_available
+from openfollow.video.source_limits import limits_snapshot
 from openfollow.window import GtkNativeSinkWindow
 
 if TYPE_CHECKING:
@@ -109,6 +114,8 @@ _MOUSE3D_WEB_DETECT_BUDGET_S = 0.35
 # How long one network backend reading serves the web UI after it completes, so
 # every section one render asks for shares it.
 _NETWORK_READING_MAX_AGE_S = 1.0
+# The OSC listener binds the wildcard; the plane's address while no pin governs it.
+_OSC_LISTENER_ANY = "0.0.0.0"
 # The window hooks the GL Operator Screen needs: one to show it, the rest to fall back to Cairo.
 _GL_CANVAS_HOOKS = ("attach_gl_display", "detach_gl_display", "attach_hud", "gdk_window")
 
@@ -237,6 +244,12 @@ class WebCommandQueue:
         self._camera_release_requested = threading.Event()
         self._camera_released = threading.Event()
         self._video_rebuild_requested = threading.Event()
+        # Camera latency: a Start not taken yet, and the run as the main loop last reported it.
+        self._latency_lock = threading.Lock()
+        self._latency_requested = False
+        self._latency_status: dict[str, Any] = {"state": "idle"}
+        # The Operator Screen's warning card, held up by Measure dialogs showing their warnings.
+        self.latency_warning = LatencyWarning(clock=clock)
         self._update_lock = threading.Lock()
         self._update_request: dict[str, str] | None = None
         self._update_status: dict[str, str] = {
@@ -392,6 +405,28 @@ class WebCommandQueue:
             self._video_rebuild_requested.clear()
             return True
         return False
+
+    def request_latency(self) -> None:
+        """Web thread: start a camera latency run; it reads as running at once, so the dialog polls it."""
+        with self._latency_lock:
+            self._latency_requested = True
+            if self._latency_status.get("state") != "running":
+                self._latency_status = {"state": "running", "measured": 0}
+
+    def consume_latency_requested(self) -> bool:
+        with self._latency_lock:
+            requested, self._latency_requested = self._latency_requested, False
+        return requested
+
+    def set_latency_status(self, status: dict[str, Any]) -> None:
+        """Main loop: the run as it stands; a Start not taken yet keeps what it set."""
+        with self._latency_lock:
+            if not self._latency_requested:
+                self._latency_status = dict(status)
+
+    def get_latency_status(self) -> dict[str, Any]:
+        with self._latency_lock:
+            return dict(self._latency_status)
 
     def consume_button_detection_requested(self) -> bool:
         if self._button_detection_requested.is_set():
@@ -732,6 +767,9 @@ class AppRuntimeServices:
         self._web_bind_pin_at_start: tuple[str, str] = ("", "")
         self._overlay_renderer: CairoOverlayRenderer | None = None  # set in init_video
         self._hud_render: HudRenderThread | None = None  # set in init_video when there is a screen
+        self._latency_probe = LatencyProbe()
+        # The display's monotonic clock in µs; the probe's frames, flashes and steps all read it.
+        self._monotonic_us: Callable[[], int] = monotonic_us
         self._system_stats: SystemStatsCollector | None = None  # set in init_video
         self._person_detector: PersonDetector | None = None  # set in init_video if enabled
         # A detector is built off the frame loop and wired back on it; tests run both in place.
@@ -1093,6 +1131,14 @@ class AppRuntimeServices:
         assert canvas is not None, "init_canvas must run before init_video"
         cfg = self._app._config
 
+        from openfollow.video.inputs import get_input_class
+
+        input_cls = get_input_class(cfg.video_source_type)
+        input_config = input_cls.runtime_config(cfg) if input_cls else {}
+        # Resolves while detection and the display are set up, so the first build reads the answer.
+        if input_cls is not None:
+            input_cls.prefetch(input_config)
+
         # Seed the pre-shipped quality-tier models into the storage folder so
         # detection (and the web tier picker) works offline out of the box.
         # No-op on a source checkout. Runs before the web server starts.
@@ -1122,12 +1168,7 @@ class AppRuntimeServices:
         self._preview_provider = PreviewProvider()
         self._snapshot_provider = SnapshotProvider()
 
-        # Build input-specific config dict from the active plugin
         from openfollow.runtime.app_modes import save_source_pick
-        from openfollow.video.inputs import get_input_class
-
-        input_cls = get_input_class(cfg.video_source_type)
-        input_config = input_cls.runtime_config(cfg) if input_cls else {}
 
         gl_display = self._choose_gl_display(canvas)
         receiver = GstNativeSinkReceiver(
@@ -1157,8 +1198,12 @@ class AppRuntimeServices:
         # The display tick, not video buffer flow, paces the HUD, so a 0 fps source cannot freeze it.
         # The tick starts and shows pictures drawn on the HUD render thread; the draw callback only pastes.
         if hasattr(canvas, "attach_hud"):
-            self._hud_render = HudRenderThread(overlay, layered=gl_display is not None)
+            self._hud_render = HudRenderThread(overlay, layered=gl_display is not None, refresh_us=self._monotonic_us)
+            self._hud_render.on_flash_shown = self._latency_probe.presented
             if gl_display is not None:
+                from openfollow.video.gl_display import ScreenFlash
+
+                gl_display.flash = ScreenFlash(self._latency_probe.screen_level, self._latency_probe.presented)
                 gl_display.set_hud(self._hud_render)
                 canvas.attach_gl_display(gl_display, tick=self._hud_render.tick)
             else:
@@ -1367,7 +1412,26 @@ class AppRuntimeServices:
             if self._osc_service.listener_status()["port"] is None and self._app._input_manager is not None:
                 self._app._input_manager.resume_osc()
 
+        _resolve_osc_input_iface = _resolver(lambda: self._app._config.osc.listen_iface, follows_station=True)
+
+        def _osc_input_follows_iface() -> bool:
+            # Config only. Unpinned, the membership is the routing table's to
+            # choose; with no group configured the pin governs nothing. Either
+            # way the plane follows the wildcard listener instead.
+            cfg = self._app._config.osc
+            pinned = plane_source_iface(cfg.listen_iface, self._app._config.psn_source_iface)
+            return bool(cfg.multicast_group and pinned)
+
+        def _resolve_osc_input() -> tuple[str, ResolveStatus, str]:
+            if _osc_input_follows_iface():
+                return _resolve_osc_input_iface()
+            # Bound on every interface: nothing to resolve and never down.
+            return _OSC_LISTENER_ANY, "primary", ""
+
         def _apply_osc_input(address: str) -> None:
+            if not _osc_input_follows_iface():
+                _start_osc_listener()
+                return
             # Rebinds the listener so the group follows the interface. The
             # membership cannot be dropped once the address it was taken on is
             # gone - the kernel calls that drop a success and releases nothing
@@ -1386,6 +1450,8 @@ class AppRuntimeServices:
 
         def _current_osc_input() -> str | None:
             status = self._osc_service.listener_status()
+            if not _osc_input_follows_iface():
+                return None if status["port"] is None else _OSC_LISTENER_ANY
             if not status["multicast_joined"]:
                 return None
             iface = status["multicast_iface"]
@@ -1395,15 +1461,6 @@ class AppRuntimeServices:
             # Unicast and broadcast keep arriving without the membership.
             _start_osc_listener()
             self._osc_service.set_multicast_iface(None)
-
-        def _osc_input_pinned() -> bool:
-            # Config only. Unpinned, the membership is the routing table's to
-            # choose and there is no interface to follow; with no group
-            # configured the pin governs nothing. A listener that is not running
-            # stays a plane, so its failure is reported and retried.
-            cfg = self._app._config.osc
-            pinned = plane_source_iface(cfg.listen_iface, self._app._config.psn_source_iface)
-            return bool(cfg.enabled and cfg.multicast_group and pinned)
 
         return [
             Plane(
@@ -1434,11 +1491,13 @@ class AppRuntimeServices:
             ),
             Plane(
                 label="OSC input",
-                resolve=_resolver(lambda: self._app._config.osc.listen_iface, follows_station=True),
+                resolve=_resolve_osc_input,
                 current=_current_osc_input,
                 apply=_apply_osc_input,
                 suspend=_suspend_osc_input,
-                enabled=_osc_input_pinned,
+                # A listener that is not running stays a plane, pinned or not,
+                # so its failure is reported and retried.
+                enabled=lambda: self._app._config.osc.enabled,
             ),
             Plane(
                 label="Video input",
@@ -1717,7 +1776,11 @@ class AppRuntimeServices:
             name = entry.name if (entry is not None and entry.name) else f"Marker {marker_id}"
             marker = server.add_marker(marker_id, name)
             marker.set_pos(*default_pos)
-        self._app._selected_id = self._app._controlled_ids[0] if self._app._controlled_ids else None
+        # No selection yet, so the first unparked marker is chosen as a start, not as a park moving it.
+        self._app._selected_id = None
+        parked = parked_within(self._app._controlled_ids, self._app._config.parked_marker_ids)
+        self._app._config.parked_marker_ids = parked
+        set_parked(self._app, parked)
 
     def _resolved_plane_source_ip(self, pin: str, *, label: str) -> str | None:
         """Resolve one plane's configured interface to a concrete bind IP.
@@ -2085,7 +2148,7 @@ class AppRuntimeServices:
 
         ``identifier`` is the substrate's stable matching key
         (serial-prefixed when present, port+product fallback otherwise) –
-        the alias-edit form posts it back so :meth:`MidiSubsystem._match`
+        the alias-edit form posts it back so :func:`~openfollow.input.midi.match_patches`
         can resolve the operator's choice to a port. Empty list while
         ``discover`` returns nothing (no devices, or broken backend)."""
         out: list[dict[str, Any]] = []
@@ -3075,6 +3138,8 @@ class AppRuntimeServices:
             network_vlan_provider=self._network_vlan_provider,
             network_vlan_create_handler=self._handle_network_vlan_create,
             network_vlan_delete_handler=self._handle_network_vlan_delete,
+            network_saved_provider=self._network_saved_provider,
+            network_forget_handler=self._handle_network_forget,
             network_rescan_handler=self._forget_network_reading,
             # Privilege capability snapshot for the diagnostics bundle.
             privilege_states_provider=self._privilege_states_provider,
@@ -3402,6 +3467,30 @@ class AppRuntimeServices:
             rows.append(row)
         return rows
 
+    def _network_saved_provider(self) -> list[dict[str, Any]]:
+        """Every interface that is not present but has saved settings, as the card shows them."""
+        from openfollow.network.validate import prefix_to_mask
+
+        reading = self._read_network()
+        if reading is None:
+            return []
+        return [
+            {
+                "name": saved.name,
+                "kind": "vlan" if saved.vlan_id is not None else None,
+                "address": saved.ipv4.address or "",
+                "prefix": saved.ipv4.prefix,
+                "subnet_mask": prefix_to_mask(saved.ipv4.prefix) or "",
+                "method": saved.ipv4.method.value,
+                "router": saved.ipv4.router or "",
+                "dns": list(saved.ipv4.dns),
+                "lease_display": None,
+                "vlan_parent": saved.vlan_parent,
+                "vlan_id": saved.vlan_id,
+            }
+            for saved in reading.saved
+        ]
+
     def _network_address_sources_provider(self) -> list[dict[str, Any]] | None:
         """Every interface's address and its source, read now for the diagnostics bundle.
 
@@ -3489,6 +3578,19 @@ class AppRuntimeServices:
             return ApplyResult(ok=False, message="Read-only host – cannot delete a VLAN.")
         with self.network_change():
             return cast(ApplyResult, adapter.delete_vlan(name))
+
+    def _handle_network_forget(self, name: str) -> ApplyResult:
+        """Delete the saved settings of an interface that is not present, serialised
+        with the other network writes (see :meth:`_handle_network_apply`)."""
+        from openfollow.network.adapter import ApplyResult
+
+        adapter = getattr(self, "_network_adapter", None)
+        if adapter is None:
+            return ApplyResult(ok=False, message="No network adapter available.")
+        if not adapter.is_writable():
+            return ApplyResult(ok=False, message="Read-only host – cannot delete saved settings.")
+        with self.network_change():
+            return cast(ApplyResult, adapter.forget_interface(name))
 
     def _privilege_states_provider(self) -> dict[str, str]:
         """Snapshot every capability's state for the web UI.
@@ -3684,6 +3786,7 @@ class AppRuntimeServices:
         broadcasts, so it carries no default - a wrong step silently rescales
         every velocity on the wire.
         """
+        self._step_latency_probe()
         state = build_marker_visual_state(
             self._app,
             system_stats=self._system_stats,
@@ -3692,6 +3795,7 @@ class AppRuntimeServices:
             dt=dt,
             network_alerts=self.network_alerts(),
             control_conflicts=self._control_conflicts,
+            latency_flash=self._latency_probe.screen_level(),
         )
 
         # Replaced on the main thread; a state the render thread received at a refresh is never changed.
@@ -3700,6 +3804,79 @@ class AppRuntimeServices:
         # unreachable at runtime.
         if self._overlay_renderer is not None:  # pragma: no branch
             self._overlay_renderer.state = state
+
+    # -- Camera latency ------------------------------------------------------
+
+    def _latency_feed(self) -> tuple[str, int] | None:
+        """What a run measures: the source and the pipeline it plays through, None while no video is decoded."""
+        receiver = self._app._video_receiver
+        if receiver is None or not receiver.status_marker.snapshot().is_connected:
+            return None
+        return (self._app._config.video_source_type, receiver.pipeline_builds)
+
+    def start_latency_run(self) -> None:
+        """Start a camera latency run (GTK main thread); a run already going carries on."""
+        probe = self._latency_probe
+        if probe.active:
+            return
+        source_type = self._app._config.video_source_type
+        if self._hud_render is None:
+            probe.refuse(FailureReason.NO_DISPLAY)
+        elif source_type == MEDIA_GALLERY:
+            probe.refuse(FailureReason.MEDIA_GALLERY)
+        else:
+            probe.start(self._monotonic_us(), self._latency_feed(), source_type)
+        receiver = self._app._video_receiver
+        if probe.active and receiver is not None:
+            receiver.set_frame_listener(self._on_latency_frame)
+            logger.info("Camera latency run started.")
+
+    def latency_status(self) -> dict[str, Any]:
+        """The latency run for the web UI, see ``LatencyProbe.status``."""
+        return self._latency_probe.status(self._monotonic_us())
+
+    def latency_last_success(self) -> dict[str, Any] | None:
+        """The last successful run, kept until a later one succeeds; failures never replace it."""
+        result = self._latency_probe.last_success
+        return result.to_dict(self._monotonic_us()) if result is not None else None
+
+    def _on_latency_frame(self, buffer: Any, caps: Any) -> None:
+        # Streaming thread: stamp the arrival before the read. A raise would drop the frame from the display.
+        from openfollow.video.frame_luma import frame_mean_luma
+
+        arrival = self._monotonic_us()
+        try:
+            luma = frame_mean_luma(buffer, caps)
+        except Exception:
+            logger.exception("Camera latency: a frame could not be read; the run ends.")
+            luma = None
+        self._latency_probe.feed(arrival, luma)
+
+    def _step_latency_probe(self) -> None:
+        """Frame loop: move a run on; nothing while idle."""
+        probe = self._latency_probe
+        if not probe.active:
+            return
+        probe.step(self._monotonic_us(), self._latency_feed())
+        if not probe.active:
+            self._end_latency_run()
+
+    def _end_latency_run(self) -> None:
+        """The receiver stops handing frames over, and the outcome is logged."""
+        receiver = self._app._video_receiver
+        if receiver is not None:
+            receiver.set_frame_listener(None)
+        status = self._latency_probe.status()
+        if (result := status["result"]) is not None:
+            logger.info(
+                "Camera latency: median %.0f ms (%.0f to %.0f ms) over %d changes.",
+                result["median_ms"],
+                result["min_ms"],
+                result["max_ms"],
+                result["samples"],
+            )
+        else:
+            logger.info("Camera latency run ended: %s", (status["failure"] or {}).get("reason"))
 
     def apply_detection_pin(self, dt: float = NOMINAL_FRAME_DT) -> None:
         """Drive controlled marker(s) from detection with EMA smoothing.
@@ -4044,6 +4221,7 @@ class AppRuntimeServices:
                 "source_selection_active": False,
                 "source_fps": 0.0,
                 "source_format": "",
+                "limits": limits_snapshot(None),
             },
             "controllers": {
                 "connected_count": 0,
@@ -4052,6 +4230,7 @@ class AppRuntimeServices:
                 "items": [],
             },
             "mouse3d": idle_mouse3d_status(cfg.mouse3d.enabled).to_dict(),
+            "keyboard": {"poller": None, "devices": None},
             "playback": self._frame_metrics.snapshot(),
             "tracking": {
                 "enabled": bool(self.detection_config().enabled),
@@ -4079,6 +4258,7 @@ class AppRuntimeServices:
             # Filled once the Operator Screen has drawn for a window (``HudMetrics``); None headless.
             "hud": None,
             "marker_conflicts": [],
+            "latency": None,
         }
 
     def _find_control_conflicts(self) -> tuple[ControlConflict, ...]:
@@ -4166,6 +4346,7 @@ class AppRuntimeServices:
             "source_selection_active": False,
             "source_fps": 0.0,
             "source_format": "",
+            "limits": limits_snapshot(None),
         }
         receiver = getattr(app, "_video_receiver", None)
         if receiver is not None:
@@ -4215,6 +4396,7 @@ class AppRuntimeServices:
                 "source_selection_active": bool(receiver.source_selection_active),
                 "source_fps": float(getattr(receiver, "source_framerate", 0.0)),
                 "source_format": str(getattr(receiver, "source_format", "") or ""),
+                "limits": limits_snapshot(getattr(receiver, "source_limits", None), receiver.source_kind),
             }
 
         controller_items: list[dict[str, Any]] = []
@@ -4223,6 +4405,9 @@ class AppRuntimeServices:
             input_manager.mouse3d_manager.status()
             if input_manager is not None
             else idle_mouse3d_status(cfg.mouse3d.enabled)
+        )
+        keyboard_status = (
+            input_manager.keyboard_status() if input_manager is not None else {"poller": None, "devices": None}
         )
         if input_manager is not None:
             for item in input_manager.get_controller_info():
@@ -4235,6 +4420,7 @@ class AppRuntimeServices:
                         "state": str(item.get("state", "connected" if item["connected"] else "missing")),
                         "connected": bool(item["connected"]),
                         "marker_id": (int(item["marker_id"]) if item["marker_id"] is not None else None),
+                        "parked": bool(item.get("parked", False)),
                         "effective_speed": float(item["effective_speed"]),
                         "backend": str(item["backend"]),
                         "port_label": str(item.get("port_label", "")),
@@ -4298,10 +4484,13 @@ class AppRuntimeServices:
                 "items": controller_items,
             },
             "mouse3d": mouse3d_status.to_dict(),
+            "keyboard": keyboard_status,
             "playback": playback_snapshot,
             "tracking": detection_snapshot,
             "hud": self._hud_render.stats() if self._hud_render is not None else None,
             "marker_conflicts": [conflict.to_dict() for conflict in self._control_conflicts],
+            # The last successful camera latency run; a failed run never replaces it.
+            "latency": self.latency_last_success(),
         }
 
         with self._runtime_stats_lock:

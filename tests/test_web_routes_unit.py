@@ -30,12 +30,12 @@ duplicating here.
 
 from __future__ import annotations
 
+import tomllib
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
-import tomllib
 
 import openfollow.web.routes as routes_module
 from openfollow.configuration import AppConfig, DetectionMaskConfig, TriggerZoneConfig

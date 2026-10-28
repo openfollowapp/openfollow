@@ -30,6 +30,8 @@ from openfollow.video.inputs.v4l2 import (
     _UnlistedModes,
     _usb_link_budget,
 )
+from openfollow.video.receiver import _caps_dimensions
+from openfollow.video.source_limits import FrameMeter, limits_row, limits_snapshot
 from tests._fake_gst import FakeElement, FakePipeline, make_fake_gst
 
 pytestmark = pytest.mark.unit
@@ -965,6 +967,40 @@ class TestV4l2PinnedMode:
             "capsfilter",
             "convert",
         ]
+
+    @pytest.mark.parametrize(
+        ("table", "expected"),
+        [
+            # A capture card fed 1080p59.94: listed only at its incoming signal.
+            ({"YUYV": {(1920, 1080): [(1001, 60000)]}}, "Video 60 fps > 30 fps"),
+            # A camera listing nothing smaller than 4K.
+            ({"MJPG": {(3840, 2160): [(1, 30)]}}, "Video 3840×2160 > Full HD"),
+        ],
+        ids=["capture-card-60", "4k-only"],
+    )
+    def test_a_mode_past_the_settings_is_what_the_source_limits_measure(self, camera, table, expected) -> None:
+        """Render resolution 1080p at FPS 30 cannot clear this: the step names the camera too."""
+        camera(table, USB3)
+        pipeline = _build_v4l2({"v4l2_render_resolution": "1080p", "v4l2_framerate": 30})
+        metered = pipeline.get_by_name(V4l2Input.frame_meter_element_name)
+        src_caps = pipeline.get_by_name("src_caps")
+        # The mode reaches the meter before anything scales it or drops frames to the settings.
+        assert src_caps.links == [metered]
+        assert "videorate" in self._chain(pipeline)[self._chain(pipeline).index(metered.name) :]
+
+        mode = src_caps.properties["caps"].to_string()
+        width, height = _caps_dimensions(mode)
+        rate = Fraction(mode.split("framerate=(fraction)")[1])
+        now = [1000.0]
+        meter = FrameMeter(clock=lambda: now[0])
+        meter.note_caps(width, height)
+        for i in range(int(rate * 15)):
+            now[0] = 1000.0 + i / float(rate)
+            meter.note_frame()
+        assert limits_row(meter.reading) == expected
+        assert limits_snapshot(meter.reading, V4l2Input.source_kind)["action"].startswith(
+            "Set the camera, or the signal into the capture card, to 1920×1080 at 30 fps or less"
+        )
 
     def test_no_mode_to_choose_leaves_the_source_open(self, camera) -> None:
         camera(CAPTURE_CARD, USB2)

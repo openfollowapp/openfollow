@@ -12,6 +12,7 @@ from typing import Any
 
 import numpy.typing as npt
 
+from openfollow.button_names import name_style
 from openfollow.configuration import (
     MOUSE3D_AXES,
     MOUSE3D_BUTTON_FIELDS,
@@ -20,11 +21,16 @@ from openfollow.configuration import (
     feature_on,
     is_simple_mode,
 )
+from openfollow.input.parking import is_parked
 from openfollow.input.touch_remote import STATUS_FLAG as REMOTE_FLAG
 from openfollow.input.touch_remote import status_row as remote_row
 from openfollow.marker_catalog.control_conflicts import ControlConflict
 from openfollow.network.validate import is_link_local
 from openfollow.palette import AUTO_PICK_ORDER as _PALETTE_AUTO_PICK_ORDER
+from openfollow.runtime.latency_warning import HEADLINE as LATENCY_WARNING_HEADLINE
+from openfollow.runtime.latency_warning import INFO as LATENCY_WARNING_INFO
+from openfollow.runtime.latency_warning import MESSAGE as LATENCY_WARNING_MESSAGE
+from openfollow.runtime.latency_warning import card_showing as latency_card_showing
 from openfollow.runtime.marker_velocity import MarkerVelocityState, estimate_marker_velocity
 from openfollow.runtime.overlay_draw_style import STATUS_LEVELS, status_level
 from openfollow.runtime.overlay_state import (
@@ -39,6 +45,7 @@ from openfollow.runtime.state_maps import get_or_create, prune_to_keep
 from openfollow.station_fqdn import web_ui_host
 from openfollow.units import UnitSystem
 from openfollow.video.failure import SourceKind, VideoFailure, failure_action, failure_chip, failure_sentence
+from openfollow.video.source_limits import limits_row
 
 
 def _receiver_kind(video_receiver: Any) -> SourceKind:
@@ -492,6 +499,7 @@ def build_marker_visual_state(
     dt: float,
     network_alerts: list[str] | None = None,
     control_conflicts: Sequence[ControlConflict] = (),
+    latency_flash: float | None = None,
 ) -> OverlayState:
     """Build a new OverlayState for the renderer; it is never changed once handed over.
 
@@ -537,7 +545,7 @@ def build_marker_visual_state(
     # The card an Identify has lit this frame, if any.
     flash_marker = app._input_manager.identify_flash_marker() if app._input_manager is not None else None
 
-    state = OverlayState()
+    state = OverlayState(latency_flash=latency_flash)
 
     # The actually-bound port from the running web server so the HUD reflects
     # reachability, not just configuration. Falls back to the configured port
@@ -750,6 +758,7 @@ def build_marker_visual_state(
                 controller_connected=ctrl_conn,
                 identify_flash=marker_id == flash_marker,
                 is_controlled=is_controlled,
+                parked=is_controlled and is_parked(app, marker_id),
                 control_conflict=marker_id in conflict_ids,
                 name=name,
                 marker_fader=marker_fader,
@@ -813,6 +822,7 @@ def build_marker_visual_state(
     # While paths are off their bindings do nothing, so help names none.
     paths_engine = getattr(app, "_paths", None)
     paths_on = paths_engine is not None and paths_engine.enabled
+    state.button_name_style = name_style(cc.button_name_style)
     state.button_labels = {
         "reset": cc.btn_reset,
         "toggle_help": cc.btn_toggle_help,
@@ -855,11 +865,11 @@ def build_marker_visual_state(
     state.controller_connected = cfg.controller.enabled and any(
         bool(info["connected"]) for info in controller_info if info.get("backend") != "mouse3d"
     )
-    # Connected pads that map to no marker (more pads than
-    # ``controlled_marker_ids``) are surfaced in the Settings menu's info
-    # card; there is no bottom-center status panel.
-    state.unbound_controller_indices = [
-        int(info["controller_index"])
+    # Connected controllers that map to no marker (more than
+    # ``controlled_marker_ids``) go to the Settings menu's info box by slot
+    # kind; any kind but a 3D mouse is a gamepad, the two the HUD names.
+    state.unbound_controllers = [
+        (int(info["controller_index"]), "mouse3d" if info.get("kind") == "mouse3d" else "gamepad")
         for info in controller_info
         if info["marker_id"] is None and bool(info["connected"])
     ]
@@ -926,6 +936,8 @@ def build_marker_visual_state(
             if status.failure not in (VideoFailure.NONE, VideoFailure.NOT_CONFIGURED)
             else None
         )
+        limits = limits_row(getattr(video_receiver, "source_limits", None))
+        flags_dict["video_limits"] = ("error", limits) if limits else None
         flags_dict[RECORDING_FLAG] = recording_row(app) if paths_on else None
         flags_dict[REMOTE_FLAG] = remote_row(app)
         flags_dict["power"] = ("error", power_warning) if power_warning else None
@@ -992,9 +1004,26 @@ def build_marker_visual_state(
     # guards windows where services or the store aren't wired yet.
     op_store = getattr(runtime_services, "_operator_message_store", None) if runtime_services is not None else None
     op_cfg = app._config.operator_messages
-    if op_store is not None and op_cfg.enabled:
+    latency_warning = latency_card_showing(app)
+    if latency_warning or (op_store is not None and op_cfg.enabled):
         state.operator_message_position = op_cfg.position
         state.operator_message_scale = op_cfg.scale
+    # The latency test's warning: one card of its own, whether OSC messages are on or not.
+    if latency_warning:
+        state.operator_messages.append(
+            OperatorMessageView(
+                message=LATENCY_WARNING_MESSAGE,
+                info=LATENCY_WARNING_INFO,
+                marker_id=0,
+                marker_name="",
+                marker_color="",
+                is_forever=True,
+                remaining_fraction=1.0,
+                headline=LATENCY_WARNING_HEADLINE,
+                headline_level="caution",
+            )
+        )
+    if op_store is not None and op_cfg.enabled:
         now = time.monotonic()
         messages = op_store.snapshot(now)
         max_visible = op_cfg.max_visible

@@ -172,7 +172,7 @@ El.prototype.contains = function (n) {
     return false;
 };
 
-// -- selectors: compounds of tag, #id, .class and [attr], [attr=v], [attr^=v], [attr$=v], [attr*=v],
+// -- selectors: compounds of tag, #id, .class, :checked and [attr], [attr=v], [attr^=v], [attr$=v], [attr*=v],
 // joined by descendant spaces, in comma-separated groups.
 function parseCompound(text) {
     var parts = [], m, rest = text;
@@ -180,6 +180,7 @@ function parseCompound(text) {
     while (rest) {
         if ((m = /^#([\w-]+)/.exec(rest))) parts.push({ attr: 'id', op: '=', value: m[1] });
         else if ((m = /^\.([\w-]+)/.exec(rest))) parts.push({ cls: m[1] });
+        else if ((m = /^:checked/.exec(rest))) parts.push({ checked: true });
         else if ((m = /^\[([\w-]+)(?:([\^$*]?=)(?:"([^"]*)"|'([^']*)'|([^\]]*)))?\]/.exec(rest))) {
             parts.push({ attr: m[1], op: m[2] || '', value: m[3] !== undefined ? m[3] : m[4] !== undefined ? m[4] : m[5] });
         } else throw new Error('the fake DOM cannot read the selector ' + text);
@@ -195,6 +196,7 @@ function matchesCompound(el, parts) {
     return parts.every(function (p) {
         if (p.tag) return p.tag === '*' || el.tagName.toLowerCase() === p.tag;
         if (p.cls) return el.classList.contains(p.cls);
+        if (p.checked) return !!el.checked;
         var v = el.getAttribute(p.attr);
         if (v === null) return false;
         if (p.op === '=') return v === p.value;

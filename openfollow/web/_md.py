@@ -4,14 +4,19 @@
 
 ``escape=True`` escapes any raw inline/block HTML in the source, keeping the
 rendered fragment inert (no live ``<script>``). The ``table`` plugin enables
-the only non-core Markdown construct the help docs use.
+the only non-core Markdown construct the help docs use. An image whose URL is
+``button:<symbol>`` is a gamepad button symbol, drawn inline in the text colour.
 """
 
 from __future__ import annotations
 
+import html
 from typing import cast
 
 import mistune
+
+from openfollow.button_names import SYMBOL_SHAPES
+from openfollow.web.button_icons import symbol_html
 
 
 class _Renderer(mistune.HTMLRenderer):
@@ -21,6 +26,13 @@ class _Renderer(mistune.HTMLRenderer):
         if url.startswith(("https://", "http://")):
             return html.replace("<a ", '<a target="_blank" rel="noopener noreferrer" ', 1)
         return html
+
+    def image(self, text: str, url: str, title: str | None = None) -> str:
+        symbol = url.removeprefix("button:")
+        if url.startswith("button:") and symbol in SYMBOL_SHAPES:
+            # mistune hands the alt text over escaped; symbol_html escapes it itself.
+            return symbol_html(symbol, html.unescape(text))
+        return super().image(text, url, title)
 
 
 # Stateless renderer; reused across requests.

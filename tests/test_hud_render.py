@@ -32,6 +32,7 @@ class _Scene:
 
     square: bool = True
     at: tuple[int, int] = (5, 5)
+    latency_flash: float | None = None
 
 
 @dataclass
@@ -771,5 +772,57 @@ def test_a_layered_hud_set_back_draws_canvas_sized_pictures(renderer) -> None:
         hud.set_layered(False)
         _until(lambda: hud.tick() and isinstance(hud.shown_picture()[0], cairo.ImageSurface), "a canvas-sized picture")
         assert _pixel(_painted(hud), 10, 10) == RED
+    finally:
+        hud.stop()
+
+
+# -- the latency flash on the Cairo Operator Screen -------------------------------------------
+
+
+def _flash_hud(renderer: _Renderer, *, layered: bool = False) -> tuple[HudRenderThread, list[tuple[float, int]]]:
+    refreshes = iter(range(1_000, 10_000_000, 1_000))
+    hud = HudRenderThread(renderer, layered=layered, refresh_us=lambda: next(refreshes))
+    shown: list[tuple[float, int]] = []
+    hud.on_flash_shown = lambda level, at: shown.append((level, at))
+    hud.start()
+    return hud, shown
+
+
+def test_a_flash_is_reported_at_the_refresh_that_shows_its_picture_not_when_drawn(renderer) -> None:
+    hud, shown = _flash_hud(renderer)
+    try:
+        hud.set_canvas(64, 36, (1.0, 1.0))
+        renderer.state = _Scene(latency_flash=1.0)
+        hud.tick()
+        _until(lambda: renderer.drawn, "the flash picture")
+        assert shown == [], "drawn is not shown"
+        _show(hud)
+        assert len(shown) == 1 and shown[0][0] == 1.0
+        # The refresh clock is read at the showing refresh only.
+        assert shown[0][1] == 1_000
+    finally:
+        hud.stop()
+
+
+def test_a_picture_without_a_flash_reports_nothing(renderer) -> None:
+    hud, shown = _flash_hud(renderer)
+    try:
+        hud.set_canvas(64, 36, (1.0, 1.0))
+        hud.tick()
+        _show(hud)
+        _show(hud)
+        assert shown == []
+    finally:
+        hud.stop()
+
+
+def test_on_the_gl_display_the_hud_leaves_the_flash_report_to_the_display(renderer) -> None:
+    hud, shown = _flash_hud(renderer, layered=True)
+    try:
+        hud.set_canvas(64, 36, (1.0, 1.0))
+        renderer.state = _Scene(latency_flash=0.0)
+        hud.tick()
+        _show(hud)
+        assert shown == []
     finally:
         hud.stop()

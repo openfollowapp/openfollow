@@ -743,6 +743,7 @@ class TestDelegators:
             ("_check_button_detection_request", "runtime_check_button_detection_request", ()),
             ("_check_controller_slot_actions", "runtime_check_controller_slot_actions", ()),
             ("_check_camera_setup_requests", "runtime_check_camera_setup_requests", ()),
+            ("_check_latency_requests", "runtime_check_latency_requests", ()),
             ("_process_source_selection_input", "runtime_process_source_selection_input", ()),
             ("_enter_source_selection", "runtime_enter_source_selection", ()),
             ("_enter_button_detection", "runtime_enter_button_detection", ()),

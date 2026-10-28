@@ -69,6 +69,8 @@ class MediaGalleryInput(VideoInputBase):
     # All three media kinds (default pattern, stored image, stored clip) name
     # their source element the same, so this one lookup covers every selection.
     source_element_name = "media_source"
+    # Within the source limits by construction: scaled to Full HD, stills at 30 fps, clips at a rate the upload passed.
+    frame_meter_element_name = None
     source_kind = SourceKind.LOCAL
 
     def __init__(self) -> None:

@@ -24,10 +24,10 @@ from __future__ import annotations
 
 import math
 import re
-from enum import Enum
+from enum import StrEnum
 
 
-class UnitSystem(str, Enum):
+class UnitSystem(StrEnum):
     METRIC = "metric"
     IMPERIAL = "imperial"
 

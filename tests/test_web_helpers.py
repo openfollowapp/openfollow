@@ -210,34 +210,6 @@ def test_as_int_list_parses_csv_and_falls_back() -> None:
 # helpers shouldn't break these.
 
 
-def test_apply_section_data_marker_accepts_the_former_z_line_names() -> None:
-    """A peer or API client still on the pre-rename names must not be accepted and
-    then ignored. ``apply_section_data`` returns True either way, so a silent drop
-    would look exactly like a successful broadcast during a rolling upgrade."""
-    config = AppConfig()
-
-    ok = apply_section_data(config, "marker", {"drop_line": False, "drop_line_thickness": 9})
-
-    assert ok is True
-    assert config.marker.z_line is False
-    assert config.marker.z_line_thickness == 9
-
-
-def test_apply_section_data_marker_prefers_the_current_z_line_names() -> None:
-    """With both spellings present the current one wins, matching the config-file
-    path, so a stale key from an older sender cannot override a deliberate value."""
-    config = AppConfig()
-
-    apply_section_data(
-        config,
-        "marker",
-        {"drop_line": False, "z_line": True, "drop_line_thickness": 9, "z_line_thickness": 4},
-    )
-
-    assert config.marker.z_line is True
-    assert config.marker.z_line_thickness == 4
-
-
 def test_apply_section_data_reads_the_control_direction_flip_from_an_older_peer() -> None:
     """An older station broadcasts the flip; dropping it would silently un-turn this station's controls."""
     config = AppConfig()
@@ -589,11 +561,13 @@ def test_apply_section_data_general_ignores_marker_ids(monkeypatch) -> None:
         {
             "controlled_marker_ids": "99",
             "viewer_marker_ids": "98",
+            "parked_marker_ids": "99",
         },
     )
     assert ok is True
     assert config.controlled_marker_ids == original_controlled
     assert config.viewer_marker_ids == original_viewer
+    assert config.parked_marker_ids == []
 
 
 def test_apply_section_data_marker_ignores_marker_id_fields() -> None:
@@ -1286,6 +1260,44 @@ def test_an_imported_controlled_marker_is_viewed_too() -> None:
     assert new.viewer_marker_ids == [4, 2]
 
 
+def test_an_import_restores_the_parked_markers_it_controls() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    new = _apply_import_data(AppConfig(), {"controlled_marker_ids": [2, 3], "parked_marker_ids": [3, 4, True, "2", 3]})
+
+    assert new.parked_marker_ids == [3]
+
+
+def test_an_import_that_drops_a_controlled_marker_drops_its_park() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    new = _apply_import_data(
+        AppConfig(controlled_marker_ids=[1, 2], parked_marker_ids=[1, 2]), {"controlled_marker_ids": [2]}
+    )
+
+    assert new.parked_marker_ids == [2]
+
+
+def test_a_push_leaves_this_stations_parked_markers() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    new = _apply_import_data(
+        AppConfig(controlled_marker_ids=[1, 2], parked_marker_ids=[1]),
+        {"controlled_marker_ids": [1, 2], "parked_marker_ids": [2]},
+        pushed=True,
+    )
+
+    assert new.parked_marker_ids == [1]
+
+
+def test_an_export_carries_the_parked_markers() -> None:
+    from openfollow.web.routes import _config_dict_redacted
+
+    payload = _config_dict_redacted(AppConfig(controlled_marker_ids=[1, 2], parked_marker_ids=[2]))
+
+    assert payload["parked_marker_ids"] == [2]
+
+
 def test_an_import_without_a_marker_selection_keeps_this_stations() -> None:
     from openfollow.web.routes import _apply_import_data
 
@@ -1303,6 +1315,8 @@ def test_an_import_without_a_marker_selection_keeps_this_stations() -> None:
         ("controller.button_raw_indices", {"A": 3}, "abc", {}),
         ("controller.swap_triggers", True, None, False),
         ("controller.mapped_controller_guid", "0300abcd", 3, ""),
+        ("controller.button_name_style", "xbox", 3, "standard"),
+        ("controller.button_name_style", "xbox", "ps5", "standard"),
         ("ui.developer_mode", True, "abc", False),
         ("paths.show_paths", False, "abc", True),
         ("network.backend", "nm", 3, "auto"),
@@ -1872,6 +1886,7 @@ def test_reset_config_to_defaults_returns_every_section_to_default() -> None:
     configured.window_width = 3840
     configured.controlled_marker_ids = [1, 2]
     configured.viewer_marker_ids = [1, 2, 3]
+    configured.parked_marker_ids = [2]
     configured.marker_move_speeds = {1: 2.5}
     configured.auto_update_check = False
     configured.camera.pos_x = 9.5
@@ -3498,12 +3513,39 @@ def test_cancel_button_label_default_is_B() -> None:
     assert routes_mod._cancel_button_label(cfg) == "B"
 
 
+@pytest.mark.parametrize(
+    ("style", "button", "word"),
+    [("playstation", "B", "Circle"), ("xbox", "BACK", "View")],
+)
+def test_cancel_button_label_draws_the_symbol_with_its_word(style: str, button: str, word: str) -> None:
+    from openfollow.configuration import AppConfig
+    from openfollow.web import routes as routes_mod
+
+    cfg = AppConfig()
+    cfg.controller.button_name_style = style
+    cfg.controller.btn_menu_cancel = button
+    label = routes_mod._cancel_button_label(cfg)
+    assert label.startswith('<span class="btn-symbol"><svg class="btn-symbol-icon"')
+    assert f'<span class="visually-hidden">{word}</span>' in label
+
+
+@pytest.mark.parametrize(("style", "word"), [("standard", "Back"), ("playstation", "Create"), ("nintendo", "Minus")])
+def test_cancel_button_label_names_a_worded_button_in_the_style(style: str, word: str) -> None:
+    from openfollow.configuration import AppConfig
+    from openfollow.web import routes as routes_mod
+
+    cfg = AppConfig()
+    cfg.controller.button_name_style = style
+    cfg.controller.btn_menu_cancel = "BACK"
+    assert routes_mod._cancel_button_label(cfg) == word
+
+
 @pytest.mark.parametrize("cleared", ["", "   "])
 def test_cancel_button_label_falls_back_when_binding_cleared(cleared) -> None:
     """Empty / whitespace ``btn_menu_cancel`` (an operator cleared the
     binding via the web form) → fall back to the word ``"Cancel"`` so
-    the footer renders ``<kbd>Cancel</kbd>Close embedded browser``
-    instead of an empty key-cap hint."""
+    the footer renders ``<kbd>Cancel</kbd>`` instead of an empty
+    key-cap hint."""
     from openfollow.configuration import AppConfig
     from openfollow.web import routes as routes_mod
 
@@ -4424,3 +4466,22 @@ def test_unknown_camera_calibration_keys_are_dropped_by_a_write(how: str) -> Non
     exported = _config_dict_redacted(station)
     assert "corner_pins" not in exported["camera"]
     assert "calibration_points" not in exported["camera"]
+
+
+def test_a_settings_file_restores_the_button_names() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    new = _apply_import_data(AppConfig(), {"controller": {"button_name_style": "playstation"}})
+
+    assert new.controller.button_name_style == "playstation"
+
+
+def test_a_push_leaves_this_stations_button_names() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    current = AppConfig()
+    current.controller.button_name_style = "xbox"
+
+    new = _apply_import_data(current, {"controller": {"button_name_style": "playstation"}}, pushed=True)
+
+    assert new.controller.button_name_style == "xbox"

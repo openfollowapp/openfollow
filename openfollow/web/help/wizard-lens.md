@@ -26,9 +26,13 @@ The values can also be typed in. **Lens centre** is in pixels of the picture, me
 
 ## Load and save
 
-**Load lens calibration** sets the lens from a calibration saved on this station, or from an exported `.ofsettings` file. Only the lens values of the file are used. Use it when the picture has no straight edge to draw a line on. The calibration must come from the same camera and lens at the same zoom. Loading removes the lines on the picture. You can still change the values under **User input** afterwards.
+**Load lens calibration** sets the lens from a calibration saved on this station, from an exported `.ofsettings` file or from an OpenCV calibration file (`.xml`). Only the lens values of the file are used. Use it when the picture has no straight edge to draw a line on. The calibration must come from the same camera and lens at the same zoom. Loading removes the lines on the picture. You can still change the values under **User input** afterwards.
 
 **Save lens calibration** saves the current values on this station under a name, so you can load them later for this camera and lens. The size of the snapshot is saved with them. The values are relative to the diagonal of the picture, so they also fit another resolution of the same picture shape, but not another shape or zoom. The list says when a calibration was measured on a picture of another shape. If the name already exists, the saved calibration is replaced.
+
+## OpenCV calibration
+
+An OpenCV calibration describes the lens with other values than the Lens step uses. The station converts it for this picture: the lens centre comes from the file, and **Barrel / fisheye** and **Corner correction** are calculated so that the overlay bends as closely as possible like the file's lens. The field of view in the file is not used; Camera Calibration measures it. The list shows how closely the conversion follows the file: the typical error in pixels of this picture, and the error at the corners. Many calibrations of wide lenses do not reach the corners of the picture, and a fisheye's corners can lie almost 90° off the lens's axis. Then the list says how much of the picture the file describes, and the overlay continues the lens beyond it. A file that does not say which picture size it was calibrated on asks for that size, starting with the size of this picture. A calibration made on a picture of another shape, such as 4:3 for a 16:9 picture, is refused. Only XML files are read. The Camera page lists a lens loaded this way and not changed afterwards as **OpenCV calibration**.
 
 ## Full screen
 

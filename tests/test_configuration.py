@@ -9890,7 +9890,7 @@ def test_a_hand_edited_calibration_height_is_read_through_load_config(tmp_path, 
 # CameraConfig's calibration record: the lens rating, time and video source of the Setup Wizard's save
 
 
-@pytest.mark.parametrize("rating", ["excellent", "good", "fair", "poor", "user_input", "loaded", ""])
+@pytest.mark.parametrize("rating", ["excellent", "good", "fair", "poor", "user_input", "loaded", "opencv", ""])
 def test_a_calibration_lens_rating_on_the_list_is_kept(rating: str) -> None:
     assert CameraConfig(calibration_lens_rating=rating).calibration_lens_rating == rating
 
@@ -9898,8 +9898,8 @@ def test_a_calibration_lens_rating_on_the_list_is_kept(rating: str) -> None:
 # A fit rated Not usable is never applied, so no saved lens carries that rating.
 @pytest.mark.parametrize(
     "raw",
-    ["Good", "okay", "medium", "low", "not_usable", " good"],
-    ids=["case", "okay", "medium", "low", "not usable", "pad"],
+    ["Good", "okay", "medium", "low", "not_usable", " good", "OpenCV"],
+    ids=["case", "okay", "medium", "low", "not usable", "pad", "opencv case"],
 )
 def test_a_calibration_lens_rating_off_the_list_reads_as_none(raw: str) -> None:
     assert CameraConfig(calibration_lens_rating=raw).calibration_lens_rating == ""

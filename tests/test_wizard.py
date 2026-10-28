@@ -2090,6 +2090,13 @@ class TestLensRatingRecord:
         loaded = {"k1": -0.25, "k2": 0.03, "cx": 0.0, "cy": 0.0, "name": "Wide"}
         assert _rating({}, {"lensLoaded": loaded}) == "user_input"
 
+    @pytest.mark.parametrize(
+        ("k1", "recorded"), [(-0.2, "opencv"), (-0.25, "user_input")], ids=["as converted", "changed"]
+    )
+    def test_a_lens_converted_from_an_opencv_file_is_recorded_as_one(self, k1: float, recorded: str) -> None:
+        loaded = {"k1": k1, "k2": 0.03, "cx": 0.0, "cy": 0.0, "name": "Wide", "kind": "opencv"}
+        assert _rating({}, {"lensLoaded": loaded}) == recorded
+
     def test_a_lens_typed_by_hand_is_user_input(self) -> None:
         assert _rating({}, {"lensTouched": True}) == "user_input"
 

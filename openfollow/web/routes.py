@@ -3822,6 +3822,26 @@ def _json_point(value: Any, name: str) -> list[float]:
     return [_json_number(value[0], name), _json_number(value[1], name)]
 
 
+def _parse_lens_opencv_body(data: Any) -> tuple[str, float, float, tuple[int, int] | None]:
+    """Validate a ``/api/wizard/lens/opencv`` body; raises for the endpoint's 400."""
+    from openfollow.scene.opencv_lens import MAX_FILE_BYTES, MAX_SIDE
+
+    if not isinstance(data, dict):
+        raise TypeError("body must be an object")
+    text = data["xml"]
+    if not isinstance(text, str):
+        raise TypeError("xml must be text")
+    if len(text) > MAX_FILE_BYTES:
+        raise ValueError("This file is too large for a lens calibration.")
+    img_w, img_h = _json_canvas(data)
+    if "calibration_width" not in data and "calibration_height" not in data:
+        return text, img_w, img_h, None
+    sides = [_json_int(data[key], key) for key in ("calibration_width", "calibration_height")]
+    if not all(0 < side <= MAX_SIDE for side in sides):
+        raise ValueError(f"The calibrated image size must be two whole numbers from 1 to {MAX_SIDE}.")
+    return text, img_w, img_h, (sides[0], sides[1])
+
+
 def _json_canvas(data: dict[str, Any]) -> tuple[float, float]:
     img_w = _json_number(data["image_width"], "image_width")
     img_h = _json_number(data["image_height"], "image_height")
@@ -11170,6 +11190,36 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             response.status = 400
             return json.dumps({"error": str(exc)})
         return json.dumps(fit_result_to_dict(result))
+
+    @app.post("/api/wizard/lens/opencv")
+    def api_wizard_lens_opencv() -> Any:
+        """Convert an OpenCV calibration file's lens for the snapshot; 422 says why the file gives none."""
+        response.content_type = "application/json"
+        data = _load_json_body()
+        if data is None:
+            return json.dumps({"error": "Invalid JSON"})
+        try:
+            text, img_w, img_h, size = _parse_lens_opencv_body(data)
+        except (KeyError, TypeError, ValueError) as exc:
+            response.status = 400
+            return json.dumps({"error": str(exc)})
+
+        from openfollow.scene.opencv_lens import (
+            OpenCvLensError,
+            OpenCvSizeUnknown,
+            fit_opencv_lens,
+            parse_opencv_calibration,
+        )
+
+        try:
+            cal = parse_opencv_calibration(text)
+            fit = fit_opencv_lens(cal, img_w, img_h, size)
+        except OpenCvSizeUnknown as exc:
+            response.status = 422
+            return json.dumps({"error": str(exc), "needs_size": True})
+        except OpenCvLensError as exc:
+            return _json_error(422, str(exc))
+        return json.dumps({**asdict(fit), "fisheye": cal.fisheye})
 
     # -- Marker catalog (shared id/name/color + per-station selection) ----
 

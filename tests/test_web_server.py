@@ -7943,6 +7943,7 @@ def test_the_calibration_column_shows_what_the_setup_wizard_recorded(video_serve
         ("poor", "Poor"),
         ("user_input", "User input"),
         ("loaded", "Loaded"),
+        ("opencv", "OpenCV calibration"),
     ],
 )
 def test_the_calibration_column_names_each_lens_rating(video_server, rating: str, shown: str) -> None:

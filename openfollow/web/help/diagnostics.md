@@ -2,7 +2,7 @@
 
 Live runtime health for the web server and peer discovery. Use this section to spot a sick subsystem at a glance and to download or view the information needed for a support report.
 
-The section is inside the Overview tab and refreshes every five seconds.
+The section is inside the Overview tab and refreshes every five seconds while it is open and in view.
 
 ## Live summary cards
 
@@ -11,7 +11,7 @@ Three cards across the top of the section. Each card shows a status chip and a s
 ### Web server
 
 - **Configured** – the web port set in your configuration.
-- **Serving on** – the port the server actually bound to. If port 80 was unavailable, OpenFollow falls back to a backup port (8080 or 2010) and this row shows which one is in use.
+- **Serving on** – the port the server actually bound to, and the one other stations are told. If the configured port was unavailable, or another program already used it, OpenFollow falls back to a backup port (8080 or 2010) and this row shows which one is in use.
 - **Uptime** – how long the OpenFollow process has been running.
 - Status chip reads **OK** when the configured and serving ports match, and **fallback** when the server is on a backup port.
 
@@ -41,4 +41,4 @@ Four actions sit below the cards.
 
 - **Test peer connectivity** – probes every known station on its advertised port and displays a small results table. A green chip means the station responded with an HTTP status and a round-trip time; a red chip means it was unreachable, with a reason. If the table shows "No peers known yet", wait for discovery or check the **Beacon receiver** card above.
 
-- **Restart application** – restarts the OpenFollow process (not the operating system). A confirmation prompt appears first; the page reloads automatically once the station comes back. Use this after changing a setting that requires a restart, such as the web port or Person Detection engine.
+- **Restart application** – restarts the OpenFollow process (not the operating system). A confirmation prompt appears first; the page reloads automatically once the station comes back. It is refused while a software update is running. Use this after changing a setting that requires a restart, such as the web port or Person Detection engine.

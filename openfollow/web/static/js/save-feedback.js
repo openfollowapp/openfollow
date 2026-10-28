@@ -6,8 +6,11 @@
  * station observed and one next step. The line stays until the next edit in
  * that form or the next save from it.
  *
- * HTMX saves (any non-GET request) are handled here on ``document``. A
- * script-driven save calls ``window.OpenFollow.saveError``:
+ * HTMX saves (any non-GET request) are handled here on ``document``. An
+ * action that saves nothing names its lead on the control or an ancestor
+ * (``data-error-lead="Not started."``), and its unanswered advice ends "try
+ * again". A background request nobody acts on is marked ``data-error-quiet``
+ * and reports nothing. A script-driven save calls ``window.OpenFollow.saveError``:
  *
  *   show(box, info, lead, near) ring ``box``; write ``info`` after ``near``
  *                              (default: the box's last actions row)
@@ -16,6 +19,9 @@
  *   fromResponse(res)          -> Promise<info> for a failed fetch Response
  *   fromText(status, text)     -> info for a body already read
  *   UNREACHABLE                info for a request that got no answer
+ *   peerFailure(peers, notDone, again)
+ *                              -> info naming the stations a broadcast did not
+ *                              reach, each with the reason it gave
  *
  * ``info`` is ``{error, action, href}``, the shape the station answers a
  * refused change with; ``lead`` defaults to "Not saved.". A ``box`` that is
@@ -28,6 +34,11 @@
     var UNREACHABLE = {
         error: 'The station did not answer.',
         action: 'Check that it is switched on and on this network, then save again.',
+        href: '',
+    };
+    var UNREACHABLE_ACTION = {
+        error: UNREACHABLE.error,
+        action: 'Check that it is switched on and on this network, then try again.',
         href: '',
     };
     var BOX_SELECTOR = 'form.section, .save-flash, .section, .modal-card, [role="dialog"]';
@@ -63,6 +74,20 @@
             function (text) { return fromText(res.status, text); },
             function () { return fromText(res.status, ''); }
         );
+    }
+
+    function peerFailure(peers, notDone, again) {
+        var failed = peers.filter(function (peer) { return !peer.success; });
+        var names = failed.map(function (peer) {
+            var name = peer.name || peer.ip;
+            return peer.reason ? name + ' (' + String(peer.reason).replace(/\.$/, '') + ')' : name;
+        });
+        var unexplained = failed.some(function (peer) { return !peer.reason; });
+        return {
+            error: notDone + ' ' + failed.length + ' of ' + peers.length + ' stations: ' + names.join(', ') + '.',
+            action: unexplained ? 'Check that they are switched on, then ' + again + '.' : '',
+            href: '',
+        };
     }
 
     function clear(box) {
@@ -112,8 +137,15 @@
         return elt.closest(BOX_SELECTOR) || elt.closest('form');
     }
 
+    function leadFor(elt) {
+        var host = elt && elt.closest ? elt.closest('[data-error-lead]') : null;
+        return host ? host.getAttribute('data-error-lead') : undefined;
+    }
+
     function isSave(evt) {
         var cfg = evt.detail && evt.detail.requestConfig;
+        var elt = evt.detail && evt.detail.elt;
+        if (elt && elt.closest && elt.closest('[data-error-quiet]')) return false;
         return !!(cfg && cfg.verb && String(cfg.verb).toLowerCase() !== 'get');
     }
 
@@ -129,10 +161,12 @@
     document.addEventListener('htmx:responseError', function (evt) {
         if (!isSave(evt)) return;
         var xhr = evt.detail.xhr;
-        show(boxFor(evt.detail.elt), fromText(xhr.status, xhr.responseText));
+        show(boxFor(evt.detail.elt), fromText(xhr.status, xhr.responseText), leadFor(evt.detail.elt));
     });
     document.addEventListener('htmx:sendError', function (evt) {
-        if (isSave(evt)) show(boxFor(evt.detail.elt), UNREACHABLE);
+        if (!isSave(evt)) return;
+        var lead = leadFor(evt.detail.elt);
+        show(boxFor(evt.detail.elt), lead === undefined ? UNREACHABLE : UNREACHABLE_ACTION, lead);
     });
 
     window.OpenFollow = window.OpenFollow || {};
@@ -143,6 +177,7 @@
         origin: function () { return lastOrigin; },
         fromResponse: fromResponse,
         fromText: fromText,
+        peerFailure: peerFailure,
         UNREACHABLE: UNREACHABLE,
     };
 })();

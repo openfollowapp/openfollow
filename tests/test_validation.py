@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import pytest
 
-from openfollow.configuration import AppConfig
+from openfollow.configuration import AppConfig, CameraConfig
+from openfollow.lens_model import C_BOUND
 from openfollow.web import validation
 from openfollow.web.routes import (
     _SECTION_FIELD_PARSERS,
@@ -122,11 +123,30 @@ def test_validate_int_list_type_error_via_parser() -> None:
     assert "Entry" in err  # custom validator surfaces specific entry
 
 
+@pytest.mark.parametrize(("value", "bad"), [("1, abc, 3", True), ("2, 5", False), ("", False)])
+def test_validate_parked_marker_ids_names_the_bad_entry(value: str, bad: bool) -> None:
+    err = validate("general", "parked_marker_ids", value)
+    assert (err is not None and "Entry 2" in err) if bad else err is None
+
+
 def test_validate_ip_list_per_entry_error() -> None:
     err = validate("osc", "allowed_sender_ips", "192.168.1.1, 999.0.0.1")
     assert err is not None
     assert "Entry 2" in err
     assert "999.0.0.1" in err
+
+
+@pytest.mark.parametrize(
+    ("value", "entry"),
+    [
+        ("192.0.2.1, 2001:db8::1", "Entry 2 ('2001:db8::1')"),
+        ("2001:db8::1", "Entry 1 ('2001:db8::1')"),
+        ("::ffff:192.0.2.1", "Entry 1 ('::ffff:192.0.2.1')"),
+        ("192.0.2.1, fe80::1%eth0", "Entry 2 ('fe80::1%eth0')"),
+    ],
+)
+def test_validate_ip_list_refuses_an_ipv6_entry(value: str, entry: str) -> None:
+    assert validate("osc", "allowed_sender_ips", value) == f"{entry} is an IPv6 address; OSC input is IPv4 only."
 
 
 def test_validate_float_within_range() -> None:
@@ -168,19 +188,109 @@ def test_validate_range_high() -> None:
     assert "FOV" in err
 
 
+_PAIR_ERROR = "This pair cannot follow the picture out to its corners. Bring either value closer to 0."
+_CENTRE_ERROR = "This lens centre stops the overlay short of the picture's corners. Bring it closer to 0."
+
+
 @pytest.mark.parametrize(
-    "field,raw",
-    [("lens_k1", "0.5"), ("lens_k1", "-0.5"), ("lens_k2", "0.5"), ("lens_k2", "-0.5")],
+    "field,raw,context",
+    [
+        ("lens_k1", "-1.0", None),  # the pole on the corner against the implied k2 = 0
+        ("lens_k1", "-0.6", {"lens_k2": "-0.4"}),
+        ("lens_k2", "0.2", {"lens_k1": "0.4"}),  # the fold on the corner
+        ("lens_k2", "1.5", None),
+        # The pair alone falls short, so a centre field names the pair, whatever the centre.
+        ("lens_cx", "0.1", {"lens_k1": "-1.2"}),
+        ("lens_cy", "0", {"lens_k1": "-1.2", "lens_cx": "0"}),
+    ],
 )
-def test_validate_lens_distortion_out_of_range(field: str, raw: str) -> None:
-    err = validate("camera", field, raw)
-    assert err is not None
-    assert "between" in err.lower()
+def test_validate_lens_a_pair_short_of_a_corner(field: str, raw: str, context: dict[str, str] | None) -> None:
+    assert validate("camera", field, raw, context=context) == _PAIR_ERROR
 
 
-@pytest.mark.parametrize("field,raw", [("lens_k1", "0.1"), ("lens_k2", "-0.03")])
-def test_validate_lens_distortion_in_range_ok(field: str, raw: str) -> None:
-    assert validate("camera", field, raw) is None
+@pytest.mark.parametrize(
+    "field,raw,context",
+    [
+        ("lens_cx", "0.1", {"lens_k1": "-0.9"}),  # the pole at 1.054, the far corner at 1.1
+        ("lens_k1", "-0.9", {"lens_cx": "0.1"}),
+        ("lens_cy", "-0.2", {"lens_k1": "-0.75"}),
+        ("lens_k2", "-0.069", {"lens_k1": "-0.6", "lens_cx": "0.2", "lens_cy": "0.2"}),
+    ],
+)
+def test_validate_lens_a_centre_that_stops_the_overlay_short(field: str, raw: str, context: dict[str, str]) -> None:
+    assert validate("camera", field, raw, context=context) == _CENTRE_ERROR
+
+
+@pytest.mark.parametrize(
+    "field,raw,context",
+    [
+        ("lens_k1", "0.1", None),
+        ("lens_k2", "-0.03", None),
+        ("lens_k1", "0.9", None),
+        ("lens_k2", "-0.8", None),
+        ("lens_k1", "-1.2", {"lens_k2": "0.3"}),  # the sibling keeps the pair valid
+        ("lens_cx", "0.04", {"lens_k1": "-0.527", "lens_k2": "-0.069", "lens_cy": "-0.03"}),
+        ("lens_cy", "0.25", None),
+        # A centre sibling past its bound is judged clamped, as the save keeps it; its own field shows its error.
+        ("lens_k1", "-0.6", {"lens_cx": "0.9"}),
+        # A sibling that is no finite number carries its own error; the lens is not judged on it.
+        ("lens_k1", "-1.2", {"lens_k2": "abc"}),
+        ("lens_k1", "-1.2", {"lens_k2": "nan"}),
+        ("lens_k1", "-0.9", {"lens_cx": "abc"}),
+        ("lens_cx", "0.1", {"lens_k1": "inf"}),
+        ("lens_cx", "0.1", {"lens_k1": "-0.9", "lens_cy": "x"}),
+    ],
+)
+def test_validate_lens_that_reaches_every_corner_ok(field: str, raw: str, context: dict[str, str] | None) -> None:
+    assert validate("camera", field, raw, context=context) is None
+
+
+_SAVED_LENS = {"lens_k1": -0.8, "lens_k2": -0.05, "lens_cx": 0.0, "lens_cy": 0.05}
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+@pytest.mark.parametrize("sibling", ["lens_k1", "lens_k2", "lens_cy"])
+def test_validate_lens_reads_an_empty_sibling_as_its_saved_value(sibling: str, blank: str) -> None:
+    # The saved lens is valid with lens_cx = 0 and not with 0.07; read as 0, any blank sibling
+    # would make 0.07 valid too.
+    cfg = AppConfig()
+    for name, value in _SAVED_LENS.items():
+        setattr(cfg.camera, name, value)
+    context = {name: str(value) for name, value in _SAVED_LENS.items() if name != "lens_cx"}
+    context[sibling] = blank
+    assert validate("camera", "lens_cx", "0", cfg=cfg, context=context) is None
+    assert validate("camera", "lens_cx", "0.07", cfg=cfg, context=context) == _CENTRE_ERROR
+
+
+@pytest.mark.parametrize("field", ["lens_k1", "lens_k2", "lens_cx", "lens_cy"])
+def test_validate_lens_without_a_config_reads_an_empty_sibling_as_0(field: str) -> None:
+    value = {"lens_k1": "-0.99", "lens_k2": "-0.99", "lens_cx": "0.25", "lens_cy": "0.25"}[field]
+    assert validate("camera", field, value, context={}) is None
+
+
+@pytest.mark.parametrize("field,raw", [("lens_k1", "abc"), ("lens_k2", "nan"), ("lens_k1", "inf"), ("lens_cx", "x")])
+def test_validate_lens_distortion_wrong_type(field: str, raw: str) -> None:
+    assert validate("camera", field, raw) is not None
+    assert "number" in validate("camera", field, raw)
+
+
+@pytest.mark.parametrize("field", ["lens_cx", "lens_cy"])
+@pytest.mark.parametrize("raw", ["0.2500001", "-0.26", "1", "-3e2"])
+def test_validate_lens_centre_past_its_bound(field: str, raw: str) -> None:
+    assert validate("camera", field, raw) == "Must be a number from -0.25 to 0.25."
+
+
+@pytest.mark.parametrize("field", ["lens_cx", "lens_cy"])
+def test_the_lens_centre_rule_is_the_configs_bound(field: str) -> None:
+    rule = FIELD_RULES["camera"][field]
+    assert (rule.lo, rule.hi) == (-C_BOUND, C_BOUND)
+    # What the blur accepts the save keeps, and what it refuses the save clamps.
+    for raw in ("0.25", "-0.25", "0.1"):
+        assert validate("camera", field, raw) is None
+        assert getattr(CameraConfig(**{field: raw}), field) == float(raw)
+    for raw in ("0.26", "-0.3"):
+        assert validate("camera", field, raw) is not None
+        assert getattr(CameraConfig(**{field: raw}), field) != float(raw)
 
 
 @pytest.mark.parametrize("section", ["grid", "marker"])
@@ -237,6 +347,16 @@ def test_validate_numeric_choices_canonical_match() -> None:
     # eval_fps with "010" parses to 10; blur must treat it as canonical "10".
     assert validate("trigger_zones", "eval_fps", "010") is None
     assert validate("trigger_zones", "eval_fps", "10") is None
+
+
+@pytest.mark.parametrize("raw", ["simple", "Simple", " ADVANCED "])
+def test_validate_a_case_blind_choice_matches_what_save_accepts(raw: str) -> None:
+    assert validate("network", "network_mode", raw) is None
+
+
+@pytest.mark.parametrize("raw", ["expert", "simple1", "advance"])
+def test_validate_an_unknown_network_mode_is_rejected(raw: str) -> None:
+    assert validate("network", "network_mode", raw) is not None
 
 
 def test_validate_numeric_choices_unknown_value_still_rejected() -> None:
@@ -358,15 +478,6 @@ def test_validate_inference_size_within_range() -> None:
 def test_validate_inference_size_below_min() -> None:
     err = validate("detection", "inference_size", "100")
     assert err is not None
-
-
-def test_validate_optional_float_uncoercible() -> None:
-    err = validate("camera", "sensor_width_mm", "abc")
-    assert err is not None
-
-
-def test_validate_optional_float_valid() -> None:
-    assert validate("camera", "sensor_width_mm", "10") is None
 
 
 # ---------------------------------------------------------------------------
@@ -1136,15 +1247,18 @@ def test_mouse3d_button_validation(raw: str, expect_error: bool) -> None:
     assert (err is not None) is expect_error
 
 
-def test_needs_cfg_false_for_every_rule() -> None:
-    """No registered ``FieldRule`` currently reads ``AppConfig``, so
-    ``needs_cfg`` returns ``False`` for all of them – the ``/api/validate``
-    fast-path skips the per-keystroke TOML parse for every field."""
+def test_needs_cfg_only_for_the_lens() -> None:
+    """Only the lens rule reads ``AppConfig`` (a sibling left empty keeps its
+    saved value), so the ``/api/validate`` fast-path skips the per-keystroke
+    TOML parse for every other field."""
     from openfollow.web.validation import needs_cfg
 
+    lens = {("camera", name) for name in ("lens_k1", "lens_k2", "lens_cx", "lens_cy")}
     for section, rules in FIELD_RULES.items():
-        for field_name, rule in rules.items():
-            assert needs_cfg(rule) is False, f"{section}.{field_name}"
+        for field_name in rules:
+            expected = (section, field_name) in lens
+            assert needs_cfg(section, field_name) is expected, f"{section}.{field_name}"
+    assert needs_cfg("camera", "no_such_field") is False
 
 
 # ---------------------------------------------------------------------------
@@ -1184,3 +1298,83 @@ def test_bidi_isolates_and_c1_controls_are_refused_and_stripped(value: str) -> N
     more at home in a config field than a C0 one."""
     assert validate("network", "label", value) == "Remove control or text-direction characters."
     assert _default_sanitiser(value) == "Lighting"
+
+
+# ---------------------------------------------------------------------------
+# Keyboard layout / variant: well-formed, and known to this station when it can tell.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def xkb_station(tmp_path, monkeypatch) -> None:
+    from tests._xkb import install_station_keyboard
+
+    install_station_keyboard(tmp_path, monkeypatch)
+
+
+@pytest.fixture
+def no_xkb_catalog(tmp_path, monkeypatch) -> None:
+    from openfollow import keyboard_layout
+
+    monkeypatch.setattr(keyboard_layout, "EVDEV_LST", tmp_path / "absent.lst")
+
+
+@pytest.mark.parametrize("section", ["controller", "keyboard"])
+@pytest.mark.parametrize(
+    ("raw", "error"),
+    [
+        ("de", None),
+        ("", None),
+        ("xx", "This station has no keyboard layout 'xx'."),
+        ("custom", "This station has no keyboard layout 'custom'."),  # listed, but no symbols ship for it
+        ("DE", "A layout name is lower-case letters, digits, '_' and '-'."),
+        ("de;id", "A layout name is lower-case letters, digits, '_' and '-'."),
+        ("a" * 33, "Must be at most 32 characters."),
+    ],
+)
+def test_validate_keyboard_layout_against_the_stations_catalog(
+    xkb_station, section: str, raw: str, error: str | None
+) -> None:
+    assert validate(section, "keyboard_layout", raw) == error
+
+
+@pytest.mark.parametrize("section", ["controller", "keyboard"])
+@pytest.mark.parametrize(
+    ("layout", "raw", "error"),
+    [
+        ("jp", "OADG109A", None),
+        ("de", "nodeadkeys", None),
+        (" de ", "nodeadkeys", None),
+        ("de", "", None),
+        ("", "", None),
+        # A variant of another layout: the name exists, just not for the layout beside it.
+        ("gb", "nodeadkeys", "Layout 'gb' has no variant 'nodeadkeys' on this station."),
+        ("xx", "nodeadkeys", "Layout 'xx' has no variant 'nodeadkeys' on this station."),
+        ("de", "nope", "Layout 'de' has no variant 'nope' on this station."),
+        ("", "nodeadkeys", "System takes the system's own variant: choose Standard."),
+        ("de", "no dead", "A variant name is letters, digits, '_' and '-'."),
+        ("de", "V" * 65, "Must be at most 64 characters."),
+    ],
+)
+def test_validate_keyboard_variant_against_the_layout_beside_it(
+    xkb_station, section: str, layout: str, raw: str, error: str | None
+) -> None:
+    assert validate(section, "keyboard_variant", raw, context={"keyboard_layout": layout}) == error
+
+
+def test_validate_keyboard_variant_without_the_form_reads_as_system(xkb_station) -> None:
+    assert validate("keyboard", "keyboard_variant", "nodeadkeys") == (
+        "System takes the system's own variant: choose Standard."
+    )
+
+
+@pytest.mark.parametrize(("field", "raw"), [("keyboard_layout", "xx"), ("keyboard_variant", "nope")])
+def test_validate_keyboard_layout_takes_any_well_formed_name_without_a_catalog(
+    no_xkb_catalog, field: str, raw: str
+) -> None:
+    assert validate("keyboard", field, raw, context={"keyboard_layout": "xx"}) is None
+
+
+@pytest.mark.parametrize(("field", "raw"), [("keyboard_layout", "DE"), ("keyboard_variant", "a b")])
+def test_validate_keyboard_layout_still_checks_the_name_without_a_catalog(no_xkb_catalog, field: str, raw: str) -> None:
+    assert validate("keyboard", field, raw) is not None

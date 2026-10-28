@@ -53,6 +53,7 @@ jobs:
         # ``python-rtmidi``'s wheel build for Linux – only sdist ships
         # for the runner's CPython/glibc combo, and meson build
         # aborts with "Dependency 'alsa' not found" without headers.
+        # ``libxkbcommon-dev`` likewise for the Linux-only ``xkbcommon`` binding.
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -69,7 +70,8 @@ jobs:
             gstreamer1.0-plugins-base \
             gstreamer1.0-plugins-good \
             gstreamer1.0-plugins-bad \
-            libasound2-dev
+            libasound2-dev \
+            libxkbcommon-dev
 
       # Pinned to the version stamped in ``poetry.lock``'s header. Unpinned,
       # ``snok/install-poetry@v1`` installs whatever resolves as latest at run
@@ -103,8 +105,9 @@ jobs:
         # ``mido`` + ``python-rtmidi`` are base deps now, so a plain install
         # builds them; the ``libasound2-dev`` step above provides the ALSA
         # headers ``python-rtmidi`` needs to build its wheel on CI's Python
-        # 3.13 (which has no prebuilt rtmidi wheel).
-        run: poetry install --no-interaction -E detection
+        # 3.13 (which has no prebuilt rtmidi wheel). ``sync`` so a restored
+        # cache sheds whatever the lock no longer lists.
+        run: poetry sync --no-interaction -E detection
 
       # Lint: `make lint` runs `ruff check` + `ruff format --check`.
       # Single source of truth in `[tool.ruff]` block of pyproject.toml.
@@ -213,7 +216,8 @@ jobs:
             gstreamer1.0-plugins-base \
             gstreamer1.0-plugins-good \
             gstreamer1.0-plugins-bad \
-            libasound2-dev
+            libasound2-dev \
+            libxkbcommon-dev
 
       - name: Install Poetry
         uses: snok/install-poetry@v1
@@ -226,8 +230,7 @@ jobs:
       # Own key prefix. Both jobs cache ``.venv``, and on a ``poetry.lock``
       # change both miss and both save concurrently – with one shared key
       # whichever post-step wins the race decides what the other job starts
-      # from, and ``test`` installs with ``poetry install``, which computes no
-      # uninstalls and would carry the surplus forward on every later run.
+      # from.
       - name: Cache Poetry virtualenv
         uses: actions/cache@v6
         with:
@@ -273,8 +276,11 @@ jobs:
   # build refuses to bundle it and no show device ever loads it, so a CVE there
   # must not block a release. It must not be invisible either – an extra outside
   # the audited closure drifts silently, with both pip-audit and Dependabot
-  # reporting nothing. Hence its own job with its own throwaway venv: ~6 GB of
-  # torch + CUDA wheels must never reach the `.venv` cache the gating jobs
+  # reporting nothing. The optional Poetry groups (mutation, package-macos) are
+  # workstation tooling too and report here. This runner is Linux, so the
+  # darwin-only packages of package-macos (macholib) never install and are not
+  # covered by any audit. Hence its own job with its own throwaway venv: ~6 GB
+  # of torch + CUDA wheels must never reach the `.venv` cache the gating jobs
   # restore from, and caching it here would put a ~3 GB entry in a 10 GB
   # per-repository budget and evict every other job's venv by LRU.
   audit-export:
@@ -311,7 +317,8 @@ jobs:
             gstreamer1.0-plugins-base \
             gstreamer1.0-plugins-good \
             gstreamer1.0-plugins-bad \
-            libasound2-dev
+            libasound2-dev \
+            libxkbcommon-dev
 
       - name: Install Poetry
         uses: snok/install-poetry@v1
@@ -323,9 +330,9 @@ jobs:
 
       # Deliberately uncached – see the job comment. pip lives inside the venv
       # being audited, so it is upgraded here too rather than reported on.
-      - name: Install export toolchain
+      - name: Install workstation toolchain
         run: |
-          poetry sync --no-interaction -E detection -E export
+          poetry sync --no-interaction -E detection -E export --with mutation,package-macos
           poetry run python -m pip install --upgrade pip
 
       # The report goes to the step summary instead of being left to an exit
@@ -333,13 +340,13 @@ jobs:
       # here would be permanently red, and the next genuinely new finding would
       # read exactly like the noise it was buried in. The listing is the signal:
       # a row that was not there last week is the drift this job exists to show.
-      - name: pip-audit (export toolchain, report-only)
+      - name: pip-audit (workstation toolchain, report-only)
         run: |
           set +e
           report="$(make audit 2>&1)"
           set -e
           {
-            echo "## Export toolchain audit (report-only, non-gating)"
+            echo "## Workstation toolchain audit: export extra and optional groups (report-only, non-gating)"
             echo
             echo '```'
             echo "$report"

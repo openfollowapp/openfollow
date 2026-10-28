@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""File-based template system for OSC, camera, grid, and zones configurations."""
+"""File-based template system for OSC, camera, grid, zones and paths configurations."""
 
 from openfollow.templates.schema import (
     TEMPLATE_FILE_SUFFIX,

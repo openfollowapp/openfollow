@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import errno
 import ipaddress
 import socket
 import struct
@@ -30,7 +31,9 @@ from openfollow.net_utils import (
     resolve_source_ip,
     resolve_web_bind,
     route_source,
+    tcp_port_shared,
 )
+from tests._port_sharing import STATION_ADDRESS, SharingKernel, share_ports
 
 pytestmark = pytest.mark.unit
 
@@ -1093,6 +1096,49 @@ class TestResolveWebBind:
         assert host != "192.168.1.5"
 
 
+class TestTcpPortShared:
+    """macOS lets a bind of one address share a TCP port with a bind of the
+    wildcard; Linux refuses that bind itself while the other socket listens."""
+
+    def test_a_kernel_that_refuses_sharing_is_not_probed(self, monkeypatch) -> None:
+        kernel = SharingKernel(held={("127.0.0.1", 8080)})
+        monkeypatch.setattr(net_utils_module.socket, "socket", kernel.socket)
+        assert tcp_port_shared("", 8080) == []
+        assert kernel.binds == []
+
+    @pytest.mark.parametrize("address", ["127.0.0.1", STATION_ADDRESS])
+    def test_the_wildcard_is_shared_where_another_socket_holds_an_address_of_this_host(
+        self, monkeypatch, address: str
+    ) -> None:
+        share_ports(monkeypatch, SharingKernel(held={(address, 8080)}))
+        assert tcp_port_shared("", 8080) == [address]
+
+    def test_an_address_is_shared_where_another_socket_holds_the_wildcard(self, monkeypatch) -> None:
+        share_ports(monkeypatch, SharingKernel(held={("", 8080)}))
+        assert tcp_port_shared(STATION_ADDRESS, 8080) == ["0.0.0.0"]
+
+    def test_a_port_held_elsewhere_only_is_free(self, monkeypatch) -> None:
+        kernel = SharingKernel(held={("127.0.0.1", 2010), ("198.51.100.7", 8080)})
+        share_ports(monkeypatch, kernel)
+        assert tcp_port_shared("", 8080) == []
+        assert sorted(kernel.binds) == [("127.0.0.1", 8080), (STATION_ADDRESS, 8080)]
+
+    @pytest.mark.parametrize("code", [errno.EACCES, errno.EADDRNOTAVAIL], ids=["privileged", "address-gone"])
+    def test_an_address_this_process_cannot_bind_is_not_counted(self, monkeypatch, code: int) -> None:
+        # Below 1024 macOS reserves a single address for root, so no unprivileged process takes it either.
+        share_ports(monkeypatch, SharingKernel(refused={("127.0.0.1", 80): code, (STATION_ADDRESS, 80): code}))
+        assert tcp_port_shared("", 80) == []
+
+    def test_an_unreadable_address_list_still_probes_loopback(self, monkeypatch) -> None:
+        share_ports(monkeypatch, SharingKernel(held={("127.0.0.1", 8080)}))
+
+        def _unreadable() -> dict:
+            raise OSError("no interfaces")
+
+        monkeypatch.setattr(net_utils_module.psutil, "net_if_addrs", _unreadable)
+        assert tcp_port_shared("", 8080) == ["127.0.0.1"]
+
+
 # --------------------------------------------------------------------------- #
 # route_source
 # --------------------------------------------------------------------------- #
@@ -1431,6 +1477,18 @@ class TestBoundedResolver:
         assert resolver.lookup("cam.example", 5.0).addresses == ("192.0.2.20",)
         assert len(dns.calls) == 1
 
+    def test_running_for_is_the_age_of_a_lookup_still_running(self, dns) -> None:
+        dns.gate = threading.Event()
+        clock = _Clock()
+        resolver = _resolver(ttl_s=30.0, clock=clock)
+        assert resolver.running_for("cam.example") is None
+        resolver.prefetch("cam.example")
+        clock.now += 0.25
+        assert resolver.running_for("cam.example") == pytest.approx(0.25)
+        dns.gate.set()
+        _join_test_lookups()
+        assert resolver.running_for("cam.example") is None
+
     def test_a_lookup_that_cannot_start_does_not_block_the_name(self, dns) -> None:
         starts: list[int] = []
 
@@ -1615,3 +1673,21 @@ class TestInterfacePresent:
     def test_no_name_is_never_present(self, monkeypatch) -> None:
         monkeypatch.setattr(net_utils_module.psutil, "net_if_addrs", lambda: {"": []})
         assert net_utils_module.interface_present("") is False
+
+
+class TestAutoStationIface:
+    """What an Automatic station interface resolves to, by name."""
+
+    def test_names_the_interface_holding_the_primary_address(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            net_utils_module.psutil,
+            "net_if_addrs",
+            lambda: _fake_addrs({"eth0": [(socket.AF_INET, "192.0.2.5")], "wlan0": [(socket.AF_INET, "198.51.100.7")]}),
+        )
+        monkeypatch.setattr(net_utils_module, "get_primary_local_ipv4", lambda default="N/A": "198.51.100.7")
+        assert net_utils_module.auto_station_iface() == "wlan0"
+
+    def test_is_blank_when_no_address_resolves(self, monkeypatch) -> None:
+        monkeypatch.setattr(net_utils_module.psutil, "net_if_addrs", lambda: {})
+        monkeypatch.setattr(net_utils_module, "get_primary_local_ipv4", lambda default="N/A": default)
+        assert net_utils_module.auto_station_iface() == ""

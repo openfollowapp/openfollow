@@ -18,9 +18,6 @@ silently pushing the datagram over the limit.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from typing import TypeVar
-
-T = TypeVar("T")
 
 # A 1500-octet Ethernet MTU less the 20-octet IPv4 and 8-octet UDP headers.
 # This is the fragmentation threshold, which bites before any protocol's own
@@ -29,7 +26,7 @@ T = TypeVar("T")
 MAX_DATAGRAM_BYTES = 1472
 
 
-def chunk_to_datagrams(
+def chunk_to_datagrams[T](
     items: Sequence[T],
     encoded_size: Callable[[Sequence[T]], int],
     budget: int = MAX_DATAGRAM_BYTES,

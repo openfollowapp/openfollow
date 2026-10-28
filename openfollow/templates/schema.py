@@ -19,6 +19,7 @@ VALID_TYPES: tuple[str, ...] = (
     "osc_output",
     "camera_grid",
     "zones",
+    "paths",
 )  # fixed set of template types
 
 
@@ -249,7 +250,10 @@ def validate_payload(template_type: str, payload: Mapping[str, Any]) -> None:
     from openfollow.configuration import (
         CameraConfig,
         GridConfig,
+        GroundGridConfig,
+        PathsConfig,
         TriggerZonesConfig,
+        without_former_camera_keys,
     )
 
     if template_type == "osc_output":
@@ -334,7 +338,7 @@ def validate_payload(template_type: str, payload: Mapping[str, Any]) -> None:
                 f"camera_grid payload 'camera' must be object, got {type(camera_dict).__name__}",
             )
         try:
-            CameraConfig(**camera_dict)
+            CameraConfig(**without_former_camera_keys(camera_dict))
         except TypeError as exc:
             raise TemplateValidationError(
                 f"camera_grid payload 'camera' invalid: {exc}",
@@ -350,6 +354,19 @@ def validate_payload(template_type: str, payload: Mapping[str, Any]) -> None:
             raise TemplateValidationError(
                 f"camera_grid payload 'grid' invalid: {exc}",
             ) from exc
+        # The ground grid is optional: a template saved before it existed has none.
+        if "ground_grid" in payload:
+            ground_dict = payload["ground_grid"]
+            if not isinstance(ground_dict, dict):
+                raise TemplateValidationError(
+                    f"camera_grid payload 'ground_grid' must be object, got {type(ground_dict).__name__}",
+                )
+            try:
+                GroundGridConfig(**ground_dict)
+            except TypeError as exc:
+                raise TemplateValidationError(
+                    f"camera_grid payload 'ground_grid' invalid: {exc}",
+                ) from exc
         return
 
     if template_type == "zones":
@@ -381,6 +398,21 @@ def validate_payload(template_type: str, payload: Mapping[str, Any]) -> None:
             raise TemplateValidationError(
                 f"zones payload invalid: {exc}",
             ) from exc
+        return
+
+    if template_type == "paths":
+        # Without a paths array, applying would delete every path.
+        if not isinstance(payload, dict) or not isinstance(payload.get("paths"), list):
+            raise TemplateValidationError("paths payload must include a 'paths' array")
+        for i, path in enumerate(payload["paths"]):
+            if not isinstance(path, dict):
+                raise TemplateValidationError(
+                    f"paths payload 'paths[{i}]' must be object, got {type(path).__name__}",
+                )
+        try:
+            PathsConfig(**payload)
+        except TypeError as exc:
+            raise TemplateValidationError(f"paths payload invalid: {exc}") from exc
         return
 
     # Defensive: unreachable if gates are in sync.

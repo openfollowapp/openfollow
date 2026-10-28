@@ -155,7 +155,7 @@ class TestDrawOrigin:
 
         calls = [0]
 
-        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0):
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0):
             calls[0] += 1
             if calls[0] == 1:
                 # X axis: make the endpoint NaN so the branch body is skipped.
@@ -368,7 +368,7 @@ class TestDrawMarkerBranches:
 
         calls: list[int] = []
 
-        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0):
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0):
             arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
             calls.append(len(arr))
             out = np.zeros((len(arr), 2), dtype=np.float64)
@@ -410,7 +410,7 @@ class TestDrawMarkerBranches:
     def test_crosshair_skips_nonfinite_axis_endpoints(self) -> None:
         from openfollow.runtime import overlay_draw_scene as mod
 
-        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0):
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0):
             arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
             # Only called by the crosshair path for 6 endpoints; make them
             # all NaN.  The center projection (called first) stays finite.
@@ -456,16 +456,12 @@ class TestDrawMarkerBranches:
     def test_z_line_skipped_when_projection_nonfinite(self) -> None:
         from openfollow.runtime import overlay_draw_scene as mod
 
-        call = [0]
-
-        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0):
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0):
+            # The marker's point and radius end land on screen; the Z line is behind the camera.
             arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
-            call[0] += 1
-            # First call (center radius pair) – return finite.
-            if call[0] == 1:
-                return np.array([[500.0, 400.0], [510.0, 400.0]], dtype=np.float64)
-            # Z line call – NaN.
-            return np.full((len(arr), 2), np.nan, dtype=np.float64)
+            out = np.full((len(arr), 2), np.nan, dtype=np.float64)
+            out[:2] = [[500.0, 400.0], [510.0, 400.0]]
+            return out
 
         state = _scene_state(
             show_z_line=True,
@@ -516,7 +512,7 @@ class TestDrawMarkerBranches:
 
         calls = [0]
 
-        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0):
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0):
             arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
             calls[0] += 1
             if calls[0] == 1:
@@ -819,10 +815,10 @@ class TestDrawMarkerConeStyle:
 
         real = mod.project
 
-        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0):
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0):
             arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
             if len(arr) == 2:  # the marker's own centre + radius point
-                return real(cam, pts, w, h, k1, k2)
+                return real(cam, pts, w, h, k1, k2, cx, cy)
             return np.full((len(arr), 2), np.nan, dtype=np.float64)
 
         monkeypatch.setattr(mod, "project", _fake_project)
@@ -838,8 +834,8 @@ class TestDrawMarkerConeStyle:
 
         real = mod.project
 
-        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0):
-            out = real(cam, pts, w, h, k1, k2)
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0):
+            out = real(cam, pts, w, h, k1, k2, cx, cy)
             if _is_cone_projection(out):
                 out[5] = np.nan  # a base ring point
                 out[_top_start(out) + 5] = np.nan  # a top ring point
@@ -998,8 +994,8 @@ class TestDrawMarkerConeStyle:
 
         real = mod.project
 
-        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0):
-            out = real(cam, pts, w, h, k1, k2)
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0):
+            out = real(cam, pts, w, h, k1, k2, cx, cy)
             if _is_cone_projection(out):
                 out[_top_start(out) :] = np.nan  # no top ring, so no silhouette edges
             return out
@@ -1084,10 +1080,10 @@ class TestDrawMarkerConeStyle:
 
         real = mod.project
 
-        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0):
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0):
             arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
             if len(arr) == 2:
-                return real(cam, pts, w, h, k1, k2)
+                return real(cam, pts, w, h, k1, k2, cx, cy)
             return np.full((len(arr), 2), np.nan, dtype=np.float64)
 
         monkeypatch.setattr(mod, "project", _fake_project)
@@ -1111,8 +1107,8 @@ class TestDrawMarkerConeStyle:
 
         real = mod.project
 
-        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0):
-            out = real(cam, pts, w, h, k1, k2)
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0):
+            out = real(cam, pts, w, h, k1, k2, cx, cy)
             if _is_cone_projection(out):
                 out[_top_start(out) :] = np.nan  # top centre and the whole top ring
             return out
@@ -1132,9 +1128,9 @@ class TestDrawMarkerConeStyle:
         real = mod.project
         calls: list[int] = []
 
-        def _counting_project(cam, pts, w, h, k1=0.0, k2=0.0):
+        def _counting_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0):
             calls.append(len(np.asarray(pts, dtype=np.float64).reshape(-1, 3)))
-            return real(cam, pts, w, h, k1, k2)
+            return real(cam, pts, w, h, k1, k2, cx, cy)
 
         monkeypatch.setattr(mod, "project", _counting_project)
         cr = FakeCairo()
@@ -1170,7 +1166,7 @@ class TestDrawMarkerConeStyle:
             assert np.abs(np.array(top) - pts[-1]).sum(axis=1).min() < 1e-6
             assert _off_chord(pts).max() > 5.0
             # Taken back through the lens, every point lies on one straight line.
-            assert _off_chord(invert_overlay_distortion(pts, 1920, 1080, k1, 0.0)).max() < 0.25
+            assert _off_chord(invert_overlay_distortion(pts, 1920, 1080, k1, 0.0, 0.0, 0.0)).max() < 0.25
 
     @pytest.mark.parametrize("shaded", [True, False], ids=["shaded", "flat"])
     def test_lens_distortion_bows_the_filled_side_with_its_edges(self, shaded: bool) -> None:
@@ -1275,7 +1271,16 @@ class TestConeCache:
             {"state": {"camera_params": np.array([0.2, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0])}},
             {"state": {"lens_k1": 0.05}},
             {"state": {"lens_k2": 0.02}},
+            {"state": {"lens_cx": 0.03}},
+            {"state": {"lens_cy": -0.02}},
             {"state": {"grid_config": (10.0, 6.0, 1.0, 0.0, 0.0, 0.3)}},
+            {
+                "state": {
+                    "ground_grid_active": True,
+                    "ground_grid_vertices": [(0.0, 0.0), (2.0, 0.0), (2.0, 1.0), (0.0, 1.0)],
+                    "ground_grid_z": -0.5,
+                }
+            },
             {"state": {"cone_base_diameter": 0.8}},
             {"state": {"cone_top_diameter": 0.1}},
             {"state": {"cone_thickness": 4}},
@@ -1311,7 +1316,7 @@ class TestConeCache:
 
     def test_an_assist_anchor_and_its_ghost_are_each_drawn_once(self, geometry_calls) -> None:
         """AI Assisted draws a marker's anchor and its ghost under one marker id; sharing one
-        picture, each redrew the other's on every display refresh."""
+        picture, each redrew the other's in every HUD picture."""
         from openfollow.runtime.overlay_draw_scene import ConeCache
 
         cache, state = ConeCache(), self._state()
@@ -1343,7 +1348,9 @@ class TestConeCache:
             dx, dy = shift[where]
             monkeypatch.setattr(mod, "project", lambda *args, **kw: real(*args, **kw) + np.array([dx, dy]))
         elif where == "behind-the-camera":
-            monkeypatch.setattr(mod, "project", lambda cam, pts, w, h, k1=0.0, k2=0.0: np.full((len(pts), 2), np.nan))
+            monkeypatch.setattr(
+                mod, "project", lambda cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0: np.full((len(pts), 2), np.nan)
+            )
         else:
             state = self._state(grid_config=None)
         cache = ConeCache()
@@ -1353,3 +1360,214 @@ class TestConeCache:
             assert ("paint",) not in cr.calls
         # Nothing is kept for it, so it is worked out again once it can show.
         assert geometry_calls == ([] if where == "no-grid" else [1, 1])
+
+
+# --------------------------------------------------------------------------- #
+# GridCache – both grids as one picture, drawn again only on a change
+# --------------------------------------------------------------------------- #
+
+_GROUND = [(-2.0, 1.0), (2.0, 1.0), (2.5, 3.0), (-2.5, 3.0)]
+
+
+class TestGridCache:
+    @staticmethod
+    def _state(**overrides: object) -> OverlayState:
+        base: dict[str, object] = {"ground_grid_visible": True, "ground_grid_vertices": list(_GROUND)}
+        base["ground_grid_z"] = -0.4
+        base.update(overrides)
+        return _scene_state(**base)
+
+    @staticmethod
+    def _pixels(surface: Any) -> np.ndarray:
+        surface.flush()
+        h, stride = surface.get_height(), surface.get_stride()
+        return np.ndarray((h, stride // 4, 4), np.uint8, surface.get_data())[:, : surface.get_width()].copy()
+
+    @staticmethod
+    def _draw(cache: Any, state: OverlayState, w: int = 1920, h: int = 1080, scale: float = 1.0) -> FakeCairo:
+        from types import SimpleNamespace
+
+        cr = FakeCairo()
+        cr.get_target = lambda: SimpleNamespace(get_device_scale=lambda: (scale, scale))  # type: ignore[method-assign]
+        cache.draw(FakeRenderer(), cr, state, w, h)
+        return cr
+
+    @pytest.mark.parametrize("scale", [1.0, 2.0], ids=["screen", "hidpi"])
+    @pytest.mark.parametrize(
+        "grids",
+        [
+            {},
+            {"grid_visible": False},
+            {"ground_grid_visible": False},
+            {"lens_k1": -0.15, "lens_k2": 0.03},
+            {"grid_thickness": 3, "grid_transparency": 0.35, "grid_color": "#33aaff"},
+        ],
+        ids=["both", "ground-only", "main-only", "lens", "style"],
+    )
+    def test_a_cached_grid_looks_like_one_drawn_directly(self, scale: float, grids: dict) -> None:
+        import cairo
+
+        from openfollow.runtime.overlay_draw_scene import GridCache, draw_ground_grid
+
+        state, (w, h) = self._state(**grids), (320, 180)
+        pictures = []
+        for cached in (False, True):
+            # The Operator Screen draws the grid first, onto a cleared picture.
+            surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, int(w * scale), int(h * scale))
+            surface.set_device_scale(scale, scale)
+            cr = cairo.Context(surface)
+            if cached:
+                GridCache().draw(FakeRenderer(), cr, state, w, h)
+            else:
+                draw_grid(FakeRenderer(), cr, state, w, h)
+                draw_ground_grid(cr, state, w, h)
+            pictures.append(self._pixels(surface))
+        direct, cached_picture = pictures
+        assert direct[..., 3].any()
+        assert np.array_equal(direct, cached_picture)
+
+    def test_a_grid_that_did_not_change_is_not_drawn_again(self) -> None:
+        from openfollow.runtime.overlay_draw_scene import GridCache
+
+        cache, state = GridCache(), self._state()
+        frames = [self._draw(cache, state) for _ in range(3)]
+        assert all(("fill",) in cr.calls for cr in frames)
+        pictures = [s for cr in frames for s in cr.surfaces]
+        assert len(pictures) == 3 and all(p is pictures[0] for p in pictures)
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"state": {"grid_visible": False}},
+            {"state": {"ground_grid_visible": False}},
+            {"state": {"grid_config": (10.0, 6.0, 0.5, 0.0, 0.0, 0.0)}},
+            {"state": {"ground_grid_vertices": [(-2.0, 1.0), (2.0, 1.0), (2.0, 3.0), (-2.0, 3.0)]}},
+            {"state": {"ground_grid_z": 0.2}},
+            {"state": {"grid_color": "#33aaff"}},
+            {"state": {"grid_transparency": 0.9}},
+            {"state": {"grid_thickness": 4}},
+            {"state": {"camera_params": np.array([0.2, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0])}},
+            {"state": {"lens_k1": 0.05}},
+            {"state": {"lens_k2": 0.02}},
+            {"state": {"lens_cx": 0.03}},
+            {"state": {"lens_cy": -0.02}},
+            {"size": (1280, 1080)},
+            {"size": (1920, 720)},
+            {"scale": 2.0},
+        ],
+        ids=[
+            "main-grid-shown",
+            "ground-grid-shown",
+            "grid-config",
+            "vertices",
+            "ground-z",
+            "color",
+            "transparency",
+            "thickness",
+            "camera",
+            "k1",
+            "k2",
+            "cx",
+            "cy",
+            "width",
+            "height",
+            "scale",
+        ],
+    )
+    def test_anything_a_grid_is_drawn_from_draws_it_again(self, change: dict) -> None:
+        from openfollow.runtime.overlay_draw_scene import GridCache
+
+        cache = GridCache()
+        before = self._pixels(self._draw(cache, self._state()).surfaces[0])
+        w, h = change.get("size", (1920, 1080))
+        changed, scale = self._state(**change.get("state", {})), change.get("scale", 1.0)
+        cr = self._draw(cache, changed, w, h, scale)
+        fresh = self._pixels(self._draw(GridCache(), changed, w, h, scale).surfaces[0])
+        assert len(cr.surfaces) == 1
+        shown = self._pixels(cr.surfaces[0])
+        assert np.array_equal(shown, fresh)
+        assert shown.shape != before.shape or not np.array_equal(shown, before)
+
+    def test_a_redraw_holds_no_second_copy_of_the_canvas(self) -> None:
+        import tracemalloc
+
+        from openfollow.runtime.overlay_draw_scene import GridCache
+
+        tracemalloc.start()
+        try:
+            self._draw(GridCache(), self._state())
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        # Finding the inked tiles must not cost another canvas-sized buffer.
+        assert peak < 1920 * 1080, peak
+
+    @pytest.mark.parametrize(
+        ("size", "scale", "kept"),
+        [((1920, 1080), 1.0, True), ((1280, 1080), 1.0, False), ((1920, 720), 1.0, False), ((960, 540), 2.0, False)],
+        ids=["same-canvas", "width", "height", "same-pixels-other-scale"],
+    )
+    def test_a_redraw_on_the_same_canvas_reuses_the_picture(self, size: tuple, scale: float, kept: bool) -> None:
+        from openfollow.runtime.overlay_draw_scene import GridCache
+
+        cache = GridCache()
+        first = self._draw(cache, self._state()).surfaces[0]
+        moved = self._state(camera_params=np.array([0.2, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0]))
+        again = self._draw(cache, moved, *size, scale).surfaces[0]
+        assert (again is first) is kept
+
+    @pytest.mark.parametrize(
+        ("w", "h", "scale", "size"),
+        [(1920, 1080, 1.0, (1920, 1080)), (1280, 720, 2.0, (2560, 1440)), (101, 51, 1.5, (152, 77))],
+        ids=["screen", "hidpi", "fractional"],
+    )
+    def test_the_picture_is_the_canvas_at_the_screens_device_scale(
+        self, w: int, h: int, scale: float, size: tuple[int, int]
+    ) -> None:
+        from openfollow.runtime.overlay_draw_scene import GridCache
+
+        cr = self._draw(GridCache(), self._state(), w, h, scale)
+        picture = cr.surfaces[0]
+        assert (picture.get_width(), picture.get_height()) == size
+        assert picture.get_device_scale() == (scale, scale)
+        assert ("source_surface", 0, 0) in cr.calls
+
+    @pytest.mark.parametrize(
+        "hidden",
+        [{"grid_visible": False, "ground_grid_visible": False}, {"grid_config": None}, {"camera_params": None}],
+        ids=["both-hidden", "no-grid", "no-camera"],
+    )
+    def test_the_picture_is_let_go_while_no_grid_is_drawn(self, hidden: dict) -> None:
+        from openfollow.runtime.overlay_draw_scene import GridCache
+
+        cache, state = GridCache(), self._state()
+        before = self._draw(cache, state)
+        assert self._draw(cache, self._state(**hidden)).calls == []
+        # Shown again unchanged, the grid is drawn afresh: no picture was kept meanwhile.
+        after = self._draw(cache, state)
+        assert after.surfaces[0] is not before.surfaces[0]
+
+    def test_clear_lets_the_picture_go(self) -> None:
+        from openfollow.runtime.overlay_draw_scene import GridCache
+
+        cache, state = GridCache(), self._state()
+        before = self._draw(cache, state)
+        cache.clear()
+        assert self._draw(cache, state).surfaces[0] is not before.surfaces[0]
+
+    def test_a_redraw_that_fails_keeps_no_damaged_picture(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import openfollow.runtime.overlay_draw_scene as scene
+
+        cache, state = scene.GridCache(), self._state()
+        fresh = self._pixels(self._draw(scene.GridCache(), state).surfaces[0])
+        self._draw(cache, state)
+        moved = self._state(camera_params=np.array([0.2, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0]))
+
+        def fail(*_args: object) -> None:
+            raise RuntimeError("draw failed")
+
+        with monkeypatch.context() as patched:
+            patched.setattr(scene, "draw_ground_grid", fail)
+            with pytest.raises(RuntimeError):
+                self._draw(cache, moved)
+        assert np.array_equal(self._pixels(self._draw(cache, state).surfaces[0]), fresh)

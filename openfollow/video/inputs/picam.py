@@ -62,6 +62,7 @@ class PiCamInput(VideoInputBase):
     input_id = "picam"
     display_name = "Pi Camera"
     source_element_name = "libcamerasrc"
+    frame_meter_element_name = "post_queue"
     source_kind = SourceKind.LOCAL
 
     # -- Declarations ---------------------------------------------------------

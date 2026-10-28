@@ -8,7 +8,9 @@ Bundle-assembly test wires everything end-to-end.
 
 from __future__ import annotations
 
+import errno
 import logging
+import os
 import platform
 import re
 import socket
@@ -16,7 +18,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timedelta, timezone, tzinfo
+from datetime import UTC, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -27,6 +29,7 @@ import openfollow
 from openfollow import net_utils
 from openfollow.logging_setup import RingBufferLogHandler
 from openfollow.runtime.removable_media import Media
+from openfollow.video.source_limits import OverLimit, SourceReading, limits_snapshot
 from openfollow.web import diagnostics as diag
 
 pytestmark = pytest.mark.unit
@@ -239,6 +242,21 @@ def test_bind_map_lists_the_panel_rows_as_configured() -> None:
     assert "All interfaces" in configured["Web UI"]
     # An unknown blank kind still renders, and an empty address reads as "-".
     assert configured["Odd row"].split()[-2:] == ["(blank)", "-"]
+
+
+@pytest.mark.parametrize(
+    ("provider", "line"),
+    [
+        (lambda: "simple", "  Network mode: Simple"),
+        (lambda: "advanced", "  Network mode: Advanced"),
+        (lambda: 1 / 0, "  Network mode: [unavailable: network_mode:"),
+    ],
+    ids=["simple", "advanced", "raising"],
+)
+def test_bind_map_names_the_network_mode_first(provider: Any, line: str) -> None:
+    rows = _bind_map(network_mode=provider, interface_assignment_rows=lambda: _PANEL_ROWS)
+    assert rows[0].startswith(line)
+    assert rows[1] == "  Configured (as the Network Interface Assignment panel shows it):"
 
 
 def test_bind_map_lists_every_plane_as_it_runs() -> None:
@@ -607,6 +625,36 @@ def test_collect_config_streams_provider_text() -> None:
     assert 'web_pin = "***"' in joined
     assert "Diff vs defaults:" in joined
     assert "web_port: 80" in joined
+
+
+def test_collect_config_says_how_the_config_file_and_its_backup_read() -> None:
+    p = diag.DiagnosticsProviders(
+        config_redacted_toml=lambda: 'system = "rig"',
+        config_file_health=lambda: "is empty; backup reads whole",
+    )
+    rows = diag.collect_config(p)
+    assert "  Config file health:  is empty; backup reads whole" in rows
+
+
+def test_collect_config_reports_a_health_read_that_failed() -> None:
+    def boom() -> str:
+        raise RuntimeError("nope")
+
+    p = diag.DiagnosticsProviders(config_redacted_toml=lambda: 'system = "rig"', config_file_health=boom)
+    joined = "\n".join(diag.collect_config(p))
+    assert "Config file health:  [unavailable: config_file_health:" in joined
+
+
+def test_the_bundle_reads_the_health_of_the_station_s_own_config_file(tmp_path) -> None:
+    from openfollow.configuration import AppConfig, save_config
+    from openfollow.web.routes import _build_diagnostics_providers
+
+    path = tmp_path / "config.toml"
+    save_config(AppConfig(web_pin="4321"), str(path))
+    path.write_bytes(b"grid = 5\n")
+    providers = _build_diagnostics_providers(_io_server(config_path=str(path)), AppConfig())
+    assert providers.config_file_health is not None
+    assert providers.config_file_health() == "could not be read; no readable backup"
 
 
 def test_collect_config_renders_unavailable_when_diff_provider_raises() -> None:
@@ -1482,6 +1530,7 @@ def test_collect_usb_linux_reads_the_hosts_disks_only_with_the_hosts_sysfs(tmp_p
     bus, block = _usb_sysfs(tmp_path)
     monkeypatch.setattr(diag, "_USB_SYSFS", bus)
     monkeypatch.setattr(diag, "_BLOCK_SYSFS", block)
+    monkeypatch.setattr(diag, "_V4L_SYSFS", tmp_path / "no-video4linux")
     by_default = {d.pid: d.disks for d in diag.collect_usb_devices_linux()}
     # A caller's own tree (a test's) reads no disks unless it names them, so the host's never leak in.
     own_tree = {d.pid: d.disks for d in diag.collect_usb_devices_linux(sysfs_root=bus)}
@@ -1492,6 +1541,104 @@ def test_collect_usb_linux_lists_devices_without_disks_when_block_is_unreadable(
     bus, _ = _usb_sysfs(tmp_path)
     devices = diag.collect_usb_devices_linux(sysfs_root=bus, block_root=tmp_path / "missing")
     assert [(d.pid, d.disks) for d in devices] == [("5581", ()), ("0002", ())]
+
+
+def _usb_camera_sysfs(tmp_path: Path) -> tuple[Path, Path]:
+    """A virtual machine's USB camera, mouse and keyboard on one hub, and a camera on no USB device at all."""
+    usb = tmp_path / "devices" / "pci0000:00" / "usb1"
+    usb.mkdir(parents=True)
+    (usb / "idVendor").write_text("1d6b")
+    (usb / "idProduct").write_text("0009")
+    (usb / "bDeviceClass").write_text("09")
+    bus, v4l = tmp_path / "bus", tmp_path / "video4linux"
+    bus.mkdir()
+    v4l.mkdir()
+    (bus / "usb1").symlink_to(usb)
+    for port, pid, product in [
+        ("1-1", "0001", "Virtual Camera"),
+        ("1-2", "0002", "Virtual Mouse"),
+        ("1-3", "0003", "Virtual Keyboard"),
+    ]:
+        device = usb / port
+        device.mkdir()
+        (device / "idVendor").write_text("80ee")
+        (device / "idProduct").write_text(pid)
+        (device / "product").write_text(product)
+        (bus / port).symlink_to(device)
+    # A UVC camera has a capture node and a metadata node, both named after it.
+    for node in ("video0", "video1"):
+        target = usb / "1-1" / "1-1:1.0" / "video4linux" / node
+        target.mkdir(parents=True)
+        (target / "name").write_text("Virtual Camera\n")
+        (v4l / node).symlink_to(target)
+    csi = tmp_path / "devices" / "platform" / "unicam" / "video4linux" / "video2"
+    csi.mkdir(parents=True)
+    (csi / "name").write_text("unicam-image")
+    (v4l / "video2").symlink_to(csi)
+    return bus, v4l
+
+
+def test_collect_usb_linux_names_the_cameras_each_device_carries(tmp_path) -> None:
+    bus, v4l = _usb_camera_sysfs(tmp_path)
+    devices = {d.pid: d.cameras for d in diag.collect_usb_devices_linux(sysfs_root=bus, v4l_root=v4l)}
+    # The root hub above the camera carries none, and the platform camera belongs to no USB device.
+    assert devices == {"0009": (), "0001": ("Virtual Camera",), "0002": (), "0003": ()}
+
+
+def test_a_camera_with_an_empty_name_is_named_by_its_node_as_the_input_names_it(tmp_path) -> None:
+    bus, v4l = _usb_camera_sysfs(tmp_path)
+    for node in ("video0", "video1"):
+        (v4l / node / "name").write_text("")
+    devices = {d.pid: d.cameras for d in diag.collect_usb_devices_linux(sysfs_root=bus, v4l_root=v4l)}
+    assert devices["0001"] == ("video0", "video1")
+
+
+def test_collect_usb_linux_reads_the_hosts_cameras_only_with_the_hosts_sysfs(tmp_path, monkeypatch) -> None:
+    bus, v4l = _usb_camera_sysfs(tmp_path)
+    monkeypatch.setattr(diag, "_USB_SYSFS", bus)
+    monkeypatch.setattr(diag, "_BLOCK_SYSFS", tmp_path / "no-block")
+    monkeypatch.setattr(diag, "_V4L_SYSFS", v4l)
+    by_default = {d.pid: d.cameras for d in diag.collect_usb_devices_linux()}
+    own_tree = {d.pid: d.cameras for d in diag.collect_usb_devices_linux(sysfs_root=bus)}
+    assert (by_default["0001"], own_tree["0001"]) == (("Virtual Camera",), ())
+
+
+def test_collect_usb_linux_lists_devices_without_cameras_when_video4linux_is_unreadable(tmp_path) -> None:
+    bus, _ = _usb_camera_sysfs(tmp_path)
+    devices = diag.collect_usb_devices_linux(sysfs_root=bus, v4l_root=tmp_path / "missing")
+    assert {d.pid: d.cameras for d in devices} == {"0009": (), "0001": (), "0002": (), "0003": ()}
+
+
+def test_a_camera_claims_only_its_own_usb_device(tmp_path) -> None:
+    """Every device here shares the word "Virtual" with the camera's name; only the camera's own row is a camera."""
+    bus, v4l = _usb_camera_sysfs(tmp_path)
+    devices = diag.collect_usb_devices_linux(sysfs_root=bus, v4l_root=v4l)
+    rows = diag.render_usb_table(devices, midi_ports=[], gamepads=[], cameras=["Virtual Camera"])
+    by_name = {
+        name: row for row in rows for name in ("Virtual Camera", "Virtual Mouse", "Virtual Keyboard") if name in row
+    }
+    assert by_name["Virtual Camera"].endswith("camera: Virtual Camera")
+    assert "camera:" not in by_name["Virtual Mouse"]
+    assert "camera:" not in by_name["Virtual Keyboard"]
+    total = next(r for r in rows if r.startswith("  Total:"))
+    assert "1 camera," in total
+
+
+def test_a_camera_on_no_usb_device_is_still_matched_by_name() -> None:
+    devices = [
+        diag.UsbDevice(vid="80ee", pid="0001", name="Virtual Camera", cameras=("Virtual Camera",)),
+        diag.UsbDevice(vid="046d", pid="0892", name="HD Pro Webcam C920", manufacturer="Logitech"),
+    ]
+    rows = diag.render_usb_table(devices, midi_ports=[], gamepads=[], cameras=["Virtual Camera", "Logitech C920"])
+    assert [r.split("  ")[-1] for r in rows[2:4]] == ["camera: Virtual Camera", "camera: Logitech C920"]
+
+
+def test_a_video_device_openfollow_does_not_list_is_not_a_camera() -> None:
+    """The column says what OpenFollow picks up: sysfs only says which USB device a listed camera is."""
+    devices = [diag.UsbDevice(vid="80ee", pid="0001", name="Virtual Camera", cameras=("Virtual Camera",))]
+    for cameras in ([], None, ["Another Camera"]):
+        rows = diag.render_usb_table(devices, midi_ports=[], gamepads=[], cameras=cameras)
+        assert "camera:" not in rows[2]
 
 
 def test_walk_macos_names_the_disks_under_a_storage_device() -> None:
@@ -1770,6 +1917,21 @@ def test_collect_bundle_runs_with_no_providers() -> None:
         assert getattr(bundle, attr), f"section {attr} unexpectedly empty"
 
 
+def test_collect_bundle_host_label_follows_a_hostname_change(monkeypatch, no_host_probes) -> None:
+    """The station renames the host after startup. ``platform.node()`` is cached
+    for the life of the process, so the bundle must read the name live."""
+    monkeypatch.setattr(platform, "node", lambda: "before-rename")
+    monkeypatch.setattr(diag, "full_hostname", lambda: "after-rename")
+    bundle = diag.collect_bundle(budget_s=0.0)
+    assert bundle.host_label.startswith("after-rename (")
+    assert "before-rename" not in bundle.host_label
+
+    monkeypatch.setattr(diag, "full_hostname", lambda: "renamed-again")
+    bundle = diag.collect_bundle(budget_s=0.0)
+    assert bundle.host_label.startswith("renamed-again (")
+    assert "host: renamed-again (" in diag.format_bundle(bundle)
+
+
 def test_format_bundle_emits_section_headers() -> None:
     bundle = diag.collect_bundle()
     text = diag.format_bundle(bundle)
@@ -1871,7 +2033,7 @@ def test_format_bundle_header_says_which_zone_the_log_times_are_in(monkeypatch) 
         @classmethod
         def now(cls, tz=None):  # noqa: ANN001, ANN206
             cls.calls += 1
-            return datetime(2026, 9, 28, 16, 53, cls.calls, tzinfo=timezone.utc).astimezone(tz)
+            return datetime(2026, 9, 28, 16, 53, cls.calls, tzinfo=UTC).astimezone(tz)
 
     monkeypatch.setattr(diag, "station_zone", zone)
     monkeypatch.setattr(diag, "datetime", _Ticking)
@@ -1881,7 +2043,7 @@ def test_format_bundle_header_says_which_zone_the_log_times_are_in(monkeypatch) 
     # Read at the moment the bundle is stamped, so the two lines describe one clock reading.
     (local,) = seen
     assert local.utcoffset() is not None
-    assert local.astimezone(timezone.utc).isoformat(timespec="seconds") == bundle.generated_at
+    assert local.astimezone(UTC).isoformat(timespec="seconds") == bundle.generated_at
 
 
 # ---------------------------------------------------------------------------
@@ -2180,13 +2342,13 @@ def test_write_bundle_to_disk_round_trip(tmp_path) -> None:
 
 
 def test_write_bundle_to_disk_uses_the_timestamp_it_is_given(tmp_path) -> None:
-    ts = datetime(2026, 9, 28, 10, 15, 0, tzinfo=timezone.utc)
+    ts = datetime(2026, 9, 28, 10, 15, 0, tzinfo=UTC)
     path = diag.write_bundle_to_disk("x", system_name="rig", root=tmp_path, ts=ts)
     assert path is not None and path.name == diag.bundle_filename("rig", ts)
 
 
 def test_write_bundle_to_disk_retention_prunes(tmp_path) -> None:
-    base_ts = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    base_ts = datetime(2026, 1, 1, tzinfo=UTC)
     # Pre-populate the dir with five "old" bundles for one system.
     for i in range(5):
         f = tmp_path / diag.bundle_filename(
@@ -2212,7 +2374,7 @@ def test_retention_counts_every_station_name_newest_by_timestamp(tmp_path) -> No
     """A renamed station's bundles are pruned too, oldest first by the time in
     the name: its old name sorts after the new one, so a sort by name would
     delete the bundle just written."""
-    base_ts = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    base_ts = datetime(2026, 1, 1, tzinfo=UTC)
     for i in range(4):
         (tmp_path / diag.bundle_filename("Zulu-Rig", base_ts.replace(hour=i))).write_text("old")
     new = diag.write_bundle_to_disk("new", system_name="Alpha", root=tmp_path, retention=2, ts=base_ts.replace(day=2))
@@ -2261,7 +2423,7 @@ def test_default_disk_root_falls_back_to_home(monkeypatch, tmp_path) -> None:
 
 
 def test_bundle_filename_shape() -> None:
-    ts = datetime(2026, 5, 7, 12, 34, 56, tzinfo=timezone.utc)
+    ts = datetime(2026, 5, 7, 12, 34, 56, tzinfo=UTC)
     assert diag.bundle_filename("Rig One", ts) == "ofdiag-Rig_One-20260507T123456Z.txt"
 
 
@@ -3365,7 +3527,7 @@ def test_prune_old_bundles_handles_iterdir_oserror(monkeypatch, tmp_path) -> Non
 
 
 def test_prune_old_bundles_handles_unlink_oserror(monkeypatch, tmp_path) -> None:
-    base_ts = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    base_ts = datetime(2026, 1, 1, tzinfo=UTC)
     for i in range(3):
         (tmp_path / diag.bundle_filename("rig", base_ts.replace(hour=i))).write_text("x")
 
@@ -3379,7 +3541,7 @@ def test_prune_old_bundles_handles_unlink_oserror(monkeypatch, tmp_path) -> None
 
 
 def test_prune_old_bundles_negative_retention_clamped_to_zero(tmp_path) -> None:
-    base_ts = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    base_ts = datetime(2026, 1, 1, tzinfo=UTC)
     for i in range(2):
         (tmp_path / diag.bundle_filename("rig", base_ts.replace(hour=i))).write_text("x")
     diag._prune_old_bundles(tmp_path, -5)
@@ -3830,6 +3992,49 @@ def test_the_bundle_names_station_default_when_its_interface_is_down(down: bool,
     providers = _build_diagnostics_providers(server, SimpleNamespace(web_port=8080))
     assert providers.iface_ip is not None
     assert providers.iface_ip() == expected
+
+
+def test_the_bundle_carries_the_calibration_marks_with_where_they_were_solved() -> None:
+    import tomllib
+
+    from openfollow.configuration import AppConfig, CalibrationMarkConfig
+    from openfollow.web.routes import _build_diagnostics_providers
+
+    cfg = AppConfig()
+    cfg.camera.calibration_mode = "advanced"
+    cfg.camera.calibration_marks = [
+        CalibrationMarkConfig(id=1, name="USR", kind="known", x=-5.0, y=6.0, z=0.0, pin=[0.81, 0.94]),
+        CalibrationMarkConfig(id=2, name="USL", kind="known", x=5.0, y=6.0, z=0.0),
+        CalibrationMarkConfig(
+            id=3,
+            kind="triangulated",
+            from_a=1,
+            from_b=2,
+            distance_a=8.078,
+            distance_b=3.905,
+            z=0.0,
+            pin=[0.6, 0.35],
+            position=[2.5, 9.0, 0.0],
+        ),
+    ]
+    providers = _build_diagnostics_providers(_io_server(), cfg)
+    assert providers.config_redacted_toml is not None
+    dumped = tomllib.loads(providers.config_redacted_toml())
+    assert dumped["camera"]["calibration_mode"] == "advanced"
+    assert [
+        (m["id"], m["name"], m["kind"], m["pin"], m["position"]) for m in dumped["camera"]["calibration_marks"]
+    ] == [
+        (1, "USR", "known", [0.81, 0.94], []),
+        (2, "USL", "known", [], []),
+        (3, "P3", "triangulated", [0.6, 0.35], [2.5, 9.0, 0.0]),
+    ]
+    assert (
+        dumped["camera"]["calibration_marks"][2]["distance_a"],
+        dumped["camera"]["calibration_marks"][2]["from_b"],
+    ) == (
+        8.078,
+        2,
+    )
 
 
 def test_build_diagnostics_providers_wires_io_fields() -> None:
@@ -4290,6 +4495,42 @@ def test_collect_runtime_state_names_what_each_controller_cannot_do() -> None:
     assert "notes" not in rows[second + 1]
 
 
+def test_collect_runtime_state_lists_every_marker_conflict() -> None:
+    stats = _stats()
+    stats["marker_conflicts"] = [
+        {"marker_id": 3, "stations": ["Stage Left"], "this_station": True},
+        {"marker_id": 12, "stations": ["Booth", "FOH"], "this_station": False},
+    ]
+    rows = diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats))
+    first = rows.index("  Marker conflicts:       2")
+    assert rows[first + 1 : first + 3] == [
+        "    marker 3    controlled by this station, Stage Left",
+        "    marker 12   controlled by Booth, FOH",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("block", "expected"),
+    [
+        ({"poller": "evdev", "devices": 2}, "  Keyboard poller:        evdev, 2 keyboard(s)"),
+        ({"poller": "evdev", "devices": 0}, "  Keyboard poller:        evdev, 0 keyboard(s)"),
+        ({"poller": "fallback", "devices": None}, "  Keyboard poller:        fallback"),
+        ({"poller": None, "devices": None}, "  Keyboard poller:        [not running]"),
+        (None, "  Keyboard poller:        [not running]"),
+    ],
+)
+def test_collect_runtime_state_names_the_keyboard_poller(block: dict[str, Any] | None, expected: str) -> None:
+    stats = _stats()
+    stats["keyboard"] = block
+    assert expected in diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats))
+
+
+def test_collect_runtime_state_says_when_no_marker_conflicts() -> None:
+    assert "  Marker conflicts:       (none)" in diag.collect_runtime_state(
+        diag.DiagnosticsProviders(runtime_stats=_stats)
+    )
+
+
 def test_collect_runtime_state_reports_not_wired() -> None:
     assert "not wired" in diag.collect_runtime_state(diag.DiagnosticsProviders())[0]
 
@@ -4342,6 +4583,39 @@ def test_collect_runtime_state_reports_the_reconnect_loop() -> None:
     assert "reconnect attempt 2" in joined
     assert "No video received (connection timeout)" in joined
     assert "- (no source frames yet)" in joined
+
+
+def _limits_line(limits: object) -> str:
+    stats = _stats(video=dict(_stats()["video"], limits=limits))
+    rows = diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats))
+    (line,) = [row for row in rows if row.startswith("    source limits")]
+    return line.removeprefix("    source limits").strip()
+
+
+@pytest.mark.parametrize(
+    ("reading", "expected"),
+    [
+        (
+            SourceReading(3840, 2160, 59.94, (OverLimit.RESOLUTION, OverLimit.FRAME_RATE)),
+            "resolution_over_limit, frame_rate_over_limit "
+            "(measured 3840x2160, 59.9 fps; limit 1920x1080 either orientation, 30 fps)",
+        ),
+        (
+            SourceReading(1920, 1080, None, ()),
+            "within (measured 1920x1080, rate not measured yet; limit 1920x1080 either orientation, 30 fps)",
+        ),
+        (None, "not measured (no source frames yet)"),
+    ],
+    ids=["over", "within", "unmeasured"],
+)
+def test_collect_runtime_state_names_the_source_limits_verdict(reading: SourceReading | None, expected: str) -> None:
+    """Support reads the stable ids without reading the numbers."""
+    assert _limits_line(limits_snapshot(reading)) == expected
+
+
+@pytest.mark.parametrize("limits", [None, "over", ["resolution_over_limit"]])
+def test_collect_runtime_state_survives_a_malformed_limits_entry(limits: object) -> None:
+    assert _limits_line(limits) == "-"
 
 
 def test_collect_runtime_state_redacts_a_credential_in_the_source_label() -> None:
@@ -5261,6 +5535,27 @@ def test_collect_video_capability_reports_an_unreadable_registry(monkeypatch: py
     assert "input registry" in diag.collect_video_capability()[0]
 
 
+def test_collect_video_capability_marks_a_ranked_out_decoder(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A decoder the station ranked out is present but never picked, which is the answer to "why software"."""
+    from types import SimpleNamespace
+
+    import gi.repository
+
+    ranks = {"v4l2slh265dec": 0, "avdec_h265": 256}
+    fake = SimpleNamespace(
+        init=lambda _args: None,
+        Rank=SimpleNamespace(NONE=0),
+        ElementFactory=SimpleNamespace(
+            find=lambda name: SimpleNamespace(get_rank=lambda: ranks[name]) if name in ranks else None
+        ),
+    )
+    monkeypatch.setattr(gi.repository, "Gst", fake, raising=False)
+
+    rows = diag.collect_video_capability()
+
+    assert rows[-1] == "  Video decoders:       v4l2slh265dec (ranked out), avdec_h265"
+
+
 def test_collect_detection_models_lists_what_is_on_disk(tmp_path: Path) -> None:
     """The storage breakdown reports the directory's size; "detection will not
     start" is a question about which model is in it."""
@@ -5882,6 +6177,47 @@ def test_runtime_state_names_the_format_the_source_delivered(source_format: str,
     )
 
 
+def test_runtime_state_shows_the_last_camera_latency_under_the_video_block() -> None:
+    stats = _stats()
+    stats["latency"] = {
+        "median_ms": 84.4,
+        "min_ms": 70.2,
+        "max_ms": 101.6,
+        "samples": 10,
+        "age_s": 125.0,
+        "source_type": "rtsp",
+        "level": "success",
+        "finished_at": 1_700_000_000.0,
+    }
+    rows = diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats))
+    row = "    camera latency        84 ms median (70 to 102 ms), 10 samples, 125 s ago, source rtsp"
+    assert row in rows
+    assert rows.index(row) == 1 + next(i for i, r in enumerate(rows) if "source limits" in r)
+
+
+@pytest.mark.parametrize("latency", [None, "garbage"], ids=["none", "not-a-result"])
+def test_runtime_state_without_a_camera_latency_says_not_measured(latency: Any) -> None:
+    stats = _stats()
+    stats["latency"] = latency
+    rows = diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats))
+    assert "    camera latency        not measured" in rows
+
+
+def test_a_failed_latency_run_leaves_the_last_success_in_the_bundle() -> None:
+    from openfollow.runtime import latency_probe as lp
+
+    probe = lp.LatencyProbe(wall_clock=lambda: 1_700_000_000.0)
+    probe.last_success = lp.LatencyResult(84.0, 70.0, 99.0, 10, 1_700_000_000.0, 0, "rtsp")
+    probe.start(1_000_000, ("rtsp", 1), "rtsp")
+    probe.step(1_000_000 + lp.SETTLE_US, ("rtsp", 1))
+    probe.step(1_000_000 + lp.SETTLE_US + lp.TIMEOUT_US, ("rtsp", 1))
+    assert probe.failure is not None
+    stats = _stats()
+    stats["latency"] = probe.last_success.to_dict(60_000_000)
+    rows = diag.collect_runtime_state(diag.DiagnosticsProviders(runtime_stats=lambda: stats))
+    assert "    camera latency        84 ms median (70 to 99 ms), 10 samples, 60 s ago, source rtsp" in rows
+
+
 # --- E5c. Settings backups ----------------------------------------------------
 
 
@@ -5947,6 +6283,78 @@ def test_collect_settings_backups_an_archive_that_vanishes(tmp_path: Path, monke
 
 def test_the_bundle_carries_the_settings_backups_section() -> None:
     assert ("E5c. Settings backups", "e5c_backups") in diag._BUNDLE_SECTIONS
+
+
+def test_collect_settings_backups_lists_the_web_ui_backups_newest_first(tmp_path: Path) -> None:
+    web = tmp_path / "config" / "backups" / "web"
+    web.mkdir(parents=True)
+    (web / "x-v0.5.0-import-20261001T000000Z.ofbackup").write_bytes(b"web_pin = a")
+    (web / "x-v0.5.0-defaults-20261002T000000Z.ofbackup").write_bytes(b"web_pin = bb")
+    rows = diag.collect_settings_backups(tmp_path, web_dir=web)
+    start = rows.index(f"  Web UI folder: {web}")
+    assert rows[start + 1 :] == [
+        "    x-v0.5.0-defaults-20261002T000000Z.ofbackup  12 B",
+        "    x-v0.5.0-import-20261001T000000Z.ofbackup  11 B",
+    ]
+
+
+def test_collect_settings_backups_before_any_web_ui_backup(tmp_path: Path) -> None:
+    web = tmp_path / "backups" / "web"
+    assert diag.collect_settings_backups(tmp_path, web_dir=web)[-1] == f"  Web UI folder: {web} (none yet)"
+
+
+def _refuse(monkeypatch, method: str, target: Path) -> None:
+    """``Path.<method>`` raises for *target*, as inside a folder that can't be searched."""
+    real = getattr(Path, method)
+
+    def refused(self: Path, *args, **kwargs):
+        if self == target:
+            raise PermissionError(errno.EACCES, "Permission denied", str(self))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, method, refused)
+
+
+def test_collect_settings_backups_an_unsearchable_web_ui_folder(tmp_path: Path, monkeypatch) -> None:
+    _backups(tmp_path)
+    web = tmp_path / "backups" / "web"
+    _refuse(monkeypatch, "is_dir", web)
+    rows = diag.collect_settings_backups(tmp_path, web_dir=web)
+    assert rows[-1] == f"  Web UI folder: {web} [unavailable: Permission denied]"
+    assert "    brave-otter-v0.4.3-20260929T180000Z.ofbackup  19 B" in rows
+
+
+def test_collect_settings_backups_an_unsearchable_update_folder(tmp_path: Path, monkeypatch) -> None:
+    _refuse(monkeypatch, "is_dir", tmp_path / "backups")
+    assert diag.collect_settings_backups(tmp_path) == [
+        f"  Folder: {tmp_path / 'backups'} [unavailable: Permission denied]"
+    ]
+
+
+def test_collect_settings_backups_an_unreadable_folder_is_not_reported_empty(tmp_path: Path, monkeypatch) -> None:
+    backup_dir = _backups(tmp_path)
+    real = os.scandir
+
+    def scandir(path=".", *args, **kwargs):
+        if Path(path) == backup_dir:
+            raise PermissionError(errno.EACCES, "Permission denied", str(path))
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(diag.os, "scandir", scandir)
+    rows = diag.collect_settings_backups(tmp_path)
+    assert "  Archives: [unavailable: Permission denied]" in rows
+    assert "  Archives: none" not in rows
+
+
+def test_collect_settings_backups_an_empty_web_ui_folder(tmp_path: Path) -> None:
+    web = tmp_path / "backups" / "web"
+    web.mkdir(parents=True)
+    assert diag.collect_settings_backups(tmp_path, web_dir=web)[-2:] == [f"  Web UI folder: {web}", "  Archives: none"]
+
+
+def test_the_bundle_lists_the_web_ui_backups_beside_its_config(tmp_path: Path) -> None:
+    bundle = diag.collect_bundle(config_path=tmp_path / "config.toml")
+    assert f"  Web UI folder: {tmp_path / 'backups' / 'web'} (none yet)" in bundle.e5c_backups
 
 
 # ---------------------------------------------------------------------------
@@ -6027,3 +6435,109 @@ def test_the_bind_map_shows_a_pin_by_label() -> None:
     row = {"label": "PSN", "value": "eth0", "value_display": "Production (eth0)", "address": "192.0.2.10"}
     rows = _bind_map(interface_assignment_rows=lambda: [{**row, "editable": True, "blank": "auto"}])
     assert "Production (eth0)" in rows[2]
+
+
+# --- E3: the keyboard layout --------------------------------------------------
+
+
+@pytest.fixture
+def xkb_station(tmp_path, monkeypatch) -> Path:
+    from tests._xkb import install_station_keyboard
+
+    install_station_keyboard(tmp_path, monkeypatch)
+    config = tmp_path / "config.toml"
+    config.write_text('[controller]\nkeyboard_layout = "de"\nkeyboard_variant = "nodeadkeys"\n')
+    return config
+
+
+def test_keyboard_layout_row_sets_configured_beside_file_and_session(xkb_station: Path) -> None:
+    session = {"OPENFOLLOW_KEYBOARD_SOURCE": "system", "XKB_DEFAULT_LAYOUT": "gb"}
+    assert diag.collect_keyboard_layout(xkb_station, session) == (
+        "  keyboard layout              configured de (nodeadkeys) | system file gb | in use gb (system)"
+    )
+
+
+def test_keyboard_layout_row_names_a_session_variant(xkb_station: Path) -> None:
+    session = {"OPENFOLLOW_KEYBOARD_SOURCE": "config", "XKB_DEFAULT_LAYOUT": "de", "XKB_DEFAULT_VARIANT": "T3"}
+    assert diag.collect_keyboard_layout(xkb_station, session).endswith("| in use de (T3) (config)")
+
+
+def test_keyboard_layout_row_names_the_session_keyboards_model_and_options(xkb_station: Path) -> None:
+    session = {
+        "OPENFOLLOW_KEYBOARD_SOURCE": "config",
+        "XKB_DEFAULT_LAYOUT": "de",
+        "XKB_DEFAULT_MODEL": "pc105",
+        "XKB_DEFAULT_OPTIONS": "ctrl:nocaps,grp:alt_shift_toggle",
+    }
+    assert diag.collect_keyboard_layout(xkb_station, session).endswith(
+        "| in use de (config), model pc105, options ctrl:nocaps,grp:alt_shift_toggle"
+    )
+
+
+def test_keyboard_layout_row_without_any_setting(xkb_station: Path) -> None:
+    from openfollow import keyboard_layout
+
+    xkb_station.write_text("")
+    keyboard_layout.SYSTEM_KEYBOARD.unlink()
+    assert diag.collect_keyboard_layout(xkb_station, {}) == (
+        "  keyboard layout              configured system | system file [not set]"
+        " | in use [not set by the kiosk session]"
+    )
+
+
+def test_keyboard_layout_row_without_a_config_path(xkb_station: Path, monkeypatch) -> None:
+    monkeypatch.delenv("OPENFOLLOW_KEYBOARD_SOURCE", raising=False)
+    assert "configured [unknown] |" in diag.collect_keyboard_layout(None)
+
+
+def test_keyboard_layout_row_names_no_variant_without_a_layout(xkb_station: Path) -> None:
+    """A variant alone describes nothing: the session would not use it either."""
+    from openfollow import keyboard_layout
+
+    xkb_station.write_text('[controller]\nkeyboard_variant = "nodeadkeys"\n')
+    keyboard_layout.SYSTEM_KEYBOARD.write_text('XKBVARIANT="nodeadkeys"\n')
+    session = {"OPENFOLLOW_KEYBOARD_SOURCE": "default", "XKB_DEFAULT_VARIANT": "nodeadkeys"}
+    assert diag.collect_keyboard_layout(xkb_station, session) == (
+        "  keyboard layout              configured system | system file [not set] | in use [none] (default)"
+    )
+
+
+@pytest.mark.parametrize(
+    ("config", "system", "session", "expected"),
+    [
+        (
+            '[controller]\nkeyboard_layout = "de\\nevil"\nkeyboard_variant = "x\\u001b[31m"\n',
+            'XKBLAYOUT="gb"\n',
+            {},
+            "configured 'de\\nevil' ('x\\x1b[31m') | system file gb |",
+        ),
+        ("", 'XKBLAYOUT="gb\tx"\nXKBVARIANT="\u202eevil"\n', {}, "| system file 'gb\\tx' ('\\u202eevil') |"),
+        (
+            "",
+            'XKBLAYOUT="gb"\n',
+            {"OPENFOLLOW_KEYBOARD_SOURCE": "sys\ntem", "XKB_DEFAULT_LAYOUT": "gb\r", "XKB_DEFAULT_VARIANT": "\x00"},
+            "| in use 'gb\\r' ('\\x00') ('sys\\ntem')",
+        ),
+        (
+            "",
+            'XKBLAYOUT="gb"\n',
+            {"OPENFOLLOW_KEYBOARD_SOURCE": "system", "XKB_DEFAULT_MODEL": "pc\n105", "XKB_DEFAULT_OPTIONS": "a b"},
+            "(system), model 'pc\\n105', options 'a b'",
+        ),
+    ],
+)
+def test_keyboard_layout_row_stays_one_row_whatever_the_values_hold(
+    xkb_station: Path, config: str, system: str, session: dict[str, str], expected: str
+) -> None:
+    from openfollow import keyboard_layout
+
+    xkb_station.write_text(config)
+    keyboard_layout.SYSTEM_KEYBOARD.write_text(system)
+    row = diag.collect_keyboard_layout(xkb_station, session)
+    assert expected in row
+    assert row.isprintable()
+
+
+def test_collect_os_carries_the_keyboard_layout_of_the_bundles_config(xkb_station: Path) -> None:
+    bundle = diag.collect_bundle(config_path=xkb_station)
+    assert any("configured de (nodeadkeys)" in row for row in bundle.e3_os)

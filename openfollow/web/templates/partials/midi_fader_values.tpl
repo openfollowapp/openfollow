@@ -1,10 +1,10 @@
-% # Live-value response for mixer-style faders (GET every 100ms).
+% # Live-value response for mixer-style faders while Show live runs.
 % # Three OOB swaps per fader: fill bar height, handle position, numeric value
-% # + optional "(not picked up)" annotation. OOB targets by id leave click
+% # + the "not picked up" pill, hidden once picked up. OOB targets by id leave click
 % # handlers and selection state on strip wrapper untouched.
 % for entry in fader_values:
 %   pct = '%g' % (max(0.0, min(1.0, entry['value'])) * 100)
 <div id="midi-fader-strip-fill-{{entry['index']}}" class="midi-fader-strip-fill" style="height:{{pct}}%" hx-swap-oob="true"></div>
 <div id="midi-fader-strip-handle-{{entry['index']}}" class="midi-fader-strip-handle" style="bottom:{{pct}}%" hx-swap-oob="true"></div>
-<span id="midi-fader-strip-value-{{entry['index']}}" class="midi-fader-strip-value" hx-swap-oob="true">{{'%.2f' % entry['value']}}{{!'<span class="midi-fader-strip-not-picked-up">not picked up</span>' if not entry['picked_up'] else ''}}</span>
+<span id="midi-fader-strip-value-{{entry['index']}}" class="midi-fader-strip-value" hx-swap-oob="true">{{'%.2f' % entry['value']}}<span class="midi-fader-strip-not-picked-up"{{!' data-picked-up' if entry['picked_up'] else ''}}>not picked up</span></span>
 % end

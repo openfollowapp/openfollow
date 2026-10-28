@@ -72,6 +72,9 @@
 % if alerts.video is not None:
 %     include('partials/video_error_box.tpl', failure_text=alerts.video[0], error_message='', action=alerts.video[1], token=video_error_token(alerts.video[0], '', alerts.video[1]), scope='stats', live='')
 % end
+% if alerts.video_limits is not None:
+%     include('partials/video_error_box.tpl', failure_text=alerts.video_limits[0], error_message='', action=alerts.video_limits[1], token=video_error_token(alerts.video_limits[0], '', alerts.video_limits[1]), scope='stats-limits', live='')
+% end
         <dl class="metric-list">
             <div class="metric-row">
                 <dt class="metric-label">Source</dt>
@@ -104,6 +107,14 @@
         <div class="notice error">
 % for line in alerts.controllers:
             <div>{{line}}</div>
+% end
+        </div>
+% end
+% for alert in alerts.power:
+        <div class="notice {{'error' if alert.level == 'error' else 'warning'}}">
+            <div>{{alert.text}}</div>
+% if alert.step:
+            <div class="notice-sub">{{alert.step}}</div>
 % end
         </div>
 % end

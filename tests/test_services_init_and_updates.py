@@ -18,7 +18,9 @@ between ``OpenFollowApp.run()`` and the per-subsystem classes:
 from __future__ import annotations
 
 import json
+import logging
 import socket
+import threading
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
@@ -35,13 +37,14 @@ from openfollow.configuration import (
     RttrpmOutputConfig,
     apply_runtime_config_changes,
 )
+from openfollow.input.touch_remote import TouchRemote
 from openfollow.net_egress import Egress
 from openfollow.net_utils import resolve_plane_source_ip as _REAL_RESOLVE_PLANE_SOURCE_IP
 from openfollow.psn.server import _UNCHANGED as _UNCHANGED_SENTINEL
 from openfollow.runtime.services_marker_visuals import _resolve_marker_color
 from openfollow.services import AppRuntimeServices
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("every_feature_on")]
 
 # --------------------------------------------------------------------------- #
 # Fakes
@@ -295,8 +298,9 @@ class _FakeDetector:
         # detection branch to drop on a rebuild.
         self.available = available
 
-    def stop(self) -> None:
+    def stop(self, *, wait: bool = True) -> None:
         self.stopped = True
+        self.waited = wait
 
     def reload_config(self, new_cfg: Any) -> None:
         self.reload_calls.append(new_cfg)
@@ -337,6 +341,7 @@ def _dummy_app(cfg: AppConfig | None = None) -> SimpleNamespace:
         _selected_id=None,
         _web_commands=SimpleNamespace(),
         _log_ring=None,
+        _touch_remote=TouchRemote(),
     )
 
 
@@ -459,6 +464,22 @@ class TestInitMarkers:
             t = services._app._server.get_marker(marker_id)
             assert t is not None
             assert t.pos_calls == [(1.5, 2.5, 0.75)]
+
+    def test_a_restart_keeps_the_parked_markers_and_selects_the_first_unparked(
+        self, services: AppRuntimeServices
+    ) -> None:
+        services._app._config = replace(
+            services._app._config, controlled_marker_ids=[1, 2, 3], parked_marker_ids=[1, 3]
+        )
+        services._app._config.parked_marker_ids = [1, 3, 7]  # as a programmatic edit could leave it
+        services._app._server = _FakePsnServer()
+        services.init_markers()
+        assert services._app._parked_ids == {1, 3}
+        # The running config and the live set agree.
+        assert services._app._config.parked_marker_ids == [1, 3]
+        assert services._app._selected_id == 2
+        # A start chooses; it moves nothing off a parked marker, so a following pin is not held back.
+        assert getattr(services._app, "_pin_waits_for_selection", False) is False
 
     def test_empty_controlled_list_leaves_selected_id_none(self, services: AppRuntimeServices) -> None:
         cfg = replace(services._app._config, controlled_marker_ids=[])
@@ -804,6 +825,7 @@ class TestInitOtp:
         NIC happens to be up instead is worse than sending nothing, because a
         stopped output is visible and a misrouted one is not.
         """
+        services._app._config.network_mode = "advanced"
         from dataclasses import replace
 
         cfg = replace(
@@ -935,6 +957,158 @@ class TestInitPsnReceiver:
         assert recv.kwargs["source_ip"] == "10.0.0.1"
         assert recv.kwargs["source_iface"] == "eth0"
 
+    def test_the_receiver_knows_where_this_station_s_output_comes_from(
+        self,
+        services: AppRuntimeServices,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(services_module, "PsnReceiver", _FakePsnReceiver)
+        monkeypatch.setattr(services, "station_source_ip_or_none", lambda: "10.0.0.1")
+        current: dict[str, tuple[str, int] | None] = {"address": ("192.0.2.10", 50000)}
+        services._app._server = SimpleNamespace(source_address=lambda: current["address"])
+        services.init_psn_receiver()
+        own_source = services._app._psn_receiver.kwargs["own_source"]
+        assert own_source() == ("192.0.2.10", 50000)
+        # The server's socket is rebuilt on recovery and rebind; the receiver follows it.
+        current["address"] = ("192.0.2.10", 50002)
+        assert own_source() == ("192.0.2.10", 50002)
+
+    def test_without_psn_output_the_receiver_drops_nothing(
+        self,
+        services: AppRuntimeServices,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(services_module, "PsnReceiver", _FakePsnReceiver)
+        monkeypatch.setattr(services, "station_source_ip_or_none", lambda: "10.0.0.1")
+        services._app._server = None
+        services.init_psn_receiver()
+        assert services._app._psn_receiver.kwargs["own_source"]() is None
+
+
+class _GateReceiver:
+    """A receiver that records the PSN input gate the way ``PsnReceiver`` applies it."""
+
+    def __init__(self, *, bound: str | None) -> None:
+        self.enabled_calls: list[bool] = []
+        self.rebinds: list[tuple[str, str | None]] = []
+        self._bound = bound
+
+    def set_enabled(self, enabled: bool) -> None:
+        self.enabled_calls.append(enabled)
+        if not enabled:
+            self._bound = None
+
+    def bound_source_ip(self) -> str | None:
+        return self._bound
+
+    def rebind(self, source_ip: str, *, source_iface: str | None = None) -> None:
+        self.rebinds.append((source_ip, source_iface))
+        self._bound = source_ip
+
+
+def _with_features(services: AppRuntimeServices, *keys: str) -> None:
+    from openfollow.configuration import UiConfig
+
+    services._app._config = replace(services._app._config, ui=UiConfig(shown_features=list(keys)))
+
+
+class TestFeatureGates:
+    """Each gated subsystem reads its config through the Features list; the config itself is never written."""
+
+    def test_the_receiver_is_built_disabled_while_psn_input_is_off(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _with_features(services)
+        monkeypatch.setattr(services_module, "PsnReceiver", _FakePsnReceiver)
+        services.init_psn_receiver()
+        assert services._app._psn_receiver.kwargs["enabled"] is False
+
+    def test_psn_input_off_disables_the_receiver(self, services: AppRuntimeServices) -> None:
+        receiver = _GateReceiver(bound="192.0.2.1")
+        services._app._psn_receiver = receiver
+        _with_features(services)
+        services.apply_psn_input_change()
+        assert receiver.enabled_calls == [False]
+        assert receiver.rebinds == []
+
+    def test_psn_input_on_binds_on_the_station_interface(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _fake_ifaces(monkeypatch, {"eth0": "192.0.2.1"})
+        receiver = _GateReceiver(bound=None)
+        services._app._psn_receiver = receiver
+        _with_features(services, "psn_input")
+        services._app._config = replace(services._app._config, psn_source_iface="eth0")
+        services.apply_psn_input_change()
+        assert receiver.enabled_calls == [True]
+        assert receiver.rebinds == [("192.0.2.1", "eth0")]
+
+    def test_psn_input_on_with_no_station_address_stays_unbound(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _fake_ifaces(monkeypatch, {})
+        receiver = _GateReceiver(bound=None)
+        services._app._psn_receiver = receiver
+        _with_features(services, "psn_input")
+        services._app._config = replace(services._app._config, psn_source_iface="eth0")
+        services.apply_psn_input_change()
+        assert receiver.enabled_calls == [True]
+        assert receiver.rebinds == []
+
+    def test_psn_input_on_leaves_a_bound_receiver_alone(self, services: AppRuntimeServices) -> None:
+        receiver = _GateReceiver(bound="192.0.2.1")
+        services._app._psn_receiver = receiver
+        _with_features(services, "psn_input")
+        services.apply_psn_input_change()
+        assert receiver.rebinds == []
+
+    def test_psn_input_without_a_receiver_does_nothing(self, services: AppRuntimeServices) -> None:
+        services._app._psn_receiver = None
+        services.apply_psn_input_change()
+
+    @pytest.mark.parametrize("on", [True, False])
+    def test_midi_patches_follow_the_midi_feature(self, services: AppRuntimeServices, on: bool) -> None:
+        from openfollow.configuration import MidiConfig, MidiPatch
+
+        patch = MidiPatch(id=1, alias="Faders")
+        services._app._config = replace(services._app._config, midi=MidiConfig(patches=[patch]))
+        _with_features(services, *(["midi"] if on else []))
+        assert services.midi_patches() == ([patch] if on else [])
+        assert services._app._config.midi.patches == [patch]
+
+    @pytest.mark.parametrize(
+        ("section", "key", "getter"),
+        [
+            ("rttrpm_output", "rttrpm", "rttrpm_config"),
+            ("trigger_zones", "zones", "zones_config"),
+            ("detection", "detection", "detection_config"),
+        ],
+    )
+    @pytest.mark.parametrize("on", [True, False])
+    def test_a_section_runs_only_with_its_feature(
+        self, services: AppRuntimeServices, section: str, key: str, getter: str, on: bool
+    ) -> None:
+        cfg = services._app._config
+        services._app._config = replace(cfg, **{section: replace(getattr(cfg, section), enabled=True)})
+        _with_features(services, *([key] if on else []))
+        assert getattr(services, getter)().enabled is on
+        assert getattr(services._app._config, section).enabled is True
+
+    def test_zones_are_not_evaluated_while_their_feature_is_off(self, services: AppRuntimeServices) -> None:
+        from openfollow.configuration import TriggerZonesConfig
+
+        class _Engine:
+            updates = 0
+
+            def update(self, *_args: object) -> None:
+                _Engine.updates += 1
+
+        services._zone_engine = _Engine()
+        services._app._config = replace(services._app._config, trigger_zones=TriggerZonesConfig(enabled=True))
+        _with_features(services)
+        services.update_zone_triggers()
+        assert _Engine.updates == 0
+
 
 def _fake_ifaces(monkeypatch, ifaces: dict[str, str]) -> None:
     """Replace the host's interface table with ``{name: ipv4}``."""
@@ -968,7 +1142,9 @@ class TestResolveWebBind:
 
     def test_a_live_pin_binds_that_interface(self, services: AppRuntimeServices, monkeypatch) -> None:
         _fake_ifaces(monkeypatch, {"eth1": "172.16.4.20"})
-        services._app._config = replace(services._app._config, web_bind="", web_bind_iface="eth1")
+        services._app._config = replace(
+            services._app._config, network_mode="advanced", web_bind="", web_bind_iface="eth1"
+        )
         assert services._resolve_web_bind() == "172.16.4.20"
         advisory = services._web_bind_advisory()
         assert advisory["status"] == "iface"
@@ -982,7 +1158,9 @@ class TestResolveWebBind:
         """The web UI is the one plane that fails open: a pin that misses must
         not take the config UI down, because nobody could then correct it."""
         _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        services._app._config = replace(services._app._config, web_bind="", web_bind_iface="eth1")
+        services._app._config = replace(
+            services._app._config, network_mode="advanced", web_bind="", web_bind_iface="eth1"
+        )
         assert services._resolve_web_bind() == "0.0.0.0"
         advisory = services._web_bind_advisory()
         assert advisory["status"] == "down"
@@ -990,6 +1168,7 @@ class TestResolveWebBind:
         assert advisory["resolved_ip"] == ""
 
     def test_a_missed_pin_is_named_by_its_label(self, services: AppRuntimeServices, monkeypatch) -> None:
+        services._app._config.network_mode = "advanced"
         _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
         services._app._config = replace(
             services._app._config, web_bind="", web_bind_iface="eth1", interface_labels={"eth1": "Office"}
@@ -1010,7 +1189,9 @@ class TestResolveWebBind:
         """Each resolve re-states the whole advisory, so a stale "down" banner
         cannot outlive the restart that fixed it."""
         _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        services._app._config = replace(services._app._config, web_bind="", web_bind_iface="eth1")
+        services._app._config = replace(
+            services._app._config, network_mode="advanced", web_bind="", web_bind_iface="eth1"
+        )
         services._resolve_web_bind()
         assert services._web_bind_advisory()["status"] == "down"
         _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "172.16.4.20"})
@@ -1085,6 +1266,8 @@ class TestInitWebServer:
         # Snapshot provider hooks wired through.  Bound-method identity
         # isn't stable across attribute lookups, so compare by __func__.
         assert srv.kwargs["runtime_stats_provider"].__func__ is AppRuntimeServices.get_runtime_stats_snapshot
+        # The touch remote's routes reach the app's one registry.
+        assert srv.kwargs["touch_remote"] is services._app._touch_remote
         # The beacons select the station interface by name.
         services._app._config = replace(services._app._config, psn_source_iface="eth3")
         assert srv.kwargs["station_iface_provider"]() == "eth3"
@@ -1111,6 +1294,22 @@ class TestInitWebServer:
         snapshot[9] = 4.0
         assert services._app._config.marker_move_speeds == {5: 2.7}
 
+    def test_wires_the_update_source_the_station_runs_with(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from openfollow import web
+
+        monkeypatch.setattr(web, "ConfigWebServer", _FakeWebServer)
+        services._preview_provider = SimpleNamespace(get_snapshot=lambda: None)
+        services._snapshot_provider = SimpleNamespace(get_snapshot=lambda: None)
+        services._app._config = replace(
+            services._app._config, update_github_repo="stage-crew/openfollow", update_include_prereleases=True
+        )
+
+        services.init_web_server()
+
+        assert services._app._web_server.kwargs["update_source_provider"]() == ("stage-crew/openfollow", True)
+
     def test_wires_the_network_bind_map_provider(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1124,6 +1323,29 @@ class TestInitWebServer:
         services.init_web_server()
         provider = services._app._web_server.kwargs["network_planes_provider"]
         assert provider.__func__ is AppRuntimeServices.network_plane_status
+
+    def test_wires_scan_to_a_fresh_network_reading(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from openfollow import web
+        from openfollow.network.adapter import NetworkReading
+
+        monkeypatch.setattr(web, "ConfigWebServer", _FakeWebServer)
+        monkeypatch.setattr(services_module, "_NETWORK_READING_MAX_AGE_S", float("inf"))
+        services._preview_provider = SimpleNamespace(get_snapshot=lambda: None)
+        services._snapshot_provider = SimpleNamespace(get_snapshot=lambda: None)
+        reads: list[int] = []
+        services._network_adapter = SimpleNamespace(
+            read_network=lambda: reads.append(1) or NetworkReading(), is_writable=lambda: False, backend_name="fake"
+        )
+
+        services.init_web_server()
+        services._network_config_provider()
+        services._network_config_provider()
+        assert reads == [1]
+        services._app._web_server.kwargs["network_rescan_handler"]()
+        services._network_config_provider()
+        assert reads == [1, 1]
 
     def test_wires_osc_binding_diagnostics_providers(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
@@ -1313,28 +1535,19 @@ class TestUpdateDelegators:
     # Note: ``update_controller_status`` and ``services_controller_status``
     # were removed when the binding moved to the marker cards.
 
-    def test_update_marker_visuals_swaps_overlay_state(
+    def test_update_marker_visuals_hands_the_renderer_each_new_state(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        built = object()
-        swapped_old: list[object] = []
-
-        monkeypatch.setattr(
-            services_module,
-            "build_marker_visual_state",
-            lambda app, **kw: built,
-        )
-        monkeypatch.setattr(
-            services_module,
-            "prepare_overlay_state_swap",
-            lambda **kw: swapped_old.append(kw["new_overlay_state"]),
-        )
+        first, second = object(), object()
+        built = [first, second]
+        monkeypatch.setattr(services_module, "build_marker_visual_state", lambda app, **kw: built.pop(0))
         renderer = _FakeOverlayRenderer()
         services._overlay_renderer = renderer
 
         services.update_marker_visuals(0.25)
-        assert renderer.state is built
-        assert swapped_old[0] is built
+        assert renderer.state is first
+        services.update_marker_visuals(0.25)
+        assert renderer.state is second
 
     def test_update_marker_visuals_passes_dt_to_builder(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
@@ -1348,7 +1561,6 @@ class TestUpdateDelegators:
             "build_marker_visual_state",
             lambda app, **kw: captured.append(kw) or built,
         )
-        monkeypatch.setattr(services_module, "prepare_overlay_state_swap", lambda **kw: None)
         services._overlay_renderer = _FakeOverlayRenderer()
         services.update_marker_visuals(dt=0.5)
         assert captured[0]["dt"] == 0.5
@@ -1467,6 +1679,12 @@ class TestShutdown:
         services.shutdown()
         assert stopped == [True]
 
+    def test_stops_the_system_stats_collector(self, services: AppRuntimeServices) -> None:
+        stopped: list[bool] = []
+        services._system_stats = SimpleNamespace(stop=lambda: stopped.append(True))  # type: ignore[assignment]
+        services.shutdown()
+        assert stopped == [True]
+
     def test_happy_path_stops_every_subsystem(self, services: AppRuntimeServices) -> None:
         app = services._app
         app._input_manager = _FakeInputManager(app)
@@ -1480,9 +1698,13 @@ class TestShutdown:
         # Shutdown must stop the transmitter before draining the OSC service.
         transmitter = _FakeTransmitterManager()
         services._osc_transmitter_manager = transmitter  # type: ignore[assignment]
+        hud = SimpleNamespace(stopped=False)
+        hud.stop = lambda: setattr(hud, "stopped", True)
+        services._hud_render = hud  # type: ignore[assignment]
 
         services.shutdown()
 
+        assert hud.stopped is True
         assert services._person_detector.stopped is True
         assert app._input_manager.stopped is True
         assert app._web_server.stopped is True
@@ -1779,6 +2001,24 @@ class TestDetachedUpdateState:
             "message": "deb restart",
             "error": "",
         }
+
+    def test_a_failed_install_is_still_reported_after_the_restart(self, monkeypatch, tmp_path) -> None:
+        # The installer restarts the station after a failed install; reading
+        # ``idle`` there, the updater dialog announced the update as complete.
+        p = tmp_path / "u.json"
+        self._point_at(monkeypatch, p)
+        p.write_text('{"state":"failed","message":"Update failed.","error":"E: dpkg error","ts":1}')
+        q = services_module.WebCommandQueue()
+        assert q.get_update_status() == {"state": "failed", "message": "Update failed.", "error": "E: dpkg error"}
+        assert not p.exists()
+        assert q.request_local_update("openfollow", deb_path="/tmp/openfollow-update-x.deb") is True
+
+    @pytest.mark.parametrize("state", ["running", "restarting", "queued", "idle"])
+    def test_any_other_state_found_at_startup_reads_idle(self, monkeypatch, tmp_path, state: str) -> None:
+        p = tmp_path / "u.json"
+        self._point_at(monkeypatch, p)
+        p.write_text(json.dumps({"state": state, "message": "m", "error": "e"}))
+        assert services_module.WebCommandQueue().get_update_status() == {"state": "idle", "message": "", "error": ""}
 
 
 class TestWhatsNewPending:
@@ -2433,7 +2673,7 @@ class TestApplyRttrpmOutputChange:
         services._app._server = _FakePsnServer()
         services._app._controlled_ids = []
         cfg = self._enabled_cfg(source_iface="eth1")
-        services._app._config = replace(services._app._config, rttrpm_output=cfg)
+        services._app._config = replace(services._app._config, network_mode="advanced", rttrpm_output=cfg)
         with pytest.raises(OSError, match="pinned to eth1"):
             services.apply_rttrpm_output_change(cfg)
         assert services._app._rttrpm_server is None
@@ -2444,7 +2684,9 @@ class TestApplyRttrpmOutputChange:
         self._ifaces(monkeypatch, {})
         monkeypatch.setattr(services_module, "RttrpmServer", _FakeRttrpmServer)
         services._app._rttrpm_server = None
-        services._app._config = replace(services._app._config, rttrpm_output=self._enabled_cfg(source_iface="eth9"))
+        services._app._config = replace(
+            services._app._config, network_mode="advanced", rttrpm_output=self._enabled_cfg(source_iface="eth9")
+        )
         services.init_rttrpm()
         assert services._app._rttrpm_server is None
 
@@ -2697,7 +2939,7 @@ class TestInitOscTransmitters:
                 "serial": None,
             },
             {
-                "identifier": "serial:ABC123",
+                "identifier": "serial:ABC123|X-Touch",
                 "port_name": "X-Touch",
                 "product": "X-Touch Mini",
                 "serial": "ABC123",
@@ -3458,6 +3700,8 @@ class TestApplyDetectionChange:
         services.apply_detection_change(new_cfg)
 
         assert detector.stopped is True
+        # An inference in flight finishes off the frame loop.
+        assert detector.waited is False
         assert services._person_detector is None
 
     def test_off_to_off_is_noop(self, services: AppRuntimeServices) -> None:
@@ -3801,6 +4045,38 @@ class TestSwapVideo:
             "video_input_iface": "",
         }
 
+    def test_a_successful_swap_settles_a_rebuild_a_failed_reload_left_owed(
+        self,
+        services: AppRuntimeServices,
+    ) -> None:
+        """Fixing on screen a source the reload could not build must not leave the
+        next reload to tear the restored feed down and build it again."""
+        from openfollow.configuration import AppConfig
+
+        services._app._video_receiver = _FakeReceiver(source_type="rtsp")  # type: ignore[assignment]
+        services._app._video_swap_owed = True
+
+        services.swap_video(AppConfig(video_source_type="rtsp", rtsp_url="rtsp://192.0.2.20/stream"))
+
+        assert services._app._video_swap_owed is False
+
+    def test_a_failed_swap_leaves_the_rebuild_owed(
+        self,
+        services: AppRuntimeServices,
+    ) -> None:
+        from openfollow.configuration import AppConfig
+
+        services._app._video_receiver = _FakeReceiver(  # type: ignore[assignment]
+            source_type="rtsp",
+            swap_raises=[RuntimeError("new pipeline failed"), None],
+        )
+        services._app._video_swap_owed = True
+
+        with pytest.raises(RuntimeError, match="new pipeline failed"):
+            services.swap_video(AppConfig(video_source_type="rtsp", rtsp_url="rtsp://192.0.2.20/stream"))
+
+        assert services._app._video_swap_owed is True
+
     def test_a_blank_video_pin_is_swapped_in_as_the_station_interface(
         self,
         services: AppRuntimeServices,
@@ -3958,6 +4234,9 @@ class _RecordingReceiver:
         # so failures leave the new reference attached.
         self._detector: Any = initial_detector
 
+    def stop(self) -> None:
+        pass
+
     def swap_detection_branch(self, new_detector: Any) -> None:
         self.swap_detector_calls.append(new_detector)
         self._detector = new_detector
@@ -3983,9 +4262,10 @@ class _FakePersonDetector:
         self.cfg = cfg
         self.available = type(self).available_default
         self.stop_calls = 0
+        self.built_on = threading.current_thread()
         type(self).instances.append(self)
 
-    def stop(self) -> None:
+    def stop(self, *, wait: bool = True) -> None:
         self.stop_calls += 1
 
 
@@ -3998,6 +4278,7 @@ class TestSwapDetector:
         receiver: _RecordingReceiver | None = None,
         existing_detector: Any = None,
         available: bool = True,
+        in_place: bool = True,
     ) -> tuple[_RecordingReceiver, type[_FakePersonDetector]]:
         receiver = receiver or _RecordingReceiver()
         services._app._video_receiver = receiver  # type: ignore[assignment]
@@ -4007,7 +4288,33 @@ class TestSwapDetector:
         _FakePersonDetector.instances = []
         _FakePersonDetector.available_default = available
         monkeypatch.setattr(detection_mod, "PersonDetector", _FakePersonDetector)
+        if in_place:
+            services._off_main_thread = services._on_main_thread = lambda work: work()
         return receiver, _FakePersonDetector
+
+    def test_the_detector_is_built_off_the_main_thread_and_wired_on_a_busy_main_loop(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from gi.repository import GLib
+
+        receiver, detector_cls = self._setup(services, monkeypatch, in_place=False)
+
+        services.swap_detector(DetectionConfig(enabled=True))
+        for thread in threading.enumerate():
+            if thread.name == "PersonDetector-Build":
+                thread.join(2.0)
+        # A frame clock that never leaves the main loop idle.
+        busy = GLib.timeout_add(0, lambda: True)
+        try:
+            context = GLib.MainContext.default()
+            for _ in range(20):
+                context.iteration(False)
+        finally:
+            GLib.source_remove(busy)
+
+        (detector,) = detector_cls.instances
+        assert detector.built_on is not threading.main_thread()
+        assert receiver.swap_detector_calls == [detector]
 
     def test_off_to_on_constructs_and_swaps(
         self,
@@ -4166,7 +4473,7 @@ class TestSwapDetector:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """On forward swap failure, orchestrator rebuilds against prior
-        detector and re-raises to revert config."""
+        detector and reports the failure so the config is reverted."""
         old_detector = _FakeDetector()
         # Forward swap raises; rollback succeeds.
         receiver = _RecordingReceiver(
@@ -4179,10 +4486,11 @@ class TestSwapDetector:
             existing_detector=old_detector,
         )
         new_cfg = DetectionConfig(enabled=True, confidence=0.95)
+        failed: list[bool] = []
 
-        with pytest.raises(RuntimeError, match="new pipeline failed"):
-            services.swap_detector(new_cfg)
+        services.swap_detector(new_cfg, on_failure=lambda: failed.append(True))
 
+        assert failed == [True]
         new_detector = detector_cls.instances[0]
         # First call: forward swap with the new detector.
         assert receiver.swap_detector_calls[0] is new_detector
@@ -4217,9 +4525,12 @@ class TestSwapDetector:
         )
         new_cfg = DetectionConfig(enabled=True, confidence=0.95)
 
+        failed: list[bool] = []
         with caplog.at_level("ERROR", logger="openfollow.services"):
-            with pytest.raises(RuntimeError, match="primary failure"):
-                services.swap_detector(new_cfg)
+            services.swap_detector(new_cfg, on_failure=lambda: failed.append(True))
+
+        assert failed == [True]
+        assert any("primary failure" in str(r.exc_info[1]) for r in caplog.records if r.exc_info)
 
         # Rollback was attempted – both swap calls happened.
         assert len(receiver.swap_detector_calls) == 2
@@ -4227,6 +4538,220 @@ class TestSwapDetector:
         # fresh through the off→on branch.
         assert services._person_detector is None
         assert any("rollback to prior detector failed" in r.message for r in caplog.records)
+
+    @staticmethod
+    def _deferred(services: AppRuntimeServices) -> tuple[list[Any], list[Any]]:
+        """Hold work handed off and back instead of running it, to run in an order a test picks."""
+        off_main: list[Any] = []
+        on_main: list[Any] = []
+        services._off_main_thread = off_main.append
+        services._on_main_thread = on_main.append
+        return off_main, on_main
+
+    @staticmethod
+    def _run_held(off_main: list[Any], on_main: list[Any]) -> None:
+        """Run held work in hand-off order until none is left."""
+        while off_main or on_main:
+            (off_main or on_main).pop(0)()
+
+    def test_the_detector_is_not_built_on_the_calling_thread(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receiver, detector_cls = self._setup(services, monkeypatch)
+        off_main, on_main = self._deferred(services)
+
+        services.swap_detector(DetectionConfig(enabled=True))
+
+        assert detector_cls.instances == []
+        off_main.pop()()
+        assert len(detector_cls.instances) == 1
+        assert receiver.swap_detector_calls == []
+        on_main.pop()()
+        assert receiver.swap_detector_calls == detector_cls.instances
+        assert services._person_detector is detector_cls.instances[0]
+
+    def test_a_build_a_later_change_overtook_is_dropped(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receiver, detector_cls = self._setup(services, monkeypatch)
+        off_main, on_main = self._deferred(services)
+
+        services.swap_detector(DetectionConfig(enabled=True, confidence=0.5))
+        services.swap_detector(DetectionConfig(enabled=True, confidence=0.7))
+        self._run_held(off_main, on_main)
+
+        first, second = detector_cls.instances
+        assert first.stop_calls == 1
+        assert receiver.swap_detector_calls == [second]
+        assert services._person_detector is second
+
+    def test_switching_off_drops_a_detector_still_being_built(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receiver, detector_cls = self._setup(services, monkeypatch)
+        off_main, on_main = self._deferred(services)
+        failed: list[bool] = []
+
+        services.swap_detector(DetectionConfig(enabled=True), on_failure=lambda: failed.append(True))
+        services.apply_detection_change(DetectionConfig(enabled=False))
+        off_main.pop()()
+        on_main.pop()()
+
+        assert detector_cls.instances[0].stop_calls == 1
+        assert receiver.swap_detector_calls == []
+        assert services._person_detector is None
+        assert failed == []
+
+    def test_a_detector_that_cannot_be_built_reverts_the_change(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receiver, _ = self._setup(services, monkeypatch)
+        from openfollow.video import detection as detection_mod
+
+        def broken(_cfg: Any) -> Any:
+            raise RuntimeError("cv2 missing")
+
+        monkeypatch.setattr(detection_mod, "PersonDetector", broken)
+        failed: list[bool] = []
+
+        services.swap_detector(DetectionConfig(enabled=True), on_failure=lambda: failed.append(True))
+
+        assert failed == [True]
+        assert receiver.swap_detector_calls == []
+
+    def test_an_overtaken_build_that_fails_reverts_nothing(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._setup(services, monkeypatch)
+        from openfollow.video import detection as detection_mod
+
+        def broken(_cfg: Any) -> Any:
+            raise RuntimeError("cv2 missing")
+
+        monkeypatch.setattr(detection_mod, "PersonDetector", broken)
+        off_main, on_main = self._deferred(services)
+        failed: list[str] = []
+
+        services.swap_detector(DetectionConfig(enabled=True), on_failure=lambda: failed.append("first"))
+        services.swap_detector(DetectionConfig(enabled=True), on_failure=lambda: failed.append("second"))
+        self._run_held(off_main, on_main)
+
+        assert failed == ["second"]
+
+    def test_a_receiver_gone_while_the_detector_was_built_reverts_the_change(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._setup(services, monkeypatch)
+        off_main, on_main = self._deferred(services)
+        failed: list[bool] = []
+
+        services.swap_detector(DetectionConfig(enabled=True), on_failure=lambda: failed.append(True))
+        services._app._video_receiver = None
+        off_main.pop()()
+        on_main.pop()()
+
+        assert failed == [True]
+
+    def test_the_detection_module_is_not_loaded_on_the_calling_thread(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Its first import loads cv2 and onnxruntime, which takes long enough to stall the frame clock."""
+        import sys
+        import types
+
+        receiver, detector_cls = self._setup(services, monkeypatch)
+        loaded_on: list[threading.Thread] = []
+
+        class _DetectionModule(types.ModuleType):
+            def __getattr__(self, name: str) -> Any:
+                if name != "PersonDetector":
+                    raise AttributeError(name)
+                loaded_on.append(threading.current_thread())
+                return detector_cls
+
+        monkeypatch.setitem(sys.modules, "openfollow.video.detection", _DetectionModule("openfollow.video.detection"))
+        off_main, on_main = self._deferred(services)
+
+        services.swap_detector(DetectionConfig(enabled=True))
+        assert loaded_on == []
+        self._run_held(off_main, on_main)
+
+        assert len(loaded_on) == 1
+        assert receiver.swap_detector_calls == detector_cls.instances
+
+    def test_one_detector_is_built_at_a_time_and_the_newest_change_is_built_next(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receiver, detector_cls = self._setup(services, monkeypatch)
+        off_main, on_main = self._deferred(services)
+        newest = DetectionConfig(enabled=True, confidence=0.9)
+
+        services.swap_detector(DetectionConfig(enabled=True, confidence=0.5))
+        services.swap_detector(DetectionConfig(enabled=True, confidence=0.7))
+        services.swap_detector(newest)
+        assert len(off_main) == 1
+        off_main.pop()()
+        on_main.pop()()
+        assert len(off_main) == 1
+        off_main.pop()()
+        on_main.pop()()
+
+        first, last = detector_cls.instances
+        assert first.stop_calls == 1
+        assert last.cfg is newest
+        assert receiver.swap_detector_calls == [last]
+        assert off_main == on_main == []
+
+    def test_switching_off_drops_a_build_still_waiting_its_turn(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receiver, detector_cls = self._setup(services, monkeypatch)
+        off_main, on_main = self._deferred(services)
+
+        services.swap_detector(DetectionConfig(enabled=True, confidence=0.5))
+        services.swap_detector(DetectionConfig(enabled=True, confidence=0.7))
+        services.apply_detection_change(DetectionConfig(enabled=False))
+        off_main.pop()()
+        on_main.pop()()
+
+        assert len(detector_cls.instances) == 1
+        assert off_main == []
+        assert receiver.swap_detector_calls == []
+
+    def test_a_build_is_pending_until_it_lands_or_detection_is_switched_off(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._setup(services, monkeypatch)
+        off_main, on_main = self._deferred(services)
+        assert services.detector_build_pending is False
+
+        services.swap_detector(DetectionConfig(enabled=True))
+        assert services.detector_build_pending is True
+        off_main.pop()()
+        assert services.detector_build_pending is True
+        on_main.pop()()
+        assert services.detector_build_pending is False
+
+        services.swap_detector(DetectionConfig(enabled=True, confidence=0.6))
+        services.swap_detector(DetectionConfig(enabled=True, confidence=0.7))
+        assert services.detector_build_pending is True
+        services.apply_detection_change(DetectionConfig(enabled=False))
+        assert services.detector_build_pending is False
+
+    def test_shutdown_drops_a_detector_still_being_built(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receiver, detector_cls = self._setup(services, monkeypatch)
+        off_main, on_main = self._deferred(services)
+
+        services.swap_detector(DetectionConfig(enabled=True))
+        services.shutdown()
+        off_main.pop()()
+        on_main.pop()()
+
+        assert detector_cls.instances[0].stop_calls == 1
+        assert receiver.swap_detector_calls == []
+        assert services._person_detector is None
 
     def test_skip_rebuild_blocked_when_receiver_still_has_available_branch(
         self,
@@ -4252,11 +4777,13 @@ class TestSwapDetector:
         # clears ``self._person_detector`` while the receiver retains
         # an available detector reference (assignment happens inside
         # ``swap_detection_branch`` before the raise).
+        failed: list[bool] = []
         with caplog.at_level("ERROR", logger="openfollow.services"):
-            with pytest.raises(RuntimeError, match="primary failure"):
-                services.swap_detector(
-                    DetectionConfig(enabled=True, confidence=0.9),
-                )
+            services.swap_detector(
+                DetectionConfig(enabled=True, confidence=0.9),
+                on_failure=lambda: failed.append(True),
+            )
+        assert failed == [True]
 
         assert services._person_detector is None
         assert receiver._detector is not None
@@ -4303,10 +4830,11 @@ class TestSwapDetector:
         )
         new_cfg = DetectionConfig(enabled=True, confidence=0.95)
 
+        failed: list[bool] = []
         with caplog.at_level("ERROR", logger="openfollow.services"):
-            with pytest.raises(PipelineStuckError, match="prior pipeline stuck"):
-                services.swap_detector(new_cfg)
+            services.swap_detector(new_cfg, on_failure=lambda: failed.append(True))
 
+        assert failed == [True]
         # Forward swap attempted exactly once – no rollback call.
         assert len(receiver.swap_detector_calls) == 1
         # Detector reference NOT mutated – the swap never reached the
@@ -4368,6 +4896,7 @@ class TestApplyStationIfaceChange:
     def test_own_pin_is_left_alone(self, services: AppRuntimeServices) -> None:
         """OTP pinned to its own interface is unaffected by the station moving –
         repointing it would silently override the operator's choice."""
+        services._app._config.network_mode = "advanced"
         services._app._otp_server = _FakeOtpServer()
         calls = self._services_with_otp(services, "eth1")
         services.apply_station_iface_change()
@@ -4407,6 +4936,7 @@ class TestApplyStationIfaceChange:
     def test_rttrpm_with_its_own_pin_or_switched_off_is_left_alone(
         self, services: AppRuntimeServices, pin: str, enabled: bool
     ) -> None:
+        services._app._config.network_mode = "advanced"
         calls = self._record_rttrpm(services, pin, enabled=enabled)
         services.apply_station_iface_change()
         assert calls == []
@@ -4581,6 +5111,17 @@ class TestSuspendPsnPlanes:
         services._app._server = None
         services._app._psn_receiver = None
         services.suspend_psn_planes()  # must not raise
+
+    @pytest.mark.parametrize("mode", ["simple", "advanced"])
+    def test_the_station_interface_is_named_by_its_label(self, services: AppRuntimeServices, caplog, mode) -> None:
+        services._app._server = None
+        services._app._psn_receiver = None
+        services._app._config.network_mode = mode
+        services._app._config.psn_source_iface = "eth0"
+        services._app._config.interface_labels = {"eth0": "Show LAN"}
+        with caplog.at_level(logging.ERROR):
+            services.suspend_psn_planes()
+        assert "psn_source_iface Show LAN (eth0) has no address" in caplog.text
 
 
 class TestStationFollowersDoNotBindOnADownInterface:

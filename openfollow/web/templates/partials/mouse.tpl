@@ -7,12 +7,18 @@
     <div class="group">
         <div class="row">
             <div class="field checkbox-field">
-                <label>Enabled</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="mouse_enabled" {{'checked' if config.controller.mouse_enabled else ''}}></div>
+                <label for="mouse-enabled">Mouse</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="mouse-enabled" name="mouse_enabled" {{'checked' if config.controller.mouse_enabled else ''}}>
+                    <label for="mouse-enabled">Steer markers with the mouse</label>
+                </div>
             </div>
             <div class="field checkbox-field">
-                <label>Double right-click resets marker</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="mouse_double_click_reset" {{'checked' if config.controller.mouse_double_click_reset else ''}}></div>
+                <label for="mouse-double-click-reset">Double right-click</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="mouse-double-click-reset" name="mouse_double_click_reset" {{'checked' if config.controller.mouse_double_click_reset else ''}}>
+                    <label for="mouse-double-click-reset">Reset and release the marker</label>
+                </div>
             </div>
         </div>
     </div>
@@ -51,12 +57,18 @@
         <h3 class="group-title">Scroll Wheel (Height)</h3>
         <div class="row">
             <div class="field checkbox-field">
-                <label>Wheel controls Z</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="mouse_wheel_z_enabled" {{'checked' if config.controller.mouse_wheel_z_enabled else ''}}></div>
+                <label for="mouse-wheel-z-enabled">Scroll wheel</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="mouse-wheel-z-enabled" name="mouse_wheel_z_enabled" {{'checked' if config.controller.mouse_wheel_z_enabled else ''}}>
+                    <label for="mouse-wheel-z-enabled">Raise and lower the marker with the wheel</label>
+                </div>
             </div>
-            <div class="field checkbox-field">
-                <label>Invert wheel</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="mouse_wheel_invert" {{'checked' if config.controller.mouse_wheel_invert else ''}}></div>
+            <div class="field">
+                <label for="mouse-wheel-invert">Wheel direction</label>
+                <select id="mouse-wheel-invert" name="mouse_wheel_invert">
+                    <option value="false" {{'' if config.controller.mouse_wheel_invert else 'selected'}}>Scroll up raises the marker</option>
+                    <option value="true" {{'selected' if config.controller.mouse_wheel_invert else ''}}>Scroll up lowers the marker</option>
+                </select>
             </div>
             <div class="field">
                 <label for="mouse-wheel-z-step">Step per tick (m)</label>

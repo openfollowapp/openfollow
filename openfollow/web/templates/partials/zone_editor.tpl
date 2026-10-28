@@ -1,11 +1,26 @@
 % from openfollow.web.routes import osc_destinations_script_json
 % _osc_dests_json = osc_destinations_script_json(config)
-<div id="zone-editor-section" class="section" data-fold-key="zone_editor" data-help="zone_editor" data-template-form="1">
+<div id="zone-editor-section" class="section" data-feature="zones" data-fold-key="zone_editor" data-help="zone_editor" data-template-form="1">
     <div class="section-head">
         <h2>Zone Editor</h2>
     </div>
 
     <div class="group">
+        <div class="seg-toggle plan-view-switch" id="zone-view-switch" role="radiogroup" aria-label="Zone editor view">
+            <label class="seg-option">
+                <input type="radio" name="zone_editor_view" value="plan" checked>
+                <span><strong>Top-down</strong></span>
+            </label>
+            <label class="seg-option">
+                <input type="radio" name="zone_editor_view" value="camera">
+                <span><strong>Camera</strong></span>
+            </label>
+        </div>
+        <div class="pv-stage" id="zone-picture" hidden>
+            <img alt="Camera picture with the zones">
+            <svg viewBox="0 0 1280 720" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg"></svg>
+        </div>
+        <div class="pv-nofeed" id="zone-picture-nofeed" hidden>No video picture.</div>
         <div id="zone-canvas-wrap" style="position:relative;border:1px solid var(--border,#444);border-radius:6px;background:#111;overflow:hidden;width:100%;">
             <canvas id="zone-canvas" width="1280" height="720" style="display:block;width:100%;height:auto;background:#111;cursor:crosshair;"></canvas>
         </div>
@@ -14,6 +29,7 @@
             <button type="button" id="zone-finish-btn" class="secondary" disabled>Finish Polygon</button>
             <button type="button" id="zone-cancel-btn" class="secondary" disabled>Cancel Drawing</button>
             <button type="button" id="zone-delete-btn" class="danger" disabled>Delete Selected</button>
+            <button type="button" id="zone-refresh-btn" class="secondary" hidden>Refresh Image</button>
             <!-- Save / Load template buttons. Save captures entire
                  trigger_zones section (defaults + zones[]) as
                  .oftemplate under templates/user/. Load lists
@@ -68,13 +84,128 @@
 
     var state = {
         zones: [],
-        markers: [],
-        grid: {width: 10, depth: 10, spacing: 1, x_offset: 0, y_offset: 0},
         selectedIndex: -1,
         detailsRenderedIndex: -2,  // sentinel: never rendered
-        draft: null,  // {vertices: [[x,y],...]} while drawing
-        dragging: null,  // {zoneIndex, vertexIndex}
     };
+
+    var plan = new window.OpenFollow.PolygonPlan(canvas, {
+        polygons: function() {
+            return state.zones.map(function(z) { return (z && z.vertices) || []; });
+        },
+        editable: function() {
+            var z = state.zones[state.selectedIndex];
+            return (z && z.vertices) || null;
+        },
+        drawPolygons: renderZones,
+        onPress: function(w) {
+            var zi = findZoneAt(w[0], w[1]);
+            if (zi !== state.selectedIndex) {
+                state.selectedIndex = zi;
+                renderDetails();
+            }
+        },
+        onDragMove: function(vertexIdx) { syncVertexInputs(state.selectedIndex, vertexIdx); },
+        onDragEnd: function() { updateZoneVertices(state.selectedIndex); },
+        onDraftClose: createZone,
+        onRender: function() { updateButtons(); projectZones(); },
+    });
+
+    // -- camera view: the zones as the saved camera sees them, on the floor plane ----
+    var editorSection = document.getElementById('zone-editor-section');
+    var pictureEl = document.getElementById('zone-picture');
+    var canvasWrap = document.getElementById('zone-canvas-wrap');
+    var refreshBtn = document.getElementById('zone-refresh-btn');
+    var pv = new window.OpenFollow.PictureView({
+        stage: pictureEl, img: pictureEl.querySelector('img'), svg: pictureEl.querySelector('svg'),
+        nofeed: document.getElementById('zone-picture-nofeed'),
+        onSize: function() { projectedKey = ''; projectZones(); },
+    });
+    var mode = 'plan';
+    var projected = null, projectedKey = '', projectSeq = 0;
+
+    function floorZ() { return Number(plan.grid.z_offset) || 0; }
+
+    function projectZones() {
+        if (mode !== 'camera') return;
+        var z = floorZ();
+        var outlines = state.zones.map(function(zone) {
+            var v = (zone && zone.vertices) || [];
+            return v.length >= 3 ? v.concat([v[0]]).map(function(p) { return [p[0], p[1], z]; }) : [];
+        });
+        var sel = state.zones[state.selectedIndex];
+        var corners = sel && sel.vertices ? sel.vertices.map(function(p) { return [p[0], p[1], z]; }) : [];
+        var key = JSON.stringify([outlines, corners, state.selectedIndex, pv.w, pv.h]);
+        if (key === projectedKey) return;
+        projectedKey = key;
+        var asked = ++projectSeq;
+        pv.project(outlines, corners).then(function(json) {
+            if (asked !== projectSeq) return;
+            projected = json;
+            renderPicture();
+        }, function() { projectedKey = ''; });
+    }
+
+    function renderPicture() {
+        pv.clear();
+        if (!projected) return;
+        projected.polylines.forEach(function(points, i) {
+            var zone = state.zones[i];
+            if (!zone) return;
+            var col = zone.color || '#ff8000';
+            pv.polylines(points).forEach(function(run) {
+                var line = pv.el('polyline', {
+                    points: run, stroke: col, fill: col, 'vector-effect': 'non-scaling-stroke',
+                    'class': 'pv-zone' + (i === state.selectedIndex ? ' pv-zone-selected' : ''),
+                });
+                line.addEventListener('click', function() {
+                    if (state.selectedIndex === i) return;
+                    state.selectedIndex = i;
+                    renderDetails();
+                    render();
+                });
+                pv.svg.appendChild(line);
+            });
+        });
+        projected.points.forEach(function(pt, i) {
+            if (pt) pv.svg.appendChild(pv.handle(pt, 'pv-handle', function() { return grabCorner(i); }));
+        });
+    }
+
+    // A corner dropped in the picture lands on the floor plane under the pointer.
+    function grabCorner(vertexIdx) {
+        var idx = state.selectedIndex, z = floorZ();
+        var zone = state.zones[idx];
+        if (!zone || !zone.vertices || !zone.vertices[vertexIdx]) return null;
+        return function(at) {
+            pv.onStage(at, z).then(function(w) {
+                var current = state.zones[idx];
+                if (!current || !current.vertices[vertexIdx]) return;
+                current.vertices[vertexIdx] = [w.x, w.y];
+                syncVertexInputs(idx, vertexIdx);
+                render();
+                updateZoneVertices(idx);
+            }, function(info) {
+                window.OpenFollow.saveError.show(editorSection, info, 'Not moved.');
+            });
+        };
+    }
+
+    function applyMode(next) {
+        mode = next;
+        var camera = mode === 'camera';
+        canvasWrap.hidden = camera;
+        refreshBtn.hidden = !camera;
+        if (camera) {
+            if (plan.draft) plan.cancelDraft();
+            projectedKey = '';
+            pv.load();
+        } else {
+            pictureEl.hidden = true;
+            document.getElementById('zone-picture-nofeed').hidden = true;
+        }
+        render();
+    }
+    refreshBtn.addEventListener('click', function() { pv.load(); });
 
     function fetchZones() {
         fetch('/api/zones', {cache: 'no-store'})
@@ -96,8 +227,8 @@
                 } else {
                     state.zones = incomingZones;
                 }
-                state.markers = data.markers || [];
-                if (data.grid) state.grid = data.grid;
+                plan.markers = data.markers || [];
+                if (data.grid) plan.grid = data.grid;
                 // Refresh the shared destinations so the OSC Destination
                 // dropdown follows add/rename/delete live.
                 var newDests = data.destinations || [];
@@ -127,170 +258,13 @@
             .catch(function() {});
     }
 
-    // Visible world extent: large enough to fit the grid AND every
-    // zone vertex with one grid-spacing unit of padding around the
-    // furthest point. Returns ``[fullWidth, fullDepth]`` in world
-    // units, both symmetric around ``grid.x_offset`` / ``grid.y_offset``
-    // so the grid stays visually centred even when zones extend
-    // asymmetrically.
-    //
-    // While the operator is dragging a vertex, the extent is FROZEN
-    // to the value captured at drag-start. Continuous recomputation
-    // would zoom the canvas in/out as the pointer moves across the
-    // edge, which both feels jarring AND moves the pointer's world
-    // coordinate underneath the operator's cursor mid-drag. On
-    // drag release ``_frozenExtent`` is cleared and the next render
-    // re-fits the canvas to the new geometry.
-    function computeViewExtent() {
-        if (state._frozenExtent) {
-            return state._frozenExtent;
-        }
-        return _computeViewExtentLive();
-    }
-
-    function _computeViewExtentLive() {
-        var spacing = Math.max(0.1, state.grid.spacing);
-        var hw = state.grid.width / 2;
-        var hd = state.grid.depth / 2;
-        // Start from the grid corners – the viewport never shrinks
-        // below the grid even when all zones are inside it.
-        var minX = state.grid.x_offset - hw;
-        var maxX = state.grid.x_offset + hw;
-        var minY = state.grid.y_offset - hd;
-        var maxY = state.grid.y_offset + hd;
-        // Expand the bbox to include every committed zone vertex.
-        if (state.zones && state.zones.length) {
-            for (var i = 0; i < state.zones.length; i++) {
-                var verts = (state.zones[i] && state.zones[i].vertices) || [];
-                for (var j = 0; j < verts.length; j++) {
-                    var v = verts[j];
-                    if (v[0] < minX) minX = v[0];
-                    if (v[0] > maxX) maxX = v[0];
-                    if (v[1] < minY) minY = v[1];
-                    if (v[1] > maxY) maxY = v[1];
-                }
-            }
-        }
-        // Pad one grid-spacing unit on each side so the furthest
-        // vertex never sits on the canvas edge.
-        minX -= spacing;
-        maxX += spacing;
-        minY -= spacing;
-        maxY += spacing;
-        // Symmetric half-extent around the grid centre – keeps the
-        // grid centred even when zones extend asymmetrically.
-        var halfW = Math.max(
-            state.grid.x_offset - minX,
-            maxX - state.grid.x_offset,
-        );
-        var halfD = Math.max(
-            state.grid.y_offset - minY,
-            maxY - state.grid.y_offset,
-        );
-        return [Math.max(0.5, halfW * 2), Math.max(0.5, halfD * 2)];
-    }
-
-    // Zone vertices and marker positions are in PSN-absolute coords
-    // (PSN origin = 0,0). The grid rectangle is visually centred on canvas
-    // and is positioned in PSN space via grid.x_offset / grid.y_offset.
-    function worldToScreen(wx, wy) {
-        var pad = 20;
-        var W = canvas.width - pad * 2;
-        var H = canvas.height - pad * 2;
-        var ext = computeViewExtent();
-        var scale = Math.min(W / ext[0], H / ext[1]);
-        var cx = canvas.width / 2;
-        var cy = canvas.height / 2;
-        // y axis: PSN +Y = upstage; draw upstage toward top of canvas
-        var sx = cx + (wx - state.grid.x_offset) * scale;
-        var sy = cy - (wy - state.grid.y_offset) * scale;
-        return [sx, sy];
-    }
-
-    function screenToWorld(sx, sy) {
-        var pad = 20;
-        var W = canvas.width - pad * 2;
-        var H = canvas.height - pad * 2;
-        var ext = computeViewExtent();
-        var scale = Math.min(W / ext[0], H / ext[1]);
-        var cx = canvas.width / 2;
-        var cy = canvas.height / 2;
-        var wx = (sx - cx) / scale + state.grid.x_offset;
-        var wy = -(sy - cy) / scale + state.grid.y_offset;
-        return [wx, wy];
-    }
-
-    function mousePos(evt) {
-        var rect = canvas.getBoundingClientRect();
-        var scaleX = canvas.width / rect.width;
-        var scaleY = canvas.height / rect.height;
-        return [
-            (evt.clientX - rect.left) * scaleX,
-            (evt.clientY - rect.top) * scaleY,
-        ];
-    }
-
-    function renderGrid() {
-        ctx.fillStyle = '#111';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-        var spacing = Math.max(0.1, state.grid.spacing);
-        var hw = state.grid.width / 2;
-        var hd = state.grid.depth / 2;
-
-        // Grid lines
-        ctx.strokeStyle = 'rgba(120,120,120,0.25)';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        for (var gx = -hw; gx <= hw + 1e-6; gx += spacing) {
-            var a = worldToScreen(state.grid.x_offset + gx, state.grid.y_offset - hd);
-            var b = worldToScreen(state.grid.x_offset + gx, state.grid.y_offset + hd);
-            ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]);
-        }
-        for (var gy = -hd; gy <= hd + 1e-6; gy += spacing) {
-            var a2 = worldToScreen(state.grid.x_offset - hw, state.grid.y_offset + gy);
-            var b2 = worldToScreen(state.grid.x_offset + hw, state.grid.y_offset + gy);
-            ctx.moveTo(a2[0], a2[1]); ctx.lineTo(b2[0], b2[1]);
-        }
-        ctx.stroke();
-
-        // Grid outline
-        ctx.strokeStyle = 'rgba(200,200,200,0.6)';
-        ctx.lineWidth = 1.5;
-        var c1 = worldToScreen(state.grid.x_offset - hw, state.grid.y_offset - hd);
-        var c2 = worldToScreen(state.grid.x_offset + hw, state.grid.y_offset - hd);
-        var c3 = worldToScreen(state.grid.x_offset + hw, state.grid.y_offset + hd);
-        var c4 = worldToScreen(state.grid.x_offset - hw, state.grid.y_offset + hd);
-        ctx.beginPath();
-        ctx.moveTo(c1[0], c1[1]);
-        ctx.lineTo(c2[0], c2[1]);
-        ctx.lineTo(c3[0], c3[1]);
-        ctx.lineTo(c4[0], c4[1]);
-        ctx.closePath();
-        ctx.stroke();
-
-        // PSN origin marker
-        var o = worldToScreen(0, 0);
-        ctx.fillStyle = 'rgba(200,200,200,0.5)';
-        ctx.beginPath();
-        ctx.arc(o[0], o[1], 3, 0, Math.PI * 2);
-        ctx.fill();
-    }
-
     function renderZones() {
         for (var i = 0; i < state.zones.length; i++) {
             var z = state.zones[i];
             if (!z.vertices || z.vertices.length < 2) continue;
             var isSel = (i === state.selectedIndex);
             var isOcc = !!z.is_occupied;
-            ctx.beginPath();
-            for (var j = 0; j < z.vertices.length; j++) {
-                var v = z.vertices[j];
-                var p = worldToScreen(v[0], v[1]);
-                if (j === 0) ctx.moveTo(p[0], p[1]);
-                else ctx.lineTo(p[0], p[1]);
-            }
-            if (z.vertices.length >= 3) ctx.closePath();
+            plan.tracePolygon(z.vertices);
 
             var col = z.color || '#ff8000';
             ctx.fillStyle = hexToRgba(col, isOcc ? 0.38 : 0.18);
@@ -299,43 +273,13 @@
             ctx.lineWidth = isSel ? 2.5 : (isOcc ? 2.0 : 1.25);
             ctx.stroke();
 
-            // Vertices (only for selected)
-            if (isSel) {
-                for (var k = 0; k < z.vertices.length; k++) {
-                    var vv = z.vertices[k];
-                    var pp = worldToScreen(vv[0], vv[1]);
-                    ctx.fillStyle = '#fff';
-                    ctx.strokeStyle = col;
-                    ctx.lineWidth = 1.5;
-                    ctx.beginPath();
-                    ctx.arc(pp[0], pp[1], 5, 0, Math.PI * 2);
-                    ctx.fill();
-                    ctx.stroke();
-                    // Index label – matches the ``V<n>`` rows in the
-                    // VERTICES list of the details panel so operators
-                    // can cross-reference which canvas vertex maps to
-                    // which row when editing coords numerically. Black
-                    // outline keeps the white digits legible against
-                    // any zone fill colour.
-                    var idxText = 'V' + (k + 1);
-                    var lx = pp[0] + 8;
-                    var ly = pp[1] - 8;
-                    ctx.font = 'bold 11px sans-serif';
-                    ctx.textAlign = 'start';
-                    ctx.textBaseline = 'alphabetic';
-                    ctx.lineWidth = 3;
-                    ctx.strokeStyle = 'rgba(0,0,0,0.85)';
-                    ctx.strokeText(idxText, lx, ly);
-                    ctx.fillStyle = '#fff';
-                    ctx.fillText(idxText, lx, ly);
-                }
-            }
+            if (isSel) plan.drawHandles(z.vertices, col);
 
             // Label
             if (z.name) {
                 var cx = 0, cy = 0;
                 for (var m = 0; m < z.vertices.length; m++) {
-                    var pv = worldToScreen(z.vertices[m][0], z.vertices[m][1]);
+                    var pv = plan.toScreen(z.vertices[m][0], z.vertices[m][1]);
                     cx += pv[0]; cy += pv[1];
                 }
                 cx /= z.vertices.length; cy /= z.vertices.length;
@@ -354,62 +298,18 @@
         }
     }
 
-    function renderDraft() {
-        if (!state.draft) return;
-        var verts = state.draft.vertices;
-        if (verts.length === 0) return;
-        ctx.strokeStyle = '#7cf';
-        ctx.lineWidth = 2;
-        ctx.setLineDash([5, 3]);
-        ctx.beginPath();
-        for (var i = 0; i < verts.length; i++) {
-            var p = worldToScreen(verts[i][0], verts[i][1]);
-            if (i === 0) ctx.moveTo(p[0], p[1]); else ctx.lineTo(p[0], p[1]);
-        }
-        ctx.stroke();
-        ctx.setLineDash([]);
-        for (var j = 0; j < verts.length; j++) {
-            var pp = worldToScreen(verts[j][0], verts[j][1]);
-            ctx.fillStyle = (j === 0) ? '#ffd76a' : '#7cf';
-            ctx.beginPath();
-            ctx.arc(pp[0], pp[1], 6, 0, Math.PI * 2);
-            ctx.fill();
-        }
-    }
-
-    function renderMarkers() {
-        for (var i = 0; i < state.markers.length; i++) {
-            var m = state.markers[i];
-            var p = worldToScreen(m.x, m.y);
-            ctx.fillStyle = '#5cf';
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.arc(p[0], p[1], 5, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.stroke();
-            ctx.fillStyle = '#cfe8ff';
-            ctx.font = '10px sans-serif';
-            ctx.fillText('#' + m.id, p[0] + 7, p[1] - 6);
-        }
-    }
-
     function render() {
-        renderGrid();
-        renderZones();
-        renderDraft();
-        renderMarkers();
-        updateButtons();
+        plan.render();
     }
 
     function updateButtons() {
-        var drawing = !!state.draft;
-        finishBtn.disabled = !(drawing && state.draft.vertices.length >= 3);
+        var drawing = !!plan.draft;
+        finishBtn.disabled = !(drawing && plan.draft.vertices.length >= 3);
         cancelBtn.disabled = !drawing;
         deleteBtn.disabled = (state.selectedIndex < 0);
-        addBtn.disabled = drawing;
+        addBtn.disabled = drawing || mode === 'camera';
         if (drawing) {
-            statusEl.textContent = 'Drawing: ' + state.draft.vertices.length + ' point(s). Click first vertex or double-click to close.';
+            statusEl.textContent = 'Drawing: ' + plan.draft.vertices.length + ' point(s). Click first vertex or double-click to close.';
         } else if (state.selectedIndex >= 0) {
             statusEl.textContent = 'Editing zone ' + (state.selectedIndex + 1);
         } else {
@@ -440,36 +340,10 @@
         return 'rgba(' + r + ',' + g + ',' + b + ',' + a + ')';
     }
 
-    function pointInPoly(x, y, verts) {
-        var inside = false;
-        for (var i = 0, j = verts.length - 1; i < verts.length; j = i++) {
-            var xi = verts[i][0], yi = verts[i][1];
-            var xj = verts[j][0], yj = verts[j][1];
-            var intersect = ((yi > y) !== (yj > y)) &&
-                (x < (xj - xi) * (y - yi) / ((yj - yi) || 1e-9) + xi);
-            if (intersect) inside = !inside;
-        }
-        return inside;
-    }
-
-    function findVertexAt(sx, sy) {
-        if (state.selectedIndex < 0) return null;
-        var z = state.zones[state.selectedIndex];
-        if (!z || !z.vertices) return null;
-        for (var i = 0; i < z.vertices.length; i++) {
-            var p = worldToScreen(z.vertices[i][0], z.vertices[i][1]);
-            var dx = p[0] - sx, dy = p[1] - sy;
-            if (dx * dx + dy * dy <= 49) {
-                return i;
-            }
-        }
-        return null;
-    }
-
     function findZoneAt(wx, wy) {
         for (var i = state.zones.length - 1; i >= 0; i--) {
             var z = state.zones[i];
-            if (z.vertices && z.vertices.length >= 3 && pointInPoly(wx, wy, z.vertices)) {
+            if (z.vertices && z.vertices.length >= 3 && window.OpenFollow.pointInPolygon(wx, wy, z.vertices)) {
                 return i;
             }
         }
@@ -514,7 +388,10 @@
             'data-value="' + escapeAttr(z.color || '#ff8000') + '" aria-label="Zone colour"></button>' +
             '<input type="hidden" data-zone-field="color" value="' + escapeAttr(z.color || '#ff8000') + '">' +
             '</div>';
-        html += '      <div class="field checkbox-field"><label>Enabled</label><div class="checkbox-wrap"><input type="checkbox" data-zone-field="enabled" ' + (z.enabled ? 'checked' : '') + '></div></div>';
+        html += '      <div class="field checkbox-field"><label for="zone-detail-enabled">Zone</label>' +
+            '<div class="checkbox-wrap checkbox-field inline">' +
+            '<input type="checkbox" id="zone-detail-enabled" data-zone-field="enabled" ' + (z.enabled ? 'checked' : '') + '>' +
+            '<label for="zone-detail-enabled">Use this zone</label></div></div>';
         html += '    </div>';
         html += '    <div class="row">';
         html += '      <div class="field"><label>Trigger Source</label><select data-zone-field="trigger_source">';
@@ -1090,22 +967,12 @@
 
     // Events
     addBtn.addEventListener('click', function() {
-        state.draft = {vertices: []};
         state.selectedIndex = -1;
-        render();
+        plan.startDraft();
         renderDetails();
     });
-    finishBtn.addEventListener('click', function() {
-        if (state.draft && state.draft.vertices.length >= 3) {
-            var verts = state.draft.vertices;
-            state.draft = null;
-            createZone(verts);
-        }
-    });
-    cancelBtn.addEventListener('click', function() {
-        state.draft = null;
-        render();
-    });
+    finishBtn.addEventListener('click', function() { plan.finishDraft(); });
+    cancelBtn.addEventListener('click', function() { plan.cancelDraft(); });
     deleteBtn.addEventListener('click', deleteSelected);
 
     // Save / Load template buttons. Modal helpers
@@ -1145,42 +1012,6 @@
         });
     }
 
-    canvas.addEventListener('mousedown', function(evt) {
-        var m = mousePos(evt);
-        var w = screenToWorld(m[0], m[1]);
-        if (state.draft) return;
-        // Try to drag a vertex of the selected zone
-        var vi = findVertexAt(m[0], m[1]);
-        if (vi !== null) {
-            state.dragging = {zoneIndex: state.selectedIndex, vertexIndex: vi};
-            // Freeze the viewport extent for the duration of the drag
-            // so the canvas doesn't auto-zoom-out as the vertex moves
-            // past the edge – that would yank the world coordinate
-            // beneath the cursor mid-drag. ``endDrag`` clears this.
-            state._frozenExtent = _computeViewExtentLive();
-            return;
-        }
-        // Select a zone under cursor
-        var zi = findZoneAt(w[0], w[1]);
-        if (zi !== state.selectedIndex) {
-            state.selectedIndex = zi;
-            renderDetails();
-        }
-        render();
-    });
-
-    canvas.addEventListener('mousemove', function(evt) {
-        if (!state.dragging) return;
-        var m = mousePos(evt);
-        var w = screenToWorld(m[0], m[1]);
-        var z = state.zones[state.dragging.zoneIndex];
-        if (z && z.vertices[state.dragging.vertexIndex]) {
-            z.vertices[state.dragging.vertexIndex] = [w[0], w[1]];
-            render();
-            syncVertexInputs(state.dragging.zoneIndex, state.dragging.vertexIndex);
-        }
-    });
-
     function syncVertexInputs(zoneIdx, vertexIdx) {
         if (zoneIdx !== state.selectedIndex) return;
         var z = state.zones[zoneIdx];
@@ -1192,61 +1023,13 @@
         if (IS_IMPERIAL) updateVertexEcho(vertexIdx);
     }
 
-    function endDrag() {
-        if (!state.dragging) return;
-        updateZoneVertices(state.dragging.zoneIndex);
-        state.dragging = null;
-        // Release the frozen viewport extent so the next render
-        // re-fits the canvas to the new geometry – picks up the
-        // vertex's final position if it landed beyond the previous
-        // bounds.
-        state._frozenExtent = null;
-        render();
-    }
-    // Also listen on window so releasing the mouse outside the canvas still
-    // clears the drag state; blur catches tab-away while holding the button.
-    canvas.addEventListener('mouseup', endDrag);
-    window.addEventListener('mouseup', endDrag);
-    window.addEventListener('blur', endDrag);
-
-    canvas.addEventListener('click', function(evt) {
-        if (!state.draft) return;
-        var m = mousePos(evt);
-        var w = screenToWorld(m[0], m[1]);
-        var verts = state.draft.vertices;
-        // Close by clicking first vertex (within 10px)
-        if (verts.length >= 3) {
-            var p0 = worldToScreen(verts[0][0], verts[0][1]);
-            var dx = p0[0] - m[0], dy = p0[1] - m[1];
-            if (dx * dx + dy * dy <= 100) {
-                var captured = verts.slice();
-                state.draft = null;
-                createZone(captured);
-                return;
-            }
-        }
-        verts.push([w[0], w[1]]);
-        render();
-    });
-
-    canvas.addEventListener('dblclick', function() {
-        if (state.draft && state.draft.vertices.length >= 3) {
-            var verts = state.draft.vertices.slice();
-            state.draft = null;
-            createZone(verts);
-        }
-    });
-
-    // Initial load + 1s polling. Tabs are hidden via CSS (not unmounted),
-    // so we must additionally gate on visibility so a background tab doesn't
-    // hammer /api/zones and re-parse the config every second.
+    // Initial load + 1s polling while the editor is in view (poll-gate.js).
     function isZoneEditorVisible() {
-        if (document.hidden) return false;
         var section = document.getElementById('zone-editor-section');
-        if (!section || !document.body.contains(section)) return false;
-        return section.getClientRects().length > 0;
+        return !!section && document.body.contains(section) && pollShown(section);
     }
 
+    window.OpenFollow.viewSwitch(document.getElementById('zone-view-switch'), 'zones', applyMode);
     if (isZoneEditorVisible()) fetchZones();
     if (window.__zoneEditorTimer) clearInterval(window.__zoneEditorTimer);
     window.__zoneEditorTimer = setInterval(function() {
@@ -1258,10 +1041,11 @@
         }
         if (isZoneEditorVisible()) fetchZones();
     }, 1000);
-    // Refresh immediately when the tab becomes visible again so the user
-    // doesn't have to wait up to 1s for the first paint after switching in.
-    document.addEventListener('visibilitychange', function() {
-        if (isZoneEditorVisible()) fetchZones();
-    });
+    // Catch up at once when the editor comes into view; a replaced editor lets go.
+    function onShown() {
+        if (!document.body.contains(canvas)) document.body.removeEventListener('poll-shown', onShown);
+        else if (isZoneEditorVisible()) fetchZones();
+    }
+    document.body.addEventListener('poll-shown', onShown);
 })();
 </script>

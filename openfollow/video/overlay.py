@@ -34,6 +34,9 @@ from openfollow.runtime.overlay_draw_hud import (
     draw_media_picker_overlay as draw_media_picker_overlay_pass,
 )
 from openfollow.runtime.overlay_draw_hud import (
+    draw_menu_help as draw_menu_help_pass,
+)
+from openfollow.runtime.overlay_draw_hud import (
     draw_pi_network_field_edit_overlay as draw_pi_network_field_edit_overlay_pass,
 )
 from openfollow.runtime.overlay_draw_hud import (
@@ -54,14 +57,17 @@ from openfollow.runtime.overlay_draw_hud import (
 from openfollow.runtime.overlay_draw_messages import (
     draw_operator_messages as draw_operator_messages_pass,
 )
+from openfollow.runtime.overlay_draw_messages import (
+    draw_station_cards as draw_station_cards_pass,
+)
+from openfollow.runtime.overlay_draw_paths import PathCache
+from openfollow.runtime.overlay_draw_paths import draw_paths as draw_paths_pass
 from openfollow.runtime.overlay_draw_scene import (
     ConeCache,
+    GridCache,
 )
 from openfollow.runtime.overlay_draw_scene import (
     draw_detections as draw_detections_pass,
-)
-from openfollow.runtime.overlay_draw_scene import (
-    draw_grid as draw_grid_pass,
 )
 from openfollow.runtime.overlay_draw_scene import (
     draw_marker as draw_marker_pass,
@@ -72,7 +78,10 @@ from openfollow.runtime.overlay_draw_scene import (
 from openfollow.runtime.overlay_draw_scene import (
     project as project_overlay_points,
 )
+from openfollow.runtime.overlay_draw_zones import ZoneCache
 from openfollow.runtime.overlay_draw_zones import draw_zones as draw_zones_pass
+from openfollow.runtime.overlay_layers import LayerContext, cairo_context, cut, mark_top
+from openfollow.runtime.overlay_picture import PanelCache
 from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
 
 logger = logging.getLogger(__name__)
@@ -145,11 +154,12 @@ class CairoOverlayRenderer:
     """Draws overlay elements using a Cairo context on top of video frames.
 
     Thread model:
-    - The GTK main thread calls ``draw()`` once per display frame (from the
-      ``DrawingArea`` "draw" signal), reading ``self.state`` and owning the
-      per-frame memo caches – so neither needs locking.
-    - Other threads only update ``self.state`` (a GIL-atomic attribute swap)
-      and read ``measured_fps`` off the timestamp deque.
+    - Only the HUD render thread (``video.hud_render``) calls ``draw()``, with the
+      state it was handed, and it alone owns the per-frame memo caches – so they
+      need no locking.
+    - The frame loop replaces ``self.state`` on the main thread each frame; the
+      render thread receives a state at a refresh, and it is never changed
+      afterwards. Other threads read ``measured_fps`` off the timestamp deque.
     """
 
     def __init__(self) -> None:
@@ -158,16 +168,19 @@ class CairoOverlayRenderer:
         # Max 200 lines = 400 endpoints. Resized if needed.
         self._grid_pts_buf = np.zeros((400, 3), dtype=np.float64)
         self._cone_cache = ConeCache()
+        self._grid_cache = GridCache()
+        self._path_cache = PathCache()
+        self._zone_cache = ZoneCache()
+        self._panel_cache = PanelCache()
 
-        # Rolling timestamps of recent draw callbacks for FPS measurement.
-        # Appended on the GTK main thread (per-frame ``draw``); read on the
-        # Bottle thread (``measured_fps``). deque.append is GIL-atomic; the
-        # FPS read is best-effort.
+        # Rolling timestamps of recent pictures for FPS measurement.
+        # Appended by the HUD render thread (``draw``); read on the stats
+        # path (``measured_fps``). deque.append is GIL-atomic; the FPS read
+        # is best-effort.
         self._frame_timestamps: deque[float] = deque(maxlen=90)
 
-        # Per-frame HUD memo caches. The HUD draws on the GTK main thread only
-        # (one ``draw`` per display frame), so these are single-threaded – no
-        # locking. Each holds ``(key, value)`` and recomputes only when its
+        # Per-picture HUD memo caches, used only by the HUD render thread, so
+        # no locking. Each holds ``(key, value)`` and recomputes only when its
         # inputs change.
         #  - info panel: key = (ip, source, station, w, h)
         #  - help sections: key = the build_help_sections inputs
@@ -223,7 +236,7 @@ class CairoOverlayRenderer:
             cr.save()
             cr.translate(x, y)
             cr.scale(scale, scale)
-            self._logo_handle.render_cairo(cr)
+            self._logo_handle.render_cairo(cairo_context(cr))
         except Exception:
             return 0.0
         finally:
@@ -246,17 +259,17 @@ class CairoOverlayRenderer:
         return ellipsis
 
     # ------------------------------------------------------------------
-    # Public entry point (``draw`` is called on the GTK main thread, once
-    # per display frame, from the overlay DrawingArea's "draw" signal)
+    # Public entry point (``draw`` is called by the HUD render thread,
+    # ``video.hud_render``, once per picture)
     # ------------------------------------------------------------------
 
     def measured_fps(self) -> float:
-        """Return recent-window FPS measured from HUD draw callbacks.
+        """Return how many HUD pictures the render thread drew a second, over a recent window.
 
         Safe to call from any thread; reads the rolling timestamp deque.
         Returns 0.0 until enough samples accumulate or if the window has
-        stalled (last sample older than 2 s). Note: this is the HUD redraw
-        rate (display tick), not the source video framerate.
+        stalled (last sample older than 2 s). At most the display refresh
+        rate; not the source video framerate.
         """
         ts = list(self._frame_timestamps)
         if len(ts) < 2:
@@ -269,94 +282,52 @@ class CairoOverlayRenderer:
             return 0.0
         return (len(ts) - 1) / span
 
-    def draw(self, cr: Any, width: int, height: int) -> None:
+    def draw(self, cr: Any, width: int, height: int, state: OverlayState) -> None:
         try:
             self._frame_timestamps.append(time.monotonic())
-            state = self.state
-            source_selection_active = state.source_selection_active
+
+            # The latency probe's black or white covers everything, alone; the GL display draws its own.
+            if (level := state.latency_flash) is not None:
+                if not isinstance(cr, LayerContext):
+                    cr.set_source_rgb(level, level, level)
+                    cr.paint()
+                return
 
             # Button detection wizard takes exclusive visual control
             if state.button_detection is not None and state.button_detection.active:
+                self._grid_cache.clear()
+                self._zone_cache.clear()
+                self._path_cache.clear()
                 self._draw_button_detection_overlay(cr, state, width, height)
+                self._draw_station_cards(cr, state, width, height)
                 return
 
-            # Settings menu takes priority over other selection overlays.
-            if state.settings_menu_active:
-                self._draw_settings_overlay(cr, state, width, height)
-                return
-
-            # About / license screen: opened from the Settings menu,
-            # same modal-priority slot.
-            if state.about_active:
-                self._draw_about_overlay(cr, state, width, height)
-                return
-
-            # Drive picker + diagnostics export screen, opened from Settings.
-            if state.media_picker_active:
-                draw_media_picker_overlay_pass(self, cr, state, width, height)
-                return
-            if state.media_export_active:
-                draw_media_export_overlay_pass(self, cr, state, width, height)
-                return
-
-            # Network screens: same modal-priority slot as iface / source-type.
-            # Deeper sub-states first.
-            net = state.pi_network
-            if net.field_edit_active:
-                self._draw_pi_network_field_edit_overlay(cr, state, width, height)
-                return
-            if net.screen_active:
-                self._draw_pi_network_screen_overlay(cr, state, width, height)
-                return
-
-            # Source-type selection – same modal-priority slot as iface
-            # selection so it isn't masked by a "No Signal" frame when
-            # the prior plugin failed to start.
-            if state.source_type_selection_active:
-                self._draw_source_type_selection_overlay(cr, state, width, height)
-                return
-
-            # URL editor – auto-chained from the source-type picker on
-            # empty-URL failure or opened from the Settings menu's
-            # "Edit Video URL" item. Shares the same priority slot so the
-            # editor remains visible while the operator types over a
-            # "No Signal" backdrop.
-            if state.url_editor_active:
-                self._draw_url_editor_overlay(cr, state, width, height)
-                return
-
-            # Field-choice picker – enum-style sibling to the URL
-            # editor, opened for plugin fields whose valid values are
-            # a small fixed set (testpattern grey/stage). Same modal
-            # priority so it stays visible over any backdrop.
-            if state.field_choice_active:
-                self._draw_field_choice_picker_overlay(cr, state, width, height)
-                return
-
-            # Video disconnects no longer render as their own overlay
-            # – ``check_video_disconnect_banner`` routes operators into
-            # the Settings menu with a banner carrying every field the
-            # old "No Signal" overlay shows. The HUD keeps drawing under
-            # the (potentially frozen) last video frame; web-UI / log
-            # surfaces still expose ``video_connected = False`` for ops
-            # dashboards.
-
-            # Draw source selection overlay on top of video if active
-            if source_selection_active:
-                self._draw_source_selection_overlay(cr, state, width, height)
+            if self._draw_menu_screen(cr, state, width, height):
+                self._grid_cache.clear()
+                self._zone_cache.clear()
+                self._path_cache.clear()
+                draw_menu_help_pass(self, cr, state, width, height)
+                self._draw_station_cards(cr, state, width, height)
                 return
 
             if state.camera_params is None:
+                self._grid_cache.clear()
+                self._zone_cache.clear()
+                self._path_cache.clear()
                 self._draw_hud(cr, state, width, height)
                 return
 
             cr.save()
+            mark_top(cr)
             try:
-                self._draw_grid(cr, state, width, height)
+                self._grid_cache.draw(self, cr, state, width, height)
                 self._draw_origin(cr, state, width, height)
                 self._draw_zones(cr, state, width, height)
+                draw_paths_pass(self, cr, state, width, height, self._path_cache)
+                cut(cr)
                 for t in state.markers:
                     self._draw_marker(cr, state, t, width, height)
+                    cut(cr)
                 self._cone_cache.retain(state.markers)
                 if state.detections and state.detection_show_boxes:
                     self._draw_detections(cr, state, width, height)
@@ -367,7 +338,7 @@ class CairoOverlayRenderer:
                 # also pop their own group/clip – see draw_marker_card).
                 cr.restore()
         except Exception as e:
-            # Don't crash GStreamer thread on drawing errors
+            # A drawing error must not end the HUD render thread.
             logger.warning("Cairo overlay draw error: %s", e)
             # Fall back to simple error message
             try:
@@ -377,6 +348,67 @@ class CairoOverlayRenderer:
                 cr.show_text("Overlay Error - See Logs")
             except Exception:
                 pass  # If even basic drawing fails, just give up
+
+    def _draw_menu_screen(self, cr: Any, state: OverlayState, width: int, height: int) -> bool:
+        """Draw the open menu screen, if any; True when one was drawn."""
+        # Settings menu takes priority over other selection overlays.
+        if state.settings_menu_active:
+            self._draw_settings_overlay(cr, state, width, height)
+            return True
+
+        # About / license screen: opened from the Settings menu,
+        # same modal-priority slot.
+        if state.about_active:
+            self._draw_about_overlay(cr, state, width, height)
+            return True
+
+        # Drive picker + diagnostics export screen, opened from Settings.
+        if state.media_picker_active:
+            draw_media_picker_overlay_pass(self, cr, state, width, height)
+            return True
+        if state.media_export_active:
+            draw_media_export_overlay_pass(self, cr, state, width, height)
+            return True
+
+        # Network screens: same modal-priority slot as iface / source-type.
+        # Deeper sub-states first.
+        net = state.pi_network
+        if net.field_edit_active:
+            self._draw_pi_network_field_edit_overlay(cr, state, width, height)
+            return True
+        if net.screen_active:
+            self._draw_pi_network_screen_overlay(cr, state, width, height)
+            return True
+
+        # Source-type selection – same modal-priority slot as iface
+        # selection so it isn't masked by a "No Signal" frame when
+        # the prior plugin failed to start.
+        if state.source_type_selection_active:
+            self._draw_source_type_selection_overlay(cr, state, width, height)
+            return True
+
+        # URL editor – auto-chained from the source-type picker on
+        # empty-URL failure or opened from the Settings menu's
+        # "Edit Video URL" item. Shares the same priority slot so the
+        # editor remains visible while the operator types over a
+        # "No Signal" backdrop.
+        if state.url_editor_active:
+            self._draw_url_editor_overlay(cr, state, width, height)
+            return True
+
+        # Field-choice picker – enum-style sibling to the URL
+        # editor, opened for plugin fields whose valid values are
+        # a small fixed set (testpattern grey/stage). Same modal
+        # priority so it stays visible over any backdrop.
+        if state.field_choice_active:
+            self._draw_field_choice_picker_overlay(cr, state, width, height)
+            return True
+
+        # Draw source selection overlay on top of video if active
+        if state.source_selection_active:
+            self._draw_source_selection_overlay(cr, state, width, height)
+            return True
+        return False
 
     # ------------------------------------------------------------------
     # 3D projection helper
@@ -405,13 +437,6 @@ class CairoOverlayRenderer:
         )
 
     # ------------------------------------------------------------------
-    # Grid
-    # ------------------------------------------------------------------
-
-    def _draw_grid(self, cr: Any, state: OverlayState, w: int, h: int) -> None:
-        draw_grid_pass(self, cr, state, w, h)
-
-    # ------------------------------------------------------------------
     # Origin marker (RGB axis lines at world origin)
     # ------------------------------------------------------------------
 
@@ -423,7 +448,7 @@ class CairoOverlayRenderer:
     # ------------------------------------------------------------------
 
     def _draw_zones(self, cr: Any, state: OverlayState, w: int, h: int) -> None:
-        draw_zones_pass(self, cr, state, w, h)
+        draw_zones_pass(self, cr, state, w, h, self._zone_cache)
 
     # ------------------------------------------------------------------
     # Person detection bounding boxes
@@ -512,7 +537,13 @@ class CairoOverlayRenderer:
     # HUD (2D screen-space)
     # ------------------------------------------------------------------
 
+    def _draw_station_cards(self, cr: Any, state: OverlayState, w: int, h: int) -> None:
+        # A hazard warning the station raises stays in sight over a menu screen; OSC cards do not.
+        cut(cr)
+        draw_station_cards_pass(self, cr, state, w, h)
+
     def _draw_hud(self, cr: Any, state: OverlayState, w: int, h: int) -> None:
         draw_hud_pass(self, cr, state, w, h)
+        cut(cr)
         # Operator-message cards on the normal-HUD layer.
         draw_operator_messages_pass(self, cr, state, w, h)

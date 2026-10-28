@@ -30,19 +30,26 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from openfollow.configuration import effective_lens
+from openfollow.input.parking import is_parked, select
+from openfollow.input.touch_remote import holds
+from openfollow.runtime import paths_runtime
 from openfollow.runtime.services_detection_pin import (
     get_or_create_manual_marker,
     is_assist_controlled,
 )
+from openfollow.scene.ground_grid import floor_height
 from openfollow.scene.solver import (
     CONE_RING_SEGMENTS,
     GROUND_RING_SEGMENTS,
     apply_overlay_distortion,
+    camera_params,
     ground_circle_world_ring,
     invert_overlay_distortion,
     project_points,
     unproject_to_plane,
 )
+from openfollow.window import operator_screen_size
 from openfollow.zones.geometry import point_in_polygon
 
 if TYPE_CHECKING:
@@ -99,6 +106,10 @@ class MouseHandler:
         # EMA target (world x, y) and the current smoothed world position.
         self._target_world: tuple[float, float] | None = None
         self._smooth_world: tuple[float, float] | None = None
+        # The floor the grabbed marker stood on: the cursor is read on it for the whole drag.
+        self._drag_floor_z: float | None = None
+        # A parked marker the mouse grabbed: it steers that one and leaves the selection alone.
+        self._parked_grab: int | None = None
         # Last right-click for double-click (reset) detection:
         # (time, x, y, released_active) – the bool records whether that click
         # released an active mouse grab, so reset only arms after real control.
@@ -107,13 +118,25 @@ class MouseHandler:
         self._clock = time.monotonic
         self._wheel_budget = _WHEEL_BURST_CLICKS
         self._wheel_refilled_at: float | None = None
-        # Pre-allocated NumPy buffers (same pattern as services_detection_pin)
-        self._cam_buffer = np.zeros(7, dtype=np.float64)
+        # Pre-allocated NumPy buffer (same pattern as services_detection_pin)
         self._screen_buffer = np.zeros((1, 2), dtype=np.float64)
 
     @property
     def active(self) -> bool:
         return self._active
+
+    def keep_grab(self, marker_id: int) -> None:
+        """Stay on ``marker_id`` when it is the mouse's marker and the selection is about to move off it.
+
+        Sets ``_parked_grab`` even while nothing is dragged: then only a double right-click right after
+        releasing this marker reads it (and resets this marker, the one let go), and the next grab replaces it.
+        """
+        if self._target_id() == marker_id:
+            self._parked_grab = marker_id
+
+    def _target_id(self) -> int | None:
+        """The marker the mouse steers: a grabbed parked marker, else the selection."""
+        return self._parked_grab if self._parked_grab is not None else self._app._selected_id
 
     def deactivate(self) -> None:
         """Disarm mouse control without a right-click.
@@ -186,6 +209,10 @@ class MouseHandler:
         marker = self._get_selected_marker()
         if marker is None:
             return False
+        paths = getattr(self._app, "_paths", None)
+        if paths is not None and paths.is_locked(self._target_id()):
+            # A locked marker's height is its path's.
+            return True
         clicks = self._take_wheel_clicks(abs(dy))
         if clicks:
             x, y, z = marker.pos
@@ -219,14 +246,27 @@ class MouseHandler:
         app = self._app
         if not app._config.controller.mouse_enabled:
             return
+        paths = getattr(app, "_paths", None)
+        target = self._target_id()
+        if paths is not None and paths.is_locked(target):
+            # Locked onto a path while held: the path has the marker now, so let go of it.
+            self._active = False
+            logger.info("Mouse let go of marker %s: it is locked onto a path", target)
+            return
+        if holds(app, target):
+            # The touch remote took the marker: drop the drag so it never glides back on release.
+            self._active = False
+            self._reset_tracking()
+            logger.info("Mouse let go of marker %s: the touch remote holds it", target)
+            return
         marker = self._get_selected_marker()
         if marker is None or self._target_world is None:
             return
         tx, ty = self._target_world
+        alpha = max(1.0 - app._config.controller.mouse_smoothing, _MIN_GLIDE_ALPHA)
         if self._smooth_world is None:
             mx, my, _ = marker.pos
             self._smooth_world = (mx, my)
-        alpha = max(1.0 - app._config.controller.mouse_smoothing, _MIN_GLIDE_ALPHA)
         sx, sy = self._smooth_world
         nx = sx + alpha * (tx - sx)
         ny = sy + alpha * (ty - sy)
@@ -254,10 +294,18 @@ class MouseHandler:
         space is a no-op so it can't snap a marker to the cursor.
         """
         marker_id = self._hit_test(x, y)
-        if marker_id is None:
+        if marker_id is None or holds(self._app, marker_id):
             return False
-        self._app._selected_id = marker_id
+        # The mouse moves markers freely: a grab takes the marker off its path where it stands.
+        paths_runtime.release(self._app, marker_id)
+        if is_parked(self._app, marker_id):
+            self._parked_grab = marker_id
+        else:
+            self._parked_grab = None
+            select(self._app, marker_id)
         self._active = True
+        grabbed = self._app._server.get_marker(marker_id) if self._app._server is not None else None
+        self._drag_floor_z = floor_height(self._app._config, *grabbed.pos[:2]) if grabbed is not None else None
         self._anchor_screen = (x, y)
         # No target until the first move, so the grab itself never yanks the
         # marker to the click. ``update`` seeds the glide from the marker's
@@ -312,11 +360,13 @@ class MouseHandler:
         marker = self._get_selected_marker()
         if marker is None:
             return
+        target = self._target_id()
+        paths_runtime.release(self._app, target)
         marker.set_pos(*self._app._get_default_marker_position())
         # Drop any pending glide so ``update`` doesn't drag it back.
         self._target_world = None
         self._smooth_world = None
-        logger.info("Mouse double-click reset marker %s to default", self._app._selected_id)
+        logger.info("Mouse double-click reset marker %s to default", target)
 
     def _get_selected_marker(self) -> Marker | None:
         """Return the marker mouse control should steer, or None.
@@ -326,13 +376,14 @@ class MouseHandler:
         as the AI-corrected output), so mouse drag + wheel-Z move the anchor.
         """
         app = self._app
-        if app._selected_id is None:
+        target = self._target_id()
+        if target is None or holds(app, target):
             return None
-        if is_assist_controlled(app, app._selected_id):
-            return get_or_create_manual_marker(app, app._selected_id)
+        if is_assist_controlled(app, target):
+            return get_or_create_manual_marker(app, target)
         if app._server is None:
             return None
-        return app._server.get_marker(app._selected_id)
+        return app._server.get_marker(target)
 
     def _view_inputs(self) -> tuple[npt.NDArray[np.float64], int, int] | None:
         """Build the 7-float camera buffer + canvas size, or None if unusable."""
@@ -344,22 +395,10 @@ class MouseHandler:
             return None
         # Canvas size must match the coordinate space of pointer events
         # (window client pixels), not the video's native resolution.
-        if app._canvas is not None:
-            w, h = app._canvas.get_canvas_size()
-        else:
-            w, h = app._config.window_width, app._config.window_height
+        w, h = operator_screen_size(app)
         if w <= 0 or h <= 0:
             return None
-        cam_cfg = app._camera.to_config()
-        buf = self._cam_buffer
-        buf[0] = cam_cfg.pos_x
-        buf[1] = cam_cfg.pos_y
-        buf[2] = cam_cfg.pos_z
-        buf[3] = cam_cfg.pitch
-        buf[4] = cam_cfg.yaw
-        buf[5] = cam_cfg.roll
-        buf[6] = cam_cfg.fov
-        return buf, w, h
+        return camera_params(app._camera.to_config()), w, h
 
     def _unproject(self, x: float, y: float) -> tuple[float, float] | None:
         """Unproject a screen point onto the stage plane; None if off-plane."""
@@ -371,10 +410,10 @@ class MouseHandler:
         self._screen_buffer[0, 1] = y
         # The cursor lands on the (lens-distorted) video, so undistort it back to
         # the pinhole frame before unprojecting. Identity when no lens distortion
-        # is configured. k1/k2 live on the config (the Camera object is pinhole).
-        cam = self._app._config.camera
-        screen = invert_overlay_distortion(self._screen_buffer, float(w), float(h), cam.lens_k1, cam.lens_k2)
-        plane_z = self._app._config.grid.z_offset
+        # is configured. The lens lives on the config (the Camera object is pinhole).
+        lens = effective_lens(self._app._config)
+        screen = invert_overlay_distortion(self._screen_buffer, float(w), float(h), *lens)
+        plane_z = self._app._config.grid.z_offset if self._drag_floor_z is None else self._drag_floor_z
         world = unproject_to_plane(buf, screen, float(w), float(h), plane_z)
         if not np.all(np.isfinite(world[0])):
             return None
@@ -395,9 +434,8 @@ class MouseHandler:
             return None
         buf, w, h = view
         cfg = app._config
-        z_off = cfg.grid.z_offset
-        # The grab area is the ring that is drawn: the cone's base ring
-        # in cone style, else the ground circle.
+        # The grab area is the ring that is drawn, on the floor it is drawn on:
+        # the cone's base ring in cone style, else the ground circle.
         if cfg.marker.marker_style == "cone":
             gc_on = True
             gc_size = cfg.marker.cone_base_diameter / 2.0
@@ -407,10 +445,10 @@ class MouseHandler:
             gc_size = cfg.marker.ground_circle_size
             ring_segments = GROUND_RING_SEGMENTS
         # Match the rendered circle: the overlay bows the projected ground circle
-        # by the lens coefficients, so the hit-test projects through the same
-        # warp (identity when no lens is configured) or the clickable region
-        # would drift from what the operator sees.
-        k1, k2 = cfg.camera.lens_k1, cfg.camera.lens_k2
+        # by the lens, so the hit-test projects through the same warp (identity
+        # when no lens is configured) or the clickable region would drift from
+        # what the operator sees.
+        lens = effective_lens(cfg)
         best_marker_id: int | None = None
         best_dist = float("inf")
         for marker_id in app._controlled_ids:
@@ -418,12 +456,12 @@ class MouseHandler:
             if marker is None:
                 continue
             mx, my, _ = marker.pos
+            z_off = floor_height(cfg, mx, my)
             center = apply_overlay_distortion(
                 project_points(buf, np.array([[mx, my, z_off]], dtype=np.float64), float(w), float(h)),
                 float(w),
                 float(h),
-                k1,
-                k2,
+                *lens,
             )[0]
             if not np.all(np.isfinite(center)):
                 continue
@@ -436,8 +474,7 @@ class MouseHandler:
                     project_points(buf, np.array(ring, dtype=np.float64), float(w), float(h)),
                     float(w),
                     float(h),
-                    k1,
-                    k2,
+                    *lens,
                 )
                 finite = ring_scr[np.all(np.isfinite(ring_scr), axis=1)]
                 if len(finite) >= 3:

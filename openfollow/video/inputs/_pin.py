@@ -21,9 +21,10 @@ from openfollow.video.failure import VideoFailure
 # the element's socket is unpinned, so the routing table's choice is what counts.
 FORCES_DEVICE = sys.platform.startswith("linux")
 
-# A connect attempt runs on the main loop: a name that does not resolve in time
-# is checked on a later attempt, from the answer the lookup leaves behind.
+# How long a name's lookup has to answer: a pin check before then reads as a
+# connect still starting, not a failure.
 _RESOLVE_WAIT_S = 0.3
+_ANSWERED_RETRY_S = 0.001
 
 
 @dataclass(frozen=True)
@@ -31,13 +32,16 @@ class PinRefusal:
     """Why a pinned input may not dial; ``detail`` names the interfaces.
 
     ``template`` repeats it with ``{pin}`` where the pinned interface goes, so the
-    receiver can name that one the way the station labels it.
+    receiver can name that one the way the station labels it. A nonzero
+    ``retry_s`` is no failure yet: the name is still within its time to resolve,
+    and the check runs again after that long.
     """
 
     failure: VideoFailure
     detail: str
     pin: str = field(default="", compare=False)
     template: str = field(default="", compare=False)
+    retry_s: float = 0.0
 
     def text(self, pin_name: str) -> str:
         return self.template.replace("{pin}", pin_name) if self.template else self.detail
@@ -48,6 +52,17 @@ def _naming(failure: VideoFailure, template: str, pin: str) -> PinRefusal:
 
 
 _resolver = HOST_RESOLVER
+
+
+def prefetch(host: str) -> None:
+    """Start *host*'s lookup, so the check before a build finds its answer."""
+    if host:
+        _resolver.prefetch(host)
+
+
+def _known(host: str) -> HostLookup:
+    """*host*'s answer as known now; one not yet known starts its lookup and reads as pending."""
+    return _resolver.lookup(host, 0.0)
 
 
 def _own_addresses() -> dict[str, str]:
@@ -119,15 +134,21 @@ def check_video_pin(
     any of them. With *forced_device* the element's socket is bound to the
     device, so a route through it must exist; libsrt binds only IPv4, so a name
     with an IPv6 address takes the routing table's own choice for every address.
+    A name is judged from the answer its lookup already left, never waited for:
+    one still within its time to resolve is checked again shortly, one past it
+    is refused, and the input retries it.
     """
     if not pin or (host and is_loopback_host(host)):
         return None
     owners = _own_addresses()
-    found = _resolver.lookup(host, _RESOLVE_WAIT_S) if host else HostLookup("failed")
-    # Looked up before the interface is judged, so a name that resolves to this
+    found = _known(host) if host else HostLookup("failed")
+    # Read before the interface is judged, so a name that resolves to this
     # station is never refused for an outage, whatever the cache held.
     if found.addresses and all(_is_local(address, owners) for address in found.addresses):
         return None
+    resolving = _still_resolving(found, host, pin)
+    if resolving is not None:
+        return resolving
     egress = resolve_egress(pin)
     if egress is None or egress.down:
         return _naming(VideoFailure.INTERFACE_DOWN, "{pin} has no address", pin)
@@ -155,7 +176,7 @@ def check_video_pin(
 
 def check_listen_address(pin: str, address: str) -> PinRefusal | None:
     """None when every address *address* resolves to belongs to *pin*; otherwise why not."""
-    found = _resolver.lookup(address, _RESOLVE_WAIT_S)
+    found = _known(address)
     unresolved = _unresolved(found, address, pin)
     if unresolved is not None:
         return unresolved
@@ -165,7 +186,23 @@ def check_listen_address(pin: str, address: str) -> PinRefusal | None:
     return None
 
 
+def _still_resolving(found: HostLookup, host: str, pin: str) -> PinRefusal | None:
+    """No failure yet while *host*'s lookup is within its time: check again once that is up."""
+    if found.outcome != "pending":
+        return None
+    running_for = _resolver.running_for(host)
+    if running_for is None:
+        # It answered since it was read: the next check reads that answer.
+        return PinRefusal(VideoFailure.NONE, f"{host} is still resolving", pin, retry_s=_ANSWERED_RETRY_S)
+    if running_for < _RESOLVE_WAIT_S:
+        return PinRefusal(VideoFailure.NONE, f"{host} is still resolving", pin, retry_s=_RESOLVE_WAIT_S - running_for)
+    return None
+
+
 def _unresolved(found: HostLookup, host: str, pin: str) -> PinRefusal | None:
+    resolving = _still_resolving(found, host, pin)
+    if resolving is not None:
+        return resolving
     if found.outcome == "pending":
         return _naming(VideoFailure.UNKNOWN, f"{host} did not resolve in time to check it against {{pin}}", pin)
     if found.outcome == "skipped":

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from openfollow.privilege.camera_config import AUTOMATIC, CAMERA_TOKEN_RE, CHOICE_TOKEN_RE, HELPER_PATH
 from openfollow.privilege.media_writer import DEVICE_RE
@@ -26,7 +26,19 @@ _PROBE_PLACEHOLDER = "_"
 _USERNAME_ARG_RE = "^[a-z_][a-z0-9_-]*$"
 
 
-class CapabilityState(str, Enum):
+def _regex_args(*tokens: str) -> str:
+    """A rule's argument text as one anchored regular expression.
+
+    sudo reads a rule's arguments as a regex only when the whole argument text
+    starts with ``^``; otherwise they are a wildcard pattern in which ``^``,
+    ``+`` and ``$`` are literal, and nothing matches. The last token is an
+    anchored ``^…$`` regex, the ones before it plain words. A test pins both.
+    """
+    *words, arg_re = tokens
+    return "^" + " ".join([*words, arg_re.removeprefix("^")])
+
+
+class CapabilityState(StrEnum):
     """Result of probing whether the host can run a capability silently."""
 
     PASSWORDLESS = "passwordless"
@@ -42,8 +54,9 @@ class Capability:
     probe_argv: tuple[str, ...]
     description: str
     sudoers_pattern: str
-    """Sudoers rule pattern (fixed tokens + an anchored ``^…$`` regex or
-    ``*`` glob for the free slot, or fully fixed argv)."""
+    """Sudoers rule pattern: the command, then fixed tokens with a ``*`` glob for
+    the free slot, argument text that is one anchored regex (:func:`_regex_args`),
+    or a fully fixed argv."""
 
     arg_pattern: str | None = None
     """Optional anchored regex the single trailing wildcard arg must match
@@ -149,9 +162,11 @@ NETWORK_NM_CON_DOWN = Capability(
 )
 
 # VLAN sub-interfaces are created and removed as NetworkManager profiles. The
-# grants are wildcarded like ``con mod`` because the profile name is
-# operator-influenced; the app layer refuses to delete anything that is not a
-# VLAN, or the interface the request arrived on, before either is invoked.
+# grants are wildcarded like ``con mod``: ``add`` takes an operator-influenced
+# name, ``delete`` the UUIDs of a VLAN's profiles or of an unplugged adapter's.
+# Before either is invoked, VLAN removal refuses a non-VLAN or the interface the
+# request arrived on, and Forget refuses any interface NetworkManager lists and
+# deletes only inactive profiles.
 NETWORK_NM_CON_ADD = Capability(
     name="network.nm.con_add",
     probe_argv=("/usr/bin/nmcli", "con", "add", _PROBE_PLACEHOLDER),
@@ -162,7 +177,7 @@ NETWORK_NM_CON_ADD = Capability(
 NETWORK_NM_CON_DELETE = Capability(
     name="network.nm.con_delete",
     probe_argv=("/usr/bin/nmcli", "con", "delete", _PROBE_PLACEHOLDER),
-    description="Delete a NetworkManager connection profile (VLAN)",
+    description="Delete a NetworkManager connection profile (VLAN or unplugged adapter)",
     sudoers_pattern="/usr/bin/nmcli con delete *",
 )
 
@@ -305,7 +320,7 @@ JOURNAL_GROUP_JOIN = Capability(
     ),
     description="Grant this user permanent log access (one-time fix)",
     # Anchored username regex, NOT a trailing ``*`` – see _USERNAME_ARG_RE.
-    sudoers_pattern=f"/usr/sbin/usermod -aG systemd-journal {_USERNAME_ARG_RE}",
+    sudoers_pattern=f"/usr/sbin/usermod {_regex_args('-aG', 'systemd-journal', _USERNAME_ARG_RE)}",
     arg_pattern=_USERNAME_ARG_RE,
 )
 
@@ -335,13 +350,6 @@ turned into a ``sudo``-group join – see :data:`DEVICE_GROUP_JOIN`."""
 
 REQUIRED_HARDWARE_GROUPS_JOINED = ",".join(REQUIRED_HARDWARE_GROUPS)
 
-# Same list with commas backslash-escaped, for use inside a sudoers
-# ``Cmnd_Spec``. Un-escaped commas terminate the current Cmnd in the
-# rule (sudoers parser sees ``video`` and then expects a new fully-
-# qualified path starting with ``render``), so ``visudo -cf`` rejects
-# the drop-in with "expected a fully-qualified path name" error.
-REQUIRED_HARDWARE_GROUPS_JOINED_SUDOERS = "\\,".join(REQUIRED_HARDWARE_GROUPS)
-
 DEVICE_GROUP_JOIN = Capability(
     name="device.group_join",
     # Probe argv must include the canonical group list so ``sudo -n -l``
@@ -360,11 +368,8 @@ DEVICE_GROUP_JOIN = Capability(
     # trailing ``*``): pinning the list alone is not enough, since a sudoers
     # ``*`` would also match ``-aG <groups> -aG sudo <user>`` – a passwordless
     # ``sudo``-group join (local root). See _USERNAME_ARG_RE.
-    #
-    # Commas in the group list MUST be backslash-escaped in the sudoers
-    # ``Cmnd_Spec``; un-escaped commas terminate the current command and
-    # ``visudo -cf`` rejects the file ("expected a fully-qualified path name").
-    sudoers_pattern=(f"/usr/sbin/usermod -aG {REQUIRED_HARDWARE_GROUPS_JOINED_SUDOERS} {_USERNAME_ARG_RE}"),
+    # Inside a regex the group list's commas need no sudoers escape.
+    sudoers_pattern=f"/usr/sbin/usermod {_regex_args('-aG', REQUIRED_HARDWARE_GROUPS_JOINED, _USERNAME_ARG_RE)}",
     arg_pattern=_USERNAME_ARG_RE,
 )
 
@@ -522,7 +527,7 @@ SYSTEM_SET_CLOCK = Capability(
     probe_argv=("/usr/bin/date", "-s", _PROBE_PLACEHOLDER),
     description="Set the system clock from a trusted time source",
     # Anchored ``@<digits>`` regex, NOT a trailing ``*`` – see _EPOCH_ARG_RE.
-    sudoers_pattern=f"/usr/bin/date -s {_EPOCH_ARG_RE}",
+    sudoers_pattern=f"/usr/bin/date {_regex_args('-s', _EPOCH_ARG_RE)}",
     arg_pattern=_EPOCH_ARG_RE,
     # The bare ``_`` placeholder can't satisfy the epoch regex, so probe with a
     # concrete ``@<digits>`` token or ``sudo -n -ll`` never matches the rule.
@@ -532,17 +537,15 @@ SYSTEM_SET_CLOCK = Capability(
 
 # Camera setup: the root helper names the Pi camera in config.txt, and loads or
 # unloads its overlay without a restart. One token per call, bounded by an
-# anchored regex (commas escaped for sudoers); the helper checks it again,
+# anchored regex; the helper checks it again,
 # together with the overlay file's existence, before touching boot config.
 CAMERA_SETUP_SCRIPT = str(HELPER_PATH)
-_CHOICE_SUDOERS = CHOICE_TOKEN_RE.replace(",", "\\,")
-_CAMERA_SUDOERS = CAMERA_TOKEN_RE.replace(",", "\\,")
 
 CAMERA_CONFIG_WRITE = Capability(
     name="camera.config_write",
     probe_argv=(CAMERA_SETUP_SCRIPT, "write", _PROBE_PLACEHOLDER),
     description="Name the Pi camera in the boot configuration",
-    sudoers_pattern=f"{CAMERA_SETUP_SCRIPT} write {_CHOICE_SUDOERS}",
+    sudoers_pattern=f"{CAMERA_SETUP_SCRIPT} {_regex_args('write', CHOICE_TOKEN_RE)}",
     arg_pattern=CHOICE_TOKEN_RE,
     probe_arg=AUTOMATIC,
 )
@@ -551,7 +554,7 @@ CAMERA_OVERLAY_LOAD = Capability(
     name="camera.overlay_load",
     probe_argv=(CAMERA_SETUP_SCRIPT, "load", _PROBE_PLACEHOLDER),
     description="Start a Pi camera without a restart",
-    sudoers_pattern=f"{CAMERA_SETUP_SCRIPT} load {_CAMERA_SUDOERS}",
+    sudoers_pattern=f"{CAMERA_SETUP_SCRIPT} {_regex_args('load', CAMERA_TOKEN_RE)}",
     arg_pattern=CAMERA_TOKEN_RE,
     probe_arg="ov5647,cam0",
 )
@@ -560,7 +563,7 @@ CAMERA_OVERLAY_UNLOAD = Capability(
     name="camera.overlay_unload",
     probe_argv=(CAMERA_SETUP_SCRIPT, "unload", _PROBE_PLACEHOLDER),
     description="Stop a Pi camera started without a restart",
-    sudoers_pattern=f"{CAMERA_SETUP_SCRIPT} unload {_CAMERA_SUDOERS}",
+    sudoers_pattern=f"{CAMERA_SETUP_SCRIPT} {_regex_args('unload', CAMERA_TOKEN_RE)}",
     arg_pattern=CAMERA_TOKEN_RE,
     probe_arg="ov5647,cam0",
 )
@@ -573,7 +576,7 @@ MEDIA_WRITE = Capability(
     name="media.write",
     probe_argv=(MEDIA_WRITE_SCRIPT, "write", _PROBE_PLACEHOLDER),
     description="Write a file to a USB storage device",
-    sudoers_pattern=f"{MEDIA_WRITE_SCRIPT} write {DEVICE_RE}",
+    sudoers_pattern=f"{MEDIA_WRITE_SCRIPT} {_regex_args('write', DEVICE_RE)}",
     arg_pattern=DEVICE_RE,
     probe_arg="/dev/sda1",
 )

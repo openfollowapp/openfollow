@@ -15,7 +15,6 @@
         <div class="field mf-name">
             <label>Display name</label>
             <input type="text" name="name" value="{{fader.name}}" placeholder="Fader {{fader_index}}" maxlength="32" autofocus>
-            <div class="field-note">Shown on the operator screen when "Show on Operator Screen" is on, and in trigger forms that reference this fader.</div>
         </div>
         <div class="field mf-default">
             <label>Default value</label>
@@ -32,8 +31,11 @@
             <input type="hidden" name="color" value="{{fader.color}}">
         </div>
         <div class="field checkbox-field">
-            <label>Show on Operator Screen</label>
-            <div class="checkbox-wrap"><input type="checkbox" name="show_on_display" {{'checked' if fader.show_on_display else ''}}></div>
+            <label for="mf-{{fader_index}}-show-on-display">Operator Screen</label>
+            <div class="checkbox-wrap checkbox-field inline">
+                <input type="checkbox" id="mf-{{fader_index}}-show-on-display" name="show_on_display" {{'checked' if fader.show_on_display else ''}}>
+                <label for="mf-{{fader_index}}-show-on-display">Show this fader on the Operator Screen</label>
+            </div>
         </div>
     </div>
 
@@ -45,7 +47,7 @@
     % # Patch + Type carry ``data-midi-source-detail`` so the kind toggle
     % # (base.tpl JS) hides just those two when "No source" is chosen,
     % # leaving Source kind in place.
-    <div class="row mf-source-row" data-midi-source-kind-row>
+    <div class="row mf-source-row" data-midi-source-kind-row data-feature="midi">
         <div class="field mf-kind">
             <label>Source Type</label>
             <select name="source_kind" data-midi-source-kind-select>

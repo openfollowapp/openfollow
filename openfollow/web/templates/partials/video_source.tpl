@@ -5,38 +5,12 @@
         <span class="section-note">Camera input and live preview</span>
     </div>
 
-% # This is the form the fix gets typed into, and the tab an operator opens
-% # first when the picture is missing, so it carries the same box Live
-% # Statistics does rather than a reduced version. Already credential-free -
-% # the status marker redacts on the way in.
-% from openfollow.web.labels import video_error_token
-% video_failure = str(defined("video_failure") and video_failure or "none")
-% video_failure_text = str(defined("video_failure_text") and video_failure_text or "")
-% video_error_message = str(defined("video_error_message") and video_error_message or "")
-% video_failure_action = str(defined("video_failure_action") and video_failure_action or "")
-%# Keyed on what there is to show. Several receiver paths publish an error
-%# with no classification, and Statistics renders that raw text; suppressing it
-%# here would leave this box empty while the other answered the question.
-% show_failure = bool(video_failure_text or video_error_message)
-%# Polled on its own so a failure that starts while this page is open still
-%# shows up. Only the box is swapped - re-rendering the form would discard
-%# whatever the operator is part-way through typing, which is what they came
-%# here to do.
-<div id="video-source-failure"
-     hx-get="/section/video_source/failure"
-     hx-trigger="every 3s"
-     hx-target="this"
-     hx-swap="innerHTML">
-% if show_failure:
-%     token = video_error_token(video_failure_text, video_error_message, video_failure_action)
-%     include('partials/video_error_box.tpl', failure_text=video_failure_text, error_message=video_error_message, action=video_failure_action, token=token, scope='source', live='status')
-% end
-</div>
+% include('partials/video_source_failure.tpl')
 
     <div class="group">
         <div class="row">
             <div class="field">
-                <label>Source Type</label>
+                <label for="video-source-type">Source Type</label>
                 <select name="video_source_type" id="video-source-type"
                         onchange="ofVideoSourceToggle(this.value)">
                     % for iid, iname in available_inputs:
@@ -70,7 +44,7 @@
             fb.textContent = msg;
         };
         // Source Type drives which controls apply: capture (live sources only),
-        // connection recovery (network sources only), preview (not the gallery).
+        // healing (network sources only), preview and latency (not the gallery).
         window.ofVideoSourceToggle = function(value){
             document.querySelectorAll('[data-input-type]').forEach(function(el){
                 el.style.display = el.dataset.inputType === value ? '' : 'none';
@@ -78,18 +52,64 @@
             var net = (value === 'rtsp' || value === 'srt' || value === 'rtp');
             function vis(id, on){ var el = document.getElementById(id); if(el) el.style.display = on ? '' : 'none'; }
             vis('capture-frame-row', value !== 'testpattern');
-            vis('recovery-row', net);
+            vis('heal-field', net);
             vis('preview-row', value !== 'testpattern');
+            vis('video-source-latency', value !== 'testpattern');
+        };
+        // Measure latency: the station renders each state of the dialog into the shared modal.
+        window.ofLatencyDialog = function(){
+            openModal({
+                title: 'Measure Camera Latency',
+                bodyHTML: '<div id="latency-dialog"></div>',
+                footerButtons: [],
+                onClose: function(){
+                    // The dialog goes first, its warnings' renewal with it; then the screen's card goes at once.
+                    var dialog = document.getElementById('latency-dialog');
+                    if(dialog) dialog.remove();
+                    if(window.ofLatencyWarning){
+                        navigator.sendBeacon('/section/video_source/latency/warning/close?token=' + window.ofLatencyWarning);
+                        window.ofLatencyWarning = '';
+                    }
+                    // The row shows the newest result, and takes the focus back.
+                    htmx.ajax('GET', '/section/video_source/latency', {target: '#video-source-latency', swap: 'outerHTML'})
+                        .then(function(){
+                            var btn = document.querySelector('#video-source-latency button');
+                            if(btn) btn.focus();
+                        });
+                },
+            });
+            htmx.ajax('GET', '/section/video_source/latency/dialog', {target: '#latency-dialog', swap: 'outerHTML'});
+        };
+        // Whether an element of the dialog is on the open dialog: closing removes it, and a state that
+        // arrives after its dialog closed lands nowhere in the page.
+        window.ofLatencyWarningLive = function(el){
+            return !!(el && el.isConnected);
+        };
+        // Each state of the dialog: locked while a run lasts; focus on the action that starts nothing, else the dialog.
+        // A state meant for a dialog closed before it arrived (another one may be open by then) is ignored.
+        window.ofLatencyDialogShown = function(running, warning){
+            var dialog = document.getElementById('latency-dialog');
+            if(!ofLatencyWarningLive(dialog) || dialog.getAttribute('data-warning') !== warning) return;
+            window.ofLatencyWarning = warning;
+            // The state's own actions take the modal's footer only now that the state is known to be this dialog's.
+            var actions = dialog.querySelector('[data-latency-footer]');
+            var footer = document.getElementById('modal-footer');
+            footer.replaceChildren.apply(footer, actions ? Array.from(actions.childNodes) : []);
+            if(actions) actions.remove();
+            htmx.process(footer);
+            modalLock(running);
+            var target = document.querySelector('#modal-footer [data-autofocus]') || dialog;
+            target.focus();
         };
         </script>
-        <!-- Connection recovery applies to network inputs only (RTSP/SRT/RTP). -->
-        <div class="row" id="recovery-row" style="display:{{'' if config.video_source_type in ('rtsp', 'srt', 'rtp') else 'none'}}">
+        <!-- Every source's video can stall; only the network inputs (RTSP/SRT/RTP) heal. -->
+        <div class="row" id="recovery-row">
             <div class="field">
                 <label>Stall Timeout (s)</label>
                 <input type="number" name="stall_timeout" value="{{config.stall_timeout}}"
                        min="0" step="0.1" placeholder="3.0">
             </div>
-            <div class="field">
+            <div class="field" id="heal-field" style="display:{{'' if config.video_source_type in ('rtsp', 'srt', 'rtp') else 'none'}}">
                 <label>Heal Interval (s)</label>
                 <input type="number" name="heal_interval" value="{{config.heal_interval}}"
                        min="0" step="0.1" placeholder="5.0">
@@ -97,9 +117,12 @@
         </div>
         <!-- Live preview is redundant for the Media Gallery's static content. -->
         <div class="row" id="preview-row" style="margin-top:0.5rem;display:{{'none' if config.video_source_type == 'testpattern' else ''}}">
-            <div class="field checkbox-field inline">
-                <input type="checkbox" id="show-preview-cb">
-                <label for="show-preview-cb">Show Preview</label>
+            <div class="field checkbox-field">
+                <label for="show-preview-cb">Preview</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="show-preview-cb">
+                    <label for="show-preview-cb">Show a snapshot of the video input</label>
+                </div>
             </div>
         </div>
         <div id="video-preview-wrap" style="display:none;">
@@ -117,12 +140,8 @@
             var img = document.getElementById('video-preview');
             var hint = document.getElementById('video-preview-hint');
             var timer = null;
-            function isExpanded(){
-                var sec = document.getElementById('video-source-section');
-                return sec && !sec.classList.contains('is-collapsed');
-            }
             function refresh(){
-                if(!cb.checked || !isExpanded()) return;
+                if(!cb.checked || !pollShown(cb)) return;
                 var next = new Image();
                 next.onload = function(){
                     img.src = next.src;
@@ -148,8 +167,17 @@
                 }
             }
             cb.addEventListener('change', toggle);
+            // A re-render of the section runs this again; the replaced copy lets go.
+            function onShown(){
+                if(document.body.contains(cb)) refresh();
+                else document.body.removeEventListener('poll-shown', onShown);
+            }
+            document.body.addEventListener('poll-shown', onShown);
         })();
         </script>
+% if defined('latency'):
+%     include('partials/video_source_latency.tpl')
+% end
     </div>
 
     <div class="actions">

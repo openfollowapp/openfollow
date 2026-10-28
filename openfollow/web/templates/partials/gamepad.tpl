@@ -1,6 +1,8 @@
 % from openfollow.configuration import GAMEPAD_ACTION_BUTTON_FORM_LABELS, GAMEPAD_MENU_BUTTON_FORM_LABELS, MENU_RESERVED_BUTTONS
+% from openfollow.button_names import STYLE_TITLES, button_label, name_style
+% from openfollow.web.button_icons import button_html
 % from openfollow.web.bindings import STICK_FIELD_LABELS
-% from openfollow.web.labels import pretty_label
+% names = name_style(config.controller.button_name_style)
 <form id="gamepad-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="gamepad" data-help="gamepad"
       hx-post="/section/gamepad" hx-target="#gamepad-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
@@ -10,12 +12,18 @@
     <div class="group">
         <div class="row">
             <div class="field checkbox-field">
-                <label>Enabled</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="enabled" {{'checked' if config.controller.enabled else ''}}></div>
+                <label for="gamepad-enabled">Gamepad</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="gamepad-enabled" name="enabled" {{'checked' if config.controller.enabled else ''}}>
+                    <label for="gamepad-enabled">Control markers with gamepads</label>
+                </div>
             </div>
-            <div class="field checkbox-field">
-                <label>Invert Stick Y</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="invert_y" {{'checked' if config.controller.invert_y else ''}}></div>
+            <div class="field">
+                <label for="gamepad-invert-y">Stick Y axis</label>
+                <select id="gamepad-invert-y" name="invert_y">
+                    <option value="false" {{'' if config.controller.invert_y else 'selected'}}>Push up to move up the screen</option>
+                    <option value="true" {{'selected' if config.controller.invert_y else ''}}>Push up to move down the screen</option>
+                </select>
             </div>
             <div class="field">
                 <label>Axis Deadzone (0–1)</label>
@@ -34,6 +42,18 @@
                     <option value="s-law" {{'selected' if config.controller.curve == 's-law' else ''}}>S-Law</option>
                 </select>
             </div>
+            <div class="field">
+                <label for="gamepad-button-name-style">Button Names</label>
+                <select id="gamepad-button-name-style" name="button_name_style"
+                        hx-get="/api/validate/gamepad/button_name_style" hx-trigger="change"
+                        hx-target="#gamepad-button-name-style-error" hx-swap="innerHTML" hx-include="closest form"
+                        aria-describedby="gamepad-button-name-style-error" aria-invalid="false">
+                    % for style, title in STYLE_TITLES.items():
+                    <option value="{{style}}" {{'selected' if names == style else ''}}>{{title}}</option>
+                    % end
+                </select>
+                <span id="gamepad-button-name-style-error" class="field-error"></span>
+            </div>
         </div>
 
         <details class="inline-advanced" data-adv-key="button-detection">
@@ -51,7 +71,7 @@
                     % if defined('detection_started') and detection_started:
                     <span style="color:var(--accent);font-size:0.8em;margin-left:0.5rem;"
                           hx-get="/section/gamepad" hx-target="#gamepad-section"
-                          hx-swap="outerHTML" hx-trigger="every 2s">Wizard running on app display</span>
+                          hx-swap="outerHTML" hx-trigger="every 2s [!document.hidden], poll-shown from:body">Wizard running on app display</span>
                     %# Allow web UI cancellation so keyboardless operator
                     %# isn't stranded after wizard grabs exclusive input.
                     <button type="button" class="secondary small"
@@ -93,8 +113,8 @@
                             raw_display = ('–' if raw_idx is None else 'axis ' + str(-100 - raw_idx) if raw_idx <= -100 else _hat_names.get(raw_idx, 'hat ' + str(raw_idx)) if raw_idx < 0 else 'btn ' + str(raw_idx))
                         %>
                         <tr>
-                            <td>{{pretty_label(wiz_key)}}</td>
-                            <td style="{{'color:var(--accent);font-weight:600;' if not is_default else 'color:var(--muted);'}}">{{pretty_label(val_display)}}</td>
+                            <td>{{!button_html(wiz_key, names)}}</td>
+                            <td style="{{'color:var(--accent);font-weight:600;' if not is_default else 'color:var(--muted);'}}">{{!button_html(val_display, names)}}</td>
                             <td style="color:var(--muted);font-family:monospace;">{{raw_display}}</td>
                         </tr>
                         % if field is not None:
@@ -104,7 +124,7 @@
                     </tbody>
                 </table>
                 <div style="margin-top:0.5rem;font-size:0.82em;">
-                    <span style="color:var(--muted);">LT / RT Triggers:</span>
+                    <span style="color:var(--muted);">{{button_label('LT', names)}} / {{button_label('RT', names)}} Triggers:</span>
                     <span style="{{'color:var(--accent);font-weight:600;' if config.controller.swap_triggers else 'color:var(--muted);'}}">
                         {{'Swapped' if config.controller.swap_triggers else 'Normal'}}
                     </span>
@@ -131,8 +151,8 @@
                 <div class="group">
                     <h3 class="group-title">Normal Mode</h3>
                     <div class="row">
-                        % for name in ('btn_reset', 'btn_toggle_help', 'btn_toggle_zones', 'btn_settings'):
-                        % include('partials/button_binding_select.tpl', name=name, label=action_labels[name], value=getattr(c, name), buttons=action_buttons)
+                        % for name in ('btn_reset', 'btn_toggle_help', 'btn_settings'):
+                        % include('partials/button_binding_select.tpl', name=name, label=action_labels[name], value=getattr(c, name), buttons=action_buttons, names=names)
                         % end
                     </div>
                     <div class="row">
@@ -175,12 +195,18 @@
                     </div>
                     <div class="row">
                         % for name in ('btn_speed_down', 'btn_speed_up', 'btn_move_z_down', 'btn_move_z_up'):
-                        % include('partials/button_binding_select.tpl', name=name, label=action_labels[name], value=getattr(c, name), buttons=action_buttons)
+                        % include('partials/button_binding_select.tpl', name=name, label=action_labels[name], value=getattr(c, name), buttons=action_buttons, names=names)
                         % end
                     </div>
                     <div class="row">
                         % for name in ('btn_next_marker', 'btn_prev_marker', 'btn_clear_messages'):
-                        % include('partials/button_binding_select.tpl', name=name, label=action_labels[name], value=getattr(c, name), buttons=action_buttons)
+                        % include('partials/button_binding_select.tpl', name=name, label=action_labels[name], value=getattr(c, name), buttons=action_buttons, names=names)
+                        % end
+                    </div>
+                    <div class="row">
+                        % include('partials/button_binding_select.tpl', name='btn_toggle_zones', label=action_labels['btn_toggle_zones'], value=c.btn_toggle_zones, buttons=action_buttons, names=names, feature='zones')
+                        % for name in ('btn_toggle_paths', 'btn_pathfinder'):
+                        % include('partials/button_binding_select.tpl', name=name, label=action_labels[name], value=getattr(c, name), buttons=action_buttons, names=names, feature='paths')
                         % end
                     </div>
                 </div>
@@ -188,7 +214,7 @@
                     <h3 class="group-title">Menu Navigation</h3>
                     <div class="row">
                         % for name in ('btn_menu_confirm', 'btn_menu_cancel'):
-                        % include('partials/button_binding_select.tpl', name=name, label=menu_labels[name], value=getattr(c, name), buttons=menu_buttons)
+                        % include('partials/button_binding_select.tpl', name=name, label=menu_labels[name], value=getattr(c, name), buttons=menu_buttons, names=names)
                         % end
                     </div>
                 </div>

@@ -2,13 +2,13 @@
 
 Configure outbound OSC messages for lighting consoles, media servers, audio engines, and show-control software.
 
-Each transmitter collapses to a one-line summary (name, trigger type, destination). Expand it for four tabs: **Basics**, **Trigger**, **Settings**, **Diagnostics**. An amber pill in the summary names a gamepad or keyboard action that fires on the same press as the trigger.
+Each transmitter collapses to a one-line summary (name, trigger type, destination). Expand it for four tabs: **Basics**, **Trigger**, **Settings**, **Diagnostics**. An orange pill in the summary names a gamepad or keyboard action that fires on the same press as the trigger.
 
 ## Basics
 
 Identity, destination, and transport.
 
-- **Enabled** – master toggle for this transmitter; disabled transmitters do not transmit. If a placeholder's dependency isn't satisfied (e.g. no Default marker for a bare `[x]`), the toggle turns red and the transmitter is forced off until resolved.
+- **Transmitter** – master toggle for this transmitter; disabled transmitters do not transmit. If a placeholder's dependency isn't satisfied (e.g. no Default marker for a bare `[x]`), the toggle turns red and the transmitter is forced off until resolved.
 - **Name** – a label for your own reference. Appears in the Diagnostics tab and the Overview live counters.
 - **Default markers** – the marker(s) that bare position placeholders (`[x]`, `[y]`, `[markerid]`, etc.) resolve against when no `:N` index is given. Enter a comma-separated list to drive several markers from one transmitter: `1, 3, 7` behaves exactly like three separate transmitters sending to markers 1, 3 and 7, each rendered against its own position. The lowest ID is the *primary* (shown in the row header); the rest appear as read-only chips nested under it, ordered by ID. Each entry is one of:
   - a **marker ID** – sends to that marker when this station controls it. An id it doesn't control isn't an error: that entry is skipped at send time and shown with a red dot.
@@ -31,7 +31,7 @@ When the transmitter sends. Pick one **Trigger type** from the dropdown; the fie
 
 - **Controller button** – fires on a gamepad button edge. Set the **Button** (A, B, X, Y, bumpers, D-Pad, Start, Back, etc.) and the **Edge** (Press or Release). Multiple transmitters can share a button and fire independently.
 
-A key or button that a keyboard or gamepad action also uses gets an amber outline and names that action: one press does both, whatever modifiers are held. That can be deliberate, so it never holds **Save**. Menu buttons are left out, since triggers don't fire while a menu is open, and so is a device switched off under Input.
+A key or button that a keyboard or gamepad action also uses gets an orange outline and names that action: one press does both, whatever modifiers are held. That can be deliberate, so it never holds **Save**. Menu buttons are left out, since triggers don't fire while a menu is open, and so is a device switched off under Input.
 
 - **MIDI message** – fires when an incoming MIDI event matches the pattern. All match fields default to "any" – leave one blank to match anything.
   - **Type** – Note On, Note Off, Control Change, Program Change, Key Pressure, or Channel Pressure.

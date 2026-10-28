@@ -21,11 +21,13 @@ import select
 import signal
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pygame
 import pytest
 
 import openfollow.input.gamepad as gp
+import openfollow.input.input_manager as input_manager_module
 from openfollow.configuration import AppConfig, ControllerConfig, MarkerConfig
 from openfollow.input.controller_slots import (
     NOTE_BUTTON_MAP_OTHER_MODEL,
@@ -66,6 +68,8 @@ from openfollow.input.gamepad import (
     SettingsMenuInput,
     SourceSelectionInput,
 )
+from openfollow.input.input_manager import InputManager
+from openfollow.operator_messages import OperatorMessageStore
 
 pytestmark = pytest.mark.unit
 
@@ -223,12 +227,13 @@ def stubbed_pygame(monkeypatch):
         "instance_ids": {},
         "lookup": False,
         "pucks": set(),
+        "names": {},
         "paths": {},
         "rumble": {},
     }
 
-    monkeypatch.setattr(pygame, "get_init", lambda: True)
-    monkeypatch.setattr(pygame, "init", lambda: None)
+    monkeypatch.setattr(pygame.display, "get_init", lambda: True)
+    monkeypatch.setattr(pygame.display, "init", lambda: None)
     monkeypatch.setattr(pygame.joystick, "get_init", lambda: True)
     monkeypatch.setattr(pygame.joystick, "init", lambda: None)
     monkeypatch.setattr(pygame.joystick, "quit", lambda: None)
@@ -247,6 +252,7 @@ def stubbed_pygame(monkeypatch):
     monkeypatch.setattr(gp, "_device_instance_id", lambda idx: state["instance_ids"].get(idx))
     monkeypatch.setattr(gp, "_instance_id_lookup_available", lambda: state["lookup"])
     monkeypatch.setattr(gp, "_is_spacemouse", lambda idx: idx in state["pucks"])
+    monkeypatch.setattr(gp, "_device_name", lambda idx: state["names"].get(idx))
     monkeypatch.setattr(gp, "_device_path", lambda idx: state["paths"].get(idx))
     monkeypatch.setattr(gp, "_can_rumble", lambda instance_id: state["rumble"].get(instance_id))
     monkeypatch.setattr(pygame.event, "get", lambda: list(events))
@@ -892,10 +898,10 @@ class TestUpdate:
         assert 0 in result.resets
 
     def test_dispatch_edges_for_configured_buttons(self, stubbed_pygame) -> None:
-        handler, _ = make_handler(stubbed_pygame)
+        handler, _ = make_handler(stubbed_pygame, config=ControllerConfig(btn_toggle_zones="B"))
         joy = FakeJoystick(num_buttons=16)
         joy.press(CONTROLLER_BUTTON_Y)  # toggle help
-        joy.press(CONTROLLER_BUTTON_B)  # toggle zones (btn_toggle_zones default)
+        joy.press(CONTROLLER_BUTTON_B)  # toggle zones
         joy.press(CONTROLLER_BUTTON_DPAD_RIGHT)  # next marker
         joy.press(CONTROLLER_BUTTON_DPAD_LEFT)  # prev marker
         joy.press(CONTROLLER_BUTTON_BACK)  # settings
@@ -962,6 +968,43 @@ class TestUpdate:
         handler._shoulder_axis_baselines[0] = {4: 0.0, 6: 0.0}  # seed so the delta reads as a press
         result = handler.update(0.016)
         assert result.clear_messages_pressed is True
+
+    def test_path_buttons_are_unbound_until_set(self, stubbed_pygame) -> None:
+        handler, _ = make_handler(stubbed_pygame)
+        joy = FakeJoystick(num_buttons=16)
+        for button in range(16):
+            joy.press(button)
+        handler.joysticks[0] = joy
+        handler.capabilities[0] = ControllerCapabilities(backend="joystick")
+        handler._bumper_state[0] = (False, False)
+        handler._shoulder_axis_baselines[0] = {}
+        result = handler.update(0.016)
+        assert result.pathfinder_presses == set()
+        assert result.toggle_paths_pressed is False
+
+    def test_a_pathfinder_press_is_reported_for_the_pad_that_pressed(self, stubbed_pygame) -> None:
+        handler, _ = make_handler(stubbed_pygame, config=ControllerConfig(btn_pathfinder="START"))
+        for idx in (0, 1):
+            joy = FakeJoystick(num_buttons=16)
+            if idx == 1:
+                joy.press(CONTROLLER_BUTTON_START)
+            handler.joysticks[idx] = joy
+            handler.capabilities[idx] = ControllerCapabilities(backend="joystick")
+            handler._bumper_state[idx] = (False, False)
+            handler._shoulder_axis_baselines[idx] = {}
+        assert handler.update(0.016).pathfinder_presses == {1}
+        # Held is not pressed again.
+        assert handler.update(0.016).pathfinder_presses == set()
+
+    def test_toggle_paths_fires_on_its_button(self, stubbed_pygame) -> None:
+        handler, _ = make_handler(stubbed_pygame, config=ControllerConfig(btn_toggle_paths="START"))
+        joy = FakeJoystick(num_buttons=16)
+        joy.press(CONTROLLER_BUTTON_START)
+        handler.joysticks[0] = joy
+        handler.capabilities[0] = ControllerCapabilities(backend="joystick")
+        handler._bumper_state[0] = (False, False)
+        handler._shoulder_axis_baselines[0] = {}
+        assert handler.update(0.016).toggle_paths_pressed is True
 
     def test_toggle_zones_trigger_binding_fires(self, stubbed_pygame) -> None:
         config = ControllerConfig(btn_toggle_zones="LT", btn_move_z_down="")
@@ -1202,6 +1245,21 @@ class TestSettingsMenuInput:
         handler._shoulder_axis_baselines[0] = {}
         handler.read_settings_menu_input()
         assert handler.update(0.016).clear_messages_pressed is False
+
+    def test_path_buttons_held_through_the_menu_do_not_fire_on_close(self, stubbed_pygame) -> None:
+        config = ControllerConfig(btn_pathfinder="START", btn_toggle_paths="Y", btn_toggle_help="")
+        handler, _ = make_handler(stubbed_pygame, config=config)
+        joy = FakeJoystick(num_buttons=16)
+        joy.press(CONTROLLER_BUTTON_START)
+        joy.press(CONTROLLER_BUTTON_Y)
+        handler.joysticks[0] = joy
+        handler.capabilities[0] = ControllerCapabilities(backend="joystick")
+        handler._bumper_state[0] = (False, False)
+        handler._shoulder_axis_baselines[0] = {}
+        handler.read_settings_menu_input()
+        result = handler.update(0.016)
+        assert result.pathfinder_presses == set()
+        assert result.toggle_paths_pressed is False
 
 
 # --------------------------------------------------------------------------- #
@@ -1804,6 +1862,240 @@ class TestSpacemouseFallback:
         assert gp._is_spacemouse(0) is False
 
 
+class TestKeyboardControlKeys:
+    """A keyboard's system, media and radio keys are never taken for a gamepad."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_lookup(self):
+        lookup = gp._sdl_device_fn  # a test may swap it; clear the real cache
+        lookup.cache_clear()
+        yield
+        lookup.cache_clear()
+
+    @staticmethod
+    def _attach(
+        stubbed_pygame,
+        names: dict[int, str | None],
+        opened: list[int],
+        *,
+        ids: dict[int, int] | None = None,
+        paths: dict[int, str] | None = None,
+    ) -> dict[int, FakeJoystick]:
+        ids = ids or {i: i for i in names}
+        joys = {i: FakeJoystick(instance_id=ids[i], name=name or "") for i, name in names.items()}
+        stubbed_pygame["state"].update(
+            count=len(names),
+            lookup=True,
+            instance_ids=ids,
+            names=dict(names),
+            paths=dict(paths or {}),
+            factories={i: (lambda idx, j=j: (opened.append(idx), j)[1]) for i, j in joys.items()},
+        )
+        return joys
+
+    @pytest.mark.parametrize(
+        "paths",
+        [{0: "/dev/input/event3", 1: "/dev/input/event5"}, {}],
+        ids=["linux-device-nodes", "no-device-nodes"],
+    )
+    def test_control_keys_next_to_a_pad_are_never_opened(self, stubbed_pygame, caplog, paths) -> None:
+        opened: list[int] = []
+        names = {0: "USB Gamepad", 1: "Raspberry Pi 500 System Control"}
+        joys = self._attach(stubbed_pygame, names, opened, paths=paths)
+        with caplog.at_level(logging.INFO, logger="openfollow.input.gamepad"):
+            handler, _ = make_handler(stubbed_pygame)
+            # Later hotplug events must neither open it nor log it again.
+            for _ in range(3):
+                stubbed_pygame["events"][:] = [pygame.event.Event(pygame.JOYDEVICEADDED, {"device_index": 1})]
+                handler._pump_events()
+
+        assert opened == [0]
+        assert handler.joysticks == {0: joys[0]}
+        assert list(handler.capabilities) == [0]
+        skipped = [r for r in caplog.records if "Raspberry Pi 500 System Control" in r.getMessage()]
+        assert [r.levelno for r in skipped] == [logging.INFO]
+
+    def test_control_keys_plugged_in_later_are_never_opened(self, stubbed_pygame) -> None:
+        opened: list[int] = []
+        joys = self._attach(stubbed_pygame, {0: "USB Gamepad"}, opened)
+        handler, _ = make_handler(stubbed_pygame)
+        self._attach(stubbed_pygame, {0: "USB Gamepad", 1: "Keychron K2 Consumer Control"}, opened)
+        stubbed_pygame["events"][:] = [pygame.event.Event(pygame.JOYDEVICEADDED, {"device_index": 1})]
+        handler._pump_events()
+
+        assert opened == [0]
+        assert handler.joysticks == {0: joys[0]}
+
+    def test_logged_again_once_unplugged_and_plugged_back(self, stubbed_pygame, caplog) -> None:
+        opened: list[int] = []
+        name = "Raspberry Pi 500 System Control"
+        self._attach(stubbed_pygame, {0: "USB Gamepad", 1: name}, opened)
+        with caplog.at_level(logging.INFO, logger="openfollow.input.gamepad"):
+            handler, _ = make_handler(stubbed_pygame)
+            self._attach(stubbed_pygame, {0: "USB Gamepad"}, opened)
+            stubbed_pygame["events"][:] = [pygame.event.Event(pygame.JOYDEVICEREMOVED, {"instance_id": 1})]
+            handler._pump_events()
+            # SDL never reuses an instance id.
+            self._attach(stubbed_pygame, {0: "USB Gamepad", 1: name}, opened, ids={0: 0, 1: 2})
+            stubbed_pygame["events"][:] = [pygame.event.Event(pygame.JOYDEVICEADDED, {"device_index": 1})]
+            handler._pump_events()
+
+        assert len([r for r in caplog.records if name in r.getMessage()]) == 2
+        assert list(handler.joysticks) == [0]
+
+    def test_startup_retries_log_a_device_once(self, stubbed_pygame, caplog) -> None:
+        # Each retry re-inits SDL, which lists the same device node under a new id.
+        name = "Raspberry Pi 500 System Control"
+        path = {0: "/dev/input/event5"}
+        self._attach(stubbed_pygame, {0: name}, [], paths=path)
+        with caplog.at_level(logging.INFO, logger="openfollow.input.gamepad"):
+            handler, _ = make_handler(stubbed_pygame)
+            for instance_id in (7, 8):
+                self._attach(stubbed_pygame, {0: name}, [], ids={0: instance_id}, paths=path)
+                handler.update(GamepadHandler._STARTUP_RETRY_INTERVAL + 0.01)
+
+        assert handler.joysticks == {}
+        assert len([r for r in caplog.records if name in r.getMessage()]) == 1
+
+    def test_logged_again_when_its_device_node_comes_back(self, stubbed_pygame, caplog) -> None:
+        name = "Keychron K2 Consumer Control"
+        pad = {0: "USB Gamepad"}
+        paths = {0: "/dev/input/event3", 1: "/dev/input/event5"}
+        self._attach(stubbed_pygame, {**pad, 1: name}, [], paths=paths)
+        with caplog.at_level(logging.INFO, logger="openfollow.input.gamepad"):
+            handler, _ = make_handler(stubbed_pygame)
+            self._attach(stubbed_pygame, pad, [], paths=paths)
+            stubbed_pygame["events"][:] = [pygame.event.Event(pygame.JOYDEVICEREMOVED, {"instance_id": 1})]
+            handler._pump_events()
+            self._attach(stubbed_pygame, {**pad, 1: name}, [], ids={0: 0, 1: 2}, paths=paths)
+            stubbed_pygame["events"][:] = [pygame.event.Event(pygame.JOYDEVICEADDED, {"device_index": 1})]
+            handler._pump_events()
+
+        assert len([r for r in caplog.records if name in r.getMessage()]) == 2
+        assert list(handler.joysticks) == [0]
+
+    def test_a_pads_own_consumer_control_sibling_is_not_opened(self, stubbed_pygame) -> None:
+        # A composite seen on a Pi 5: the pad and its media keys, listed side by side.
+        opened: list[int] = []
+        pad = "GameSir-G7 SE Controller for Xbox"
+        joys = self._attach(stubbed_pygame, {0: pad, 1: f"{pad} Consumer Control"}, opened)
+        handler, _ = make_handler(stubbed_pygame)
+
+        assert opened == [0]
+        assert handler.joysticks == {0: joys[0]}
+
+    @pytest.mark.parametrize(
+        ("name", "is_pad"),
+        [
+            ("Raspberry Pi 500 System Control", False),
+            ("Keychron K2 Consumer Control", False),
+            ("Logitech USB Receiver Wireless Radio Control", False),
+            ("System Control", False),
+            ("Consumer Control", False),
+            ("USB Keyboard Consumer Control  ", False),
+            ("\ufffd\ufffd System Control", False),
+            ("Xbox 360 Controller", True),
+            ("USB Gamepad", True),
+            ("System Control Pad", True),
+            ("Generic Consumer Control Joystick", True),
+            ("Keyboard System control", True),
+            ("KeyboardSystem Control", True),
+            ("Wooting Two HE Keyboard", True),
+            ("", True),
+            (None, True),
+        ],
+        ids=[
+            "system-control",
+            "consumer-control",
+            "wireless-radio-control",
+            "bare-system-control",
+            "bare-consumer-control",
+            "trailing-whitespace",
+            "undecodable-prefix",
+            "xbox-360-pad",
+            "plain-pad",
+            "suffix-at-the-start",
+            "suffix-in-the-middle",
+            "other-case",
+            "no-separating-space",
+            "keyboard-suffix",
+            "empty-name",
+            "no-name",
+        ],
+    )
+    def test_only_a_control_keys_name_is_skipped(self, stubbed_pygame, name, is_pad) -> None:
+        opened: list[int] = []
+        self._attach(stubbed_pygame, {0: name}, opened)
+        handler, _ = make_handler(stubbed_pygame)
+
+        assert (list(handler.joysticks) == [0]) is is_pad
+        assert (opened == [0]) is is_pad
+
+    def test_one_pad_beside_control_keys_routes_as_the_only_controller(self, stubbed_pygame, monkeypatch) -> None:
+        class _Pucks:
+            def __init__(self, _config, **_kwargs) -> None:
+                pass
+
+            def start(self) -> None:
+                pass
+
+            def connected_devices(self) -> dict:
+                return {}
+
+            def initial_scan_settled(self) -> bool:
+                return True
+
+            def last_input(self) -> dict:
+                return {}
+
+        class _Server:
+            def get_marker(self, _marker_id: int) -> None:
+                return None
+
+        monkeypatch.setattr(input_manager_module, "KeyboardHandler", lambda app, **_kwargs: object())
+        monkeypatch.setattr(input_manager_module, "Mouse3DManager", _Pucks)
+        app = FakeApp()
+        app._config.osc.enabled = False
+        app._controlled_ids = [10, 11, 12]
+        app._selected_id = 12
+        app._server = _Server()
+        app._assist_manual = {}
+        app._runtime_services = SimpleNamespace(_virtual_faders=None, _operator_message_store=OperatorMessageStore())
+        self._attach(stubbed_pygame, {0: "Raspberry Pi 500 System Control", 1: "USB Gamepad"}, [])
+
+        manager = InputManager(app)
+
+        # The pad drives the selected marker, not a fixed slot's.
+        assert [(c["name"], c["marker_id"]) for c in manager.get_controller_info()] == [("USB Gamepad", 12)]
+        assert manager.marker_cycle_active() is True
+
+    def test_name_lookup_resolves_in_the_sdl_pygame_loaded(self) -> None:
+        assert gp._sdl_device_fn("SDL_JoystickNameForIndex", ctypes.c_char_p) is not None
+
+    def test_index_with_no_device_has_no_name(self) -> None:
+        # Real call into the SDL pygame loaded; no joystick has this index.
+        assert gp._device_name(10_000) is None
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            (b"Raspberry Pi 500 System Control", "Raspberry Pi 500 System Control"),
+            (b"\xff\xfe System Control", "\ufffd\ufffd System Control"),
+            (b"\xff\xfe", "\ufffd\ufffd"),
+            (b"", None),
+            (None, None),
+        ],
+        ids=["utf-8", "invalid-utf-8-with-suffix", "invalid-utf-8", "empty-name", "no-name"],
+    )
+    def test_reads_the_name_sdl_lists(self, monkeypatch, raw, expected) -> None:
+        monkeypatch.setattr(gp, "_sdl_device_fn", lambda symbol, _restype: lambda _idx: raw)
+        assert gp._device_name(0) == expected
+
+    def test_unreachable_sdl_reads_no_name(self, monkeypatch) -> None:
+        monkeypatch.setattr(gp, "_sdl_device_fn", lambda _symbol, _restype: None)
+        assert gp._device_name(0) is None
+
+
 class TestDeviceInstanceIdLookup:
     """SDL's instance id for a device index, read without opening the device."""
 
@@ -1876,11 +2168,11 @@ class TestConstruction:
 
 
 class TestPygameSubsystemInitOnConstruct:
-    def test_calls_pygame_init_when_not_already_initialized(self, monkeypatch) -> None:
-        called = {"pygame": False, "joystick": False}
+    def test_starts_the_display_and_joystick_subsystems_when_not_running(self, monkeypatch) -> None:
+        called = {"display": False, "joystick": False}
 
-        monkeypatch.setattr(pygame, "get_init", lambda: False)
-        monkeypatch.setattr(pygame, "init", lambda: called.__setitem__("pygame", True))
+        monkeypatch.setattr(pygame.display, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.display, "init", lambda: called.__setitem__("display", True))
         monkeypatch.setattr(pygame.joystick, "get_init", lambda: False)
         monkeypatch.setattr(
             pygame.joystick,
@@ -1895,8 +2187,26 @@ class TestPygameSubsystemInitOnConstruct:
         monkeypatch.setattr(gp, "sdl2_controller", None)
 
         GamepadHandler(FakeApp())
-        assert called["pygame"] is True
+        assert called["display"] is True
         assert called["joystick"] is True
+
+    def test_starts_no_sound(self, monkeypatch) -> None:
+        """No pygame.init(): it keeps an SDL timer and, through the mixer, an audio thread running all show."""
+        started: list[str] = []
+        monkeypatch.setattr(pygame, "init", lambda: started.append("pygame.init"))
+        monkeypatch.setattr(pygame.mixer, "init", lambda *a, **k: started.append("mixer"))
+        monkeypatch.setattr(pygame.display, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.display, "init", lambda: None)
+        monkeypatch.setattr(pygame.joystick, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.joystick, "init", lambda: None)
+        monkeypatch.setattr(pygame.joystick, "quit", lambda: None)
+        monkeypatch.setattr(pygame.joystick, "get_count", lambda: 0)
+        monkeypatch.setattr(pygame.event, "get", lambda: [])
+        monkeypatch.setattr(pygame.event, "post", lambda e: None)
+        monkeypatch.setattr(gp, "sdl2_controller", None)
+
+        GamepadHandler(FakeApp())
+        assert started == []
 
     @pytest.mark.parametrize(("is_ce", "warns"), [(True, False), (False, True)], ids=["pygame-ce", "classic"])
     def test_warns_when_classic_pygame_loaded(self, stubbed_pygame, monkeypatch, caplog, is_ce, warns) -> None:
@@ -1909,9 +2219,9 @@ class TestPygameSubsystemInitOnConstruct:
         monkeypatch.delenv("SDL_JOYSTICK_BLACKLIST_DEVICES", raising=False)
         seen: dict[str, str | None] = {}
 
-        monkeypatch.setattr(pygame, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.display, "get_init", lambda: False)
         monkeypatch.setattr(
-            pygame,
+            pygame.display,
             "init",
             lambda: seen.__setitem__("blacklist", os.environ.get("SDL_JOYSTICK_BLACKLIST_DEVICES")),
         )
@@ -1932,8 +2242,8 @@ class TestPygameSubsystemInitOnConstruct:
     def test_keeps_an_explicit_blacklist(self, monkeypatch) -> None:
         monkeypatch.setenv("SDL_JOYSTICK_BLACKLIST_DEVICES", "0x1234/0x5678")
 
-        monkeypatch.setattr(pygame, "get_init", lambda: False)
-        monkeypatch.setattr(pygame, "init", lambda: None)
+        monkeypatch.setattr(pygame.display, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.display, "init", lambda: None)
         monkeypatch.setattr(pygame.joystick, "get_init", lambda: False)
         monkeypatch.setattr(pygame.joystick, "init", lambda: None)
         monkeypatch.setattr(pygame.joystick, "quit", lambda: None)
@@ -1949,9 +2259,9 @@ class TestPygameSubsystemInitOnConstruct:
         monkeypatch.delenv("SDL_AUDIODRIVER", raising=False)
         seen: dict[str, str | None] = {}
 
-        monkeypatch.setattr(pygame, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.display, "get_init", lambda: False)
         monkeypatch.setattr(
-            pygame,
+            pygame.display,
             "init",
             lambda: seen.__setitem__("driver", os.environ.get("SDL_AUDIODRIVER")),
         )
@@ -1970,8 +2280,8 @@ class TestPygameSubsystemInitOnConstruct:
     def test_keeps_explicit_audio_driver_override(self, monkeypatch) -> None:
         monkeypatch.setenv("SDL_AUDIODRIVER", "alsa")
 
-        monkeypatch.setattr(pygame, "get_init", lambda: False)
-        monkeypatch.setattr(pygame, "init", lambda: None)
+        monkeypatch.setattr(pygame.display, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.display, "init", lambda: None)
         monkeypatch.setattr(pygame.joystick, "get_init", lambda: False)
         monkeypatch.setattr(pygame.joystick, "init", lambda: None)
         monkeypatch.setattr(pygame.joystick, "quit", lambda: None)
@@ -1988,9 +2298,9 @@ class TestPygameSubsystemInitOnConstruct:
         monkeypatch.delenv("SDL_VIDEODRIVER", raising=False)
         seen: dict[str, str | None] = {}
 
-        monkeypatch.setattr(pygame, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.display, "get_init", lambda: False)
         monkeypatch.setattr(
-            pygame,
+            pygame.display,
             "init",
             lambda: seen.__setitem__("driver", os.environ.get("SDL_VIDEODRIVER")),
         )
@@ -2005,14 +2315,14 @@ class TestPygameSubsystemInitOnConstruct:
 
         GamepadHandler(FakeApp())
         # Read at init time, not after: SDL takes the driver when the subsystem
-        # comes up, so a setdefault below pygame.init() would be a silent no-op.
+        # comes up, so a setdefault below pygame.display.init() would be a silent no-op.
         assert seen["driver"] == "dummy"
 
     def test_keeps_explicit_video_driver_override(self, monkeypatch) -> None:
         monkeypatch.setenv("SDL_VIDEODRIVER", "x11")
 
-        monkeypatch.setattr(pygame, "get_init", lambda: False)
-        monkeypatch.setattr(pygame, "init", lambda: None)
+        monkeypatch.setattr(pygame.display, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.display, "init", lambda: None)
         monkeypatch.setattr(pygame.joystick, "get_init", lambda: False)
         monkeypatch.setattr(pygame.joystick, "init", lambda: None)
         monkeypatch.setattr(pygame.joystick, "quit", lambda: None)
@@ -2031,9 +2341,9 @@ class TestPygameSubsystemInitOnConstruct:
         monkeypatch.setattr("sys.platform", platform)
         seen: dict[str, str | None] = {}
 
-        monkeypatch.setattr(pygame, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.display, "get_init", lambda: False)
         monkeypatch.setattr(
-            pygame,
+            pygame.display,
             "init",
             lambda: seen.__setitem__("hidapi", os.environ.get("SDL_JOYSTICK_HIDAPI")),
         )
@@ -2053,8 +2363,8 @@ class TestPygameSubsystemInitOnConstruct:
         monkeypatch.setenv("SDL_JOYSTICK_HIDAPI", "1")
         monkeypatch.setattr("sys.platform", "darwin")
 
-        monkeypatch.setattr(pygame, "get_init", lambda: False)
-        monkeypatch.setattr(pygame, "init", lambda: None)
+        monkeypatch.setattr(pygame.display, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.display, "init", lambda: None)
         monkeypatch.setattr(pygame.joystick, "get_init", lambda: False)
         monkeypatch.setattr(pygame.joystick, "init", lambda: None)
         monkeypatch.setattr(pygame.joystick, "quit", lambda: None)
@@ -2096,8 +2406,8 @@ class TestPygameSubsystemInitOnConstruct:
     def test_keeps_explicit_sdl_signal_handler_override(self, monkeypatch) -> None:
         monkeypatch.setenv("SDL_NO_SIGNAL_HANDLERS", "0")
 
-        monkeypatch.setattr(pygame, "get_init", lambda: False)
-        monkeypatch.setattr(pygame, "init", lambda: None)
+        monkeypatch.setattr(pygame.display, "get_init", lambda: False)
+        monkeypatch.setattr(pygame.display, "init", lambda: None)
         monkeypatch.setattr(pygame.joystick, "get_init", lambda: False)
         monkeypatch.setattr(pygame.joystick, "init", lambda: None)
         monkeypatch.setattr(pygame.joystick, "quit", lambda: None)
@@ -2129,7 +2439,7 @@ class TestPygameSubsystemInitOnConstruct:
             def is_controller(_idx):
                 return False
 
-        monkeypatch.setattr(pygame, "get_init", lambda: True)
+        monkeypatch.setattr(pygame.display, "get_init", lambda: True)
         monkeypatch.setattr(pygame.joystick, "get_init", lambda: True)
         monkeypatch.setattr(pygame.joystick, "quit", lambda: None)
         monkeypatch.setattr(pygame.joystick, "get_count", lambda: 0)
@@ -2177,7 +2487,7 @@ class TestSdl2ControllerOpenSuccess:
 
             Controller = _Sdl2Ctrl
 
-        monkeypatch.setattr(pygame, "get_init", lambda: True)
+        monkeypatch.setattr(pygame.display, "get_init", lambda: True)
         monkeypatch.setattr(pygame.joystick, "get_init", lambda: True)
         monkeypatch.setattr(pygame.joystick, "quit", lambda: None)
         monkeypatch.setattr(pygame.joystick, "get_count", lambda: 1)
@@ -2217,7 +2527,7 @@ class TestSdl2ControllerOpenFailure:
             def Controller(_idx):
                 raise pygame.error("sdl2 open failed")
 
-        monkeypatch.setattr(pygame, "get_init", lambda: True)
+        monkeypatch.setattr(pygame.display, "get_init", lambda: True)
         monkeypatch.setattr(pygame.joystick, "get_init", lambda: True)
         monkeypatch.setattr(pygame.joystick, "quit", lambda: None)
         monkeypatch.setattr(pygame.joystick, "get_count", lambda: 1)
@@ -2566,8 +2876,8 @@ class TestUpdateStartupRetry:
             def is_controller(_idx):
                 return False
 
-        monkeypatch.setattr(pygame, "get_init", lambda: True)
-        monkeypatch.setattr(pygame, "init", lambda: None)
+        monkeypatch.setattr(pygame.display, "get_init", lambda: True)
+        monkeypatch.setattr(pygame.display, "init", lambda: None)
         monkeypatch.setattr(pygame.joystick, "get_init", lambda: True)
         monkeypatch.setattr(pygame.joystick, "init", lambda: None)
         monkeypatch.setattr(pygame.joystick, "quit", lambda: None)
@@ -2758,10 +3068,10 @@ class TestStopErrorSwallowing:
 
         # Construct phase: pretend everything is already initialised so
         # the handler doesn't toggle our flags.
-        monkeypatch.setattr(pygame, "get_init", lambda: True)
-        monkeypatch.setattr(pygame, "init", lambda: None)
+        monkeypatch.setattr(pygame.display, "get_init", lambda: True)
+        monkeypatch.setattr(pygame.display, "init", lambda: None)
         monkeypatch.setattr(
-            pygame,
+            pygame.display,
             "quit",
             lambda: called.__setitem__("pyg_quit", True),
         )
@@ -4178,3 +4488,77 @@ class TestReadSettingsToggle:
         handler.joysticks[0] = _Failing()
         assert handler.read_settings_toggle() is False
         assert 0 not in handler.joysticks
+
+
+class TestParkedSlotThroughTheRealHandler:
+    """The resolver InputManager injects reaches the handler's bumper and fader writes for a parked slot."""
+
+    class _Bus:
+        def __init__(self) -> None:
+            self.calls: list[int] = []
+
+        def set_marker_fader_from_velocity_delta(self, marker_id: int, _delta: float) -> None:
+            self.calls.append(marker_id)
+
+    @pytest.mark.parametrize("surface", ["bumper_speed", "marker_fader"])
+    def test_a_parked_slot_writes_nothing_and_the_other_pad_still_does(
+        self, stubbed_pygame, monkeypatch, surface: str
+    ) -> None:
+        from openfollow.input.parking import set_parked
+
+        class _Keyboard:
+            def __init__(self, _app, **_kwargs) -> None:
+                pass
+
+            def update(self, _dt: float) -> None:
+                return None
+
+        class _Pucks:
+            def __init__(self, _config, **_kwargs) -> None:
+                pass
+
+            def start(self) -> None:
+                pass
+
+            def connected_devices(self) -> dict:
+                return {}
+
+            def initial_scan_settled(self) -> bool:
+                return True
+
+            def last_input(self) -> dict:
+                return {}
+
+        monkeypatch.setattr(input_manager_module, "KeyboardHandler", _Keyboard)
+        monkeypatch.setattr(input_manager_module, "Mouse3DManager", _Pucks)
+        cfg = ControllerConfig(move_xy_stick="right", marker_fader_stick="left_y", marker_fader_max_speed_s=1.0)
+        app = FakeApp(controller_cfg=cfg)
+        app._config.osc.enabled = False
+        app._controlled_ids = [10, 11]
+        app._selected_id = 10
+        app._server = SimpleNamespace(get_marker=lambda _marker_id: None)
+        app._assist_manual = {}
+        bus = self._Bus()
+        app._runtime_services = SimpleNamespace(_virtual_faders=bus, _operator_message_store=OperatorMessageStore())
+        joys = {i: FakeJoystick(instance_id=i, name=f"Pad {i}") for i in (0, 1)}
+        stubbed_pygame["state"].update(
+            count=2,
+            lookup=True,
+            instance_ids={0: 0, 1: 1},
+            names={0: "Pad 0", 1: "Pad 1"},
+            factories={i: (lambda _idx, j=j: j) for i, j in joys.items()},
+        )
+        manager = InputManager(app)
+        assert [c["marker_id"] for c in manager.get_controller_info()] == [10, 11]
+        set_parked(app, [10])
+        manager.update(0.016)  # baselines the shoulders and primes the sticks
+        for joy in joys.values():
+            if surface == "bumper_speed":
+                joy.press(BUMPER_LEFT_BUTTON_INDICES[0])
+            else:
+                joy.set_axis(1, -0.8)
+        manager.update(0.016)
+        if surface == "bumper_speed":
+            assert app.move_speed_calls == [(-1, 11)]
+        else:
+            assert set(bus.calls) == {11}

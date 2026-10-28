@@ -1,3 +1,4 @@
+% from openfollow.button_names import button_label, name_style
 % from openfollow.web.labels import pretty_label
 % # Trigger-specific input fields, swapped into Triggers tab
 % # when kind dropdown changes.
@@ -87,10 +88,10 @@
         </span>
     </div>
     <div class="field">
-        <label>Modifiers</label>
-        <div class="checkbox-group">
+        <label id="osc-{{row.id}}-trigger-modifiers">Modifiers</label>
+        <div class="checkbox-group" role="group" aria-labelledby="osc-{{row.id}}-trigger-modifiers">
             % for m in valid_modifiers:
-                <label class="inline-checkbox"><input type="checkbox" name="trigger.modifiers" value="{{m}}" {{'checked' if m in current_mods else ''}}> {{pretty_label(m)}}</label>
+                <label class="inline-checkbox" for="osc-{{row.id}}-trigger-mod-{{m}}"><input type="checkbox" id="osc-{{row.id}}-trigger-mod-{{m}}" name="trigger.modifiers" value="{{m}}" {{'checked' if m in current_mods else ''}}> {{pretty_label(m)}}</label>
             % end
         </div>
     </div>
@@ -115,7 +116,7 @@
             <option value="" {{'selected' if not current_btn else ''}}>(none)</option>
             % for b in valid_buttons:
                 % if b:
-                <option value="{{b}}" {{'selected' if b == current_btn else ''}}>{{pretty_label(b)}}</option>
+                <option value="{{b}}" {{'selected' if b == current_btn else ''}}>{{button_label(b, name_style(get('button_name_style', '')), short=False, spelled=True)}}</option>
                 % end
             % end
         </select>

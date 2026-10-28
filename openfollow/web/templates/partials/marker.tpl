@@ -32,7 +32,7 @@
     </div>
     <div id="marker-catalog-root"
          hx-get="/api/markers/catalog"
-         hx-trigger="load, every 1500ms"
+         hx-trigger="load, every 1500ms [pollShown(this)], poll-shown[pollShown(this)] from:body"
          hx-target="this"
          hx-swap="none">
         Loading…
@@ -103,8 +103,11 @@
                 <span id="marker-cone-thickness-error" class="field-error"></span>
             </div>
             <div class="field checkbox-field">
-                <label>Filled</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="cone_filled" {{'checked' if config.marker.cone_filled else ''}}></div>
+                <label for="marker-cone-filled">Cone fill</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="marker-cone-filled" name="cone_filled" {{'checked' if config.marker.cone_filled else ''}}>
+                    <label for="marker-cone-filled">Fill the cone</label>
+                </div>
             </div>
             <div class="field">
                 <label>Fill Opacity (0–1)</label>
@@ -115,8 +118,11 @@
                 <span id="marker-cone-opacity-error" class="field-error"></span>
             </div>
             <div class="field checkbox-field">
-                <label>Shaded</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="cone_shaded" {{'checked' if config.marker.cone_shaded else ''}}></div>
+                <label for="marker-cone-shaded">Shading</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="marker-cone-shaded" name="cone_shaded" {{'checked' if config.marker.cone_shaded else ''}}>
+                    <label for="marker-cone-shaded">Shade the cone</label>
+                </div>
             </div>
         </div>
     </div>
@@ -125,8 +131,11 @@
         <h3 class="group-title">Body</h3>
         <div class="fields-grid">
             <div class="field checkbox-field">
-                <label>Show Ball</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="ball_visible" {{'checked' if config.marker.ball_visible else ''}}></div>
+                <label for="marker-ball-visible">Ball</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="marker-ball-visible" name="ball_visible" {{'checked' if config.marker.ball_visible else ''}}>
+                    <label for="marker-ball-visible">Show the ball</label>
+                </div>
             </div>
             <div class="field">
                 <label>Ball Size ({{_len}})</label>
@@ -154,8 +163,11 @@
         <h3 class="group-title">Crosshair</h3>
         <div class="fields-grid">
             <div class="field checkbox-field">
-                <label>Show Crosshair</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="crosshair_visible" {{'checked' if config.marker.crosshair_visible else ''}}></div>
+                <label for="marker-crosshair-visible">Crosshair</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="marker-crosshair-visible" name="crosshair_visible" {{'checked' if config.marker.crosshair_visible else ''}}>
+                    <label for="marker-crosshair-visible">Show the crosshair</label>
+                </div>
             </div>
             <div class="field">
                 <label>Crosshair Size ({{_len}})</label>
@@ -195,8 +207,11 @@
         <h3 class="group-title">Z Line</h3>
         <div class="fields-grid">
             <div class="field checkbox-field">
-                <label>Z Line</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="z_line" {{'checked' if config.marker.z_line else ''}}></div>
+                <label for="marker-z-line-visible">Z Line</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="marker-z-line-visible" name="z_line" {{'checked' if config.marker.z_line else ''}}>
+                    <label for="marker-z-line-visible">Show the Z Line</label>
+                </div>
             </div>
             <div class="field">
                 <label>Z Line Thickness (px)</label>
@@ -213,8 +228,11 @@
         <h3 class="group-title">Ground Circle</h3>
         <div class="fields-grid">
             <div class="field checkbox-field">
-                <label>Ground Circle</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="ground_circle" {{'checked' if config.marker.ground_circle else ''}}></div>
+                <label for="marker-ground-circle-visible">Ground circle</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="marker-ground-circle-visible" name="ground_circle" {{'checked' if config.marker.ground_circle else ''}}>
+                    <label for="marker-ground-circle-visible">Show the ground circle</label>
+                </div>
             </div>
             <div class="field">
                 <label>Circle Size ({{_len}})</label>
@@ -228,8 +246,11 @@
                 % end
             </div>
             <div class="field checkbox-field">
-                <label>Filled</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="ground_circle_filled" {{'checked' if config.marker.ground_circle_filled else ''}}></div>
+                <label for="marker-ground-circle-filled">Circle fill</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="marker-ground-circle-filled" name="ground_circle_filled" {{'checked' if config.marker.ground_circle_filled else ''}}>
+                    <label for="marker-ground-circle-filled">Fill the ground circle</label>
+                </div>
             </div>
         </div>
     </div>
@@ -237,9 +258,12 @@
     <div class="group">
         <h3 class="group-title">Z Display</h3>
         <div class="fields-grid">
-            <div class="field checkbox-field">
-                <label>Z from Stage Level</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="z_display_from_stage" {{'checked' if config.marker.z_display_from_stage else ''}}></div>
+            <div class="field span-2">
+                <label for="marker-z-display-from-stage">Z readout</label>
+                <select id="marker-z-display-from-stage" name="z_display_from_stage">
+                    <option value="false" {{'' if config.marker.z_display_from_stage else 'selected'}}>Show Z relative to the Reference Point</option>
+                    <option value="true" {{'selected' if config.marker.z_display_from_stage else ''}}>Show Z relative to the grid</option>
+                </select>
             </div>
         </div>
     </div>
@@ -319,12 +343,8 @@
         return owners.map(o => o.self ? '<strong>' + o.name + '</strong>' : o.name).join('<br>+ ');
     }
 
-    function controlConflict(entry, thisStation, peers) {
-        let count = thisStation.controlled_ids.indexOf(entry.id) !== -1 ? 1 : 0;
-        for (const p of peers) {
-            if (p.controlled_ids.indexOf(entry.id) !== -1) count++;
-        }
-        return count > 1;
+    function controlConflict(entry, conflicts) {
+        return conflicts.some(function(c) { return c.marker_id === entry.id; });
     }
 
     // ---- DOM helpers: write only when value differs AND not focused.
@@ -402,6 +422,18 @@
             '</div>';
     }
 
+    // Park: only a View & Control row can be parked; any other state clears it.
+    function parkToggle(markerId) {
+        return '<button type="button" class="park-toggle" data-park data-marker-id="' + markerId +
+            '" aria-pressed="false" aria-label="Park" disabled>P</button>';
+    }
+
+    function setPark(button, state, pressed) {
+        const parked = state === 'control' && pressed;
+        if (button.disabled !== (state !== 'control')) button.disabled = state !== 'control';
+        if (button.getAttribute('aria-pressed') !== String(parked)) button.setAttribute('aria-pressed', String(parked));
+    }
+
     function thisStationState(id, thisStation) {
         if (thisStation.controlled_ids.indexOf(id) !== -1) return 'control';
         return thisStation.viewer_ids.indexOf(id) !== -1 ? 'view' : 'hide';
@@ -418,10 +450,10 @@
 
     // ---- Selection POST (out-of-band write, same wire as before). ``extra``
     // adds a marker that has no catalog row yet: the add-row's choice.
-    function postSelection(root, row, extra) {
+    function postSelection(root, row, extra, park) {
         selectionPending++;
         selectionQueue = selectionQueue
-            .then(function() { return saveSelection(root, row, extra); })
+            .then(function() { return saveSelection(root, row, extra, park); })
             .catch(function() {})
             .then(function() {
                 selectionPending--;
@@ -430,7 +462,8 @@
     }
 
     // Reads the toggles when it is sent, so a queued save carries the latest selection.
-    function saveSelection(root, row, extra) {
+    // ``park`` is the one row whose P was clicked ({"<id>": true|false}); a park set elsewhere is never sent back.
+    function saveSelection(root, row, extra, park) {
         const controlled = [];
         const viewer = [];
         function add(id, state) {
@@ -445,7 +478,7 @@
         return fetch('/api/markers/selection', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({controlled_ids: controlled, viewer_ids: viewer})
+            body: JSON.stringify({controlled_ids: controlled, viewer_ids: viewer, park: park || {}})
         }).then(writeResult(table)).then(function(ok) {
             flashRow(row, ok);
             const flash = root.querySelector('#selection-saved-flash');
@@ -472,7 +505,7 @@
             '<td><button type="button" class="color-swatch-trigger" data-field="color" ' +
                 'data-color-picker="full" aria-label="Marker colour"></button></td>' +
             '<td class="cell-soft" data-cell="controlled-by"></td>' +
-            '<td data-cell="this-station">' + thisStationToggle('this-station-' + id, id) + '</td>' +
+            '<td data-cell="this-station">' + thisStationToggle('this-station-' + id, id) + parkToggle(id) + '</td>' +
             '<td class="row-actions">' +
                 '<button type="button" class="save-btn small" data-action="save">Save</button>' +
                 '<button type="button" class="danger small" data-action="delete">Delete</button>' +
@@ -480,8 +513,18 @@
         window.OpenFollow.attachColorPicker(tr.querySelector('[data-field="color"]'), {
             mode: 'full',
         });
+        const park = tr.querySelector('button[data-park]');
         tr.querySelectorAll('input[data-this-station]').forEach(function(radio) {
-            radio.addEventListener('change', function() { postSelection(root, tr); });
+            radio.addEventListener('change', function() {
+                setPark(park, radio.value, park.getAttribute('aria-pressed') === 'true');
+                postSelection(root, tr);
+            });
+        });
+        park.addEventListener('click', function() {
+            if (park.disabled) return;
+            const on = park.getAttribute('aria-pressed') !== 'true';
+            setPark(park, 'control', on);
+            postSelection(root, tr, null, {[id]: on});
         });
         tr.querySelector('[data-action="save"]').addEventListener('click', function() {
             const name = tr.querySelector('[data-field="name"]').value;
@@ -506,8 +549,8 @@
         return tr;
     }
 
-    function updateCatalogRow(tr, entry, thisStation, peers) {
-        const conflict = controlConflict(entry, thisStation, peers);
+    function updateCatalogRow(tr, entry, thisStation, peers, conflicts) {
+        const conflict = controlConflict(entry, conflicts);
         tr.classList.toggle('conflict', conflict);
         setTextIfChanged(tr.querySelector('[data-cell="id"]'), String(entry.id));
         setInputIfChanged(tr.querySelector('[data-field="name"]'), entry.name || '');
@@ -516,17 +559,25 @@
             (conflict ? ' <span class="stat-chip off conflict-flag">Conflict</span>' : '');
         setHTMLIfChanged(tr.querySelector('[data-cell="controlled-by"]'), ctrlHTML);
         // The poll never moves a toggle the operator is on, nor one a save hasn't settled; a new row syncs at once.
-        const toggle = tr.querySelector('[data-cell="this-station"] .seg-toggle');
+        const cell = tr.querySelector('[data-cell="this-station"]');
+        const toggle = cell.querySelector('.seg-toggle');
+        const park = cell.querySelector('button[data-park]');
         const settled = selectionPending === 0 && Date.now() >= selectionSettleUntil;
+        const state = thisStationState(entry.id, thisStation);
         if (!tr.dataset.synced || (settled && !toggle.contains(document.activeElement))) {
-            const state = thisStationState(entry.id, thisStation);
             toggle.querySelectorAll('input[data-this-station]').forEach(function(radio) {
                 if (radio.checked !== (radio.value === state)) radio.checked = radio.value === state;
             });
-            tr.dataset.synced = 'true';
         }
-        const label = 'This station: ' + (entry.name || ('Marker ' + entry.id));
+        // P follows the station even with focus on it: OSC parks and unparks too, and a click saves at once.
+        if (!tr.dataset.synced || settled) {
+            setPark(park, state, (thisStation.parked_ids || []).indexOf(entry.id) !== -1);
+        }
+        tr.dataset.synced = 'true';
+        const markerName = entry.name || ('Marker ' + entry.id);
+        const label = 'This station: ' + markerName;
         if (toggle.getAttribute('aria-label') !== label) toggle.setAttribute('aria-label', label);
+        if (park.getAttribute('aria-label') !== 'Park ' + markerName) park.setAttribute('aria-label', 'Park ' + markerName);
     }
 
     function createAddRow() {
@@ -697,15 +748,16 @@
         ensureSkeleton(root);
         const entries = data.entries || [];
         const thisStation = data.this_station ||
-            {station_name: '', controlled_ids: [], viewer_ids: []};
+            {station_name: '', controlled_ids: [], viewer_ids: [], parked_ids: []};
         const peers = data.peer_selections || [];
+        const conflicts = data.marker_conflicts || [];
 
         const catalogBody = root.querySelector('[data-role="catalog-body"]');
         const addRow = catalogBody.querySelector('.add-row');
         reconcileBody(
             catalogBody, entries,
             function(id) { return createCatalogRow(id, root); },
-            function(tr, e) { updateCatalogRow(tr, e, thisStation, peers); },
+            function(tr, e) { updateCatalogRow(tr, e, thisStation, peers, conflicts); },
             addRow,
         );
         updateAddRow(addRow, entries, data.next_free_id);
@@ -731,6 +783,16 @@
 <style>
 .marker-catalog-table { margin-top: 0.5rem; }
 .marker-catalog-table td[data-cell="this-station"] { white-space: nowrap; }
+/* Park: grey while off, the info line while on, inert unless the row is View & Control. */
+.marker-catalog-table .park-toggle {
+    display: inline-flex; align-items: center; justify-content: center; vertical-align: middle;
+    width: 1.6rem; height: 1.6rem; margin-left: 0.4rem; padding: 0;
+    border: 1px solid var(--border-soft); border-radius: 0.4rem;
+    background: rgba(0, 0, 0, 0.22); color: var(--muted);
+    font-size: inherit; font-weight: 700;
+}
+.marker-catalog-table .park-toggle[aria-pressed="true"] { background: var(--info-line); border-color: var(--info-line); color: var(--text); }
+.marker-catalog-table .park-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* A This Station save flashes its row's background, green or red, fading back to the row's own. */
 .marker-catalog-table tr.row-saved { animation: row-flash-green 0.8s ease-out; }
 .marker-catalog-table tr.row-failed { animation: row-flash-red 0.8s ease-out; }

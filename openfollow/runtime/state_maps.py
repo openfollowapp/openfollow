@@ -11,13 +11,9 @@ the three call sites share one implementation.
 from __future__ import annotations
 
 from collections.abc import Callable, Container, Sequence
-from typing import TypeVar
-
-K = TypeVar("K")
-V = TypeVar("V")
 
 
-def get_or_create(mapping: dict[K, V], key: K, factory: Callable[[], V]) -> V:
+def get_or_create[K, V](mapping: dict[K, V], key: K, factory: Callable[[], V]) -> V:
     """Return ``mapping[key]``, creating it from *factory* on first use."""
     try:
         return mapping[key]
@@ -26,7 +22,7 @@ def get_or_create(mapping: dict[K, V], key: K, factory: Callable[[], V]) -> V:
         return value
 
 
-def prune_to_keep(mapping: dict[K, V], keep: Container[K]) -> Sequence[tuple[K, V]]:
+def prune_to_keep[K, V](mapping: dict[K, V], keep: Container[K]) -> Sequence[tuple[K, V]]:
     """Drop every entry whose key is not in *keep*, in place.
 
     Returns the dropped ``(key, value)`` pairs so a caller can release whatever

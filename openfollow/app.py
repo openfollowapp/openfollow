@@ -23,8 +23,13 @@ from openfollow.configuration import (
     bootstrap_config_if_missing,
     config_write_lock,
     load_config,
+    load_config_for_save,
+    network_mode_unsaved,
+    parked_within,
+    restore_empty_config,
     save_config,
 )
+from openfollow.input.touch_remote import TouchRemote
 from openfollow.logging_setup import ThrottledExceptionLogger
 from openfollow.marker_catalog import (
     MarkerCatalog,
@@ -33,6 +38,7 @@ from openfollow.marker_catalog import (
     save_catalog,
 )
 from openfollow.palette import AUTO_PICK_ORDER as _PALETTE_AUTO_PICK_ORDER
+from openfollow.paths.engine import PathEngine
 from openfollow.runtime.app_commands import (
     check_button_detection_request as runtime_check_button_detection_request,
 )
@@ -41,6 +47,9 @@ from openfollow.runtime.app_commands import (
 )
 from openfollow.runtime.app_commands import (
     check_controller_slot_actions as runtime_check_controller_slot_actions,
+)
+from openfollow.runtime.app_commands import (
+    check_latency_requests as runtime_check_latency_requests,
 )
 from openfollow.runtime.app_commands import (
     check_restart_request as runtime_check_restart_request,
@@ -199,6 +208,7 @@ if TYPE_CHECKING:
     from openfollow.input.button_detection import ButtonDetectionWizard
     from openfollow.logging_setup import RingBufferLogHandler
     from openfollow.net_adapters import Adapter
+    from openfollow.network.adapter import SavedInterface
     from openfollow.otp import OtpServer
     from openfollow.psn import Marker, PsnReceiver, PsnServer
     from openfollow.rttrpm import RttrpmServer
@@ -230,6 +240,7 @@ class OpenFollowApp:
         # a station that has silently respawned several times reads exactly
         # like a healthy one in every other section.
         self._crash_restarts: int = crash_restarts
+        restore_empty_config(self._config_path)
         bootstrap_config_if_missing(self._config_path)
         self._config: AppConfig = load_config(self._config_path)
         self._bootstrap_station_identity()
@@ -237,8 +248,15 @@ class OpenFollowApp:
         self._marker_catalog_sync: Any = None
         self._config_mtime: float = self._get_config_mtime()
         self._last_config_check: float = 0.0
+        self._config_blank_warned_mtime: float | None = None
+        self._config_error_warned_mtime: float | None = None
         self._web_commands: WebCommandQueue = WebCommandQueue()
         self._runtime_services: AppRuntimeServices = AppRuntimeServices(self)
+        # Markers locked onto paths; rebuilt whenever the paths or the Paths feature change.
+        self._paths: PathEngine = PathEngine()
+        self._paths.reload(self._config.paths, enabled=self._config.ui.feature_on("paths"))
+        # Browser sessions of the web touch remote and the markers they hold.
+        self._touch_remote: TouchRemote = TouchRemote()
 
         self._canvas: GtkNativeSinkWindow | None = None
         self._camera: Camera | None = None
@@ -253,6 +271,10 @@ class OpenFollowApp:
         self._controlled_ids: list[int] = []
         self._viewer_ids: list[int] = []
         self._selected_id: int | None = None
+        # Controlled markers no relative input moves (``input/parking.py``).
+        self._parked_ids: frozenset[int] = frozenset()
+        # The selection moved off a marker that parked; a pin following the selection waits for the operator.
+        self._pin_waits_for_selection = False
         # Assist-mode manual anchor markers, keyed by the pinned marker id.
         # These are operator-steered "ghosts" that are never registered with
         # ``_server`` (so never broadcast) – the detection pin reads them as the
@@ -294,7 +316,7 @@ class OpenFollowApp:
         self._url_editor_field_label: str = ""
         self._url_editor_value: str = ""
         self._url_editor_banner: str = ""
-        self._url_editor_revert_type: str = ""
+        self._url_editor_source_type: str = ""
 
         self._field_choice_active: bool = False
         self._field_choice_field_name: str = ""
@@ -302,7 +324,7 @@ class OpenFollowApp:
         self._field_choice_options: list[tuple[str, str]] = []
         self._field_choice_items: list[str] = []
         self._field_choice_selected_index: int = 0
-        self._field_choice_revert_type: str = ""
+        self._field_choice_source_type: str = ""
 
         self._browser_active: bool = False
         self._browser_overlay: Any | None = None
@@ -321,6 +343,9 @@ class OpenFollowApp:
         self._settings_menu_active: bool = False
         self._settings_menu_index: int = 0
         self._settings_menu_banner: str = ""
+        self._settings_menu_banner_action: str = ""
+        # Newest pushed-settings warning pending when the Settings menu opened.
+        self._settings_pushed_upto: int | None = None
         self._settings_key_pressed: bool = False
         # True while a modal/overlay suspends direct marker control; drives the
         # one-shot keyboard clear when control RETURNS to the marker (the
@@ -358,10 +383,24 @@ class OpenFollowApp:
         self._pi_network_methods: dict[str, str] = {}
         # Interface name -> which adapter it is, read with the methods.
         self._pi_network_adapters: dict[str, Adapter] = {}
+        # Interfaces that are not present but have saved settings, read with the methods.
+        self._pi_network_saved: tuple[SavedInterface, ...] = ()
         # Which interface's own screen is open; "" is the interface list.
         # Separate from ``_pi_network_active_iface``, which says whose state is
         # loaded from the adapter and has to stay set for the static editor.
         self._pi_network_open_iface: str = ""
+        # Simple network mode: the picker open over the screen ("interface",
+        # "method"), and the interface an Automatic station resolves to.
+        self._pi_network_picker: str = ""
+        self._pi_network_auto_iface: str = ""
+        # The station interface the screen's values were read for; None when read in Advanced.
+        self._pi_network_read_station: str | None = None
+        # A re-read overran its budget and has not been answered yet.
+        self._pi_network_reading: bool = False
+        # The DNS servers as read, against which an edit is told apart.
+        self._pi_network_read_dns: tuple[str, ...] = ()
+        # Whether the operator edited a DNS server; untouched, a DHCP apply sends none.
+        self._pi_network_dns_edited: bool = False
         # Interface-address enumeration for the screen's rows, held briefly so
         # the frame loop isn't walking every NIC on every tick.
         self._pi_network_addr_cache: dict[str, str] = {}
@@ -509,7 +548,7 @@ class OpenFollowApp:
         if resolved:
             banner += f"Using auto-detected {resolved}."
         else:
-            banner += "No usable interface – pick one to continue."
+            banner += "No usable interface."
         self._psn_source_banner = banner
         return banner
 
@@ -548,6 +587,11 @@ class OpenFollowApp:
 
         check_diagnostics_export(self)
 
+    def _check_pushed_settings(self) -> None:
+        from openfollow.runtime.pushed_settings_hud import check_pushed_settings
+
+        check_pushed_settings(self)
+
     def _check_update_request(self) -> None:
         runtime_check_update_request(self)
 
@@ -559,6 +603,9 @@ class OpenFollowApp:
 
     def _check_camera_setup_requests(self) -> None:
         runtime_check_camera_setup_requests(self)
+
+    def _check_latency_requests(self) -> None:
+        runtime_check_latency_requests(self)
 
     def _run_deb_update(self, request: dict[str, str]) -> None:
         runtime_run_deb_update(self, request)
@@ -679,9 +726,9 @@ class OpenFollowApp:
         self,
         *,
         banner: str = "",
-        revert_type: str = "",
+        source_type: str = "",
     ) -> None:
-        runtime_enter_url_editor(self, banner=banner, revert_type=revert_type)
+        runtime_enter_url_editor(self, banner=banner, source_type=source_type)
 
     def _exit_url_editor(self) -> None:
         runtime_exit_url_editor(self)
@@ -692,8 +739,8 @@ class OpenFollowApp:
     def _confirm_url_editor(self) -> None:
         runtime_confirm_url_editor(self)
 
-    def _enter_field_choice_picker(self, *, revert_type: str = "") -> None:
-        runtime_enter_field_choice_picker(self, revert_type=revert_type)
+    def _enter_field_choice_picker(self, *, source_type: str = "") -> None:
+        runtime_enter_field_choice_picker(self, source_type=source_type)
 
     def _exit_field_choice_picker(self) -> None:
         runtime_exit_field_choice_picker(self)
@@ -707,8 +754,8 @@ class OpenFollowApp:
     def _process_field_choice_picker_input(self) -> None:
         runtime_process_field_choice_picker_input(self)
 
-    def _enter_settings_menu(self, *, banner: str = "") -> None:
-        runtime_enter_settings_menu(self, banner=banner)
+    def _enter_settings_menu(self, *, banner: str = "", action: str = "") -> None:
+        runtime_enter_settings_menu(self, banner=banner, action=action)
 
     def _exit_settings_menu(self) -> None:
         runtime_exit_settings_menu(self)
@@ -726,7 +773,7 @@ class OpenFollowApp:
         runtime_check_config_reload(self)
 
     def _bootstrap_station_identity(self) -> None:
-        """Seed ``station_id`` (UUID) and a derived ``psn_system_name``.
+        """Seed ``station_id`` (UUID) and a derived ``psn_system_name``, and save the starting network mode.
 
         Runs once per install: only when the operator hasn't already
         configured a station name (``"OpenFollow"`` is the historical
@@ -740,6 +787,9 @@ class OpenFollowApp:
             dirty = True
         if self._config.psn_system_name in ("", "OpenFollow"):
             self._config.psn_system_name = derive_station_name(self._config.station_id)
+            dirty = True
+        # The starting network mode is decided once, then kept.
+        if network_mode_unsaved(self._config_path):
             dirty = True
         if dirty:
             try:
@@ -762,14 +812,15 @@ class OpenFollowApp:
         """Drop ids from persisted selection (on-disk config for race-free hot-reload)."""
         drop = set(ids)
         with config_write_lock:
-            cfg = load_config(self._config_path)
-            new_controlled = [t for t in cfg.controlled_marker_ids if t not in drop]
-            new_viewer = [t for t in cfg.viewer_marker_ids if t not in drop]
-            if new_controlled == cfg.controlled_marker_ids and new_viewer == cfg.viewer_marker_ids:
-                return  # none of the deleted ids were in our selection
-            cfg.controlled_marker_ids = new_controlled
-            cfg.viewer_marker_ids = new_viewer
             try:
+                cfg = load_config_for_save(self._config_path)
+                new_controlled = [t for t in cfg.controlled_marker_ids if t not in drop]
+                new_viewer = [t for t in cfg.viewer_marker_ids if t not in drop]
+                if new_controlled == cfg.controlled_marker_ids and new_viewer == cfg.viewer_marker_ids:
+                    return  # none of the deleted ids were in our selection
+                cfg.controlled_marker_ids = new_controlled
+                cfg.viewer_marker_ids = new_viewer
+                cfg.parked_marker_ids = parked_within(new_controlled, cfg.parked_marker_ids)
                 save_config(cfg, self._config_path)
             except OSError:
                 logger.exception(
@@ -885,6 +936,7 @@ class OpenFollowApp:
         if new_controlled != controlled or new_viewer != viewer:
             self._config.controlled_marker_ids = new_controlled
             self._config.viewer_marker_ids = new_viewer
+            self._config.parked_marker_ids = parked_within(new_controlled, self._config.parked_marker_ids)
             try:
                 save_config(self._config, self._config_path)
             except OSError:

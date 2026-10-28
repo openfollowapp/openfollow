@@ -20,10 +20,20 @@ from openfollow.services import WebCommandQueue
 pytestmark = pytest.mark.unit
 
 
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 100.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
 def _make_app(**overrides):  # noqa: ANN202
+    clock = _Clock()
     defaults = {
         "_update_worker": None,
-        "_web_commands": WebCommandQueue(),
+        "_clock": clock,
+        "_web_commands": WebCommandQueue(clock=clock),
         "_restart_called": False,
         "_enter_button_detection_called": False,
         "_exit_button_detection_called": False,
@@ -61,12 +71,33 @@ def _make_app(**overrides):  # noqa: ANN202
 # ---------------------------------------------------------------------------
 
 
-def test_check_restart_triggers_restart_when_requested() -> None:
+def test_check_restart_triggers_restart_half_a_second_after_the_request() -> None:
+    """The request that asked for it gets its answer out before the station goes."""
     app = _make_app()
     app._web_commands.request_restart()
 
+    app._clock.now = 100.49
     app_commands.check_restart_request(app)
+    assert app._restart_called is False
 
+    app._clock.now = 100.5
+    app_commands.check_restart_request(app)
+    assert app._restart_called is True
+
+
+def test_check_restart_waits_out_the_grace_of_the_latest_request() -> None:
+    """Each request has an answer to get out, so a second one restarts the wait."""
+    app = _make_app()
+    app._web_commands.request_restart()
+    app._clock.now = 100.4
+    app._web_commands.request_restart()
+
+    app._clock.now = 100.8
+    app_commands.check_restart_request(app)
+    assert app._restart_called is False
+
+    app._clock.now = 100.9
+    app_commands.check_restart_request(app)
     assert app._restart_called is True
 
 
@@ -79,6 +110,7 @@ def test_check_restart_is_noop_when_no_request() -> None:
 def test_check_restart_skips_when_update_worker_alive() -> None:
     app = _make_app()
     app._web_commands.request_restart()
+    app._clock.now = 100.5
 
     class _LiveWorker:
         def is_alive(self) -> bool:
@@ -427,3 +459,47 @@ def test_a_failed_rebuild_is_logged_not_raised(caplog) -> None:  # noqa: ANN001
 
 def test_an_unanswered_release_times_out() -> None:
     assert _make_app()._web_commands.release_camera(0.01) is False
+
+
+# ---------------------------------------------------------------------------
+# check_latency_requests
+# ---------------------------------------------------------------------------
+
+
+class _LatencyServices:
+    def __init__(self) -> None:
+        self.starts = 0
+        self.status: dict = {"state": "idle"}
+
+    def start_latency_run(self) -> None:
+        self.starts += 1
+        self.status = {"state": "running", "measured": 0}
+
+    def latency_status(self) -> dict:
+        return dict(self.status)
+
+
+@pytest.mark.parametrize(("clicks", "starts", "state"), [(1, 1, "running"), (2, 1, "running"), (0, 0, "idle")])
+def test_a_start_click_runs_once_and_the_run_is_reported_back(clicks: int, starts: int, state: str) -> None:
+    app = _make_app(_runtime_services=_LatencyServices())
+    for _ in range(clicks):
+        app._web_commands.request_latency()
+    app_commands.check_latency_requests(app)
+    app_commands.check_latency_requests(app)
+    assert app._runtime_services.starts == starts
+    assert app._web_commands.get_latency_status()["state"] == state
+
+
+def test_a_start_reads_as_running_before_the_main_loop_takes_it() -> None:
+    queue = WebCommandQueue()
+    queue.request_latency()
+    # The main loop's last report, from before the click, does not overwrite it.
+    queue.set_latency_status({"state": "done"})
+    assert queue.get_latency_status() == {"state": "running", "measured": 0}
+
+
+def test_a_start_during_a_run_keeps_its_progress() -> None:
+    queue = WebCommandQueue()
+    queue.set_latency_status({"state": "running", "measured": 4})
+    queue.request_latency()
+    assert queue.get_latency_status() == {"state": "running", "measured": 4}

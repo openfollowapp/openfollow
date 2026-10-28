@@ -1,6 +1,6 @@
 # Live Statistics
 
-A read-only panel on the Overview tab that refreshes every second. Use it to confirm the pipeline is healthy and to narrow down problems during a show.
+A read-only panel on the Overview tab that refreshes every second while it is open and in view. Use it to confirm the pipeline is healthy and to narrow down problems during a show.
 
 ## Video
 
@@ -28,9 +28,17 @@ The first line is the station's reading of how far the connection got before it 
 - **Frame Rate (source)** – frame rate the source advertises. `N/A` while nothing is connected, for the same reason.
 - **Pipeline** – the connection attempt in more detail: `Connecting`, `Reconnecting`, `Connected`, or `Disconnected` once the retries have run out. It is where retry state lives: the banner deliberately carries no attempt counter, because a figure that changes every few seconds moves the box without telling you anything.
 
+A red box also appears while the video arriving is more than the station is sized for: over Full HD (the longer side over 1920 or the shorter over 1080 pixels) or over 30 fps. It names what arrives beside the limit, then the one thing to change. The video keeps playing; the box says why the picture or the markers may lag. Its frame rate is counted from the frames that arrive, so it can differ from **Frame Rate (source)**, which is what the source advertises. **Video Source** explains the limits.
+
 ## Device
 
 System health for the station hardware.
+
+A red box above the list means the Raspberry Pi is short of power or slowed down right now: **under voltage** when the power supply cannot hold 5 V, which leads to freezes and USB devices dropping out, or **CPU throttled** when the Pi has slowed its processor because it is too hot. An under voltage slows the processor too, so while one lasts only the power supply is named. The second line is the usual fix.
+
+Once it passes, an orange box says it was reported since the station last started. It stays until the Pi restarts, because that is how long the Pi itself keeps the record, so an intermittent fault is still visible after the moment has gone. The Operator Screen shows the live state only, as a red row in the top right that stays 10 s after the state passes, so a run of short dips reads as one warning.
+
+A station that is not a Raspberry Pi, or cannot read these, shows neither box; `/api/stats` reports them as not available.
 
 - **IP** – the network address this station is reachable on. Useful for pointing another tool or peer at it.
 - **Controllers** – gamepads and 3D mice connected, and how many are missing. A red warning above the list names each missing controller, the marker its slot drives and the port it was in; the Controller Slots section on the Input tab shows the rest.
@@ -38,7 +46,7 @@ System health for the station hardware.
 - **RAM** – memory usage as a percentage. Approaching 100 % on a Raspberry Pi typically causes slowdowns.
 - **Temperature** – processor temperature in degrees Celsius; `N/A` on platforms without a thermal sensor. On a Raspberry Pi, sustained values above 80 °C may trigger thermal throttling, visible as CPU spikes paired with frame-rate drops.
 - **Output resolution** – the canvas the overlay is drawn on: the real window or full screen, not the size requested under Display. If its aspect ratio differs from **Input resolution**, the overlay sits off the video – that mismatch is the only on-screen explanation for it. `N/A (no display)` with no screen attached.
-- **Overlay redraw rate** – how fast this station redraws its overlay. It follows the screen, not the feed: `0.0 fps` with no screen attached is normal and says nothing about the video. Check **Signal** for that.
+- **Overlay redraw rate** – how many Operator Screen pictures this station draws a second. It follows the screen, not the feed: at most the display's refresh rate, or a steady half, third and so on of it once pictures take longer than one, two or more refreshes; `0.0 fps` with no screen attached is normal and says nothing about the video. Check **Signal** for that.
 - **Frame clock** – the loop that reads your input and updates marker positions. `Running` is normal, and it stays running with no display attached. `Stalled` means the loop has not run for over a second: marker positions, input, and detection are frozen, while PSN, OTP, RTTrPM, and OSC keep transmitting the last known position at full rate.
 
 ## Person Detection

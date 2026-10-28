@@ -157,10 +157,10 @@ class TestTheBoxAppearsWithoutAReload:
     fresh load - which is not how an operator meets a failure.
     """
 
-    def test_the_box_is_polled(self) -> None:
+    def test_the_box_is_polled_while_it_shows(self) -> None:
         body = _render(video_failure="unreachable", video_failure_text="Nothing answered at X.")
         assert 'hx-get="/section/video_source/failure"' in body
-        assert 'hx-trigger="every 3s"' in body
+        assert 'hx-trigger="every 3s [pollShown(this)], poll-shown[pollShown(this)] from:body"' in body
 
     def test_the_poll_target_exists_even_while_healthy(self) -> None:
         """Nothing to swap into means the box can never appear later."""
@@ -175,3 +175,49 @@ class TestTheBoxAppearsWithoutAReload:
         region = body[start : body.index("</div>", start)]
         for field in ('name="rtsp_url"', 'name="video_source_type"', 'name="rtsp_password"'):
             assert field not in region
+
+
+_LIMITS_TEXT = "Video arrives at 3840×2160, over Full HD (1920×1080)."
+_LIMITS_ACTION = "Set the camera or encoder to 1920×1080 at 30 fps or less."
+
+
+class TestASourceOverTheLimits:
+    """The section where the camera is set up says when it sends more than the station is sized for."""
+
+    def test_the_box_names_what_arrives_and_the_step(self) -> None:
+        body = _render(video_limits_text=_LIMITS_TEXT, video_limits_action=_LIMITS_ACTION)
+        assert body.count(_NOTICE) == 1
+        assert _LIMITS_TEXT in body
+        assert _LIMITS_ACTION in body
+        assert 'id="video-error-source-limits-' in body
+
+    def test_it_sits_inside_the_polled_region_above_the_form(self) -> None:
+        body = _render(video_limits_text=_LIMITS_TEXT, video_limits_action=_LIMITS_ACTION)
+        assert body.index('id="video-source-failure"') < body.index(_LIMITS_TEXT) < body.index("video-source-type")
+
+    def test_it_stands_beside_a_failure_box(self) -> None:
+        body = _render(
+            video_failure="stalled",
+            video_failure_text="Video stopped arriving.",
+            video_limits_text=_LIMITS_TEXT,
+            video_limits_action=_LIMITS_ACTION,
+        )
+        assert body.count(_NOTICE) == 2
+        assert body.index("Video stopped arriving.") < body.index(_LIMITS_TEXT)
+
+    def test_no_box_without_a_verdict(self) -> None:
+        assert _NOTICE not in _render(video_limits_text="", video_limits_action="")
+
+    def test_the_builder_reads_the_published_verdict(self) -> None:
+        from openfollow.web.routes import _build_input_template_data
+
+        stats = {"limits": {"exceeded": ["resolution_over_limit"], "text": _LIMITS_TEXT, "action": _LIMITS_ACTION}}
+        data = _build_input_template_data(AppConfig(), stats)
+        assert (data["video_limits_text"], data["video_limits_action"]) == (_LIMITS_TEXT, _LIMITS_ACTION)
+
+    @pytest.mark.parametrize("stats", [None, {}, {"limits": None}, {"limits": {"exceeded": [], "text": ""}}])
+    def test_the_builder_shows_nothing_without_one(self, stats: dict[str, object] | None) -> None:
+        from openfollow.web.routes import _build_input_template_data
+
+        data = _build_input_template_data(AppConfig(), stats)
+        assert (data["video_limits_text"], data["video_limits_action"]) == ("", "")

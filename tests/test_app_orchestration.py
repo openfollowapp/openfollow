@@ -45,6 +45,13 @@ class _FakeKeyboardHandler:
 class _FakeInputManager:
     def __init__(self, keys: list[str] | None = None) -> None:
         self.keyboard_handler = _FakeKeyboardHandler(keys)
+        self.path_frames: list[float] = []
+
+    def update_paths(self, dt: float) -> None:
+        self.path_frames.append(dt)
+
+    def update_touch_remote(self, dt: float) -> None:
+        self.path_frames.append(dt)
 
 
 class _FakeCanvas:
@@ -134,9 +141,11 @@ def _make_fake_app(
         _check_restart_request=_recorder("check_restart_request"),
         _check_pi_network_worker=_recorder("check_pi_network_worker"),
         _check_diagnostics_export=_recorder("check_diagnostics_export"),
+        _check_pushed_settings=_recorder("check_pushed_settings"),
         _check_button_detection_request=_recorder("check_button_detection_request"),
         _check_controller_slot_actions=_recorder("check_controller_slot_actions"),
         _check_camera_setup_requests=_recorder("check_camera_setup_requests"),
+        _check_latency_requests=_recorder("check_latency_requests"),
         _check_marker_speeds_persist=_recorder("check_marker_speeds_persist"),
         _check_frame_loop_stall=_recorder("check_frame_loop_stall"),
         _frame_stalled=False,
@@ -232,6 +241,30 @@ class TestAnimate:
         assert mgr.keyboard_handler.consumed == 1
         assert app._calls.count("handle_key_press") == 2
 
+    def test_the_path_engine_runs_once_every_frame_before_input(self) -> None:
+        """Outside input processing, so a menu or a station controlling no marker never stops it."""
+        mgr = _FakeInputManager()
+        app = _make_fake_app(input_manager=mgr)
+        order: list[tuple[str, float]] = []
+        mgr.update_paths = lambda dt: order.append(("paths", dt))  # type: ignore[method-assign]
+        app._process_input = lambda dt: order.append(("input", dt))
+        orch.animate(app)
+        orch.animate(app)
+        assert [name for name, _ in order] == ["paths", "input", "paths", "input"]
+        assert order[0][1] == order[1][1] == pytest.approx(orch._DEFAULT_FRAME_DT)
+
+    def test_the_touch_remote_runs_every_frame_after_the_paths_before_input(self) -> None:
+        """Outside input processing too, so an open on-screen menu never stops a held marker's dead-man."""
+        mgr = _FakeInputManager()
+        app = _make_fake_app(input_manager=mgr)
+        order: list[str] = []
+        mgr.update_paths = lambda dt: order.append("paths")  # type: ignore[method-assign]
+        mgr.update_touch_remote = lambda dt: order.append("remote")  # type: ignore[method-assign]
+        app._process_input = lambda dt: order.append("input")
+        orch.animate(app)
+        orch.animate(app)
+        assert order == ["paths", "remote", "input", "paths", "remote", "input"]
+
     def test_runs_display_bound_checks(self) -> None:
         app = _make_fake_app()
         orch.animate(app)
@@ -250,6 +283,7 @@ class TestAnimate:
             "check_restart_request",
             "check_pi_network_worker",
             "check_diagnostics_export",
+            "check_pushed_settings",
             "check_button_detection_request",
         ):
             assert moved not in app._calls
@@ -273,9 +307,11 @@ class TestHousekeeping:
             "check_restart_request",
             "check_pi_network_worker",
             "check_diagnostics_export",
+            "check_pushed_settings",
             "check_button_detection_request",
             "check_controller_slot_actions",
             "check_camera_setup_requests",
+            "check_latency_requests",
             "check_marker_speeds_persist",
             # The stall watchdog belongs here and not on the frame clock: a
             # stalled loop cannot report its own stall.
@@ -300,9 +336,11 @@ class TestHousekeeping:
             "check_update_request",
             "check_pi_network_worker",
             "check_diagnostics_export",
+            "check_pushed_settings",
             "check_button_detection_request",
             "check_controller_slot_actions",
             "check_camera_setup_requests",
+            "check_latency_requests",
             "check_marker_speeds_persist",
             "check_frame_loop_stall",
             "observe_network_planes",
@@ -340,6 +378,8 @@ class TestCheckConfigReload:
             _last_config_check=0.0,
             _get_config_mtime=lambda: 200.0,
             _config=None,
+            _config_blank_warned_mtime=None,
+            _config_error_warned_mtime=None,
         )
 
     def test_throttled_within_1_second(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -414,6 +454,107 @@ class TestCheckConfigReload:
         orch.check_config_reload(app)
         assert app._config_mtime == 200.0
         assert len(applied) == 1
+
+    def test_an_empty_file_is_not_reloaded_and_the_write_after_it_is(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An editor that truncates before it writes leaves an empty file, which
+        loads as every default: the running station must not take those in."""
+        monkeypatch.setattr(orch.time, "monotonic", lambda: 10.0)
+        applied: list[object] = []
+        monkeypatch.setattr(orch, "apply_runtime_config_changes", lambda _app, cfg: applied.append(cfg) or True)
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("", encoding="utf-8")
+        app = self._app(str(config_path))
+
+        with caplog.at_level(logging.WARNING, logger=orch.logger.name):
+            orch.check_config_reload(app)
+        assert applied == []
+        assert app._config_mtime == 100.0  # kept: the write that follows may share its mtime
+        assert [r.getMessage() for r in caplog.records] == [f"{config_path} is empty – not reloaded."]
+
+        config_path.write_text("web_port = 8080\n", encoding="utf-8")  # the editor's write
+        app._last_config_check = 0.0
+        orch.check_config_reload(app)
+        assert [cfg.web_port for cfg in applied] == [8080]
+        assert app._config_mtime == 200.0
+
+    def test_an_empty_file_is_reported_once_per_mtime(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setattr(orch.time, "monotonic", lambda: 10.0)
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("", encoding="utf-8")
+        app = self._app(str(config_path))
+
+        with caplog.at_level(logging.WARNING, logger=orch.logger.name):
+            for mtime in (200.0, 200.0, 300.0):
+                app._get_config_mtime = lambda mtime=mtime: mtime
+                app._last_config_check = 0.0
+                orch.check_config_reload(app)
+
+        expected = f"{config_path} is empty – not reloaded."
+        assert [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING] == [expected, expected]
+
+    def test_a_file_that_does_not_parse_is_reported_once_per_mtime_and_retried_every_poll(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setattr(orch.time, "monotonic", lambda: 10.0)
+        applied: list[object] = []
+        monkeypatch.setattr(orch, "apply_runtime_config_changes", lambda _app, cfg: applied.append(cfg) or True)
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[grid\n", encoding="utf-8")
+        app = self._app(str(config_path))
+
+        with caplog.at_level(logging.WARNING, logger=orch.logger.name):
+            for mtime in (200.0, 200.0, 200.0, 300.0, 300.0):
+                app._get_config_mtime = lambda mtime=mtime: mtime
+                app._last_config_check = 0.0
+                orch.check_config_reload(app)
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 2
+        assert all(w.startswith(f"Config reload error: Config file {config_path} could not be read") for w in warnings)
+
+        config_path.write_text("web_port = 8080\n", encoding="utf-8")  # the fix, within the same mtime tick
+        app._last_config_check = 0.0
+        orch.check_config_reload(app)
+        assert [cfg.web_port for cfg in applied] == [8080]
+        assert app._config_mtime == 300.0
+
+    def test_a_file_emptied_after_an_earlier_read_is_not_reloaded(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pathlib import Path
+
+        from openfollow.configuration import AppConfig, save_config
+
+        monkeypatch.setattr(orch.time, "monotonic", lambda: 10.0)
+        applied: list[object] = []
+        monkeypatch.setattr(orch, "apply_runtime_config_changes", lambda _app, cfg: applied.append(cfg) or True)
+        config_path = tmp_path / "config.toml"
+        save_config(AppConfig(web_port=8080), str(config_path))
+        whole = config_path.read_bytes()
+        config_path.write_text("", encoding="utf-8")
+        monkeypatch.setattr(Path, "read_bytes", lambda _self: whole)
+        app = self._app(str(config_path))
+
+        orch.check_config_reload(app)
+
+        assert applied == []
+        assert app._config_mtime == 100.0
+
+    def test_a_file_renamed_away_after_its_mtime_was_read_is_not_reloaded(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(orch.time, "monotonic", lambda: 10.0)
+        applied: list[object] = []
+        monkeypatch.setattr(orch, "apply_runtime_config_changes", lambda _app, cfg: applied.append(cfg) or True)
+        app = self._app(str(tmp_path / "config.toml"))
+
+        orch.check_config_reload(app)
+
+        assert applied == []
+        assert app._config_mtime == 100.0
 
     def test_partial_apply_keeps_old_mtime_for_retry(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # A degraded _apply_with_fallback section returns False (not a raise):
@@ -811,17 +952,19 @@ class TestCheckMarkerSpeedsPersist:
     def test_flush_holds_config_write_lock(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
         """The flush must serialise on ``config_write_lock`` so it can't race a
         concurrent web section save."""
+        import openfollow.configuration as cfg_mod
+
         monkeypatch.setattr(orch.time, "monotonic", lambda: 100.0)
         app = self._app(tmp_path, {5: 2.7}, dirty=True, dirty_since=90.0)
 
         observed: list[bool] = []
-        real_save = orch.save_config
+        real_save = cfg_mod.save_config
 
         def _spy_save(cfg, path):  # noqa: ANN001
-            observed.append(orch.config_write_lock.locked())
+            observed.append(cfg_mod.config_write_lock.locked())
             return real_save(cfg, path)
 
-        monkeypatch.setattr(orch, "save_config", _spy_save)
+        monkeypatch.setattr(cfg_mod, "save_config", _spy_save)
         orch.check_marker_speeds_persist(app)
         assert observed == [True]  # lock held across the save
 
@@ -839,12 +982,14 @@ class TestCheckMarkerSpeedsPersist:
         def _boom(*_a, **_kw):
             raise OSError("disk full")
 
-        monkeypatch.setattr(orch, "save_config", _boom)
+        import openfollow.configuration as cfg_mod
+
+        monkeypatch.setattr(cfg_mod, "save_config", _boom)
         # Must not raise.
         orch.check_marker_speeds_persist(app)
         # Still dirty → retried later; the lock was released.
         assert app._marker_speeds_dirty is True
-        assert orch.config_write_lock.locked() is False
+        assert cfg_mod.config_write_lock.locked() is False
         # Backoff: the timestamp was advanced to now, so the next flush attempt
         # waits out the settle window again rather than firing every tick.
         assert app._marker_speeds_dirty_since == 100.0

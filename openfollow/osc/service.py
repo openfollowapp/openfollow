@@ -9,6 +9,7 @@ dispatcher that subscribers attach patterns to.
 
 from __future__ import annotations
 
+import errno
 import logging
 import socket
 import threading
@@ -18,11 +19,16 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from openfollow.configuration import VALID_OSC_FRAMINGS as _VALID_OSC_FRAMINGS_TUPLE
+from openfollow.configuration import is_ipv4_literal
 from openfollow.net_egress import Egress, pin_socket_egress
 from openfollow.net_utils import IPV4_RESOLVER, join_multicast_group_on_iface
 from openfollow.osc.transport import TcpOscSender
+from openfollow.receive_gate import ReceiveGate
 
 logger = logging.getLogger(__name__)
+
+# Only a handler that hangs can hold this up: shutdown ends the wait itself.
+_LISTENER_JOIN_TIMEOUT_S = 1.0
 
 try:
     from pythonosc.dispatcher import Dispatcher
@@ -44,10 +50,13 @@ _VALID_FRAMINGS: frozenset[str] = frozenset(_VALID_OSC_FRAMINGS_TUPLE)
 # uniform 4-tuple across transports (framing is a TCP-only concern).
 _UDP_FRAMING_PIN = "length_prefix"
 
-# How long a pinned target whose client could not be created waits before the
-# next attempt. The address a pin needs can lag the interface by an observer
-# debounce, so the failure is expected to clear on its own.
-_PINNED_CREATE_RETRY_S = 1.0
+# How long a target whose client could not be created waits before the next
+# attempt, so a name that does not resolve, or a refused pin, is not retried per
+# send. The address a pin needs can lag the interface by an observer debounce,
+# so that failure is expected to clear on its own.
+_CREATE_RETRY_S = 1.0
+# How often a target whose client still cannot be created is logged again.
+_CREATE_FAILURE_REMINDER_S = 60.0
 
 # One cached client per target and the interface it is pinned to.
 _CacheKey = tuple[str, int, str, str, Egress | None]
@@ -190,6 +199,14 @@ class ClientStats:
 
 
 @dataclass
+class _CreateFailure:
+    """A target's run of failed client creations, for its throttled log lines."""
+
+    logged_at: float
+    attempts: int = 1
+
+
+@dataclass
 class _ClientEntry:
     """Cached OSC client for a single ``(host, port, protocol, framing)`` target.
 
@@ -242,6 +259,9 @@ if _PYTHONOSC_AVAILABLE:  # pragma: no branch
 
         ``verify_request`` runs before dispatch; returning False drops the
         packet with no handler invoked. An empty allowlist accepts everything.
+
+        Serves through a :class:`ReceiveGate`, so ``shutdown`` ends the loop at
+        once rather than after socketserver's 0.5 s poll, and never blocks.
         """
 
         def __init__(
@@ -252,6 +272,37 @@ if _PYTHONOSC_AVAILABLE:  # pragma: no branch
         ) -> None:
             super().__init__(server_address, dispatcher)
             self._allowed_ips = allowed_ips
+            try:
+                # Read only once the gate reports data, so a read never blocks.
+                self.socket.setblocking(False)
+                self._gate = ReceiveGate(self.socket)
+            except OSError:
+                self.server_close()
+                raise
+
+        def serve_forever(self, poll_interval: float = 0.5) -> None:
+            try:
+                while self._gate.wait():
+                    self._handle_request_noblock()  # type: ignore[attr-defined]  # socketserver, untyped in typeshed
+            finally:
+                self._gate.close()
+
+        def shutdown(self) -> None:
+            """End ``serve_forever``; the caller joins the serving thread."""
+            self._gate.stop()
+
+        def server_close(self) -> None:
+            """Close the socket and stop the loop; the serving thread closes its own gate."""
+            super().server_close()
+            # Absent when the bind or the gate failed: the constructor closes before it returns.
+            gate: ReceiveGate | None = getattr(self, "_gate", None)
+            if gate is not None:
+                gate.stop()
+
+        def discard(self) -> None:
+            """Release a listener whose ``serve_forever`` never ran."""
+            self.server_close()
+            self._gate.close()
 
         def verify_request(
             self,
@@ -289,9 +340,10 @@ class OscService:
     def __init__(self, *, close_async: Callable[[list[Any]], None] = _close_clients_in_background) -> None:
         self._cache: dict[_CacheKey, _ClientEntry] = {}
         self._cache_lock = threading.Lock()
-        # Pinned targets whose client could not be created, and when to try
-        # again: a refused pin would otherwise be retried and logged per send.
+        # Targets whose client could not be created, and when to try again:
+        # each would otherwise be retried and logged per send.
         self._create_retry_at: dict[_CacheKey, float] = {}
+        self._create_failures: dict[_CacheKey, _CreateFailure] = {}
         self._close_async = close_async
 
         self._dispatcher: Any = _GuardedDispatcher() if _PYTHONOSC_AVAILABLE else None
@@ -476,18 +528,15 @@ class OscService:
         except (OSError, ValueError) as exc:
             # OSError: socket/DNS failure or a refused pin. ValueError:
             # malformed host string.
-            logger.error(
-                "Failed to create OSC client for %s://%s:%d – %s",
-                protocol,
-                host,
-                port,
-                exc,
-            )
-            if egress is not None:
-                with self._cache_lock:
-                    self._create_retry_at[key] = time.monotonic() + _PINNED_CREATE_RETRY_S
+            self._record_create_failure(key, exc)
             return None
         new_entry = _ClientEntry(client=client)
+        with self._cache_lock:
+            failure = self._create_failures.pop(key, None)
+        if failure is not None:
+            logger.info(
+                "Created OSC client for %s://%s:%d after %d failed attempts", protocol, host, port, failure.attempts
+            )
         with self._cache_lock:
             # Re-check under lock to resolve a duplicate-creation race.
             existing = self._cache.get(key)
@@ -497,6 +546,39 @@ class OscService:
                 return existing
             self._cache[key] = new_entry
             return new_entry
+
+    def _record_create_failure(self, key: _CacheKey, exc: Exception) -> None:
+        """Hold *key* back for the retry delay; log a streak's start, then once a minute."""
+        host, port, protocol = key[0], key[1], key[2]
+        now = time.monotonic()
+        with self._cache_lock:
+            self._create_retry_at[key] = now + _CREATE_RETRY_S
+            failure = self._create_failures.get(key)
+            if failure is None:
+                self._create_failures[key] = _CreateFailure(logged_at=now)
+            else:
+                failure.attempts += 1
+                if now - failure.logged_at < _CREATE_FAILURE_REMINDER_S:
+                    return
+                failure.logged_at = now
+        if failure is None:
+            logger.warning(
+                "Cannot create OSC client for %s://%s:%d, retrying every %gs: %s",
+                protocol,
+                host,
+                port,
+                _CREATE_RETRY_S,
+                exc,
+            )
+        else:
+            logger.warning(
+                "Still cannot create OSC client for %s://%s:%d after %d attempts: %s",
+                protocol,
+                host,
+                port,
+                failure.attempts,
+                exc,
+            )
 
     # ------------------------------------------------------------------
     # Inbound
@@ -576,9 +658,10 @@ class OscService:
             self._listener_multicast_iface_name = ""
         if listener is not None:
             listener.shutdown()
-            listener.server_close()
         if thread is not None:
-            thread.join(timeout=1.0)
+            thread.join(timeout=_LISTENER_JOIN_TIMEOUT_S)
+        if listener is not None:
+            listener.server_close()
 
     def restart_listener(
         self,
@@ -619,11 +702,11 @@ class OscService:
                 self._dispatcher,
                 normalised_ips,
             )
-        except OSError:
-            logger.error(
-                "Cannot start OSC listener on port %d – port likely in use.",
-                port,
-            )
+        except OSError as exc:
+            if exc.errno == errno.EADDRINUSE:
+                logger.error("Cannot start OSC listener on port %d – port likely in use.", port)
+            else:
+                logger.error("Cannot start OSC listener on port %d: %s", port, exc)
             raise
         joined_group = (
             _join_multicast_group(listener.socket, group, port, iface_ip=multicast_iface, iface=multicast_iface_name)
@@ -635,11 +718,8 @@ class OscService:
             daemon=True,
             name="OscService-Listener",
         )
-        # Start the thread inside the lock so a concurrent ``stop_listener``
-        # can't see the listener before its serve loop runs: ``shutdown()``
-        # before ``serve_forever()`` enters its loop deadlocks, and
-        # ``join()`` on an unstarted thread raises ``RuntimeError``.
-        # ``Thread.start()`` only blocks until the thread is scheduled.
+        # Started inside the lock: a concurrent ``stop_listener`` joining an
+        # unstarted thread would raise ``RuntimeError``.
         with self._listener_lock:
             self._listener = listener
             self._listener_thread = thread
@@ -662,7 +742,7 @@ class OscService:
                 self._listener_multicast_group = ""
                 self._listener_multicast_joined = False
                 self._listener_multicast_iface = ""
-                listener.server_close()
+                listener.discard()
                 raise
         group_note = ""
         if group:
@@ -672,7 +752,15 @@ class OscService:
                 if joined_group
                 else f"; NOT subscribed to multicast group {group}"
             )
-        if normalised_ips:
+        if normalised_ips and not any(is_ipv4_literal(ip) for ip in normalised_ips):
+            logger.warning(
+                "OSC input listening on UDP port %d; accepting no packets: the sender allowlist (%s) "
+                "holds no IPv4 address, and OSC input is IPv4 only%s",
+                port,
+                ", ".join(sorted(normalised_ips)),
+                group_note,
+            )
+        elif normalised_ips:
             logger.info(
                 "OSC input listening on UDP port %d; accepting packets only from %s%s",
                 port,

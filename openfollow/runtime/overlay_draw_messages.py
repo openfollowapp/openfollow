@@ -6,7 +6,8 @@ Pure painter: consumes the ``OperatorMessageView`` list on :class:`OverlayState`
 and draws a centered stack of cards (top or bottom, per config).
 
 Marker-targeted cards (``marker_id >= 1``) get a solid title bar in the marker
-colour with the marker name on it; broadcast cards have neither. Below that:
+colour with the marker name on it; a station-made card with a ``headline`` gets
+the same bar in its status level's chip fill; broadcast cards have neither. Below that:
 bold message, optional muted detail line, and a shrinking countdown bar for
 timed messages (forever ones have no footer). A ``+N more`` line caps the stack.
 """
@@ -24,6 +25,7 @@ from openfollow.runtime.overlay_draw_style import (
     COLOR_TEXT_MUTED,
     PANEL_RADIUS,
     draw_card_background,
+    level_fill,
     parse_hex,
 )
 from openfollow.runtime.overlay_state import OperatorMessageView, OverlayState
@@ -56,11 +58,33 @@ def _contrast_ink(rgb: tuple[float, float, float]) -> tuple[float, float, float]
 
 
 def draw_operator_messages(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
-    """Draw the operator-message stack onto ``cr``."""
-    views = state.operator_messages
-    overflow = state.operator_message_overflow
+    """Draw the station's own cards nearest the edge, and the OSC stack beyond them."""
+    taken = draw_station_cards(renderer, cr, state, w, h)
+    others = [v for v in state.operator_messages if not v.headline]
+    _draw_stack(renderer, cr, state, others, state.operator_message_overflow, w, h, taken)
+
+
+def draw_station_cards(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> float:
+    """Draw the station's own headline cards nearest the edge, the same place over a menu screen as on the HUD.
+
+    Returns the height they take from the edge, with the gap to what follows.
+    """
+    return _draw_stack(renderer, cr, state, [v for v in state.operator_messages if v.headline], 0, w, h, 0.0)
+
+
+def _draw_stack(
+    renderer: Any,
+    cr: Any,
+    state: OverlayState,
+    views: list[OperatorMessageView],
+    overflow: int,
+    w: int,
+    h: int,
+    offset: float,
+) -> float:
+    """A stack of cards ``offset`` in from the configured edge; the height it takes, with its gap."""
     if not views and overflow <= 0:
-        return
+        return 0.0
 
     # Uniform scale for the card window + text. The screen-overrun guard
     # (_CARD_W_FRACTION) and the edge gap (_MARGIN) stay unscaled.
@@ -72,7 +96,7 @@ def draw_operator_messages(renderer: Any, cr: Any, state: OverlayState, w: int, 
     text_w = card_w - 2 * pad
     if text_w <= 0:
         # Degenerate (zero/tiny) surface: skip layout.
-        return
+        return 0.0
     x = (w - card_w) / 2.0
 
     # Measure every card to anchor the stack with a known total height.
@@ -91,9 +115,9 @@ def draw_operator_messages(renderer: Any, cr: Any, state: OverlayState, w: int, 
     total_h = sum(element_heights) + gap * (len(element_heights) - 1)
 
     if state.operator_message_position == "top":
-        cur_y = _MARGIN
+        cur_y = _MARGIN + offset
     else:  # bottom: anchor above the bottom edge
-        cur_y = max(_MARGIN, h - _MARGIN - total_h)
+        cur_y = max(_MARGIN, h - _MARGIN - offset - total_h)
 
     for v, msg_lines, info_lines, card_h in cards:
         _draw_card(renderer, cr, v, msg_lines, info_lines, x, cur_y, card_w, card_h, scale)
@@ -101,6 +125,7 @@ def draw_operator_messages(renderer: Any, cr: Any, state: OverlayState, w: int, 
 
     if overflow > 0:
         _draw_overflow(renderer, cr, overflow, x, cur_y, card_w, scale)
+    return total_h + gap
 
 
 def _card_height(v: OperatorMessageView, msg_lines: list[str], info_lines: list[str], scale: float) -> float:
@@ -109,8 +134,8 @@ def _card_height(v: OperatorMessageView, msg_lines: list[str], info_lines: list[
     All terms scale uniformly with ``scale`` – kept as a single trailing
     multiply so it stays in lockstep with the scaled cursor advances.
     """
-    # Marker cards: a flush title bar replaces the top pad + chip.
-    total = _PAD + (_TITLE_H + _TITLE_GAP if v.marker_id >= 1 else _PAD)
+    # Marker and headline cards: a flush title bar replaces the top pad + chip.
+    total = _PAD + (_TITLE_H + _TITLE_GAP if _has_title(v) else _PAD)
     total += len(msg_lines) * _MSG_LINE_H
     total += len(info_lines) * _INFO_LINE_H
     if not v.is_forever:
@@ -148,9 +173,10 @@ def _draw_card(
     accent = parse_hex(v.marker_color) if v.marker_id >= 1 else COLOR_ACCENT
 
     # Marker-targeted cards: solid title bar in the marker colour (rounded top
-    # to match the card, square bottom) with the marker name on it. Broadcast
-    # cards have no bar – the message starts straight under the top padding.
-    if v.marker_id >= 1:
+    # to match the card, square bottom) with the marker name on it; a headline
+    # card's bar takes its level's chip fill and off-white text, like a status
+    # row. Broadcast cards have no bar – the message starts straight under the top padding.
+    if _has_title(v):
         cr.move_to(x, y + title_h)
         cr.line_to(x, y + radius)
         cr.arc(x + radius, y + radius, radius, math.pi, 1.5 * math.pi)
@@ -158,11 +184,16 @@ def _draw_card(
         cr.arc(x + card_w - radius, y + radius, radius, 1.5 * math.pi, 2.0 * math.pi)
         cr.line_to(x + card_w, y + title_h)
         cr.close_path()
-        cr.set_source_rgb(*accent)
+        if v.headline:
+            cr.set_source_rgba(*level_fill(v.headline_level))
+            ink = COLOR_TEXT
+        else:
+            cr.set_source_rgb(*accent)
+            ink = _contrast_ink(accent)
         cr.fill()
-        label = v.marker_name or f"M{v.marker_id}"
+        label = v.headline or v.marker_name or f"M{v.marker_id}"
         renderer._set_ui_font(cr, _TITLE_SIZE * scale, bold=True)
-        cr.set_source_rgb(*_contrast_ink(accent))
+        cr.set_source_rgb(*ink)
         label = _truncate(cr, label, card_w - 2 * pad)
         # Center the actual glyph box in the bar so caps clear the top edge.
         te = cr.text_extents(label)
@@ -203,6 +234,10 @@ def _draw_card(
             cr.set_source_rgb(*accent)
             cr.rectangle(inner_x, bar_top, fill_w, bar_h)
             cr.fill()
+
+
+def _has_title(v: OperatorMessageView) -> bool:
+    return v.marker_id >= 1 or bool(v.headline)
 
 
 def _draw_overflow(renderer: Any, cr: Any, overflow: int, x: float, y: float, card_w: float, scale: float) -> None:

@@ -15,12 +15,18 @@ import io
 import json
 import os
 import re
+import socket
 import sys
+import tarfile
+import threading
 import time
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
 import wsgiref.util
+from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -28,12 +34,13 @@ import pytest
 import openfollow
 import openfollow.services as services_module
 import openfollow.web.discovery as discovery_module
-from openfollow.configuration import AppConfig, load_config, save_config
+from openfollow.configuration import MOUSE3D_AXIS_FORM_LABELS, AppConfig, CameraConfig, load_config, save_config
 from openfollow.marker_catalog import MarkerCatalog
 from openfollow.palette import AUTO_PICK_ORDER
 from openfollow.runtime.overlay_links import SUPPORT
 from openfollow.web import diagnostics, peer_auth
 from openfollow.web import whats_new as whats_new_module
+from openfollow.web.routes import apply_section_data
 from openfollow.web.server import ConfigWebServer
 from tests._ports import live_on_free_port, start_on_free_port
 
@@ -111,12 +118,14 @@ def _post_raw_json(base: str, path: str, payload: object, method: str = "POST") 
         return e.code, json.loads(e.read().decode() or "{}")
 
 
-def _post_form_full(base: str, path: str, data: dict) -> tuple[int, str, dict]:
+def _post_form_full(
+    base: str, path: str, data: dict, *, headers: dict[str, str] | None = None
+) -> tuple[int, str, dict]:
     """Form POST returning ``(status, body, headers_dict)``."""
     req = urllib.request.Request(
         f"{base}{path}",
         data=urllib.parse.urlencode(data).encode(),
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={"Content-Type": "application/x-www-form-urlencoded", **(headers or {})},
         method="POST",
     )
     try:
@@ -205,6 +214,18 @@ def test_index_page_offers_restore_defaults_outside_the_form_gate(live_server) -
     assert "/api/config/reset" in body
 
 
+@pytest.mark.parametrize("tab", ["general", "camera-grid"])
+def test_index_tab_opens_the_setup_wizard(live_server, tab) -> None:
+    _, base = live_server
+    status, body = _get(base, "/")
+    assert status == 200
+
+    start = body.index(f'id="tab-{tab}"')
+    end = body.find('class="tab-content', start)
+    pane = body[start : end if end != -1 else len(body)]
+    assert re.search(r'<a href="/wizard"[^>]*>Open Setup Wizard</a>', pane)
+
+
 def test_update_banner_and_footer_flag_shown_when_available(live_server, monkeypatch) -> None:
     # The background online-sync worker publishes a discovered version via the
     # command queue; the index page renders the banner (General section) and the
@@ -220,12 +241,12 @@ def test_update_banner_and_footer_flag_shown_when_available(live_server, monkeyp
 
     status, body = _get(base, "/")
     assert status == 200
-    assert "is ready to install" in body  # General-section banner
+    assert "Version 0.4.0 is available." in body  # General-section banner
     assert '<span class="update-flag">Update available: v0.4.0</span>' in body  # footer flag
 
     status_section, section = _get(base, "/section/general")
     assert status_section == 200
-    assert "is ready to install" in section
+    assert "Version 0.4.0 is available." in section
 
 
 def test_wizard_page_shows_update_footer_flag(live_server, monkeypatch) -> None:
@@ -255,24 +276,54 @@ def test_update_banner_and_footer_hidden_on_unsupported_platform(live_server, mo
 
     status, body = _get(base, "/")
     assert status == 200
-    assert "is ready to install" not in body
+    assert "Version 0.4.0 is available." not in body
     assert '<span class="update-flag">' not in body
 
     status_section, section = _get(base, "/section/general")
     assert status_section == 200
-    assert "is ready to install" not in section
+    assert "Version 0.4.0 is available." not in section
 
 
-def test_update_banner_hidden_when_up_to_date(live_server) -> None:
+def _software_update_section(body: str) -> str:
+    start = body.index('id="general-software-update-section"')
+    return body[start : body.index("<script>", start)]
+
+
+def test_update_banner_hidden_when_up_to_date(live_server, monkeypatch) -> None:
+    from openfollow.web import routes
+
+    monkeypatch.setattr(routes.sys, "platform", "linux")
+
     server, base = live_server
     server._command_queue.set_update_available("")  # default / up to date
 
     status, body = _get(base, "/")
     assert status == 200
-    # Banner copy and the rendered footer flag are both absent (the ``.update-flag``
-    # class also appears in base.tpl's CSS, so assert on the element).
-    assert "is ready to install" not in body
+    # The ``.update-flag`` class also appears in base.tpl's CSS, so assert on the element.
     assert '<span class="update-flag">' not in body
+    for page in (body, _get(base, "/section/general")[1]):
+        section = _software_update_section(page)
+        assert 'class="notice"' not in section
+        assert "Install Latest Version Online" in section
+        assert "Install .ofupdate File" in section
+
+
+@pytest.mark.parametrize("path", ["/", "/section/general"])
+def test_update_actions_disabled_through_the_routes_while_an_install_runs(live_server, monkeypatch, path) -> None:
+    from openfollow.web import routes
+
+    monkeypatch.setattr(routes.sys, "platform", "linux")
+
+    server, base = live_server
+    server._command_queue.set_update_available("0.4.0")
+    server.set_update_status("running", message="Installing")
+
+    status, body = _get(base, path)
+    assert status == 200
+    actions = _software_update_section(body).split('<div class="actions">', 1)[1]
+    controls = re.findall(r"<(?:button|input)\b[^>]*>", actions)
+    assert len(controls) == 3
+    assert all(" disabled" in c for c in controls)
 
 
 _SLOT_ITEMS = [
@@ -354,6 +405,19 @@ def test_controller_slots_name_each_marker_in_its_colour(slots_server, path: str
     assert f'<span class="slot-marker-dot" style="--marker-color: {palette}"></span>Marker 11</span>' in unnamed
     assert "slot-marker" not in empty
     assert "<td>-</td>" in empty
+
+
+def test_a_parked_slot_marker_carries_the_p_badge(slots_server) -> None:
+    """The slot keeps its marker; a blue P after it says the controller in that slot idles."""
+    _, base, stats = slots_server
+    stats["controllers"]["items"] = [dict(_SLOT_ITEMS[0], parked=True), dict(_SLOT_ITEMS[1], parked=False)]
+    _, body = _get(base, "/section/controller_slots")
+    parked, free = _row(body, "C1"), _row(body, "C2")
+    assert (
+        'Lead &amp; &lt;Keys&gt; (10)<span class="park-badge"><span aria-hidden="true">P</span>'
+        '<span class="visually-hidden">Parked</span></span></span>' in parked
+    )
+    assert "park-badge" not in free
 
 
 def test_controller_slots_table_shows_every_state(slots_server) -> None:
@@ -465,7 +529,8 @@ def test_the_input_tab_opens_with_the_controller_slots(slots_server) -> None:
     tab = body[body.index('id="tab-input"') :]
     assert tab.index('id="controller-slots-section"') < tab.index('id="gamepad-section"')
     assert 'data-help="controller_slots"' in tab
-    assert "this.closest('.tab-content').classList.contains('active')" in tab
+    assert 'id="controller-slots-content"' in tab
+    assert 'hx-trigger="every 1s [pollShown(this)], poll-shown[pollShown(this)] from:body"' in tab
 
 
 def test_statistics_name_each_missing_controller(slots_server) -> None:
@@ -500,6 +565,28 @@ def after_in_app_update(tmp_path, monkeypatch):
 
 
 _WHATS_NEW_TRIGGER = "document.addEventListener('DOMContentLoaded', openfollowShowWhatsNew)"
+
+
+@pytest.fixture()
+def after_a_failed_install(tmp_path, monkeypatch):
+    """The installer's state as the start it makes after a failed install finds it."""
+    state_file = tmp_path / "update-state.json"
+    state_file.write_text('{"state":"failed","message":"Update failed.","error":"E: dpkg error","ts":1}')
+    monkeypatch.setattr(services_module, "_DETACHED_UPDATE_STATE_FILE", str(state_file))
+    monkeypatch.setattr(services_module, "_WHATS_NEW_SEEN_FILE", str(tmp_path / "whats-new-seen"))
+    # The Software Update section renders only where the .deb updater can run.
+    monkeypatch.setattr("openfollow.web.routes._deb_update_supported", lambda: True)
+
+
+def test_a_failed_install_is_reported_by_the_station_it_restarted(after_a_failed_install, live_server) -> None:
+    _, base = live_server
+    status, data = _get_json(base, "/api/update-status")
+    assert (status, data) == (200, {"state": "failed", "message": "Update failed.", "error": "E: dpkg error"})
+    _, body = _get(base, "/")
+    assert '<div class="notice error">' in body
+    assert "<div>Update failed.</div>" in body
+    assert '<div class="notice-sub">E: dpkg error</div>' in body
+    assert _WHATS_NEW_TRIGGER not in body
 
 
 def test_whats_new_does_not_open_on_an_ordinary_start(live_server) -> None:
@@ -875,14 +962,14 @@ def test_overview_says_station_default_is_down_rather_than_showing_its_address(l
 
 
 def test_index_overview_section_polls_only_peer_rows(live_server) -> None:
-    # The polling element is the inner peer list (#overview-peers), gated on the
-    # enclosing section's collapsed state – not the whole #overview-section via
-    # outerHTML, which is what flickered.
+    # The polling element is the inner peer list (#overview-peers), gated on its
+    # section being shown – not the whole #overview-section via outerHTML,
+    # which is what flickered.
     _, base = live_server
     status, body = _get(base, "/")
     assert status == 200
-    assert 'id="overview-peers"' in body
-    assert "closest('.section').classList.contains('is-collapsed')" in body
+    peers = body[body.index('id="overview-peers"') :].split(">", 1)[0]
+    assert 'hx-trigger="every 5s [pollShown(this)], poll-shown[pollShown(this)] from:body"' in peers
 
 
 def test_statistics_partial_renders(live_server) -> None:
@@ -927,6 +1014,22 @@ def test_video_source_failure_fragment_carries_the_box(live_server, monkeypatch)
     assert 'role="status" aria-live="polite" aria-atomic="true"' in body
     # The pipeline's own wording is not shown where there is a classification.
     assert "Could not open resource." not in body
+
+
+def test_video_source_failure_fragment_carries_the_limits_box(live_server, monkeypatch) -> None:
+    """A source over the limits plays on, so it has no failure; the fragment still swaps its box in."""
+    from openfollow.video.source_limits import OverLimit, SourceReading, limits_snapshot
+
+    server, base = live_server
+    limits = limits_snapshot(SourceReading(1920, 1080, 60.0, (OverLimit.FRAME_RATE,)))
+    monkeypatch.setattr(server, "get_runtime_stats", lambda: {"video": {"connected": True, "limits": limits}})
+    status, body = _get(base, "/section/video_source/failure")
+
+    assert status == 200
+    assert "Video arrives at 60 fps, over 30 fps." in body
+    assert "Set the camera or encoder to 1920×1080 at 30 fps or less." in body
+    assert 'id="video-error-source-limits-' in body
+    assert body.count('class="notice error"') == 1
 
 
 def test_unknown_section_returns_404(live_server) -> None:
@@ -1072,6 +1175,7 @@ def test_otp_save_preserves_pin_now_that_the_picker_moved(live_server) -> None:
     """Same guard for OTP: its Save posts no ``source_iface`` any more."""
     server, base = live_server
     cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
     cfg.otp_output.source_iface = "eth1"
     save_config(cfg, server.config_path)
 
@@ -1083,6 +1187,7 @@ def test_otp_save_preserves_pin_now_that_the_picker_moved(live_server) -> None:
     assert status == 200
 
     saved = load_config(server.config_path)
+    saved.network_mode = "advanced"
     assert saved.otp_output.system_number == 3
     assert saved.otp_output.source_iface == "eth1"
 
@@ -1108,6 +1213,7 @@ def test_interface_assignment_renders_rows_with_resolved_addresses(
     )
     server, base = live_server
     cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
     cfg.psn_source_iface = "eth0"
     cfg.otp_output.source_iface = "eth1"
     save_config(cfg, server.config_path)
@@ -1143,6 +1249,7 @@ def test_interface_assignment_shows_a_down_interface_as_an_error(
     )
     server, base = live_server
     cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
     cfg.psn_source_iface = "eth0"
     cfg.otp_output.source_iface = "eth_gone"
     save_config(cfg, server.config_path)
@@ -1169,6 +1276,13 @@ def _patch_ifaces(monkeypatch, ifaces: dict[str, str]) -> None:
     )
 
 
+def _advanced(server) -> None:
+    """Put the live server's station in Advanced, where the per-plane pins live."""
+    cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
+    save_config(cfg, server.config_path)
+
+
 def test_interface_assignment_has_a_web_ui_row(live_server, monkeypatch) -> None:
     """The web UI gets its own pin rather than following the station: a
     station pinned to a lighting VLAN would otherwise take its own config UI
@@ -1176,6 +1290,7 @@ def test_interface_assignment_has_a_web_ui_row(live_server, monkeypatch) -> None
     _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59", "eth1": "10.0.0.9"})
     server, base = live_server
     cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
     cfg.psn_source_iface = "eth0"
     cfg.web_bind_iface = "eth1"
     save_config(cfg, server.config_path)
@@ -1208,6 +1323,7 @@ def test_interface_assignment_web_ui_row_reads_as_the_wildcard_when_the_pin_is_d
     _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59"})
     server, base = live_server
     cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
     cfg.web_bind_iface = "eth_gone"
     save_config(cfg, server.config_path)
 
@@ -1248,6 +1364,7 @@ def test_interface_assignment_web_ui_pin_warns_with_the_surviving_url(live_serve
     _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59", "eth1": "10.0.0.9"})
     server, base = live_server
     cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
     cfg.web_bind_iface = "eth1"
     save_config(cfg, server.config_path)
 
@@ -1273,15 +1390,11 @@ def test_interface_assignment_web_ui_pin_offers_a_restart(live_server, monkeypat
     save_config(cfg, server.config_path)
 
     _status, body = _get(base, "/section/interface_assignment")
-    # Its own red action, not a second kind of Save.
-    tag_start = body.rindex("<button", 0, body.index('hx-post="/section/interface_assignment/restart"'))
+    # Its own red action, not a second kind of Save, through the shared restart flow.
+    tag_start = body.rindex("<button", 0, body.index('onclick="openfollowRestart('))
     button = body[tag_start : body.index("</button>", tag_start)]
     assert 'type="button" class="danger"' in button
     assert button.endswith(">Restart OpenFollow")
-    # Restarting pauses every output, so it asks first, with the danger button.
-    assert 'data-confirm-label="Restart"' in button
-    assert "data-confirm-danger" in button
-    assert body.count("hx-confirm=") == 1
     assert "Save &amp; Restart" not in body
 
 
@@ -1301,11 +1414,12 @@ def test_interface_assignment_offers_a_restart_for_a_pin_to_a_down_interface(
         raising=False,
     )
     cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
     cfg.web_bind_iface = "eth_gone"
     save_config(cfg, server.config_path)
 
     _status, body = _get(base, "/section/interface_assignment")
-    assert "/section/interface_assignment/restart" in body
+    assert "openfollowRestart(" in body
 
 
 def test_interface_assignment_offers_no_restart_once_the_pin_is_in_force(
@@ -1323,29 +1437,24 @@ def test_interface_assignment_offers_no_restart_once_the_pin_is_in_force(
         raising=False,
     )
     cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
     cfg.web_bind_iface = "eth_gone"
     save_config(cfg, server.config_path)
 
     _status, body = _get(base, "/section/interface_assignment")
-    assert "/section/interface_assignment/restart" not in body
+    assert "openfollowRestart(" not in body
 
 
-def test_interface_assignment_restart_notice_names_the_moved_address(live_server, monkeypatch) -> None:
-    """Unlike every other restart notice, this one may come back at a
-    different address – so it has to say where to look when the reload
-    cannot reach this one."""
+def test_interface_assignment_names_the_address_a_restart_moves_the_web_ui_to(live_server, monkeypatch) -> None:
     _patch_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
     server, base = live_server
     cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
     cfg.web_bind_iface = "eth1"
     save_config(cfg, server.config_path)
-    status, body = _post_form(base, "/section/interface_assignment/restart", {})
+    status, body = _get(base, "/section/interface_assignment")
     assert status == 200
-    assert "restart-notice" in body
-    assert "Network screen" in body
     assert "After a restart the web UI answers only on http://10.0.0.9" in body
-    # The notice polls for the server's return; the Address poll would only fail meanwhile.
-    assert "/section/interface_assignment/status" not in body
 
 
 _IA_STATUS = "/section/interface_assignment/status"
@@ -1375,6 +1484,7 @@ def test_the_interface_assignment_poll_replaces_every_address_cell_and_no_picker
     _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59", "eth1": "10.0.0.9"})
     server, base = live_server
     cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
     cfg.psn_source_iface = "eth0"
     cfg.otp_output.source_iface = "eth1"
     save_config(cfg, server.config_path)
@@ -1395,6 +1505,7 @@ def test_the_interface_assignment_poll_tells_apart_ids_that_differ_by_punctuatio
     _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59", "eth1": "10.0.0.9"})
     server, base = live_server
     cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
     cfg.psn_source_iface = "eth0"
     cfg.osc_destinations.destinations = [
         OscDestinationConfig(id="media.v2", name="A", host="198.51.100.1", source_iface="eth1"),
@@ -1425,6 +1536,7 @@ def test_the_interface_assignment_poll_shows_an_outage_without_a_scan(live_serve
     _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59", "eth1": "10.0.0.9"})
     server, base = live_server
     cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
     cfg.psn_source_iface = "eth0"
     cfg.otp_output.source_iface = "eth1"
     save_config(cfg, server.config_path)
@@ -1491,7 +1603,7 @@ def test_the_interface_assignment_panel_polls_and_its_pickers_can_reload_in_plac
     _server, base = live_server
     _status, panel = _get(base, "/section/interface_assignment")
     poller = panel[panel.rindex("<div", 0, panel.index(f'hx-get="{_IA_STATUS}"')) :].split("</div>", 1)[0]
-    assert 'hx-trigger="every 5s"' in poller
+    assert 'hx-trigger="every 5s [pollShown(this)], poll-shown[pollShown(this)] from:body"' in poller
     assert 'hx-swap="none"' in poller and 'hx-target="this"' in poller
     assert 'document.getElementById("ia-options-fp").dataset.fp' in poller
     selects = re.findall(r'<select [^>]*data-options-url="([^"]+)"[^>]*hx-get="([^"]+)"', panel)
@@ -1512,12 +1624,13 @@ def test_interface_assignment_offers_no_restart_when_the_bind_already_matches(li
     save_config(cfg, server.config_path)
 
     _status, body = _get(base, "/section/interface_assignment")
-    assert "/section/interface_assignment/restart" not in body
+    assert "openfollowRestart(" not in body
 
 
 def test_interface_assignment_saves_the_web_ui_pin(live_server, monkeypatch) -> None:
     _patch_ifaces(monkeypatch, {"eth0": "192.168.178.59", "eth1": "10.0.0.9"})
     server, base = live_server
+    _advanced(server)
     status, _body = _post_form(
         base,
         "/section/interface_assignment",
@@ -1568,6 +1681,7 @@ def test_interface_assignment_renders_and_saves_the_sender_rows(live_server, mon
     )
     server, base = live_server
     cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
     cfg.rttrpm_output.source_iface = "eth1"
     save_config(cfg, server.config_path)
 
@@ -1576,7 +1690,7 @@ def test_interface_assignment_renders_and_saves_the_sender_rows(live_server, mon
     assert 'name="rttrpm_output.source_iface"' in body
     assert 'name="osc_destinations.default.source_iface"' in body
     assert "OSC Destination Default" in body
-    assert "experimental-feature" in body
+    assert 'data-feature="rttrpm"' in body
 
     status, _ = _post_form(
         base,
@@ -1585,6 +1699,7 @@ def test_interface_assignment_renders_and_saves_the_sender_rows(live_server, mon
     )
     assert status == 200
     saved = load_config(server.config_path)
+    saved.network_mode = "advanced"
     assert saved.osc_destinations.destinations[0].source_iface == "eth1"
     assert saved.rttrpm_output.source_iface == "eth1"
 
@@ -1610,6 +1725,7 @@ def test_sender_sections_point_to_the_panel_with_their_own_pin(live_server, path
     """Each section shows its row's pin read-only, and Station default's wording only when it is blank."""
     server, base = live_server
     cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
     _SENDER_POINTERS[path](cfg, pin)
     save_config(cfg, server.config_path)
 
@@ -1643,7 +1759,8 @@ def test_interface_assignment_pickers_have_accessible_names(live_server) -> None
 def test_protocol_sections_link_switches_to_the_general_tab(live_server) -> None:
     """A bare href="#id" does nothing when the target sits in a display:none
     tab, so the pointer had no effect at all."""
-    _server, base = live_server
+    server, base = live_server
+    _advanced(server)
     for path in ("/section/psn", "/section/otp_output", "/section/osc"):
         _status, body = _get(base, path)
         assert "goToSection('general', 'interface-assignment')" in body
@@ -1668,6 +1785,7 @@ def test_interface_assignment_save_round_trips_to_disk(
         },
     )
     server, base = live_server
+    _advanced(server)
 
     status, body = _post_form(
         base,
@@ -1682,6 +1800,7 @@ def test_interface_assignment_save_round_trips_to_disk(
     assert "saved" in body
 
     saved = load_config(server.config_path)
+    saved.network_mode = "advanced"
     assert saved.psn_source_iface == "eth0"
     assert saved.otp_output.source_iface == "eth1"
     # The panel is the only editing surface for the OSC pin, so the dotted form
@@ -1785,6 +1904,35 @@ def test_api_info_returns_expected_fields(live_server) -> None:
     assert data["port"] == server.port
     # Must reflect the real package version, not the legacy "0.1.0" placeholder.
     assert data["version"] == openfollow.__version__
+
+
+def test_api_info_and_peers_name_the_fallback_port_served(tmp_path, monkeypatch) -> None:
+    from openfollow.web import server as server_mod
+
+    monkeypatch.setattr(discovery_module.BeaconSender, "start", lambda self: None)
+    monkeypatch.setattr(discovery_module.BeaconSender, "stop", lambda self: None)
+    monkeypatch.setattr(discovery_module.BeaconReceiver, "start", lambda self: None)
+    monkeypatch.setattr(discovery_module.BeaconReceiver, "stop", lambda self: None)
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as taken:
+        taken.bind(("127.0.0.1", 0))
+        taken.listen(1)
+        configured = taken.getsockname()[1]
+
+        def _factory(port: int) -> ConfigWebServer:
+            monkeypatch.setattr(server_mod, "_FALLBACK_PORTS", (port,))
+            return ConfigWebServer(
+                config_path=str(tmp_path / "config.toml"), host="127.0.0.1", port=configured, system_name="TestSystem"
+            )
+
+        with live_on_free_port(_factory) as (_server, base):
+            _status, info = _get_json(base, "/api/info")
+            _status, peers = _get_json(base, "/api/peers")
+
+    served = int(base.rsplit(":", 1)[1])
+    assert served != configured
+    assert info["port"] == served
+    assert peers["local"]["port"] == served
 
 
 def test_api_stats_returns_json(live_server) -> None:
@@ -1983,6 +2131,264 @@ def test_form_post_camera_renders_saved_partial(live_server) -> None:
     assert len(body) > 50
 
 
+_HELD_PINS = [[0.8, 0.9], [0.2, 0.9], [0.3, 0.6], [0.7, 0.6]]
+# The default grid's corners: DSL, DSR, USR, USL.
+_DEFAULT_CORNERS = [(5.0, 0.0, 0.0), (-5.0, 0.0, 0.0), (-5.0, 6.0, 0.0), (5.0, 6.0, 0.0)]
+
+
+def _corner_marks(pins=_HELD_PINS, corners=_DEFAULT_CORNERS) -> list[dict]:
+    return [
+        {"id": n, "name": name, "kind": "known", "x": x, "y": y, "z": z, "pin": pin}
+        for n, (name, (x, y, z), pin) in enumerate(zip(("DSL", "DSR", "USR", "USL"), corners, pins, strict=True), 1)
+    ]
+
+
+def _held_camera(mode: str = "simple") -> CameraConfig:
+    marks = _corner_marks()
+    if mode == "advanced":
+        marks.append(
+            {
+                "id": 5,
+                "kind": "triangulated",
+                "from_a": 1,
+                "from_b": 2,
+                "distance_a": 21.4,
+                "distance_b": 23.9,
+                "z": 0.0,
+                "pin": [0.4, 0.2],
+            }
+        )
+    return CameraConfig(calibration_mode=mode, calibration_marks=marks)  # type: ignore[arg-type]
+
+
+def _held(cfg_camera) -> list[tuple]:
+    return [(m.id, m.x, m.y, m.z, m.pin) for m in cfg_camera.calibration_marks]
+
+
+def test_a_pose_posted_without_marks_clears_the_calibration(live_server) -> None:
+    """The marks describe the pose the Setup Wizard solved; a pose written by anything else leaves none behind."""
+    server, base = live_server
+    camera = _held_camera("advanced")
+    camera.calibration_height = 9.8
+    save_config(AppConfig(camera=camera), server.config_path)
+    status, _body = _post_form(base, "/section/camera", {"pos_x": "1.5", "pos_y": "-5.0", "pos_z": "4.0"})
+    assert status == 200
+    saved = load_config(server.config_path).camera
+    assert (saved.pos_x, saved.calibration_mode, saved.calibration_marks, saved.calibration_height) == (
+        1.5,
+        "simple",
+        [],
+        None,
+    )
+
+
+def test_a_camera_write_that_keeps_the_pose_keeps_the_calibration(live_server) -> None:
+    server, base = live_server
+    camera = _held_camera("advanced")
+    camera.calibration_height = 9.8
+    save_config(AppConfig(camera=camera), server.config_path)
+    status, _body = _post_json(base, "/api/config/camera", {"lens_k1": -0.2, "pos_x": camera.pos_x})
+    assert status == 200
+    saved = load_config(server.config_path).camera
+    assert (saved.lens_k1, saved.calibration_mode, saved.calibration_height) == (-0.2, "advanced", 9.8)
+    assert [m.id for m in saved.calibration_marks] == [1, 2, 3, 4, 5]
+
+
+def test_the_setup_wizard_s_pose_with_its_marks_keeps_them(live_server) -> None:
+    server, base = live_server
+    save_config(AppConfig(camera=_held_camera("advanced")), server.config_path)
+    marks = [asdict(m) for m in _held_camera("advanced").calibration_marks][:4]
+    status, _body = _post_json(
+        base,
+        "/api/config/camera",
+        {"pos_x": 2.0, "yaw": 12.0, "calibration_mode": "advanced", "calibration_marks": marks},
+    )
+    assert status == 200
+    saved = load_config(server.config_path).camera
+    assert (saved.pos_x, saved.yaw, [m.id for m in saved.calibration_marks]) == (2.0, 12.0, [1, 2, 3, 4])
+
+
+def test_an_import_bringing_a_pose_without_marks_clears_the_calibration(live_server) -> None:
+    server, base = live_server
+    save_config(AppConfig(camera=_held_camera("advanced")), server.config_path)
+    status, _ = _post_json(base, "/api/config/import", {"camera": {"pos_x": 3.0, "fov": 40.0}})
+    assert status == 200
+    saved = load_config(server.config_path).camera
+    assert (saved.pos_x, saved.fov, saved.calibration_marks) == (3.0, 40.0, [])
+
+
+def _post_grid(base: str, how: str, fields: dict) -> int:
+    if how == "form":
+        return _post_form(base, "/section/grid", {k: str(v) for k, v in fields.items()})[0]
+    return _post_json(base, "/api/config/grid" if how == "api" else "/api/config/grid/broadcast", fields)[0]
+
+
+@pytest.mark.parametrize("how", ["form", "api", "broadcast"])
+@pytest.mark.parametrize(
+    "moved", [{"width": 12.0}, {"depth": 8.0}, {"x_offset": 0.5}, {"y_offset": 2.0}, {"z_offset": 0.3}]
+)
+def test_a_grid_write_that_moves_the_corners_moves_and_unpins_simples_corners(live_server, how: str, moved) -> None:
+    """Simple's corners are the grid's: they move with it, and their pins were placed on the old ones."""
+    from openfollow.configuration import grid_corner_positions
+
+    server, base = live_server
+    save_config(AppConfig(camera=_held_camera()), server.config_path)
+    assert _post_grid(base, how, moved) == 200
+    cfg = load_config(server.config_path)
+    g = cfg.grid
+    corners = grid_corner_positions(g.width, g.depth, g.x_offset, g.y_offset, g.z_offset)
+    assert corners != [list(c) for c in _DEFAULT_CORNERS]
+    assert cfg.camera.calibration_mode == "simple"
+    assert _held(cfg.camera) == [(n, *corner, []) for n, corner in enumerate(corners, start=1)]
+
+
+@pytest.mark.parametrize("how", ["form", "api"])
+def test_a_grid_write_in_advanced_leaves_the_marks_as_they_are(live_server, how: str) -> None:
+    """Advanced's marks are the operator's own measurements, not the grid's corners."""
+    server, base = live_server
+    save_config(AppConfig(camera=_held_camera("advanced")), server.config_path)
+    before = _held(load_config(server.config_path).camera)
+    assert _post_grid(base, how, {"width": 12.0, "z_offset": 0.3}) == 200
+    assert _held(load_config(server.config_path).camera) == before
+
+
+@pytest.mark.parametrize("how", ["form", "api", "broadcast"])
+@pytest.mark.parametrize(
+    "kept", [{"spacing": 0.5}, {"max_height": 4.0}, {"width": 10.0, "depth": 6.0}, {"width": 10.0004}]
+)
+def test_a_grid_write_that_leaves_the_corners_keeps_the_corner_pins(live_server, how: str, kept: dict) -> None:
+    server, base = live_server
+    save_config(AppConfig(camera=_held_camera()), server.config_path)
+    assert _post_grid(base, how, kept) == 200
+    assert [m.pin for m in load_config(server.config_path).camera.calibration_marks] == _HELD_PINS
+
+
+def test_an_imperial_grid_form_save_of_the_same_grid_keeps_the_corner_pins(live_server) -> None:
+    """The form shows each length to a hundredth of an inch; posting it back unchanged is no move."""
+    from openfollow.configuration import GridConfig
+    from openfollow.units import UnitSystem, format_length
+
+    server, base = live_server
+    cfg = AppConfig(camera=_held_camera(), grid=GridConfig(width=10.37, y_offset=2.91))
+    cfg.ui.unit_system = "imperial"
+    # Pinned on this grid's own corners.
+    for mark, pin in zip(cfg.camera.calibration_marks, _HELD_PINS, strict=True):
+        mark.pin = list(pin)
+    save_config(cfg, server.config_path)
+    assert [m.pin for m in load_config(server.config_path).camera.calibration_marks] == _HELD_PINS
+    shown = {
+        name: format_length(getattr(cfg.grid, name), UnitSystem.IMPERIAL)
+        for name in ("width", "depth", "x_offset", "y_offset", "z_offset")
+    }
+    assert _post_grid(base, "form", shown) == 200
+    assert [m.pin for m in load_config(server.config_path).camera.calibration_marks] == _HELD_PINS
+
+
+_ITS_PINS = [[0.1, 0.9], [0.9, 0.9], [0.8, 0.5], [0.2, 0.5]]
+_WIDE_CORNERS = [(6.0, 0.0, 0.0), (-6.0, 0.0, 0.0), (-6.0, 6.0, 0.0), (6.0, 6.0, 0.0)]
+
+
+@pytest.mark.parametrize(
+    ("camera", "grid", "marks"),
+    [
+        # another grid and no marks of its own: this station's corners move and lose their pins
+        ({"lens_k1": -0.1}, {"width": 12.0}, _corner_marks([[]] * 4, _WIDE_CORNERS)),
+        # its own marks, on its own grid
+        (
+            {"calibration_marks": _corner_marks(_ITS_PINS, _WIDE_CORNERS)},
+            {"width": 12.0},
+            _corner_marks(_ITS_PINS, _WIDE_CORNERS),
+        ),
+        # the same corners
+        ({"lens_k1": -0.1}, {"spacing": 0.5}, _corner_marks()),
+    ],
+)
+def test_an_import_applies_the_grid_before_the_camera(live_server, camera, grid, marks) -> None:
+    server, base = live_server
+    save_config(AppConfig(camera=_held_camera()), server.config_path)
+    status, _ = _post_json(base, "/api/config/import", {"camera": camera, "grid": grid})
+    assert status == 200
+    assert _held(load_config(server.config_path).camera) == [(m["id"], m["x"], m["y"], m["z"], m["pin"]) for m in marks]
+
+
+def _calibration_rows(camera_html: str) -> tuple[str, list[list[str]]]:
+    start = camera_html.index('<details class="inline-advanced" id="camera-calibration-marks">')
+    group = camera_html[start : camera_html.index("</table>", start)]
+    assert "<input" not in group and "<select" not in group
+    title = re.search(r"<summary>(.*?)</summary>", group)
+    assert title is not None
+    body = group[group.index("<tbody>") :]
+    rows = [re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", row) for row in re.findall(r"<tr>(.*?)</tr>", body, re.S)]
+    return title.group(1), rows
+
+
+@pytest.mark.parametrize(("mode", "kind"), [("simple", "Simple"), ("advanced", "Advanced")])
+def test_the_camera_tab_lists_the_calibration_marks_read_only(live_server, mode: str, kind: str) -> None:
+    server, base = live_server
+    camera = _held_camera(mode)
+    camera.calibration_marks[1].pin = []
+    if mode == "advanced":
+        camera.calibration_marks[4].position = [2.5, 9.0, 0.0]
+    save_config(AppConfig(camera=camera), server.config_path)
+    status, html_text = _get(base, "/section/camera")
+    assert status == 200
+    shown_title, rows = _calibration_rows(html_text)
+    assert shown_title == "Calibration points"
+    readout = _readout(_camera_section(html_text))
+    assert readout["Type"] == kind
+    # Each kind counts its pinned points; Simple's points are its corners.
+    assert readout["Pinned"] == ("3 of 4 corners" if mode == "simple" else "3 of 4 known points, 1 triangulated point")
+    # Without video there is no picture to count an error in.
+    assert rows[0] == ["DSL", "Known point", "X = 5.000 m<br>Y = 0.000 m<br>Z = 0.000 m", "–", "Yes", "–"]
+    assert rows[1] == ["DSR", "Known point", "X = -5.000 m<br>Y = 0.000 m<br>Z = 0.000 m", "–", "No", "–"]
+    assert len(rows) == (4 if mode == "simple" else 5)
+    if mode == "advanced":
+        assert rows[4] == [
+            "P5",
+            "Triangulated point",
+            "X = 2.500 m<br>Y = 9.000 m<br>Z = 0.000 m",
+            "DSL 21.400 m<br>DSR 23.900 m",
+            "Yes",
+            "–",
+        ]
+
+
+def test_the_camera_tab_shows_a_distance_point_no_solve_placed_without_a_position(live_server) -> None:
+    server, base = live_server
+    save_config(AppConfig(camera=_held_camera("advanced")), server.config_path)
+    _, rows = _calibration_rows(_get(base, "/section/camera")[1])
+    assert rows[4][2] == "–"
+
+
+@pytest.mark.parametrize(
+    ("units", "height", "shown"),
+    [
+        ("metric", 9.8, "Fixed at 9.800 m"),
+        ("metric", 12.0, "Fixed at 12.000 m"),
+        ("imperial", 9.8, "Fixed at 32 ft 1.83 in"),
+        ("metric", None, None),
+    ],
+    ids=["metric", "whole metres", "imperial", "not entered"],
+)
+def test_the_camera_tab_shows_the_calibrations_camera_height_read_only(live_server, units, height, shown) -> None:
+    server, base = live_server
+    camera = _held_camera("advanced")
+    camera.calibration_height = height
+    cfg = AppConfig(camera=camera)
+    cfg.ui.unit_system = units
+    save_config(cfg, server.config_path)
+    html_text = _get(base, "/section/camera")[1]
+    assert _readout(_camera_section(html_text)).get("Camera height") == shown
+
+
+def test_without_marks_the_camera_tab_has_no_calibration_group(live_server) -> None:
+    _, base = live_server
+    status, html_text = _get(base, "/section/camera")
+    assert status == 200
+    assert "camera-calibration-marks" not in html_text
+    assert _readout(_camera_section(html_text))["Type"] == "None"
+
+
 def test_form_post_osc_renders_saved_partial(live_server) -> None:
     _, base = live_server
     status, body = _post_form(base, "/section/osc", {"enabled": "true", "port": "8765"})
@@ -2024,6 +2430,15 @@ def test_form_post_movement_renders_saved_partial(live_server) -> None:
     assert "movement-section" in body
 
 
+def test_form_post_movement_reads_the_former_invert_flag_as_the_control_frame(live_server) -> None:
+    """A page served before the control frame posts the flag; it lands as a camera looking downstage."""
+    server, base = live_server
+    status, _body = _post_form(base, "/section/movement", {"invert_control_direction": "on"})
+    assert status == 200
+    cfg = load_config(server.config_path)
+    assert (cfg.marker.control_frame, cfg.marker.control_heading) == ("heading", 180.0)
+
+
 def test_form_post_gamepad_renders_saved_partial(live_server) -> None:
     _, base = live_server
     status, body = _post_form(base, "/section/gamepad", {"enabled": "true", "deadzone": "0.1"})
@@ -2054,6 +2469,87 @@ def test_form_post_gamepad_persists_new_button_fields(live_server) -> None:
     assert saved.controller.btn_settings == "START"
     assert saved.controller.btn_menu_confirm == "A"
     assert saved.controller.btn_menu_cancel == "B"
+
+
+def test_gamepad_buttons_are_named_the_standard_way_until_a_family_is_chosen(live_server) -> None:
+    _, base = live_server
+    status, body = _get(base, "/section/gamepad")
+    assert status == 200
+    assert '<option value="standard" selected>Standard</option>' in body
+    assert '<option value="BACK" selected>Back</option>' in body
+    assert '<option value="LB" selected>Left Bumper</option>' in body
+    assert "<td>A</td>" in body
+    assert "btn-symbol" not in body
+
+
+@pytest.mark.parametrize(
+    ("style", "options", "cell"),
+    [
+        (
+            "playstation",
+            ['<option value="X" selected>Square</option>', '<option value="LB" selected>L1</option>'],
+            '<td><span class="btn-symbol">',
+        ),
+        (
+            "xbox",
+            ['<option value="BACK" selected>View</option>', '<option value="LB" selected>LB</option>'],
+            "<td>A</td>",
+        ),
+        (
+            "nintendo",
+            [
+                '<option value="BACK" selected>Minus</option>',
+                '<option value="START" >Plus</option>',
+                '<option value="LB" selected>L</option>',
+            ],
+            "<td>A</td>",
+        ),
+    ],
+)
+def test_a_saved_button_name_style_names_the_buttons_and_keeps_the_bindings(
+    live_server, style: str, options: list[str], cell: str
+) -> None:
+    server, base = live_server
+    status, body = _post_form(
+        base,
+        "/section/gamepad",
+        {"enabled": "true", "deadzone": "0.15", "button_name_style": style, "btn_reset": "X", "btn_settings": "BACK"},
+    )
+    assert status == 200
+    saved = load_config(server.config_path).controller
+    assert (saved.button_name_style, saved.btn_reset, saved.btn_settings) == (style, "X", "BACK")
+    assert f'<option value="{style}" selected>' in body
+    assert all(option in body for option in options)
+    assert cell in body
+
+
+def test_the_detection_table_shows_a_symbol_with_its_word_for_screen_readers(live_server) -> None:
+    _, base = live_server
+    _post_form(base, "/section/gamepad", {"enabled": "true", "deadzone": "0.15", "button_name_style": "playstation"})
+    status, body = _get(base, "/section/gamepad")
+    assert status == 200
+    row = body[body.index("<tbody>") :]
+    row = row[: row.index("</tr>")]
+    assert '<svg class="btn-symbol-icon"' in row
+    assert 'aria-hidden="true"' in row
+    assert '<span class="visually-hidden">Cross</span>' in row
+    # The select options for the same button stay words.
+    assert '<option value="A" >Cross</option>' in body
+
+
+@pytest.mark.parametrize("bad", ["ps5", "Xbox", "", "1"])
+def test_form_post_gamepad_unknown_button_name_style_saves_standard(live_server, bad: str) -> None:
+    server, base = live_server
+    _post_form(base, "/section/gamepad", {"enabled": "true", "deadzone": "0.15", "button_name_style": bad})
+    assert load_config(server.config_path).controller.button_name_style == "standard"
+
+
+@pytest.mark.parametrize("bad", ["ps5", "Xbox", "1"])
+def test_validate_gamepad_button_name_style_refuses_an_unknown_family(live_server, bad: str) -> None:
+    _, base = live_server
+    status, body = _get(base, f"/api/validate/gamepad/button_name_style?button_name_style={bad}")
+    assert status == 200
+    assert "field-error-msg" in body
 
 
 def test_form_post_gamepad_invalid_button_falls_back_to_default(live_server) -> None:
@@ -2144,6 +2640,59 @@ def test_form_post_mouse_saves_the_wheel_settings_on_every_platform(live_server,
     assert saved.controller.mouse_wheel_z_step == pytest.approx(0.4)
 
 
+_TRUE_FALSE_DROPDOWNS = [
+    pytest.param("/section/marker", "z_display_from_stage", lambda c: c.marker.z_display_from_stage, id="z-readout"),
+    pytest.param(
+        "/section/mouse", "mouse_wheel_invert", lambda c: c.controller.mouse_wheel_invert, id="wheel-direction"
+    ),
+    pytest.param("/section/gamepad", "invert_y", lambda c: c.controller.invert_y, id="stick-y-axis"),
+    pytest.param("/section/mouse3d", "invert_pan_x", lambda c: c.mouse3d.invert_pan_x, id="3d-mouse-direction"),
+    pytest.param(
+        "/section/operator_messages",
+        "route_by_marker",
+        lambda c: c.operator_messages.route_by_marker,
+        id="message-routing",
+    ),
+]
+
+
+def _selected_options(body: str, name: str) -> list[str]:
+    select = body.split(f'name="{name}"', 1)[1].split("</select>", 1)[0]
+    return re.findall(r'<option value="([^"]*)" selected>', select)
+
+
+@pytest.mark.parametrize(("path", "field", "read"), _TRUE_FALSE_DROPDOWNS)
+@pytest.mark.parametrize("value", [True, False])
+def test_a_true_false_dropdown_saves_and_shows_the_chosen_option(live_server, path, field, read, value) -> None:
+    # A dropdown always posts its value, so "false" has to save False.
+    server, base = live_server
+    status, body = _post_form(base, path, {field: str(value).lower()})
+    assert status == 200
+    assert read(load_config(server.config_path)) is value
+    assert _selected_options(body, field) == [str(value).lower()]
+
+
+@pytest.mark.parametrize(("path", "field", "read"), _TRUE_FALSE_DROPDOWNS)
+@pytest.mark.parametrize("value", [True, False])
+def test_a_post_without_the_dropdown_keeps_its_value(live_server, path, field, read, value) -> None:
+    server, base = live_server
+    _post_form(base, path, {field: str(value).lower()})
+    status, _ = _post_form(base, path, {})
+    assert status == 200
+    assert read(load_config(server.config_path)) is value
+
+
+def test_each_3d_mouse_axis_direction_is_named_after_its_axis(live_server) -> None:
+    # Six selects share the visible label "Direction"; the axis tells them apart.
+    _, base = live_server
+    status, body = _get(base, "/section/mouse3d")
+    assert status == 200
+    for axis, label in MOUSE3D_AXIS_FORM_LABELS:
+        ids = re.search(rf'<select id="m3d-invert-{axis}"[^>]*aria-labelledby="([^"]+)"', body).group(1).split()
+        names = [html.unescape(re.search(rf'id="{i}">([^<]*)<', body).group(1)) for i in ids]
+        assert names == [label, "Direction"]
+
+
 def test_form_post_mouse_renders_saved_partial(live_server) -> None:
     _, base = live_server
     status, body = _post_form(base, "/section/mouse", {"mouse_enabled": "true"})
@@ -2219,26 +2768,10 @@ def test_api_update_zone_ignores_non_list_vertices(live_server) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_restart_openfollow_restarts_and_saves_nothing(live_server, monkeypatch) -> None:
-    """Save and Restart are two actions: the restart takes whatever was
-    saved, and never the form it was pressed under."""
-    _patch_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
-    server, base = live_server
-    assert server.check_restart_requested() is False
-
-    status, _body = _post_form(
-        base,
-        "/section/interface_assignment/restart",
-        {"psn_source_iface": "", "otp_output.source_iface": "", "web_bind_iface": "eth1"},
-    )
-    assert status == 200
-    assert load_config(server.config_path).web_bind_iface == ""
-    assert server.check_restart_requested() is True
-
-
 def test_save_never_restarts(live_server, monkeypatch) -> None:
     _patch_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
     server, base = live_server
+    _advanced(server)
     status, _body = _post_form(
         base,
         "/section/interface_assignment?restart=1",
@@ -2250,14 +2783,21 @@ def test_save_never_restarts(live_server, monkeypatch) -> None:
 
 
 @pytest.mark.parametrize("state", ["queued", "running", "restarting"])
-def test_restart_openfollow_waits_for_a_running_update(live_server, monkeypatch, state: str) -> None:
+def test_api_restart_waits_for_a_running_update(live_server, state: str) -> None:
     server, base = live_server
     server.set_update_status(state=state)
-    status, body = _post_form(base, "/section/interface_assignment/restart", {})
-    assert status == 200
+    status, body = _post_json(base, "/api/restart", {})
+    assert status == 409
+    assert body == {"error": "An update is running.", "action": "Restart once it has finished."}
     assert server.check_restart_requested() is False
-    assert "An update is running, so OpenFollow was not restarted." in body
-    assert "restart-notice" not in body
+
+
+def test_api_restart_goes_ahead_once_the_update_failed(live_server) -> None:
+    server, base = live_server
+    server.set_update_status(state="failed")
+    status, body = _post_json(base, "/api/restart", {})
+    assert (status, body) == (200, {"success": True, "instance": server.instance_id})
+    assert server.check_restart_requested() is True
 
 
 def test_post_interface_assignment_without_restart_flag_queues_nothing(live_server, monkeypatch) -> None:
@@ -2274,18 +2814,6 @@ def test_post_interface_assignment_without_restart_flag_queues_nothing(live_serv
     assert server.check_restart_requested() is False
 
 
-def test_post_general_with_restart_flag_queues_restart(live_server) -> None:
-    server, base = live_server
-    assert server.check_restart_requested() is False
-
-    status, body = _post_form(base, "/section/general?restart=1", {})
-    assert status == 200
-
-    assert server.check_restart_requested() is True
-    # consuming it should clear the flag
-    assert server.check_restart_requested() is False
-
-
 # ---------------------------------------------------------------------------
 # Peer authentication (HMAC-signed requests)
 # ---------------------------------------------------------------------------
@@ -2294,6 +2822,20 @@ def test_post_general_with_restart_flag_queues_restart(live_server) -> None:
 @pytest.fixture()
 def pin_protected_server(tmp_path, monkeypatch):
     """Variant of ``live_server`` that starts with a configured web PIN."""
+    yield from _serve_with_pin(tmp_path, monkeypatch)
+
+
+@pytest.fixture()
+def frozen_throttle_pin_server(tmp_path, monkeypatch):
+    """``pin_protected_server`` whose login throttle never sees time pass, so a lockout cannot expire mid-test."""
+    import openfollow.web.routes as routes_module
+    from openfollow.web.login_throttle import LoginThrottle
+
+    monkeypatch.setattr(routes_module, "LoginThrottle", lambda **kw: LoginThrottle(**kw, clock=lambda: 1000.0))
+    yield from _serve_with_pin(tmp_path, monkeypatch)
+
+
+def _serve_with_pin(tmp_path, monkeypatch):
     monkeypatch.setattr(discovery_module.BeaconSender, "start", lambda self: None)
     monkeypatch.setattr(discovery_module.BeaconSender, "stop", lambda self: None)
     monkeypatch.setattr(discovery_module.BeaconReceiver, "start", lambda self: None)
@@ -3210,7 +3752,7 @@ def test_detection_section_running_state_emits_polling_div(live_server) -> None:
         server.set_detection_install_status(state="idle")
 
     assert status == 200
-    assert 'hx-trigger="every 1s"' in body
+    assert 'hx-trigger="every 1s [!document.hidden], poll-shown from:body"' in body
     assert "Exporting `yolo11n.onnx`" in body
 
 
@@ -3330,7 +3872,7 @@ def _stub_export_script(monkeypatch, tmp_path):
     storage.mkdir()
     monkeypatch.setattr(routes_mod, "_export_tools_available", lambda: True)
     monkeypatch.setattr(routes_mod, "_detection_export_script", lambda: script)
-    monkeypatch.setattr(routes_mod, "load_config", lambda _p: _config_with_storage(str(storage)))
+    save_config(_config_with_storage(str(storage)), str(tmp_path / "config.toml"))
     return script, storage
 
 
@@ -3468,14 +4010,13 @@ def test_export_rejected_while_another_export_in_progress(live_server, monkeypat
 
 
 def _seed_storage_model(monkeypatch, tmp_path, name: str = "yolo11n.onnx"):
-    """Create <tmp>/store/models/<name> and point load_config at that storage."""
-    from openfollow.web import routes as routes_mod
+    """Create <tmp>/store/models/<name> and point the station's config at that storage."""
 
     storage = tmp_path / "store"
     (storage / "models").mkdir(parents=True)
     model = storage / "models" / name
     model.write_bytes(b"stub-onnx")
-    monkeypatch.setattr(routes_mod, "load_config", lambda _p: _config_with_storage(str(storage)))
+    save_config(_config_with_storage(str(storage)), str(tmp_path / "config.toml"))
     return model
 
 
@@ -3729,7 +4270,7 @@ def test_api_config_import_rejects_malformed_json(live_server) -> None:
     assert status == 400
 
 
-def test_api_config_import_saves_non_restart_changes_immediately(live_server) -> None:
+def test_api_config_import_saves_changes_immediately(live_server) -> None:
     server, base = live_server
     status, body = _post_json(
         base,
@@ -3738,14 +4279,13 @@ def test_api_config_import_saves_non_restart_changes_immediately(live_server) ->
     )
     assert status == 200
     assert body.get("success") is True
-    assert body.get("needs_restart") is False
 
     saved = load_config(server.config_path)
     assert saved.camera.pos_x == pytest.approx(7.25)
     assert saved.psn_system_name == "Imported"
 
 
-def test_api_config_import_detection_off_to_on_saves_live_without_restart_gate(
+def test_api_config_import_detection_off_to_on_saves_live(
     live_server,
 ) -> None:
     server, base = live_server
@@ -3759,13 +4299,12 @@ def test_api_config_import_detection_off_to_on_saves_live_without_restart_gate(
     )
     assert status == 200
     assert body.get("success") is True
-    assert body.get("needs_restart") is False
 
     saved = load_config(server.config_path)
     assert saved.detection.enabled == (not original_detection)
 
 
-def test_api_config_import_otp_change_saves_live_without_restart_gate(
+def test_api_config_import_otp_change_saves_live(
     live_server,
 ) -> None:
     server, base = live_server
@@ -3779,64 +4318,369 @@ def test_api_config_import_otp_change_saves_live_without_restart_gate(
     )
     assert status == 200
     assert body.get("success") is True
-    assert body.get("needs_restart") is False
 
     saved = load_config(server.config_path)
     assert saved.otp_output.enabled == (not original_enabled)
     assert saved.otp_output.priority == 42
 
 
-def test_api_config_import_with_confirm_restart_saves_everything(live_server) -> None:
+def test_api_config_import_applies_a_push_from_an_older_station(live_server) -> None:
+    """Stations on 0.5.0-rc1 and earlier push Broadcast All to ``?skip_restart=1``."""
     server, base = live_server
     before = load_config(server.config_path)
-
-    status, body = _post_json(
-        base,
-        "/api/config/import?confirm_restart=1",
-        {
-            "detection": {"enabled": not before.detection.enabled},
-            "otp_output": {"enabled": True, "priority": 42, "system_number": 7},
-        },
-    )
-    assert status == 200
-    assert body.get("success") is True
-    assert body.get("needs_restart") is False
-
-    saved = load_config(server.config_path)
-    assert saved.otp_output.enabled is True
-    assert saved.otp_output.priority == 42
-    assert saved.otp_output.system_number == 7
-
-
-def test_api_config_import_with_skip_restart_saves_everything_live(
-    live_server,
-) -> None:
-    """All sections apply live; skip_restart flag is preserved for backwards compatibility."""
-    server, base = live_server
-    before = load_config(server.config_path)
-    before_otp = before.otp_output.enabled
-    before_detection = before.detection.enabled
 
     status, body = _post_json(
         base,
         "/api/config/import?skip_restart=1",
         {
-            "otp_output": {"enabled": not before_otp},
-            "detection": {"enabled": not before_detection},
+            "detection": {"enabled": not before.detection.enabled},
             "camera": {"pos_x": 99.0},
         },
     )
     assert status == 200
     assert body.get("success") is True
-    # No diff is restart-gated, so the request is satisfied via the
-    # default save-everything path; the skip_restart=1 query param
-    # has no remaining gate to honour.
-    assert body.get("needs_restart") is False
 
     saved = load_config(server.config_path)
-    assert saved.detection.enabled == (not before_detection)
-    assert saved.otp_output.enabled == (not before_otp)
+    assert saved.detection.enabled == (not before.detection.enabled)
     assert saved.camera.pos_x == pytest.approx(99.0)
+
+
+def _archived_config(server: ConfigWebServer, archive: str) -> dict[str, Any]:
+    """The ``config.toml`` inside one of the web UI's settings backups."""
+    path = Path(server.config_path).parent / "backups" / "web" / archive
+    with tarfile.open(path, "r:gz") as tar:
+        member = tar.extractfile("config.toml")
+        assert member is not None
+        return tomllib.loads(member.read().decode())
+
+
+def _block_backups(server: ConfigWebServer) -> None:
+    """A file where the backups folder goes, so no backup can be written."""
+    (Path(server.config_path).parent / "backups").write_text("not a folder")
+
+
+def test_api_config_import_backs_up_the_settings_it_replaces(live_server) -> None:
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.camera.pos_x = 1.5
+    save_config(cfg, server.config_path)
+
+    status, body = _post_json(base, "/api/config/import", {"camera": {"pos_x": 7.25}})
+    assert status == 200
+    assert body.get("success") is True
+    assert "-import-" in body["backup"]
+    assert "backup_error" not in body
+    assert _archived_config(server, body["backup"])["camera"]["pos_x"] == pytest.approx(1.5)
+    assert load_config(server.config_path).camera.pos_x == pytest.approx(7.25)
+
+
+@pytest.mark.parametrize("path", ["/api/config/import", "/api/config/reset"])
+def test_the_backup_does_not_wait_for_the_write_lock(live_server, path: str) -> None:
+    """The main loop takes the lock too, so a slow archive must not be written under it."""
+    import threading
+
+    from openfollow.configuration import config_write_lock
+
+    server, base = live_server
+    web = Path(server.config_path).parent / "backups" / "web"
+    answers: list[tuple[int, dict]] = []
+    with config_write_lock:
+        sender = threading.Thread(target=lambda: answers.append(_post_json(base, path, {})))
+        sender.start()
+        deadline = time.monotonic() + 5
+        while not (web.is_dir() and any(web.iterdir())) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert web.is_dir() and any(web.iterdir())
+        assert answers == []
+    sender.join(5)
+    assert answers[0][0] == 200
+
+
+def test_api_config_import_goes_ahead_when_no_backup_can_be_made(live_server) -> None:
+    server, base = live_server
+    _block_backups(server)
+
+    status, body = _post_json(base, "/api/config/import", {"camera": {"pos_x": 7.25}})
+    assert status == 200
+    assert body.get("success") is True
+    assert body["backup_error"]
+    assert "backup" not in body
+    assert load_config(server.config_path).camera.pos_x == pytest.approx(7.25)
+
+
+# ---------------------------------------------------------------------------
+# Settings another station pushed here
+# ---------------------------------------------------------------------------
+
+
+def _push(base: str, path: str, data: dict, sender: str = "Stage Left") -> tuple[int, dict]:
+    return _post_json(base, f"{path}?from={urllib.parse.quote(sender, safe='')}", data)
+
+
+def _pushes(server: ConfigWebServer) -> list[tuple[str, str, str, str]]:
+    return [(p.station, p.address, p.what, p.backup_error) for p in server.pushed_settings.snapshot()[0]]
+
+
+def test_a_pushed_import_is_recorded_and_backed_up_as_a_push(live_server) -> None:
+    server, base = live_server
+    status, body = _push(base, "/api/config/import", {"camera": {"pos_x": 7.25}})
+    assert status == 200
+    assert "-push-" in body["backup"]
+    assert _pushes(server) == [("Stage Left", "127.0.0.1", "every shared setting", "")]
+    assert load_config(server.config_path).camera.pos_x == pytest.approx(7.25)
+
+
+def test_a_push_names_the_address_it_came_from_not_a_forwarded_one(live_server) -> None:
+    server, base = live_server
+    req = urllib.request.Request(
+        f"{base}/api/config/grid?from=Stage%20Left",
+        data=json.dumps({"width": 12.0}).encode(),
+        headers={"Content-Type": "application/json", "X-Forwarded-For": "203.0.113.9"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        assert resp.status == 200
+    assert _pushes(server)[0][1] == "127.0.0.1"
+
+
+@pytest.mark.parametrize("path", ["/api/config/grid", "/api/config/no_such_section"])
+def test_a_pushed_section_backup_does_not_wait_for_the_write_lock(live_server, path: str) -> None:
+    """A known section is archived before the lock; an unknown one is refused before any archive."""
+    import threading
+
+    from openfollow.configuration import config_write_lock
+
+    server, base = live_server
+    web = Path(server.config_path).parent / "backups" / "web"
+    answers: list[tuple[int, dict]] = []
+    known = path.endswith("grid")
+    with config_write_lock:
+        sender = threading.Thread(target=lambda: answers.append(_push(base, path, {"width": 12.0})))
+        sender.start()
+        if known:
+            deadline = time.monotonic() + 5
+            while not (web.is_dir() and any(web.iterdir())) and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert web.is_dir() and any(web.iterdir())
+        else:
+            sender.join(5)
+            assert answers and answers[0][0] == 404
+            assert not web.exists()
+    sender.join(5)
+    assert answers[0][0] == (200 if known else 404)
+
+
+def test_an_import_from_this_page_is_no_push(live_server) -> None:
+    server, base = live_server
+    status, body = _post_json(base, "/api/config/import", {"camera": {"pos_x": 7.25}})
+    assert status == 200
+    assert "-import-" in body["backup"]
+    assert _pushes(server) == []
+
+
+def test_a_pushed_section_is_recorded_and_backed_up_as_a_push(live_server) -> None:
+    server, base = live_server
+    status, body = _push(base, "/api/config/grid", {"width": 12.0})
+    assert status == 200
+    assert "-push-" in body["backup"]
+    assert _pushes(server) == [("Stage Left", "127.0.0.1", "Grid", "")]
+    assert load_config(server.config_path).grid.width == pytest.approx(12.0)
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/api/config/import", {"psn_system_name": "Stage Left", "camera": {"pos_x": 7.25}}),
+        ("/api/config/psn", {"psn_system_name": "Stage Left", "psn_mcast_ip": "236.10.10.11"}),
+    ],
+)
+def test_a_push_never_renames_the_station_it_lands_on(live_server, path: str, payload: dict) -> None:
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.psn_system_name = "Front of House"
+    save_config(cfg, server.config_path)
+
+    status, _body = _push(base, path, payload)
+    assert status == 200
+    saved = load_config(server.config_path)
+    assert saved.psn_system_name == "Front of House"
+    # The rest of the push still applies.
+    assert (saved.camera.pos_x, saved.psn_mcast_ip) != (AppConfig().camera.pos_x, AppConfig().psn_mcast_ip)
+
+
+def test_a_push_from_an_older_station_is_recorded_unnamed_and_keeps_the_name(live_server) -> None:
+    """Stations on 0.5.0-rc1 and earlier push every setting to ``?skip_restart=1``, their name included."""
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.psn_system_name = "Front of House"
+    save_config(cfg, server.config_path)
+
+    status, body = _post_json(
+        base, "/api/config/import?skip_restart=1", {"psn_system_name": "Stage Left", "camera": {"pos_x": 7.25}}
+    )
+    assert status == 200
+    assert "-push-" in body["backup"]
+    assert _pushes(server) == [("", "127.0.0.1", "every shared setting", "")]
+    saved = load_config(server.config_path)
+    assert saved.psn_system_name == "Front of House"
+    assert saved.camera.pos_x == pytest.approx(7.25)
+
+
+@pytest.mark.parametrize(
+    ("section", "label"),
+    [
+        ("osc", "OSC"),
+        ("otp_output", "OTP output"),
+        ("rttrpm_output", "RTTrPM output"),
+        ("psn", "PSN"),
+        ("mouse3d", "3D mouse"),
+        ("video_source", "Video source"),
+    ],
+)
+def test_a_pushed_section_is_named_as_the_operator_knows_it(live_server, section: str, label: str) -> None:
+    server, base = live_server
+    status, _body = _push(base, f"/api/config/{section}", {"unused": 1})
+    assert status == 200
+    assert _pushes(server)[0][2] == label
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/api/config/interface_assignment", {"psn": "eth0"}),
+        ("/api/config/psn", {"psn_system_name": "Stage Left"}),
+    ],
+)
+def test_a_push_carrying_nothing_this_station_shares_is_no_push(live_server, path: str, payload: dict) -> None:
+    # A device-local section, or a station name alone, is stripped to nothing.
+    server, base = live_server
+    status, body = _push(base, path, payload)
+    assert status == 200
+    assert "backup" not in body
+    assert _pushes(server) == []
+    assert not (Path(server.config_path).parent / "backups").exists()
+
+
+def test_a_section_write_that_is_no_push_records_and_backs_up_nothing(live_server) -> None:
+    server, base = live_server
+    status, body = _post_json(base, "/api/config/camera", {"pos_x": 2.0})
+    assert status == 200
+    assert body == {"success": True}
+    assert _pushes(server) == []
+    assert not (Path(server.config_path).parent / "backups").exists()
+
+
+def test_a_push_to_an_unknown_section_records_nothing(live_server) -> None:
+    server, base = live_server
+    status, _body = _push(base, "/api/config/no_such_section", {"x": 1})
+    assert status == 404
+    assert _pushes(server) == []
+
+
+def test_a_push_whose_backup_failed_carries_the_reason(live_server) -> None:
+    server, base = live_server
+    _block_backups(server)
+    status, body = _push(base, "/api/config/import", {"camera": {"pos_x": 7.25}})
+    assert status == 200
+    assert _pushes(server)[0][3] == body["backup_error"] != ""
+
+
+@pytest.mark.parametrize(
+    ("sent", "shown"),
+    [
+        ("Bühne Links", "Bühne Links"),
+        ("Stage\nLeft\x1b[31m", "StageLeft[31m"),
+        ("x" * 200, "x" * 128),
+        ("  ", ""),
+    ],
+)
+def test_the_pushing_station_name_is_cleaned(live_server, sent: str, shown: str) -> None:
+    server, base = live_server
+    status, _body = _push(base, "/api/config/import", {}, sender=sent)
+    assert status == 200
+    assert _pushes(server)[0][0] == shown
+
+
+@pytest.mark.parametrize("sender", ["send_config_import", "send_config_section"])
+def test_a_signed_push_from_the_real_sender_is_verified_and_recorded(pin_protected_server, sender: str) -> None:
+    from openfollow.web import routes as routes_mod
+
+    server, base, _pin = pin_protected_server
+    port = int(base.rsplit(":", 1)[1])
+    if sender == "send_config_import":
+        ok = routes_mod._send_config_import_to_peer(
+            "127.0.0.1", port, {"camera": {"pos_x": 3.0}}, pin="sekret", expected_port=port, sender="Bühne Links"
+        )
+        what = "every shared setting"
+    else:
+        ok = routes_mod._send_config_to_peer(
+            "127.0.0.1", port, "grid", {"width": 9.0}, pin="sekret", expected_port=port, sender="Bühne Links"
+        )
+        what = "Grid"
+    assert ok is True
+    assert _pushes(server) == [("Bühne Links", "127.0.0.1", what, "")]
+
+
+def test_a_push_signed_with_the_wrong_pin_is_refused_and_not_recorded(pin_protected_server) -> None:
+    from openfollow.web import routes as routes_mod
+
+    server, base, _pin = pin_protected_server
+    port = int(base.rsplit(":", 1)[1])
+    ok = routes_mod._send_config_import_to_peer("127.0.0.1", port, {}, pin="wrong", expected_port=port, sender="X")
+    assert ok is False
+    assert _pushes(server) == []
+
+
+def test_the_pushed_settings_api_lists_newest_first(live_server) -> None:
+    server, base = live_server
+    server.pushed_settings.record("A", "198.51.100.1", "Grid")
+    second = server.pushed_settings.record("B", "198.51.100.2", "every setting", "No space left on device")
+    status, body = _get_json(base, "/api/pushed-settings")
+    assert status == 200
+    assert body["earlier"] == 0
+    newest = body["pushes"][0]
+    assert re.fullmatch(r"\d\d:\d\d", newest.pop("time"))
+    assert newest == {
+        "id": second.id,
+        "station": "B",
+        "address": "198.51.100.2",
+        "what": "every setting",
+        "backup_error": "No space left on device",
+    }
+    assert [p["station"] for p in body["pushes"]] == ["B", "A"]
+    assert body["run"] == server.pushed_settings.run
+    assert body["received"] == 2
+
+
+def test_removing_the_warning_keeps_a_push_that_arrived_since(live_server) -> None:
+    server, base = live_server
+    server.pushed_settings.record("A", "198.51.100.1", "Grid")
+    seen = server.pushed_settings.record("B", "198.51.100.2", "Grid")
+    server.pushed_settings.record("C", "198.51.100.3", "Camera")
+    status, body = _post_json(base, "/api/pushed-settings/remove", {"upto": seen.id, "run": server.pushed_settings.run})
+    assert (status, body) == (200, {"success": True})
+    assert [p[0] for p in _pushes(server)] == ["C"]
+
+
+@pytest.mark.parametrize("payload", [{"upto": 5, "run": "an-earlier-run"}, {"upto": 5}])
+def test_a_removal_read_from_another_run_is_refused(live_server, payload) -> None:
+    # Ids start at 1 on every run: an id from before a restart names a push the page never showed.
+    server, base = live_server
+    server.pushed_settings.record("A", "198.51.100.1", "Grid")
+    status, body = _post_json(base, "/api/pushed-settings/remove", payload)
+    assert status == 409
+    assert body["error"]
+    assert [p[0] for p in _pushes(server)] == ["A"]
+
+
+@pytest.mark.parametrize("payload", [{}, {"upto": "3"}, {"upto": True}, {"upto": None}, [1]])
+def test_removing_the_warning_needs_a_push_id(live_server, payload) -> None:
+    server, base = live_server
+    server.pushed_settings.record("A", "198.51.100.1", "Grid")
+    status, body = _post_json(base, "/api/pushed-settings/remove", payload)
+    assert status == 400
+    assert body["error"]
+    assert [p[0] for p in _pushes(server)] == ["A"]
 
 
 # ---------------------------------------------------------------------------
@@ -3864,6 +4708,8 @@ def test_api_config_reset_restores_defaults_and_keeps_device_fields(live_server)
     # it only completes across a restart.
     assert body.get("needs_restart") is True
     assert body.get("restarting") is True
+    # The process the browser waits to see replaced.
+    assert body.get("instance") == server.instance_id
     assert server.check_restart_requested() is True
 
     defaults = AppConfig()
@@ -3875,6 +4721,120 @@ def test_api_config_reset_restores_defaults_and_keeps_device_fields(live_server)
     assert saved.web_port == 8123
     assert saved.psn_source_iface == "eth0"
     assert saved.detection.storage_path == "/mnt/nvme/openfollow/yolo"
+
+
+@pytest.mark.parametrize("state", ["queued", "running", "restarting"])
+def test_api_config_reset_waits_for_a_running_update_and_writes_nothing(live_server, state: str) -> None:
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.grid.width = 42.0
+    save_config(cfg, server.config_path)
+    server.set_update_status(state=state)
+
+    status, body = _post_json(base, "/api/config/reset", {})
+
+    assert status == 409
+    assert body == {"error": "An update is running.", "action": "Restore defaults once it has finished."}
+    assert load_config(server.config_path).grid.width == pytest.approx(42.0)
+    # No backup either: the reset wrote nothing.
+    assert not (Path(server.config_path).parent / "backups").exists()
+    assert server.check_restart_requested() is False
+
+
+def test_api_config_reset_goes_ahead_once_the_update_failed(live_server) -> None:
+    server, base = live_server
+    server.set_update_status(state="failed")
+    status, body = _post_json(base, "/api/config/reset", {})
+    assert (status, body["success"]) == (200, True)
+    assert server.check_restart_requested() is True
+
+
+def test_an_update_asked_for_while_defaults_are_written_is_refused_for_their_restart(live_server, monkeypatch) -> None:
+    """Queued between the write and the restart, the update would leave the reset file under the old config."""
+    import threading
+
+    import openfollow.services as services_module
+    import openfollow.web.routes as routes_module
+
+    server, base = live_server
+    monkeypatch.setattr(services_module, "clear_detached_update_state", lambda: None)
+    real_save = routes_module.save_config
+    queued: list[bool] = []
+    restart_seen: list[bool] = []
+    workers: list[threading.Thread] = []
+
+    def ask_for_an_update() -> None:
+        queued.append(server.request_deb_update("openfollow"))
+        # Read the moment the update went through.
+        restart_seen.append(server.check_restart_requested())
+
+    def save_while_an_update_is_asked_for(cfg: AppConfig, path: Any) -> None:
+        real_save(cfg, path)
+        worker = threading.Thread(target=ask_for_an_update)
+        worker.start()
+        worker.join(timeout=0.2)
+        assert worker.is_alive(), "an update was queued between the write and its restart"
+        workers.append(worker)
+
+    monkeypatch.setattr(routes_module, "save_config", save_while_an_update_is_asked_for)
+    status, body = _post_json(base, "/api/config/reset", {})
+    workers[0].join(timeout=5)
+
+    assert (status, body["success"], body["restarting"]) == (200, True, True)
+    # It waited for the write, then found the restart pending.
+    assert (queued, restart_seen) == ([False], [True])
+    assert server.get_update_status()["state"] == "idle"
+
+
+def test_a_reset_never_answers_restarting_without_a_restart(live_server, monkeypatch) -> None:
+    """An update queued while the backup is made refuses the reset, which then writes nothing."""
+    import openfollow.services as services_module
+    import openfollow.web.routes as routes_module
+
+    server, base = live_server
+    monkeypatch.setattr(services_module, "clear_detached_update_state", lambda: None)
+    cfg = load_config(server.config_path)
+    cfg.grid.width = 42.0
+    save_config(cfg, server.config_path)
+    real_backup = routes_module._backup_before
+
+    def back_up_then_queue_an_update(config_path: str, kind: str) -> dict[str, str]:
+        fields = real_backup(config_path, kind)
+        assert server.request_deb_update("openfollow") is True
+        return fields
+
+    monkeypatch.setattr(routes_module, "_backup_before", back_up_then_queue_an_update)
+    status, body = _post_json(base, "/api/config/reset", {})
+
+    assert status == 409
+    assert body == {"error": "An update is running.", "action": "Restore defaults once it has finished."}
+    assert load_config(server.config_path).grid.width == pytest.approx(42.0)
+    assert server.check_restart_requested() is False
+
+
+def test_api_config_reset_backs_up_the_settings_it_replaces(live_server) -> None:
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.grid.width = 42.0
+    save_config(cfg, server.config_path)
+
+    status, body = _post_json(base, "/api/config/reset", {})
+    assert status == 200
+    assert body.get("success") is True
+    assert "-defaults-" in body["backup"]
+    assert _archived_config(server, body["backup"])["grid"]["width"] == pytest.approx(42.0)
+    assert load_config(server.config_path).grid.width == pytest.approx(AppConfig().grid.width)
+
+
+def test_api_config_reset_goes_ahead_when_no_backup_can_be_made(live_server) -> None:
+    server, base = live_server
+    _block_backups(server)
+
+    status, body = _post_json(base, "/api/config/reset", {})
+    assert status == 200
+    assert body.get("success") is True
+    assert body["backup_error"]
+    assert server.check_restart_requested() is True
 
 
 def test_api_config_reset_keeps_the_web_pin_authenticating(pin_protected_server) -> None:
@@ -3919,261 +4879,159 @@ def test_api_config_reset_refuses_a_cross_origin_form_post(live_server) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Wizard endpoints – error-path coverage
+# Export, Restore Defaults, import
 # ---------------------------------------------------------------------------
 
+# What a file import restores and a push leaves as it is.
+_RESTORED_BY_A_FILE_ONLY = (
+    "controlled_marker_ids",
+    "viewer_marker_ids",
+    "detection.masks",
+    "detection.masks_enabled",
+    "ndi_source_name",
+    "rtsp_url",
+    "picam_camera_name",
+    "v4l2_device",
+    "avf_unique_id",
+    "mouse3d.enabled",
+    "operator_messages.enabled",
+    "midi.patches",
+    "virtual_faders.faders",
+    "controller.button_raw_indices",
+    "controller.swap_triggers",
+    "controller.mapped_controller_guid",
+    "controller.button_name_style",
+    "ui.developer_mode",
+    "paths.show_paths",
+    "network.backend",
+    "update_include_prereleases",
+    "auto_update_check",
+    "auto_time_sync",
+    "time_sync_server",
+)
+_CHANGED_STRINGS = ("Cam 2", "192.0.2.10", "#336699", "imperial", "replace", "bottom", "nm", "H265", "720p", "x")
+# Settings the web UI checks harder than a config.toml load does.
+_CHANGED_VALUES = {
+    "update_github_repo": "stage-crew/openfollow",
+    "update_service_name": "openfollow-stage",
+    "controller.button_name_style": "playstation",
+}
 
-def _wizard_camera_payload(**overrides) -> dict[str, object]:
-    base = {
-        "pos_x": 0.0,
-        "pos_y": -5.0,
-        "pos_z": 3.0,
-        "pitch": 10.0,
-        "yaw": 0.0,
-        "roll": 0.0,
-        "fov": 45.0,
+
+def _leaves(tree: dict[str, Any], prefix: tuple[str, ...] = ()) -> Any:
+    for key, value in tree.items():
+        if isinstance(value, dict) and value:
+            yield from _leaves(value, (*prefix, key))
+        else:
+            yield ".".join((*prefix, key)), value
+
+
+def _at(tree: dict[str, Any], path: str) -> Any:
+    for key in path.split("."):
+        tree = tree[key]
+    return tree
+
+
+def _put(tree: dict[str, Any], path: str, value: Any) -> None:
+    *parents, name = path.split(".")
+    for key in parents:
+        tree = tree[key]
+    tree[name] = value
+
+
+def _changed(value: Any) -> list[Any]:
+    if isinstance(value, bool):
+        return [not value]
+    if isinstance(value, int):
+        return [value + 1, 2, 0]
+    if isinstance(value, float):
+        return [value + 0.5, value / 2 + 0.01, 0.3]
+    if isinstance(value, str):
+        return [s for s in _CHANGED_STRINGS if s != value]
+    return []
+
+
+def _without_none(tree: Any) -> Any:
+    if isinstance(tree, dict):
+        return {k: _without_none(v) for k, v in tree.items() if v is not None}
+    if isinstance(tree, list):
+        return [_without_none(v) for v in tree]
+    return tree
+
+
+def _export(base: str) -> dict[str, Any]:
+    with urllib.request.urlopen(f"{base}/api/config/export", timeout=5) as resp:
+        return json.loads(resp.read().decode())
+
+
+def _save_every_setting_changed(config_path: str, defaults: dict[str, Any]) -> None:
+    """Write a config.toml whose every exported setting differs from ``defaults`` where a load keeps the change."""
+    import copy
+    from dataclasses import asdict
+
+    import tomli_w
+
+    data = copy.deepcopy(defaults)
+    data["controlled_marker_ids"] = [3, 5]
+    data["viewer_marker_ids"] = [3, 5, 7]
+    data["detection"]["masks"] = [{"name": "Stage", "vertices": [[0.1, 0.1], [0.9, 0.1], [0.5, 0.9]], "enabled": False}]
+    data["midi"]["patches"] = [{"id": 2, "alias": "Desk", "serial": "", "port_name": "Desk", "product": "Desk"}]
+    data["virtual_faders"]["faders"][0]["name"] = "Iris"
+    data["controller"]["button_raw_indices"] = {"A": 3}
+    data["osc"]["allowed_sender_ips"] = ["192.0.2.7"]
+    # The input stays one every host offers; the others are the ones a station remembers.
+    pending = {
+        path: [_CHANGED_VALUES[path]] if path in _CHANGED_VALUES else options
+        for path, value in _leaves(defaults)
+        if path != "video_source_type" and (options := _changed(value))
     }
-    base.update(overrides)
-    return base
+    while pending:
+        for path, options in pending.items():
+            _put(data, path, options[0])
+        Path(config_path).write_text(tomli_w.dumps(_without_none(data)), encoding="utf-8")
+        kept = asdict(load_config(config_path, strict=True))
+        for path in list(pending):
+            if _at(kept, path) == pending[path][0]:
+                del pending[path]
+                continue
+            pending[path].pop(0)
+            if not pending[path]:
+                _put(data, path, _at(defaults, path))
+                del pending[path]
+    Path(config_path).write_text(tomli_w.dumps(_without_none(data)), encoding="utf-8")
 
 
-def test_api_wizard_project_happy_path(live_server) -> None:
-    _, base = live_server
-    status, body = _post_json(
-        base,
-        "/api/wizard/project",
-        {
-            "camera": _wizard_camera_payload(),
-            "grid": {"width": 10.0, "depth": 8.0},
-            "image_width": 1920,
-            "image_height": 1080,
-        },
-    )
+def test_an_export_restore_defaults_import_round_trip_restores_every_exported_setting(live_server) -> None:
+    server, base = live_server
+    defaults = _export(base)
+    _save_every_setting_changed(server.config_path, defaults)
+    exported = _export(base)
+    changed = {path for path, value in _leaves(defaults) if _at(exported, path) != value}
+    assert set(_RESTORED_BY_A_FILE_ONLY) <= changed
+
+    assert _post_json(base, "/api/config/reset", {})[0] == 200
+    assert _export(base)["controlled_marker_ids"] == []
+    status, body = _post_json(base, "/api/config/import", exported)
+
+    assert (status, body["success"]) == (200, True)
+    restored = _export(base)
+    assert [path for path, _ in _leaves(defaults) if _at(restored, path) != _at(exported, path)] == []
+
+
+def test_a_push_leaves_what_only_a_file_import_restores(live_server) -> None:
+    server, base = live_server
+    defaults = _export(base)
+    _save_every_setting_changed(server.config_path, defaults)
+    sent = _export(base)
+    save_config(AppConfig(), server.config_path)
+    before = _export(base)
+
+    status, _ = _push(base, "/api/config/import", sent)
+
     assert status == 200
-    assert "corners" in body
-    for key in ("DSL", "DSR", "USR", "USL"):
-        assert key in body["corners"]
-    # With z_offset=0 there should not be an elevated reference point.
-    assert "reference_elevated" not in body
-    assert "reference" in body
-
-
-def test_api_wizard_project_includes_elevated_ref_when_z_offset(live_server) -> None:
-    _, base = live_server
-    status, body = _post_json(
-        base,
-        "/api/wizard/project",
-        {
-            "camera": _wizard_camera_payload(),
-            "grid": {"width": 10.0, "depth": 8.0, "z_offset": 1.5},
-            "image_width": 1920,
-            "image_height": 1080,
-        },
-    )
-    assert status == 200
-    assert "reference_elevated" in body
-    assert body.get("z_offset") == pytest.approx(1.5)
-
-
-def test_api_wizard_project_rejects_non_dict_camera(live_server) -> None:
-    _, base = live_server
-    status, body = _post_json(
-        base,
-        "/api/wizard/project",
-        {
-            "camera": [1, 2, 3],  # not a dict
-            "grid": {"width": 10.0, "depth": 8.0},
-            "image_width": 1920,
-            "image_height": 1080,
-        },
-    )
-    assert status == 400
-    assert "error" in body
-
-
-def test_api_wizard_project_rejects_missing_camera_fields(live_server) -> None:
-    _, base = live_server
-    cam = _wizard_camera_payload()
-    cam.pop("fov")  # omit a required field
-
-    status, body = _post_json(
-        base,
-        "/api/wizard/project",
-        {
-            "camera": cam,
-            "grid": {"width": 10.0, "depth": 8.0},
-            "image_width": 1920,
-            "image_height": 1080,
-        },
-    )
-    assert status == 400
-    assert "error" in body
-
-
-def test_api_wizard_project_rejects_malformed_json(live_server) -> None:
-    _, base = live_server
-    req = urllib.request.Request(
-        f"{base}/api/wizard/project",
-        data=b"{not json",
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=5) as r:
-            status = r.status
-    except urllib.error.HTTPError as e:
-        status = e.code
-    assert status == 400
-
-
-def test_api_wizard_unproject_rejects_empty_screen_points(live_server) -> None:
-    _, base = live_server
-    status, body = _post_json(
-        base,
-        "/api/wizard/unproject",
-        {
-            "camera": _wizard_camera_payload(),
-            "screen_points": [],  # empty list -> 400
-            "image_width": 1920,
-            "image_height": 1080,
-        },
-    )
-    assert status == 400
-    assert "non-empty" in str(body.get("error", ""))
-
-
-def test_api_wizard_unproject_rejects_non_list_screen_points(live_server) -> None:
-    _, base = live_server
-    status, body = _post_json(
-        base,
-        "/api/wizard/unproject",
-        {
-            "camera": _wizard_camera_payload(),
-            "screen_points": "not a list",
-            "image_width": 1920,
-            "image_height": 1080,
-        },
-    )
-    assert status == 400
-    assert "error" in body
-
-
-def test_api_wizard_unproject_rejects_wrong_point_shape(live_server) -> None:
-    _, base = live_server
-    status, body = _post_json(
-        base,
-        "/api/wizard/unproject",
-        {
-            "camera": _wizard_camera_payload(),
-            "screen_points": [[1.0, 2.0, 3.0]],  # 3-tuple instead of [x, y]
-            "image_width": 1920,
-            "image_height": 1080,
-        },
-    )
-    assert status == 400
-    assert "[x, y]" in str(body.get("error", ""))
-
-
-def test_api_wizard_unproject_rejects_non_numeric_coord(live_server) -> None:
-    _, base = live_server
-    status, body = _post_json(
-        base,
-        "/api/wizard/unproject",
-        {
-            "camera": _wizard_camera_payload(),
-            "screen_points": [["a", "b"]],
-            "image_width": 1920,
-            "image_height": 1080,
-        },
-    )
-    assert status == 400
-    assert "error" in body
-
-
-def test_api_wizard_unproject_returns_delta_for_two_points(live_server) -> None:
-    _, base = live_server
-    # Camera looking down (pitch=-30) from 5 m high – both screen points
-    # project onto the ground plane, so the endpoint produces a real delta.
-    # The default _wizard_camera_payload() pitches up and would yield NaN.
-    status, body = _post_json(
-        base,
-        "/api/wizard/unproject",
-        {
-            "camera": _wizard_camera_payload(pos_z=5.0, pitch=-30.0),
-            "screen_points": [[960.0, 540.0], [1000.0, 540.0]],
-            "image_width": 1920,
-            "image_height": 1080,
-        },
-    )
-    assert status == 200
-    assert "world_points" in body
-    # Two points must produce a delta payload (x/y distances).
-    assert "delta" in body
-    assert "x" in body["delta"] and "y" in body["delta"]
-
-
-def test_api_wizard_solve_rejects_wrong_corner_counts(live_server) -> None:
-    _, base = live_server
-    status, body = _post_json(
-        base,
-        "/api/wizard/solve",
-        {
-            "world_corners": [[0, 0, 0]],  # only 1, expected 4
-            "screen_corners": [[0, 0], [1, 0], [1, 1], [0, 1]],
-            "image_width": 1920,
-            "image_height": 1080,
-        },
-    )
-    assert status == 400
-    assert "exactly 4" in str(body.get("error", ""))
-
-
-def test_api_wizard_solve_rejects_non_list_screen_corners(live_server) -> None:
-    _, base = live_server
-    status, body = _post_json(
-        base,
-        "/api/wizard/solve",
-        {
-            "world_corners": [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]],
-            "screen_corners": "not a list",
-            "image_width": 1920,
-            "image_height": 1080,
-        },
-    )
-    assert status == 400
-    assert "error" in body
-
-
-def test_api_wizard_solve_rejects_malformed_world_corner(live_server) -> None:
-    _, base = live_server
-    status, body = _post_json(
-        base,
-        "/api/wizard/solve",
-        {
-            "world_corners": [[0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]],  # missing z on first
-            "screen_corners": [[0, 0], [1, 0], [1, 1], [0, 1]],
-            "image_width": 1920,
-            "image_height": 1080,
-        },
-    )
-    assert status == 400
-    assert "[x, y, z]" in str(body.get("error", ""))
-
-
-def test_api_wizard_solve_rejects_non_numeric_screen_coord(live_server) -> None:
-    _, base = live_server
-    status, body = _post_json(
-        base,
-        "/api/wizard/solve",
-        {
-            "world_corners": [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]],
-            "screen_corners": [[0, 0], [1, 0], [1, 1], [0, "not-a-number"]],
-            "image_width": 1920,
-            "image_height": 1080,
-        },
-    )
-    assert status == 400
-    assert "error" in body
+    after = _export(base)
+    assert after["camera"] == sent["camera"]
+    assert [path for path in _RESTORED_BY_A_FILE_ONLY if _at(after, path) != _at(before, path)] == []
 
 
 # ---------------------------------------------------------------------------
@@ -4338,6 +5196,46 @@ def test_auth_cookie_authenticates_subsequent_requests(pin_protected_server) -> 
         json.loads(r.read().decode())  # valid JSON body
 
 
+def _login_cookie(base: str, pin: str) -> str:
+    """The ``name=value`` auth cookie a browser gets for logging in with ``pin``."""
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *_a, **_kw):
+            return None
+
+    req = urllib.request.Request(
+        f"{base}/login",
+        data=urllib.parse.urlencode({"pin": pin}).encode(),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        set_cookies = urllib.request.build_opener(_NoRedirect).open(req, timeout=5).headers.get_all("Set-Cookie")
+    except urllib.error.HTTPError as e:
+        set_cookies = e.headers.get_all("Set-Cookie")
+    return next(c for c in set_cookies or [] if c.startswith("_openfollow_auth=")).split(";", 1)[0]
+
+
+def _info_with_cookie(base: str, cookie: str) -> dict:
+    req = urllib.request.Request(f"{base}/api/info", headers={"Cookie": cookie})
+    with urllib.request.urlopen(req, timeout=5) as r:
+        assert r.status == 200
+        return json.loads(r.read().decode())
+
+
+def test_a_restarted_openfollow_lets_the_logged_in_browser_ask_whether_it_is_back(pin_protected_server) -> None:
+    """The cookie is signed with the PIN, not per process, so the new process answers the
+    browser that asked the old one to restart, with a new instance."""
+    server, base, pin = pin_protected_server
+    cookie = _login_cookie(base, pin)
+    before = _info_with_cookie(base, cookie)["instance"]
+    assert before == server.instance_id
+    with live_on_free_port(
+        lambda port: ConfigWebServer(config_path=server.config_path, host="127.0.0.1", port=port)
+    ) as (_restarted, restarted_base):
+        assert _info_with_cookie(restarted_base, cookie)["instance"] not in ("", before)
+
+
 def test_auth_invalid_signature_fails_closed(pin_protected_server) -> None:
     _, base, _ = pin_protected_server
     body = b'{"pos_x": 2.5}'
@@ -4467,6 +5365,64 @@ def test_login_submit_redirects_when_no_pin_configured(live_server) -> None:
     assert location.endswith("/")
 
 
+# Any LAN client can send these; a station is never behind a proxy that sets them.
+_FORGED_FORWARDED = {"X-Forwarded-Host": "attacker.example", "X-Forwarded-Proto": "https"}
+
+
+def _redirect_with_forged_forwarded(
+    base: str, method: str, path: str, form: dict | None = None, cookie: str = ""
+) -> tuple[int, str]:
+    """``(status, Location)`` of a request carrying attacker-set X-Forwarded-* headers."""
+    data = urllib.parse.urlencode(form).encode() if form is not None else None
+    headers = dict(_FORGED_FORWARDED)
+    if cookie:
+        headers["Cookie"] = cookie
+    if data is not None:
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+    req = urllib.request.Request(f"{base}{path}", data=data, headers=headers, method=method)
+    try:
+        with _no_redirect_opener().open(req, timeout=5) as resp:
+            return resp.status, resp.headers.get("Location", "")
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers.get("Location", "")
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "form", "expected"),
+    [
+        ("GET", "/", None, "/login"),
+        ("POST", "/login", {"pin": "sekret"}, "/"),
+    ],
+)
+def test_pin_redirects_ignore_forwarded_headers(pin_protected_server, method, path, form, expected) -> None:
+    """An attacker-set X-Forwarded-Host / -Proto never reaches a Location header."""
+    _, base, _ = pin_protected_server
+    assert _redirect_with_forged_forwarded(base, method, path, form) == (303, expected)
+
+
+def test_logout_redirect_ignores_forwarded_headers(pin_protected_server) -> None:
+    _, base, pin = pin_protected_server
+    cookie = _login_cookie(base, pin)
+    assert _redirect_with_forged_forwarded(base, "POST", "/logout", {}, cookie) == (303, "/login")
+
+
+@pytest.mark.parametrize(("method", "form"), [("GET", None), ("POST", {"pin": "anything"})])
+def test_login_without_pin_redirect_ignores_forwarded_headers(live_server, method, form) -> None:
+    _, base = live_server
+    assert _redirect_with_forged_forwarded(base, method, "/login", form) == (303, "/")
+
+
+def test_license_redirect_ignores_forwarded_headers(live_server, monkeypatch) -> None:
+    import openfollow.web.routes as routes_module
+
+    _, base = live_server
+    monkeypatch.setattr(routes_module, "_license_file_path", lambda: None)
+    assert _redirect_with_forged_forwarded(base, "GET", "/about/license.txt") == (
+        303,
+        "https://www.gnu.org/licenses/agpl-3.0.txt",
+    )
+
+
 def test_login_submit_renders_error_template_on_invalid_pin(pin_protected_server) -> None:
     _, base, _ = pin_protected_server
 
@@ -4481,8 +5437,8 @@ def test_login_submit_renders_error_template_on_invalid_pin(pin_protected_server
     assert '<div class="notice error" role="alert">' in body
 
 
-def test_repeated_wrong_pin_locks_out_with_retry_after(pin_protected_server) -> None:
-    _, base, _ = pin_protected_server
+def test_repeated_wrong_pin_locks_out_with_retry_after(frozen_throttle_pin_server) -> None:
+    _, base, _ = frozen_throttle_pin_server
 
     status1, _, _ = _post_form_full(base, "/login", {"pin": "wrong-1"})
     assert status1 == 200  # first failure renders template, no penalty yet
@@ -4496,12 +5452,12 @@ def test_repeated_wrong_pin_locks_out_with_retry_after(pin_protected_server) -> 
     assert int(headers2["Retry-After"]) >= 1
 
 
-def test_lockout_blocks_correct_pin_during_window(pin_protected_server) -> None:
+def test_lockout_blocks_correct_pin_during_window(frozen_throttle_pin_server) -> None:
     """Even the correct PIN is rejected with 429 while the IP is locked
     out. Otherwise an attacker could probe whether their *guess* matches
     by timing the response – a 200 vs 429 split would leak whether they
     happened to guess right just before being locked out."""
-    _, base, pin = pin_protected_server
+    _, base, pin = frozen_throttle_pin_server
 
     _post_form_full(base, "/login", {"pin": "wrong-1"})
     status, _, _ = _post_form_full(base, "/login", {"pin": pin})
@@ -4549,6 +5505,7 @@ def _signed_post_full(
     *,
     signature: str,
     timestamp: str,
+    headers: dict[str, str] | None = None,
 ) -> tuple[int, dict]:
     """Send a signed POST with a caller-supplied signature/timestamp pair.
 
@@ -4562,6 +5519,7 @@ def _signed_post_full(
             "Content-Type": "application/json",
             peer_auth.TIMESTAMP_HEADER: timestamp,
             peer_auth.SIGNATURE_HEADER: signature,
+            **(headers or {}),
         },
         method="POST",
     )
@@ -4572,9 +5530,9 @@ def _signed_post_full(
         return e.code, dict(e.headers.items())
 
 
-def test_peer_auth_signature_failure_locks_out(pin_protected_server) -> None:
+def test_peer_auth_signature_failure_locks_out(frozen_throttle_pin_server) -> None:
     """Peer-auth signature path is subject to rate-limit throttle like login."""
-    _, base, _ = pin_protected_server
+    _, base, _ = frozen_throttle_pin_server
 
     body = b'{"pos_x": 1.0}'
     bogus_sig = "0" * 64  # SHA-256 hex length, but never a valid HMAC
@@ -4601,6 +5559,62 @@ def test_peer_auth_signature_failure_locks_out(pin_protected_server) -> None:
     )
     assert status2 == 429
     assert "Retry-After" in headers2
+
+
+def test_a_forwarded_for_header_does_not_escape_the_login_lockout(frozen_throttle_pin_server) -> None:
+    """The lockout follows the connection: any client can set X-Forwarded-For."""
+    _, base, _ = frozen_throttle_pin_server
+
+    status1, _, _ = _post_form_full(base, "/login", {"pin": "wrong-1"}, headers={"X-Forwarded-For": "203.0.113.1"})
+    assert status1 == 200
+    status2, _, _ = _post_form_full(base, "/login", {"pin": "wrong-2"}, headers={"X-Forwarded-For": "203.0.113.2"})
+    assert status2 == 429
+
+
+def test_a_forwarded_for_header_does_not_escape_the_peer_lockout(frozen_throttle_pin_server) -> None:
+    _, base, _ = frozen_throttle_pin_server
+    body = b'{"pos_x": 1.0}'
+    ts = "0"  # any rejected signature counts as a failure, a stale one included
+
+    status1, _ = _signed_post_full(
+        base, "/api/config/camera", body, signature="0" * 64, timestamp=ts, headers={"X-Forwarded-For": "203.0.113.1"}
+    )
+    assert status1 == 401
+    status2, _ = _signed_post_full(
+        base, "/api/config/camera", body, signature="0" * 64, timestamp=ts, headers={"X-Forwarded-For": "203.0.113.2"}
+    )
+    assert status2 == 429
+
+
+def test_a_forwarded_for_header_does_not_decide_the_on_device_footer(live_server) -> None:
+    """The embedded browser is recognised by its loopback connection, whatever a header says."""
+    _, base = live_server
+    req = urllib.request.Request(f"{base}/", headers={"X-Forwarded-For": "198.51.100.7"})
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        body = resp.read().decode()
+    assert '<footer class="on-device-footer">' in body
+
+
+def test_the_on_device_footer_names_the_controller_button_and_esc(live_server) -> None:
+    """Both ways to close the embedded browser: the mapped cancel button on a controller, Esc on a keyboard."""
+    _, base = live_server
+    with urllib.request.urlopen(f"{base}/", timeout=5) as resp:
+        body = resp.read().decode()
+    footer = body[body.index('<footer class="on-device-footer">') :]
+    footer = footer[: footer.index("</footer>")]
+    assert "<kbd>B</kbd> on a controller or <kbd>Esc</kbd> on a keyboard closes the embedded browser" in footer
+
+
+def test_the_on_device_footer_draws_the_cancel_buttons_symbol(live_server) -> None:
+    server, base = live_server
+    _post_form(base, "/section/gamepad", {"enabled": "true", "deadzone": "0.15", "button_name_style": "playstation"})
+    with urllib.request.urlopen(f"{base}/", timeout=5) as resp:
+        body = resp.read().decode()
+    footer = body[body.index('<footer class="on-device-footer">') :]
+    footer = footer[: footer.index("</footer>")]
+    kbd = footer[footer.index("<kbd>") : footer.index("</kbd>")]
+    assert '<svg class="btn-symbol-icon"' in kbd
+    assert '<span class="visually-hidden">Circle</span>' in kbd
 
 
 def test_logout_clears_cookie_and_redirects_to_login(live_server) -> None:
@@ -4635,8 +5649,25 @@ def test_logout_clears_cookie_and_redirects_to_login(live_server) -> None:
     assert any("max-age=0" in c.lower() or "max-age=-" in c.lower() or "expires=" in c.lower() for c in auth_cookies)
 
 
+@pytest.mark.parametrize(
+    ("path", "section_id"),
+    [
+        ("/section/general", 'id="general-network-section"'),
+        ("/section/video_source", 'id="video-source-section"'),
+        ("/section/psn", 'id="psn-section"'),
+    ],
+)
+def test_a_section_save_never_restarts(live_server, path: str, section_id: str) -> None:
+    """Restarting is the Restart buttons' own step; a save only saves."""
+    server, base = live_server
+    status, body = _post_form(base, path, {})
+    assert status == 200
+    assert section_id in body
+    assert server.check_restart_requested() is False
+
+
 def test_update_video_source_post_renders_video_source_partial(live_server) -> None:
-    """Form POST without ?restart=1 saves and re-renders the video source partial.
+    """A form POST saves and re-renders the video source partial.
     Asserts on stable IDs to catch regressions in partial rendering."""
     server, base = live_server
     status, body = _post_form(
@@ -4653,39 +5684,93 @@ def test_update_video_source_post_renders_video_source_partial(live_server) -> N
     assert saved.video_source_type == "rtsp"
 
 
-def test_update_video_source_post_with_restart_renders_general_partial(live_server) -> None:
-    """``?restart=1`` flips into the restart-confirmation branch, which
-    requests an app restart and renders the general partial instead of
-    the video-source one. Asserting on stable section IDs (rather than
-    just the restart flag) catches a regression where the handler
-    returns the wrong template."""
-    server, base = live_server
-    assert server.check_restart_requested() is False
+class _LookupsStarted:
+    """A resolver that records each lookup started and has answered none."""
 
-    status, body = _post_form(
-        base,
-        "/section/video_source?restart=1",
-        {"video_source_type": "rtsp"},
+    def __init__(self) -> None:
+        self.started: list[str] = []
+
+    def prefetch(self, host: str) -> None:
+        self.started.append(host)
+
+    def lookup(self, host: str, wait_s: float) -> Any:
+        from openfollow.net_utils import HostLookup
+
+        return HostLookup("pending")
+
+    def cached(self, host: str) -> tuple[str, ...]:
+        return ()
+
+
+@pytest.mark.parametrize(("pin", "started"), [("eth1", ["camera.example"]), ("", [])], ids=["pinned", "unpinned"])
+def test_saving_a_source_starts_the_lookup_its_pin_check_reads(
+    live_server, monkeypatch: pytest.MonkeyPatch, pin: str, started: list[str]
+) -> None:
+    """The name resolves before the saved source is applied, so its first build reads the answer."""
+    from openfollow.video.inputs import _pin
+
+    resolver = _LookupsStarted()
+    monkeypatch.setattr(_pin, "_resolver", resolver)
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
+    cfg.psn_source_iface = ""
+    cfg.video_input_iface = pin
+    save_config(cfg, server.config_path)
+
+    status, _body = _post_form(
+        base, "/section/video_source", {"video_source_type": "rtsp", "rtsp_url": "rtsp://camera.example:554/stream"}
     )
+
     assert status == 200
-    assert server.check_restart_requested() is True
-    # Verify the general partial rendered (not the video-source one) via
-    # stable, platform-independent section markers. The Software Update
-    # section is gated on the host platform, so don't key on it here.
-    assert 'id="general-network-section"' in body
-    assert 'data-fold-key="general-station"' in body
-    assert 'id="video-source-section"' not in body
+    assert resolver.started == started
 
 
-def test_update_general_blocks_restart_while_update_is_running(live_server) -> None:
+@pytest.mark.parametrize(("pin", "started"), [("eth1", ["camera.example"]), ("", [])], ids=["pinned", "unpinned"])
+def test_pinning_the_video_input_starts_the_lookup_its_pin_check_reads(
+    live_server, monkeypatch: pytest.MonkeyPatch, pin: str, started: list[str]
+) -> None:
+    """A pin saved in the Assignment panel resolves its camera before the input is rebuilt under it."""
+    from openfollow.video.inputs import _pin
+    from openfollow.web import routes as routes_module
+
+    resolver = _LookupsStarted()
+    monkeypatch.setattr(_pin, "_resolver", resolver)
+    # The panel's own Address column asks the shared resolver; it must not reach the network.
+    monkeypatch.setattr(routes_module, "HOST_RESOLVER", _LookupsStarted())
+    _patch_ifaces(monkeypatch, {"eth0": "192.0.2.10", "eth1": "198.51.100.10"})
     server, base = live_server
-    server.set_update_status(state="running", message="Pulling...", error="")
+    cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
+    cfg.psn_source_iface = ""
+    cfg.video_source_type = "rtsp"
+    cfg.rtsp_url = "rtsp://camera.example:554/stream"
+    save_config(cfg, server.config_path)
 
-    assert server.check_restart_requested() is False
-    status, body = _post_form(base, "/section/general?restart=1", {})
+    status, _body = _post_form(base, "/section/interface_assignment", {"video_input_iface": pin})
+
     assert status == 200
-    assert server.check_restart_requested() is False
-    assert "Restart is blocked" in body or "currently running" in body
+    assert load_config(server.config_path).video_input_iface == pin
+    assert resolver.started == started
+
+
+def test_a_pin_saved_for_an_unregistered_source_type_starts_no_lookup(
+    live_server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openfollow.video.inputs import _pin
+
+    resolver = _LookupsStarted()
+    monkeypatch.setattr(_pin, "_resolver", resolver)
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.network_mode = "advanced"
+    cfg.video_source_type = "not-an-input"
+    save_config(cfg, server.config_path)
+
+    status, _body = _post_form(base, "/section/interface_assignment", {"video_input_iface": "eth1"})
+
+    assert status == 200
+    assert resolver.started == []
 
 
 def test_deb_update_dispatches_request(live_server, monkeypatch) -> None:
@@ -4754,6 +5839,15 @@ def test_deb_update_reports_when_already_running(live_server, monkeypatch) -> No
     assert "already running" in body
 
 
+def test_an_update_asked_for_while_a_restart_is_pending_is_refused_and_says_why(live_server) -> None:
+    server, base = live_server
+    server._command_queue.request_restart()
+    status, body = _post_form(base, "/section/general/deb-update", {})
+    assert status == 200
+    assert json.loads(body) == {"ok": False, "error": "OpenFollow is restarting. Start the update once it is back."}
+    assert server._command_queue.get_update_status()["state"] == "idle"
+
+
 def test_deb_update_check_returns_json_available(live_server, monkeypatch) -> None:
     """GET /section/general/deb-update/check returns JSON the General-tab
     modal uses to decide whether to offer the install."""
@@ -4770,6 +5864,52 @@ def test_deb_update_check_returns_json_available(live_server, monkeypatch) -> No
     assert body["ok"] is True
     assert body["available"] is True
     assert body["latest"] == "99.0.0"
+
+
+_SAVED_UPDATE_SOURCE = AppConfig(update_github_repo="stage-crew/openfollow", update_include_prereleases=True)
+
+
+def _check_asks_for(base: str, monkeypatch) -> tuple[str, bool]:
+    import openfollow.runtime.deb_update as deb_update_mod
+
+    asked: list[tuple[str, bool]] = []
+
+    def _fetch(repo, *, include_prereleases=False):
+        asked.append((repo, include_prereleases))
+        return {"tag_name": "v0.0.1", "assets": []}
+
+    monkeypatch.setattr(deb_update_mod, "_fetch_latest_release", _fetch)
+    # A pre-release build always asks for pre-releases.
+    monkeypatch.setattr(openfollow, "__version__", "1.0.0")
+    status, body = _get_json(base, "/section/general/deb-update/check")
+    assert (status, body["ok"]) == (200, True)
+    return asked[0]
+
+
+def test_deb_update_check_asks_for_what_the_station_started_with(tmp_path, monkeypatch) -> None:
+    """A saved change (an import) waits for the next start, as it does for the installer."""
+    for beacon in (discovery_module.BeaconSender, discovery_module.BeaconReceiver):
+        monkeypatch.setattr(beacon, "start", lambda self: None)
+        monkeypatch.setattr(beacon, "stop", lambda self: None)
+    config_path = tmp_path / "config.toml"
+    save_config(_SAVED_UPDATE_SOURCE, str(config_path))
+    with live_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(config_path),
+            host="127.0.0.1",
+            port=port,
+            system_name="TestSystem",
+            update_source_provider=lambda: ("openfollowapp/openfollow", False),
+        )
+    ) as (_, base):
+        assert _check_asks_for(base, monkeypatch) == ("openfollowapp/openfollow", False)
+
+
+def test_deb_update_check_unwired_asks_for_the_saved_settings(live_server, monkeypatch) -> None:
+    server, base = live_server
+    save_config(_SAVED_UPDATE_SOURCE, server.config_path)
+
+    assert _check_asks_for(base, monkeypatch) == ("stage-crew/openfollow", True)
 
 
 def test_deb_update_check_surfaces_error_as_json(live_server, monkeypatch) -> None:
@@ -4987,6 +6127,27 @@ def test_deb_upload_reports_when_already_running(live_server, monkeypatch) -> No
     assert "already running" in body["error"]
 
 
+def test_an_upload_while_a_restart_is_pending_is_refused_and_says_why(live_server, monkeypatch) -> None:
+    import openfollow.runtime.deb_update as deb_update_mod
+
+    server, base = live_server
+    monkeypatch.setattr(
+        deb_update_mod,
+        "verify_and_extract_bundle",
+        lambda bundle, staging: bundle + ".d/openfollow_0.2.4_arm64.deb",
+    )
+    monkeypatch.setattr(
+        deb_update_mod,
+        "validate_uploaded_deb",
+        lambda path, arch: {"Package": "openfollow", "Version": "99.0.0", "Architecture": arch},
+    )
+    server._command_queue.request_restart()
+    status, body = _post_upload(base, "/section/general/deb-upload")
+    assert status == 200
+    assert body == {"ok": False, "error": "OpenFollow is restarting. Start the update once it is back."}
+    assert server._command_queue.get_update_status()["state"] == "idle"
+
+
 def test_deb_upload_falls_back_to_default_service_name(live_server, monkeypatch) -> None:
     """An invalid update_service_name in config must not block the upload –
     the route falls back to 'openfollow' (mirrors the online updater)."""
@@ -5047,17 +6208,6 @@ def test_update_psn_persists_and_renders_partial(live_server) -> None:
     assert saved.psn_system_name == "PSN-A"
     assert saved.psn_mcast_ip == "236.10.10.20"
     assert saved.psn_source_iface == "eth0"
-
-
-def test_update_psn_with_restart_flag_queues_restart(live_server) -> None:
-    """Same restart contract as /section/general: ``?restart=1`` triggers a
-    restart request via the command queue."""
-    server, base = live_server
-    assert server.check_restart_requested() is False
-
-    status, _ = _post_form(base, "/section/psn?restart=1", {})
-    assert status == 200
-    assert server.check_restart_requested() is True
 
 
 def test_psn_section_renders_source_advisory_when_pin_missed(
@@ -5612,15 +6762,31 @@ def test_api_video_snapshot_full_returns_503_when_no_full_provider(live_server) 
     assert status == 503
 
 
+def test_api_info_and_api_restart_name_the_running_process(live_server) -> None:
+    """A browser waiting out a restart tells the old process from the new one by this."""
+    server, base = live_server
+    _status, first = _get_json(base, "/api/info")
+    _status, second = _get_json(base, "/api/info")
+    status, restart = _post_json(base, "/api/restart", {})
+    assert status == 200
+    assert re.fullmatch(r"[0-9a-f]{16}", first["instance"])
+    assert first["instance"] == second["instance"] == restart["instance"] == server.instance_id
+
+
+def test_every_web_server_is_a_new_instance(tmp_path) -> None:
+    servers = [ConfigWebServer(config_path=str(tmp_path / "config.toml"), host="127.0.0.1", port=0) for _ in range(2)]
+    assert servers[0].instance_id != servers[1].instance_id
+
+
 def test_api_restart_post_requests_restart_via_command_queue(live_server) -> None:
-    """The JSON /api/restart endpoint must enqueue a restart and return
-    success – used by the web UI's "Apply & Restart" buttons."""
+    """The JSON /api/restart endpoint every Restart button calls enqueues a
+    restart and answers success."""
     server, base = live_server
     assert server.check_restart_requested() is False
 
     status, body = _post_json(base, "/api/restart", {})
     assert status == 200
-    assert body.get("success") is True
+    assert body == {"success": True, "instance": server.instance_id}
     assert server.check_restart_requested() is True
 
 
@@ -6201,6 +7367,34 @@ def test_api_create_detection_mask_drops_garbage_vertices(live_server) -> None:
     assert saved.detection.masks[body["index"]].vertices == [[0.0, 0.0], [1.0, 1.0]]
 
 
+def test_api_broadcast_all_marks_the_push_with_this_station_name(live_server, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from openfollow.web import routes as routes_mod
+
+    senders: list[str] = []
+    payloads: list[dict] = []
+
+    def _fake_send(ip: str, port: int, data: dict, pin: str = "", *, expected_port: int, sender: str) -> bool:
+        senders.append(sender)
+        payloads.append(data)
+        return True
+
+    monkeypatch.setattr(routes_mod, "_send_config_import_to_peer", _fake_send)
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.psn_system_name = "Front of House"
+    save_config(cfg, server.config_path)
+    monkeypatch.setattr(server, "get_peers", lambda: [SimpleNamespace(name="peer", ip="10.0.0.99", web_port=80)])
+
+    status, _body = _post_json(base, "/api/config/broadcast-all", {})
+    assert status == 200
+    assert senders == ["Front of House"]
+    # Each peer keeps its own station name.
+    assert "psn_system_name" not in payloads[0]
+    assert "camera" in payloads[0]
+
+
 def test_api_broadcast_all_returns_empty_results_when_no_peers(live_server) -> None:
     _, base = live_server
     status, body = _post_json(base, "/api/config/broadcast-all", {})
@@ -6213,8 +7407,8 @@ def test_api_broadcast_section_returns_empty_results_when_no_peers(live_server) 
     server, base = live_server
     status, body = _post_json(
         base,
-        "/api/config/camera/broadcast",
-        {"pos_x": 4.5},
+        "/api/config/grid/broadcast",
+        {"width": 12.5},
     )
     assert status == 200
     assert body.get("success") is True
@@ -6222,7 +7416,44 @@ def test_api_broadcast_section_returns_empty_results_when_no_peers(live_server) 
     assert body.get("peer_results") == []
 
     saved = load_config(server.config_path)
-    assert saved.camera.pos_x == pytest.approx(4.5)
+    assert saved.grid.width == pytest.approx(12.5)
+
+
+@pytest.mark.parametrize("posted", [{}, {"pos_x": 4.5, "calibration_marks": []}], ids=["empty", "crafted"])
+def test_the_camera_broadcast_sends_the_saved_camera_with_its_calibration(live_server, monkeypatch, posted) -> None:
+    from types import SimpleNamespace
+
+    from openfollow.web import routes as routes_mod
+
+    sent: list[dict] = []
+    monkeypatch.setattr(
+        routes_mod,
+        "_send_config_to_peer",
+        lambda ip, port, section, data, pin="", **_kw: sent.append(dict(data)) or True,
+    )
+    server, base = live_server
+    monkeypatch.setattr(server, "get_peers", lambda: [SimpleNamespace(name="peer", ip="10.0.0.99", web_port=80)])
+    camera = _held_camera("advanced")
+    camera.pos_x, camera.calibration_height = 1.25, 9.8
+    camera.calibration_lens_rating, camera.calibration_time = "fair", "2026-10-25T11:04:00+01:00"
+    camera.calibration_source = "NDI®: Stage"
+    save_config(AppConfig(camera=camera), server.config_path)
+    status, body = _post_json(base, "/api/config/camera/broadcast", posted)
+    assert status == 200 and body.get("success") is True
+    (data,) = sent
+    assert (data["pos_x"], data["calibration_mode"], data["calibration_height"]) == (1.25, "advanced", 9.8)
+    assert [m["id"] for m in data["calibration_marks"]] == [1, 2, 3, 4, 5]
+    # A station receiving it keeps the pose with its marks and what describes them.
+    receiver = AppConfig()
+    assert apply_section_data(receiver, "camera", data)
+    assert (receiver.camera.pos_x, len(receiver.camera.calibration_marks)) == (1.25, 5)
+    got = receiver.camera
+    assert (got.calibration_lens_rating, got.calibration_time, got.calibration_source) == (
+        "fair",
+        "2026-10-25T11:04:00+01:00",
+        "NDI®: Stage",
+    )
+    assert load_config(server.config_path).camera == camera
 
 
 def test_api_update_section_psn_ignores_psn_source_iface(live_server) -> None:
@@ -6259,8 +7490,10 @@ def test_api_broadcast_section_psn_strips_iface_from_peer_payload(
 
     captured_payloads: list[dict] = []
 
-    def _fake_send(ip: str, port: int, section: str, data: dict, pin: str = "", *, expected_port: int) -> bool:
-        captured_payloads.append({"section": section, "data": dict(data)})
+    def _fake_send(
+        ip: str, port: int, section: str, data: dict, pin: str = "", *, expected_port: int, sender: str
+    ) -> bool:
+        captured_payloads.append({"section": section, "data": dict(data), "sender": sender})
         return True
 
     monkeypatch.setattr(routes_mod, "_send_config_to_peer", _fake_send)
@@ -6297,8 +7530,11 @@ def test_api_broadcast_section_psn_strips_iface_from_peer_payload(
     sent = captured_payloads[0]
     assert sent["section"] == "psn"
     assert "psn_source_iface" not in sent["data"]
-    assert sent["data"]["psn_system_name"] == "Broadcasted"
+    # Each peer keeps its own station name.
+    assert "psn_system_name" not in sent["data"]
     assert sent["data"]["psn_mcast_ip"] == "236.10.10.10"
+    # Marked as a push from this station, under the name it now has.
+    assert sent["sender"] == "Broadcasted"
 
 
 def test_api_broadcast_section_returns_404_for_unknown_section(live_server) -> None:
@@ -6373,8 +7609,8 @@ def test_update_marker_post_persists_visual_booleans(live_server) -> None:
         {
             "ball_visible": "on",
             "crosshair_visible": "on",
-            # z_line + ground_circle + ground_circle_filled +
-            # z_display_from_stage all omitted -> coerced to False.
+            # z_line + ground_circle + ground_circle_filled all omitted
+            # -> coerced to False.
         },
     )
     assert status == 200
@@ -6386,64 +7622,44 @@ def test_update_marker_post_persists_visual_booleans(live_server) -> None:
     assert saved.marker.ground_circle is False
 
 
-def test_marker_form_accepts_the_former_z_line_checkbox_name(live_server) -> None:
-    """A page rendered before the rename posts the checkbox under its former name.
-
-    The bool fields are synthesised from what the form did *not* send, so without
-    translating first the synthesised ``False`` would win over the ticked box and
-    silently switch the line off - while the thickness beside it, not being a
-    bool, would translate and carry over. The two halves of one rename must not
-    disagree on the same POST.
-    """
-    server, base = live_server
-    status, _ = _post_form(
-        base,
-        "/section/marker",
-        {"drop_line": "on", "drop_line_thickness": "7"},
-    )
-    assert status == 200
-
-    saved = load_config(server.config_path)
-    assert saved.marker.z_line is True
-    assert saved.marker.z_line_thickness == 7
-
-
-def test_marker_save_preserves_invert_control_direction(live_server) -> None:
-    """``invert_control_direction`` lives on MarkerConfig but is rendered by the
-    *movement* section, so the marker (visuals) form never posts it. It must not
-    appear in this route's bool fields, or saving a visual toggle would silently
-    reverse the operator's controls."""
+def test_marker_save_preserves_the_control_frame(live_server) -> None:
+    """The control frame lives on MarkerConfig but is rendered by the *movement*
+    section, so saving a visual toggle must not reset the operator's controls."""
     server, base = live_server
     cfg = load_config(server.config_path)
-    cfg.marker.invert_control_direction = True
+    cfg.marker.control_frame = "heading"
+    cfg.marker.control_heading = 90.0
     save_config(cfg, server.config_path)
 
     status, _ = _post_form(base, "/section/marker", {"ball_visible": "on"})
     assert status == 200
-    assert load_config(server.config_path).marker.invert_control_direction is True
+    saved = load_config(server.config_path).marker
+    assert (saved.control_frame, saved.control_heading) == ("heading", pytest.approx(90.0))
 
 
-def test_movement_save_can_turn_invert_control_direction_on_and_off(live_server) -> None:
-    """An unchecked checkbox isn't posted at all, so the owning section has to
-    declare it as a bool field – otherwise it could be switched on but never
-    off, stranding the operator with reversed controls."""
+@pytest.mark.parametrize("frame", ["stage", "heading", "camera", "screen"])
+def test_movement_form_saves_the_control_frame(live_server, frame) -> None:  # noqa: ANN001
     server, base = live_server
-
-    status, _ = _post_form(
-        base,
-        "/section/movement",
-        {"min_speed": "0.2", "move_speed": "1.5", "max_speed": "4.0", "invert_control_direction": "on"},
-    )
+    status, _ = _post_form(base, "/section/movement", {"control_frame": frame, "control_heading": "45"})
     assert status == 200
-    assert load_config(server.config_path).marker.invert_control_direction is True
+    saved = load_config(server.config_path).marker
+    assert saved.control_frame == frame
+    assert saved.control_heading == pytest.approx(45.0)
 
-    status, _ = _post_form(
-        base,
-        "/section/movement",
-        {"min_speed": "0.2", "move_speed": "1.5", "max_speed": "4.0"},
-    )
+
+@pytest.mark.parametrize(("frame", "hidden"), [("heading", False), ("stage", True), ("screen", True)])
+def test_movement_form_shows_the_heading_for_a_fixed_heading_only(live_server, frame, hidden) -> None:  # noqa: ANN001
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.marker.control_frame = frame
+    save_config(cfg, server.config_path)
+
+    status, body = _post_form(base, "/section/movement", {"control_frame": frame})
     assert status == 200
-    assert load_config(server.config_path).marker.invert_control_direction is False
+    field = re.search(r'<div class="field" id="movement-control-heading-field"([^>]*)>', body)
+    assert field is not None
+    assert ("hidden" in field.group(1)) is hidden
+    assert re.search(rf'<option value="{frame}"\s+selected>', body)
 
 
 def test_api_video_snapshot_returns_jpeg_when_provider_yields_bytes(
@@ -6482,100 +7698,6 @@ def test_api_video_snapshot_returns_jpeg_when_provider_yields_bytes(
             assert r.read() == b"\xff\xd8\xff\xe0fulljpeg"
 
 
-def test_api_wizard_solve_returns_camera_and_reprojected_corners(live_server) -> None:
-    """Happy-path DLT solve: four well-conditioned corner correspondences
-    yield a camera dict (pos/rot/fov) plus a reprojected corner array of
-    the same shape. Generate the screen corners by projecting through a
-    known camera pose so the DLT is guaranteed to succeed (a hand-picked
-    trapezoid can fall into the degenerate branch and return 422)."""
-    import numpy as np
-
-    from openfollow.scene.solver import project_points
-
-    _, base = live_server
-
-    img_w, img_h = 1280.0, 720.0
-    params = np.array([0.0, -10.0, 5.0, -28.0, 8.0, 1.0, 65.0], dtype=np.float64)
-    world = np.array(
-        [
-            [-5.0, -5.0, 0.0],
-            [5.0, -5.0, 0.0],
-            [5.0, 5.0, 0.0],
-            [-5.0, 5.0, 0.0],
-        ],
-        dtype=np.float64,
-    )
-    screen = project_points(params, world, img_w, img_h)
-
-    status, body = _post_json(
-        base,
-        "/api/wizard/solve",
-        {
-            "world_corners": [list(p) for p in world],
-            "screen_corners": [list(p) for p in screen],
-            "image_width": img_w,
-            "image_height": img_h,
-        },
-    )
-    assert status == 200
-    assert "camera" in body
-    assert {"pos_x", "pos_y", "pos_z", "pitch", "yaw", "roll", "fov"}.issubset(set(body["camera"].keys()))
-    reprojected = body.get("reprojected_corners")
-    assert isinstance(reprojected, list)
-    assert len(reprojected) == 4
-
-
-def test_api_wizard_solve_returns_422_for_degenerate_corners(live_server) -> None:
-    """When the four screen corners can't be matched to a valid camera pose,
-    the route returns 422 with an "Invalid perspective" hint instead of
-    serving a NaN-laced camera dict the editor would render as garbage."""
-    _, base = live_server
-    # All four screen corners collapsed to a single point – the DLT
-    # has no perspective to fit.
-    status, body = _post_json(
-        base,
-        "/api/wizard/solve",
-        {
-            "world_corners": [
-                [-5.0, -5.0, 0.0],
-                [5.0, -5.0, 0.0],
-                [5.0, 5.0, 0.0],
-                [-5.0, 5.0, 0.0],
-            ],
-            "screen_corners": [
-                [640.0, 360.0],
-                [640.0, 360.0],
-                [640.0, 360.0],
-                [640.0, 360.0],
-            ],
-            "image_width": 1280,
-            "image_height": 720,
-        },
-    )
-    assert status == 422
-    assert "Invalid perspective" in str(body.get("error", ""))
-
-
-def test_api_wizard_unproject_single_point_returns_world_only(live_server) -> None:
-    """When only one screen point is sent, the route returns ``world_points``
-    but no ``delta`` (delta is meaningless for a single point). This is
-    the fall-through arm at the bottom of api_wizard_unproject."""
-    _, base = live_server
-    status, body = _post_json(
-        base,
-        "/api/wizard/unproject",
-        {
-            "camera": _wizard_camera_payload(pos_z=5.0, pitch=-30.0),
-            "screen_points": [[960.0, 540.0]],
-            "image_width": 1920,
-            "image_height": 1080,
-        },
-    )
-    assert status == 200
-    assert "world_points" in body
-    assert "delta" not in body
-
-
 def test_get_wizard_page_renders(live_server) -> None:
     _, base = live_server
     status, body = _get(base, "/wizard")
@@ -6600,65 +7722,6 @@ def test_api_broadcast_section_rejects_malformed_json(live_server) -> None:
         body = json.loads(e.read().decode() or "{}")
     assert status == 400
     assert "error" in body
-
-
-def test_api_wizard_unproject_rejects_malformed_json(live_server) -> None:
-    """Same _load_json_body short-circuit on the unproject route – without
-    this guard the route would 500 on the next ``data["camera"]`` deref."""
-    _, base = live_server
-    req = urllib.request.Request(
-        f"{base}/api/wizard/unproject",
-        data=b"\x00garbage",
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=5) as r:
-            status = r.status
-    except urllib.error.HTTPError as e:
-        status = e.code
-    assert status == 400
-
-
-def test_api_wizard_solve_rejects_malformed_json(live_server) -> None:
-    """Same _load_json_body short-circuit on the solve route."""
-    _, base = live_server
-    req = urllib.request.Request(
-        f"{base}/api/wizard/solve",
-        data=b"not json at all",
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=5) as r:
-            status = r.status
-    except urllib.error.HTTPError as e:
-        status = e.code
-    assert status == 400
-
-
-def test_api_wizard_solve_rejects_screen_corner_with_wrong_shape(live_server) -> None:
-    """A screen_corner that isn't [x, y] (e.g. [x, y, z]) must surface as
-    400 with an ``[x, y]`` hint – the world_corner-shape check fires
-    first only if both are malformed in the same payload."""
-    _, base = live_server
-    status, body = _post_json(
-        base,
-        "/api/wizard/solve",
-        {
-            "world_corners": [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]],
-            "screen_corners": [
-                [0, 0, 999],  # extra coord – must be rejected
-                [1, 0],
-                [1, 1],
-                [0, 1],
-            ],
-            "image_width": 1920,
-            "image_height": 1080,
-        },
-    )
-    assert status == 400
-    assert "[x, y]" in str(body.get("error", ""))
 
 
 def test_ndi_video_input_plugin_route_is_registered_and_callable(live_server) -> None:
@@ -6707,6 +7770,332 @@ def test_validate_endpoint_type_error(live_server) -> None:
     assert 'class="field-error-msg"' in body
 
 
+@pytest.mark.parametrize(("saved_k2", "short"), [(0.0, True), (0.3, False)])
+def test_validate_endpoint_reads_an_empty_lens_sibling_as_its_saved_value(live_server, saved_k2, short) -> None:
+    # The save keeps the saved value of a field left empty, so the blur check judges that lens.
+    _, base = live_server
+    assert _post_json(base, "/api/config/camera", {"lens_k1": 0.0, "lens_k2": saved_k2})[0] == 200
+    status, body = _get(base, "/api/validate/camera/lens_k1?lens_k1=-1.2&lens_k2=")
+    assert status == 200
+    assert ("This pair cannot follow the picture out to its corners." in body) is short
+
+
+def test_validate_endpoint_names_a_lens_centre_that_stops_the_overlay_short(live_server) -> None:
+    _, base = live_server
+    status, body = _get(base, "/api/validate/camera/lens_cx?lens_cx=0.1&lens_k1=-0.9&lens_k2=0&lens_cy=0")
+    assert status == 200
+    assert "This lens centre stops the overlay short of the picture&#x27;s corners." in body
+
+
+@pytest.mark.parametrize(
+    ("posted", "saved"),
+    [
+        ({"lens_cx": "0.05", "lens_cy": "-0.02"}, (-0.3, 0.0, 0.05, -0.02)),
+        ({"lens_cx": "7", "lens_cy": "abc"}, (-0.3, 0.0, 0.25, 0.0)),
+        # Valid about the frame centre, not with this centre: the pair is pulled back
+        # (1 - 0.9 t s reaches 0 at s = 1.1^2), the centre kept.
+        ({"lens_k1": "-0.9", "lens_cx": "0.1"}, (-0.99 / 1.21, 0.0, 0.1, 0.0)),
+    ],
+)
+def test_a_crafted_camera_post_saves_the_lens_centre_as_a_hand_edited_file_would(live_server, posted, saved) -> None:
+    server, base = live_server
+    status, _ = _post_form(base, "/section/camera", {"lens_k1": "-0.3", "lens_k2": "0", **posted})
+    assert status == 200
+    camera = load_config(server.config_path).camera
+    assert (camera.lens_k1, camera.lens_k2, camera.lens_cx, camera.lens_cy) == pytest.approx(saved)
+
+
+# The Camera tab's lens centre, in pixels of the live video.
+_HD_1080 = 0.5 * (1920**2 + 1080**2) ** 0.5
+_CENTRE = (28 / _HD_1080, -16 / _HD_1080)
+
+
+@pytest.fixture()
+def video_server(tmp_path, monkeypatch):
+    """A station whose live video is 1920 x 1080, its lens centre 28 px right and 16 px up."""
+    for cls in (discovery_module.BeaconSender, discovery_module.BeaconReceiver):
+        monkeypatch.setattr(cls, "start", lambda self: None)
+        monkeypatch.setattr(cls, "stop", lambda self: None)
+    cfg = AppConfig()
+    cfg.camera.lens_k1, cfg.camera.lens_k2 = -0.31, -0.01
+    cfg.camera.lens_cx, cfg.camera.lens_cy = _CENTRE
+    save_config(cfg, str(tmp_path / "config.toml"))
+    stats: dict = {"video": {"resolution": {"width": 1920, "height": 1080}}}
+    with live_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(tmp_path / "config.toml"),
+            host="127.0.0.1",
+            port=port,
+            system_name="TestSystem",
+            runtime_stats_provider=lambda: stats,
+        )
+    ) as (server, base):
+        yield server, base, stats
+
+
+def _camera_section(body: str) -> str:
+    start = body.index('<form id="camera-section"')
+    return body[start : body.index("</form>", start)]
+
+
+def _readout(section: str) -> dict[str, str]:
+    return dict(re.findall(r"<dt>(.*?)</dt>\s*<dd>(.*?)</dd>", section))
+
+
+@pytest.mark.parametrize("path", ["/section/camera", "/"])
+def test_the_camera_tab_shows_the_camera_and_edits_nothing(video_server, path: str) -> None:
+    server, base, _ = video_server
+    cfg = load_config(server.config_path)
+    cfg.camera.pos_x, cfg.camera.pos_y, cfg.camera.pos_z = 1.5, -5.0, 4.0
+    cfg.camera.pitch, cfg.camera.yaw, cfg.camera.roll, cfg.camera.fov = -20.25, 3.5, 0.0, 42.0
+    save_config(cfg, server.config_path)
+    _, body = _get(base, path)
+    section = _camera_section(body)
+    for editable in ("<input", "<select", "<textarea", '<button type="submit"', "hx-post"):
+        assert editable not in section, editable
+    # Its primary action opens the Setup Wizard, which sets everything shown.
+    assert re.findall(r'class="[^"]*save-btn[^"]*"', section) == ['class="btn-link save-btn"']
+    assert '<a href="/wizard" class="btn-link save-btn">Open Setup Wizard</a>' in section
+    assert _readout(section) == {
+        "Position X": "1.500 m",
+        "Position Y": "-5.000 m",
+        "Position Z": "4.000 m",
+        "Pitch": "-20.25°",
+        "Yaw": "3.50°",
+        "Roll": "0.00°",
+        "Horizontal Field of View": "42.00°",
+        "Barrel / fisheye": "-0.310",
+        "Corner correction": "-0.010",
+        # Up is positive on the screen, y runs down in the config.
+        "Right of the picture centre": "28 px",
+        "Above the picture centre": "16 px",
+        "Type": "None",
+    }
+    assert "onclick=\"broadcastSection('camera', this.form)\"" in section
+
+
+def test_a_value_that_rounds_to_zero_reads_without_a_sign(video_server) -> None:
+    server, base, _ = video_server
+    cfg = load_config(server.config_path)
+    cfg.camera.roll, cfg.camera.lens_k2 = -0.001, -0.0003
+    save_config(cfg, server.config_path)
+    _, body = _get(base, "/section/camera")
+    readout = _readout(_camera_section(body))
+    assert (readout["Roll"], readout["Corner correction"]) == ("0.00°", "0.000")
+
+
+def test_the_camera_tab_shows_lengths_in_the_station_s_units(video_server) -> None:
+    server, base, _ = video_server
+    cfg = load_config(server.config_path)
+    cfg.ui.unit_system, cfg.camera.pos_x = "imperial", 1.5
+    save_config(cfg, server.config_path)
+    _, body = _get(base, "/section/camera")
+    assert _readout(_camera_section(body))["Position X"] == "4 ft 11.06 in"
+
+
+def test_a_lens_centre_at_the_bound_reads_within_the_setup_wizard_s_bound(video_server) -> None:
+    # At 1280 x 720 the bound is 183.58 px: rounding alone shows 184, one pixel past the Setup Wizard's 183.
+    server, base, stats = video_server
+    cfg = load_config(server.config_path)
+    cfg.camera.lens_k1 = cfg.camera.lens_k2 = 0.0
+    cfg.camera.lens_cx, cfg.camera.lens_cy = 0.25, 0.25
+    save_config(cfg, server.config_path)
+    stats["video"] = {"resolution": {"width": 1280, "height": 720}}
+    _, body = _get(base, "/section/camera")
+    readout = _readout(_camera_section(body))
+    assert (readout["Right of the picture centre"], readout["Above the picture centre"]) == ("183 px", "-183 px")
+
+
+@pytest.mark.parametrize("resolution", [{"width": 0, "height": 0}, None], ids=["no size", "no video stats"])
+def test_without_video_the_lens_centre_reads_no_video(video_server, resolution) -> None:
+    _, base, stats = video_server
+    stats["video"] = {"resolution": resolution} if resolution else {}
+    _, body = _get(base, "/section/camera")
+    readout = _readout(_camera_section(body))
+    assert (readout["Right of the picture centre"], readout["Above the picture centre"]) == ("No video", "No video")
+
+
+def _pinned_camera(cfg: AppConfig, misses: dict[int, float], size: tuple[int, int] = (1920, 1080)) -> CameraConfig:
+    """``cfg``'s camera with the Simple corners pinned where it sees them, lens included, each miss px to the right."""
+    import numpy as np
+
+    from openfollow.scene.solver import apply_overlay_distortion, camera_params, project_points
+
+    cam = cfg.camera
+    marks = _corner_marks()
+    world = np.array([[m["x"], m["y"], m["z"]] for m in marks], dtype=np.float64)
+    seen = apply_overlay_distortion(
+        project_points(camera_params(cam), world, *size), *size, cam.lens_k1, cam.lens_k2, cam.lens_cx, cam.lens_cy
+    )
+    for mark, (x, y) in zip(marks, seen, strict=True):
+        mark["pin"] = [(x + misses.get(mark["id"], 0.0)) / size[0], y / size[1]]
+    return CameraConfig(**{**asdict(cam), "calibration_mode": "simple", "calibration_marks": marks})
+
+
+_RECORDED = {
+    "calibration_lens_rating": "good",
+    "calibration_time": "2026-10-26T09:30:42-02:30",
+    "calibration_source": "RTSP: rtsp://192.0.2.10/stream",
+}
+
+
+def test_the_calibration_column_shows_what_the_setup_wizard_recorded(video_server) -> None:
+    server, base, _ = video_server
+    cfg = load_config(server.config_path)
+    cfg.camera = _pinned_camera(cfg, {1: 2.5, 3: 0.6})
+    for name, value in _RECORDED.items():
+        setattr(cfg.camera, name, value)
+    cfg.camera.calibration_marks[1].pin = []
+    save_config(cfg, server.config_path)
+    _, body = _get(base, "/section/camera")
+    section = _camera_section(body)
+    readout = _readout(section[section.index('id="camera-calibration"') :])
+    # The time reads as the browser that saved it wrote it, in its own offset.
+    assert readout == {
+        "Type": "Simple",
+        "Calibrated": "2026-10-26 09:30",
+        "Video source": "RTSP: rtsp://192.0.2.10/stream",
+        "Lens rating": "Good",
+        "Pinned": "3 of 4 corners",
+        "Accuracy": "Within 2.5 px",
+    }
+    _, rows = _calibration_rows(section)
+    assert [row[-1] for row in rows] == ["2.5 px", "–", "0.6 px", "0.0 px"]
+
+
+@pytest.mark.parametrize(
+    ("rating", "shown"),
+    [
+        ("excellent", "Excellent"),
+        ("good", "Good"),
+        ("fair", "Fair"),
+        ("poor", "Poor"),
+        ("user_input", "User input"),
+        ("loaded", "Loaded"),
+        ("opencv", "OpenCV calibration"),
+    ],
+)
+def test_the_calibration_column_names_each_lens_rating(video_server, rating: str, shown: str) -> None:
+    server, base, _ = video_server
+    cfg = load_config(server.config_path)
+    cfg.camera = _pinned_camera(cfg, {})
+    cfg.camera.calibration_lens_rating = rating
+    save_config(cfg, server.config_path)
+    assert _readout(_camera_section(_get(base, "/section/camera")[1]))["Lens rating"] == shown
+
+
+def test_a_calibration_without_a_record_shows_none_of_its_rows(video_server) -> None:
+    server, base, _ = video_server
+    cfg = load_config(server.config_path)
+    cfg.camera = _pinned_camera(cfg, {})
+    save_config(cfg, server.config_path)
+    readout = _readout(_camera_section(_get(base, "/section/camera")[1]))
+    assert not {"Calibrated", "Video source", "Lens rating"} & set(readout)
+    assert (readout["Pinned"], readout["Accuracy"]) == ("4 corners", "Within 0.0 px")
+
+
+def test_the_accuracy_is_counted_in_the_live_video_s_pixels(video_server) -> None:
+    # The pins are fractions of the picture: a 3 px miss at 1920 wide is 2 px at 1280.
+    server, base, stats = video_server
+    cfg = load_config(server.config_path)
+    cfg.camera = _pinned_camera(cfg, {2: 3.0})
+    save_config(cfg, server.config_path)
+    stats["video"] = {"resolution": {"width": 1280, "height": 720}}
+    assert _readout(_camera_section(_get(base, "/section/camera")[1]))["Accuracy"] == "Within 2.0 px"
+
+
+def test_the_accuracy_reads_no_video_without_a_picture(video_server) -> None:
+    server, base, stats = video_server
+    cfg = load_config(server.config_path)
+    cfg.camera = _pinned_camera(cfg, {1: 2.0})
+    save_config(cfg, server.config_path)
+    stats["video"] = {}
+    section = _camera_section(_get(base, "/section/camera")[1])
+    assert _readout(section)["Accuracy"] == "No video"
+    assert [row[-1] for row in _calibration_rows(section)[1]] == ["–"] * 4
+
+
+def test_without_pins_there_is_no_accuracy(video_server) -> None:
+    server, base, _ = video_server
+    cfg = load_config(server.config_path)
+    cfg.camera = _pinned_camera(cfg, {})
+    for mark in cfg.camera.calibration_marks:
+        mark.pin = []
+    save_config(cfg, server.config_path)
+    readout = _readout(_camera_section(_get(base, "/section/camera")[1]))
+    assert readout["Pinned"] == "0 of 4 corners" and "Accuracy" not in readout
+
+
+def test_a_recorded_video_source_is_shown_as_text(video_server) -> None:
+    server, base, _ = video_server
+    cfg = load_config(server.config_path)
+    cfg.camera = _pinned_camera(cfg, {})
+    cfg.camera.calibration_source = 'NDI®: <img src=x onerror="alert(1)">'
+    save_config(cfg, server.config_path)
+    section = _camera_section(_get(base, "/section/camera")[1])
+    assert "<img" not in section
+    assert _readout(section)["Video source"] == "NDI®: &lt;img src=x onerror=&quot;alert(1)&quot;&gt;"
+
+
+_WIZARD_SAVE = {
+    "calibration_mode": "simple",
+    "calibration_marks": _corner_marks(),
+    "calibration_time": "2026-10-25T11:04:00+01:00",
+}
+
+
+@pytest.mark.parametrize(
+    ("source_type", "label", "recorded"),
+    [
+        ("rtsp", "rtsp://192.0.2.10/stream", "RTSP: rtsp://192.0.2.10/stream"),
+        ("srt", "SRT srt://192.0.2.10:5000", "SRT srt://192.0.2.10:5000"),
+        ("ndi", "Stage (Left)", "NDI®: Stage (Left)"),
+        ("testpattern", "Media Gallery (Clip)", "Media Gallery (Clip)"),
+        ("no_such_input", "Something", "Something"),
+        ("rtsp", "", ""),
+    ],
+    ids=["rtsp", "srt", "ndi", "gallery", "unknown input", "no label"],
+)
+def test_a_setup_wizard_save_records_the_video_source_the_station_shows(
+    video_server, source_type: str, label: str, recorded: str
+) -> None:
+    server, base, stats = video_server
+    stats["video"] = {"resolution": {"width": 1920, "height": 1080}, "source_type": source_type, "source_label": label}
+    status, _ = _post_json(base, "/api/config/camera", _WIZARD_SAVE)
+    assert status == 200
+    assert load_config(server.config_path).camera.calibration_source == recorded
+
+
+def test_a_setup_wizard_save_without_video_stats_records_no_source(video_server) -> None:
+    server, base, stats = video_server
+    stats.clear()
+    assert _post_json(base, "/api/config/camera", _WIZARD_SAVE)[0] == 200
+    camera = load_config(server.config_path).camera
+    assert (camera.calibration_time, camera.calibration_source) == ("2026-10-25T11:04:00+01:00", "")
+
+
+@pytest.mark.parametrize(
+    ("path", "data"),
+    [
+        ("/api/config/camera", {**_WIZARD_SAVE, "calibration_source": "SRT srt://192.0.2.20:5000"}),
+        ("/api/config/camera?from=Peer", {**_WIZARD_SAVE, "calibration_source": "SRT srt://192.0.2.20:5000"}),
+        ("/api/config/camera?from=Peer", _WIZARD_SAVE),
+        ("/api/config/camera", {k: v for k, v in _WIZARD_SAVE.items() if k != "calibration_time"}),
+    ],
+    ids=["brought", "pushed", "pushed without", "no time"],
+)
+def test_only_a_setup_wizard_save_is_stamped_with_this_station_s_source(video_server, path: str, data: dict) -> None:
+    """A source brought, or a push from a station that showed another, is never this station's."""
+    server, base, stats = video_server
+    stats["video"] = {
+        "resolution": {"width": 1920, "height": 1080},
+        "source_type": "rtsp",
+        "source_label": "rtsp://192.0.2.10/s",
+    }
+    assert _post_json(base, path, data)[0] == 200
+    assert load_config(server.config_path).camera.calibration_source == data.get("calibration_source", "")
+
+
 def test_validate_endpoint_advisory_note(live_server) -> None:
     """Cross-field auto-correct surfaces as a ``field-note-msg`` span."""
     _, base = live_server
@@ -6729,11 +8118,56 @@ def test_validate_endpoint_inference_size_snap_note(live_server) -> None:
     assert 'class="field-note-msg"' in body
 
 
+_SYMBOL_HTML = '<svg class="btn-symbol-icon"'
+
+
 def _get_checked(base: str, path: str, query: dict[str, str]) -> tuple[str, dict | None]:
     """Body plus the ``bindingChecked`` event of an ``HX-Trigger`` header, if any."""
     with urllib.request.urlopen(f"{base}{path}?{urllib.parse.urlencode(query)}", timeout=5) as r:
         header = r.headers.get("HX-Trigger")
         return r.read().decode(), (json.loads(header)["bindingChecked"] if header else None)
+
+
+@pytest.mark.parametrize(
+    ("style", "word", "symbol"),
+    [("standard", "Y", False), ("nintendo", "Y", False), ("playstation", "Triangle", True)],
+)
+def test_validate_binding_notes_name_the_button_in_the_saved_style(live_server, style, word, symbol) -> None:
+    """The notes use the saved style, as the selectors beside them do, whatever the form's unsaved choice."""
+    _, base = live_server
+    _post_form(base, "/section/gamepad", {"enabled": "true", "deadzone": "0.15", "button_name_style": style})
+    unsaved = "playstation" if style != "playstation" else "standard"
+    body, event = _get_checked(
+        base,
+        "/api/validate/gamepad/btn_reset",
+        {"btn_reset": "Y", "btn_toggle_help": "Y", "btn_settings": "BACK", "button_name_style": unsaved},
+    )
+    [moved] = event["moved"]
+    assert body.endswith("taken from Toggle Help</span>")
+    assert (_SYMBOL_HTML in body) is symbol
+    assert (_SYMBOL_HTML in moved["html"]) is symbol
+    if symbol:
+        assert f'<span class="visually-hidden">{word}</span>' in body
+    else:
+        assert f"{word} taken from Toggle Help" in body
+    # Once the button moves on, the note reads as plain words.
+    assert f'data-lost-text="{word} was taken"' in moved["html"]
+
+
+@pytest.mark.parametrize(("button", "word"), [("BACK", "Minus"), ("START", "Plus")])
+def test_a_nintendo_mark_in_a_binding_note_is_spelled_out(live_server, button: str, word: str) -> None:
+    """A lone "-" in the red note would read as the unbound option's dash."""
+    _, base = live_server
+    _post_form(base, "/section/gamepad", {"enabled": "true", "deadzone": "0.15", "button_name_style": "nintendo"})
+    body, event = _get_checked(
+        base,
+        "/api/validate/gamepad/btn_reset",
+        {"btn_reset": button, "btn_toggle_help": button, "btn_settings": "" if button == "BACK" else "BACK"},
+    )
+    [moved] = event["moved"]
+    assert f"{word} taken from Toggle Help" in body
+    assert f"{word} moved to Reset Marker" in moved["html"]
+    assert f'data-lost-text="{word} was taken"' in moved["html"]
 
 
 def test_validate_binding_takes_a_shared_button_and_names_both_fields(live_server) -> None:
@@ -6821,7 +8255,7 @@ def test_validate_move_stick_leaving_the_fader_stick_rechecks_it(live_server) ->
 @pytest.mark.parametrize(
     ("field", "value", "caution"),
     [
-        ("trigger.button", "B", "Also 'Toggle Zone Overlay' on gamepad input"),
+        ("trigger.button", "Y", "Also 'Toggle Help' on gamepad input"),
         ("trigger.button", "A", ""),
         ("trigger.key", "x", "Also 'Reset Marker' on keyboard input"),
         ("trigger.key", "p", ""),
@@ -6891,47 +8325,71 @@ def test_validate_reuses_request_scoped_config_cache(live_server) -> None:
     assert body == ""
 
 
-def test_get_handler_parses_config_once_per_request(live_server, monkeypatch) -> None:
-    """GET handlers reuse request-scoped config cache to parse config exactly once per request."""
-    import openfollow.web.routes as routes_mod
+class _CountingCache:
+    """Stands in for the request config cache, counting the copies taken."""
 
-    calls: list[str] = []
-    real_load = routes_mod.load_config
+    def __init__(self) -> None:
+        from openfollow.web.config_cache import ParsedConfigCache
 
-    def _counting(path, *a, **k):
-        calls.append(path)
-        return real_load(path, *a, **k)
+        self._real = ParsedConfigCache()
+        self.taken = 0
 
-    monkeypatch.setattr(routes_mod, "load_config", _counting)
-    _, base = live_server
-    calls.clear()
-    status, _ = _get(base, "/")
-    assert status == 200
-    # ``_check_auth`` (before_request) parses once and caches on the request
-    # environ; ``index`` reuses that instead of a second parse.
-    assert len(calls) == 1
+    def load(self, path: str):  # noqa: ANN201 - returns the real cache's AppConfig
+        self.taken += 1
+        return self._real.load(path)
 
 
-def test_marker_catalog_parses_config_once_per_request(
-    live_server,
-    monkeypatch,
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("/", 200),
+        ("/api/markers/catalog", 200),
+        # Polled every 250 ms while a MIDI capture runs; the row lookup reads the config.
+        ("/section/osc/midi/learn/poll/no-such-row", 404),
+        ("/section/midi", 200),
+        ("/section/midi/faders/1/detail", 200),
+    ],
+)
+def test_a_request_takes_one_copy_of_the_config_and_parses_nothing_itself(
+    live_server, monkeypatch, path, expected
 ) -> None:
+    """``_check_auth`` (before_request) takes the request's copy; the handler reuses it."""
     import openfollow.web.routes as routes_mod
 
-    calls: list[str] = []
-    real_load = routes_mod.load_config
+    server, base = live_server
+    save_config(AppConfig(), server.config_path)
+    cache = _CountingCache()
+    parses: list[str] = []
+    real_load = routes_mod.load_config_for_save
+    monkeypatch.setattr(routes_mod, "_CONFIG_CACHE", cache)
+    monkeypatch.setattr(routes_mod, "load_config_for_save", lambda p: parses.append(p) or real_load(p))
+    status, _ = _get(base, path)
+    assert status == expected
+    assert cache.taken == 1
+    assert parses == []
 
-    def _counting(path, *a, **k):
-        calls.append(path)
-        return real_load(path, *a, **k)
 
-    monkeypatch.setattr(routes_mod, "load_config", _counting)
-    _, base = live_server
-    calls.clear()
-    status, _ = _get(base, "/api/markers/catalog")
-    assert status == 200
-    # before_request parses + caches; the catalog handler reuses that cache.
-    assert len(calls) == 1
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("/section/osc/midi/learn/arm/no-such-row", 404),
+        ("/section/midi/faders/99", 200),
+    ],
+)
+def test_a_midi_post_that_writes_nothing_parses_nothing_itself(live_server, monkeypatch, path, expected) -> None:
+    import openfollow.web.routes as routes_mod
+
+    server, base = live_server
+    save_config(AppConfig(), server.config_path)
+    cache = _CountingCache()
+    parses: list[str] = []
+    real_load = routes_mod.load_config_for_save
+    monkeypatch.setattr(routes_mod, "_CONFIG_CACHE", cache)
+    monkeypatch.setattr(routes_mod, "load_config_for_save", lambda p: parses.append(p) or real_load(p))
+    status, _ = _post_form(base, path, {})
+    assert status == expected
+    assert cache.taken == 1
+    assert parses == []
 
 
 # ---------------------------------------------------------------------------
@@ -7355,14 +8813,18 @@ def test_the_mdns_address_is_shown_beside_the_custom_domain_name(
     assert "disabled" in field.group(0) and "name=" not in field.group(0)
 
 
-def test_the_station_settings_box_draws_no_rules_inside(live_server) -> None:
-    """A ``.group`` draws a rule under itself unless it is the last in its container, so each
-    of the box's three containers (name and PIN, display units, Advanced Settings) holds one."""
+def test_the_station_settings_box_draws_one_rule_before_the_features(live_server) -> None:
+    """A ``.group`` draws a rule under itself unless it is the last in its container: name and
+    PIN and display units hold one group each, and Advanced Settings two, ruled off before the
+    Features table."""
     _, base = live_server
     _, body = _get(base, "/")
     start = body.index('data-fold-key="general-station"')
-    box = body[start : body.find('<div class="section"', start)]
-    assert box.count('class="group"') == 3
+    box = body[start : body.index('data-fold-key="general-network-interface"', start)]
+    assert box.count('class="group"') == 4
+    assert box.count('<div id="features-section" class="group"') == 1
+    advanced = box[box.index('<details class="inline-advanced">') : box.index("</details>")]
+    assert advanced.index('class="group"') < advanced.index('<div id="features-section" class="group"')
     assert "group--divider" not in box
 
 
@@ -7420,7 +8882,7 @@ def test_a_refused_unlock_says_why_on_the_login_page(pin_protected_server) -> No
     assert "Set-Cookie" not in response_headers
 
 
-def _refused_login_post(tmp_path, declared_length: int | str, body: bytes) -> tuple[str, io.BytesIO]:
+def _refused_login_post(tmp_path, declared_length: int | str, body: bytes) -> str:
     """POST the login form through a refused name straight into the WSGI app."""
     server = ConfigWebServer(config_path=str(tmp_path / "config.toml"))
     stream = io.BytesIO(body)
@@ -7440,29 +8902,410 @@ def _refused_login_post(tmp_path, declared_length: int | str, body: bytes) -> tu
     )
     status: list[str] = []
     b"".join(server._app(environ, lambda s, _headers, _exc=None: status.append(s)))
-    return status[0], stream
+    return status[0]
 
 
-def test_a_refusal_reads_the_body_first_so_closing_does_not_reset_its_answer(tmp_path) -> None:
-    # Closing a connection with unread request data resets it, which can drop
-    # the refusal before the browser reads it.
-    body = b"pin=sekret"
-    status, stream = _refused_login_post(tmp_path, len(body), body)
-    assert status.startswith("403")
-    assert stream.tell() == len(body)
+def _post_whole(base: str, *, chunked: bool, body: bytes) -> bytes:
+    """Send a whole POST to a settings route, then read the answer to EOF."""
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    if chunked:
+        framing = b"Transfer-Encoding: chunked\r\n"
+        payload = b"%x\r\n%s\r\n0\r\n\r\n" % (len(body), body)
+    else:
+        framing = b"Content-Length: %d\r\n" % len(body)
+        payload = body
+    head = b"POST /api/config/camera HTTP/1.1\r\nHost: %s\r\nContent-Type: application/json\r\n%s\r\n" % (
+        host.encode(),
+        framing,
+    )
+    with socket.create_connection((host, int(port)), timeout=5) as sock:
+        sock.sendall(head + payload)
+        answer = b""
+        while chunk := sock.recv(65536):
+            answer += chunk
+    return answer
 
 
-def test_a_refusal_does_not_read_a_body_past_the_pre_auth_cap(tmp_path) -> None:
-    status, stream = _refused_login_post(tmp_path, peer_auth.MAX_SIGNED_BODY_SIZE + 1, b"pin=sekret")
-    assert status.startswith("403")
-    assert stream.tell() == 0
+@pytest.mark.parametrize("chunked", [False, True], ids=["content-length", "chunked"])
+def test_a_refusal_before_the_body_is_read_reaches_the_client(pin_protected_server, chunked: bool) -> None:
+    # Closing with the body still arriving would reset the connection and drop the answer.
+    _, base, _ = pin_protected_server
+    body = b"x" * (4 * 1024 * 1024)
+    failures: list[str] = []
+    for _ in range(50):
+        try:
+            answer = _post_whole(base, chunked=chunked, body=body)
+        except OSError as exc:
+            failures.append(repr(exc))
+            continue
+        if not answer.startswith(b"HTTP/1.0 401 "):
+            failures.append(repr(answer[:40]))
+    assert failures == []
+
+
+def _slot_freed_after(base: str, monkeypatch, request: bytes, status: bytes) -> bool:
+    """Send ``request`` and hold the connection open once answered: is its handler slot freed?"""
+    from openfollow.web import server as server_module
+
+    slot = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(server_module, "_request_semaphore", slot)
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    with socket.create_connection((host, int(port)), timeout=5) as held:
+        held.sendall(request)
+        assert held.recv(65536).startswith(b"HTTP/1.0 " + status)
+        freed = slot.acquire(timeout=5)
+    if freed:
+        slot.release()
+    return freed
+
+
+def _owed_body(declared: str) -> bytes:
+    """A POST the PIN check refuses, declaring a body it never sends."""
+    return b"POST /api/config/camera HTTP/1.1\r\nHost: x\r\nContent-Length: %s\r\n\r\n" % declared.encode()
+
+
+def test_a_body_that_never_arrives_does_not_hold_the_connection(pin_protected_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_UNREAD_BODY_TIMEOUT_S", 0.2)
+    _, base, _ = pin_protected_server
+    assert _slot_freed_after(base, monkeypatch, _owed_body("1000"), b"401 ")
+
+
+@pytest.mark.parametrize("declared", ["1025", "abc", "-5"], ids=["past-the-cap", "malformed", "negative"])
+def test_a_body_with_no_length_to_wait_for_is_not_waited_for(pin_protected_server, monkeypatch, declared) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_UNREAD_BODY_TIMEOUT_S", 60.0)
+    monkeypatch.setattr(server_module, "_UNREAD_BODY_MAX_BYTES", 1024)
+    _, base, _ = pin_protected_server
+    assert _slot_freed_after(base, monkeypatch, _owed_body(declared), b"401 ")
+
+
+def test_a_body_the_route_read_is_not_waited_for(live_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_UNREAD_BODY_TIMEOUT_S", 60.0)
+    _, base = live_server
+    body = json.dumps({"pos_x": 1.0}).encode()
+    request = (
+        b"POST /api/config/camera HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+        b"Content-Length: %d\r\n\r\n%s" % (len(body), body)
+    )
+    assert _slot_freed_after(base, monkeypatch, request, b"200 ")
+
+
+def test_a_malformed_request_line_is_answered_without_a_handler_error(live_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    errors: list[object] = []
+    monkeypatch.setattr(server_module._ThreadingWSGIServer, "handle_error", lambda self, *args: errors.append(args))
+    _, base = live_server
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    with socket.create_connection((host, int(port)), timeout=5) as sock:
+        sock.sendall(b"POST / HTTP/1.x\r\nContent-Length: 4\r\n\r\nbody")
+        answer = b""
+        while chunk := sock.recv(65536):
+            answer += chunk
+    assert b"Error code: 400" in answer
+    assert errors == []
+
+
+def _quiet_slot(monkeypatch) -> tuple[threading.BoundedSemaphore, list[object]]:
+    """One handler slot, and the handler errors the server reports."""
+    from openfollow.web import server as server_module
+
+    slot = threading.BoundedSemaphore(1)
+    errors: list[object] = []
+    monkeypatch.setattr(server_module, "_request_semaphore", slot)
+    monkeypatch.setattr(server_module._ThreadingWSGIServer, "handle_error", lambda self, *args: errors.append(args))
+    return slot, errors
+
+
+def test_an_idle_connection_is_closed_quietly_after_the_head_timeout(live_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_REQUEST_HEAD_TIMEOUT_S", 0.2)
+    slot, errors = _quiet_slot(monkeypatch)
+    _, base = live_server
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    with socket.create_connection((host, int(port)), timeout=5) as idle:
+        assert idle.recv(1) == b""
+        assert slot.acquire(timeout=5)
+    slot.release()
+    assert errors == []
+
+
+def test_headers_that_trickle_past_the_head_timeout_are_closed(live_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_REQUEST_HEAD_TIMEOUT_S", 0.5)
+    _, errors = _quiet_slot(monkeypatch)
+    _, base = live_server
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    with socket.create_connection((host, int(port)), timeout=5) as sock:
+        sock.sendall(b"GET /api/info HTTP/1.1\r\n")
+        sock.settimeout(0.1)
+        closed = False
+        for _ in range(50):
+            try:
+                sock.sendall(b"X-Slow: 1\r\n")
+                closed = sock.recv(1) == b""
+            except TimeoutError:
+                continue
+            except ConnectionError:
+                closed = True
+            break
+    assert closed
+    assert errors == []
+
+
+def test_a_slow_but_steady_upload_completes(live_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_REQUEST_HEAD_TIMEOUT_S", 1.0)
+    monkeypatch.setattr(server_module, "_REQUEST_BODY_READ_TIMEOUT_S", 1.0)
+    server, base = live_server
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    body = json.dumps({"pos_x": 1.0, "pos_y": 2.0}).encode()
+    pieces = [body[i : i + 3] for i in range(0, len(body), 3)]
+    assert len(pieces) * 0.25 > 2.0  # the body takes longer than both timeouts in total
+    with socket.create_connection((host, int(port)), timeout=5) as sock:
+        sock.sendall(
+            b"POST /api/config/camera HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+            b"Content-Length: %d\r\n\r\n" % len(body)
+        )
+        for piece in pieces:
+            time.sleep(0.25)
+            sock.sendall(piece)
+        answer = b""
+        while chunk := sock.recv(65536):
+            answer += chunk
+    assert answer.startswith(b"HTTP/1.0 200 ")
+    assert json.loads(answer.split(b"\r\n\r\n", 1)[1])["success"] is True
+    assert load_config(server.config_path).camera.pos_y == pytest.approx(2.0)
+
+
+def test_a_body_that_stops_arriving_is_answered_and_frees_its_slot(live_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_REQUEST_BODY_READ_TIMEOUT_S", 0.3)
+    monkeypatch.setattr(server_module, "_UNREAD_BODY_TIMEOUT_S", 60.0)
+    _, base = live_server
+    body = json.dumps({"pos_x": 1.0, "pos_y": 2.0}).encode()
+    request = (
+        b"POST /api/config/camera HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+        b"Content-Length: %d\r\n\r\n%s" % (len(body), body[: len(body) // 2])
+    )
+    assert _slot_freed_after(base, monkeypatch, request, b"408 ")
+
+
+def _busy(monkeypatch, drain_places: int = 1) -> tuple[threading.BoundedSemaphore, threading.BoundedSemaphore]:
+    """Every handler slot taken: the slot, held, and the busy drain's places."""
+    from openfollow.web import server as server_module
+
+    slot, _ = _quiet_slot(monkeypatch)
+    assert slot.acquire(blocking=False)
+    drains = threading.BoundedSemaphore(drain_places)
+    monkeypatch.setattr(server_module, "_busy_drain_semaphore", drains)
+    monkeypatch.setattr(server_module, "_busy_log", server_module._BusyLog())
+    return slot, drains
+
+
+def _reset_within(sock: socket.socket, seconds: float, chunk: bytes = b"x") -> bool:
+    """Keep sending until the station's close resets the connection."""
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        try:
+            sock.sendall(chunk)
+        except ConnectionError:
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def _busy_answer(sock: socket.socket) -> bytes:
+    """Send the start of a request and read the answer to the station's half-close."""
+    sock.sendall(b"POST /api/config/camera HTTP/1.1\r\nHost: x\r\nContent-Length: 1000000\r\n\r\n")
+    answer = b""
+    while chunk := sock.recv(65536):
+        answer += chunk
+    return answer
+
+
+def test_a_busy_answer_reaches_a_client_still_sending(live_server, monkeypatch, caplog) -> None:
+    import logging
+
+    from openfollow.web import server as server_module
+
+    caplog.set_level(logging.INFO, logger="openfollow.web.server")
+    _, base = live_server
+    slot, drains = _busy(monkeypatch)
+    body = b"x" * (server_module._BUSY_DRAIN_MAX_BYTES - 4096)  # the head fits under the cap too
+    failures: list[str] = []
+    try:
+        for _ in range(30):
+            # A drain frees its place once the client's close reaches it, which can trail the client.
+            assert drains.acquire(timeout=5)
+            drains.release()
+            try:
+                answer = _post_whole(base, chunked=False, body=body)
+            except OSError as exc:
+                failures.append(repr(exc))
+                continue
+            if not answer.startswith(b"HTTP/1.1 503 Service Unavailable\r\n") or not answer.endswith(
+                b"Server busy; retry"
+            ):
+                failures.append(repr(answer[:40]))
+    finally:
+        slot.release()
+    assert failures == []
+    assert [r.levelno for r in caplog.records if r.name == "openfollow.web.server"] == [logging.WARNING]
+
+
+def test_a_station_that_accepts_again_after_a_quiet_interval_says_so(live_server, monkeypatch, caplog) -> None:
+    import logging
+
+    from openfollow.web import server as server_module
+
+    caplog.set_level(logging.INFO, logger="openfollow.web.server")
+    _, base = live_server
+    slot, _ = _busy(monkeypatch)
+    now = [0.0]
+    monkeypatch.setattr(server_module, "_busy_log", server_module._BusyLog(clock=lambda: now[0]))
+    try:
+        assert _get(base, "/api/info")[0] == 503
+    finally:
+        slot.release()
+    now[0] = server_module._BUSY_LOG_INTERVAL_S
+    assert _get(base, "/api/info")[0] == 200
+    lines = [(r.levelno, r.getMessage()) for r in caplog.records if r.name == "openfollow.web.server"]
+    assert [level for level, _ in lines] == [logging.WARNING, logging.INFO]
+    assert "accepts requests again; 0 refused" in lines[1][1]
+
+
+def test_a_busy_drain_ends_at_its_deadline_and_frees_its_place(live_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_BUSY_DRAIN_TIMEOUT_S", 0.4)
+    _, base = live_server
+    slot, drains = _busy(monkeypatch)
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    try:
+        with socket.create_connection((host, int(port)), timeout=5) as sock:
+            started = time.monotonic()
+            assert _busy_answer(sock).startswith(b"HTTP/1.1 503 ")
+            assert _reset_within(sock, 3.0)
+            elapsed = time.monotonic() - started
+        assert 0.3 < elapsed < 3.0
+        assert drains.acquire(timeout=5)
+    finally:
+        slot.release()
+
+
+def test_a_busy_drain_stops_at_its_byte_cap(live_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_BUSY_DRAIN_TIMEOUT_S", 60.0)
+    monkeypatch.setattr(server_module, "_BUSY_DRAIN_MAX_BYTES", 64 * 1024)
+    _, base = live_server
+    slot, drains = _busy(monkeypatch)
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    try:
+        with socket.create_connection((host, int(port)), timeout=5) as sock:
+            assert _busy_answer(sock).startswith(b"HTTP/1.1 503 ")
+            assert _reset_within(sock, 3.0, chunk=b"x" * 4096)
+        assert drains.acquire(timeout=5)
+    finally:
+        slot.release()
+
+
+def test_a_busy_station_with_no_drain_place_closes_at_once(live_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_BUSY_DRAIN_TIMEOUT_S", 60.0)
+    _, base = live_server
+    slot, drains = _busy(monkeypatch)
+    assert drains.acquire(blocking=False)
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    try:
+        with socket.create_connection((host, int(port)), timeout=5) as sock:
+            assert _reset_within(sock, 2.0)
+    finally:
+        drains.release()
+        slot.release()
+
+
+class _FixedToken:
+    """``secrets`` with a known ``token_hex``, so a test can name the file a route stages."""
+
+    def __init__(self, token: str) -> None:
+        self._token = token
+
+    def token_hex(self, _nbytes: int | None = None) -> str:
+        return self._token
+
+    def __getattr__(self, name: str) -> Any:
+        import secrets
+
+        return getattr(secrets, name)
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/video-input/testpattern/upload", "/section/general/deb-upload?filename=a.ofupdate"],
+    ids=["gallery", "ofupdate"],
+)
+def test_an_upload_that_stops_arriving_is_answered_408_and_leaves_nothing_staged(
+    live_server, monkeypatch, caplog, path
+) -> None:
+    import glob
+    import logging
+
+    import openfollow.web.routes as routes_module
+    from openfollow.web import server as server_module
+
+    token = f"stall{os.getpid()}{time.monotonic_ns()}"
+    monkeypatch.setattr(routes_module, "secrets", _FixedToken(token))
+    monkeypatch.setattr(server_module, "_REQUEST_BODY_READ_TIMEOUT_S", 0.3)
+    caplog.set_level(logging.INFO)
+    _, base = live_server
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    with socket.create_connection((host, int(port)), timeout=5) as sock:
+        sock.sendall(
+            b"POST %s HTTP/1.1\r\nHost: x\r\nContent-Type: application/octet-stream\r\n"
+            b"Content-Length: 1000\r\n\r\n%s" % (path.encode(), b"x" * 10)
+        )
+        answer = b""
+        while chunk := sock.recv(65536):
+            answer += chunk
+    assert answer.startswith(b"HTTP/1.0 408 ")
+    assert glob.glob(f"/tmp/*{token}*") == []  # nosec B108 - where the routes stage uploads
+    assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
+
+
+def test_a_large_answer_reaches_a_client_that_reads_late(live_server, monkeypatch) -> None:
+    from openfollow.web import server as server_module
+
+    monkeypatch.setattr(server_module, "_REQUEST_HEAD_TIMEOUT_S", 0.3)
+    server, base = live_server
+    jpeg = b"x" * (12 * 1024 * 1024)
+    monkeypatch.setattr(server, "_full_snapshot_provider", lambda: jpeg)
+    host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)
+    with socket.create_connection((host, int(port)), timeout=5) as sock:
+        sock.sendall(b"GET /api/video/snapshot/full HTTP/1.0\r\n\r\n")
+        time.sleep(1.0)  # past the head timeout before reading any of the answer
+        answer = b""
+        while chunk := sock.recv(1 << 20):
+            answer += chunk
+    head, _, received = answer.partition(b"\r\n\r\n")
+    assert head.startswith(b"HTTP/1.0 200 ")
+    assert len(received) == len(jpeg)
 
 
 @pytest.mark.parametrize("declared", ["abc", "", "-5"])
 def test_a_refusal_with_a_missing_or_malformed_length_still_refuses(tmp_path, declared: str) -> None:
-    status, stream = _refused_login_post(tmp_path, declared, b"pin=sekret")
-    assert status.startswith("403")
-    assert stream.tell() == 0
+    assert _refused_login_post(tmp_path, declared, b"pin=sekret").startswith("403")
 
 
 def test_the_refused_name_is_escaped(live_server) -> None:
@@ -7581,7 +9424,8 @@ def test_gallery_list_shows_defaults(gallery_server) -> None:
     status, body = _get(base, f"{_GP}/list")
     assert status == 200
     assert 'id="gallery-grid"' in body
-    assert "Stage" in body and "Grey" in body
+    titles = re.findall(r'class="gallery-select" type="button" title="([^"]+)"', body)
+    assert titles == ["Stage", "Concert", "Festival", "Grey"]
     assert "gallery-label" not in body  # no visible per-tile labels
     assert 'title="Stage"' in body  # name kept as hover/aria name only
 
@@ -7686,14 +9530,49 @@ def test_gallery_thumb_stage_serves_asset(gallery_server) -> None:
     assert body[:3] == b"\xff\xd8\xff"  # JPEG
 
 
+@pytest.mark.parametrize(
+    ("media_id", "asset"),
+    [
+        ("default:concert", "CONCERT_ASSET_JPG"),
+        ("default:festival", "FESTIVAL_ASSET_JPG"),
+    ],
+)
+def test_gallery_thumb_of_a_bundled_picture_serves_it(gallery_server, media_id: str, asset: str) -> None:
+    from openfollow.video import media_store
+
+    _, base, _ = gallery_server
+    status, body = _get_raw(base, f"{_GP}/thumb/{media_id}")
+    assert status == 200
+    assert body == getattr(media_store, asset).read_bytes()
+
+
+def test_gallery_thumb_grey_has_none(gallery_server) -> None:
+    _, base, _ = gallery_server
+    status, _body = _get_raw(base, f"{_GP}/thumb/default:grey")
+    assert status == 404
+
+
+@pytest.mark.parametrize(
+    ("media_id", "label"),
+    [("default:concert", "Concert"), ("default:festival", "Festival")],
+)
+def test_gallery_select_a_bundled_picture_persists(gallery_server, media_id: str, label: str) -> None:
+    server, base, _ = gallery_server
+    status, body = _post_form(base, f"{_GP}/select", {"media_id": media_id})
+    assert status == 200
+    assert load_config(server.config_path).testpattern_selected_media == media_id
+    assert f'<div class="gallery-tile selected"><button class="gallery-select" type="button" title="{label}"' in body
+
+
 def test_video_source_section_hides_capture_for_gallery(live_server) -> None:
     _, base = live_server  # default source is the gallery (testpattern)
     status, body = _get(base, "/section/video_source")
     assert status == 200
     assert 'id="gallery-grid"' in body  # grid container loads via HTMX
-    # Capture, connection recovery, and preview don't apply to the gallery.
+    # Capture, healing and preview don't apply to the gallery; a clip can still stall.
     assert 'id="capture-frame-row" style="margin-top:0.5rem;display:none"' in body
-    assert 'id="recovery-row" style="display:none"' in body
+    assert '<div class="row" id="recovery-row">' in body and 'name="stall_timeout"' in body
+    assert 'id="heal-field" style="display:none"' in body
     assert 'id="preview-row" style="margin-top:0.5rem;display:none"' in body
 
 
@@ -7707,20 +9586,23 @@ def test_video_source_section_shows_capture_for_live_source(live_server) -> None
     assert status == 200
     assert "Capture frame to gallery" in body  # live sources offer capture
     assert 'id="capture-frame-row" style="margin-top:0.5rem;display:"' in body  # shown
-    assert 'id="recovery-row" style="display:"' in body  # network source -> recovery shown
+    assert 'id="heal-field" style="display:"' in body  # network source -> healing shown
     assert 'id="preview-row" style="margin-top:0.5rem;display:"' in body  # preview shown
 
 
-def test_video_source_section_camera_hides_recovery_keeps_preview(live_server) -> None:
-    # A non-network, non-gallery source (NDI uses its own reconnect): recovery
-    # hidden, but capture + preview still apply.
+def test_video_source_section_camera_hides_healing_keeps_stall_and_preview(live_server) -> None:
+    # A non-network, non-gallery source (NDI uses its own reconnect): healing
+    # hidden, but the stall timeout, capture and preview still apply.
     server, base = live_server
     cfg = load_config(server.config_path)
     cfg.video_source_type = "ndi"
     save_config(cfg, server.config_path)
     status, body = _get(base, "/section/video_source")
     assert status == 200
-    assert 'id="recovery-row" style="display:none"' in body
+    assert 'id="heal-field" style="display:none"' in body
+    assert '<div class="row" id="recovery-row">' in body
+    # The Source Type toggle shows and hides the same field the server rendered.
+    assert "vis('heal-field', net);" in body
     assert 'id="preview-row" style="margin-top:0.5rem;display:"' in body
     assert 'id="capture-frame-row" style="margin-top:0.5rem;display:"' in body
 
@@ -7970,3 +9852,885 @@ def test_vlan_subinterface_is_offered_as_a_plane_pin(live_server, monkeypatch) -
     assert status == 200
     assert 'value="eth0.10"' in body
     assert "eth0.10 – 10.20.0.5" in body
+
+
+def test_api_config_paths_reads_and_takes_paths_keeping_station_state(live_server) -> None:
+    """A peer or API client replaces the paths; Active flags and visibility stay this station's."""
+    from openfollow.configuration import PathConfig
+
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.paths.show_paths = False
+    cfg.paths.paths = [PathConfig(name="cross", active=True)]
+    save_config(cfg, server.config_path)
+
+    with urllib.request.urlopen(f"{base}/api/config/paths", timeout=5) as resp:
+        got = json.loads(resp.read())
+    assert got["paths"][0]["name"] == "cross"
+    assert got["show_paths"] is False
+
+    status, data = _post_json(
+        base,
+        "/api/config/paths",
+        {"show_paths": True, "slide_time": 0.8, "paths": [{"name": "cross", "active": False, "closed": True}]},
+    )
+    assert status == 200 and data["success"] is True
+    out = load_config(server.config_path).paths
+    assert (out.show_paths, out.slide_time) == (False, 0.8)
+    assert [(p.name, p.active, p.closed) for p in out.paths] == [("cross", True, True)]
+
+
+# ---------------------------------------------------------------------------
+# Ground grid section: form -> config, broadcast, import / export
+# ---------------------------------------------------------------------------
+
+_GG_SQUARE = [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]]
+
+
+def test_ground_grid_post_persists_every_field_and_renders_partial(live_server) -> None:
+    server, base = live_server
+    status, body = _post_form(
+        base,
+        "/section/ground_grid",
+        {"enabled": "on", "visible": "on", "z_offset": "-0.75", "vertices": json.dumps(_GG_SQUARE)},
+    )
+    assert status == 200
+    assert 'id="ground-grid-section"' in body
+    gg = load_config(server.config_path).ground_grid
+    assert (gg.enabled, gg.visible, gg.z_offset, gg.vertices) == (True, True, -0.75, _GG_SQUARE)
+
+
+def test_ground_grid_post_unticked_boxes_turn_off(live_server) -> None:
+    server, base = live_server
+    _post_form(base, "/section/ground_grid", {"enabled": "on", "visible": "on"})
+    status, _ = _post_form(base, "/section/ground_grid", {"z_offset": "0"})
+    assert status == 200
+    gg = load_config(server.config_path).ground_grid
+    assert (gg.enabled, gg.visible) == (False, False)
+
+
+@pytest.mark.parametrize("bad", ["not json", "null", "5", '"text"', '{"x": 1}'])
+def test_ground_grid_post_malformed_vertices_keep_the_polygon(live_server, bad: str) -> None:
+    server, base = live_server
+    _post_form(base, "/section/ground_grid", {"vertices": json.dumps(_GG_SQUARE)})
+    status, _ = _post_form(base, "/section/ground_grid", {"vertices": bad})
+    assert status == 200
+    assert load_config(server.config_path).ground_grid.vertices == _GG_SQUARE
+
+
+def test_ground_grid_post_drops_bad_corners_and_caps_the_count(live_server) -> None:
+    from openfollow.configuration import GROUND_GRID_MAX_VERTICES
+
+    server, base = live_server
+    corners = [[0, 0], ["x", 1], [1, "NaN"], [1, 0], [1, 1]] + [[i, 5] for i in range(GROUND_GRID_MAX_VERTICES)]
+    status, _ = _post_form(base, "/section/ground_grid", {"vertices": json.dumps(corners)})
+    assert status == 200
+    saved = load_config(server.config_path).ground_grid.vertices
+    assert saved[:3] == [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]
+    assert len(saved) == GROUND_GRID_MAX_VERTICES
+
+
+@pytest.mark.parametrize(("bad", "expected"), [("abc", -0.5), ("", -0.5), ("inf", 0.0), ("nan", 0.0)])
+def test_ground_grid_post_bad_height_never_stores_a_non_number(live_server, bad: str, expected: float) -> None:
+    server, base = live_server
+    _post_form(base, "/section/ground_grid", {"z_offset": "-0.5"})
+    status, _ = _post_form(base, "/section/ground_grid", {"z_offset": bad})
+    assert status == 200
+    assert load_config(server.config_path).ground_grid.z_offset == expected
+
+
+@pytest.mark.parametrize(("raw", "invalid"), [("-0.4", False), ("abc", True)])
+def test_ground_grid_height_blur_validation(live_server, raw: str, invalid: bool) -> None:
+    _, base = live_server
+    status, body = _get(base, f"/api/validate/ground_grid/z_offset?z_offset={urllib.parse.quote(raw)}")
+    assert status == 200
+    assert ("field-error-msg" in body) is invalid
+
+
+def test_ground_grid_broadcast_saves_the_polygon_locally(live_server) -> None:
+    server, base = live_server
+    status, body = _post_json(
+        base,
+        "/api/config/ground_grid/broadcast",
+        {"enabled": True, "visible": False, "z_offset": -1, "vertices": json.dumps(_GG_SQUARE)},
+    )
+    assert status == 200
+    assert body["local_updated"] is True
+    gg = load_config(server.config_path).ground_grid
+    assert (gg.enabled, gg.visible, gg.z_offset, gg.vertices) == (True, False, -1.0, _GG_SQUARE)
+
+
+def test_ground_grid_travels_through_export_and_import(live_server) -> None:
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.ui.shown_features = ["ground_grid"]
+    save_config(cfg, server.config_path)
+    _post_form(base, "/section/ground_grid", {"enabled": "on", "z_offset": "-0.6", "vertices": json.dumps(_GG_SQUARE)})
+    with urllib.request.urlopen(f"{base}/api/config/export", timeout=5) as resp:
+        exported = json.loads(resp.read())
+    assert exported["ground_grid"]["vertices"] == _GG_SQUARE
+
+    _post_form(base, "/section/ground_grid", {"vertices": "[]", "z_offset": "0"})
+    status, _ = _post_raw_json(base, "/api/config/import", exported)
+    assert status == 200
+    gg = load_config(server.config_path).ground_grid
+    assert (gg.enabled, gg.z_offset, gg.vertices) == (True, -0.6, _GG_SQUARE)
+
+
+def test_ground_grid_section_belongs_to_its_feature_on_the_settings_page(live_server) -> None:
+    _, base = live_server
+    status, body = _get(base, "/")
+    assert status == 200
+    form_tag = re.search(r'<form id="ground-grid-section"[^>]*>', body)
+    assert form_tag is not None
+    assert 'data-feature="ground_grid"' in form_tag.group(0)
+    assert 'name="vertices"' in body
+
+
+# ---------------------------------------------------------------------------
+# Keyboard Layout: shown where the kiosk session resolved it, applied on restart
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def keyboard_station(tmp_path, monkeypatch):
+    """A station's xkb files, and the session environment that marks the row as usable."""
+    from tests._xkb import install_station_keyboard, start_session
+
+    install_station_keyboard(tmp_path, monkeypatch)
+    start_session(monkeypatch)
+
+
+def _save_layout(server, layout: str, variant: str = "") -> None:
+    cfg = load_config(server.config_path)
+    cfg.controller.keyboard_layout = layout
+    cfg.controller.keyboard_variant = variant
+    save_config(cfg, server.config_path)
+
+
+def _keyboard_section(body: str) -> str:
+    start = body.index('id="keyboard-section"')
+    return body[start : body.index("</form>", start)]
+
+
+@pytest.mark.parametrize("path", ["/", "/section/keyboard"])
+def test_keyboard_layout_is_hidden_outside_the_kiosk_session(live_server, monkeypatch, tmp_path, path: str) -> None:
+    from tests._xkb import install_station_keyboard, no_session
+
+    install_station_keyboard(tmp_path, monkeypatch)
+    no_session(monkeypatch)
+    _, base = live_server
+    status, body = _get(base, path)
+    assert status == 200
+    assert 'id="keyboard-section"' in body
+    assert 'name="keyboard_layout"' not in body
+    assert "openfollowRestart(" not in _keyboard_section(body)
+
+
+@pytest.mark.parametrize("path", ["/", "/section/keyboard"])
+def test_keyboard_layout_offers_the_stations_layouts(live_server, keyboard_station, path: str) -> None:
+    server, base = live_server
+    _save_layout(server, "de", "T3")
+    _status, body = _get(base, path)
+    layout = re.search(r'<select id="keyboard-layout" name="keyboard_layout".*?</select>', body, re.DOTALL)
+    assert layout is not None
+    options = re.findall(r'<option value="([^"]*)"\s*(selected)?>([^<]*)</option>', layout.group(0))
+    assert options[0] == ("", "", "System – English (UK)")
+    assert ("de", "selected", "German") in options
+    assert {value for value, _, _ in options} == {"", "al", "gb", "us", "de", "jp"}
+    variant = re.search(r'<select id="keyboard-variant" name="keyboard_variant".*?</select>', body, re.DOTALL)
+    assert variant is not None
+    assert '<option value="T3" selected>German (T3)</option>' in variant.group(0)
+    assert '<option value="" >Standard</option>' in variant.group(0)
+
+
+def test_keyboard_layout_carries_the_standard_validation_markup(live_server, keyboard_station) -> None:
+    _, base = live_server
+    _status, body = _get(base, "/section/keyboard")
+    select = re.search(r'<select id="keyboard-layout"[^>]*>', body)
+    assert select is not None
+    assert 'hx-get="/api/validate/keyboard/keyboard_layout"' in select.group(0)
+    assert 'aria-describedby="keyboard-layout-error"' in select.group(0)
+    assert '<span id="keyboard-layout-error" class="field-error"></span>' in body
+
+
+def test_keyboard_variant_carries_the_standard_validation_markup(live_server, keyboard_station) -> None:
+    _, base = live_server
+    _status, body = _get(base, "/section/keyboard")
+    select = re.search(r'<select id="keyboard-variant"[^>]*>', body)
+    assert select is not None
+    assert 'hx-get="/api/validate/keyboard/keyboard_variant"' in select.group(0)
+    assert 'hx-trigger="blur changed delay:200ms"' in select.group(0)
+    assert 'hx-target="#keyboard-variant-error"' in select.group(0)
+    assert 'hx-include="closest form"' in select.group(0)
+    assert 'aria-describedby="keyboard-variant-error" aria-invalid="false"' in select.group(0)
+    assert '<span id="keyboard-variant-error" class="field-error"></span>' in body
+
+
+def _variant_field(body: str) -> str:
+    """The element that reloads the Variant options: the field around the select."""
+    select_at = body.index('<select id="keyboard-variant"')
+    start = body.rindex('<div class="field"', 0, select_at)
+    return body[start : body.index(">", start) + 1]
+
+
+def test_keyboard_variants_reload_with_the_layout(live_server, keyboard_station) -> None:
+    _, base = live_server
+    _status, body = _get(base, "/section/keyboard")
+    field = _variant_field(body)
+    assert 'hx-get="/section/keyboard/variants"' in field
+    assert 'hx-trigger="change from:#keyboard-layout"' in field
+    assert 'hx-include="#keyboard-layout"' in field
+    assert 'hx-target="#keyboard-variant" hx-swap="innerHTML"' in field
+
+
+def test_keyboard_save_waits_out_a_variant_reload(live_server, keyboard_station) -> None:
+    """Saved mid-reload, the form would carry the previous layout's variant under the new layout."""
+    _, base = live_server
+    _status, body = _get(base, "/section/keyboard")
+    field = _variant_field(body)
+    assert 'hx-disabled-elt="#keyboard-section button[type=submit]"' in field
+    # A failed reload leaves the previous layout's variants: fall back to Standard, then gate again.
+    assert (
+        "hx-on::after-request=\"if(!event.detail.successful) document.getElementById('keyboard-variant').value='';"
+        " refreshFormGate(this.closest('form'))\""
+    ) in field
+    section = body[body.index('<form id="keyboard-section"') :]
+    assert re.findall(r"<button[^>]*type=\"submit\"[^>]*>", section) == ['<button type="submit" class="save-btn">']
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("keyboard_layout=jp", ["", "OADG109A"]),
+        ("keyboard_layout=de", ["", "nodeadkeys", "T3", "us"]),
+        ("keyboard_layout=", [""]),
+        ("keyboard_layout=xx", [""]),
+        ("", [""]),
+    ],
+)
+def test_keyboard_variants_route_lists_the_layouts_own(live_server, keyboard_station, query: str, expected) -> None:
+    _, base = live_server
+    status, body = _get(base, f"/section/keyboard/variants?{query}")
+    assert status == 200
+    assert re.findall(r'<option value="([^"]*)"', body) == expected
+    # A new layout starts on Standard: the previous layout's variant means nothing here.
+    assert re.findall(r'<option value="([^"]*)" selected>', body) == [""]
+    assert body.count("Standard") == 1
+
+
+def test_keyboard_layout_save_stores_the_choice_and_leaves_the_session_alone(live_server, keyboard_station) -> None:
+    """Save only saves: the layout in use changes on restart, which Save never requests."""
+    server, base = live_server
+    status, body = _post_form(
+        base, "/section/keyboard", {"keyboard_enabled": "on", "keyboard_layout": "de", "keyboard_variant": "nodeadkeys"}
+    )
+    assert status == 200
+    saved = load_config(server.config_path).controller
+    assert (saved.keyboard_layout, saved.keyboard_variant) == ("de", "nodeadkeys")
+    assert server.check_restart_requested() is False
+    assert "In use: English (UK) until OpenFollow restarts." in body
+
+
+def test_keyboard_save_without_the_row_keeps_the_saved_layout(live_server, monkeypatch) -> None:
+    """Outside the kiosk session the form has no layout fields; saving the rest must not clear them."""
+    from tests._xkb import no_session
+
+    no_session(monkeypatch)
+    server, base = live_server
+    _save_layout(server, "de", "nodeadkeys")
+    status, _ = _post_form(base, "/section/keyboard", {"keyboard_enabled": "on"})
+    assert status == 200
+    saved = load_config(server.config_path).controller
+    assert (saved.keyboard_layout, saved.keyboard_variant) == ("de", "nodeadkeys")
+
+
+@pytest.mark.parametrize(
+    ("form", "expected"),
+    [
+        ({"keyboard_layout": "de;reboot", "keyboard_variant": "nodeadkeys"}, ("", "")),
+        ({"keyboard_layout": "", "keyboard_variant": "nodeadkeys"}, ("", "")),
+        ({"keyboard_layout": "de", "keyboard_variant": "$(id)"}, ("de", "")),
+    ],
+)
+def test_keyboard_layout_save_refuses_a_crafted_value(live_server, keyboard_station, form, expected) -> None:
+    server, base = live_server
+    status, _ = _post_form(base, "/section/keyboard", {"keyboard_enabled": "on", **form})
+    assert status == 200
+    saved = load_config(server.config_path).controller
+    assert (saved.keyboard_layout, saved.keyboard_variant) == expected
+
+
+def test_keyboard_layout_in_use_offers_no_restart(live_server, keyboard_station) -> None:
+    server, base = live_server
+    _save_layout(server, "")
+    _status, body = _get(base, "/section/keyboard")
+    assert "until OpenFollow restarts" not in body
+    assert "openfollowRestart(" not in _keyboard_section(body)
+
+
+def test_keyboard_layout_pending_offers_a_restart(live_server, keyboard_station) -> None:
+    server, base = live_server
+    _save_layout(server, "de")
+    _status, body = _get(base, "/section/keyboard")
+    assert '<div class="field-caution-msg" role="status">In use: English (UK) until OpenFollow restarts.</div>' in body
+    tag_start = body.rindex("<button", 0, body.index('onclick="openfollowRestart('))
+    button = body[tag_start : body.index("</button>", tag_start)]
+    assert 'type="button" class="danger"' in button
+    assert button.endswith(">Restart OpenFollow")
+
+
+def test_keyboard_layout_pending_names_only_the_layout(live_server, keyboard_station) -> None:
+    server, base = live_server
+    _save_layout(server, "de")
+    _status, body = _get(base, "/section/keyboard")
+    assert "The system keyboard settings change" not in body
+
+
+def test_keyboard_settings_pending_without_a_new_layout(live_server, keyboard_station, monkeypatch) -> None:
+    """The system file changed since the session started: the layout stays, the model changes."""
+    from tests._xkb import start_session
+
+    start_session(monkeypatch, model="pc104")
+    server, base = live_server
+    _save_layout(server, "")
+    _status, body = _get(base, "/section/keyboard")
+    caution = "The system keyboard settings change when OpenFollow restarts."
+    assert f'<div class="field-caution-msg" role="status">{caution}</div>' in body
+    assert "until OpenFollow restarts" not in body
+    assert 'onclick="openfollowRestart(' in body
+
+
+@pytest.mark.parametrize(
+    ("raw", "error"),
+    [
+        ("de", None),
+        ("xx", "This station has no keyboard layout &#x27;xx&#x27;."),
+        ("DE", "A layout name is lower-case letters, digits, &#x27;_&#x27; and &#x27;-&#x27;."),
+    ],
+)
+def test_keyboard_layout_blur_validation(live_server, keyboard_station, raw: str, error: str | None) -> None:
+    _, base = live_server
+    status, body = _get(base, f"/api/validate/keyboard/keyboard_layout?keyboard_layout={raw}")
+    assert status == 200
+    if error is None:
+        assert "field-error-msg" not in body
+    else:
+        assert error in body
+
+
+@pytest.mark.parametrize(
+    ("query", "error"),
+    [
+        ("keyboard_layout=de&keyboard_variant=nodeadkeys", None),
+        ("keyboard_layout=gb&keyboard_variant=nodeadkeys", "has no variant &#x27;nodeadkeys&#x27;"),
+        ("keyboard_layout=&keyboard_variant=nodeadkeys", "System takes the system&#x27;s own variant"),
+    ],
+)
+def test_keyboard_variant_blur_validation_reads_the_layout_beside_it(
+    live_server, keyboard_station, query: str, error: str | None
+) -> None:
+    _, base = live_server
+    status, body = _get(base, f"/api/validate/keyboard/keyboard_variant?{query}")
+    assert status == 200
+    if error is None:
+        assert "field-error-msg" not in body
+    else:
+        assert error in body
+
+
+_CONTROLLER_SECTIONS = ["controller", "gamepad", "keyboard", "mouse"]
+
+
+@pytest.mark.parametrize("section", _CONTROLLER_SECTIONS)
+def test_button_names_are_never_broadcast_from_any_controller_section(live_server, monkeypatch, section) -> None:
+    """They describe this station's pads: a DualSense station must not name an Xbox station's buttons."""
+    from types import SimpleNamespace
+
+    from openfollow.web import routes as routes_mod
+
+    sent: list[dict] = []
+
+    def _fake_send(ip, port, section_name, data, pin="", *, expected_port, sender) -> bool:
+        sent.append(dict(data))
+        return True
+
+    monkeypatch.setattr(routes_mod, "_send_config_to_peer", _fake_send)
+    server, base = live_server
+    monkeypatch.setattr(server, "get_peers", lambda: [SimpleNamespace(name="peer", ip="10.0.0.99", web_port=80)])
+    status, body = _post_json(
+        base, f"/api/config/{section}/broadcast", {"button_name_style": "playstation", "key_reset": "c"}
+    )
+    assert status == 200 and body.get("success") is True
+    # The broadcasting station keeps its own choice; the peers are sent none.
+    assert load_config(server.config_path).controller.button_name_style == "playstation"
+    assert [("button_name_style" in data, data.get("key_reset")) for data in sent] == [(False, "c")]
+
+
+@pytest.mark.parametrize("section", _CONTROLLER_SECTIONS)
+def test_button_names_from_a_peer_are_ignored_in_any_controller_section(live_server, section) -> None:
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.controller.button_name_style = "xbox"
+    save_config(cfg, server.config_path)
+    status, body = _post_json(base, f"/api/config/{section}", {"button_name_style": "playstation", "key_reset": "c"})
+    assert status == 200 and body.get("success") is True
+    saved = load_config(server.config_path).controller
+    assert (saved.button_name_style, saved.key_reset) == ("xbox", "c")
+
+
+def test_an_export_carries_the_button_names(live_server) -> None:
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.controller.button_name_style = "nintendo"
+    save_config(cfg, server.config_path)
+    assert _export(base)["controller"]["button_name_style"] == "nintendo"
+
+
+def test_the_gamepad_trigger_state_names_the_triggers_in_the_family(live_server) -> None:
+    _, base = live_server
+    for style, names in (("standard", "LT / RT"), ("playstation", "L2 / R2"), ("nintendo", "ZL / ZR")):
+        _post_form(base, "/section/gamepad", {"enabled": "true", "deadzone": "0.15", "button_name_style": style})
+        status, body = _get(base, "/section/gamepad")
+        assert status == 200
+        assert f'<span style="color:var(--muted);">{names} Triggers:</span>' in body
+
+
+@pytest.mark.parametrize("section", _CONTROLLER_SECTIONS)
+def test_keyboard_layout_is_never_broadcast_from_any_controller_section(live_server, monkeypatch, section) -> None:
+    """Echoing ``GET /api/config/<section>`` back as a broadcast must not set every peer's layout."""
+    from types import SimpleNamespace
+
+    from openfollow.web import routes as routes_mod
+
+    sent: list[dict] = []
+
+    def _fake_send(ip, port, section_name, data, pin="", *, expected_port, sender) -> bool:
+        sent.append(dict(data))
+        return True
+
+    monkeypatch.setattr(routes_mod, "_send_config_to_peer", _fake_send)
+    server, base = live_server
+    monkeypatch.setattr(server, "get_peers", lambda: [SimpleNamespace(name="peer", ip="10.0.0.99", web_port=80)])
+    _save_layout(server, "de", "nodeadkeys")
+    with urllib.request.urlopen(f"{base}/api/config/{section}", timeout=5) as resp:
+        echoed = json.loads(resp.read())
+    # The station's own view carries them, as it does every device-local field.
+    assert (echoed["keyboard_layout"], echoed["keyboard_variant"]) == ("de", "nodeadkeys")
+    status, body = _post_json(base, f"/api/config/{section}/broadcast", echoed)
+    assert status == 200 and body.get("success") is True
+    assert len(sent) == 1
+    assert "keyboard_layout" not in sent[0]
+    assert "keyboard_variant" not in sent[0]
+    assert sent[0]["key_reset"] == echoed["key_reset"]
+
+
+@pytest.mark.parametrize("section", _CONTROLLER_SECTIONS)
+def test_keyboard_layout_from_a_peer_is_ignored_in_any_controller_section(live_server, section) -> None:
+    server, base = live_server
+    _save_layout(server, "de", "nodeadkeys")
+    status, body = _post_json(
+        base, f"/api/config/{section}", {"keyboard_layout": "jp", "keyboard_variant": "OADG109A", "key_reset": "c"}
+    )
+    assert status == 200 and body.get("success") is True
+    saved = load_config(server.config_path).controller
+    assert (saved.keyboard_layout, saved.keyboard_variant) == ("de", "nodeadkeys")
+    assert saved.key_reset == "c"
+
+
+def test_keyboard_variants_need_the_pin(pin_protected_server) -> None:
+    _server, base, _ = pin_protected_server
+    _status, body, headers = _raw_request(
+        base, "/section/keyboard/variants?keyboard_layout=de", headers={"HX-Request": "true"}, method="GET"
+    )
+    assert {k.lower(): v for k, v in headers.items()}.get("hx-redirect") == "/login"
+    assert "option" not in body
+
+
+def test_restart_needs_the_pin(pin_protected_server) -> None:
+    server, base, _ = pin_protected_server
+    assert _post_status_with_headers(base, "/api/restart", extra_headers={}) == 401
+    assert server.check_restart_requested() is False
+
+
+def test_restart_through_a_foreign_origin_is_refused(pin_protected_server) -> None:
+    server, base, _ = pin_protected_server
+    status = _post_status_with_headers(base, "/api/restart", extra_headers={"Origin": "http://evil.example.com"})
+    assert status == 403
+    assert server.check_restart_requested() is False
+
+
+def test_requests_share_one_parse_of_an_unchanged_config(live_server, monkeypatch) -> None:
+    """Requests against an unchanged config.toml share one parse."""
+    import openfollow.web.config_cache as cache_module
+    import openfollow.web.routes as routes_module
+    from openfollow.web.config_cache import ParsedConfigCache
+
+    server, base = live_server
+    save_config(AppConfig(), server.config_path)
+    parses: list[str] = []
+    real = cache_module.load_config
+    monkeypatch.setattr(cache_module, "load_config", lambda path, **kw: parses.append(path) or real(path, **kw))
+    # A clock in the year 2100, long past the file's mtime, so its parse may be kept.
+    monkeypatch.setattr(routes_module, "_CONFIG_CACHE", ParsedConfigCache(now=lambda: 4_102_444_800.0))
+    for _ in range(3):
+        status, _body = _get(base, "/api/info")
+        assert status == 200
+    assert parses == [server.config_path]
+
+
+# ---------------------------------------------------------------------------
+# Measure latency (Video Source)
+# ---------------------------------------------------------------------------
+
+_DECODING = {"video": {"source_type": "rtsp", "connected": True, "phase": "decoding"}, "hud": {"window_s": 2.0}}
+_NO_VIDEO = {**_DECODING, "video": {**_DECODING["video"], "connected": False}}
+
+
+def _latency_stats(monkeypatch, server, stats: dict) -> None:
+    monkeypatch.setattr(server, "get_runtime_stats", lambda: stats)
+
+
+def _get_full(base: str, path: str) -> tuple[int, str, Any]:
+    """Status, body and the headers, which read without regard to case."""
+    with urllib.request.urlopen(f"{base}{path}", timeout=5) as r:
+        return r.status, r.read().decode(), r.headers
+
+
+def _latency_row(body: str) -> str:
+    """The Camera Latency row up to its button."""
+    row = body[body.index('id="video-source-latency"') :]
+    return row[: row.index("</button>")]
+
+
+def _footer(body: str) -> str:
+    """The dialog's actions, which the page moves into the modal's footer."""
+    footer = body[body.index("data-latency-footer") :]
+    return footer[: footer.index("</div>")]
+
+
+def _rtsp(server) -> None:
+    save_config(AppConfig(video_source_type="rtsp"), server.config_path)
+
+
+def test_the_row_shows_the_last_successful_result_and_when(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _rtsp(server)
+    last = {"median_ms": 64.2, "min_ms": 37.0, "max_ms": 79.4, "samples": 10, "finished_at": time.time() - 60.0}
+    _latency_stats(monkeypatch, server, {**_DECODING, "latency": last})
+    _, body = _get(base, "/section/video_source")
+    row = _latency_row(body)
+    assert "Round trip 64 ms (37 to 79 ms)<small>Measured " in row
+    assert re.search(r'onclick="ofLatencyDialog\(\)"\s*>Measure latency', row)
+
+
+def test_the_row_without_a_result_says_not_measured_yet(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _rtsp(server)
+    _latency_stats(monkeypatch, server, _DECODING)
+    _, body = _get(base, "/section/video_source/latency")
+    assert "Not measured yet." in _latency_row(body)
+
+
+@pytest.mark.parametrize(
+    ("stats", "reason"),
+    [
+        ({**_DECODING, "hud": None}, "No Operator Screen is showing on this station."),
+        (_NO_VIDEO, "No video is arriving."),
+    ],
+    ids=["no-display", "no-video"],
+)
+def test_the_row_says_why_it_cannot_measure_and_disables_its_button(
+    live_server, monkeypatch, stats: dict, reason: str
+) -> None:
+    server, base = live_server
+    _rtsp(server)
+    last = {"median_ms": 64.0, "min_ms": 37.0, "max_ms": 79.0, "samples": 10, "finished_at": time.time()}
+    _latency_stats(monkeypatch, server, {**stats, "latency": last})
+    for path in ("/", "/section/video_source"):
+        _, body = _get(base, path)
+        row = _latency_row(body)
+        assert reason in row
+        assert "Round trip" not in row
+        assert re.search(r"<button[^>]*\sdisabled\s*>Measure latency", row)
+
+
+def test_the_row_is_hidden_for_the_media_gallery(live_server, monkeypatch) -> None:
+    server, base = live_server
+    save_config(AppConfig(video_source_type="testpattern"), server.config_path)
+    _latency_stats(monkeypatch, server, _DECODING)
+    _, body = _get(base, "/section/video_source")
+    row = _latency_row(body)
+    assert 'style="display:none"' in row[: row.index(">")]
+    # Switching the source type on the page hides and shows it too.
+    assert "vis('video-source-latency', value !== 'testpattern');" in body
+
+
+def _warning_token(body: str) -> str:
+    token = re.search(r"ofLatencyDialogShown\(false, '([A-Za-z0-9_-]+)'\)", body)
+    assert token, "the warnings carry their token"
+    return token.group(1)
+
+
+def test_the_dialog_opens_on_its_warnings_and_its_renewal_puts_the_card_up(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    status, body = _get(base, "/section/video_source/latency/dialog")
+    assert status == 200
+    # A GET changes nothing on the station: the card goes up when the dialog's renewal posts.
+    assert not server.latency_warning.showing()
+    hazard = body.index("WARNING: PHOTOSENSITIVITY / EPILEPSY SEIZURES")
+    show = body.index("Never during a show.")
+    assert "For about 5 seconds, longer with a slow camera, the Operator Screen shows no video and no markers" in body
+    assert hazard < show < body.index("The station flashes its Operator Screen")
+    assert body.count('<div class="notice warning">') == 2
+    footer = _footer(body)
+    assert "hx-swap-oob" not in body
+    assert re.search(r'onclick="closeModal\(\)" data-autofocus>Cancel</button>', footer)
+    assert re.search(r'class="primary" hx-post="/section/video_source/latency"', footer)
+    assert 'data-error-lead="Not started."' in footer
+    # Free to close; the card is put up and renewed while the warnings show in an open dialog.
+    token = _warning_token(body)
+    renew = body[body.index('id="latency-warning-renewal"') :]
+    renew = renew[: renew.index("></div>")]
+    assert 'hx-post="/section/video_source/latency/warning"' in renew
+    assert f"""hx-vals='{{"token": "{token}"}}'""" in renew
+    assert "data-error-quiet" in renew
+    assert (
+        'hx-trigger="load[ofLatencyWarningLive(this)], every 1s [!document.hidden && ofLatencyWarningLive(this)],'
+        ' poll-shown[ofLatencyWarningLive(this)] from:body"'
+    ) in renew
+    assert _post_form(base, "/section/video_source/latency/warning", {"token": token})[0] == 204
+    assert server.latency_warning.showing()
+    assert 'role="alert"' not in body
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        {
+            "state": "done",
+            "measured": 10,
+            "result": {"median_ms": 64.0, "min_ms": 37.0, "max_ms": 79.0, "level": "success"},
+        },
+        {"state": "failed", "measured": 0, "failure": {"reason": "no_rise", "text": "No flash seen.", "action": ""}},
+    ],
+    ids=["after-a-result", "after-a-failure"],
+)
+def test_the_dialog_opens_on_its_warnings_again_after_a_run(live_server, monkeypatch, status: dict) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    server._command_queue.set_latency_status(status)
+    _, body = _get(base, "/section/video_source/latency/dialog")
+    assert "WARNING: PHOTOSENSITIVITY / EPILEPSY SEIZURES" in body
+    assert "Round trip" not in body and "No flash seen." not in body
+    assert _warning_token(body)
+
+
+def test_a_run_started_elsewhere_shows_measuring_with_no_way_out(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    server._command_queue.set_latency_status({"state": "running", "measured": 4})
+    _, body = _get(base, "/section/video_source/latency/dialog")
+    assert "Measuring: 4 of 10 changes seen." in body
+    assert "The Operator Screen is flashing." in body
+    assert "<button" not in _footer(body)
+    assert "ofLatencyDialogShown(true, '')" in body
+    assert not server.latency_warning.showing()
+    progress = body[body.index('id="latency-progress"') :]
+    progress = progress[: progress.index(">")]
+    assert 'hx-get="/section/video_source/latency/dialog?poll=1"' in progress
+    assert 'hx-trigger="every 1s [!document.hidden], poll-shown from:body"' in progress
+    assert 'role="alert"' not in body
+
+
+def test_a_run_s_progress_answers_alone_while_it_lasts(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    server._command_queue.set_latency_status({"state": "running", "measured": 7})
+    status, body, headers = _get_full(base, "/section/video_source/latency/dialog?poll=1")
+    assert status == 200
+    assert "Measuring: 7 of 10 changes seen." in body
+    assert "data-latency-footer" not in body
+    assert "HX-Retarget" not in headers
+
+
+@pytest.mark.parametrize(
+    ("median", "level", "notice", "sub"),
+    [
+        (64.0, "success", "notice success", "Measured over 10 changes."),
+        (180.0, "caution", "notice warning", "Lower the buffering of the camera and the stream, then measure again."),
+        (420.0, "error", "notice error", "Lower the buffering of the camera and the stream, then measure again."),
+    ],
+)
+def test_the_run_s_end_turns_the_dialog_to_its_result(
+    live_server, monkeypatch, median: float, level: str, notice: str, sub: str
+) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    result = {"median_ms": median, "min_ms": median - 10, "max_ms": median + 12.4, "samples": 10, "level": level}
+    server._command_queue.set_latency_status({"state": "done", "measured": 10, "result": result})
+    _, body, headers = _get_full(base, "/section/video_source/latency/dialog?poll=1")
+    assert headers.get("HX-Retarget") == "#latency-dialog" and headers.get("HX-Reswap") == "outerHTML"
+    assert f'<div class="{notice}">' in body
+    assert f"Round trip {median:.0f} ms ({median - 10:.0f} to {median + 12.4:.0f} ms)." in body
+    assert sub in body
+    footer = _footer(body)
+    assert re.search(r'hx-post="/section/video_source/latency"[^>]*>Measure again</button>', footer)
+    # Focus lands on Close, so one Enter never starts another flashing run.
+    assert re.search(r'class="primary" onclick="closeModal\(\)" data-autofocus>Close</button>', footer)
+    assert footer.count("data-autofocus") == 1
+    assert "ofLatencyDialogShown(false, '')" in body
+    assert not server.latency_warning.showing()
+
+
+def test_a_failed_run_turns_the_dialog_to_what_was_seen(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    failure = {"reason": "no_rise", "text": "No flash seen in the video within 3 s.", "action": "Point the camera."}
+    server._command_queue.set_latency_status({"state": "failed", "measured": 0, "failure": failure})
+    _, body, _headers = _get_full(base, "/section/video_source/latency/dialog?poll=1")
+    assert '<div class="notice error">' in body
+    assert "No flash seen in the video within 3 s." in body and "Point the camera." in body
+    footer = _footer(body)
+    assert re.search(r'hx-post="/section/video_source/latency"[^>]*>Try again</button>', footer)
+    assert ">Close</button>" in footer
+
+
+def test_start_runs_the_measurement_and_takes_the_card_down(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    _, intro = _get(base, "/section/video_source/latency/dialog")
+    token = _warning_token(intro)
+    _post_form(base, "/section/video_source/latency/warning", {"token": token})
+    assert server.latency_warning.showing()
+    status, body = _post_form(base, "/section/video_source/latency", {"token": token})
+    assert status == 200
+    assert server._command_queue.consume_latency_requested()
+    assert not server.latency_warning.showing()
+    assert "Measuring: 0 of 10 changes seen." in body
+    assert "<button" not in _footer(body)
+    # A renewal still on its way never brings the card back.
+    _post_form(base, "/section/video_source/latency/warning", {"token": token})
+    assert not server.latency_warning.showing()
+
+
+def test_measure_again_starts_at_once_without_the_warnings(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    result = {"median_ms": 64.0, "min_ms": 37.0, "max_ms": 79.0, "samples": 10, "level": "success"}
+    server._command_queue.set_latency_status({"state": "done", "measured": 10, "result": result})
+    status, body = _post_form(base, "/section/video_source/latency", {})
+    assert status == 200
+    assert server._command_queue.consume_latency_requested()
+    assert "Measuring:" in body and "PHOTOSENSITIVITY" not in body
+    assert not server.latency_warning.showing()
+
+
+@pytest.mark.parametrize(
+    ("stats", "reason"),
+    [
+        ({**_DECODING, "hud": None}, "No Operator Screen is showing on this station."),
+        (_NO_VIDEO, "No video is arriving."),
+        ({**_DECODING, "video": {**_DECODING["video"], "phase": "data_arriving"}}, "No video is arriving."),
+        ({**_DECODING, "video": {**_DECODING["video"], "source_type": "testpattern"}}, "The Media Gallery plays"),
+        ({}, "No Operator Screen is showing on this station."),
+    ],
+    ids=["no-display", "not-connected", "not-decoding", "gallery", "no-stats"],
+)
+def test_start_while_it_cannot_run_answers_409_with_the_reason(
+    live_server, monkeypatch, stats: dict, reason: str
+) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, stats)
+    status, body = _post_form(base, "/section/video_source/latency", {})
+    assert status == 409
+    answer = json.loads(body)
+    assert answer["error"].startswith(reason) and answer["action"]
+    assert not server._command_queue.consume_latency_requested()
+
+
+def test_the_warning_card_is_put_up_and_taken_down_by_its_token(live_server) -> None:
+    server, base = live_server
+    token = "Abc_DEF-123456789"
+    assert not server.latency_warning.showing()
+    status, _body = _post_form(base, "/section/video_source/latency/warning", {"token": token})
+    assert status == 204 and server.latency_warning.showing()
+    status, _body = _post_form(base, f"/section/video_source/latency/warning/close?token={token}", {})
+    assert status == 204 and not server.latency_warning.showing()
+
+
+@pytest.mark.parametrize("token", ["", "short", "x" * 65, "bad token!!!!!!!!"])
+def test_a_malformed_warning_token_is_refused(live_server, token: str) -> None:
+    _, base = live_server
+    query = urllib.parse.urlencode({"token": token})
+    assert _post_form(base, "/section/video_source/latency/warning", {"token": token})[0] == 400
+    assert _post_form(base, f"/section/video_source/latency/warning/close?{query}", {})[0] == 400
+
+
+def test_a_renewal_from_another_site_is_refused_and_a_get_puts_nothing_up(live_server) -> None:
+    server, base = live_server
+    status, _body, _headers = _post_form_full(
+        base,
+        "/section/video_source/latency/warning",
+        {"token": "Abc_DEF-123456789"},
+        headers={"Origin": "http://203.0.113.9", "Referer": "http://203.0.113.9/"},
+    )
+    assert status == 403
+    assert _get(base, "/section/video_source/latency/warning?token=Abc_DEF-123456789")[0] == 405
+    assert not server.latency_warning.showing()
+
+
+def _latency_key(body: str) -> str:
+    match = re.search(r'id="video-source-latency-key" name="latency" value="(\d+)"', body)
+    assert match, "the row carries its key"
+    return match.group(1)
+
+
+def test_the_idle_latency_row_turns_on_once_video_is_decoding_without_a_reload(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _rtsp(server)
+    _latency_stats(monkeypatch, server, _NO_VIDEO)
+    _, section = _get(base, "/section/video_source")
+    shown = _latency_key(section)
+    poll = section[section.index('id="video-source-failure"') :]
+    assert 'hx-include="#video-source-latency-key"' in poll[: poll.index(">")]
+    # Nothing changed: the source-status poll leaves the row alone.
+    _, body = _get(base, f"/section/video_source/failure?latency={shown}")
+    assert "video-source-latency" not in body
+    _latency_stats(monkeypatch, server, _DECODING)
+    _, body = _get(base, f"/section/video_source/failure?latency={shown}")
+    row = _latency_row(body)
+    assert 'hx-swap-oob="true"' in row[: row.index(">")]
+    assert re.search(r'onclick="ofLatencyDialog\(\)"\s*>Measure latency', row)
+    assert "No video is arriving." not in row
+    _, again = _get(base, f"/section/video_source/failure?latency={_latency_key(body)}")
+    assert "video-source-latency" not in again
+
+
+def test_a_new_latency_result_reaches_the_row_through_the_status_poll(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _rtsp(server)
+    _latency_stats(monkeypatch, server, _DECODING)
+    _, section = _get(base, "/section/video_source")
+    last = {"median_ms": 64.0, "min_ms": 37.0, "max_ms": 79.0, "samples": 10, "finished_at": time.time()}
+    _latency_stats(monkeypatch, server, {**_DECODING, "latency": last})
+    _, body = _get(base, f"/section/video_source/failure?latency={_latency_key(section)}")
+    assert "Round trip 64 ms (37 to 79 ms)" in _latency_row(body)
+
+
+def test_the_setup_wizard_s_status_poll_gets_no_latency_row(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    _, body = _get(base, "/section/video_source/failure")
+    assert "video-source-latency" not in body
+
+
+def test_the_latency_key_is_never_saved_with_the_video_source_form(live_server, monkeypatch) -> None:
+    server, base = live_server
+    _latency_stats(monkeypatch, server, _DECODING)
+    _, body = _get(base, "/section/video_source")
+    key = body[body.rindex("<", 0, body.index('id="video-source-latency-key"')) :]
+    # Owned by a form id that does not exist, so the form leaves it out.
+    assert 'form="video-source-latency-unsaved"' in key[: key.index(">")]
+    assert 'id="video-source-latency-unsaved"' not in body

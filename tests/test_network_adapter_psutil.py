@@ -12,7 +12,17 @@ import pytest
 
 import openfollow.network.psutil_adapter as psutil_adapter
 from openfollow import net_utils
-from openfollow.network.adapter import VLAN_UNSUPPORTED_MESSAGE, BackendReadError, Ipv4Config, Ipv4Method
+from openfollow.network.adapter import (
+    VLAN_UNSUPPORTED_MESSAGE,
+    ApplyResult,
+    BackendReadError,
+    Ipv4Config,
+    Ipv4Method,
+    NetworkAdapter,
+    NetworkInterface,
+    NetworkState,
+    VlanInterface,
+)
 from openfollow.network.psutil_adapter import PsutilReadOnlyAdapter
 
 pytestmark = pytest.mark.unit
@@ -244,6 +254,63 @@ class TestAdapterDefaults:
         assert DhcpcdAdapter().get_ipv6_state("eth0") is None
 
 
+class _Listed(NetworkAdapter):
+    """A backend answering per interface: eth0 reads, eth1 has no state, eth2 raises."""
+
+    def __init__(self, vlans: Exception | list[VlanInterface]) -> None:
+        self._vlans = vlans
+
+    def list_interfaces(self):
+        return [NetworkInterface(name, None, kind, True) for name, kind in _LISTED]
+
+    def get_state(self, iface):
+        if iface == "eth2":
+            raise RuntimeError("eth2 vanished")
+        if iface != "eth0":
+            return None
+        return NetworkState(NetworkInterface("eth0", None, "ethernet", True), Ipv4Config(Ipv4Method.DHCP), None)
+
+    def list_vlans(self):
+        if isinstance(self._vlans, Exception):
+            raise self._vlans
+        return self._vlans
+
+    def apply_ipv4(self, iface, config):
+        return ApplyResult(ok=False)
+
+    def renew_lease(self, iface):
+        return ApplyResult(ok=False)
+
+
+_LISTED = [("lo", "loopback"), ("eth0", "ethernet"), ("eth1", "ethernet"), ("eth2", "ethernet")]
+
+
+class TestReadNetworkDefault:
+    """A backend without a reading of its own is asked per interface."""
+
+    def test_reads_each_interface_but_loopback(self, caplog) -> None:
+        vlan = VlanInterface("eth0.10", "eth0", 10)
+        reading = _Listed([vlan]).read_network()
+        assert [i.name for i in reading.interfaces] == ["eth0", "eth1", "eth2"]
+        assert set(reading.states) == {"eth0"}
+        assert reading.vlans == (vlan,)
+        assert "Network state read failed for eth2" in caplog.text
+
+    def test_an_unreadable_vlan_list_lists_none(self, caplog) -> None:
+        reading = _Listed(RuntimeError("nmcli exploded")).read_network()
+        assert reading.vlans == ()
+        assert set(reading.states) == {"eth0"}
+        assert "VLAN list read failed" in caplog.text
+
+    def test_the_psutil_backend_reads_through_it(self, fake_psutil, monkeypatch, tmp_path) -> None:
+        monkeypatch.setattr(psutil_adapter, "_RESOLV_CONF", tmp_path / "resolv.conf")
+        monkeypatch.setattr(net_utils, "_PROC_NET_ROUTE", tmp_path / "route")
+        reading = PsutilReadOnlyAdapter().read_network()
+        assert [i.name for i in reading.interfaces] == ["eth0"]
+        assert reading.states["eth0"].ipv4.address == "192.168.1.50"
+        assert reading.vlans == ()
+
+
 class TestResolvAndRouteOsError:
     def test_read_dns_handles_oserror(self, monkeypatch, tmp_path) -> None:
         """Path exists but reading it raises OSError mid-read (e.g. fs flaky)."""
@@ -320,3 +387,10 @@ def test_a_read_only_host_cannot_register_a_name_by_dhcp() -> None:
 
     result = PsutilReadOnlyAdapter().set_dhcp_fqdn("of-1.stage.example.com")
     assert (result.ok, result.message) == (False, DHCP_FQDN_UNSUPPORTED_MESSAGE)
+
+
+def test_forget_interface_is_unsupported() -> None:
+    from openfollow.network.adapter import FORGET_UNSUPPORTED_MESSAGE
+
+    result = PsutilReadOnlyAdapter().forget_interface("enx001122334455")
+    assert (result.ok, result.message) == (False, FORGET_UNSUPPORTED_MESSAGE)

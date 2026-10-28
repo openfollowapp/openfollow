@@ -98,6 +98,9 @@ AGPLv3-compatible.
 | [PyGObject](https://gitlab.gnome.org/GNOME/pygobject) | ≥3.42 | LGPL-2.1-or-later |
 | [psutil](https://github.com/giampaolo/psutil) | ≥5.9 | BSD-3-Clause |
 | [python-osc](https://github.com/attwad/python-osc) | ≥1.8 | Unlicense (public-domain dedication) |
+| [PyOpenGL](https://github.com/mcfletch/pyopengl) | ≥3.1.7 | BSD |
+| [evdev](https://github.com/gvalkov/python-evdev) | ≥1.6 (Linux only) | BSD-3-Clause |
+| [xkbcommon](https://github.com/sde1000/python-xkbcommon) | ≥1.0 (Linux only) | MIT |
 
 `tomli` is only installed on Python < 3.11; on 3.11+ the standard-library
 `tomllib` is used instead.
@@ -159,6 +162,7 @@ AGPLv3-compatible.
 | cairo | LGPL-2.1 / MPL-1.1 (dual) |
 | Pango | LGPL-2.1-or-later |
 | WebKitGTK | LGPL-2.1-or-later + BSD-2-Clause |
+| libxkbcommon (Linux, via the `xkbcommon` binding) | MIT |
 
 > **GStreamer plugin sets:** `gst-plugins-bad` and `gst-libav` (FFmpeg) are
 > pulled in by the Debian package and are therefore present in the appliance

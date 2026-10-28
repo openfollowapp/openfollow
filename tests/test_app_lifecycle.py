@@ -182,6 +182,126 @@ class TestConstruction:
         assert app._config_mtime > 0.0
 
 
+_EMPTY = pytest.mark.parametrize("content", ["", "  \n\t\n"], ids=["empty", "whitespace"])
+
+
+@pytest.fixture
+def real_load(monkeypatch: pytest.MonkeyPatch, tmp_path):  # noqa: ANN001, ANN201
+    """Construction that reads ``config.toml`` for real; the backup holds the station's settings."""
+    from openfollow.configuration import save_config
+
+    monkeypatch.setattr(app_module, "AppRuntimeServices", _FakeRuntimeServices)
+    path = tmp_path / "config.toml"
+    for _ in range(2):  # the second save leaves the first as the backup
+        save_config(
+            AppConfig(psn_system_name="Backup Name", station_id="abc123", network_mode="advanced"),
+            str(path),
+        )
+    return path
+
+
+class TestStartupOnABrokenConfigFile:
+    @_EMPTY
+    def test_an_empty_file_is_restored_from_the_backup_and_saves_work_again(
+        self,
+        real_load,
+        caplog,  # noqa: ANN001
+        content: str,
+    ) -> None:
+        from openfollow.configuration import load_config, save_config
+
+        backup = real_load.with_name("config.toml.bak").read_bytes()
+        real_load.write_text(content, encoding="utf-8")
+
+        with caplog.at_level("WARNING"):
+            app = OpenFollowApp(config_path=str(real_load))
+
+        assert (app._config.psn_system_name, app._config.station_id) == ("Backup Name", "abc123")
+        assert real_load.read_bytes() == backup
+        assert real_load.with_name("config.toml.bak").read_bytes() == backup
+        assert f"is empty – restored it from {real_load}.bak" in caplog.text
+        assert [r.message for r in caplog.records if r.levelname == "ERROR"] == []
+        save_config(app._config, str(real_load))
+        assert load_config(str(real_load), strict=True).station_id == "abc123"
+
+    def test_an_unreadable_file_runs_on_the_backup_and_is_left_alone(self, real_load, caplog) -> None:  # noqa: ANN001
+        real_load.write_text("not [[ toml", encoding="utf-8")
+
+        with caplog.at_level("WARNING"):
+            app = OpenFollowApp(config_path=str(real_load))
+
+        assert (app._config.psn_system_name, app._config.station_id) == ("Backup Name", "abc123")
+        assert real_load.read_text(encoding="utf-8") == "not [[ toml"
+        assert f"recovered from {real_load}.bak" in caplog.text
+        assert [r.message for r in caplog.records if r.levelname == "ERROR"] == []
+
+    @_EMPTY
+    @pytest.mark.parametrize("example", [False, True], ids=["bare", "with-example"])
+    def test_an_empty_file_without_a_backup_starts_as_a_first_run(
+        self,
+        real_load,  # noqa: ANN001
+        content: str,
+        example: bool,
+    ) -> None:
+        from openfollow.configuration import load_config
+
+        real_load.with_name("config.toml.bak").unlink()
+        real_load.write_text(content, encoding="utf-8")
+        if example:
+            real_load.with_name("config.example.toml").write_text('psn_source_iface = "eth9"\n', encoding="utf-8")
+
+        app = OpenFollowApp(config_path=str(real_load))
+
+        saved = load_config(str(real_load), strict=True)
+        assert app._config.station_id not in ("", "abc123")
+        assert saved.station_id == app._config.station_id
+        assert saved.psn_source_iface == ("eth9" if example else "")
+
+    @pytest.mark.parametrize("content", ["", "not [[ toml"], ids=["empty", "unparseable"])
+    def test_a_backup_that_is_not_utf8_counts_as_no_backup(self, real_load, content: str) -> None:  # noqa: ANN001
+        real_load.with_name("config.toml.bak").write_bytes(b'psn_system_name = "\xff\xfe"\n')
+        real_load.write_text(content, encoding="utf-8")
+
+        app = OpenFollowApp(config_path=str(real_load))
+
+        assert app._config.station_id not in ("", "abc123")
+
+    def test_a_file_that_is_no_config_runs_on_the_backup_and_is_left_alone(self, real_load) -> None:  # noqa: ANN001
+        real_load.write_text("grid = 5\n", encoding="utf-8")
+
+        app = OpenFollowApp(config_path=str(real_load))
+
+        assert (app._config.psn_system_name, app._config.station_id) == ("Backup Name", "abc123")
+        assert real_load.read_text(encoding="utf-8") == "grid = 5\n"
+
+    def test_an_empty_file_whose_backup_is_no_config_starts_as_a_first_run(self, real_load) -> None:  # noqa: ANN001
+        from openfollow.configuration import load_config
+
+        real_load.with_name("config.toml.bak").write_text('camera = "x"\n', encoding="utf-8")
+        real_load.write_text("", encoding="utf-8")
+
+        app = OpenFollowApp(config_path=str(real_load))
+
+        assert app._config.station_id not in ("", "abc123")
+        assert load_config(str(real_load), strict=True).station_id == app._config.station_id
+        assert real_load.with_name("config.toml.bak").read_text(encoding="utf-8") == 'camera = "x"\n'
+
+    def test_an_unreadable_file_without_a_backup_runs_on_the_defaults_and_writes_nothing(
+        self,
+        real_load,
+        caplog,  # noqa: ANN001
+    ) -> None:
+        real_load.with_name("config.toml.bak").unlink()
+        real_load.write_text("not [[ toml", encoding="utf-8")
+
+        with caplog.at_level("WARNING"):
+            app = OpenFollowApp(config_path=str(real_load))
+
+        assert app._config.station_id != "abc123"
+        assert real_load.read_text(encoding="utf-8") == "not [[ toml"
+        assert "Failed to persist seeded station identity" in caplog.text
+
+
 # --------------------------------------------------------------------------- #
 # run()
 # --------------------------------------------------------------------------- #
@@ -272,6 +392,18 @@ class TestRun:
             "Diagnostics saved to SanDisk Ultra",
         )
 
+    def test_check_pushed_settings_posts_the_newest_push(self, patched_ctor) -> None:  # noqa: ANN001
+        from types import SimpleNamespace
+
+        from openfollow.web.pushed_settings import PushedSettings
+
+        app = OpenFollowApp(config_path=patched_ctor.cfg_path)
+        register = PushedSettings()
+        register.record("Stage Left", "198.51.100.7", "Grid")
+        app._web_server = SimpleNamespace(pushed_settings=register)
+        app._check_pushed_settings()
+        assert app._runtime_services._status_flags["pushed_settings"] == ("info", "Settings pushed from Stage Left")
+
     def test_loopback_resolution_logs_degraded_warning_not_ready(
         self,
         patched_ctor,
@@ -345,7 +477,7 @@ class TestRun:
         monkeypatch.setattr(
             app_module,
             "runtime_enter_settings_menu",
-            lambda a, *, banner="": banners.append(banner),
+            lambda a, *, banner="", action="": banners.append(banner),
         )
         app.run()
         assert len(banners) == 1
@@ -383,7 +515,7 @@ class TestRun:
         monkeypatch.setattr(
             app_module,
             "runtime_enter_settings_menu",
-            lambda a, *, banner="": banners.append(banner),
+            lambda a, *, banner="", action="": banners.append(banner),
         )
         app.run()
         assert banners == []
@@ -404,7 +536,7 @@ class TestRun:
         monkeypatch.setattr(
             app_module,
             "runtime_enter_settings_menu",
-            lambda a, *, banner="": banners.append(banner),
+            lambda a, *, banner="", action="": banners.append(banner),
         )
         app.run()
         assert banners == []
@@ -436,12 +568,12 @@ class TestRun:
         monkeypatch.setattr(
             app_module,
             "runtime_enter_settings_menu",
-            lambda a, *, banner="": banners.append(banner),
+            lambda a, *, banner="", action="": banners.append(banner),
         )
         app.run()
         assert banners == []  # zero candidates → no Settings prompt
         assert app._psn_source_status == "none"
-        assert "No usable interface" in app._psn_source_banner
+        assert app._psn_source_banner == "Pinned network interface 'eth0' is not available. No usable interface."
 
     def test_iface_pin_resolves_and_skips_settings(
         self,
@@ -476,7 +608,7 @@ class TestRun:
         monkeypatch.setattr(
             app_module,
             "runtime_enter_settings_menu",
-            lambda a, *, banner="": banners.append(banner),
+            lambda a, *, banner="", action="": banners.append(banner),
         )
         app.run()
         assert banners == []
@@ -611,6 +743,7 @@ class TestDelegators:
             ("_check_button_detection_request", "runtime_check_button_detection_request", ()),
             ("_check_controller_slot_actions", "runtime_check_controller_slot_actions", ()),
             ("_check_camera_setup_requests", "runtime_check_camera_setup_requests", ()),
+            ("_check_latency_requests", "runtime_check_latency_requests", ()),
             ("_process_source_selection_input", "runtime_process_source_selection_input", ()),
             ("_enter_source_selection", "runtime_enter_source_selection", ()),
             ("_enter_button_detection", "runtime_enter_button_detection", ()),
@@ -659,6 +792,18 @@ class TestDelegators:
         assert len(hits) == 1
         # All helpers take ``app`` as first arg.
         assert hits[0][0] is app
+
+    def test_enter_settings_menu_forwards_the_banner_and_its_step(
+        self,
+        patched_ctor,
+        monkeypatch: pytest.MonkeyPatch,  # noqa: ANN001
+    ) -> None:
+        hits: list[dict[str, str]] = []
+        monkeypatch.setattr(app_module, "runtime_enter_settings_menu", lambda _app, **kw: hits.append(kw))
+
+        app = OpenFollowApp(config_path=patched_ctor.cfg_path)
+        app._enter_settings_menu(banner="Seen.", action="Do this.")
+        assert hits == [{"banner": "Seen.", "action": "Do this."}]
 
     @pytest.mark.parametrize("verdict", [True, False])
     def test_run_frame_forwards_the_helpers_verdict(

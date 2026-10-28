@@ -12,11 +12,32 @@ from __future__ import annotations
 import logging
 import sys
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openfollow.logging_setup import ThrottledExceptionLogger
 
+if TYPE_CHECKING:
+    from openfollow.app import OpenFollowApp
+
 logger = logging.getLogger(__name__)
+
+
+def operator_screen_size(app: OpenFollowApp) -> tuple[int, int]:
+    """The Operator Screen's size in pixels, the space pointer events and the picture share.
+
+    The window's allocation where there is one, else the requested window size;
+    ``(0, 0)`` when GTK cannot read it, so a caller skips the picture rather than
+    stopping the frame loop.
+    """
+    canvas = app._canvas
+    if canvas is None:
+        return app._config.window_width, app._config.window_height
+    try:
+        return canvas.get_canvas_size()
+    except Exception:
+        logger.debug("Operator Screen size unavailable", exc_info=True)
+        return 0, 0
+
 
 # GDK key name → rendercanvas-style key name
 _GDK_KEY_MAP: dict[str, str] = {
@@ -131,6 +152,9 @@ class GtkNativeSinkWindow:
         self._overlay.add_overlay(self._hud_drawing_area)
         self._overlay.set_overlay_pass_through(self._hud_drawing_area, True)
         self._hud_draw_fn: Callable[[Any, int, int], None] | None = None
+        self._hud_tick: Callable[[], bool] | None = None
+        # A GL display renders video and HUD together, once per refresh.
+        self._gl_display: Any = None
 
         self._handlers: dict[str, list[Callable[[dict[str, Any]], None]]] = {}
         self._tick_callback_id: int | None = None
@@ -157,6 +181,7 @@ class GtkNativeSinkWindow:
         # The pointer poll runs every frame; throttle its failure log so a
         # persistent error can't flood the journal at the display tick rate.
         self._poll_err_log = ThrottledExceptionLogger(logger, "Pointer poll failed")
+        self._hud_tick_err_log = ThrottledExceptionLogger(logger, "HUD tick failed")
         self._setup_events()
         self._window.show_all()
 
@@ -331,10 +356,29 @@ class GtkNativeSinkWindow:
                 return
         gdk_window.set_cursor(cursor)
 
-    def attach_hud(self, draw_fn: Callable[[Any, int, int], None]) -> None:
-        """Register HUD draw callback invoked once per display frame."""
+    def attach_hud(self, draw_fn: Callable[[Any, int, int], None], tick: Callable[[], bool] | None = None) -> None:
+        """Register the HUD draw callback; ``tick`` paces the HUD by the display and says when to redraw."""
         self._hud_draw_fn = draw_fn
+        self._hud_tick = tick
         self._hud_drawing_area.queue_draw()
+
+    def attach_gl_display(self, display: Any, tick: Callable[[], bool]) -> None:
+        """Render ``display`` every display refresh in place of the Cairo HUD; ``tick`` still paces the HUD."""
+        self._gl_display = display
+        self._hud_tick = tick
+        self._hud_drawing_area.hide()
+        self._hud_drawing_area.set_no_show_all(True)
+
+    def detach_gl_display(self) -> None:
+        """Stop rendering the GL display and bring the Cairo HUD layer back; ``attach_hud`` gives it pictures."""
+        self._gl_display = None
+        self._hud_drawing_area.set_no_show_all(False)
+        self._hud_drawing_area.show()
+
+    def gdk_window(self) -> Any:
+        """The realized toplevel's GDK window, for probing a GL context before the GL display is chosen."""
+        self._window.realize()
+        return self._window.get_window()
 
     def _on_hud_draw(self, widget: Any, cr: Any) -> bool:
         if self._hud_draw_fn is None:
@@ -469,8 +513,21 @@ class GtkNativeSinkWindow:
         except Exception:
             self._poll_err_log.log()
         # Redraw HUD independent of video buffer flow.
-        if self._hud_draw_fn is not None:
-            self._hud_drawing_area.queue_draw()
+        if self._gl_display is not None:
+            try:
+                self._hud_tick()  # type: ignore[misc]
+            except Exception:
+                self._hud_tick_err_log.log()
+            self._gl_display.queue_render(frame_clock)
+        elif self._hud_draw_fn is not None:
+            # A raise escaping this callback would make GTK drop the tick for good.
+            try:
+                redraw = self._hud_tick is None or self._hud_tick()
+            except Exception:
+                self._hud_tick_err_log.log()
+                redraw = False
+            if redraw:
+                self._hud_drawing_area.queue_draw()
         # Keep window focus.
         if not self._window.has_toplevel_focus():
             self._window.grab_focus()
@@ -478,9 +535,10 @@ class GtkNativeSinkWindow:
 
     # -- Internal event wiring ------------------------------------------------
 
-    def _emit(self, event_type: str, **kwargs: Any) -> None:
+    def _emit(self, event_type: str, **kwargs: Any) -> dict[str, Any]:
         for h in self._handlers.get(event_type, []):
             h(kwargs)
+        return kwargs
 
     def _setup_events(self) -> None:
         Gdk = self._Gdk
@@ -543,8 +601,9 @@ class GtkNativeSinkWindow:
             # close button (emit "close" → shutdown, then main_quit).
             return self._on_delete(widget, event)
         name = self._translate_key(event)
-        if name:
-            self._emit("key_down", key=name)
+        if name and self._emit("key_down", key=name).get("late_echo"):
+            # The press a hardware poller already acted on: keep it from the overlay too.
+            return True
         # Return False when overlay mounted to dispatch keys to it.
         return self._overlay_widget is None
 

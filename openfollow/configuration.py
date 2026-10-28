@@ -4,33 +4,36 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
+import errno
 import ipaddress
 import logging
 import math
 import os
 import re
-import shutil
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Iterable
+import tomllib
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass, field, fields
+from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
-
-try:
-    import tomllib
-except ImportError:
-    # Python 3.10 has no stdlib ``tomllib``; use the ``tomli`` backport.
-    import tomli as tomllib  # type: ignore[no-redef]
+from typing import TYPE_CHECKING, Any, Protocol
 
 import tomli_w
 
 from openfollow.binding_conflicts import BindingMove, settle_duplicates
+from openfollow.button_names import BUTTON_NAME_STYLES
+from openfollow.keyboard_layout import LAYOUT_RE as XKB_LAYOUT_RE
+from openfollow.keyboard_layout import VARIANT_RE as XKB_VARIANT_RE
+from openfollow.lens_model import C_BOUND, pull_back_to_valid
 from openfollow.net_adapters import normalize_labels
 from openfollow.station_fqdn import normalize_fqdn
+from openfollow.text_hygiene import CONTROL_CHARS_RE
 from openfollow.units import UnitSystem
+from openfollow.uri_redaction import redact_uris_in_text
 
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp
@@ -41,9 +44,10 @@ logger = logging.getLogger(__name__)
 # Serializes load→mutate→``save_config`` spans against the on-disk config.
 # ``save_config`` overwrites the whole file, so two interleaving spans would
 # have the later save clobber the earlier. Held by the off-GTK-thread writers
-# that run concurrently: the threaded WSGI request handlers and the
-# marker-catalog sync receiver. GTK-main-loop writers (on-screen menu,
-# receiver self-heal) do NOT take this lock and can still interleave.
+# that run concurrently (the threaded WSGI request handlers and the
+# marker-catalog sync receiver) and by main-loop writers that write only their
+# own change (``save_config_change``, ``save_config_fields``, the move-speed
+# flush). The receiver's source pick does NOT take it.
 config_write_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
@@ -105,16 +109,17 @@ def _coerce_int(
         out = int(value)
     except (TypeError, ValueError, OverflowError):
         return default
-    # pragma: no branch – every current caller passes ``lo=…``; the
-    # signature keeps ``lo`` optional for symmetry with
-    # ``_coerce_optional_float`` (which has callers that don't pass
-    # bounds), so the False arm is structurally reachable but unused
-    # at every present call site.
+    # Every current caller passes ``lo``.
     if lo is not None:  # pragma: no branch
         out = max(lo, out)
     if hi is not None:
         out = min(hi, out)
     return out
+
+
+def _not_bool(value: Any) -> Any:
+    """``None`` for a bool, so a coercer falls back to its default; ``value`` otherwise."""
+    return None if isinstance(value, bool) else value
 
 
 def _coerce_hex_color(value: Any, default: str) -> str:
@@ -180,34 +185,13 @@ def _coerce_multicast_ipv4(value: Any, default: str = "") -> str:
     return addr
 
 
-def _coerce_optional_float(
-    value: Any,
-    default: float | None,
-    *,
-    lo: float | None = None,
-    hi: float | None = None,
-) -> float | None:
-    """Like ``_coerce_float`` but preserves ``None`` for optional fields.
-
-    When ``default`` is ``None``, invalid input collapses to ``None`` –
-    substituting ``0.0`` would turn "not set" into "explicitly zero" for
-    optional lens hints (``sensor_width_mm`` / ``focal_length_mm``).
-    Catches ``OverflowError`` and rejects non-finite results as in
-    ``_coerce_float`` (the lens helper divides by these).
-    """
-    if value is None:
-        return None
+def is_ipv4_literal(value: str) -> bool:
+    """Whether *value* is an IPv4 address in the dotted form a socket reports a sender in."""
     try:
-        out = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return default
-    if not math.isfinite(out):
-        return default
-    if lo is not None:
-        out = max(lo, out)
-    if hi is not None:
-        out = min(hi, out)
-    return out
+        ipaddress.IPv4Address(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _coerce_optional_marker_id(value: Any) -> int | None:
@@ -373,6 +357,14 @@ _TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
 _FALSY_STRINGS = frozenset({"0", "false", "no", "off"})
 
 
+def _coerce_name(value: Any, pattern: re.Pattern[str]) -> str:
+    """The stripped string when it is blank or matches ``pattern`` in full, else blank."""
+    if not isinstance(value, str):
+        return ""
+    value = value.strip()
+    return value if not value or pattern.fullmatch(value) else ""
+
+
 def _coerce_bool(value: Any, default: bool) -> bool:
     """Accept real bools or recognised string forms; else ``default``.
 
@@ -393,6 +385,104 @@ def _coerce_bool(value: Any, default: bool) -> bool:
 # --- Config dataclasses --------------------------------------------------
 
 
+CALIBRATION_CORNERS = ("DSL", "DSR", "USR", "USL")
+CALIBRATION_MODES = ("simple", "advanced")
+# The Setup Wizard's verdict on the lens it saved with a calibration.
+CALIBRATION_LENS_RATINGS = ("excellent", "good", "fair", "poor", "user_input", "loaded", "opencv")
+CALIBRATION_SOURCE_MAX_LEN = 200
+MARK_KINDS = ("known", "triangulated")
+MAX_CALIBRATION_MARKS = 12
+MAX_MARK_ID = 999
+MAX_MARK_NAME = 60
+MARK_REACH_M = 10_000.0  # a typed coordinate further out is a typing slip
+MAX_MARK_DISTANCE_M = 200.0
+
+
+def _coerce_measured(value: Any) -> float:
+    """A measured number, or NaN for one that cannot be read; a boolean too (``float(True)`` is 1 m)."""
+    return math.nan if isinstance(value, bool) else _coerce_float(value, math.nan)
+
+
+def _coerce_mark_id(value: Any) -> int:
+    """A whole number from 1 to MAX_MARK_ID, else 0, which no mark may carry."""
+    if isinstance(value, bool):
+        return 0
+    number = _coerce_float(value, 0.0)
+    return int(number) if number.is_integer() and 1 <= number <= MAX_MARK_ID else 0
+
+
+@dataclass
+class CalibrationMarkConfig:
+    """A point of the Setup Wizard's camera solve: typed (known) or measured from two others (triangulated).
+
+    ``pin`` is where it is on the snapshot, as fractions of its width and height; empty when not pinned.
+    ``position`` is where the solve the camera pose came from put a triangulated point, kept with the pose.
+    A value the kind does not read is stored as 0, so a kept mark holds finite numbers only.
+    """
+
+    # A missing coordinate or distance is no measurement: problem() refuses these defaults.
+    id: int = 0
+    name: str = ""
+    kind: str = "known"
+    x: float = math.nan  # known only
+    y: float = math.nan
+    z: float = math.nan
+    from_a: int = 0  # triangulated only: the ids its two distances are measured from
+    from_b: int = 0
+    distance_a: float = math.nan  # m
+    distance_b: float = math.nan
+    pin: list[float] = field(default_factory=list)
+    position: list[float] = field(default_factory=list)  # x, y, z in m; empty when no solve placed it
+
+    def __post_init__(self) -> None:
+        self.id = _coerce_mark_id(self.id)
+        name = self.name.strip() if isinstance(self.name, str) else ""
+        self.name = name[:MAX_MARK_NAME] or (f"P{self.id}" if self.id else "")
+        self.kind = _coerce_choice(self.kind, MARK_KINDS, "")
+        known = self.kind == "known"
+        self.x = _coerce_measured(self.x) if known else 0.0
+        self.y = _coerce_measured(self.y) if known else 0.0
+        self.z = _coerce_measured(self.z)
+        self.from_a = 0 if known else _coerce_mark_id(self.from_a)
+        self.from_b = 0 if known else _coerce_mark_id(self.from_b)
+        self.distance_a = 0.0 if known else _coerce_measured(self.distance_a)
+        self.distance_b = 0.0 if known else _coerce_measured(self.distance_b)
+        given = self.pin is not None and not (isinstance(self.pin, list | tuple) and not self.pin)
+        self.pin = _coerce_fixed_list(self.pin, 2)
+        self._unread_pin = given and not self.pin
+        position = _coerce_fixed_list(self.position, 3)
+        reached = all(abs(c) <= MARK_REACH_M for c in position)
+        self.position = position if not known and reached else []
+
+    def problem(self) -> str:
+        """Why the mark cannot be used, or ``""``. A measurement is dropped, never clamped."""
+        if not self.id:
+            return f"needs an id between 1 and {MAX_MARK_ID}"
+        if not self.kind:
+            return "needs a kind of known or triangulated"
+        if not -MARK_REACH_M <= self.z <= MARK_REACH_M:
+            return "needs its Z"
+        if self.kind == "known":
+            if not (-MARK_REACH_M <= self.x <= MARK_REACH_M and -MARK_REACH_M <= self.y <= MARK_REACH_M):
+                return "needs its X and Y"
+        else:
+            if not self.from_a or not self.from_b or len({self.from_a, self.from_b, self.id}) < 3:
+                return "needs two other marks to be measured from"
+            if not (0.0 < self.distance_a <= MAX_MARK_DISTANCE_M and 0.0 < self.distance_b <= MAX_MARK_DISTANCE_M):
+                return f"needs both distances between 0 and {MAX_MARK_DISTANCE_M:g} m"
+            if not self.pin:
+                return "needs its pin: two distances allow two places"
+        if self._unread_pin or (self.pin and not all(0.0 <= c <= 1.0 for c in self.pin)):
+            return "needs its pin on the snapshot"
+        return ""
+
+
+def _coerce_fixed_list(value: Any, size: int) -> list[float]:
+    """``size`` finite numbers, else empty."""
+    numbers = [_coerce_measured(v) for v in value] if isinstance(value, list | tuple) else []
+    return numbers if len(numbers) == size and all(math.isfinite(n) for n in numbers) else []
+
+
 @dataclass
 class CameraConfig:
     pos_x: float = 0.0
@@ -402,16 +492,21 @@ class CameraConfig:
     yaw: float = 0.0
     roll: float = 0.0
     fov: float = 60.0  # horizontal FOV in degrees
-    # UI hints to derive FOV from sensor width + focal length (mm). Not read by
-    # the projection math; ``fov`` remains the source of truth.
-    sensor_width_mm: float | None = None
-    focal_length_mm: float | None = None
-    # Radial lens-distortion coefficients for the overlay-curvature correction.
-    # Bow the rendered HUD to match a fisheye / wide-angle lens via
-    # f = 1 + k1*r^2 + k2*r^4 (r normalised to the image half-diagonal). The
-    # video frame is never warped. 0/0 = pinhole (no curvature).
+    # The lens the HUD is bowed to match (openfollow.lens_model): the division
+    # pair k1 / k2 (barrel negative) and the lens centre's offset from the frame
+    # centre in half-diagonals (x right, y down). The video frame is never
+    # warped. All 0 = pinhole.
     lens_k1: float = 0.0
     lens_k2: float = 0.0
+    lens_cx: float = 0.0
+    lens_cy: float = 0.0
+    # The Setup Wizard's last calibration: Simple's four corners or Advanced's points, with their pins.
+    calibration_mode: str = "simple"
+    calibration_marks: list[CalibrationMarkConfig] = field(default_factory=list)
+    calibration_height: float | None = None  # m: the camera's exact height the solve held; None when not entered
+    calibration_lens_rating: str = ""  # one of CALIBRATION_LENS_RATINGS, "" when none was saved
+    calibration_time: str = ""  # ISO 8601 with offset, by the clock of the browser that saved it; "" when none
+    calibration_source: str = ""  # the video source the station showed when the calibration was saved
 
     def __post_init__(self) -> None:
         # These feed ``project_points`` via a numpy float array. Clamp fov out
@@ -423,15 +518,163 @@ class CameraConfig:
         self.yaw = _coerce_float(self.yaw, 0.0)
         self.roll = _coerce_float(self.roll, 0.0)
         self.fov = _coerce_float(self.fov, 60.0, lo=1.0, hi=179.0)
-        self.sensor_width_mm = _coerce_optional_float(self.sensor_width_mm, None, lo=0.0)
-        self.focal_length_mm = _coerce_optional_float(self.focal_length_mm, None, lo=0.0)
-        # Bounds cover strong wide-angle / fisheye lenses. The radial map
-        # f = 1 + k1*r^2 + k2*r^4 stays positive and monotonic across the bulk
-        # of the frame; near the extreme corner a strong barrel setting can
-        # compress past monotonic, but the floored inverse (input path) stays
-        # bounded there, so control never diverges.
-        self.lens_k1 = _coerce_float(self.lens_k1, 0.0, lo=-0.4, hi=0.4)
-        self.lens_k2 = _coerce_float(self.lens_k2, 0.0, lo=-0.2, hi=0.2)
+        # The centre is clamped; the pair's one bound is that the overlay reaches every
+        # frame corner, and a pair that does not is pulled back along its own direction.
+        lens = (
+            _coerce_float(self.lens_k1, 0.0),
+            _coerce_float(self.lens_k2, 0.0),
+            _coerce_float(self.lens_cx, 0.0, lo=-C_BOUND, hi=C_BOUND),
+            _coerce_float(self.lens_cy, 0.0, lo=-C_BOUND, hi=C_BOUND),
+        )
+        self.lens_k1, self.lens_k2, self.lens_cx, self.lens_cy = pull_back_to_valid(*lens)
+        if (self.lens_k1, self.lens_k2) != lens[:2]:
+            _report_once(
+                "camera.lens",
+                f"lens_k1={lens[0]} / lens_k2={lens[1]} with lens centre {lens[2]:.6g} / {lens[3]:.6g} "
+                f"cannot follow the picture out to its corners; using {self.lens_k1:.6g} / {self.lens_k2:.6g}",
+            )
+        self.calibration_mode = _coerce_choice(self.calibration_mode, CALIBRATION_MODES, "simple")
+        self.calibration_marks = _coerce_calibration_marks(self.calibration_marks, self.calibration_mode)
+        self.calibration_height = _coerce_calibration_height(self.calibration_height)
+        self.calibration_lens_rating = _coerce_choice(self.calibration_lens_rating, CALIBRATION_LENS_RATINGS, "")
+        self.calibration_time = _coerce_calibration_time(self.calibration_time)
+        self.calibration_source = _coerce_calibration_source(self.calibration_source)
+
+
+def _coerce_calibration_time(value: Any) -> str:
+    """An ISO 8601 time with its UTC offset, to the second, else \"\". TOML reads one unquoted as a datetime."""
+    if isinstance(value, datetime):
+        moment = value
+    elif isinstance(value, str):
+        try:
+            moment = datetime.fromisoformat(value.strip())
+        except ValueError:
+            return ""
+    else:
+        return ""
+    return moment.isoformat(timespec="seconds") if moment.tzinfo is not None else ""
+
+
+def _coerce_calibration_source(value: Any) -> str:
+    """Display text without stream credentials or control characters, at most CALIBRATION_SOURCE_MAX_LEN."""
+    if not isinstance(value, str):
+        return ""
+    return redact_uris_in_text(CONTROL_CHARS_RE.sub("", value)).strip()[:CALIBRATION_SOURCE_MAX_LEN].strip()
+
+
+def _coerce_calibration_height(value: Any) -> float | None:
+    """A measured height within MARK_REACH_M, else None; an unreadable one is dropped, never clamped."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    height = _coerce_measured(value)
+    if abs(height) <= MARK_REACH_M:
+        return height
+    _report_drops("camera.calibration_height", f"{value!r} is not a height within {MARK_REACH_M:g} m")
+    return None
+
+
+# The warnings last reported, by field: every load_config builds the camera again, so a file says it once.
+_reported_drops: dict[str, str] = {}
+
+
+def _report_drops(name: str, said: str) -> None:
+    if _reported_drops.get(name) != said:
+        _reported_drops[name] = said
+        logger.warning("%s: %s; dropped", name, said)
+
+
+def _report_once(name: str, said: str) -> None:
+    if _reported_drops.get(name) != said:
+        _reported_drops[name] = said
+        logger.warning("%s: %s", name, said)
+
+
+def calibration_mark_drops(marks: list[CalibrationMarkConfig]) -> tuple[list[CalibrationMarkConfig], list[str]]:
+    """The marks a solve can read: a triangulated one needs both marks it is measured from, without a loop."""
+    dropped: list[str] = []
+    while True:
+        by_id = {m.id: m for m in marks}
+        orphans = [m for m in marks if m.kind == "triangulated" and not (m.from_a in by_id and m.from_b in by_id)]
+        if not orphans:
+            break
+        dropped += [f"mark id {m.id} is measured from a mark that is not kept" for m in orphans]
+        marks = [m for m in marks if m not in orphans]
+    by_id = {m.id: m for m in marks}
+    looping: set[int] = set()
+    for mark in marks:
+        seen, todo = set(), [mark.id]
+        while todo:
+            current = by_id[todo.pop()]
+            if current.kind != "triangulated":
+                continue
+            for parent in (current.from_a, current.from_b):
+                if parent == mark.id:
+                    looping.add(mark.id)
+                elif parent not in seen:
+                    seen.add(parent)
+                    todo.append(parent)
+    dropped += [f"mark id {i} is measured from itself through others" for i in sorted(looping)]
+    if not looping:
+        return marks, dropped
+    kept, more = calibration_mark_drops([m for m in marks if m.id not in looping])
+    return kept, dropped + more
+
+
+def _coerce_calibration_marks(value: Any, mode: str = "advanced") -> list[CalibrationMarkConfig]:
+    """Entries as dataclasses; one that cannot be used is dropped with one warning, past the cap too.
+
+    Simple's marks are the rectangle's four corners: known marks with ids 1 to 4, in CALIBRATION_CORNERS order.
+    """
+    marks: list[CalibrationMarkConfig] = []
+    entries = value if isinstance(value, list) else []
+    dropped: list[str] = [] if isinstance(value, list) else ["is not a list of tables"]
+    for i, entry in enumerate(entries, start=1):
+        if len(marks) == MAX_CALIBRATION_MARKS:
+            dropped.append(f"entries from {i} on, past the first {MAX_CALIBRATION_MARKS} usable")
+            break
+        if isinstance(entry, dict):
+            entry = CalibrationMarkConfig(**_filter_known(CalibrationMarkConfig, entry))
+        if not isinstance(entry, CalibrationMarkConfig):
+            dropped.append(f"entry {i} is not a table")
+            continue
+        problem = entry.problem()
+        if not problem and any(m.id == entry.id for m in marks):
+            problem = f"repeats id {entry.id}"
+        if not problem and mode == "simple" and (entry.kind != "known" or entry.id > len(CALIBRATION_CORNERS)):
+            problem = "is not one of Simple's four corners"
+        if problem:
+            dropped.append(f"entry {i} {problem}")
+            continue
+        marks.append(entry)
+    marks, unreadable = calibration_mark_drops(marks)
+    dropped += unreadable
+    if dropped:
+        _report_drops(
+            "camera.calibration_marks",
+            "; ".join(dropped[:3]) + (f"; {len(dropped) - 3} more" if len(dropped) > 3 else ""),
+        )
+    return marks
+
+
+def grid_corner_positions(width: float, depth: float, x: float, y: float, z: float) -> list[list[float]]:
+    """DSL, DSR, USR, USL of a grid whose centre is at ``x``, ``y`` (stage left +X, upstage +Y), at ``z``."""
+    hw, hd = width / 2.0, depth / 2.0
+    return [[x + hw, y - hd, z], [x - hw, y - hd, z], [x - hw, y + hd, z], [x + hw, y + hd, z]]
+
+
+def reconcile_simple_corners(cfg: Any) -> None:
+    """Simple's corners are the grid's: a corner the grid has moved goes with it and loses its pin."""
+    if cfg.camera.calibration_mode != "simple":
+        return
+    corners = grid_corner_positions(*(getattr(cfg.grid, k) for k in _GRID_PLACEMENT))
+    for mark in cfg.camera.calibration_marks:
+        place = corners[mark.id - 1]
+        if any(abs(a - b) > 1e-3 for a, b in zip((mark.x, mark.y, mark.z), place, strict=True)):
+            mark.x, mark.y, mark.z = place
+            mark.pin = []
+
+
+_GRID_PLACEMENT = ("width", "depth", "x_offset", "y_offset", "z_offset")
 
 
 _GRID_COLOR_DEFAULT = "#545454"
@@ -489,8 +732,58 @@ class GridConfig:
         self.origin_thickness = _coerce_int(self.origin_thickness, 3, lo=1, hi=20)
 
 
+def _coerce_xy_vertices(value: Any, *, max_count: int | None = None) -> list[list[float]]:
+    """Keep finite ``[x, y]`` pairs from *value*; anything else is dropped.
+
+    Non-finite coordinates are dropped too: they make every point-in-polygon
+    comparison False and silently corrupt the containment test.
+    """
+    if not isinstance(value, (list, tuple)):
+        return []
+    cleaned: list[list[float]] = []
+    for v in value:
+        if not isinstance(v, (list, tuple)) or len(v) < 2 or isinstance(v[0], bool) or isinstance(v[1], bool):
+            continue
+        try:
+            x, y = float(v[0]), float(v[1])
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(x) and math.isfinite(y):
+            cleaned.append([x, y])
+    return cleaned[:max_count] if max_count is not None else cleaned
+
+
+# Upper bound on ground-grid polygon corners.
+GROUND_GRID_MAX_VERTICES = 64
+
+
+@dataclass
+class GroundGridConfig:
+    """A second floor: one polygon at its own absolute Z (experimental).
+
+    Active only when ``enabled`` and the polygon has at least three corners; a
+    marker inside it in XY gets its floor elements drawn at ``z_offset``.
+    """
+
+    enabled: bool = False
+    visible: bool = True
+    z_offset: float = 0.0
+    vertices: list[list[float]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.enabled = _coerce_bool(self.enabled, False)
+        self.visible = _coerce_bool(self.visible, True)
+        self.z_offset = 0.0 if isinstance(self.z_offset, bool) else _coerce_float(self.z_offset, 0.0)
+        self.vertices = _coerce_xy_vertices(self.vertices, max_count=GROUND_GRID_MAX_VERTICES)
+
+    @property
+    def active(self) -> bool:
+        return self.enabled and len(self.vertices) >= 3
+
+
 # Operator Screen marker glyph; each style reads only its own fields.
 _MARKER_STYLES = ("crosshair", "cone")
+CONTROL_FRAMES = ("stage", "heading", "camera", "screen")
 
 
 @dataclass
@@ -501,8 +794,9 @@ class MarkerConfig:
     default_pos_x: float = 0.0
     default_pos_y: float = 0.0
     default_pos_z: float = 1.6
-    # Relative input only (keyboard, gamepad, 3D mouse); for an upstage camera.
-    invert_control_direction: bool = False
+    # Which stage directions relative input (keyboard, gamepad, 3D mouse) steers in.
+    control_frame: str = "stage"
+    control_heading: float = 0.0
     marker_style: str = "crosshair"
     cone_base_diameter: float = 0.6
     cone_top_diameter: float = 0.3
@@ -535,7 +829,11 @@ class MarkerConfig:
         self.default_pos_x = _coerce_float(self.default_pos_x, 0.0)
         self.default_pos_y = _coerce_float(self.default_pos_y, 0.0)
         self.default_pos_z = _coerce_float(self.default_pos_z, 1.6)
-        self.invert_control_direction = _coerce_bool(self.invert_control_direction, False)
+        self.control_frame = _coerce_choice(self.control_frame, CONTROL_FRAMES, "stage")
+        heading = 0.0 if isinstance(self.control_heading, bool) else _coerce_float(self.control_heading, 0.0)
+        wrapped = heading % 360.0
+        # A tiny negative wraps to exactly 360.0 in float arithmetic.
+        self.control_heading = 0.0 if wrapped == 360.0 else wrapped
         self.marker_style = _coerce_choice(self.marker_style, _MARKER_STYLES, "crosshair")
         self.cone_base_diameter = _coerce_float(self.cone_base_diameter, 0.6, lo=0.0)
         self.cone_top_diameter = _coerce_float(self.cone_top_diameter, 0.3, lo=0.0)
@@ -673,7 +971,7 @@ class DetectionConfig:
         # dereference ``mask.vertices`` without an AttributeError.
         self.masks = [
             DetectionMaskConfig(**_filter_known(DetectionMaskConfig, m)) if isinstance(m, dict) else m
-            for m in self.masks
+            for m in (self.masks if isinstance(self.masks, list) else [])
             if isinstance(m, (dict, DetectionMaskConfig))
         ]
 
@@ -684,7 +982,7 @@ class OscConfig:
     port: int = 8765
     # Source-IP allowlist for the ``/marker/{id} x y z`` receiver. Empty =
     # allow-all (the handler logs a startup warning). Each entry is a literal
-    # IPv4/IPv6 address; CIDR blocks are not supported.
+    # IPv4 address, the listener's only family; CIDR blocks are not supported.
     allowed_sender_ips: list[str] = field(default_factory=list)
     # IPv4 multicast group the listener joins; empty = off. Validated to
     # 224.0.0.0–239.255.255.255, else coerced to "".
@@ -708,7 +1006,10 @@ class OscConfig:
             candidates = list(raw)
         else:
             candidates = []
-        self.allowed_sender_ips = [entry.strip() for entry in candidates if isinstance(entry, str) and entry.strip()]
+        entries = [entry.strip() for entry in candidates if isinstance(entry, str) and entry.strip()]
+        # Only an IPv4 entry can match a sender. A list with none stays as written,
+        # so it admits nobody rather than reading as empty, which admits everybody.
+        self.allowed_sender_ips = [entry for entry in entries if is_ipv4_literal(entry)] or entries
         self.multicast_group = _coerce_multicast_ipv4(self.multicast_group)
 
 
@@ -755,6 +1056,30 @@ class OperatorMessagesConfig:
         self.route_by_marker = _coerce_bool(self.route_by_marker, True)
 
 
+@dataclass
+class TouchRemoteConfig:
+    """`[touch_remote]` – the web UI's touch remote, a setup tool that drives a controlled marker.
+
+    ``enabled`` (device-local, default off) shows the launcher and opens the remote routes. The
+    rest shape the controls: the stick response curve (exponent) and dead zone (fraction of full
+    deflection), and the Z wheel's step per notch and finger travel per notch.
+    """
+
+    enabled: bool = False
+    stick_curve: float = 2.0
+    stick_dead_zone: float = 0.08
+    z_step_m: float = 0.05
+    z_notch_px: int = 20
+
+    def __post_init__(self) -> None:
+        self.enabled = _coerce_bool(self.enabled, False)
+        # A TOML ``true`` is not a number here, though ``float(True)`` is 1.0.
+        self.stick_curve = _coerce_float(_not_bool(self.stick_curve), 2.0, lo=1.0, hi=3.0)
+        self.stick_dead_zone = _coerce_float(_not_bool(self.stick_dead_zone), 0.08, lo=0.0, hi=0.5)
+        self.z_step_m = _coerce_float(_not_bool(self.z_step_m), 0.05, lo=0.001, hi=1.0)
+        self.z_notch_px = _coerce_int(self.z_notch_px, 20, lo=8, hi=80)
+
+
 VALID_TRIGGER_SOURCES = ("markers", "detection", "both")
 VALID_ZONE_EVAL_FPS = (1, 5, 10, 15, 30, 60)
 
@@ -787,21 +1112,7 @@ class TriggerZoneConfig:
                 self.trigger_source,
             )
             self.trigger_source = "markers"
-        # Normalize vertices to [float, float] pairs
-        cleaned: list[list[float]] = []
-        for v in self.vertices:
-            if isinstance(v, (list, tuple)) and len(v) >= 2:
-                try:
-                    x, y = float(v[0]), float(v[1])
-                except (TypeError, ValueError):
-                    continue
-                # Drop non-finite coords: ``float("nan")`` / ``float("inf")``
-                # survive coercion but make every point-in-polygon comparison
-                # False, silently corrupting membership tests for the zone.
-                if not (math.isfinite(x) and math.isfinite(y)):
-                    continue
-                cleaned.append([x, y])
-        self.vertices = cleaned
+        self.vertices = _coerce_xy_vertices(self.vertices)
         # Coerce ``triggered_by`` items to ``int``; drop anything that
         # can't be coerced (a hand-edited TOML with ``["a", 1]`` won't
         # crash the engine – it'll filter on ``[1]`` and log nothing,
@@ -856,6 +1167,128 @@ class TriggerZonesConfig:
         ]
 
 
+# A path is addressed by name over OSC, so names keep to what an OSC address allows.
+PATH_NAME_MAX_LEN = 32
+PATH_NAME_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
+MAX_PATHS = 32
+MAX_PATH_POINTS = 100
+# Stage coordinates in metres; far beyond any venue.
+_PATH_COORD_LIMIT = 1000.0
+DEFAULT_PATH_RADIUS = 0.5
+
+
+@dataclass
+class PathPointConfig:
+    """One point of a path: a stage position and the radius its corner is rounded with."""
+
+    x: float = 0.0
+    y: float = 0.0
+    z: float = 0.0
+    radius: float = DEFAULT_PATH_RADIUS  # metres
+
+    def __post_init__(self) -> None:
+        self.x = _coerce_float(self.x, 0.0, lo=-_PATH_COORD_LIMIT, hi=_PATH_COORD_LIMIT)
+        self.y = _coerce_float(self.y, 0.0, lo=-_PATH_COORD_LIMIT, hi=_PATH_COORD_LIMIT)
+        self.z = _coerce_float(self.z, 0.0, lo=-_PATH_COORD_LIMIT, hi=_PATH_COORD_LIMIT)
+        self.radius = _coerce_float(self.radius, DEFAULT_PATH_RADIUS, lo=0.0, hi=100.0)
+
+
+def path_name_from(value: Any) -> str:
+    """``value`` reduced to the characters a path name allows, at most 32 of them; dots alone make no name."""
+    text = value if isinstance(value, str) else ""
+    name = "".join(PATH_NAME_PATTERN.findall(text))[:PATH_NAME_MAX_LEN]
+    # A URL resolves dot segments away, even written as %2E, so such a name could never be addressed.
+    return name if name.strip(".") else ""
+
+
+@dataclass
+class PathConfig:
+    """A path a marker can be locked onto, in PSN-absolute world coordinates."""
+
+    name: str = ""
+    # Per station: a push or an import keeps this station's flag (see PathsConfig.replace_paths).
+    active: bool = False
+    closed: bool = False
+    # Ends of an open path: pushing past one releases the marker instead of stopping it there.
+    release_at_start: bool = False
+    release_at_end: bool = False
+    points: list[PathPointConfig] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.name = path_name_from(self.name)
+        self.active = _coerce_bool(self.active, False)
+        self.closed = _coerce_bool(self.closed, False)
+        self.release_at_start = _coerce_bool(self.release_at_start, False)
+        self.release_at_end = _coerce_bool(self.release_at_end, False)
+        raw = self.points if isinstance(self.points, list) else []
+        points = [
+            PathPointConfig(**_filter_known(PathPointConfig, p)) if isinstance(p, dict) else p
+            for p in raw
+            if isinstance(p, (dict, PathPointConfig))
+        ]
+        if len(points) > MAX_PATH_POINTS:
+            logger.warning("Path %r has %d points, keeping the first %d", self.name, len(points), MAX_PATH_POINTS)
+        self.points = points[:MAX_PATH_POINTS]
+
+
+@dataclass
+class PathsConfig:
+    """Paths, and how a marker slides onto one."""
+
+    show_paths: bool = True
+    slide_time: float = 1.0  # seconds
+    paths: list[PathConfig] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.show_paths = _coerce_bool(self.show_paths, True)
+        self.slide_time = _coerce_float(self.slide_time, 1.0, lo=0.0, hi=10.0)
+        raw = self.paths if isinstance(self.paths, list) else []
+        paths = [
+            PathConfig(**_filter_known(PathConfig, p)) if isinstance(p, dict) else p
+            for p in raw
+            if isinstance(p, (dict, PathConfig))
+        ]
+        if len(paths) > MAX_PATHS:
+            logger.warning("%d paths configured, keeping the first %d", len(paths), MAX_PATHS)
+        self.paths = paths[:MAX_PATHS]
+        self._give_unique_names()
+
+    def _give_unique_names(self) -> None:
+        # OSC finds a path by name ignoring case, so two must never match.
+        explicit = {path.name.lower() for path in self.paths if path.name}
+        taken: set[str] = set()
+        for index, path in enumerate(self.paths):
+            base = path.name or f"path-{index + 1}"
+            name, n = base, 1
+            # A name made up here, or a clash's new one, never takes a name another path was given.
+            while name.lower() in taken or (name != path.name and name.lower() in explicit):
+                n += 1
+                suffix = f"-{n}"
+                name = base[: PATH_NAME_MAX_LEN - len(suffix)] + suffix
+            if name != path.name:
+                if path.name:
+                    logger.warning("Path name %r is already taken, renamed to %r", path.name, name)
+                path.name = name
+            taken.add(name.lower())
+
+    def find(self, name: str) -> PathConfig | None:
+        """The path called ``name``, ignoring case."""
+        wanted = name.lower()
+        return next((path for path in self.paths if path.name.lower() == wanted), None)
+
+    def replace_paths(self, raw: Any) -> None:
+        """Take ``raw``'s paths, keeping this station's Active flag for each name it already has.
+
+        A new name arrives inactive: what is active is decided per station, by its
+        own web UI and desk.
+        """
+        active = {path.name.lower(): path.active for path in self.paths}
+        self.paths = raw if isinstance(raw, list) else []
+        self.__post_init__()
+        for path in self.paths:
+            path.active = active.get(path.name.lower(), False)
+
+
 @dataclass
 class MidiPatch:
     """A stable, integer-ID'd MIDI slot the operator assigns a device to.
@@ -896,16 +1329,15 @@ class MidiPatch:
 
     @property
     def identifier(self) -> str:
-        """Stable device key matching ``_DiscoveredDevice.identifier`` in
-        the MIDI subsystem – ``serial:<serial>`` when a serial is known,
-        else ``port:<port_name>|<product>``. Empty when no device is bound
-        (a fresh patch). Used by the Device dropdown to mark the selected
-        option and to preserve a binding whose device is currently
-        disconnected (the row re-submits this same key)."""
+        """Stable device key matching ``DiscoveredDevice.identifier`` in
+        the MIDI subsystem – ``serial:<serial>|<port_name>`` when a serial is
+        known, else ``port:<port_name>|<product>``. Empty when no device is bound
+        (a fresh patch). The value a disconnected binding's option re-submits,
+        so a save keeps it."""
         if not (self.serial or self.port_name or self.product):
             return ""
         if self.serial:
-            return f"serial:{self.serial}"
+            return f"serial:{self.serial}|{self.port_name}"
         return f"port:{self.port_name}|{self.product}"
 
 
@@ -920,7 +1352,12 @@ class MidiConfig:
     patches: list[MidiPatch] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        self.patches = [MidiPatch(**_filter_known(MidiPatch, p)) if isinstance(p, dict) else p for p in self.patches]
+        patches = self.patches if isinstance(self.patches, list) else []
+        self.patches = [
+            MidiPatch(**_filter_known(MidiPatch, p)) if isinstance(p, dict) else p
+            for p in patches
+            if isinstance(p, (dict, MidiPatch))
+        ]
         # Guarantee every patch has a unique id >= 1 (id 0 / duplicates get the
         # next free sequential id) so binding foreign keys always resolve.
         seen: set[int] = set()
@@ -1036,9 +1473,11 @@ class VirtualFadersConfig:
     def __post_init__(self) -> None:
         # Coerce dicts to typed entries before padding so pad/trim sees
         # uniform values.
+        faders = self.faders if isinstance(self.faders, list) else []
         self.faders = [
             VirtualFaderConfig(**_filter_known(VirtualFaderConfig, f)) if isinstance(f, dict) else f
-            for f in self.faders
+            for f in faders
+            if isinstance(f, (dict, VirtualFaderConfig))
         ]
         while len(self.faders) < VIRTUAL_FADER_COUNT:
             self.faders.append(VirtualFaderConfig())
@@ -1761,6 +2200,8 @@ _BUTTON_MAPPING_FIELDS = (
     "btn_menu_confirm",
     "btn_menu_cancel",
     "btn_clear_messages",  # clear operator-message cards
+    "btn_pathfinder",
+    "btn_toggle_paths",
     # Deprecated – superseded by btn_menu_confirm / btn_menu_cancel. Kept
     # in the mapping so legacy configs still validate and fall back to
     # defaults on invalid values; no longer used for dispatch.
@@ -1797,6 +2238,8 @@ _KEYBOARD_ACTION_FIELDS = (
     "key_prev_marker",
     "key_settings",
     "key_clear_messages",  # clear operator-message cards
+    "key_pathfinder",
+    "key_toggle_paths",
 )
 
 # Binding groups in form order: the fields of one group may not share an input,
@@ -1805,7 +2248,6 @@ _KEYBOARD_ACTION_FIELDS = (
 GAMEPAD_ACTION_BUTTON_FORM_LABELS = (
     ("btn_reset", "Reset Marker"),
     ("btn_toggle_help", "Toggle Help"),
-    ("btn_toggle_zones", "Toggle Zone Overlay"),
     ("btn_settings", "Settings Menu"),
     ("btn_speed_down", "Speed -"),
     ("btn_speed_up", "Speed +"),
@@ -1814,6 +2256,9 @@ GAMEPAD_ACTION_BUTTON_FORM_LABELS = (
     ("btn_next_marker", "Next Marker"),
     ("btn_prev_marker", "Prev Marker"),
     ("btn_clear_messages", "Clear Messages"),
+    ("btn_toggle_zones", "Toggle Zone Overlay"),
+    ("btn_toggle_paths", "Toggle Paths"),
+    ("btn_pathfinder", "Pathfinder"),
 )
 GAMEPAD_MENU_BUTTON_FORM_LABELS = (
     ("btn_menu_confirm", "Confirm"),
@@ -1834,6 +2279,8 @@ KEYBOARD_ACTION_FORM_LABELS = (
     ("key_clear_messages", "Clear Messages"),
     ("key_next_marker", "Next Marker"),
     ("key_prev_marker", "Prev Marker"),
+    ("key_pathfinder", "Pathfinder"),
+    ("key_toggle_paths", "Toggle Paths"),
 )
 CONTROLLER_BINDING_GROUPS = tuple(
     tuple(name for name, _ in labels)
@@ -1871,6 +2318,8 @@ class ControllerConfig:
     deadzone: float = 0.15
     invert_y: bool = False
     curve: str = "logarithmic"
+    # Which pad family's printed names buttons are shown by (button_names.py).
+    button_name_style: str = "standard"
     # Normal mode button mappings
     btn_reset: str = "X"
     btn_toggle_help: str = "Y"
@@ -1878,7 +2327,6 @@ class ControllerConfig:
     btn_speed_up: str = "RB"
     btn_move_z_down: str = "LT"
     btn_move_z_up: str = "RT"
-    btn_toggle_zones: str = "B"
     # Cycle bindings (marker selection only; calibration is web-UI-only).
     btn_next_marker: str = "DPAD_RIGHT"
     btn_prev_marker: str = "DPAD_LEFT"
@@ -1890,6 +2338,9 @@ class ControllerConfig:
     btn_menu_cancel: str = "B"
     # Clear all operator-message cards. Default unbound; edge-triggered.
     btn_clear_messages: str = ""
+    btn_toggle_zones: str = ""
+    btn_toggle_paths: str = ""
+    btn_pathfinder: str = ""
     move_xy_stick: str = "left"
     # Marker-fader integrator: which stick Y-axis (if any) drives the fader of
     # the currently-controlled marker. The bus integrates
@@ -1952,9 +2403,16 @@ class ControllerConfig:
     key_settings: str = "m"
     # Clear all operator-message cards. Default unbound.
     key_clear_messages: str = ""
+    key_pathfinder: str = ""
+    key_toggle_paths: str = ""
+    # xkb layout / variant the kiosk session starts with; blank = the system's.
+    keyboard_layout: str = ""
+    keyboard_variant: str = ""
 
     def __post_init__(self) -> None:
         """Validate configuration values."""
+        self.keyboard_layout = _coerce_name(self.keyboard_layout, XKB_LAYOUT_RE)
+        self.keyboard_variant = _coerce_name(self.keyboard_variant, XKB_VARIANT_RE) if self.keyboard_layout else ""
         # Mouse steering refinements – coerce so a hand-edited / imported TOML
         # can't feed a string or out-of-range value into the input loop.
         self.mouse_hysteresis_px = _coerce_int(self.mouse_hysteresis_px, 0, lo=0, hi=200)
@@ -1976,6 +2434,7 @@ class ControllerConfig:
                 self.curve,
             )
             self.curve = "logarithmic"
+        self.button_name_style = _coerce_choice(self.button_name_style, BUTTON_NAME_STYLES, "standard")
         if self.move_xy_stick not in VALID_STICKS:
             logger.warning(
                 "Invalid move_xy_stick %r, falling back to 'left'",
@@ -2066,6 +2525,9 @@ class ControllerConfig:
                 continue
             coerced_indices[str(raw_name)] = idx
         self.button_raw_indices = coerced_indices
+        self.swap_triggers = _coerce_bool(self.swap_triggers, False)
+        self.mapped_controller_name = _coerce_str(self.mapped_controller_name, "")
+        self.mapped_controller_guid = _coerce_str(self.mapped_controller_guid, "")
         for move in self.settle_bindings():
             _log_settled_binding("controller", move)
 
@@ -2103,6 +2565,8 @@ MOUSE3D_BUTTON_FIELDS = (
     "btn_speed_down",
     "btn_toggle_help",
     "btn_toggle_zones",
+    "btn_pathfinder",
+    "btn_toggle_paths",
 )
 # Web-form row labels (gesture-first, config key in parens) in display order.
 # Single source for the form's axis/button loops; the consistency test asserts
@@ -2123,6 +2587,8 @@ MOUSE3D_BUTTON_FORM_LABELS = (
     ("btn_speed_down", "Speed down"),
     ("btn_toggle_help", "Toggle help"),
     ("btn_toggle_zones", "Toggle zones"),
+    ("btn_pathfinder", "Pathfinder"),
+    ("btn_toggle_paths", "Toggle paths"),
 )
 
 
@@ -2172,6 +2638,8 @@ class Mouse3DConfig:
     btn_speed_down: int = -1
     btn_toggle_help: int = -1
     btn_toggle_zones: int = -1
+    btn_pathfinder: int = -1
+    btn_toggle_paths: int = -1
 
     def __post_init__(self) -> None:
         self.enabled = _coerce_bool(self.enabled, False)
@@ -2258,6 +2726,89 @@ class NetworkConfig:
         self.backend = choice
 
 
+OPERATOR_SCREENS: tuple[str, ...] = ("auto", "cairo")
+
+
+@dataclass
+class DisplayConfig:
+    """Optional ``[display]`` section, set in ``config.toml`` only.
+
+    ``operator_screen`` "auto" runs the GL Operator Screen where the platform supports it and Cairo
+    elsewhere; "cairo" keeps Cairo on this station. Read at startup.
+    """
+
+    operator_screen: str = "auto"
+
+    def __post_init__(self) -> None:
+        choice = self.operator_screen.strip().lower() if isinstance(self.operator_screen, str) else ""
+        self.operator_screen = _coerce_choice(choice, OPERATOR_SCREENS, "auto")
+
+
+# The General tab's Features list, in display order. A feature that is off is
+# hidden in the web UI and does not run; its own settings are kept.
+FEATURE_KEYS: tuple[str, ...] = (
+    "zones",
+    "midi",
+    "psn_input",
+    "lens_suggestions",
+    "detection",
+    "rttrpm",
+    "paths",
+    "ground_grid",
+    "touch_remote",
+)
+EXPERIMENTAL_FEATURES: frozenset[str] = frozenset(
+    {"lens_suggestions", "detection", "rttrpm", "paths", "ground_grid", "touch_remote"}
+)
+DEFAULT_SHOWN_FEATURES: tuple[str, ...] = tuple(key for key in FEATURE_KEYS if key not in EXPERIMENTAL_FEATURES)
+# Gated like any feature but not offered: no Features row, no web route turns one on.
+# Only ``shown_features`` in config.toml (or an import or push carrying it) does.
+CONFIG_ONLY_FEATURES: frozenset[str] = frozenset({"paths"})
+OFFERED_FEATURES: tuple[str, ...] = tuple(key for key in FEATURE_KEYS if key not in CONFIG_ONLY_FEATURES)
+
+
+def _coerce_feature_list(value: Any) -> list[str]:
+    """Known feature keys from ``value`` in ``FEATURE_KEYS`` order; anything but a list is the default."""
+    if not isinstance(value, (list, tuple)):
+        return list(DEFAULT_SHOWN_FEATURES)
+    named = {entry.strip().lower() for entry in value if isinstance(entry, str)}
+    return [key for key in FEATURE_KEYS if key in named]
+
+
+def migrate_ui_keys(ui_data: dict[str, Any]) -> None:
+    """Map ``show_experimental_features`` onto ``shown_features`` when that is absent; drop the old key."""
+    if "show_experimental_features" not in ui_data:
+        return
+    shown_all = _coerce_bool(ui_data.pop("show_experimental_features"), False)
+    if shown_all and "shown_features" not in ui_data:
+        ui_data["shown_features"] = list(OFFERED_FEATURES)
+
+
+def feature_on(cfg: Any, key: str) -> bool:
+    """Whether ``cfg`` has feature ``key`` on; a config without ``[ui]`` reads the defaults."""
+    shown = getattr(getattr(cfg, "ui", None), "shown_features", DEFAULT_SHOWN_FEATURES)
+    return key in shown
+
+
+class _Switched(Protocol):
+    enabled: bool
+
+
+def feature_gated[SwitchedT: _Switched](section: SwitchedT, cfg: Any, key: str) -> SwitchedT:
+    """``section`` as its subsystem runs it: switched off (``enabled``) while feature ``key`` is off."""
+    if not section.enabled or feature_on(cfg, key):
+        return section
+    gated = copy.copy(section)
+    gated.enabled = False
+    return gated
+
+
+def effective_lens(cfg: Any) -> tuple[float, float, float, float]:
+    """The lens everything draws and maps with, ``(k1, k2, cx, cy)``."""
+    cam = cfg.camera
+    return cam.lens_k1, cam.lens_k2, cam.lens_cx, cam.lens_cy
+
+
 @dataclass
 class UiConfig:
     """Optional ``[ui]`` section – operator display preferences.
@@ -2270,9 +2821,10 @@ class UiConfig:
 
     unit_system: str = "metric"  # "metric" | "imperial"
 
-    # UI-visibility gate for experimental sections; does not start/stop any
-    # subsystem (the save route handles the mouse + detection cascade).
-    show_experimental_features: bool = False
+    # Features that are on; every subsystem gated by one asks ``feature_on``.
+    shown_features: list[str] = field(default_factory=lambda: list(DEFAULT_SHOWN_FEATURES))
+    # Config-only: shows the developer's views in the web UI (the Lens step's edge view).
+    developer_mode: bool = False
 
     def __post_init__(self) -> None:
         valid = {m.value for m in UnitSystem}
@@ -2280,7 +2832,91 @@ class UiConfig:
             self.unit_system = "metric"
         choice = self.unit_system.strip().lower()
         self.unit_system = choice if choice in valid else "metric"
-        self.show_experimental_features = _coerce_bool(self.show_experimental_features, False)
+        self.shown_features = _coerce_feature_list(self.shown_features)
+        self.developer_mode = _coerce_bool(self.developer_mode, False)
+
+    def feature_on(self, key: str) -> bool:
+        """Whether feature ``key`` is on."""
+        return key in self.shown_features
+
+
+NETWORK_MODE_SIMPLE = "simple"
+NETWORK_MODE_ADVANCED = "advanced"
+NETWORK_MODES = (NETWORK_MODE_SIMPLE, NETWORK_MODE_ADVANCED)
+
+
+# Every per-plane interface pin, plus the web UI's: (form key, owning section or
+# None for top level, field, the Assignment panel's name for it). Each OSC
+# destination's ``source_iface`` is one more, keyed by its id.
+PLANE_PIN_FIELDS: tuple[tuple[str, str | None, str, str], ...] = (
+    ("otp_output.source_iface", "otp_output", "source_iface", "OTP output"),
+    ("rttrpm_output.source_iface", "rttrpm_output", "source_iface", "RTTrPM output"),
+    ("osc.listen_iface", "osc", "listen_iface", "OSC input"),
+    ("video_input_iface", None, "video_input_iface", "Video input"),
+    ("web_bind_iface", None, "web_bind_iface", "Web UI"),
+)
+
+
+def plane_pin_key(dest_id: str) -> str:
+    """The form key of an OSC destination's pin."""
+    return f"osc_destinations.{dest_id}.source_iface"
+
+
+def plane_pins(cfg: AppConfig) -> list[tuple[str, str]]:
+    """Every per-plane interface pin that is set, plus ``web_bind_iface``, as ``(key, iface)``.
+
+    ``psn_source_iface`` is the station interface, not a per-plane pin, and
+    ``web_bind`` is config-only.
+    """
+    pins = [(key, getattr(getattr(cfg, owner) if owner else cfg, name)) for key, owner, name, _ in PLANE_PIN_FIELDS]
+    # In the Assignment panel's order: the destinations follow OSC input.
+    after_osc = [key for key, *_ in PLANE_PIN_FIELDS].index("osc.listen_iface") + 1
+    pins[after_osc:after_osc] = [
+        (plane_pin_key(dest.id), dest.source_iface) for dest in cfg.osc_destinations.destinations
+    ]
+    return [(key, value) for key, value in pins if isinstance(value, str) and value.strip()]
+
+
+def enforce_network_mode(cfg: AppConfig) -> None:
+    """Clear every per-plane pin and ``web_bind_iface`` in Simple: Simple never holds a hidden pin."""
+    if cfg.network_mode != NETWORK_MODE_SIMPLE:
+        return
+    for _key, owner, name, _label in PLANE_PIN_FIELDS:
+        setattr(getattr(cfg, owner) if owner else cfg, name, "")
+    for dest in cfg.osc_destinations.destinations:
+        dest.source_iface = ""
+
+
+def _coerce_network_mode(cfg: AppConfig) -> str:
+    """``network_mode`` read case- and space-blind; anything else is the mode the pins imply.
+
+    That is also how a config without the field starts: Advanced when it pins a
+    plane or the web UI (VLANs and labels do not count), else Simple. A typo
+    must never read as Simple and erase every pin.
+    """
+    raw = cfg.network_mode.strip().lower() if isinstance(cfg.network_mode, str) else None
+    if raw in NETWORK_MODES:
+        return str(raw)
+    return NETWORK_MODE_ADVANCED if plane_pins(cfg) else NETWORK_MODE_SIMPLE
+
+
+def network_mode_unsaved(path: str) -> bool:
+    """Whether the config file at ``path`` reads but records no ``network_mode``.
+
+    A file that does not read says nothing: the config may have come from the
+    backup, and saving over the original would discard what the operator wrote.
+    """
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+        return bool(raw.strip()) and "network_mode" not in tomllib.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return False
+
+
+def is_simple_mode(cfg: Any) -> bool:
+    """Whether ``cfg`` is in Simple network mode; anything without the field reads as Advanced."""
+    return getattr(cfg, "network_mode", NETWORK_MODE_ADVANCED) == NETWORK_MODE_SIMPLE
 
 
 @dataclass
@@ -2352,6 +2988,9 @@ class AppConfig:
     # This station's name on a venue's DNS. Blank = only its ``<host>.local`` name.
     # Device-local: it names this box.
     station_fqdn: str = ""
+    # "simple": the station interface carries every plane; "advanced": per-plane
+    # pins. Device-local. A config without it starts in the mode its pins imply.
+    network_mode: str = NETWORK_MODE_SIMPLE
 
     # Web-triggered update settings (signed-.deb GitHub-release installer)
     update_github_repo: str = "openfollowapp/openfollow"
@@ -2361,7 +3000,7 @@ class AppConfig:
     update_include_prereleases: bool = False
 
     # On startup and whenever the device IP changes, if the LAN has internet:
-    # auto-check GitHub for a newer release (drives the update banner) and
+    # auto-check GitHub for a newer release (drives the Software Update box) and
     # sync the system clock from a trusted NTP server (Pis have no RTC and
     # drift). Both are gated, fail silently offline, and default on.
     auto_update_check: bool = True
@@ -2372,6 +3011,8 @@ class AppConfig:
     # the default selection is empty (operator picks via the catalog UI).
     controlled_marker_ids: list[int] = field(default_factory=list)
     viewer_marker_ids: list[int] = field(default_factory=list)
+    # Controlled markers no relative input moves; they keep transmitting.
+    parked_marker_ids: list[int] = field(default_factory=list)
     # Per-marker move-speed overrides; ``MarkerConfig.move_speed`` is the
     # fallback for a marker with no entry.
     marker_move_speeds: dict[int, float] = field(default_factory=dict)
@@ -2390,22 +3031,26 @@ class AppConfig:
     # Sub-configs
     camera: CameraConfig = field(default_factory=CameraConfig)
     grid: GridConfig = field(default_factory=GridConfig)
+    ground_grid: GroundGridConfig = field(default_factory=GroundGridConfig)
     marker: MarkerConfig = field(default_factory=MarkerConfig)
     controller: ControllerConfig = field(default_factory=ControllerConfig)
     mouse3d: Mouse3DConfig = field(default_factory=Mouse3DConfig)
     osc: OscConfig = field(default_factory=OscConfig)
     operator_messages: OperatorMessagesConfig = field(default_factory=OperatorMessagesConfig)
+    touch_remote: TouchRemoteConfig = field(default_factory=TouchRemoteConfig)
     otp_output: OtpOutputConfig = field(default_factory=OtpOutputConfig)
     rttrpm_output: RttrpmOutputConfig = field(default_factory=RttrpmOutputConfig)
     osc_transmitters: OscTransmittersConfig = field(default_factory=OscTransmittersConfig)
     osc_destinations: OscDestinationsConfig = field(default_factory=OscDestinationsConfig)
     detection: DetectionConfig = field(default_factory=DetectionConfig)
     trigger_zones: TriggerZonesConfig = field(default_factory=TriggerZonesConfig)
+    paths: PathsConfig = field(default_factory=PathsConfig)
     midi: MidiConfig = field(default_factory=MidiConfig)
     virtual_faders: VirtualFadersConfig = field(
         default_factory=VirtualFadersConfig,
     )
     network: NetworkConfig = field(default_factory=NetworkConfig)
+    display: DisplayConfig = field(default_factory=DisplayConfig)
     ui: UiConfig = field(default_factory=UiConfig)
 
     def __post_init__(self) -> None:
@@ -2433,6 +3078,9 @@ class AppConfig:
         self.video_input_iface = self.video_input_iface.strip()
         self.interface_labels = normalize_labels(self.interface_labels)
         self.station_fqdn = normalize_fqdn(self.station_fqdn)
+        self.network_mode = _coerce_network_mode(self)
+        enforce_network_mode(self)
+        reconcile_simple_corners(self)
         # Strip ``psn_source_iface`` so whitespace doesn't look like a value
         # change each load and trigger a needless rebind cycle.
         if not isinstance(self.psn_source_iface, str):
@@ -2473,12 +3121,8 @@ class AppConfig:
             self.rtsp_password = ""
         if not isinstance(self.srt_passphrase, str):
             self.srt_passphrase = ""
-        # Auto online-sync knobs: normalise so a hand-edited TOML can't feed a
-        # non-bool / non-string into the worker.
-        self.update_include_prereleases = _coerce_bool(self.update_include_prereleases, False)
-        self.auto_update_check = _coerce_bool(self.auto_update_check, True)
-        self.auto_time_sync = _coerce_bool(self.auto_time_sync, True)
-        self.time_sync_server = _coerce_str(self.time_sync_server, "ptbtime1.ptb.de").strip() or "ptbtime1.ptb.de"
+        self.normalise_startup_settings()
+        self.parked_marker_ids = parked_within(self.controlled_marker_ids, self.parked_marker_ids)
         # TOML produces ``dict[str, Any]``; the runtime contract is
         # ``dict[int, float]`` keyed by marker_id. Drop pairs with a non-int
         # key or non-finite/negative value.
@@ -2514,6 +3158,14 @@ class AppConfig:
             coerced[key] = value
         self.marker_move_speeds = coerced
 
+    def normalise_startup_settings(self) -> None:
+        """Coerce the update and time-sync settings read at startup, so a hand-edited TOML or an
+        import can't feed a non-bool / non-string into the updater or the online-sync worker."""
+        self.update_include_prereleases = _coerce_bool(self.update_include_prereleases, False)
+        self.auto_update_check = _coerce_bool(self.auto_update_check, True)
+        self.auto_time_sync = _coerce_bool(self.auto_time_sync, True)
+        self.time_sync_server = _coerce_str(self.time_sync_server, "ptbtime1.ptb.de").strip() or "ptbtime1.ptb.de"
+
 
 # ---------------------------------------------------------------------------
 # TOML I/O
@@ -2526,23 +3178,36 @@ def _filter_known(cls: type, data: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in data.items() if k in known}
 
 
+# Former camera settings a Camera & Grid template saved by an earlier build may carry.
+_FORMER_CAMERA_KEYS = frozenset({"sensor_width_mm", "focal_length_mm"})
+
+
+def without_former_camera_keys(camera: dict[str, Any]) -> dict[str, Any]:
+    """*camera* without its former settings; any other unknown key still fails the dataclass."""
+    return {k: v for k, v in camera.items() if k not in _FORMER_CAMERA_KEYS}
+
+
 _SUB_CONFIG_MAP: dict[str, type] = {
     "camera": CameraConfig,
     "grid": GridConfig,
+    "ground_grid": GroundGridConfig,
     "marker": MarkerConfig,
     "controller": ControllerConfig,
     "mouse3d": Mouse3DConfig,
     "osc": OscConfig,
     "operator_messages": OperatorMessagesConfig,
+    "touch_remote": TouchRemoteConfig,
     "otp_output": OtpOutputConfig,
     "rttrpm_output": RttrpmOutputConfig,
     "osc_transmitters": OscTransmittersConfig,
     "osc_destinations": OscDestinationsConfig,
     "detection": DetectionConfig,
     "trigger_zones": TriggerZonesConfig,
+    "paths": PathsConfig,
     "midi": MidiConfig,
     "virtual_faders": VirtualFadersConfig,
     "network": NetworkConfig,
+    "display": DisplayConfig,
     "ui": UiConfig,
 }
 
@@ -2594,22 +3259,100 @@ def bootstrap_config_if_missing(config_path: str) -> bool:
     return True
 
 
-def _load_backup_data(path: str) -> dict[str, Any] | None:
-    """Parse the ``<path>.bak`` snapshot ``save_config`` writes, or ``None``.
+def restore_empty_config(path: str) -> None:
+    """At startup, put the backup in place of an empty config file, or remove it for a first run.
 
-    Returns ``None`` when the backup is absent, unreadable, or unparseable so
-    recovery degrades to defaults rather than raising.
+    An empty file holds nothing to keep, unlike an unreadable one, which may
+    hold hand edits and is left alone. The backup is copied byte for byte and
+    stays: ``save_config`` would snapshot the empty file over it.
     """
+    with config_write_lock:
+        try:
+            with open(path, "rb") as f:
+                if f.read().strip():
+                    return
+        except OSError:
+            return
+        backup = _readable_backup(path)
+        try:
+            if backup is None:
+                os.unlink(path)
+            else:
+                _replace_file(Path(path), backup[0])
+        except OSError:
+            logger.exception("Config file %s is empty and could not be restored.", path)
+            return
+    if backup is None:
+        logger.warning("Config file %s is empty and has no readable backup – starting as a first run.", path)
+    else:
+        logger.warning("Config file %s is empty – restored it from %s.bak.", path, path)
+
+
+def _readable_backup(path: str) -> tuple[bytes, AppConfig] | None:
+    """The ``<path>.bak`` snapshot ``save_config`` writes, when it reads whole."""
     try:
-        with open(path + ".bak", "rb") as f:
-            return tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError):
+        return _read_whole(path + ".bak")
+    except ConfigFileUnreadableError:
         return None
+
+
+def _replace_file(target: Path, data: bytes) -> None:
+    """Write *data* to a 0o600 temp file beside *target*, fsync it and rename it into place."""
+    directory = target.parent if str(target.parent) else Path(".")
+    fd, tmp_path = tempfile.mkstemp(prefix=target.name + ".", suffix=".tmp", dir=str(directory))
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, target)
+    except Exception:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+        raise
+    _fsync_dir(directory)
 
 
 # Which (config path, marker ids) have been logged as newly viewed, so a config reloaded on every
 # request says it once per process.
 _LOGGED_UNVIEWED: set[tuple[str, tuple[int, ...]]] = set()
+
+
+def marker_id_list(raw: Any, *, path: str, field_name: str) -> list[int]:
+    """A selection list as it is kept: positive int marker ids in first-seen order.
+
+    Marker id 0 is reserved as "ignored" on the PSN wire, so it never gets past ``Marker.__init__``. A
+    duplicate would render two marker cards and register the marker twice with PSN / RTTrPM. Anything
+    but a list reads as ``[]``: ``init_markers`` iterates it. *path* names the source in the log.
+    """
+    if not isinstance(raw, list):
+        logger.warning("%s: %s is %s, not a list – coercing to []", path, field_name, type(raw).__name__)
+        return []
+    kept: list[int] = []
+    for value in raw:
+        if isinstance(value, bool) or not isinstance(value, int):
+            continue
+        if value < 1:
+            logger.warning("%s: dropping reserved marker id %r from %s", path, value, field_name)
+            continue
+        if value not in kept:
+            kept.append(value)
+    return kept
+
+
+def parked_within(controlled: Any, parked: Any) -> list[int]:
+    """The parked markers as kept: marker ids of *controlled*, each once, in first-seen order.
+
+    Anything but a list reads as ``[]``, and so does a *controlled* that is not one.
+    """
+    if not isinstance(parked, list) or not isinstance(controlled, list):
+        return []
+    allowed = {mid for mid in controlled if isinstance(mid, int) and not isinstance(mid, bool) and mid >= 1}
+    kept: list[int] = []
+    for mid in parked:
+        if isinstance(mid, int) and not isinstance(mid, bool) and mid in allowed and mid not in kept:
+            kept.append(mid)
+    return kept
 
 
 def viewed_with_controlled(controlled: list[int], viewer: list[int]) -> list[int]:
@@ -2618,56 +3361,102 @@ def viewed_with_controlled(controlled: list[int], viewer: list[int]) -> list[int
     return list(viewer) + [mid for mid in controlled if mid not in viewer]
 
 
-def load_config(path: str = "config.toml", *, strict: bool = False) -> AppConfig:
+class ConfigFileUnreadableError(OSError):
+    """The config file exists but is empty or does not read: nothing may be written over it."""
+
+    def __init__(self, message: str, path: str) -> None:
+        super().__init__(message)
+        self.path = path
+
+
+class ConfigFileEmptyError(ConfigFileUnreadableError):
+    """The config file holds only whitespace, which would load as every default."""
+
+
+# The state of each config file whose recovery was last logged; a web request reads it every time.
+_RECOVERY_LOGGED: dict[str, tuple[int, ...]] = {}
+
+
+def _file_state(path: str) -> tuple[int, ...]:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return ()
+    return (st.st_ino, st.st_mtime_ns, st.st_size)
+
+
+def _log_recovery(path: str, level: int, message: str, *args: object, exc_info: BaseException | None = None) -> None:
+    """Log how a file that did not read was recovered, once until the file changes."""
+    state = _file_state(path)
+    if _RECOVERY_LOGGED.get(path) == state:
+        return
+    _RECOVERY_LOGGED[path] = state
+    logger.log(level, message, path, *args, exc_info=exc_info)
+
+
+def load_config(path: str = "config.toml", *, strict: bool = False, missing_ok: bool = True) -> AppConfig:
     """Load config from a TOML file.
 
     Args:
         path: Path to the TOML file.
-        strict: When True, re-raise parse/read errors instead of logging and
-            returning defaults; missing files still return defaults. Used by
-            hot-reload, which must not replace the running config with defaults.
-            Strict also skips the ``.bak`` recovery.
+        strict: When True, a file that does not read whole raises
+            ``ConfigFileUnreadableError`` (``ConfigFileEmptyError`` for an empty
+            one) instead of being recovered; missing files still return
+            defaults. Used by hot-reload, which must not replace the running
+            config with defaults.
+        missing_ok: With *strict*, False raises ``FileNotFoundError`` for a
+            missing file instead of returning defaults.
 
-    On the non-strict path, a missing or unparseable primary file is recovered
-    from the ``config.toml.bak`` snapshot, degrading to defaults when the
-    backup is also absent or unparseable.
+    On the non-strict path, a missing file or one that does not read whole (see
+    ``_read_whole``) is recovered from the ``config.toml.bak`` snapshot,
+    degrading to defaults when the backup does not read whole either; it never
+    raises. A caller that writes the config back reads it with
+    :func:`load_config_for_save` instead.
 
     Returns:
         Populated ``AppConfig``; defaults for any missing fields.
     """
     try:
-        with open(path, "rb") as f:
-            data: dict[str, Any] = tomllib.load(f)
-    except FileNotFoundError:
-        # Strict mode (hot-reload): a missing file is not an error and must not
-        # pull in a stale backup. Otherwise recover from the ``.bak``.
-        if not strict:
-            backup = _load_backup_data(path)
-            if backup is not None:
-                logger.warning("Config file %s is missing – recovered from %s.bak.", path, path)
-                data = backup
-            else:
-                return AppConfig()
-        else:
-            return AppConfig()
-    except Exception:
+        whole = _read_whole(path)
+    except ConfigFileUnreadableError as error:
         if strict:
             raise
-        # Catches any read/parse failure (TOML decode, permissions, …);
-        # recover from the ``.bak`` snapshot.
-        backup = _load_backup_data(path)
-        if backup is not None:
-            logger.warning(
-                "Config file %s could not be read/parsed – recovered from %s.bak.",
-                path,
-                path,
-                exc_info=True,
-            )
-            data = backup
-        else:
-            logger.exception("Failed to read/parse config file %s – using defaults.", path)
-            return AppConfig()
+        return _recovered(path, error)
+    if whole is None:
+        if not strict:
+            return _recovered(path, None)
+        if not missing_ok:
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), path)
+        return AppConfig()
+    _RECOVERY_LOGGED.pop(path, None)
+    return whole[1]
 
+
+def _recovered(path: str, error: ConfigFileUnreadableError | None) -> AppConfig:
+    """The config for a file that is missing (*error* ``None``) or does not read: the backup, else defaults."""
+    backup = _readable_backup(path)
+    if error is None:
+        if backup is not None:
+            _log_recovery(path, logging.WARNING, "Config file %s is missing – recovered from %s.bak.", path)
+            return backup[1]
+        return AppConfig()
+    if isinstance(error, ConfigFileEmptyError):
+        if backup is None:
+            _log_recovery(path, logging.WARNING, "Config file %s is empty – using defaults.")
+            return AppConfig()
+        _log_recovery(path, logging.WARNING, "Config file %s is empty – recovered from %s.bak.", path)
+        return backup[1]
+    if backup is None:
+        _log_recovery(path, logging.ERROR, "Failed to read/parse config file %s – using defaults.", exc_info=error)
+        return AppConfig()
+    _log_recovery(
+        path, logging.WARNING, "Config file %s could not be read/parsed – recovered from %s.bak.", path, exc_info=error
+    )
+    return backup[1]
+
+
+def _config_from_data(path: str, data: dict[str, Any]) -> AppConfig:
+    """Build the config a parsed config file holds; *path* only names it in what is logged."""
     # Backward compatibility: fall back to num_markers if new fields absent.
     # Coerce the raw TOML types – this is the legacy-upgrade path, so a
     # hand-edited / old config can carry a non-int ``num_markers`` (range()
@@ -2681,43 +3470,9 @@ def load_config(path: str = "config.toml", *, strict: bool = False) -> AppConfig
         raw_controlled = data["controlled_marker_ids"]
         data["viewer_marker_ids"] = list(raw_controlled) if isinstance(raw_controlled, list) else []
 
-    # Marker id 0 is reserved as "ignored" on the PSN wire; strip it from the
-    # selection lists so a hand-edited config can't smuggle a 0 past
-    # ``Marker.__init__``. A non-list value coerces to ``[]`` (``init_markers``
-    # expects an iterable of ints). The backcompat block above guarantees both
-    # keys are present, so there's no missing-key case to guard.
+    # The backcompat block above guarantees both keys are present.
     for _field_name in ("controlled_marker_ids", "viewer_marker_ids"):
-        _raw = data[_field_name]
-        if not isinstance(_raw, list):
-            logger.warning(
-                "%s: %s is %s, not a list – coercing to [] so selection-list iteration can't crash startup",
-                path,
-                _field_name,
-                type(_raw).__name__,
-            )
-            data[_field_name] = []
-            continue
-        # Dedup, preserving first-seen order: a duplicate id would render two
-        # marker cards and double-register the marker with PSN / RTTrPM on hot
-        # reload.
-        _seen: set[int] = set()
-        _filtered: list[int] = []
-        for _v in _raw:
-            if isinstance(_v, bool) or not isinstance(_v, int):
-                continue
-            if _v < 1:
-                logger.warning(
-                    "%s: dropping reserved marker id %r from %s",
-                    path,
-                    _v,
-                    _field_name,
-                )
-                continue
-            if _v in _seen:
-                continue
-            _seen.add(_v)
-            _filtered.append(_v)
-        data[_field_name] = _filtered
+        data[_field_name] = marker_id_list(data[_field_name], path=path, field_name=_field_name)
     _unviewed = [mid for mid in data["controlled_marker_ids"] if mid not in data["viewer_marker_ids"]]
     if _unviewed and (path, tuple(_unviewed)) not in _LOGGED_UNVIEWED:
         _LOGGED_UNVIEWED.add((path, tuple(_unviewed)))
@@ -2736,11 +3491,15 @@ def load_config(path: str = "config.toml", *, strict: bool = False) -> AppConfig
             if _old in _ctrl and _new not in _ctrl:
                 _ctrl[_new] = _ctrl[_old]
 
-    # Back-compat: read the marker's Z-line settings under their former names
-    # BEFORE ``_filter_known`` drops them, so an existing config keeps them.
+    # Back-compat: read ``invert_control_direction`` as the control frame
+    # BEFORE ``_filter_known`` drops it, so an existing config keeps it.
     _marker = data.get("marker")
     if isinstance(_marker, dict):
         apply_renamed_marker_keys(_marker)
+
+    _ui = data.get("ui")
+    if isinstance(_ui, dict):
+        migrate_ui_keys(_ui)
 
     # Back-compat: OTP output used to pin a raw ``source_ip``; it now pins the
     # interface by name (``source_iface``), like PSN. Convert an existing IP to
@@ -2754,6 +3513,9 @@ def load_config(path: str = "config.toml", *, strict: bool = False) -> AppConfig
             from openfollow.net_utils import get_iface_for_ip
 
             _otp["source_iface"] = get_iface_for_ip(_legacy_otp_ip.strip())
+
+    # Missing, it is decided from the pins (``_coerce_network_mode``).
+    data.setdefault("network_mode", None)
 
     # Build sub-config instances from their TOML sections
     sub_kwargs: dict[str, Any] = {}
@@ -2772,27 +3534,38 @@ def load_config(path: str = "config.toml", *, strict: bool = False) -> AppConfig
     return config
 
 
+def load_config_for_save(path: str, *, missing: Callable[[], AppConfig] | None = None) -> AppConfig:
+    """The config file as it is on disk, for a caller that writes it back or hands it on.
+
+    An empty or unreadable file raises ``ConfigFileUnreadableError``: read as
+    the backup or the defaults, it would be written over with them. A missing
+    one reads as *missing* says, else as ``load_config`` reads it.
+    """
+    on_disk = read_config_whole(path)
+    if on_disk is not None:
+        return on_disk
+    return missing() if missing is not None else load_config(path)
+
+
 _DEPRECATED_WARNED: set[str] = set()
 
 
-_RENAMED_MARKER_KEYS: tuple[tuple[str, str], ...] = (
-    ("drop_line", "z_line"),
-    ("drop_line_thickness", "z_line_thickness"),
-)
-
-
 def apply_renamed_marker_keys(marker_data: dict[str, Any]) -> None:
-    """Read the marker's Z-line settings under their former names, in place.
+    """Read ``invert_control_direction`` as the control frame, in place.
 
-    Every route into a marker section goes through here - config file, JSON
-    config API, peer broadcast - so a station still sending the former names
-    during a rolling upgrade is understood rather than accepted and silently
-    discarded. The current name wins wherever both appear.
+    Every route into a marker section goes through here - config file, web
+    form, JSON config API, import, peer broadcast - so a station still sending
+    ``invert_control_direction`` during a rolling upgrade is understood rather
+    than accepted and silently discarded. A ``control_frame`` beside it wins.
     """
-    for old, new in _RENAMED_MARKER_KEYS:
-        if old in marker_data and new not in marker_data:
-            marker_data[new] = marker_data[old]
-            _warn_renamed_marker_key(old, new)
+    # invert_control_direction is stage axes, or when true the heading of a camera looking downstage.
+    if "invert_control_direction" in marker_data:
+        inverted = _coerce_bool(marker_data.pop("invert_control_direction"), False)
+        if "control_frame" not in marker_data:
+            marker_data["control_frame"] = "heading" if inverted else "stage"
+            if inverted:
+                marker_data.setdefault("control_heading", 180.0)
+            _warn_renamed_marker_key("invert_control_direction", "control_frame")
 
 
 def _warn_renamed_marker_key(old: str, new: str) -> None:
@@ -2900,85 +3673,182 @@ def config_to_toml_dict(config: AppConfig) -> dict[str, Any]:
     return data
 
 
-def save_config(config: AppConfig, path: str = "config.toml") -> None:
+def _read_whole(path: str) -> tuple[bytes, AppConfig] | None:
+    """The bytes of the config file at *path* and the config they hold; ``None`` when there is no file.
+
+    This is the one test of a file that reads whole: its bytes build a config.
+    An empty file raises ``ConfigFileEmptyError``, one that cannot be read,
+    does not parse or does not build ``ConfigFileUnreadableError``.
+    """
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise ConfigFileUnreadableError(f"Config file {path} could not be read: {error}", path) from error
+    # Blank loads as every default; an editor that truncates before it writes leaves one for a moment.
+    if not raw.strip():
+        raise ConfigFileEmptyError(f"Config file {path} is empty.", path)
+    try:
+        return raw, _config_from_data(path, tomllib.loads(raw.decode("utf-8")))
+    except Exception as error:
+        raise ConfigFileUnreadableError(f"Config file {path} could not be read: {error}", path) from error
+
+
+def read_config_whole(path: str) -> AppConfig | None:
+    """The config file at *path* as it reads whole, ``None`` when there is none; an empty or unreadable one raises."""
+    whole = _read_whole(path)
+    return None if whole is None else whole[1]
+
+
+def config_file_problem(path: str) -> ConfigFileUnreadableError | None:
+    """What keeps the config file at *path* from taking a save, or ``None``."""
+    try:
+        _read_whole(path)
+    except ConfigFileUnreadableError as error:
+        return error
+    return None
+
+
+def config_problem_kind(error: ConfigFileUnreadableError) -> str:
+    """``empty-restorable`` (a restart restores the backup), ``empty`` (a restart starts afresh) or ``unreadable``."""
+    if not isinstance(error, ConfigFileEmptyError):
+        return "unreadable"
+    return "empty" if _readable_backup(error.path) is None else "empty-restorable"
+
+
+_PROBLEM_WORDS = {
+    "empty-restorable": ("is empty", "Restart OpenFollow to restore the settings from the latest backup copy"),
+    "empty": ("is empty", "Restart OpenFollow to start again with default settings"),
+    "unreadable": ("could not be read", "Import a settings file to replace it"),
+}
+
+
+def config_problem_words(error: ConfigFileUnreadableError) -> tuple[str, str]:
+    """An operator's words for *error*: what is wrong with the settings file, and the one step that mends it."""
+    return _PROBLEM_WORDS[config_problem_kind(error)]
+
+
+def config_file_health(path: str) -> str:
+    """How the config file at *path* and its backup read, naming nothing they hold."""
+    problem = config_file_problem(path)
+    if problem is not None:
+        state = config_problem_words(problem)[0]
+    else:
+        state = "reads whole" if os.path.exists(path) else "missing"
+    backup = "backup reads whole" if _readable_backup(path) is not None else "no readable backup"
+    return f"{state}; {backup}"
+
+
+def save_config(config: AppConfig, path: str = "config.toml", *, replace_unreadable: bool = False) -> None:
     """Serialize the full config to a TOML file, overwriting existing content.
+
+    A file that is there but empty or unreadable is left alone and raises
+    ``ConfigFileUnreadableError``, unless *replace_unreadable*: the config
+    written was not read from it. Replacing one takes no snapshot, so the last
+    good ``.bak`` stays.
 
     Durable, atomic write: content is streamed to a temp file in the same
     directory, ``fsync``-ed, ``os.replace``-d into place, then the parent
     directory is ``fsync``-ed so the rename survives power loss. A crash leaves
-    either the old or new file intact, never a truncated one. The previous
-    config is snapshotted to ``config.toml.bak`` best-effort (a copy failure is
-    logged and swallowed); ``load_config`` recovers from it when the primary is
-    missing or unreadable.
+    either the old or new file intact, never a truncated one. The bytes the
+    check read are snapshotted to ``config.toml.bak`` the same way, best-effort
+    (a failure is logged and swallowed); ``load_config`` recovers from it when
+    the primary is missing or unreadable.
     """
-    data = config_to_toml_dict(config)
-    target = Path(path)
-    directory = target.parent if str(target.parent) else Path(".")
-    fd, tmp_path = tempfile.mkstemp(
-        prefix=target.name + ".",
-        suffix=".tmp",
-        dir=str(directory),
-    )
     try:
-        with os.fdopen(fd, "wb") as f:
-            tomli_w.dump(data, f)
-            f.flush()
-            os.fsync(f.fileno())
-        # Snapshot the current good config to ``<name>.bak`` before the swap
-        # so an unparseable primary can be recovered. Written atomically (temp
-        # + ``os.replace``) so a partial snapshot can't truncate the last
-        # recovery point. A backup failure is logged and swallowed.
-        if target.exists():
-            backup_path = target.with_name(target.name + ".bak")
-            try:
-                bak_fd, bak_tmp = tempfile.mkstemp(
-                    prefix=backup_path.name + ".",
-                    suffix=".tmp",
-                    dir=str(directory),
-                )
-                os.close(bak_fd)
-                try:
-                    shutil.copy2(target, bak_tmp)
-                    # copy2 copies the source's mode onto bak_tmp, so a
-                    # world-readable primary would yield a world-readable .bak
-                    # despite mkstemp's 0o600. Re-tighten – the .bak holds the
-                    # same web_pin secret as the primary.
-                    os.chmod(bak_tmp, 0o600)
-                    # fsync the snapshot's contents before the rename so power
-                    # loss can't leave an empty/truncated ``.bak``.
-                    tmp_fd = os.open(bak_tmp, os.O_RDONLY)
-                    try:
-                        os.fsync(tmp_fd)
-                    finally:
-                        os.close(tmp_fd)
-                    os.replace(bak_tmp, backup_path)
-                    _fsync_dir(directory)
-                except OSError:
-                    # Drop the partial temp so a failed backup doesn't litter
-                    # ``<name>.bak.*.tmp`` next to the config, then re-raise to
-                    # the best-effort handler below.
-                    try:
-                        os.unlink(bak_tmp)
-                    except OSError:  # pragma: no cover - unlink of our own temp
-                        pass
-                    raise
-            except OSError:
-                # Swallowed (the save itself is fine) but log with the full
-                # path + traceback – the cause (permissions, disk full, …) is
-                # exactly what's needed to diagnose a missing .bak later.
-                logger.warning(
-                    "Could not write config backup %s; continuing",
-                    backup_path,
-                    exc_info=True,
-                )
-        os.replace(tmp_path, path)
-        _fsync_dir(directory)
-    except Exception:
+        whole = _read_whole(path)
+    except ConfigFileUnreadableError:
+        if not replace_unreadable:
+            raise
+        whole = None
+    current = None if whole is None else whole[0]
+    data = tomli_w.dumps(config_to_toml_dict(config)).encode("utf-8")
+    target = Path(path)
+    if current is not None:
+        backup_path = target.with_name(target.name + ".bak")
         try:
-            os.unlink(tmp_path)
+            _replace_file(backup_path, current)
         except OSError:
-            pass
-        raise
+            # The save itself is fine; the cause is what a missing .bak is later diagnosed from.
+            logger.warning("Could not write config backup %s; continuing", backup_path, exc_info=True)
+    _replace_file(target, data)
+
+
+def save_config_change(path: str, running: AppConfig, change: Callable[[AppConfig], None]) -> None:
+    """Make ``change`` in ``running`` and in the config file as it is on disk now.
+
+    For a writer whose running config may lag the file: only what ``change`` sets is written, under
+    ``config_write_lock``, so a save another thread made in the meantime survives. With no file yet,
+    ``running`` is written whole.
+    """
+    change(running)
+    with config_write_lock:
+        current = read_config_whole(path)
+        if current is None:
+            save_config(running, path)
+            return
+        change(current)
+        save_config(current, path)
+
+
+def save_config_fields(
+    config: AppConfig,
+    path: str,
+    names: Iterable[str],
+    *,
+    replace_unreadable: bool = False,
+) -> None:
+    """Write the named fields of *config* onto the file at *path*; every other field keeps the file's value.
+
+    One dot addresses a sub-config field (``trigger_zones.show_overlay``). A
+    missing file is written from *config* whole. An empty or unreadable file
+    raises and is left alone, or is replaced by *config* whole with
+    *replace_unreadable*.
+    """
+    with config_write_lock:
+        try:
+            on_disk = read_config_whole(path)
+        except ConfigFileUnreadableError:
+            if not replace_unreadable:
+                raise
+            logger.warning("Config file %s could not be read - replacing it with the running config.", path)
+            save_config(config, path, replace_unreadable=True)
+            return
+        if on_disk is None:
+            save_config(config, path)
+            return
+        for name in names:
+            parent, _, attr = name.rpartition(".")
+            source = getattr(config, parent) if parent else config
+            target = getattr(on_disk, parent) if parent else on_disk
+            setattr(target, attr, getattr(source, attr))
+        save_config(on_disk, path)
+
+
+def park_changes_applied(parked: list[int], changes: Mapping[int, bool]) -> list[int]:
+    """*parked* with each marker in *changes* parked (``True``) or unparked (``False``), order kept."""
+    kept = [mid for mid in parked if changes.get(mid, True)]
+    return kept + [mid for mid, on in changes.items() if on and mid not in kept]
+
+
+def save_park_changes(config: AppConfig, path: str, changes: Mapping[int, bool]) -> bool:
+    """Apply *changes* to the parked markers of the file at *path* in one read-modify-write under the lock.
+
+    The file's parked and controlled sets are the base, so a park another writer saved since *config*
+    was read survives. A missing file is written from a copy of *config* with the changes applied; an
+    empty or unreadable one raises. Returns whether the file was written.
+    """
+    with config_write_lock:
+        on_disk = read_config_whole(path)
+        target = copy.deepcopy(config) if on_disk is None else on_disk
+        parked = parked_within(target.controlled_marker_ids, park_changes_applied(target.parked_marker_ids, changes))
+        if on_disk is not None and parked == on_disk.parked_marker_ids:
+            return False
+        target.parked_marker_ids = parked
+        save_config(target, path)
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -3044,6 +3914,18 @@ def _video_config_changed(old_config: AppConfig, new_config: AppConfig) -> bool:
     input_cls = get_input_class(new_config.video_source_type)
     # None only for a hand-edited config.toml naming a removed plugin.
     return input_cls is not None and input_cls.config_changed(old_config, new_config)
+
+
+def _inactive_video_field_names(running_type: str) -> set[str]:
+    """Stored video input fields that the input *running_type* does not declare."""
+    from openfollow.video.inputs import get_input_class, get_registry
+
+    stored = {f.name for f in fields(AppConfig)}
+    names = {f.name for cls in get_registry().values() for f in cls.config_fields()} & stored
+    cls = get_input_class(running_type)
+    if cls is not None:
+        names -= {f.name for f in cls.config_fields()}
+    return names
 
 
 def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> bool:
@@ -3193,6 +4075,14 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
     # looping on subsequent passes.
     if new_config.web_pin != app._config.web_pin:
         app._config.web_pin = new_config.web_pin
+    # Read live by the Network screen, the labels and the video wording; the
+    # pins it clears arrive through their own sections above.
+    if new_config.network_mode != app._config.network_mode:
+        app._config.network_mode = new_config.network_mode
+    # The listener moves only on a restart, but a whole-config save must not
+    # write a cleared pin back, and the Network screen reads the saved one.
+    if new_config.web_bind_iface != app._config.web_bind_iface:
+        app._config.web_bind_iface = new_config.web_bind_iface
     # Read live by the HUD's outage rows and the Network screen; nothing to rebind.
     if new_config.interface_labels != app._config.interface_labels:
         app._config.interface_labels = dict(new_config.interface_labels)
@@ -3287,10 +4177,22 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
             app._config.video_source_type = old_video_source_type
             for name, value in old_field_values.items():
                 setattr(app._config, name, value)
+    # The swap commits the video pin only for an input it rebuilds; a pin Simple cleared may need
+    # no rebuild, and must not stay in the running config for a whole-config save to write back.
+    if not getattr(app, "_video_swap_owed", False) and new_config.video_input_iface != app._config.video_input_iface:
+        app._config.video_input_iface = new_config.video_input_iface
+
+    # The other inputs' fields drive nothing until their input runs, so they are
+    # mirrored as they are: a later switch to one is built from the file's values.
+    for name in _inactive_video_field_names(app._config.video_source_type):
+        setattr(app._config, name, getattr(new_config, name))
 
     # Grid and camera updates (no renderer needed - Cairo overlay reads from config)
     if new_config.grid != app._config.grid:
         app._config.grid = new_config.grid
+
+    if new_config.ground_grid != app._config.ground_grid:
+        app._config.ground_grid = new_config.ground_grid
 
     if new_config.camera != app._config.camera:
         app._camera = Camera.from_config(new_config.camera)
@@ -3305,11 +4207,18 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
     # web section save, the debounced self-persist, an import) must never overwrite it.
     # Startup ``load_config`` seeds the initial value from disk; it is not reloaded after.
 
-    # ``unit_system`` is read live every frame by ``sync_ui_config`` and
-    # ``show_experimental_features`` gates the web UI off ``app._config``; a
-    # direct swap is enough (the save routes own the mouse/detection cascade).
+    # ``unit_system`` is read live every frame by ``sync_ui_config``; the
+    # Features list is read live too, and the services it gates are re-applied
+    # by their blocks below.
+    old_ui = app._config.ui
     if new_config.ui != app._config.ui:
         app._config.ui = new_config.ui
+
+    def _flipped(key: str) -> bool:
+        return old_ui.feature_on(key) != app._config.ui.feature_on(key)
+
+    if _flipped("psn_input"):
+        _apply("psn_input", app._runtime_services.apply_psn_input_change)
 
     # Network backend selection happens once at startup, so a change only
     # takes effect on restart. Mirror it in-memory so the web UI re-render and
@@ -3317,7 +4226,8 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
     if new_config.network != app._config.network:
         app._config.network = new_config.network
 
-    if new_config.controlled_marker_ids != app._config.controlled_marker_ids:
+    controlled_changed = new_config.controlled_marker_ids != app._config.controlled_marker_ids
+    if controlled_changed:
         # Defense-in-depth: filter ``< 1`` ids again (this path can bypass
         # ``load_config``'s filter via programmatic apply). ``Marker.__init__``
         # raises for id < 1 and id 0 is the reserved "ignored" wire value.
@@ -3383,7 +4293,9 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
                 # controlled_ids list and is only updated to a new value
                 # when removed; integration tests cover the True arm.
                 if app._selected_id not in new_ids:  # pragma: no branch
-                    app._selected_id = app._controlled_ids[0] if app._controlled_ids else None
+                    from openfollow.input.parking import is_parked
+
+                    app._selected_id = next((m for m in app._controlled_ids if not is_parked(app, m)), None)
                 receiver.set_ignore_ids(new_ids)
                 app._config.controlled_marker_ids = filtered_controlled
 
@@ -3420,6 +4332,19 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         ]
         app._viewer_ids = list(filtered_viewer)
         app._config.viewer_marker_ids = filtered_viewer
+
+    # Against the committed controlled set, which may also have moved the selection onto a parked marker.
+    parked = parked_within(app._config.controlled_marker_ids, new_config.parked_marker_ids)
+    if controlled_changed or parked != app._config.parked_marker_ids:
+        from openfollow.input.parking import set_parked
+
+        old_parked = app._config.parked_marker_ids
+        app._config.parked_marker_ids = parked
+        _apply(
+            "parked_marker_ids",
+            lambda: set_parked(app, parked),
+            on_failure=lambda: setattr(app._config, "parked_marker_ids", old_parked),
+        )
 
     if new_config.controller != app._config.controller:
         mouse_was_enabled = app._config.controller.mouse_enabled
@@ -3472,6 +4397,10 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         if app._input_manager is not None:  # pragma: no branch
             app._input_manager.restart_operator_messages()
 
+    # Read live by the remote routes and the frame loop, which lets go of every hold while it is off.
+    if new_config.touch_remote != app._config.touch_remote:
+        app._config.touch_remote = new_config.touch_remote
+
     if new_config.otp_output != app._config.otp_output:
         old_otp_output = app._config.otp_output
         app._config.otp_output = new_config.otp_output
@@ -3487,7 +4416,7 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         ):
             app._config.otp_output = old_otp_output
 
-    if new_config.rttrpm_output != app._config.rttrpm_output:
+    if new_config.rttrpm_output != app._config.rttrpm_output or _flipped("rttrpm"):
         old_rttrpm_output = app._config.rttrpm_output
         app._config.rttrpm_output = new_config.rttrpm_output
         # Same lifecycle ownership as OTP: orchestrator nulls the
@@ -3495,7 +4424,7 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         if not _apply(
             "rttrpm_output",
             lambda: app._runtime_services.apply_rttrpm_output_change(
-                new_config.rttrpm_output,
+                feature_gated(new_config.rttrpm_output, app._config, "rttrpm"),
             ),
         ):
             app._config.rttrpm_output = old_rttrpm_output
@@ -3513,7 +4442,7 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
     # The trigger_zones block below reloads the zone engine too; when zones also
     # changed, let that block own the single reload so a combined edit doesn't
     # reload the engine twice in one pass.
-    trigger_zones_changed = new_config.trigger_zones != app._config.trigger_zones
+    trigger_zones_changed = new_config.trigger_zones != app._config.trigger_zones or _flipped("zones")
     if osc_transmitters_changed or osc_destinations_changed:
         old_osc_transmitters = app._config.osc_transmitters
         old_osc_destinations = app._config.osc_destinations
@@ -3523,7 +4452,7 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         def _reload_zone_destinations(destinations: OscDestinationsConfig) -> None:
             zone_engine = getattr(app._runtime_services, "_zone_engine", None)
             if zone_engine is not None:
-                zone_engine.reload_config(app._config.trigger_zones, destinations)
+                zone_engine.reload_config(feature_gated(app._config.trigger_zones, app._config, "zones"), destinations)
 
         def _revert_osc_routing() -> None:
             # Restore config first, then re-stage the old routing into the
@@ -3551,9 +4480,18 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
             if not trigger_zones_changed:
                 _reload_zone_destinations(new_config.osc_destinations)
 
-    if new_config.detection != app._config.detection:
+    if new_config.detection != app._config.detection or _flipped("detection"):
         old_detection = app._config.detection
-        new_enabled = new_config.detection.enabled
+        # A new tracking mode or Follow marker is a fresh start for the pin: it no longer waits for a selection.
+        if _flipped("detection") or (old_detection.enabled, old_detection.pin_mode, old_detection.pin_marker_id) != (
+            new_config.detection.enabled,
+            new_config.detection.pin_mode,
+            new_config.detection.pin_marker_id,
+        ):
+            app._pin_waits_for_selection = False
+        # What the detector runs: off while the Person detection feature is off.
+        new_detection = feature_gated(new_config.detection, app._config, "detection")
+        new_enabled = new_detection.enabled
         # Two live-apply paths:
         #   - ``apply_detection_change`` for on→on reload, on→off, off→off –
         #     served by the in-process worker's staged-config drain.
@@ -3561,24 +4499,31 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         #     (the detection appsink caps are pinned at build time from
         #     ``PersonDetector.input_resolution``): off→on, unavailable→on
         #     (re-probe a backend that failed to load), and ``inference_size``
-        #     change while enabled.
+        #     change while enabled. An edit while a detector is still being
+        #     built goes to a new build: the running detector is about to go.
         detector_ref = getattr(app._runtime_services, "_person_detector", None)
         detector_runnable = detector_ref is not None and getattr(detector_ref, "available", True)
         inference_size_changed = old_detection.inference_size != new_config.detection.inference_size
-        needs_swap = new_enabled and (not detector_runnable or inference_size_changed)
+        needs_swap = new_enabled and (
+            not detector_runnable or inference_size_changed or app._runtime_services.detector_build_pending
+        )
         app._config.detection = new_config.detection
         if needs_swap:
             # Rebuild path. ``swap_detector`` owns its own rollback –
             # on failure it restores the prior detector against a
             # rebuilt pipeline (or clears the reference if rollback
-            # also fails). The dispatcher only reverts stored config;
-            # an ``on_failure`` clear here would erase a successful
-            # orchestrator-side rollback.
+            # also fails), so the dispatcher only reverts stored config.
+            # The detector is built off the frame loop; a failure after this
+            # returns reverts and is retried on the next poll, as a raise is.
+            retry_from = app._config_mtime
+
+            def _swap_failed() -> None:
+                app._config.detection = old_detection
+                app._config_mtime = min(app._config_mtime, retry_from)
+
             if not _apply(
                 "detection_swap",
-                lambda: app._runtime_services.swap_detector(
-                    new_config.detection,
-                ),
+                lambda: app._runtime_services.swap_detector(new_detection, on_failure=_swap_failed),
             ):
                 app._config.detection = old_detection
         else:
@@ -3590,9 +4535,7 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
             # nothing else reads.
             if not _apply(
                 "detection",
-                lambda: app._runtime_services.apply_detection_change(
-                    new_config.detection,
-                ),
+                lambda: app._runtime_services.apply_detection_change(new_detection),
                 on_failure=lambda: setattr(
                     app._runtime_services,
                     "_person_detector",
@@ -3601,14 +4544,14 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
             ):
                 app._config.detection = old_detection
 
-    if new_config.trigger_zones != app._config.trigger_zones:
+    if trigger_zones_changed:
         app._config.trigger_zones = new_config.trigger_zones
         zone_engine = getattr(app._runtime_services, "_zone_engine", None)
         if zone_engine is not None:
             # Use the committed destinations (``app._config``) so a zones edit
             # stays coherent with an OSC-routing apply that was reverted above.
             zone_engine.reload_config(
-                new_config.trigger_zones,
+                feature_gated(new_config.trigger_zones, app._config, "zones"),
                 app._config.osc_destinations,
             )
         # The endpoint is resolved from ``osc_destinations`` at send time.
@@ -3617,13 +4560,21 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         # destination and can't be safely evicted without per-caller
         # ownership tracking.
 
+    paths_changed = new_config.paths != app._config.paths
+    if paths_changed:
+        app._config.paths = new_config.paths
+    engine = getattr(app, "_paths", None)
+    paths_on = app._config.ui.feature_on("paths")
+    if engine is not None and (paths_changed or engine.enabled != paths_on):
+        engine.reload(app._config.paths, enabled=paths_on)
+
     # The MIDI ``apply_config`` is idempotent (same device on same patch is a
     # no-op), so re-applying on every reload pass is safe.
-    if new_config.midi != app._config.midi:
+    if new_config.midi != app._config.midi or _flipped("midi"):
         app._config.midi = new_config.midi
         midi = getattr(app._runtime_services, "_midi", None)
         if midi is not None:
-            midi.apply_config(new_config.midi.patches)
+            midi.apply_config(new_config.midi.patches if app._config.ui.feature_on("midi") else [])
 
     # The bus's ``apply_config`` preserves current runtime values (only startup
     # resets to defaults) and resets pickup state for any fader whose source

@@ -10,6 +10,7 @@ is derived from position deltas.
 
 from __future__ import annotations
 
+import functools
 import logging
 import socket
 import threading
@@ -20,67 +21,96 @@ import pypsn
 
 from openfollow.net_utils import join_multicast_group_on_iface
 from openfollow.psn.marker import Marker
+from openfollow.receive_gate import ReceiveGate
 
 logger = logging.getLogger(__name__)
 
 
 class _RobustReceiver(pypsn.Receiver):  # type: ignore[misc]
-    """pypsn.Receiver with proper exception handling.
+    """pypsn.Receiver with proper exception handling and a prompt stop.
 
-    The upstream implementation prints socket timeouts to stdout and runs
-    parse_psn_packet/callback outside the try/except, so a bad packet or
-    callback error crashes the thread.  This subclass fixes both issues.
+    The upstream implementation prints socket timeouts to stdout, runs
+    parse_psn_packet/callback outside the try/except, and its stop waits out a
+    2 s read. This subclass reads through a :class:`ReceiveGate`, so a stop
+    from the main loop returns at once.
     """
 
     def __init__(
-        self, callback: Callable[..., None], ip_addr: str = "0.0.0.0", mcast_port: int = 56565, iface: str = ""
+        self,
+        callback: Callable[..., None],
+        ip_addr: str,
+        mcast_port: int,
+        iface: str = "",
+        own_source: Callable[[], tuple[str, int] | None] = lambda: None,
     ) -> None:
-        if not iface:
+        self._own_source = own_source
+        if iface:
+            # pypsn joins its group by address; a pinned interface is joined by index.
+            threading.Thread.__init__(self)
+            self.callback = callback
+            self.socket = _pinned_socket(ip_addr, mcast_port, iface)
+        else:
             super().__init__(callback=callback, ip_addr=ip_addr, mcast_port=mcast_port)
-            return
-        # pypsn joins its group by address; a pinned interface is joined by index.
-        threading.Thread.__init__(self)
-        self.callback = callback
-        self.running = True
-        self.socket = _pinned_socket(ip_addr, mcast_port, iface)
-        self.socket.settimeout(2)
+        self._gate: ReceiveGate | None = None
 
-    # Bound so a caller on the GTK thread can't stall the render loop. pypsn's
-    # own ``stop()`` does a plain ``self.join()`` with no timeout while ``run``
-    # is blocked in ``recvfrom``; closing the fd does not reliably wake a
-    # thread already parked there, so the join waits out the socket timeout.
-    _JOIN_TIMEOUT_S = 3.0
+    # Only a callback that hangs can hold this up: the gate ends the wait itself.
+    _JOIN_TIMEOUT_S = 1.0
+
+    def start(self) -> None:
+        """Start the receive thread; on failure release the gate and the socket, then raise."""
+        if self.socket is None:
+            return  # pypsn opened none: there is nothing to read
+        try:
+            # Read only once the gate reports data, so a read never blocks.
+            self.socket.setblocking(False)
+            self._gate = ReceiveGate(self.socket)
+            super().start()
+        except BaseException:
+            gate, self._gate = self._gate, None
+            if gate is not None:
+                gate.close()
+            self.socket.close()
+            raise
 
     def stop(self) -> None:
-        """Signal the loop to end and join it, but never block indefinitely."""
-        self.running = False
+        """End the loop and close the socket, releasing its membership. Never waits on a read."""
+        if self._gate is not None:
+            self._gate.stop()
+            self.join(timeout=self._JOIN_TIMEOUT_S)
+            if self.is_alive():
+                logger.warning("PSN receiver thread did not stop within %.0fs", self._JOIN_TIMEOUT_S)
         if self.socket is not None:
             try:
                 self.socket.close()
             except OSError:
                 pass
-        self.join(timeout=self._JOIN_TIMEOUT_S)
-        if self.is_alive():
-            logger.warning("PSN receiver thread did not stop within %.0fs", self._JOIN_TIMEOUT_S)
 
     def run(self) -> None:
-        if self.socket is None:
+        gate = self._gate
+        if gate is None:
             return
-        while self.running:
+        try:
+            self._receive(gate)
+        finally:
+            gate.close()
+
+    def _receive(self, gate: ReceiveGate) -> None:
+        while gate.wait():
             try:
                 # Max UDP payload: a PSN data packet exceeds 1500 B at ~15
                 # trackers, and a short read truncates the tail → struct.error →
                 # the whole frame is dropped. Size to the largest datagram.
                 data, addr = self.socket.recvfrom(65535)
-            except TimeoutError:
-                continue  # no data within timeout – normal, keep looping
+            except BlockingIOError:
+                continue  # readiness without a datagram
             except OSError:
-                if not self.running:
-                    break  # socket was closed by stop()
                 logger.debug("PSN recv socket error", exc_info=True)
                 continue
             except Exception:
                 logger.debug("PSN recv unexpected error", exc_info=True)
+                continue
+            # This station's own output, looped back: dropped before it is decoded.
+            if addr[:2] == self._own_source():
                 continue
 
             try:
@@ -129,6 +159,7 @@ class PsnReceiver:
     *source_ip* binds the multicast socket to a specific network interface.
     Leave empty to listen on all interfaces (default behaviour). *source_iface*
     names that interface, so the membership is taken on it by index.
+    While not *enabled* (the PSN input feature is off) it never binds.
     """
 
     def __init__(
@@ -137,8 +168,14 @@ class PsnReceiver:
         ignore_ids: list[int] | None = None,
         source_ip: str = "",
         source_iface: str = "",
+        *,
+        enabled: bool = True,
+        own_source: Callable[[], tuple[str, int] | None] = lambda: None,
     ) -> None:
         self._port = port
+        # Where this station's own PSN output comes from, read per packet.
+        self._own_source = own_source
+        self._enabled = enabled
         # Strip whitespace; empty/whitespace-only → listen on all interfaces.
         self._source_ip = source_ip.strip()
         self._source_iface = source_iface.strip()
@@ -152,15 +189,38 @@ class PsnReceiver:
         self._wire_speed_sender: dict[int, str] = {}
         self._last_evict_sweep: float = 0.0
         self._receiver: pypsn.Receiver | None = None
+        # The running receive thread's token; a packet carrying any other is dropped.
+        self._generation: object | None = None
+
+    @property
+    def enabled(self) -> bool:
+        """Whether the receiver may listen at all."""
+        return self._enabled
+
+    def set_enabled(self, enabled: bool) -> None:
+        """Allow or forbid listening; forbidding stops it and forgets every received marker."""
+        self._enabled = enabled
+        if enabled:
+            return
+        self.stop()
+        with self._lock:
+            self._markers.clear()
+            self._last_seen.clear()
+            self._last_pos.clear()
+            self._wire_speed_sender.clear()
 
     def start(self) -> None:
-        """Begin listening for PSN packets on the multicast group."""
+        """Begin listening for PSN packets on the multicast group; a no-op while not enabled."""
+        if not self._enabled:
+            return
+        generation = object()
         try:
-            self._receiver = _RobustReceiver(
-                callback=self._on_packet,
+            receiver = _RobustReceiver(
+                callback=functools.partial(self._on_packet, generation=generation),
                 ip_addr=self._source_ip or "0.0.0.0",
                 mcast_port=self._port,
                 iface=self._source_iface,
+                own_source=self._own_source,
             )
         except OSError as exc:
             logger.error(
@@ -168,11 +228,21 @@ class PsnReceiver:
                 exc,
             )
             return
-        self._receiver.daemon = True
-        self._receiver.start()
+        receiver.daemon = True
+        try:
+            receiver.start()
+        except (OSError, RuntimeError) as exc:
+            # A full fd table or thread table; the receiver has released its socket.
+            logger.error("PSN receiver could not start: %s. PSN input disabled.", exc)
+            return
+        with self._lock:
+            self._generation = generation
+        self._receiver = receiver
 
     def stop(self) -> None:
         """Stop listening and release the receiver thread."""
+        with self._lock:
+            self._generation = None
         if self._receiver is not None:
             self._receiver.stop()
             self._receiver = None
@@ -184,12 +254,17 @@ class PsnReceiver:
         return self._source_ip
 
     def rebind(self, source_ip: str, *, source_iface: str | None = None) -> None:
-        """Recreate socket bound to new interface; raises on failure. ``source_iface=None`` keeps the name."""
+        """Recreate socket bound to new interface; raises on failure. ``source_iface=None`` keeps the name.
+
+        While not enabled it only records the interface.
+        """
         self.stop()
         # Strip whitespace same as __init__.
         self._source_ip = source_ip.strip()
         if source_iface is not None:
             self._source_iface = source_iface.strip()
+        if not self._enabled:
+            return
         self.start()
         if self._receiver is None:
             raise OSError(
@@ -197,8 +272,11 @@ class PsnReceiver:
             )
 
     def get_marker(self, marker_id: int) -> Marker | None:
-        """Return a received marker by ID, or ``None``."""
+        """Return a received marker by ID, or ``None`` once it has been silent past the TTL."""
         with self._lock:
+            # Swept on read too: this station's own packets are never decoded,
+            # so with no peer left sending, no packet would ever sweep.
+            self._sweep_if_due_locked(time.monotonic())
             return self._markers.get(marker_id)
 
     def is_marker_online(self, marker_id: int, timeout: float = 2.0) -> bool:
@@ -212,18 +290,22 @@ class PsnReceiver:
         with self._lock:
             self._ignore_ids = set(ignore_ids)
 
-    def _on_packet(self, data: object, sender: str = "") -> None:
+    def _on_packet(self, data: object, sender: str = "", *, generation: object | None = None) -> None:
         """Callback invoked by pypsn on each received packet.
 
         *sender* is the source address of the datagram; it scopes the wire-speed
         decision to one station so a second station publishing the same tracker
-        id cannot claim the first one's trust.
+        id cannot claim the first one's trust. *generation* is the receive
+        thread's token: once that thread is stopped its packets are dropped, so
+        nothing it read lands after :meth:`stop` returns.
         """
         try:
             if not isinstance(data, pypsn.PsnDataPacket):
                 return
             # Acquire lock once for the entire batch of marker updates.
             with self._lock:
+                if generation is not None and generation is not self._generation:
+                    return
                 # ``data.trackers`` and ``t.tracker_id`` are pypsn's
                 # wire-protocol-derived names; our domain layer
                 # translates them into Marker instances at this seam.
@@ -231,9 +313,7 @@ class PsnReceiver:
                 # together, so they share an arrival time. Local and monotonic -
                 # not comparable to the sender-timed stamp the marker carries.
                 now = time.monotonic()
-                if now - self._last_evict_sweep >= _EVICT_SWEEP_INTERVAL_S:
-                    self._last_evict_sweep = now
-                    self._evict_stale_markers_locked(now)
+                self._sweep_if_due_locked(now)
                 for t in data.trackers:
                     # tracker_id 0 is the reserved "ignored" id on the PSN wire;
                     # Marker(0) raises, which would abort the loop and drop every
@@ -290,6 +370,12 @@ class PsnReceiver:
                     self._last_seen[tid] = now
         except Exception:
             logger.debug("Malformed PSN packet ignored", exc_info=True)
+
+    def _sweep_if_due_locked(self, now: float) -> None:
+        """Evict stale markers at most every ``_EVICT_SWEEP_INTERVAL_S``. Caller holds ``_lock``."""
+        if now - self._last_evict_sweep >= _EVICT_SWEEP_INTERVAL_S:
+            self._last_evict_sweep = now
+            self._evict_stale_markers_locked(now)
 
     def _evict_stale_markers_locked(self, now: float) -> None:
         """Drop markers silent longer than ``_MARKER_TTL_S``. Caller holds ``_lock``."""

@@ -8,10 +8,11 @@ import errno
 import json
 import os
 import pwd
+import shutil
 import stat
 import subprocess
 import tarfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,12 +21,17 @@ import pytest
 import openfollow
 from openfollow.privilege import settings_backup
 from openfollow.privilege.settings_backup import archive_name, list_archives, read_record, run_backup, station_label
+from openfollow.web import lens_calibrations
 
 pytestmark = pytest.mark.unit
 
 _REPO_ROOT = Path(openfollow.__file__).resolve().parent.parent
 _DEBIAN = _REPO_ROOT / "packaging" / "debian"
-_NOW = datetime(2026, 9, 29, 18, 0, 0, tzinfo=timezone.utc)
+_NOW = datetime(2026, 9, 29, 18, 0, 0, tzinfo=UTC)
+_LENS = (
+    '{"name": "Zoom wide", "k1": -0.2, "k2": 0.03, "cx": 0.0, "cy": 0.0, '
+    '"saved": "2026-09-28", "openfollow_version": "0.6.0"}\n'
+)
 
 
 def _station(tmp_path: Path, config: str = 'psn_system_name = "OpenFollow brave-otter"\n') -> Path:
@@ -36,6 +42,8 @@ def _station(tmp_path: Path, config: str = 'psn_system_name = "OpenFollow brave-
     (state / "templates" / "user" / "grid.oftemplate").write_text("grid", encoding="utf-8")
     (state / "templates" / "system").mkdir()
     (state / "templates" / "system" / "stock.oftemplate").write_text("stock", encoding="utf-8")
+    (state / "lens-calibrations").mkdir()
+    (state / "lens-calibrations" / "zoom-wide.json").write_text(_LENS, encoding="utf-8")
     return state
 
 
@@ -106,14 +114,21 @@ def test_archive_name_is_stamped_in_utc() -> None:
 # --- archive contents ---------------------------------------------------------
 
 
-def test_the_archive_holds_the_three_sources_and_a_manifest(tmp_path: Path) -> None:
+def test_the_archive_holds_the_four_sources_and_a_manifest(tmp_path: Path) -> None:
     state = _station(tmp_path)
     record = run_backup(state, "0.4.3", "0.4.4", now=_NOW)
     assert record.error == ""
     assert record.archive == "brave-otter-v0.4.3-20260929T180000Z.ofbackup"
     members = _members(state / "backups" / record.archive)
-    assert set(members) == {"config.toml", "markers.toml", "templates/user/grid.oftemplate", "manifest.json"}
+    assert set(members) == {
+        "config.toml",
+        "markers.toml",
+        "templates/user/grid.oftemplate",
+        "lens-calibrations/zoom-wide.json",
+        "manifest.json",
+    }
     assert members["config.toml"] == (state / "config.toml").read_bytes()
+    assert members["lens-calibrations/zoom-wide.json"] == _LENS.encode()
     manifest = json.loads(members["manifest.json"])
     assert manifest["from"] == "0.4.3"
     assert manifest["to"] == "0.4.4"
@@ -144,7 +159,7 @@ def test_an_absolute_marker_catalog_path_is_used_as_is(tmp_path: Path) -> None:
     assert _members(state / "backups" / record.archive)["markers.toml"] == b"abs"
 
 
-@pytest.mark.parametrize("missing", ["config.toml", "markers.toml", "templates/user"])
+@pytest.mark.parametrize("missing", ["config.toml", "markers.toml", "templates/user", "lens-calibrations"])
 def test_a_missing_source_is_skipped_and_listed(tmp_path: Path, missing: str) -> None:
     state = _station(tmp_path)
     target = state / missing
@@ -181,6 +196,101 @@ def test_a_symlinked_source_is_not_followed(tmp_path: Path) -> None:
     record = run_backup(state, "0.4.3", "0.4.4", now=_NOW)
     members = _members(state / "backups" / record.archive)
     assert b"secret" not in members.values()
+
+
+def test_an_empty_lens_folder_is_archived_as_a_folder(tmp_path: Path) -> None:
+    state = _station(tmp_path)
+    (state / "lens-calibrations" / "zoom-wide.json").unlink()
+    record = run_backup(state, "0.4.3", "0.4.4", now=_NOW)
+    with tarfile.open(state / "backups" / record.archive, "r:gz") as tar:
+        assert tar.getmember("lens-calibrations").isdir()
+        assert not [m for m in tar.getnames() if m.startswith("lens-calibrations/")]
+    assert json.loads(_members(state / "backups" / record.archive)["manifest.json"])["missing"] == {}
+
+
+def test_a_lens_folder_holding_more_than_files_is_still_archived(tmp_path: Path) -> None:
+    secret = tmp_path / "secret"
+    secret.write_text("secret", encoding="utf-8")
+    state = _station(tmp_path)
+    lens = state / "lens-calibrations"
+    (lens / "nested").mkdir()
+    (lens / "nested" / "copy.json").write_text("{}", encoding="utf-8")
+    (lens / "linked.json").symlink_to(secret)
+    os.mkfifo(lens / "pipe")
+    record = run_backup(state, "0.4.3", "0.4.4", now=_NOW)
+    assert record.error == ""
+    members = _members(state / "backups" / record.archive)
+    assert members["lens-calibrations/zoom-wide.json"] == _LENS.encode()
+    assert members["lens-calibrations/nested/copy.json"] == b"{}"
+    assert b"secret" not in members.values()
+
+
+def test_a_lens_path_that_is_a_symlink_is_not_followed(tmp_path: Path) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "secret.json").write_text("secret", encoding="utf-8")
+    state = _station(tmp_path)
+    shutil.rmtree(state / "lens-calibrations")
+    (state / "lens-calibrations").symlink_to(elsewhere)
+    record = run_backup(state, "0.4.3", "0.4.4", now=_NOW)
+    members = _members(state / "backups" / record.archive)
+    assert not any(name.startswith("lens-calibrations") for name in members)
+    assert "lens-calibrations" in json.loads(members["manifest.json"])["missing"]
+
+
+# --- restoring by hand --------------------------------------------------------
+
+# The command docs/PACKAGING.md gives, run as the service user.
+_RESTORE = ["tar", "-xzf", "{archive}", "-C", "{state}", "--exclude=manifest.json", "--exclude=markers.toml"]
+
+
+def _restore(archive: Path, state: Path) -> subprocess.CompletedProcess[str]:
+    args = [a.format(archive=archive, state=state) for a in _RESTORE]
+    return subprocess.run(args, capture_output=True, text=True, timeout=30, check=False)
+
+
+def test_the_restore_command_is_the_one_documented() -> None:
+    packaging = (_REPO_ROOT / "docs" / "PACKAGING.md").read_text(encoding="utf-8")
+    documented = " ".join(_RESTORE).format(
+        archive="/var/lib/openfollow/backups/<file>.ofbackup", state="/var/lib/openfollow"
+    )
+    assert f"sudo -u openfollow {documented}" in packaging
+
+
+def test_a_restore_brings_the_saved_lenses_back(tmp_path: Path) -> None:
+    state = _station(tmp_path)
+    store = lens_calibrations.calibrations_dir(state / "config.toml")
+    lens_calibrations.save_calibration(
+        store, "Zoom tele", -0.05, 0.0, 0.0, 0.0, "0.6.0", _NOW.date(), width=1920, height=1080
+    )
+    record = run_backup(state, "0.4.3", "0.4.4", now=_NOW)
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    result = _restore(state / "backups" / record.archive, fresh)
+    assert result.returncode == 0, result.stderr
+    assert (fresh / "config.toml").read_bytes() == (state / "config.toml").read_bytes()
+    assert (fresh / "templates" / "user" / "grid.oftemplate").read_text(encoding="utf-8") == "grid"
+    listed = lens_calibrations.list_calibrations(lens_calibrations.calibrations_dir(fresh / "config.toml"))
+    assert [(c.name, c.width) for c in listed] == [("Zoom tele", 1920), ("Zoom wide", None)]
+    assert not (fresh / "manifest.json").exists()
+    assert not (fresh / "markers.toml").exists()
+
+
+def test_a_backup_made_before_lenses_were_saved_still_restores(tmp_path: Path) -> None:
+    state = _station(tmp_path)
+    old = tmp_path / "old.ofbackup"
+    with tarfile.open(old, "w:gz") as tar:
+        tar.add(state / "config.toml", arcname="config.toml")
+        tar.add(state / "markers.toml", arcname="markers.toml")
+        tar.add(state / "templates" / "user", arcname="templates/user")
+        tar.add(state / "config.toml", arcname="manifest.json")
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    result = _restore(old, fresh)
+    assert result.returncode == 0, result.stderr
+    assert (fresh / "config.toml").read_bytes() == (state / "config.toml").read_bytes()
+    assert (fresh / "templates" / "user" / "grid.oftemplate").read_text(encoding="utf-8") == "grid"
+    assert not (fresh / "lens-calibrations").exists()
 
 
 # --- secrets ------------------------------------------------------------------
@@ -227,6 +337,38 @@ def test_retention_ignores_the_station_name(tmp_path: Path) -> None:
         "a-z-v1-20260101T000000Z.ofbackup",
         "zz-v2-20260601T000000Z.ofbackup",
     ]
+
+
+def _seed_later(backup_dir: Path, count: int, kind: str = "") -> list[str]:
+    """``count`` archives dated after ``_NOW``, as a clock set back finds them."""
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    names = [archive_name("OpenFollow old-name", "0.1.0", _NOW + timedelta(days=d), kind) for d in range(1, count + 1)]
+    for name in names:
+        (backup_dir / name).write_bytes(b"x")
+    return names
+
+
+def test_a_clock_set_back_never_prunes_the_archive_just_written(tmp_path: Path) -> None:
+    state = _station(tmp_path)
+    later = _seed_later(state / "backups", 12)
+    record = run_backup(state, "0.4.3", "0.4.4", now=_NOW)
+    names = [p.name for p in list_archives(state / "backups")]
+    assert names == [record.archive] + later[-(settings_backup.KEEP - 1) :]
+
+
+def test_list_archives_counts_an_entry_it_cannot_check_by_its_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    names = _seed_archives(tmp_path, 2)
+    real_is_file = Path.is_file
+
+    def is_file(self: Path, *args: object, **kwargs: object) -> bool:
+        if self.parent == tmp_path:
+            raise PermissionError(errno.EACCES, "Permission denied", str(self))
+        return real_is_file(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "is_file", is_file)
+    assert [p.name for p in list_archives(tmp_path)] == names
 
 
 def test_list_archives_of_a_missing_folder_is_empty(tmp_path: Path) -> None:
@@ -546,3 +688,144 @@ def test_main_without_the_state_folder(tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.setattr(settings_backup, "STATE_DIR", tmp_path / "absent")
     assert settings_backup.main(["upgrade", "0.4.3", "0.4.4"]) == 0
     assert not (tmp_path / "absent").exists()
+
+
+# --- before a web UI change ---------------------------------------------------
+
+
+def _web_backup(state: Path, kind: str = "import", **kwargs: object) -> settings_backup.WebBackup:
+    return settings_backup.run_web_backup(state / "config.toml", "0.5.0", kind, now=_NOW, **kwargs)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        ("import", "brave-otter-v0.5.0-import-20260929T180000.000Z.ofbackup"),
+        ("defaults", "brave-otter-v0.5.0-defaults-20260929T180000.000Z.ofbackup"),
+        ("../push", "brave-otter-v0.5.0-push-20260929T180000.000Z.ofbackup"),
+        ("//", "brave-otter-v0.5.0-20260929T180000.000Z.ofbackup"),
+    ],
+)
+def test_archive_name_names_the_change(kind: str, expected: str) -> None:
+    assert archive_name("OpenFollow brave-otter", "0.5.0", _NOW, kind) == expected
+
+
+def test_a_web_backup_holds_the_settings_before_the_change(tmp_path: Path) -> None:
+    state = _station(tmp_path)
+    result = _web_backup(state)
+    assert result == settings_backup.WebBackup("brave-otter-v0.5.0-import-20260929T180000.000Z.ofbackup", "")
+    members = _members(state / "backups" / "web" / result.archive)
+    assert members["config.toml"] == b'psn_system_name = "OpenFollow brave-otter"\n'
+    assert members["markers.toml"] == b"[[markers]]\nid = 1\n"
+    assert members["templates/user/grid.oftemplate"] == b"grid"
+    assert members["lens-calibrations/zoom-wide.json"] == _LENS.encode()
+    manifest = json.loads(members["manifest.json"])
+    assert {key: manifest[key] for key in ("kind", "version", "created")} == {
+        "kind": "import",
+        "version": "0.5.0",
+        "created": "2026-09-29T18:00:00+00:00",
+    }
+
+
+def test_a_web_backup_archives_the_config_file_it_was_given(tmp_path: Path) -> None:
+    state = _station(tmp_path)
+    (state / "show.toml").write_text('psn_system_name = "OpenFollow Stage Left"\n', encoding="utf-8")
+    result = settings_backup.run_web_backup(state / "show.toml", "0.5.0", "import", now=_NOW)
+    assert result.archive == "Stage-Left-v0.5.0-import-20260929T180000.000Z.ofbackup"
+    members = _members(state / "backups" / "web" / result.archive)
+    assert members["config.toml"] == b'psn_system_name = "OpenFollow Stage Left"\n'
+
+
+def test_a_web_backup_folder_is_private(tmp_path: Path) -> None:
+    state = _station(tmp_path)
+    result = _web_backup(state)
+    assert stat.S_IMODE((state / "backups").stat().st_mode) == 0o700
+    assert stat.S_IMODE((state / "backups" / "web").stat().st_mode) == 0o700
+    assert stat.S_IMODE((state / "backups" / "web" / result.archive).stat().st_mode) == 0o600
+
+
+def test_web_backups_keep_their_own_ten_and_leave_the_update_backups_alone(tmp_path: Path) -> None:
+    state = _station(tmp_path)
+    update = run_backup(state, "0.4.3", "0.5.0", now=_NOW - timedelta(days=30))
+    record_before = (state / "backups" / settings_backup.RECORD_NAME).read_bytes()
+    seeded = _seed_archives(state / "backups" / "web", 12)
+    result = _web_backup(state, "defaults")
+    assert [p.name for p in list_archives(state / "backups" / "web")] == seeded[3:] + [result.archive]
+    assert [p.name for p in list_archives(state / "backups")] == [update.archive]
+    assert (state / "backups" / settings_backup.RECORD_NAME).read_bytes() == record_before
+
+
+def test_a_web_backup_writes_no_update_record(tmp_path: Path) -> None:
+    state = _station(tmp_path)
+    _web_backup(state)
+    assert read_record(state) is None
+    assert not (state / "backups" / "web" / settings_backup.RECORD_NAME).exists()
+
+
+def test_a_web_backup_that_cannot_create_its_folder_reports_why(tmp_path: Path) -> None:
+    state = _station(tmp_path)
+    (state / "backups").write_text("not a folder", encoding="utf-8")
+    result = _web_backup(state)
+    assert result.archive == ""
+    assert result.error
+
+
+def test_a_web_backup_on_a_full_disk_evicts_only_older_web_backups(tmp_path: Path) -> None:
+    state = _station(tmp_path)
+    web = state / "backups" / "web"
+    seeded = _seed_archives(web, 3)
+    result = _web_backup(state, write=_FullDisk(web, free_after=1))
+    assert result.error == ""
+    assert [p.name for p in list_archives(web)] == seeded[1:] + [result.archive]
+
+
+def test_a_web_backup_under_a_clock_set_back_is_kept(tmp_path: Path) -> None:
+    state = _station(tmp_path)
+    web = state / "backups" / "web"
+    later = _seed_later(web, 12, "push")
+    result = _web_backup(state)
+    assert [p.name for p in list_archives(web)] == [result.archive] + later[-(settings_backup.KEEP - 1) :]
+
+
+def test_an_unsearchable_web_backup_folder_is_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A folder left by a root run (0700, root's) refuses even the check for a free name.
+    state = _station(tmp_path)
+    web = state / "backups" / "web"
+    real_exists = Path.exists
+
+    def exists(self: Path, *args: object, **kwargs: object) -> bool:
+        if self.parent == web:
+            raise PermissionError(errno.EACCES, "Permission denied", str(web))
+        return real_exists(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "exists", exists)
+    result = _web_backup(state)
+    assert result == settings_backup.WebBackup("", f"Permission denied: {web}")
+
+
+def test_web_backup_names_carry_milliseconds() -> None:
+    moment = _NOW + timedelta(microseconds=123_456)
+    assert archive_name("x", "0.5.0", moment, "push").endswith("-push-20260929T180000.123Z.ofbackup")
+
+
+def test_two_web_backups_in_one_instant_are_both_kept(tmp_path: Path) -> None:
+    state = _station(tmp_path)
+    first = _web_backup(state, "push")
+    (state / "config.toml").write_text('psn_system_name = "OpenFollow brave-otter"\nweb_port = 81\n', encoding="utf-8")
+    second = _web_backup(state, "push")
+    assert (first.archive, second.archive) == (
+        "brave-otter-v0.5.0-push-20260929T180000.000Z.ofbackup",
+        "brave-otter-v0.5.0-push-20260929T180000.001Z.ofbackup",
+    )
+    web = state / "backups" / "web"
+    assert _members(web / first.archive)["config.toml"] == b'psn_system_name = "OpenFollow brave-otter"\n'
+    assert [p.name for p in list_archives(web)] == [first.archive, second.archive]
+
+
+def test_archives_order_by_millisecond(tmp_path: Path) -> None:
+    for name in ("x-v1-push-20260101T000000.900Z.ofbackup", "x-v1-push-20260101T000000.100Z.ofbackup"):
+        (tmp_path / name).write_bytes(b"")
+    assert [p.name for p in list_archives(tmp_path)] == [
+        "x-v1-push-20260101T000000.100Z.ofbackup",
+        "x-v1-push-20260101T000000.900Z.ofbackup",
+    ]

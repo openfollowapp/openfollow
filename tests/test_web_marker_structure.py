@@ -342,6 +342,13 @@ class TestMarkerAddRowReCreate:
         assert "flash('Added marker ' + id, 'ok');" in body
         assert "flash.textContent = 'Saved';" in body
 
+    def test_the_conflict_flag_reads_the_runtimes_decision(self) -> None:
+        """The table flags what ``marker_conflicts`` lists, so it cannot disagree with the Operator Screen."""
+        body = _render_marker()
+        assert "const conflicts = data.marker_conflicts || [];" in body
+        assert "return conflicts.some(function(c) { return c.marker_id === entry.id; });" in body
+        assert "const conflict = controlConflict(entry, conflicts);" in body
+
     def test_add_row_blocks_live_duplicate(self) -> None:
         """Adding a live id is blocked by the duplicate guard."""
         body = _render_marker()
@@ -370,6 +377,22 @@ class TestThisStationToggle:
         assert "thisStationToggle('this-station-new', null)" in body
         assert "seg-toggle seg-toggle--3 seg-toggle--compact" in body
 
+    def test_each_catalog_row_has_a_p_toggle_right_of_this_station(self) -> None:
+        """A plain ``aria-pressed`` button, never a save control, inert until the row is View & Control."""
+        body = _render_marker()
+        assert "thisStationToggle('this-station-' + id, id) + parkToggle(id) + '</td>'" in body
+        assert '<button type="button" class="park-toggle" data-park data-marker-id="' in body
+        assert '" aria-pressed="false" aria-label="Park" disabled>P</button>' in body
+        assert "parkToggle(null)" not in body
+        assert "body: JSON.stringify({controlled_ids: controlled, viewer_ids: viewer, park: park || {}})" in body
+        assert "postSelection(root, tr, null, {[id]: on});" in body
+
+    def test_the_p_toggle_is_grey_off_and_the_info_line_on(self) -> None:
+        body = _render_marker()
+        on = body[body.index('.park-toggle[aria-pressed="true"] {') :].split("}", 1)[0]
+        assert "background: var(--info-line)" in on
+        assert "color: var(--text)" in on
+
     def test_the_save_reads_every_row_and_control_implies_view(self) -> None:
         body = _render_marker()
         assert "root.querySelectorAll('tr[data-marker-id] input[data-this-station]:checked')" in body
@@ -387,13 +410,13 @@ class TestThisStationToggle:
         """Each save posts the whole selection, and the server runs requests in
         parallel: two in flight could commit out of order and put back the older one."""
         body = _render_marker()
-        start = body.index("function postSelection(root, row, extra) {")
+        start = body.index("function postSelection(root, row, extra, park) {")
         post = body[start : body.index("\n    }\n", start)]
         assert "selectionQueue = selectionQueue" in post
-        assert ".then(function() { return saveSelection(root, row, extra); })" in post
+        assert ".then(function() { return saveSelection(root, row, extra, park); })" in post
         # The snapshot is taken inside the queued save, not when the click happened.
         assert "querySelectorAll" not in post
-        save = body[body.index("function saveSelection(root, row, extra) {") :]
+        save = body[body.index("function saveSelection(root, row, extra, park) {") :]
         assert save.index("root.querySelectorAll('tr[data-marker-id] input[data-this-station]:checked')") < save.index(
             "fetch('/api/markers/selection'"
         )

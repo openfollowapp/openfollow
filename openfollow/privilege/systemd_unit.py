@@ -101,7 +101,6 @@ User={user}
 WorkingDirectory={repo_dir}
 PermissionsStartOnly=true
 ExecStartPre=/bin/bash -c 'until [ -d /run/user/{uid} ]; do sleep 0.5; done'
-ExecStartPre=/bin/sleep 2
 ExecStart=/usr/bin/cage -- /bin/sh -c '{cage_session}'
 Restart=always
 RestartSec=5

@@ -10,4 +10,4 @@ Each row is one station – this one or a peer discovered by multicast.
 
 > If no peers appear, check that the other OpenFollow instances are running and on the same network segment. Multicast peer discovery does not cross router hops or VLAN boundaries.
 
-The panel refreshes automatically every 5 seconds. Use **Refresh** for an immediate update – e.g. right after bringing a second station online.
+The panel refreshes automatically every 5 seconds while it is open and in view. Use **Refresh** for an immediate update – e.g. right after bringing a second station online.

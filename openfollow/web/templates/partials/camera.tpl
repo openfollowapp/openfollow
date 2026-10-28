@@ -1,263 +1,149 @@
-% from openfollow.units import UnitSystem, format_length, metric_echo, unit_suffix_length
+% import math
+% from datetime import datetime
+% from openfollow.lens_model import C_BOUND
+% from openfollow.scene.calibration_points import pin_errors
+% from openfollow.units import UnitSystem, format_length
 % _us = UnitSystem(config.ui.unit_system)
-% _imp = _us is UnitSystem.IMPERIAL
-% _len = unit_suffix_length(_us)
+% _cam = config.camera
+% # The lens centre counts in pixels of the live video; without one there is no number to show.
+% _vs = get('video_size')
+% _hd = 0.5 * math.hypot(*_vs) if _vs else 0.0
+% # Whole pixels within the Setup Wizard's bound, which a centre at the bound can round past.
+% _cmax = math.floor(C_BOUND * _hd)
+% _cpx = lambda v: max(-_cmax, min(_cmax, round(v * _hd)))
+% # A rounded value of -0 reads as 0.
+% _fix = lambda v, n: "%.*f" % (n, round(v, n) + 0.0)
+% _marks = _cam.calibration_marks
+% _pinned = sum(1 for _m in _marks if _m.pin)
+% # "4 corners", "3 of 4 known points": the pinned of each kind, named by its count.
+% def _pinned_of(kind, one, many):
+%   _all = [_m for _m in _marks if (_m.kind == "known") == (kind == "known")]
+%   _on = sum(1 for _m in _all if _m.pin)
+%   return ("%d" % _on if _on == len(_all) else "%d of %d" % (_on, len(_all))) + " " + (one if len(_all) == 1 else many) if _all else ""
+% end
+% _pinned_text = _pinned_of("known", "corner", "corners") if _cam.calibration_mode == "simple" else ", ".join(t for t in (_pinned_of("known", "known point", "known points"), _pinned_of("triangulated", "triangulated point", "triangulated points")) if t)
+% # Pins are fractions of the snapshot, counted in pixels of the live video.
+% _errors = pin_errors(_cam, *_vs) if _vs else {}
+% _ratings = {"excellent": "Excellent", "good": "Good", "fair": "Fair", "poor": "Poor", "user_input": "User input", "loaded": "Loaded", "opencv": "OpenCV calibration"}
 <form id="camera-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="camera" data-help="camera"
-      data-template-form="1"
-      hx-post="/section/camera" hx-target="#camera-section" hx-swap="outerHTML" hx-trigger="submit">
+      data-template-form="1">
     <div class="section-head">
-        <h2>Camera</h2>
-        <span class="section-note">PSN-space position and orientation</span>
+        <h2>Camera &amp; Lens Calibration</h2>
+        <span class="section-note">Set by the Setup Wizard</span>
     </div>
 
-    <div class="group">
-        <h3 class="group-title">Position</h3>
-        <div class="row">
-            <div class="field">
-                <label>Position X ({{_len}})</label>
-                <input id="camera-pos-x" type="{{'text' if _imp else 'number'}}" name="pos_x" value="{{format_length(config.camera.pos_x, _us) if _imp else config.camera.pos_x}}" step="any"
-                       hx-get="/api/validate/camera/pos_x" hx-trigger="blur changed delay:200ms"
-                       hx-target="#camera-pos-x-error" hx-swap="innerHTML" hx-include="closest form"
-                       aria-describedby="camera-pos-x-error" aria-invalid="false">
-                <span id="camera-pos-x-error" class="field-error"></span>
-                % if _imp:
-                <small class="metric-echo">Stored: {{metric_echo(config.camera.pos_x)}}</small>
+    <div class="camera-readout">
+        <div class="group">
+            <h3 class="group-title">Position and orientation</h3>
+            <dl class="network-state-grid" id="camera-position">
+                <dt>Position X</dt>
+                <dd>{{format_length(_cam.pos_x, _us)}}</dd>
+                <dt>Position Y</dt>
+                <dd>{{format_length(_cam.pos_y, _us)}}</dd>
+                <dt>Position Z</dt>
+                <dd>{{format_length(_cam.pos_z, _us)}}</dd>
+                <dt>Pitch</dt>
+                <dd>{{_fix(_cam.pitch, 2)}}°</dd>
+                <dt>Yaw</dt>
+                <dd>{{_fix(_cam.yaw, 2)}}°</dd>
+                <dt>Roll</dt>
+                <dd>{{_fix(_cam.roll, 2)}}°</dd>
+            </dl>
+        </div>
+        <div class="group">
+            <h3 class="group-title">Lens</h3>
+            <dl class="network-state-grid" id="camera-lens">
+                <dt>Horizontal Field of View</dt>
+                <dd>{{_fix(_cam.fov, 2)}}°</dd>
+                <dt>Barrel / fisheye</dt>
+                <dd>{{_fix(_cam.lens_k1, 3)}}</dd>
+                <dt>Corner correction</dt>
+                <dd>{{_fix(_cam.lens_k2, 3)}}</dd>
+                <dt>Right of the picture centre</dt>
+                <dd>{{"%d px" % _cpx(_cam.lens_cx) if _vs else "No video"}}</dd>
+                <dt>Above the picture centre</dt>
+                <dd>{{"%d px" % _cpx(-_cam.lens_cy) if _vs else "No video"}}</dd>
+            </dl>
+        </div>
+        <div class="group">
+            <h3 class="group-title">Calibration</h3>
+            <dl class="network-state-grid" id="camera-calibration">
+                <dt>Type</dt>
+                <dd>{{("Simple" if _cam.calibration_mode == "simple" else "Advanced") if _marks else "None"}}</dd>
+                % if _marks:
+                % if _cam.calibration_time:
+                <dt>Calibrated</dt>
+                <dd>{{datetime.fromisoformat(_cam.calibration_time).strftime("%Y-%m-%d %H:%M")}}</dd>
                 % end
-            </div>
-            <div class="field">
-                <label>Position Y ({{_len}})</label>
-                <input id="camera-pos-y" type="{{'text' if _imp else 'number'}}" name="pos_y" value="{{format_length(config.camera.pos_y, _us) if _imp else config.camera.pos_y}}" step="any"
-                       hx-get="/api/validate/camera/pos_y" hx-trigger="blur changed delay:200ms"
-                       hx-target="#camera-pos-y-error" hx-swap="innerHTML" hx-include="closest form"
-                       aria-describedby="camera-pos-y-error" aria-invalid="false">
-                <span id="camera-pos-y-error" class="field-error"></span>
-                % if _imp:
-                <small class="metric-echo">Stored: {{metric_echo(config.camera.pos_y)}}</small>
+                % if _cam.calibration_source:
+                <dt>Video source</dt>
+                <dd>{{_cam.calibration_source}}</dd>
                 % end
-            </div>
-            <div class="field">
-                <label>Position Z ({{_len}})</label>
-                <input id="camera-pos-z" type="{{'text' if _imp else 'number'}}" name="pos_z" value="{{format_length(config.camera.pos_z, _us) if _imp else config.camera.pos_z}}" step="any"
-                       hx-get="/api/validate/camera/pos_z" hx-trigger="blur changed delay:200ms"
-                       hx-target="#camera-pos-z-error" hx-swap="innerHTML" hx-include="closest form"
-                       aria-describedby="camera-pos-z-error" aria-invalid="false">
-                <span id="camera-pos-z-error" class="field-error"></span>
-                % if _imp:
-                <small class="metric-echo">Stored: {{metric_echo(config.camera.pos_z)}}</small>
+                % if _cam.calibration_lens_rating:
+                <dt>Lens rating</dt>
+                <dd>{{_ratings[_cam.calibration_lens_rating]}}</dd>
                 % end
-            </div>
+                <dt>Pinned</dt>
+                <dd>{{_pinned_text}}</dd>
+                % if _pinned and (_errors or not _vs):
+                <dt>Accuracy</dt>
+                <dd>{{"Within %.1f px" % max(_errors.values()) if _errors else "No video"}}</dd>
+                % end
+                % if _cam.calibration_height is not None:
+                <dt>Camera height</dt>
+                <dd>Fixed at {{format_length(_cam.calibration_height, _us)}}</dd>
+                % end
+                % end
+            </dl>
         </div>
     </div>
-
-    <div class="group">
-        <h3 class="group-title">Orientation</h3>
-        <div class="row">
-            <div class="field">
-                <label>Pitch (°)</label>
-                <input id="camera-pitch" type="number" name="pitch" value="{{config.camera.pitch}}" step="any"
-                       hx-get="/api/validate/camera/pitch" hx-trigger="blur changed delay:200ms"
-                       hx-target="#camera-pitch-error" hx-swap="innerHTML" hx-include="closest form"
-                       aria-describedby="camera-pitch-error" aria-invalid="false">
-                <span id="camera-pitch-error" class="field-error"></span>
-            </div>
-            <div class="field">
-                <label>Yaw (°)</label>
-                <input id="camera-yaw" type="number" name="yaw" value="{{config.camera.yaw}}" step="any"
-                       hx-get="/api/validate/camera/yaw" hx-trigger="blur changed delay:200ms"
-                       hx-target="#camera-yaw-error" hx-swap="innerHTML" hx-include="closest form"
-                       aria-describedby="camera-yaw-error" aria-invalid="false">
-                <span id="camera-yaw-error" class="field-error"></span>
-            </div>
-            <div class="field">
-                <label>Roll (°)</label>
-                <input id="camera-roll" type="number" name="roll" value="{{config.camera.roll}}" step="any"
-                       hx-get="/api/validate/camera/roll" hx-trigger="blur changed delay:200ms"
-                       hx-target="#camera-roll-error" hx-swap="innerHTML" hx-include="closest form"
-                       aria-describedby="camera-roll-error" aria-invalid="false">
-                <span id="camera-roll-error" class="field-error"></span>
-            </div>
-        </div>
-    </div>
-
-    <div class="group">
-        <h3 class="group-title">Lens</h3>
-        <div class="row">
-            <div class="field">
-                <label>Horizontal Field of View (°)</label>
-                <input type="number" id="camera_panel_fov" name="fov" value="{{config.camera.fov}}" min="1" max="179" step="any" oninput="cameraPanelHfovEdited()"
-                       hx-get="/api/validate/camera/fov" hx-trigger="blur changed delay:200ms"
-                       hx-target="#camera-fov-error" hx-swap="innerHTML" hx-include="closest form"
-                       aria-describedby="camera-fov-error" aria-invalid="false">
-                <span id="camera-fov-error" class="field-error"></span>
-            </div>
-            <div class="field" id="camera_panel_sensor_field">
-                <label>Sensor Size</label>
-                <select id="camera_panel_sensor" onchange="cameraPanelSensorOrFocalChanged()"></select>
-            </div>
-            <div class="field" id="camera_panel_sensor_custom_field" style="display:none;">
-                <label>Sensor Width (mm)</label>
-                <input type="number" name="sensor_width_mm" id="camera_panel_sensor_custom" step="0.01" min="0" oninput="cameraPanelSensorOrFocalChanged()"
-                       hx-get="/api/validate/camera/sensor_width_mm" hx-trigger="blur changed delay:200ms"
-                       hx-target="#camera-sensor-width-mm-error" hx-swap="innerHTML" hx-include="closest form"
-                       aria-describedby="camera-sensor-width-mm-error" aria-invalid="false">
-                <span id="camera-sensor-width-mm-error" class="field-error"></span>
-            </div>
-            <div class="field">
-                <label>Focal Length (mm)</label>
-                <input type="number" name="focal_length_mm" id="camera_panel_focal"
-                       value="{{config.camera.focal_length_mm if config.camera.focal_length_mm is not None else ''}}"
-                       step="0.1" min="0" oninput="cameraPanelSensorOrFocalChanged()"
-                       hx-get="/api/validate/camera/focal_length_mm" hx-trigger="blur changed delay:200ms"
-                       hx-target="#camera-focal-length-mm-error" hx-swap="innerHTML" hx-include="closest form"
-                       aria-describedby="camera-focal-length-mm-error" aria-invalid="false">
-                <span id="camera-focal-length-mm-error" class="field-error"></span>
-            </div>
-            <input type="hidden" id="camera_panel_sensor_initial"
-                   value="{{config.camera.sensor_width_mm if config.camera.sensor_width_mm is not None else ''}}">
-        </div>
-        <p class="hint" style="margin:0.4rem 0 0 0;font-size:0.8rem;color:var(--muted);">
-            FOV is horizontal (as printed on camera datasheets). Pick your sensor size and focal length and we'll compute FOV automatically.
-        </p>
-    </div>
-
-    <div class="group experimental-feature">
-        <h3 class="group-title">Lens distortion <span class="badge-experimental">Experimental</span></h3>
-        <p class="field-note">Overlay-only curvature to match a fisheye / wide-angle lens; the video is never warped.</p>
-        <div class="row">
-            <div class="field">
-                <label>Barrel / fisheye (k1)</label>
-                <input type="number" id="camera-lens-k1" name="lens_k1" value="{{config.camera.lens_k1}}" min="-0.4" max="0.4" step="0.005"
-                       oninput="var s=document.getElementById('camera-lens-k1-range'); if (s) s.value=this.value;"
-                       hx-get="/api/validate/camera/lens_k1" hx-trigger="blur changed delay:200ms"
-                       hx-target="#camera-lens-k1-error" hx-swap="innerHTML" hx-include="closest form"
-                       aria-describedby="camera-lens-k1-error" aria-invalid="false">
-                <input type="range" id="camera-lens-k1-range" min="-0.4" max="0.4" step="0.005" value="{{config.camera.lens_k1}}"
-                       aria-label="Barrel / fisheye (k1) slider"
-                       oninput="var n=document.getElementById('camera-lens-k1'); n.value=this.value;">
-                <span id="camera-lens-k1-error" class="field-error"></span>
-            </div>
-            <div class="field">
-                <label>Edge fit (k2)</label>
-                <input type="number" id="camera-lens-k2" name="lens_k2" value="{{config.camera.lens_k2}}" min="-0.2" max="0.2" step="0.005"
-                       oninput="var s=document.getElementById('camera-lens-k2-range'); if (s) s.value=this.value;"
-                       hx-get="/api/validate/camera/lens_k2" hx-trigger="blur changed delay:200ms"
-                       hx-target="#camera-lens-k2-error" hx-swap="innerHTML" hx-include="closest form"
-                       aria-describedby="camera-lens-k2-error" aria-invalid="false">
-                <input type="range" id="camera-lens-k2-range" min="-0.2" max="0.2" step="0.005" value="{{config.camera.lens_k2}}"
-                       aria-label="Edge fit (k2) slider"
-                       oninput="var n=document.getElementById('camera-lens-k2'); n.value=this.value;">
-                <span id="camera-lens-k2-error" class="field-error"></span>
-            </div>
-        </div>
-    </div>
-
-    <script>
-    (function() {
-        if (window.__cameraPanelLensHelperInstalled) return;
-        window.__cameraPanelLensHelperInstalled = true;
-
-        var SENSOR_SIZES = [
-            { id: '1/4',    label: '1/4" (3.6 mm)',              width_mm: 3.6  },
-            { id: '1/3',    label: '1/3" (4.8 mm)',              width_mm: 4.8  },
-            { id: '1/2.8',  label: '1/2.8" (5.37 mm)',           width_mm: 5.37 },
-            { id: '1/2.5',  label: '1/2.5" (5.76 mm)',           width_mm: 5.76 },
-            { id: '1/2',    label: '1/2" (6.4 mm)',              width_mm: 6.4  },
-            { id: '1/1.8',  label: '1/1.8" (7.18 mm)',           width_mm: 7.18 },
-            { id: '1/1.7',  label: '1/1.7" (7.6 mm)',            width_mm: 7.6  },
-            { id: '2/3',    label: '2/3" (8.8 mm)',              width_mm: 8.8  },
-            { id: '1',      label: '1" (13.2 mm)',               width_mm: 13.2 },
-            { id: 'mft',    label: 'Micro Four Thirds (17.3 mm)', width_mm: 17.3 },
-            { id: 'apsc',   label: 'APS-C (23.6 mm)',            width_mm: 23.6 },
-            { id: 'super35',label: 'Super 35 (24.89 mm)',        width_mm: 24.89 },
-            { id: 'ff',     label: 'Full Frame 35 mm (36 mm)',   width_mm: 36   },
-            { id: 'custom', label: 'Custom…',                    width_mm: null },
-            { id: '',       label: '– choose –',                 width_mm: null },
-        ];
-        window.__CAMERA_PANEL_SENSORS = SENSOR_SIZES;
-
-        function getSensorWidth() {
-            var sel = document.getElementById('camera_panel_sensor');
-            if (!sel) return null;
-            if (sel.value === 'custom') {
-                var v = parseFloat(document.getElementById('camera_panel_sensor_custom').value);
-                return isFinite(v) && v > 0 ? v : null;
-            }
-            var entry = SENSOR_SIZES.find(function(s) { return s.id === sel.value; });
-            return entry && entry.width_mm ? entry.width_mm : null;
-        }
-
-        function hfovFromSensor(sw, fl) {
-            if (!sw || !fl) return null;
-            return 2 * Math.atan(sw / (2 * fl)) * 180 / Math.PI;
-        }
-
-        function setStale(stale) {
-            ['camera_panel_sensor_field', 'camera_panel_sensor_custom_field', 'camera_panel_focal'].forEach(function(id) {
-                var el = document.getElementById(id);
-                if (el) el.classList.toggle('lens-helper-stale', stale);
-            });
-        }
-
-        window.cameraPanelSensorOrFocalChanged = function() {
-            var sel = document.getElementById('camera_panel_sensor');
-            var customField = document.getElementById('camera_panel_sensor_custom_field');
-            var customInput = document.getElementById('camera_panel_sensor_custom');
-            if (sel && customField) {
-                customField.style.display = sel.value === 'custom' ? '' : 'none';
-            }
-            // Mirror the resolved sensor width into the posted hidden/custom input,
-            // so the value reaches the server regardless of preset vs. custom.
-            var sw = getSensorWidth();
-            if (customInput && sel && sel.value !== 'custom') {
-                customInput.value = sw !== null ? String(sw) : '';
-            }
-            var hfov = hfovFromSensor(sw, parseFloat(document.getElementById('camera_panel_focal').value));
-            if (hfov !== null && isFinite(hfov)) {
-                document.getElementById('camera_panel_fov').value = hfov.toFixed(2);
-                setStale(false);
-            }
-        };
-
-        window.cameraPanelHfovEdited = function() {
-            setStale(true);
-        };
-
-        function init() {
-            var sel = document.getElementById('camera_panel_sensor');
-            if (!sel || sel.options.length) return;
-            SENSOR_SIZES.forEach(function(s) {
-                var opt = document.createElement('option');
-                opt.value = s.id;
-                opt.textContent = s.label;
-                sel.appendChild(opt);
-            });
-            sel.value = '';
-            var initialSw = parseFloat(document.getElementById('camera_panel_sensor_initial').value);
-            if (isFinite(initialSw) && initialSw > 0) {
-                var match = SENSOR_SIZES.find(function(s) {
-                    return s.width_mm && Math.abs(s.width_mm - initialSw) < 0.05;
-                });
-                if (match) {
-                    sel.value = match.id;
-                } else {
-                    sel.value = 'custom';
-                    document.getElementById('camera_panel_sensor_custom').value = initialSw;
-                    document.getElementById('camera_panel_sensor_custom_field').style.display = '';
-                }
-            }
-        }
-        init();
-        // Re-init after HTMX swaps the camera form back in (save → re-render).
-        document.body.addEventListener('htmx:afterSwap', init);
-    })();
-    </script>
     <style>
-    .lens-helper-stale, .lens-helper-stale label,
-    .lens-helper-stale input, .lens-helper-stale select { opacity: 0.55; }
+    .camera-readout { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0 1.5rem; }
+    @media (max-width: 680px) { .camera-readout { grid-template-columns: 1fr; } }
     </style>
 
+    % if _marks:
+    % _by_id = {m.id: m for m in _marks}
+    <details class="inline-advanced" id="camera-calibration-marks">
+        <summary>Calibration points</summary>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th scope="col">Point</th>
+                    <th scope="col">Kind</th>
+                    <th scope="col">Position</th>
+                    <th scope="col">Measured from</th>
+                    <th scope="col">Pinned</th>
+                    <th scope="col">Error</th>
+                </tr>
+            </thead>
+            <tbody>
+            % for _m in _marks:
+                % _at = [_m.x, _m.y, _m.z] if _m.kind == "known" else _m.position
+                <tr>
+                    <th scope="row">{{_m.name}}</th>
+                    <td>{{"Known point" if _m.kind == "known" else "Triangulated point"}}</td>
+                    % if _at:
+                    <td>X = {{format_length(_at[0], _us)}}<br>Y = {{format_length(_at[1], _us)}}<br>Z = {{format_length(_at[2], _us)}}</td>
+                    % else:
+                    <td>–</td>
+                    % end
+                    % if _m.kind == "triangulated":
+                    <td>{{_by_id[_m.from_a].name}} {{format_length(_m.distance_a, _us)}}<br>{{_by_id[_m.from_b].name}} {{format_length(_m.distance_b, _us)}}</td>
+                    % else:
+                    <td>–</td>
+                    % end
+                    <td>{{"Yes" if _m.pin else "No"}}</td>
+                    <td>{{"%.1f px" % _errors[_m.id] if _m.id in _errors else "–"}}</td>
+                </tr>
+            % end
+            </tbody>
+        </table>
+    </details>
+    % end
+
     <div class="actions">
-        <button type="submit" class="save-btn">Save</button>
+        <a href="/wizard" class="btn-link save-btn">Open Setup Wizard</a>
         <button type="button" class="broadcast-btn" onclick="broadcastSection('camera', this.form)">Apply to all stations</button>
         <!-- Save / Load template buttons. Camera and grid share one
              ``camera_grid`` template type (tuned together). Buttons bind to

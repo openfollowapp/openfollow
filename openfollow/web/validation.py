@@ -12,13 +12,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from openfollow.button_names import BUTTON_NAME_STYLES
 from openfollow.configuration import (
     _DEFAULT_PSN_MCAST_IP,
     _DEFAULT_PSN_SYSTEM_NAME,
+    CONTROL_FRAMES,
     MENU_RESERVED_BUTTONS,
     MOUSE3D_AXES,
     MOUSE3D_AXIS_TARGETS,
     MOUSE3D_BUTTON_FIELDS,
+    NETWORK_MODES,
+    OFFERED_FEATURES,
     RESERVED_MOVEMENT_KEYS,
     VALID_BUTTON_NAMES,
     VALID_CURVES,
@@ -36,18 +40,22 @@ from openfollow.configuration import (
     AppConfig,
     _canonical_marker_token,
 )
+from openfollow.keyboard_layout import LAYOUT_RE, VARIANT_RE
+from openfollow.lens_model import C_BOUND, lens_warp_is_valid
 from openfollow.net_adapters import LABEL_MAX_LEN
 from openfollow.station_fqdn import FQDN_INPUT_MAX_LEN, fqdn_problem
 from openfollow.text_hygiene import CONTROL_CHARS_RE
+from openfollow.web.keyboard_layout_view import station_catalog
 from openfollow.web.routes import (
     _as_bool,
     _as_button_index,
     _as_float,
     _as_float_or_zero,
+    _as_heading,
     _as_int,
     _as_int_list,
     _as_ip_list,
-    _as_optional_float,
+    _as_network_mode,
     _as_optional_int,
     _as_positive_int,
     _as_str,
@@ -56,6 +64,7 @@ from openfollow.web.routes import (
 
 _FieldParser = Callable[[Any, Any], Any]
 _CustomValidator = Callable[[str, "AppConfig | None"], "str | None"]
+_SiblingValidator = Callable[[str, Mapping[str, Any]], "str | None"]
 
 
 # --- Sanitiser --------------------------------------------------------------
@@ -82,10 +91,9 @@ _TYPE_ERRORS: dict[_FieldParser, str] = {
     _as_optional_int: "Must be a whole number (or empty).",
     _as_positive_int: "Must be a whole number (1 or greater).",
     _as_float: "Must be a number.",
-    _as_optional_float: "Must be a number (or empty).",
     _as_bool: "Must be one of: true, false, yes, no, on, off.",
     _as_int_list: "Must be a comma-separated list of whole numbers.",
-    _as_ip_list: "Each entry must be a valid IPv4 or IPv6 address.",
+    _as_ip_list: "Each entry must be a valid IPv4 address.",
 }
 
 
@@ -117,6 +125,7 @@ class FieldRule:
     type_error: str | None = None  # None → derived from parser
     human_error: str = "Invalid value."
     custom: _CustomValidator | None = None  # extra validator after default checks
+    sibling_check: _SiblingValidator | None = None  # reads the rest of the form, after ``custom``
 
 
 def _resolved_type_error(rule: FieldRule) -> str:
@@ -168,15 +177,17 @@ def _validate_service_name(value: str, _cfg: AppConfig | None) -> str | None:
 
 
 def _validate_ip_list(value: str, _cfg: AppConfig | None) -> str | None:
-    """Per-entry IP validation. Surfaces the first offending entry."""
+    """Per-entry IPv4 validation. Surfaces the first offending entry."""
     if not value:
         return None
     entries = [e.strip() for e in value.split(",") if e.strip()]
     for idx, entry in enumerate(entries, start=1):
         try:
-            ipaddress.ip_address(entry)
+            addr = ipaddress.ip_address(entry)
         except ValueError:
-            return f"Entry {idx} ({entry!r}) is not a valid IPv4 or IPv6 address."
+            return f"Entry {idx} ({entry!r}) is not a valid IPv4 address."
+        if not isinstance(addr, ipaddress.IPv4Address):
+            return f"Entry {idx} ({entry!r}) is an IPv6 address; OSC input is IPv4 only."
     return None
 
 
@@ -286,6 +297,25 @@ def _validate_keybinding(value: str, _cfg: AppConfig | None) -> str | None:
     return None
 
 
+def _validate_keyboard_layout(value: str, _cfg: AppConfig | None) -> str | None:
+    """A layout this station's xkb catalog lists; any well-formed name when it has none."""
+    catalog = station_catalog()
+    if catalog.layouts and value not in catalog.layouts:
+        return f"This station has no keyboard layout {value!r}."
+    return None
+
+
+def _validate_keyboard_variant(value: str, form: Mapping[str, Any]) -> str | None:
+    """A variant of the layout chosen beside it; System takes none. Any well-formed name without a catalog."""
+    layout = str(form.get("keyboard_layout", "")).strip()
+    if not layout:
+        return "System takes the system's own variant: choose Standard."
+    catalog = station_catalog()
+    if catalog.layouts and not catalog.has_variant(layout, value):
+        return f"Layout {layout!r} has no variant {value!r} on this station."
+    return None
+
+
 def _validate_osc_message(value: str, _cfg: AppConfig | None) -> str | None:
     """Combined ``osc_message`` field validator (quote-aware).
 
@@ -387,14 +417,21 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "yaw": FieldRule(_as_float, lo=-180.0, hi=180.0, human_error="Yaw must be between -180° and 180°."),
         "roll": FieldRule(_as_float, lo=-180.0, hi=180.0, human_error="Roll must be between -180° and 180°."),
         "fov": FieldRule(_as_float, lo=1.0, hi=179.0, human_error="FOV must be between 1° and 179°."),
-        "sensor_width_mm": FieldRule(
-            _as_optional_float, lo=0.0, human_error="Sensor width must be a positive number (or empty)."
+        # The lens's one rule, that the overlay reaches every corner, is cross-field: ``validate``
+        # reads the siblings from the form context, or from the saved config when one is empty.
+        "lens_k1": FieldRule(_as_float, human_error="Must be a number."),
+        "lens_k2": FieldRule(_as_float, human_error="Must be a number."),
+        "lens_cx": FieldRule(
+            _as_float, lo=-C_BOUND, hi=C_BOUND, human_error=f"Must be a number from {-C_BOUND:g} to {C_BOUND:g}."
         ),
-        "focal_length_mm": FieldRule(
-            _as_optional_float, lo=0.0, human_error="Focal length must be a positive number (or empty)."
+        "lens_cy": FieldRule(
+            _as_float, lo=-C_BOUND, hi=C_BOUND, human_error=f"Must be a number from {-C_BOUND:g} to {C_BOUND:g}."
         ),
-        "lens_k1": FieldRule(_as_float, lo=-0.4, hi=0.4, human_error="Must be between -0.4 and 0.4."),
-        "lens_k2": FieldRule(_as_float, lo=-0.2, hi=0.2, human_error="Must be between -0.2 and 0.2."),
+    },
+    "ground_grid": {
+        "enabled": FieldRule(_as_bool),
+        "visible": FieldRule(_as_bool),
+        "z_offset": FieldRule(_as_float, human_error="Must be a number."),
     },
     "grid": {
         "visible": FieldRule(_as_bool),
@@ -432,7 +469,12 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "default_pos_x": FieldRule(_as_float, human_error="Must be a number."),
         "default_pos_y": FieldRule(_as_float, human_error="Must be a number."),
         "default_pos_z": FieldRule(_as_float, human_error="Must be a number."),
-        "invert_control_direction": FieldRule(_as_bool),
+        "control_frame": FieldRule(
+            _as_str,
+            choices=CONTROL_FRAMES,
+            human_error="Control frame must be 'stage', 'heading', 'camera' or 'screen'.",
+        ),
+        "control_heading": FieldRule(_as_heading, human_error="Heading must be a number of degrees."),
     },
     "marker": {
         "marker_style": FieldRule(
@@ -484,6 +526,11 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "curve": FieldRule(
             _as_str, choices=VALID_CURVES, human_error=f"Curve must be one of: {', '.join(VALID_CURVES)}."
         ),
+        "button_name_style": FieldRule(
+            _as_str,
+            choices=BUTTON_NAME_STYLES,
+            human_error="Button names must be Standard, Xbox, PlayStation or Nintendo.",
+        ),
         "btn_reset": _button_rule(),
         "btn_toggle_help": _button_rule(),
         "btn_speed_down": _button_rule(),
@@ -497,6 +544,8 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "btn_menu_confirm": _menu_button_rule(),
         "btn_menu_cancel": _menu_button_rule(),
         "btn_clear_messages": _button_rule(),
+        "btn_pathfinder": _button_rule(),
+        "btn_toggle_paths": _button_rule(),
         "move_xy_stick": FieldRule(
             _as_str, choices=VALID_STICKS, human_error=f"Stick must be one of: {', '.join(VALID_STICKS)}."
         ),
@@ -541,12 +590,28 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "key_prev_marker": _key_rule(),
         "key_settings": _key_rule(),
         "key_clear_messages": _key_rule(),
+        "key_pathfinder": _key_rule(),
+        "key_toggle_paths": _key_rule(),
+        "keyboard_layout": FieldRule(
+            _as_str,
+            max_len=32,
+            pattern=LAYOUT_RE.pattern,
+            custom=_validate_keyboard_layout,
+            human_error="A layout name is lower-case letters, digits, '_' and '-'.",
+        ),
+        "keyboard_variant": FieldRule(
+            _as_str,
+            max_len=64,
+            pattern=VARIANT_RE.pattern,
+            sibling_check=_validate_keyboard_variant,
+            human_error="A variant name is letters, digits, '_' and '-'.",
+        ),
     },
     "osc": {
         "enabled": FieldRule(_as_bool),
         "port": FieldRule(_as_int, lo=1, hi=65535, human_error="Port must be between 1 and 65535."),
         "allowed_sender_ips": FieldRule(
-            _as_ip_list, custom=_validate_ip_list, human_error="Comma-separated IPv4 / IPv6 addresses."
+            _as_ip_list, custom=_validate_ip_list, human_error="Comma-separated IPv4 addresses."
         ),
         # Empty = off (unicast/broadcast only); else a multicast group to join.
         "multicast_group": FieldRule(
@@ -555,6 +620,16 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
             custom=_validate_multicast_ip,
             human_error="Multicast IPv4 address (224.0.0.0–239.255.255.255) or blank.",
         ),
+    },
+    # The Features list: one checkbox per offered feature.
+    "features": {key: FieldRule(_as_bool) for key in OFFERED_FEATURES},
+    # Touch remote: only ``enabled`` has a form input; the tuning fields come from config.toml or the JSON API.
+    "touch_remote": {
+        "enabled": FieldRule(_as_bool),
+        "stick_curve": FieldRule(_as_float, lo=1.0, hi=3.0, human_error="Stick curve must be between 1 and 3."),
+        "stick_dead_zone": FieldRule(_as_float, lo=0.0, hi=0.5, human_error="Dead zone must be between 0 and 0.5."),
+        "z_step_m": FieldRule(_as_float, lo=0.001, hi=1.0, human_error="Z step must be between 0.001 and 1 m."),
+        "z_notch_px": FieldRule(_as_int, lo=8, hi=80, human_error="Notch spacing must be between 8 and 80 px."),
     },
     # OSC operator / next-cue overlay.
     "operator_messages": {
@@ -638,6 +713,10 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         ),
         "debounce_ms": FieldRule(_as_int, lo=0, hi=60000, human_error="Debounce must be between 0 and 60000 ms."),
         "hysteresis": FieldRule(_as_float, lo=0.0, hi=10.0, human_error="Hysteresis must be between 0 and 10 m."),
+    },
+    "paths": {
+        "show_paths": FieldRule(_as_bool),
+        "slide_time": FieldRule(_as_float, lo=0.0, hi=10.0, human_error="Slide time must be between 0 and 10 s."),
     },
     # Shared OSC destination profiles (name + connection).
     "osc_destination": {
@@ -771,6 +850,9 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
         "viewer_marker_ids": FieldRule(
             _as_int_list, custom=_validate_int_list, human_error="Comma-separated marker IDs."
         ),
+        "parked_marker_ids": FieldRule(
+            _as_int_list, custom=_validate_int_list, human_error="Comma-separated marker IDs."
+        ),
     },
 }
 
@@ -812,22 +894,57 @@ FIELD_RULES["mouse3d"] = _mouse3d_rules
 # other labels and the row's interface, so the validate route checks it.
 FIELD_RULES["network"] = {
     "label": FieldRule(_as_str, max_len=LABEL_MAX_LEN, human_error=f"A label is at most {LABEL_MAX_LEN} characters."),
+    "network_mode": FieldRule(
+        _as_network_mode, choices=NETWORK_MODES, human_error="Network mode must be 'simple' or 'advanced'."
+    ),
 }
 
 
 # --- Public API -------------------------------------------------------------
+_LENS_FIELDS = ("lens_k1", "lens_k2", "lens_cx", "lens_cy")
+_LENS_LIMIT_ERROR = "This pair cannot follow the picture out to its corners. Bring either value closer to 0."
+_LENS_CENTRE_ERROR = "This lens centre stops the overlay short of the picture's corners. Bring it closer to 0."
+
+
+def _lens_limit_error(field: str, value: float, context: Mapping[str, Any] | None, cfg: AppConfig | None) -> str | None:
+    """The lens rule on all four values, with the siblings as the save will read them.
+
+    An empty sibling keeps its saved value (0 without a config) and a centre past its
+    bound is clamped, as the save does; one that is not a finite number carries its own
+    error, so the lens is not judged on it. The pair's error comes first: the centre's
+    names it only when the pair alone would reach the corners.
+    """
+    lens = []
+    for name in _LENS_FIELDS:
+        raw = value if name == field else (context.get(name) if context is not None else None)
+        if isinstance(raw, str):
+            raw = raw.strip()
+        if raw in (None, ""):
+            number = float(getattr(cfg.camera, name)) if cfg is not None else 0.0
+        else:
+            number = _as_float(raw, math.nan)
+            if not math.isfinite(number):
+                return None
+        lens.append(number if name in ("lens_k1", "lens_k2") else min(max(number, -C_BOUND), C_BOUND))
+    if not lens_warp_is_valid(lens[0], lens[1], 0.0, 0.0):
+        return _LENS_LIMIT_ERROR
+    return None if lens_warp_is_valid(*lens) else _LENS_CENTRE_ERROR
+
+
 def validate(
     section: str,
     field: str,
     raw: Any,
     *,
     cfg: AppConfig | None = None,
+    context: Mapping[str, Any] | None = None,
 ) -> str | None:
     """Return an error string if ``raw`` is invalid for the given field, else None.
 
     Empty input returns ``None`` so an operator who clears a field doesn't
     see a stale "required" complaint on every keystroke. Use ``note()`` to
-    surface advisory text for empty-with-fallback fields.
+    surface advisory text for empty-with-fallback fields. ``context`` carries
+    the rest of the form for the few rules that read a sibling field.
     """
     rule = FIELD_RULES.get(section, {}).get(field)
     if rule is None:
@@ -864,11 +981,11 @@ def validate(
     if rule.pattern is not None and not re.fullmatch(rule.pattern, value):
         return rule.human_error
     if rule.choices is not None:
-        # For numeric parsers, compare the canonicalised parsed value
-        # against ``choices`` – save-time runs the parser too, so e.g.
-        # ``"010"`` (parsed → 10) must match ``"10"`` in choices to keep
-        # blur and save in lockstep.
-        canonical = str(parsed) if isinstance(parsed, (int, float)) and not isinstance(parsed, bool) else value
+        # Compare the parsed value against ``choices`` – save-time runs the
+        # parser too, so e.g. ``"010"`` (parsed → 10) must match ``"10"``, and
+        # a case-blind parser's ``"Simple"`` match ``"simple"``, to keep blur
+        # and save in lockstep.
+        canonical = str(parsed) if isinstance(parsed, (int, float, str)) and not isinstance(parsed, bool) else value
         if canonical not in rule.choices:
             return rule.human_error
     if isinstance(parsed, (int, float)) and not isinstance(parsed, bool):
@@ -898,10 +1015,16 @@ def validate(
             return rule.human_error
         if rule.hi is not None and bound_value > rule.hi:
             return rule.human_error
+    if section == "camera" and field in _LENS_FIELDS:
+        limit_err = _lens_limit_error(field, parsed, context, cfg)
+        if limit_err is not None:
+            return limit_err
     if rule.custom is not None:
         custom_err = rule.custom(value, cfg)
         if custom_err is not None:
             return custom_err
+    if rule.sibling_check is not None:
+        return rule.sibling_check(value, context or {})
     return None
 
 
@@ -969,9 +1092,15 @@ def note(
 _CFG_USING_VALIDATORS: frozenset[_CustomValidator] = frozenset()
 
 
-def needs_cfg(rule: FieldRule) -> bool:
-    """True iff ``validate`` would actually consult ``cfg`` for this rule."""
-    return rule.custom in _CFG_USING_VALIDATORS
+# Fields whose check reads the saved config outside their rule: the lens reads a
+# sibling left empty as the value the save keeps.
+_CFG_USING_FIELDS: frozenset[tuple[str, str]] = frozenset(("camera", name) for name in _LENS_FIELDS)
+
+
+def needs_cfg(section: str, field: str) -> bool:
+    """True iff ``validate`` would actually consult ``cfg`` for this field."""
+    rule = FIELD_RULES.get(section, {}).get(field)
+    return rule is not None and (rule.custom in _CFG_USING_VALIDATORS or (section, field) in _CFG_USING_FIELDS)
 
 
 __all__ = [

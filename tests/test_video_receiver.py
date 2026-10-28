@@ -46,6 +46,7 @@ from openfollow.video.failure import (
     RESOURCE_NOT_AUTHORIZED,
     RESOURCE_NOT_FOUND,
     RESOURCE_OPEN_READ,
+    RESOURCE_SETTINGS,
     STREAM_CODEC_NOT_FOUND,
     STREAM_DOMAIN,
     ConnectionPhase,
@@ -59,6 +60,9 @@ from openfollow.video.inputs._base import (
     SourceEndpoint,
 )
 from openfollow.video.inputs._pin import PinRefusal
+from openfollow.video.inputs.rtsp import RtspInput
+from openfollow.video.source_limits import FrameMeter, OverLimit
+from tests import _fake_gst as shared_fake_gst
 
 pytestmark = pytest.mark.unit
 
@@ -266,6 +270,7 @@ class FakeGLib:
         self.timers: dict[int, tuple[int, Callable]] = {}
         self._counter = 0
         self.removed: list[int] = []
+        self.idles: list[tuple[Callable, tuple]] = []
 
     def timeout_add(self, delay_ms: int, callback: Callable) -> int:
         self._counter += 1
@@ -275,6 +280,16 @@ class FakeGLib:
     def source_remove(self, source_id: int) -> None:
         self.removed.append(source_id)
         self.timers.pop(source_id, None)
+
+    def idle_add(self, callback: Callable, *args: Any) -> int:
+        self._counter += 1
+        self.idles.append((callback, args))
+        return self._counter
+
+    def run_idles(self) -> None:
+        idles, self.idles = self.idles, []
+        for callback, args in idles:
+            callback(*args)
 
 
 # --------------------------------------------------------------------------- #
@@ -288,6 +303,7 @@ class FakeInput:
     input_id = "fake"
     display_name = "Fake"
     source_element_name: str | None = None
+    frame_meter_element_name: str | None = None
 
     # Defaults – override per-test via subclass.
     _available: tuple[bool, str] = (True, "")
@@ -349,6 +365,13 @@ class FakeInput:
             raise cls._refusal
         return cls._refusal
 
+    # Every config whose name lookup the receiver started.
+    prefetched: tuple[dict[str, Any], ...] = ()
+
+    @classmethod
+    def prefetch(cls, config: dict[str, Any]) -> None:
+        cls.prefetched = (*cls.prefetched, dict(config))
+
     @classmethod
     def get_source_label(cls, config: dict[str, Any]) -> str:
         return str(config.get("fake_source", "") or "")
@@ -366,6 +389,7 @@ class FakeInput:
         self.segment_done_calls = 0
         self.discover_results: list[list[str]] | None = None
         self.discover_calls: list[float] = []
+        self.bus_errors: list[BusError] = []
 
     def create_pipeline(
         self,
@@ -385,6 +409,9 @@ class FakeInput:
     def on_bus_segment_done(self, pipeline: Any) -> bool:
         self.segment_done_calls += 1
         return True
+
+    def on_bus_error(self, error: BusError) -> None:
+        self.bus_errors.append(error)
 
     def observe_progress(self, pipeline: Any, report: Any) -> None:
         # Hand the reporter to the test so it can drive protocol progress the
@@ -418,6 +445,7 @@ class FakeInputAlt:
     input_id = "fake_alt"
     display_name = "FakeAlt"
     source_element_name: str | None = None
+    frame_meter_element_name: str | None = None
 
     _available: tuple[bool, str] = (True, "")
     _capabilities = InputCapabilities(
@@ -473,6 +501,10 @@ class FakeInputAlt:
         return None
 
     @classmethod
+    def prefetch(cls, config: dict[str, Any]) -> None:
+        pass
+
+    @classmethod
     def get_source_label(cls, config: dict[str, Any]) -> str:
         return str(config.get("alt_url", "") or "")
 
@@ -500,6 +532,9 @@ class FakeInputAlt:
 
     def on_bus_async_done(self, pipeline: Any) -> None:
         self.async_done_calls += 1
+
+    def on_bus_error(self, error: BusError) -> None:
+        pass
 
     def observe_progress(self, pipeline: Any, report: Any) -> None:
         self.progress_reporters.append(report)
@@ -549,6 +584,7 @@ def fake_input_cls(monkeypatch):
             "create_pipeline_result",
             "create_pipeline_call_count",
             "preflight_calls",
+            "prefetched",
         )
     }
     monkeypatch.setattr(
@@ -579,6 +615,7 @@ def fake_input_pair(monkeypatch):
                 "create_pipeline_result",
                 "create_pipeline_call_count",
                 "preflight_calls",
+                "prefetched",
             )
             if hasattr(cls, name)
         }
@@ -604,7 +641,7 @@ def _make_receiver(
     input_config: dict[str, Any] | None = None,
     on_widget_changed: Callable | None = None,
     overlay_renderer: Any = None,
-    config_path: str = "config.toml",
+    on_source_picked: Callable[[str, str], None] | None = None,
 ) -> receiver_mod.GstNativeSinkReceiver:
     return receiver_mod.GstNativeSinkReceiver(
         source_type="fake",
@@ -612,7 +649,7 @@ def _make_receiver(
         reconnect_delay=0.2,
         overlay_renderer=overlay_renderer,
         on_widget_changed=on_widget_changed,
-        config_path=config_path,
+        on_source_picked=on_source_picked,
     )
 
 
@@ -730,6 +767,59 @@ class TestSharedSink:
         same = r._get_shared_sink()
         assert same is sink
         assert fake_gst.init_calls == 1
+
+    def test_each_frame_reaching_the_display_tells_the_listener_and_passes_on(
+        self, fake_gst, fake_glib, fake_input_cls
+    ) -> None:
+        r = _make_receiver()
+        sink = r._get_shared_sink()
+        ((kind, probe),) = sink.get_static_pad("sink").probes
+        assert kind == FakePadProbeType.BUFFER
+        # No listener yet: the frame passes on.
+        assert probe(None, None) == FakePadProbeReturn.OK
+        frames: list[None] = []
+        r.set_display_frame_listener(lambda: frames.append(None))
+        assert probe(None, None) == FakePadProbeReturn.OK
+        assert probe(None, None) == FakePadProbeReturn.OK
+        assert len(frames) == 2
+        r.set_display_frame_listener(None)
+        probe(None, None)
+        assert len(frames) == 2
+
+    def test_a_frame_listener_is_handed_each_source_frame_with_its_caps_only_while_set(
+        self, fake_gst, fake_glib, fake_input_cls
+    ) -> None:
+        r = _make_receiver()
+        ((_kind, probe),) = r._get_shared_sink().get_static_pad("sink").probes
+        pad = SimpleNamespace(get_current_caps=lambda: "caps")
+        info = SimpleNamespace(get_buffer=lambda: "buffer")
+        handed: list[tuple[Any, Any]] = []
+        assert probe(pad, info) == FakePadProbeReturn.OK
+        r.set_frame_listener(lambda buf, caps: handed.append((buf, caps)))
+        assert probe(pad, info) == FakePadProbeReturn.OK
+        assert handed == [("buffer", "caps")]
+        r.set_frame_listener(None)
+        probe(pad, info)
+        assert handed == [("buffer", "caps")]
+
+    def test_the_no_signal_placeholder_s_frames_are_not_handed_to_the_frame_listener(
+        self, fake_gst, fake_glib, fake_input_cls
+    ) -> None:
+        r = _make_receiver()
+        ((_kind, probe),) = r._get_shared_sink().get_static_pad("sink").probes
+        handed: list[Any] = []
+        r.set_frame_listener(lambda buf, caps: handed.append(buf))
+        r._state.set_placeholder_pipeline(True)
+        probe(SimpleNamespace(get_current_caps=lambda: None), SimpleNamespace(get_buffer=lambda: "black"))
+        assert handed == []
+
+    def test_every_pipeline_build_counts(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        FakeInput.create_pipeline_result = FakePipeline()
+        before = r.pipeline_builds
+        r.create_pipeline()
+        r.create_pipeline()
+        assert r.pipeline_builds == before + 2
 
     def test_shared_sink_returns_none_when_no_embeddable_sink(self, fake_gst, fake_glib, fake_input_cls) -> None:
         fake_gst.ElementFactory = FakeElementFactory(available_elements=set())
@@ -1258,13 +1348,6 @@ class TestSourceSelectionNavigation:
             lambda _s: None,
             raising=True,
         )
-        monkeypatch.setattr(
-            selection_receiver,
-            "_save_source_to_config",
-            lambda _s: None,
-            raising=True,
-        )
-
         assert selection_receiver.confirm_source_selection() is True
 
         # Empty discovered list → False.
@@ -1378,48 +1461,57 @@ class TestSetSource:
 # --------------------------------------------------------------------------- #
 
 
-class TestSaveSourceToConfig:
-    def test_save_source_invokes_configuration_roundtrip(
-        self, fake_gst, fake_glib, fake_input_cls, monkeypatch, tmp_path
-    ) -> None:
-        loaded: list[str] = []
-        saved: list[tuple[Any, str]] = []
+class TestSourcePickIsReported:
+    """The receiver connects a picked source and hands it to whoever saves it; it writes no file."""
 
-        class FakeCfg:
-            fake_source: str = ""
-
-        def fake_load(path: str) -> FakeCfg:
-            loaded.append(path)
-            return FakeCfg()
-
-        def fake_save(cfg: FakeCfg, path: str) -> None:
-            saved.append((cfg, path))
-
-        import openfollow.configuration as configuration_mod
-
-        monkeypatch.setattr(configuration_mod, "load_config", fake_load)
-        monkeypatch.setattr(configuration_mod, "save_config", fake_save)
-
-        cfg_path = str(tmp_path / "config.toml")
-        r = _make_receiver(config_path=cfg_path)
-        r._save_source_to_config("cam-42")
-
-        assert loaded == [cfg_path]
-        assert len(saved) == 1
-        assert saved[0][0].fake_source == "cam-42"
-        assert saved[0][1] == cfg_path
-
-    def test_save_source_swallows_errors(self, fake_gst, fake_glib, fake_input_cls, monkeypatch) -> None:
-        """A failing save must not crash the GLib main-thread handler."""
-        import openfollow.configuration as configuration_mod
-
+    @pytest.fixture
+    def picking(self, fake_gst, fake_glib, fake_input_cls, monkeypatch):  # noqa: ANN001, ANN201
         monkeypatch.setattr(
-            configuration_mod,
-            "load_config",
-            lambda _p: (_ for _ in ()).throw(RuntimeError("disk full")),
+            FakeInput, "_capabilities", InputCapabilities(has_source_selection=True, has_source_discovery=True)
         )
+        FakeInput.create_pipeline_result = FakePipeline()
+        picked: list[tuple[str, str]] = []
+        r = _make_receiver(on_source_picked=lambda field, value: picked.append((field, value)))
+        r._discovered_sources = ["  CAM-1 (Stage)  ", "CAM-2 (Stage)"]
+        r._state.activate_source_selection()
+        return r, picked
+
+    def test_the_picked_source_is_connected_and_reported_once(self, picking) -> None:  # noqa: ANN001
+        r, picked = picking
+
+        assert r.confirm_source_selection() is True
+
+        assert picked == [("fake_source", "CAM-1 (Stage)")]
+        assert r._input_config["fake_source"] == "CAM-1 (Stage)"
+
+    def test_nothing_is_reported_when_nothing_was_picked(self, picking) -> None:  # noqa: ANN001
+        r, picked = picking
+        r._state.deactivate_source_selection()
+
+        assert r.confirm_source_selection() is False
+
+        assert picked == []
+
+    def test_an_input_without_a_source_field_reports_nothing(self, picking, monkeypatch) -> None:  # noqa: ANN001
+        r, picked = picking
+        monkeypatch.setattr(FakeInput, "_config_fields", [])
+        monkeypatch.setattr(r, "set_source", lambda _source: None)
+
+        assert r.confirm_source_selection() is True
+
+        assert picked == []
+
+    def test_a_pick_without_a_listener_still_connects(self, fake_gst, fake_glib, fake_input_cls, monkeypatch) -> None:
+        monkeypatch.setattr(
+            FakeInput, "_capabilities", InputCapabilities(has_source_selection=True, has_source_discovery=True)
+        )
+        FakeInput.create_pipeline_result = FakePipeline()
         r = _make_receiver()
-        r._save_source_to_config("cam-1")  # must not raise
+        r._discovered_sources = ["CAM-1 (Stage)"]
+        r._state.activate_source_selection()
+
+        assert r.confirm_source_selection() is True
+        assert r._input_config["fake_source"] == "CAM-1 (Stage)"
 
 
 # --------------------------------------------------------------------------- #
@@ -1696,12 +1788,14 @@ class TestReconnect:
         placeholder = FakePipeline()
         r._pipeline_assembler.create_placeholder_pipeline = lambda: placeholder
         r._state.reconnect_attempt = 1  # hit the limit
+        assert r.source_name == "cam-1"
 
         result = r._do_reconnect()
         assert result is False
         assert r._state.is_placeholder_pipeline is True
         # Primary config field cleared so selection UI is empty.
         assert r._input_config["fake_source"] == ""
+        assert r.source_name == ""
         assert r.source_selection_active is True
         assert FakeState.PLAYING in placeholder.state_changes
 
@@ -1712,6 +1806,308 @@ class TestReconnect:
         r._state.reconnect_attempt = 1
         result = r._do_reconnect()
         assert result is False
+
+
+class TestSourceLabel:
+    """The label the Operator Screen reads every frame, worked out only when what it names changes."""
+
+    @pytest.fixture
+    def label_calls(self, monkeypatch) -> list[dict[str, Any]]:
+        calls: list[dict[str, Any]] = []
+        label = FakeInput.get_source_label.__func__
+
+        def counted(cls: type, config: dict[str, Any]) -> str:
+            calls.append(dict(config))
+            return label(cls, config)
+
+        monkeypatch.setattr(FakeInput, "get_source_label", classmethod(counted))
+        return calls
+
+    def test_the_label_is_worked_out_once_while_nothing_changes(
+        self, fake_gst, fake_glib, fake_input_cls, label_calls
+    ) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        label_calls.clear()
+        assert [r.source_name for _ in range(3)] == ["cam-1"] * 3
+        assert len(label_calls) == 1
+
+    def test_a_picked_source_renames_the_label(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        assert r.source_name == "cam-1"
+        r.set_source("cam-2")
+        assert r.source_name == "cam-2"
+
+    def test_a_swapped_input_names_the_label_before_it_builds(
+        self, fake_gst, fake_glib, fake_input_pair, monkeypatch
+    ) -> None:
+        # No source configured: play() starts a placeholder, not the new input's pipeline.
+        monkeypatch.setattr(FakeInputAlt, "get_source_label", classmethod(lambda cls, config: "alt"))
+        monkeypatch.setattr(threading, "Thread", _SyncSwapThread)
+        r = _make_receiver()
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+        assert r.source_name == ""
+        r.swap_input("fake_alt", {})
+        assert r.source_name == "alt"
+
+    def test_a_source_picked_while_the_label_is_worked_out_is_not_hidden(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        # The stats route reads the label on the web thread while the GTK thread picks a source.
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+
+        def label(cls: type, config: dict[str, Any]) -> str:
+            name = config["fake_source"]
+            r._input_config["fake_source"] = "cam-2"
+            return name
+
+        monkeypatch.setattr(FakeInput, "get_source_label", classmethod(label))
+        assert r.source_name == "cam-1"
+        assert r.source_name == "cam-2"
+
+    def test_a_rebuilt_pipeline_works_the_label_out_again(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        # An input resolves what it plays as it builds, as the Media Gallery its selection on disk.
+        playing = {"name": "Stage"}
+        monkeypatch.setattr(FakeInput, "get_source_label", classmethod(lambda cls, config: playing["name"]))
+        monkeypatch.setattr(FakeInput, "create_pipeline_result", FakePipeline())
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        assert r.source_name == "Stage"
+        playing["name"] = "Concert"
+        assert r.source_name == "Stage"
+        r.create_pipeline()
+        assert r.source_name == "Concert"
+
+    def test_a_rebuild_while_the_label_is_worked_out_is_not_hidden(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        # The stats route reads the label on the web thread while the GTK thread rebuilds.
+        playing = {"name": "Stage"}
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+
+        def label(cls: type, config: dict[str, Any]) -> str:
+            name = playing["name"]
+            if name == "Stage":
+                playing["name"] = "Concert"
+                r.create_pipeline()
+            return name
+
+        monkeypatch.setattr(FakeInput, "get_source_label", classmethod(label))
+        monkeypatch.setattr(FakeInput, "create_pipeline_result", FakePipeline())
+        assert r.source_name == "Stage"
+        assert r.source_name == "Concert"
+
+
+class TestGlDisplay:
+    """A GL display brings the sink the pipeline ends in and the widget the window shows."""
+
+    def test_the_display_s_sink_and_widget_replace_gtksink(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        sinks: list[Any] = []
+
+        def create_pipeline(_self: Any, config: Any, sink: Any, build_overlay_tail: Any, prepare_sink: Any) -> Any:
+            sinks.append(sink)
+            return FakePipeline()
+
+        monkeypatch.setattr(FakeInput, "create_pipeline", create_pipeline)
+        display = SimpleNamespace(sink=FakeElement("shared_videosink"), widget=object())
+        r = receiver_mod.GstNativeSinkReceiver(source_type="fake", input_config={}, display=display)
+        r.create_pipeline()
+        assert sinks == [display.sink]
+        assert r.get_sink_widget() is display.widget
+
+    def test_each_frame_reaching_the_display_s_sink_tells_the_listener(
+        self, fake_gst, fake_glib, fake_input_cls
+    ) -> None:
+        display = SimpleNamespace(sink=FakeElement("shared_videosink"), widget=object())
+        r = receiver_mod.GstNativeSinkReceiver(source_type="fake", input_config={}, display=display)
+        frames: list[None] = []
+        r.set_display_frame_listener(lambda: frames.append(None))
+        assert r._get_shared_sink() is display.sink
+        ((kind, probe),) = display.sink.get_static_pad("sink").probes
+        assert kind == FakePadProbeType.BUFFER
+        assert probe(None, None) == FakePadProbeReturn.OK
+        assert frames == [None]
+
+    @pytest.mark.parametrize("teardown", ["stop", "swap", "reconnect", "error"])
+    def test_the_display_hands_its_frames_back_before_the_pipeline_stops(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch, teardown: str
+    ) -> None:
+        order: list[str] = []
+
+        class _Pipeline(FakePipeline):
+            def set_state(self, state: str) -> str:
+                order.append(f"set_state {state}")
+                return super().set_state(state)
+
+        class _SyncThread:
+            def __init__(self, target, daemon=False, name=""):  # noqa: ANN001
+                self._target = target
+
+            def start(self) -> None:
+                self._target()
+
+            def join(self, timeout: float = 0.0) -> None:
+                return None
+
+            def is_alive(self) -> bool:
+                return False
+
+        monkeypatch.setattr(threading, "Thread", _SyncThread)
+        display = SimpleNamespace(
+            sink=FakeElement("shared_videosink"), widget=object(), release_frames=lambda: order.append("release")
+        )
+        r = receiver_mod.GstNativeSinkReceiver(source_type="fake", input_config={}, display=display)
+        r._pipeline = _Pipeline()
+        if teardown == "stop":
+            r.stop()
+        elif teardown == "swap":
+            r._null_transition_current_pipeline(swap_label="test")
+        elif teardown == "reconnect":
+            monkeypatch.setattr(r, "play", lambda: None)
+            r._do_reconnect()
+        else:
+            r._schedule_reconnect("boom")
+
+        assert order[0] == "release"
+        assert f"set_state {FakeState.NULL}" in order
+
+    @staticmethod
+    def _receiver_on_a_display(fake_gst, monkeypatch, *, stuck: bool = False) -> tuple[Any, Any, list, list, list]:
+        """A configured source playing on a GL display; returns it, the display, sinks, embeds and releases."""
+        sinks: list[Any] = []
+        embedded: list[Any] = []
+        released: list[int] = []
+
+        class _StuckPipeline(FakePipeline):
+            def get_state(self, timeout_ns: int = 0) -> tuple[str, str, str]:
+                return (FakeStateChangeReturn.ASYNC, FakeState.PLAYING, FakeState.NULL)
+
+        def create_pipeline(_self: Any, config: Any, sink: Any, build_overlay_tail: Any, prepare_sink: Any) -> Any:
+            sinks.append(sink)
+            elements = {"shared_videosink": sink} if sink is not None else {}
+            return _StuckPipeline(elements=elements) if stuck and len(sinks) == 1 else FakePipeline(elements=elements)
+
+        def make(kind: str, name: str) -> FakeElement:
+            element = FakeElement(name=name)
+            element.set_property("widget", f"{kind} widget")
+            return element
+
+        monkeypatch.setattr(FakeInput, "create_pipeline", create_pipeline)
+        monkeypatch.setattr(fake_gst.ElementFactory, "make", make)
+        display = SimpleNamespace(
+            sink=FakeElement("shared_videosink"),
+            widget="GL area",
+            release_frames=lambda: released.append(1),
+            accept_frames=lambda: None,
+        )
+        r = receiver_mod.GstNativeSinkReceiver(
+            source_type="fake",
+            input_config={"fake_source": "cam-1"},
+            on_widget_changed=embedded.append,
+            display=display,
+        )
+        monkeypatch.setattr(r, "_select_sink_name", lambda: "gtksink")
+        r.create_pipeline()
+        embedded.append(r.get_sink_widget())
+        r.play()
+        return r, display, sinks, embedded, released
+
+    def test_dropping_the_display_rebuilds_the_pipeline_on_the_platform_sink(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        r, display, sinks, embedded, released = self._receiver_on_a_display(fake_gst, monkeypatch)
+        frames: list[None] = []
+        r.set_display_frame_listener(lambda: frames.append(None))
+        r.drop_display()
+
+        assert released == [1]
+        assert sinks[0] is display.sink and sinks[-1] is not display.sink
+        # The window shows the platform sink's widget in place of the GL area.
+        assert embedded == ["GL area", "gtksink widget"]
+        assert FakeState.PLAYING in r._pipeline.state_changes
+        # The new sink is watched like the display's was, and its frames still reach the listener.
+        pad = sinks[-1].get_static_pad("sink")
+        assert len(pad.probes) == len(display.sink.get_static_pad("sink").probes) == 3
+        for kind, probe in pad.probes:
+            if kind == FakePadProbeType.BUFFER:
+                probe(pad, None)
+        assert frames == [None]
+
+    def test_a_stuck_pipeline_still_hands_the_window_and_the_next_build_to_the_platform_sink(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        r, display, sinks, embedded, released = self._receiver_on_a_display(fake_gst, monkeypatch, stuck=True)
+
+        with pytest.raises(receiver_mod.PipelineStuckError):
+            r.drop_display()
+        assert released == [1]
+        assert embedded == ["GL area", "gtksink widget"]
+
+        r._pipeline = None  # the stuck pipeline stopped at last
+        r.create_pipeline()
+        assert sinks[-1] is not display.sink and sinks[-1].get_property("widget") == "gtksink widget"
+
+    @pytest.mark.parametrize("timer", ["reconnect", "heal", "watchdog"])
+    def test_a_recovery_timer_pending_when_the_display_drops_never_acts_on_the_new_pipeline(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch, timer: str
+    ) -> None:
+        r, _display, _sinks, _embedded, _released = self._receiver_on_a_display(fake_gst, monkeypatch)
+        r.set_recovery_timers(stall_timeout=6.0, heal_interval=5.0)
+        arm = {
+            "reconnect": lambda: r._schedule_reconnect("lost link"),
+            "heal": r._schedule_heal,
+            "watchdog": r._start_watchdog,
+        }
+        arm[timer]()
+        pending = set(fake_glib.timers)
+        assert pending
+        r.drop_display()
+
+        assert not pending & set(fake_glib.timers)
+
+    def test_dropping_the_display_with_no_platform_sink_embeds_nothing(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        r, display, sinks, embedded, released = self._receiver_on_a_display(fake_gst, monkeypatch)
+        monkeypatch.setattr(r, "_select_sink_name", lambda: None)
+        r.drop_display()
+
+        assert embedded == ["GL area"]
+        assert sinks[-1] is None
+
+    def test_dropping_no_display_changes_nothing(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = receiver_mod.GstNativeSinkReceiver(source_type="fake", input_config={})
+        pipeline = r._pipeline
+        r.drop_display()
+        assert r._pipeline is pipeline
+
+    def test_the_display_takes_frames_again_only_when_its_sink_joins_the_next_pipeline(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        order: list[str] = []
+
+        def create_pipeline(_self: Any, config: Any, sink: Any, build_overlay_tail: Any, prepare_sink: Any) -> Any:
+            prepared = prepare_sink()
+            order.append("build")
+            return FakePipeline(elements={"shared_videosink": prepared})
+
+        monkeypatch.setattr(FakeInput, "create_pipeline", create_pipeline)
+        display = SimpleNamespace(
+            sink=FakeElement("shared_videosink"),
+            widget=object(),
+            release_frames=lambda: order.append("release"),
+            accept_frames=lambda: order.append("accept"),
+        )
+        r = receiver_mod.GstNativeSinkReceiver(
+            source_type="fake", input_config={"fake_source": "cam-1"}, display=display
+        )
+        r.create_pipeline()
+        r._do_reconnect()
+
+        assert order[:2] == ["accept", "build"]
+        assert order.index("release") < order.index("accept", 2) < order.index("build", 2)
 
 
 # --------------------------------------------------------------------------- #
@@ -2848,46 +3244,6 @@ class TestSetSourceWithoutConfigFields:
         assert r._input_config["fake_source"] == "old"
 
 
-class TestSaveSourceWithoutConfigFields:
-    """``_save_source_to_config`` must short-circuit silently when the
-    plugin has no config fields – branch 529→532."""
-
-    def test_save_source_no_config_fields_writes_no_attr(
-        self,
-        fake_gst,
-        fake_glib,
-        fake_input_cls,
-        monkeypatch,
-        tmp_path,
-    ) -> None:
-        monkeypatch.setattr(FakeInput, "_config_fields", [])
-
-        attrs_set: list[tuple[str, Any]] = []
-
-        class FakeCfg:
-            def __setattr__(self, key: str, value: Any) -> None:  # noqa: ANN401
-                attrs_set.append((key, value))
-
-        saved: list[tuple[Any, str]] = []
-
-        import openfollow.configuration as configuration_mod
-
-        monkeypatch.setattr(configuration_mod, "load_config", lambda _p: FakeCfg())
-        monkeypatch.setattr(
-            configuration_mod,
-            "save_config",
-            lambda cfg, path: saved.append((cfg, path)),
-        )
-
-        cfg_path = str(tmp_path / "c.toml")
-        r = _make_receiver(config_path=cfg_path)
-        r._save_source_to_config("anything")
-
-        # Save still happened, but no setattr was performed on the cfg.
-        assert saved and saved[0][1] == cfg_path
-        assert attrs_set == []
-
-
 class TestExitSourceSelectionCancelled:
     """The else-branch of ``exit_source_selection`` fires when the
     receiver was not previously connected AND no source is configured.
@@ -3846,8 +4202,9 @@ class _FakeDetector:
     def start(self) -> None:
         self.start_calls += 1
 
-    def stop(self) -> None:
+    def stop(self, *, wait: bool = True) -> None:
         self.stop_calls += 1
+        self.waited = wait
 
     def set_appsink(self, appsink: Any) -> None:
         self.set_appsink_calls.append(appsink)
@@ -3893,6 +4250,8 @@ class TestSwapDetectionBranch:
         assert r._pipeline_assembler._detector is new_detector
         # OLD detector stopped; NEW detector started after rebuild.
         assert old_detector.stop_calls == 1
+        # Detached by the NULL transition; an inference in flight finishes off the main thread.
+        assert old_detector.waited is False
         assert new_detector.start_calls == 1
         # The widget callback was NOT called with None – canvas keeps
         # the shared sink across the swap.
@@ -4477,6 +4836,185 @@ class TestRecoveryTimerOverrides:
         assert r._state.reconnect_source_id is not None
 
 
+class TestRecoveryTimersActOnTheFeed:
+    """A saved timer acts on the feed as it is now, not only from its next connection."""
+
+    @staticmethod
+    def _parked(**receiver) -> receiver_mod.GstNativeSinkReceiver:
+        """A fixed-URL feed that used up its reconnects with healing off: on the placeholder, nothing pending."""
+        r = receiver_mod.GstNativeSinkReceiver(
+            source_type="fake", input_config={"fake_source": "cam-1"}, heal_interval=0.0, **receiver
+        )
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+        r._state.reconnect_attempt = 2  # FakeInput's max_attempts
+        r._do_reconnect()
+        assert r._state.is_placeholder_pipeline and r._heal_source_id is None
+        return r
+
+    def test_a_heal_interval_set_while_parked_starts_healing_at_it(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = self._parked()
+        r.set_recovery_timers(heal_interval=5.0)
+        delay_ms, cb = fake_glib.timers[r._heal_source_id]
+        assert (delay_ms, cb.__name__) == (5000, "_do_heal")
+
+    def test_a_pending_heal_moves_to_the_new_interval(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = self._parked()
+        r.set_recovery_timers(heal_interval=60.0)
+        old = r._heal_source_id
+        r.set_recovery_timers(heal_interval=5.0)
+        assert old in fake_glib.removed
+        assert fake_glib.timers[r._heal_source_id][0] == 5000
+
+    def test_a_heal_interval_of_zero_stops_healing(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = self._parked()
+        r.set_recovery_timers(heal_interval=5.0)
+        pending = r._heal_source_id
+        r.set_recovery_timers(heal_interval=0.0)
+        assert pending in fake_glib.removed
+        assert r._heal_source_id is None
+
+    def test_a_save_that_leaves_the_heal_interval_keeps_the_pending_heal(
+        self, fake_gst, fake_glib, fake_input_cls
+    ) -> None:
+        """The live-apply passes both timers whichever changed; restarting the heal would put the next probe off."""
+        r = self._parked()
+        r.set_recovery_timers(stall_timeout=3.0, heal_interval=5.0)
+        pending = r._heal_source_id
+        r.set_recovery_timers(stall_timeout=4.0, heal_interval=5.0)
+        assert r._heal_source_id == pending and pending not in fake_glib.removed
+        assert r._watchdog_source_id is None
+
+    @pytest.mark.parametrize("pending", ["reconnect", "connection timeout"])
+    def test_a_feed_still_reconnecting_is_not_parked(self, fake_gst, fake_glib, fake_input_cls, pending) -> None:
+        """Its own timer brings it back; a heal would cancel that timer."""
+        r = self._parked()
+        if pending == "reconnect":
+            r._schedule_reconnect("lost link")
+            timer = r._state.reconnect_source_id
+        else:
+            r._start_connection_timeout()
+            timer = r._state.connection_timeout_id
+        r.set_recovery_timers(heal_interval=5.0)
+        assert r._heal_source_id is None
+        assert timer in fake_glib.timers
+
+    @pytest.mark.parametrize("release", ["release_for_pin", "release_source"])
+    def test_a_released_feed_waits_for_whoever_released_it(self, fake_gst, fake_glib, fake_input_cls, release) -> None:
+        """The network plane rebuilds a feed whose pinned interface lost its address; a heal must not."""
+        r = self._parked()
+        getattr(r, release)("eth1 has no address")
+        r.set_recovery_timers(heal_interval=5.0)
+        assert r._heal_source_id is None
+
+    def test_a_feed_built_again_is_no_longer_parked(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        """A rebuild from a saved source setting starts its own connection, whatever comes of it."""
+        r = self._parked()
+        r._input.create_pipeline_result = FakePipeline()
+        r.create_pipeline()
+        assert not r._state.is_placeholder_pipeline
+        r.set_recovery_timers(heal_interval=5.0)
+        assert r._heal_source_id is None
+
+    @pytest.mark.parametrize("source", ["", "cam-2"], ids=["no-source", "another-source"])
+    def test_a_feed_swapped_after_parking_is_no_longer_parked(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch, source
+    ) -> None:
+        """A new source starts its own connection; one with nothing to dial would otherwise heal forever."""
+        r = self._parked()
+        monkeypatch.setattr(FakeInput, "create_pipeline_result", FakePipeline())
+        r.swap_input("fake", {"fake_source": source})
+        r.set_recovery_timers(heal_interval=5.0)
+        assert r._heal_source_id is None
+
+    def test_a_watchdog_armed_as_a_save_lands_reads_the_saved_timeout(
+        self, fake_gst, fake_glib, fake_input_cls
+    ) -> None:
+        """The first frame arms it on the streaming thread while a save writes the timeout on the main loop."""
+        r = receiver_mod.GstNativeSinkReceiver(
+            source_type="fake", input_config={"fake_source": "cam-1"}, stall_timeout=0.0
+        )
+        lock = r._watchdog_lock
+
+        class _SaveLandsFirst:
+            def __enter__(self):
+                r._reconnect_policy.stall_timeout = 3.0  # the save, landing as the arm waits for the lock
+                return lock.__enter__()
+
+            def __exit__(self, *exc):
+                return lock.__exit__(*exc)
+
+        r._watchdog_lock = _SaveLandsFirst()
+        r._start_watchdog()
+        assert fake_glib.timers[r._watchdog_source_id][0] == 1000
+
+    def test_a_build_that_failed_from_the_start_is_not_healed(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        """Only the fallback parks a feed; a failed first build keeps its own reason on screen."""
+        r = receiver_mod.GstNativeSinkReceiver(
+            source_type="fake", input_config={"fake_source": "cam-1"}, heal_interval=0.0
+        )
+        r._input.create_pipeline_raises = RuntimeError("element missing")
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+        r.create_pipeline()
+        assert r._state.is_placeholder_pipeline
+        r.set_recovery_timers(heal_interval=5.0)
+        assert r._heal_source_id is None
+
+    def test_a_source_found_by_discovery_is_not_healed(self, fake_gst, fake_glib, fake_input_cls, monkeypatch) -> None:
+        """A selectable, discoverable input (NDI) is brought back when it is announced again."""
+        monkeypatch.setattr(
+            FakeInput,
+            "_capabilities",
+            replace(FakeInput._capabilities, has_source_selection=True, has_source_discovery=True),
+        )
+        r = receiver_mod.GstNativeSinkReceiver(
+            source_type="fake", input_config={"fake_source": "cam-1"}, heal_interval=0.0
+        )
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+        r._state.reconnect_attempt = 2
+        r._do_reconnect()
+        r.set_recovery_timers(heal_interval=5.0)
+        assert r._heal_source_id is None
+
+    def test_a_running_feed_gets_no_heal(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = self._parked()
+        r._state.connected = True
+        r.set_recovery_timers(heal_interval=5.0)
+        assert r._heal_source_id is None
+
+    def test_a_stall_timeout_of_zero_stops_the_watchdog_on_save(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = receiver_mod.GstNativeSinkReceiver(
+            source_type="fake", input_config={"fake_source": "cam-1"}, stall_timeout=3.0
+        )
+        r._state.connected = True
+        r._start_watchdog()
+        armed = r._watchdog_source_id
+        r.set_recovery_timers(stall_timeout=0.0)
+        assert armed in fake_glib.removed and r._watchdog_source_id is None
+
+    def test_a_stall_timeout_switched_on_arms_the_running_feed(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        """Judged by the frame clock every buffer stamps, so a feed that already stalled is caught."""
+        r = receiver_mod.GstNativeSinkReceiver(
+            source_type="fake", input_config={"fake_source": "cam-1"}, stall_timeout=0.0
+        )
+        r._state.connected = True
+        r._start_watchdog()
+        assert r._watchdog_source_id is None
+        r._last_frame_monotonic = time.monotonic() - 100
+
+        r.set_recovery_timers(stall_timeout=3.0)
+
+        assert fake_glib.timers[r._watchdog_source_id][0] == 1000
+        assert r._do_watchdog() is False
+        assert r._state.reconnect_source_id is not None
+
+    def test_a_feed_that_is_not_running_gets_no_watchdog(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = receiver_mod.GstNativeSinkReceiver(
+            source_type="fake", input_config={"fake_source": "cam-1"}, stall_timeout=0.0
+        )
+        r.set_recovery_timers(stall_timeout=3.0)
+        assert r._watchdog_source_id is None
+
+
 # --------------------------------------------------------------------------- #
 # Failure diagnosis: how far it got decides what the operator is told
 # --------------------------------------------------------------------------- #
@@ -4821,6 +5359,149 @@ class TestTheDiagnosisSurvivesToTheStateTheOperatorSees:
         assert r.status_marker.failure == VideoFailure.UNAUTHORIZED
 
 
+class TestAFailedAttemptReachesTheInputBeforeTheRetry:
+    """The input reads what failed before it builds the next attempt."""
+
+    def test_the_error_is_handed_to_the_input(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        error = BusError("Could not open resource", RESOURCE_DOMAIN, RESOURCE_OPEN_READ, "debug text")
+
+        r._handle_bus_error(error)
+
+        assert r._input.bus_errors == [error]
+
+    def test_a_failure_with_no_error_hands_nothing_over(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._on_connection_timeout()
+        assert r._input.bus_errors == []
+
+    def test_an_input_that_raises_still_gets_its_retry(
+        self, fake_gst, fake_glib, fake_input_cls, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+
+        def _boom(_error: BusError) -> None:
+            raise RuntimeError("input bug")
+
+        r._input.on_bus_error = _boom
+        with caplog.at_level(logging.ERROR, logger=receiver_mod.__name__):
+            r._handle_bus_error(BusError("Could not open resource", RESOURCE_DOMAIN, RESOURCE_OPEN_READ))
+
+        assert r._state.reconnect_source_id is not None
+        assert r.status_marker.failure == VideoFailure.UNREACHABLE
+        assert "input bug" in caplog.text
+
+
+class _PlayablePipeline(shared_fake_gst.FakePipeline):
+    """The plugin-side fake pipeline, with the bus and state calls the receiver makes."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__(name)
+        self.bus = FakeBus()
+
+    def get_bus(self) -> FakeBus:
+        return self.bus
+
+    def set_state(self, state: str) -> str:
+        return FakeStateChangeReturn.SUCCESS
+
+    def get_state(self, timeout_ns: int = 0) -> tuple[str, str, str]:
+        return (FakeStateChangeReturn.SUCCESS, FakeState.NULL, FakeState.NULL)
+
+    def get_by_name(self, name: str) -> Any:
+        # Holds the receiver's own sink, a different fake, beside the plugin's elements.
+        return next((elem for elem in self.elements if elem.get_name() == name), None)
+
+
+class TestAnRtspAddressFamilyFailureRetriesOverTcp:
+    """The real RTSP input behind the receiver: the server described its
+    stream, then rtspsrc's UDP ports turned out to be of the other IP family
+    than the address the connection reached. The retry has to run over TCP
+    interleaved, and the operator is told what was observed, not the
+    element's own wording."""
+
+    _ERROR = BusError(
+        message="Could not get/set settings from/on resource.",
+        domain=RESOURCE_DOMAIN,
+        code=RESOURCE_SETTINGS,
+        debug=(
+            "../gst/udp/gstmultiudpsink.c(1229): gst_multiudpsink_configure_client (): "
+            "/GstPipeline:rtsp-sink/GstRTSPSrc:rtspsrc/GstUDPSink:udpsink0:\nInvalid address family (got 10)"
+        ),
+    )
+
+    @pytest.fixture
+    def receiver(self, fake_gst, fake_glib, monkeypatch: pytest.MonkeyPatch) -> receiver_mod.GstNativeSinkReceiver:
+        from gi.repository import Gst  # noqa: F401 - loads the attribute patched below
+
+        plugin_gst = shared_fake_gst.make_fake_gst()
+        plugin_gst.Pipeline = SimpleNamespace(new=_PlayablePipeline)
+        monkeypatch.setattr("gi.repository.Gst", plugin_gst)
+        monkeypatch.setattr(receiver_mod, "get_input_class", lambda input_id: RtspInput if input_id == "rtsp" else None)
+        # An IPv6 literal still fails on the address family: the UDP family follows the server's session description.
+        return receiver_mod.GstNativeSinkReceiver(
+            source_type="rtsp", input_config={"rtsp_url": "rtsp://[2001:db8::10]:554/stream"}, reconnect_delay=0.2
+        )
+
+    @staticmethod
+    def _protocols(r: receiver_mod.GstNativeSinkReceiver) -> object:
+        return r._pipeline.get_by_name("rtspsrc").properties["protocols"]
+
+    @staticmethod
+    def _describe(r: receiver_mod.GstNativeSinkReceiver) -> None:
+        rtspsrc = r._pipeline.get_by_name("rtspsrc")
+        for signal, callback in rtspsrc.signals:
+            if signal == "on-sdp":
+                callback(rtspsrc, None)
+
+    @staticmethod
+    def _retry(r: receiver_mod.GstNativeSinkReceiver, fake_glib: FakeGLib) -> None:
+        _delay, callback = fake_glib.timers[r._state.reconnect_source_id]
+        callback()
+
+    def test_the_retry_runs_over_tcp_interleaved(self, receiver, fake_glib) -> None:
+        receiver.play()
+        assert self._protocols(receiver) == 0x7
+        self._describe(receiver)
+
+        receiver._handle_bus_error(self._ERROR)
+        self._retry(receiver, fake_glib)
+
+        assert self._protocols(receiver) == 0x4
+
+    def test_the_failure_is_classified_not_shown_raw(self, receiver) -> None:
+        receiver.play()
+        self._describe(receiver)
+
+        receiver._handle_bus_error(self._ERROR)
+
+        assert receiver.status_marker.failure == VideoFailure.NO_DATA
+
+    def test_a_saved_change_to_the_source_tries_every_transport_again(self, receiver, fake_glib) -> None:
+        """The input is built anew, so the host the failed attempt moved to TCP is forgotten."""
+        receiver.play()
+        self._describe(receiver)
+        receiver._handle_bus_error(self._ERROR)
+        self._retry(receiver, fake_glib)
+        assert self._protocols(receiver) == 0x4
+
+        receiver.swap_input("rtsp", {"rtsp_url": "rtsp://[2001:db8::10]:554/stream", "rtsp_user": "operator"})
+
+        assert self._protocols(receiver) == 0x7
+
+    def test_a_failed_tcp_retry_is_classified_and_the_next_stays_on_tcp(self, receiver, fake_glib) -> None:
+        receiver.play()
+        self._describe(receiver)
+        receiver._handle_bus_error(self._ERROR)
+        self._retry(receiver, fake_glib)
+
+        receiver._on_connection_timeout()
+
+        assert receiver.status_marker.failure == VideoFailure.NO_DATA
+        self._retry(receiver, fake_glib)
+        assert self._protocols(receiver) == 0x4
+
+
 class TestRefusalReachesTheClassifier:
     """GStreamer puts the OS wording in the debug string, so a receiver that
     forwarded only ``message`` left REFUSED unreachable for every plugin."""
@@ -5088,6 +5769,112 @@ class TestTheInterfacePinRefusesABuild:
         assert r.status_marker.failure is VideoFailure.WRONG_INTERFACE
         assert r.status_marker.reconnect_attempt == 1
 
+    def test_a_refused_build_starts_the_lookup_its_retry_reads(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        """A refused build looks the name up again during its backoff, so the retry's check finds a current answer."""
+        r = self._refused(monkeypatch)
+
+        r.play()
+
+        assert FakeInput.prefetched == ({"fake_source": "cam-1", "video_input_iface": "eth1"},)
+
+    def test_a_dropped_feed_refreshes_the_lookup_before_its_retry(self, fake_gst, fake_glib, fake_input_cls) -> None:
+        """An answer older than its lifetime is looked up again during the backoff, not on the retry."""
+        r = _make_receiver(input_config={"fake_source": "cam-1", "video_input_iface": "eth1"})
+
+        r._handle_bus_error(BusError("Could not open resource for reading", RESOURCE_DOMAIN, RESOURCE_OPEN_READ))
+
+        assert FakeInput.prefetched == ({"fake_source": "cam-1", "video_input_iface": "eth1"},)
+        assert [cb.__name__ for _delay, cb in fake_glib.timers.values()] == ["_do_reconnect"]
+
+    _RESOLVING = PinRefusal(VideoFailure.NONE, "camera.example is still resolving", retry_s=0.2)
+
+    def test_a_name_still_resolving_reads_as_connecting(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch, caplog
+    ) -> None:
+        """A first build that beats its own lookup is no failure: no verdict, no error text, no warning."""
+        monkeypatch.setattr(FakeInput, "_refusal", self._RESOLVING)
+        r = _make_receiver(input_config={"fake_source": "cam-1", "video_input_iface": "eth1"})
+
+        with caplog.at_level(logging.DEBUG, logger="openfollow.video.receiver"):
+            r.play()
+
+        assert FakeInput.create_pipeline_call_count == 0
+        status = r.status_marker.snapshot()
+        assert status.status is ConnectionStatus.CONNECTING
+        assert status.failure is VideoFailure.NONE
+        assert status.error_message == ""
+        assert status.reconnect_attempt == 0
+        assert [rec for rec in caplog.records if rec.levelno >= logging.WARNING] == []
+        # Checked again once its time is up, without spending a backoff step.
+        assert [(delay, cb.__name__) for delay, cb in fake_glib.timers.values()] == [(200, "_recheck_name")]
+        assert r._state.reconnect_attempt == 0
+        assert r._state.is_placeholder_pipeline is True
+
+    def test_a_name_check_replaces_a_reconnect_already_pending(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        """Two timers would build twice; the later one would tear down the first one's pipeline."""
+        r = _make_receiver(input_config={"fake_source": "cam-1", "video_input_iface": "eth1"})
+        r._schedule_reconnect("Stream stalled (no frames received)")
+        assert [cb.__name__ for _delay, cb in fake_glib.timers.values()] == ["_do_reconnect"]
+        monkeypatch.setattr(FakeInput, "_refusal", self._RESOLVING)
+
+        r.play()
+
+        assert [(delay, cb.__name__) for delay, cb in fake_glib.timers.values()] == [(200, "_recheck_name")]
+
+    def test_a_name_check_is_logged_quietly(self, fake_gst, fake_glib, fake_input_cls, monkeypatch, caplog) -> None:
+        """It is no reconnect: the attempt count would read 0 at startup and repeat mid-sequence."""
+        monkeypatch.setattr(FakeInput, "_refusal", self._RESOLVING)
+        r = _make_receiver(input_config={"fake_source": "cam-1", "video_input_iface": "eth1"})
+        r.play()
+        (_delay, recheck), *_ = fake_glib.timers.values()
+
+        with caplog.at_level(logging.DEBUG, logger="openfollow.video.receiver"):
+            recheck()
+
+        assert [rec for rec in caplog.records if rec.levelno >= logging.INFO] == []
+        assert "Checking the Fake source's name again" in caplog.text
+
+    def test_a_name_that_answers_in_its_time_builds_on_the_next_check(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(FakeInput, "_refusal", self._RESOLVING)
+        r = _make_receiver(input_config={"fake_source": "cam-1", "video_input_iface": "eth1"})
+        r.play()
+        built = FakePipeline()
+        FakeInput.create_pipeline_result = built
+        monkeypatch.setattr(FakeInput, "_refusal", None)
+        ((_delay, recheck),) = fake_glib.timers.values()
+        assert recheck.__name__ == "_recheck_name"
+        fake_glib.timers.clear()
+
+        recheck()
+
+        assert r._pipeline is built
+        assert r.status_marker.failure is VideoFailure.NONE
+        assert r.status_marker.error_message == ""
+
+    def test_a_name_unanswered_past_its_time_is_the_failure_it_was(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(FakeInput, "_refusal", self._RESOLVING)
+        r = _make_receiver(input_config={"fake_source": "cam-1", "video_input_iface": "eth1"})
+        r.play()
+        late = PinRefusal(VideoFailure.UNKNOWN, "camera.example did not resolve in time to check it against eth1")
+        monkeypatch.setattr(FakeInput, "_refusal", late)
+        ((_delay, recheck),) = fake_glib.timers.values()
+        assert recheck.__name__ == "_recheck_name"
+        fake_glib.timers.clear()
+
+        recheck()
+
+        assert r.status_marker.failure is VideoFailure.UNKNOWN
+        assert r.status_marker.error_message == late.detail
+        assert r.status_marker.reconnect_attempt == 1
+
     def test_a_retry_that_is_still_refused_keeps_the_verdict(
         self, fake_gst, fake_glib, fake_input_cls, monkeypatch
     ) -> None:
@@ -5250,3 +6037,369 @@ class TestTheInterfacePinRefusesABuild:
         r.create_pipeline()
 
         assert FakeInput.create_pipeline_call_count == 1
+
+
+# --------------------------------------------------------------------------- #
+# A lost source that is announced again
+# --------------------------------------------------------------------------- #
+
+
+class TestReturningSource:
+    """An input with a picker that gave up returns to its source once discovery announces it again."""
+
+    @pytest.fixture
+    def lost(self, fake_gst, fake_glib, fake_input_cls, monkeypatch):
+        monkeypatch.setattr(
+            FakeInput,
+            "_capabilities",
+            InputCapabilities(has_source_selection=True, has_source_discovery=True, discovery_interval=5.0),
+        )
+        monkeypatch.setattr(
+            FakeInput,
+            "_reconnect_policy",
+            ReconnectPolicy(max_attempts=1, fallback_to_selection=True, connection_timeout=0),
+        )
+        monkeypatch.setattr(threading, "Thread", _SyncSwapThread)
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+        r._state.note_phase(ConnectionPhase.DECODING)  # it was showing video when it went away
+        self._give_up(r, fake_glib)
+        return r
+
+    @staticmethod
+    def _give_up(r, glib, *listed: str) -> None:
+        """Run out of attempts; the discovery pass that follows lists *listed*."""
+        r._state.reconnect_attempt = 1
+        r._input.discover_results = [list(listed)]
+        r._do_reconnect()
+        assert r._state.is_placeholder_pipeline and r.source_selection_active and r._input_config["fake_source"] == ""
+        glib.run_idles()
+
+    @staticmethod
+    def _announce(r, glib, *sources: str) -> None:
+        r._input.discover_results = [list(sources)]
+        r._do_discovery()
+        glib.run_idles()
+
+    def test_the_source_is_reconnected_once_announced_again(self, lost, fake_glib) -> None:
+        FakeInput.create_pipeline_result = FakePipeline()
+        self._announce(lost, fake_glib, "cam-2", "cam-1")
+        assert lost.source_name == "cam-1"
+        assert lost.source_selection_active is False
+        assert lost._pipeline is FakeInput.create_pipeline_result
+
+    def test_nothing_happens_while_it_stays_away(self, lost, fake_glib) -> None:
+        self._announce(lost, fake_glib, "cam-2")
+        assert lost.source_name == ""
+        assert lost._state.is_placeholder_pipeline
+        assert lost.source_selection_active is True
+
+    def test_a_moved_selection_in_the_open_picker_does_not_hold_it_back(self, lost, fake_glib) -> None:
+        self._announce(lost, fake_glib, "cam-2", "cam-3")
+        lost.select_source_down()
+        self._announce(lost, fake_glib, "cam-2", "cam-3", "cam-1")
+        assert lost.source_name == "cam-1"
+        assert lost.source_selection_active is False
+
+    def test_closing_the_picker_keeps_the_wait_and_the_verdict(self, lost, fake_glib) -> None:
+        before = lost._status_marker.snapshot()
+        lost.exit_source_selection()
+        after = lost._status_marker.snapshot()
+        assert after.error_message == before.error_message
+        assert after.failure == before.failure
+        assert lost._discovery_source_id in fake_glib.timers
+        self._announce(lost, fake_glib, "cam-1")
+        assert lost.source_name == "cam-1"
+
+    def test_a_source_the_operator_picks_ends_the_wait(self, lost, fake_glib) -> None:
+        self._announce(lost, fake_glib, "cam-2")
+        assert lost.confirm_source_selection() is True
+        assert lost.source_name == "cam-2"
+        lost._state.set_placeholder_pipeline(True)  # cam-2 failed too: back on No Signal
+        self._announce(lost, fake_glib, "cam-1", "cam-2")
+        assert lost.source_name == "cam-2"
+
+    def test_a_return_queued_before_the_operator_picked_is_dropped(self, lost, fake_glib) -> None:
+        lost._input.discover_results = [["cam-1", "cam-2"]]
+        lost._do_discovery()
+        assert len(fake_glib.idles) == 1
+        lost.set_source("cam-2")
+        lost._state.set_placeholder_pipeline(True)
+        fake_glib.run_idles()
+        assert lost.source_name == "cam-2"
+
+    def test_a_new_source_from_the_config_ends_the_wait(self, lost, fake_glib) -> None:
+        lost.swap_input("fake", {"fake_source": ""})
+        lost._state.set_placeholder_pipeline(True)
+        self._announce(lost, fake_glib, "cam-1")
+        assert lost.source_name == ""
+
+    def test_a_running_pipeline_is_not_replaced(self, lost, fake_glib) -> None:
+        lost._state.set_placeholder_pipeline(False)
+        self._announce(lost, fake_glib, "cam-1")
+        assert lost.source_name == ""
+
+    def test_without_discovery_nothing_is_awaited(self, fake_gst, fake_glib, fake_input_cls, monkeypatch) -> None:
+        monkeypatch.setattr(FakeInput, "_capabilities", InputCapabilities(has_source_selection=True))
+        monkeypatch.setattr(FakeInput, "_reconnect_policy", ReconnectPolicy(max_attempts=1, fallback_to_selection=True))
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+        r._state.reconnect_attempt = 1
+        r._do_reconnect()
+        r.exit_source_selection()
+        assert r._status_marker.snapshot().error_message == "Source selection cancelled"
+
+    def test_closing_a_camera_picker_keeps_the_wait(self, lost, fake_glib, monkeypatch) -> None:
+        # A camera names its default device when none is set, so its label is never empty.
+        monkeypatch.setattr(FakeInput, "get_source_label", classmethod(lambda cls, config: "Camera (1080p@30)"))
+        before = lost._status_marker.snapshot()
+        lost.exit_source_selection()
+        assert lost._state.reconnect_source_id is None
+        assert lost._status_marker.snapshot().error_message == before.error_message
+        self._announce(lost, fake_glib, "cam-1")
+        assert lost._input_config["fake_source"] == "cam-1"
+
+    def test_giving_up_again_keeps_the_name(self, lost, fake_glib) -> None:
+        self._give_up(lost, fake_glib)
+        self._announce(lost, fake_glib, "cam-1")
+        assert lost.source_name == "cam-1"
+
+    def test_a_source_back_before_the_give_up_returns_on_the_first_pass(self, lost, fake_glib) -> None:
+        FakeInput.create_pipeline_result = FakePipeline()
+        self._announce(lost, fake_glib, "cam-1")
+        lost._state.note_phase(ConnectionPhase.DECODING)
+        self._give_up(lost, fake_glib, "cam-1")
+        assert lost.source_name == "cam-1"
+        assert lost.source_selection_active is False
+
+    def test_a_listed_source_that_sent_no_video_is_tried_again_after_a_hold(self, lost, fake_glib) -> None:
+        FakeInput.create_pipeline_result = FakePipeline()
+        self._announce(lost, fake_glib, "cam-1")
+        assert lost.source_name == "cam-1"
+        # Announced but sending nothing: the picker stays up for a while before the next try.
+        self._give_up(lost, fake_glib, "cam-1")
+        for _ in range(receiver_mod._LISTED_RETRY_PASSES - 1):
+            self._announce(lost, fake_glib, "cam-1")
+        assert lost.source_name == ""
+        assert lost.source_selection_active is True
+        self._announce(lost, fake_glib, "cam-1")
+        assert lost.source_name == "cam-1"
+
+    def test_a_source_that_sent_no_video_returns_once_announced_again(self, lost, fake_glib) -> None:
+        FakeInput.create_pipeline_result = FakePipeline()
+        self._announce(lost, fake_glib, "cam-1")
+        self._give_up(lost, fake_glib, "cam-1")
+        self._announce(lost, fake_glib, "cam-2")
+        assert lost.source_name == ""
+        self._announce(lost, fake_glib, "cam-1")
+        assert lost.source_name == "cam-1"
+
+    @pytest.mark.parametrize(
+        "end",
+        [
+            pytest.param(lambda r: r.release_source("Camera released"), id="release_source"),
+            pytest.param(lambda r: r.stop(), id="stop"),
+        ],
+    )
+    def test_a_return_queued_before_the_source_was_released_is_dropped(self, lost, fake_glib, end) -> None:
+        lost._input.discover_results = [["cam-1"]]
+        lost._do_discovery()
+        assert len(fake_glib.idles) == 1
+        end(lost)
+        lost._state.set_placeholder_pipeline(True)
+        builds = FakeInput.create_pipeline_call_count
+        fake_glib.run_idles()
+        assert FakeInput.create_pipeline_call_count == builds
+        assert lost._input_config["fake_source"] == ""
+
+
+# --------------------------------------------------------------------------- #
+# Source limits
+# --------------------------------------------------------------------------- #
+
+_UHD = "video/x-raw, format=(string)NV12, width=(int)3840, height=(int)2160"
+_FHD = "video/x-raw, width=(int)1920, height=(int)1080"
+
+
+def _caps_info(caps: str | None) -> SimpleNamespace:
+    event = SimpleNamespace(type=FakeEventType.CAPS, parse_caps=lambda: FakeCaps(caps) if caps is not None else None)
+    return SimpleNamespace(get_event=lambda: event)
+
+
+def _metered_pipeline() -> tuple[FakePipeline, FakeElement]:
+    queue = FakeElement(name="post_queue")
+    return FakePipeline(elements={"shared_videosink": FakeElement("shared_videosink"), "post_queue": queue}), queue
+
+
+class TestTheSourceIsMeasuredAgainstItsLimits:
+    """The frames that arrive are counted on the plugin's first frame-dropping
+    queue, per attempt, and never the placeholder's."""
+
+    @pytest.fixture
+    def clock(self, monkeypatch) -> list[float]:
+        now = [1000.0]
+        monkeypatch.setattr(receiver_mod, "FrameMeter", lambda: FrameMeter(clock=lambda: now[0]))
+        return now
+
+    def _build(self, monkeypatch, name: str | None = "post_queue") -> tuple[Any, FakePad]:
+        monkeypatch.setattr(FakeInput, "frame_meter_element_name", name, raising=False)
+        pipeline, queue = _metered_pipeline()
+        FakeInput.create_pipeline_result = pipeline
+        r = _make_receiver(input_config={"fake_source": "cam-1"})
+        r.create_pipeline()
+        return r, queue.get_static_pad("sink")
+
+    @staticmethod
+    def _probe(pad: FakePad, kind: str) -> Callable:
+        (callback,) = [cb for probe_type, cb in pad.probes if probe_type == kind]
+        return callback
+
+    def _deliver(self, pad: FakePad, clock: list[float], caps: str, fps: float, seconds: float) -> None:
+        self._probe(pad, FakePadProbeType.EVENT_DOWNSTREAM)(pad, _caps_info(caps))
+        frame = self._probe(pad, FakePadProbeType.BUFFER)
+        start = clock[0]
+        for i in range(int(fps * seconds)):
+            clock[0] = start + i / fps
+            assert frame(pad, object()) == FakePadProbeReturn.OK
+
+    def test_the_metered_queue_carries_a_caps_and_a_frame_probe(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        _r, pad = self._build(monkeypatch)
+        assert sorted(kind for kind, _cb in pad.probes) == [FakePadProbeType.BUFFER, FakePadProbeType.EVENT_DOWNSTREAM]
+
+    def test_nothing_is_read_before_a_frame(self, fake_gst, fake_glib, fake_input_cls, monkeypatch) -> None:
+        r, _pad = self._build(monkeypatch)
+        assert r.source_limits is None
+
+    def test_an_oversized_frame_is_named(self, fake_gst, fake_glib, fake_input_cls, monkeypatch, clock) -> None:
+        r, pad = self._build(monkeypatch)
+        self._deliver(pad, clock, _UHD, 30.0, 1.0)
+        assert r.source_limits is not None
+        assert r.source_limits.over == (OverLimit.RESOLUTION,)
+        assert (r.source_limits.width, r.source_limits.height) == (3840, 2160)
+
+    def test_the_arrival_rate_is_judged_not_the_declared_one(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch, clock
+    ) -> None:
+        r, pad = self._build(monkeypatch)
+        self._deliver(pad, clock, _FHD + ", framerate=(fraction)0/1", 60.0, 12.0)
+        assert r.source_limits is not None
+        assert r.source_limits.over == (OverLimit.FRAME_RATE,)
+        assert r.source_limits.fps == pytest.approx(60.0, abs=0.01)
+
+    def test_a_portrait_feed_at_thirty_reads_within(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch, clock
+    ) -> None:
+        r, pad = self._build(monkeypatch)
+        self._deliver(pad, clock, "video/x-raw, width=(int)1080, height=(int)1920", 30.0, 12.0)
+        assert r.source_limits is not None and r.source_limits.over == ()
+
+    @pytest.mark.parametrize(
+        "info",
+        [
+            pytest.param(SimpleNamespace(get_event=lambda: None), id="no-event"),
+            pytest.param(SimpleNamespace(get_event=lambda: SimpleNamespace(type=FakeEventType.OTHER)), id="not-caps"),
+            pytest.param(_caps_info(None), id="no-caps"),
+            pytest.param(_caps_info("video/x-raw, format=(string)I420"), id="no-size"),
+        ],
+    )
+    def test_an_event_without_a_size_leaves_it_unknown(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch, clock, info
+    ) -> None:
+        r, pad = self._build(monkeypatch)
+        assert self._probe(pad, FakePadProbeType.EVENT_DOWNSTREAM)(pad, info) == FakePadProbeReturn.OK
+        self._probe(pad, FakePadProbeType.BUFFER)(pad, object())
+        assert r.source_limits is not None
+        assert (r.source_limits.width, r.source_limits.height, r.source_limits.over) == (0, 0, ())
+
+    def test_the_placeholder_is_never_measured(self, fake_gst, fake_glib, fake_input_cls, monkeypatch, clock) -> None:
+        r, pad = self._build(monkeypatch)
+        self._deliver(pad, clock, _UHD, 30.0, 1.0)
+        r._pipeline_assembler.create_placeholder_pipeline = lambda: FakePipeline()
+        r._create_placeholder_pipeline()
+        assert r.source_limits is None
+        # A late frame of the old pipeline does not bring it back.
+        self._deliver(pad, clock, _UHD, 30.0, 1.0)
+        assert r.source_limits is None
+
+    def test_dropping_the_display_measures_afresh(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch, clock
+    ) -> None:
+        monkeypatch.setattr(receiver_mod.threading, "Thread", _SyncSwapThread)
+        monkeypatch.setattr(FakeInput, "frame_meter_element_name", "post_queue", raising=False)
+        display = SimpleNamespace(
+            sink=FakeElement("shared_videosink"),
+            widget="GL area",
+            release_frames=lambda: None,
+            accept_frames=lambda: None,
+        )
+        pipeline, queue = _metered_pipeline()
+        FakeInput.create_pipeline_result = pipeline
+        r = receiver_mod.GstNativeSinkReceiver(
+            source_type="fake", input_config={"fake_source": "cam-1"}, display=display
+        )
+        monkeypatch.setattr(r, "_select_sink_name", lambda: "gtksink")
+        r.create_pipeline()
+        self._deliver(queue.get_static_pad("sink"), clock, _UHD, 30.0, 1.0)
+        assert r.source_limits is not None
+
+        FakeInput.create_pipeline_result = FakePipeline(elements={"shared_videosink": FakeElement("shared_videosink")})
+        r.drop_display()
+        assert r.source_limits is None
+
+    def test_a_reconnect_measures_afresh(self, fake_gst, fake_glib, fake_input_cls, monkeypatch, clock) -> None:
+        r, old_pad = self._build(monkeypatch)
+        self._deliver(old_pad, clock, _UHD, 30.0, 1.0)
+        r._schedule_reconnect("Stream stalled")
+        assert r.source_limits is None
+
+        pipeline, queue = _metered_pipeline()
+        FakeInput.create_pipeline_result = pipeline
+        r.create_pipeline()
+        # The old pipeline's probe writes only to its own meter.
+        self._deliver(old_pad, clock, _UHD, 30.0, 1.0)
+        assert r.source_limits is None
+        self._deliver(queue.get_static_pad("sink"), clock, _FHD, 30.0, 1.0)
+        assert r.source_limits is not None and r.source_limits.over == ()
+
+    def test_a_source_change_clears_the_verdict(self, fake_gst, fake_glib, fake_input_cls, monkeypatch, clock) -> None:
+        monkeypatch.setattr(receiver_mod.threading, "Thread", _SyncSwapThread)
+        r, pad = self._build(monkeypatch)
+        self._deliver(pad, clock, _UHD, 30.0, 1.0)
+        FakeInput.create_pipeline_result = FakePipeline(elements={"shared_videosink": FakeElement("shared_videosink")})
+        r.set_source("cam-2")
+        assert r.source_limits is None
+
+    def test_an_input_that_declares_no_queue_is_not_measured(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        r, pad = self._build(monkeypatch, name=None)
+        assert pad.probes == []
+        assert r.source_limits is None
+
+    def test_a_missing_queue_is_survivable(self, fake_gst, fake_glib, fake_input_cls, monkeypatch) -> None:
+        r, pad = self._build(monkeypatch, name="absent_queue")
+        assert pad.probes == []
+        assert r.source_limits is None
+        assert r._pipeline is not None
+
+
+class TestCapsDimensions:
+    @pytest.mark.parametrize(
+        ("caps", "expected"),
+        [
+            ("video/x-raw, format=(string)I420, width=(int)1920, height=(int)1080", (1920, 1080)),
+            ("video/x-raw,width=3840,height=2160", (3840, 2160)),
+            ("image/jpeg, width=(int)1280, height=(int)720, framerate=(fraction)30/1", (1280, 720)),
+            ("video/x-raw(memory:DMABuf), height=(int)1920, width=(int)1080", (1080, 1920)),
+            ("video/x-raw, width=(int)1920", None),
+            ("video/x-raw, height=(int)1080", None),
+            ("video/x-raw, width=(int)0, height=(int)1080", None),
+            ("video/x-raw, max-width=(int)1920, height=(int)1080", None),
+            ("", None),
+            ("ANY", None),
+        ],
+    )
+    def test_it_reads_both_sides_or_nothing(self, caps: str, expected: tuple[int, int] | None) -> None:
+        assert receiver_mod._caps_dimensions(caps) == expected

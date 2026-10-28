@@ -65,6 +65,14 @@ origin_visible = false
 origin_length = 1.0
 origin_thickness = 3
 
+# Experimental: a second floor, one polygon at its own absolute Z. A marker
+# inside it draws its Z line, ground circle and cone base at z_offset.
+[ground_grid]
+enabled = false
+visible = true
+z_offset = 0.0
+vertices = []
+
 [marker]
 min_speed = 0.1
 max_speed = 3.0
@@ -72,11 +80,14 @@ move_speed = 2.0
 default_pos_x = 0.0
 default_pos_y = 0.0
 default_pos_z = 1.6
-# Reverse left/right and forward/back for keyboard, gamepad and 3D mouse.
-# For a camera placed upstage looking downstage, whose picture is rotated
-# 180 degrees from the stage axes. Height is never affected; the mouse and
-# OSC set absolute positions and are unaffected.
-invert_control_direction = false
+# Which way keyboard, gamepad and 3D mouse steer: "stage" (stage axes),
+# "heading" (stage axes turned to control_heading degrees, measured like the
+# camera yaw; 180 for a camera upstage looking downstage), "camera" (the
+# calibrated camera's view, flattened onto the floor) or "screen" (up the
+# picture at the marker ball). Height is never affected; the mouse and OSC set
+# absolute positions and are unaffected.
+control_frame = "stage"
+control_heading = 0.0
 # "crosshair" (ball, crosshair, Z line, ground circle) or "cone" (a truncated
 # cone between the stage plane and the marker's Z).
 marker_style = "crosshair"
@@ -118,13 +129,14 @@ deadzone = 0.01
 invert_y = false
 curve = "logarithmic"
 btn_reset = "X"
-btn_source_select = "BACK"
 btn_toggle_help = "Y"
 btn_speed_down = "LB"
 btn_speed_up = "RB"
 btn_move_z_down = "LT"
 btn_move_z_up = "RT"
-btn_toggle_zones = "B"
+btn_toggle_zones = ""
+btn_toggle_paths = ""
+btn_pathfinder = ""
 move_xy_stick = "right"
 src_btn_confirm = "A"
 src_btn_cancel = "B"
@@ -150,6 +162,8 @@ key_toggle_help = "h"
 key_toggle_zones = "z"
 key_speed_down = "r"
 key_speed_up = "t"
+key_pathfinder = ""
+key_toggle_paths = ""
 
 # Intentionally empty: the button-detection wizard fills this in per-device.
 # Shipping captured raw indices here would mis-map any other controller.
@@ -192,6 +206,8 @@ btn_speed_up = -1
 btn_speed_down = -1
 btn_toggle_help = -1
 btn_toggle_zones = -1
+btn_pathfinder = -1
+btn_toggle_paths = -1
 
 [osc]
 enabled = true
@@ -213,6 +229,15 @@ enabled = false       # gate the OSC ingest + overlay draw
 position = "bottom"   # "bottom" | "top"
 max_visible = 5       # cap on stacked cards; overflow shows "+N more"
 scale = 1.0           # window + text scale: 1.0 | 1.25 | 1.5 | 1.75 | 2.0
+
+# Touch remote: a setup tool in the web UI that drives a controlled marker
+# from a tablet. `enabled` belongs to this station and never travels.
+[touch_remote]
+enabled = false
+stick_curve = 2.0      # stick response exponent, 1 (linear) to 3
+stick_dead_zone = 0.08 # fraction of full deflection ignored, 0 to 0.5
+z_step_m = 0.05        # metres per Z wheel notch
+z_notch_px = 20        # finger travel per Z wheel notch
 
 [otp_output]
 enabled = false
@@ -285,7 +310,8 @@ hysteresis = 0.05
 # metric – only display formatting and form-input parsing change.
 unit_system = "metric"
 
-# Reveal experimental web-UI sections (Person Detection, RTTrPM Output,
-# Device Permissions). Toggled from Station Settings.
-# Turning it off also disables person detection.
-show_experimental_features = false
+# Features this station uses (General tab, Features). One that is left out is
+# hidden in the web UI and does not run; its settings are kept. Also:
+# "lens_suggestions", "detection", "rttrpm", "paths", "ground_grid",
+# "touch_remote" (experimental).
+shown_features = ["zones", "midi", "psn_input"]

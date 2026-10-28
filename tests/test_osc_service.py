@@ -216,11 +216,162 @@ def test_send_with_client_construction_error_returns_silently(
     monkeypatch.setattr(service_module, "SimpleUDPClient", _ExplodingClient)
     monkeypatch.setattr(service_module, "_resolve_host", lambda host: host)
     svc = OscService()
-    with caplog.at_level(logging.ERROR):
+    with caplog.at_level(logging.WARNING):
         svc.send("/a", host="bogus", port=1)
-    assert any("Failed to create OSC client" in r.message for r in caplog.records)
+    assert [r.getMessage() for r in caplog.records] == [
+        "Cannot create OSC client for udp://bogus:1, retrying every 1s: DNS failure for bogus:1"
+    ]
     # No entry cached because client construction blew up.
     assert svc.stats_for("bogus", 1) == ClientStats()
+
+
+class TestClientCreationFailure:
+    """A target whose client cannot be created waits before retrying and logs once per failure streak."""
+
+    _DNS_FAILURE = "DNS lookup for 'console.invalid' failed: Name or service not known"
+
+    @pytest.fixture
+    def unresolvable(self, monkeypatch: pytest.MonkeyPatch) -> tuple[OscService, list[float], list[str], list[bool]]:
+        """A service whose clock stands still unless a test moves it, and whose lookups fail until told otherwise."""
+        from openfollow.net_utils import HostLookup
+
+        now = [100.0]
+        looked_up: list[str] = []
+        resolves = [False]
+
+        def _lookup(host: str, _wait_s: float) -> HostLookup:
+            looked_up.append(host)
+            if resolves[0]:
+                return HostLookup("resolved", ("192.0.2.40",))
+            return HostLookup("failed", error="Name or service not known")
+
+        monkeypatch.setattr(service_module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+        monkeypatch.setattr(service_module, "_resolver", SimpleNamespace(lookup=_lookup))
+        monkeypatch.setattr(service_module, "SimpleUDPClient", _FakeClient)
+        return OscService(), now, looked_up, resolves
+
+    @staticmethod
+    def _send_for(svc: OscService, now: list[float], seconds: float, *, step: float = 0.25) -> list[bool]:
+        """Send to console.invalid every *step* seconds for *seconds*."""
+        sent = []
+        for _ in range(round(seconds / step)):
+            sent.append(svc.send("/x", host="console.invalid", port=8000))
+            now[0] += step
+        return sent
+
+    def test_a_name_that_does_not_resolve_is_tried_once_per_retry_and_logged_once(
+        self,
+        unresolvable: tuple[OscService, list[float], list[str], list[bool]],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A row streaming at its frame rate would otherwise look it up and log per send."""
+        svc, now, looked_up, _resolves = unresolvable
+        with caplog.at_level(logging.INFO, logger="openfollow"):
+            sent = [svc.send("/x", host="console.invalid", port=8000) for _ in range(600)]
+            now[0] += 1.0
+            sent += [svc.send("/x", host="console.invalid", port=8000) for _ in range(600)]
+        assert not any(sent)
+        assert looked_up == ["console.invalid"] * 2
+        assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
+            (
+                logging.WARNING,
+                f"Cannot create OSC client for udp://console.invalid:8000, retrying every 1s: {self._DNS_FAILURE}",
+            ),
+        ]
+
+    def test_a_streak_is_reminded_once_a_minute_and_its_recovery_logged(
+        self,
+        unresolvable: tuple[OscService, list[float], list[str], list[bool]],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        svc, now, _looked_up, resolves = unresolvable
+        with caplog.at_level(logging.INFO, logger="openfollow"):
+            self._send_for(svc, now, 150.0)
+            resolves[0] = True
+            assert self._send_for(svc, now, 2.0)[-1] is True
+        still = "Still cannot create OSC client for udp://console.invalid:8000 after"
+        assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
+            (
+                logging.WARNING,
+                f"Cannot create OSC client for udp://console.invalid:8000, retrying every 1s: {self._DNS_FAILURE}",
+            ),
+            (logging.WARNING, f"{still} 61 attempts: {self._DNS_FAILURE}"),
+            (logging.WARNING, f"{still} 121 attempts: {self._DNS_FAILURE}"),
+            (logging.INFO, "Created OSC client for udp://console.invalid:8000 after 150 failed attempts"),
+        ]
+        assert _FakeClient.instances[0].host == "192.0.2.40"
+
+    def test_a_streak_after_a_recovery_starts_afresh(
+        self,
+        unresolvable: tuple[OscService, list[float], list[str], list[bool]],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        svc, now, _looked_up, resolves = unresolvable
+        with caplog.at_level(logging.INFO, logger="openfollow"):
+            self._send_for(svc, now, 2.0)
+            resolves[0] = True
+            self._send_for(svc, now, 2.0)
+            svc.evict("console.invalid", 8000)
+            resolves[0] = False
+            self._send_for(svc, now, 2.0)
+        started = f"Cannot create OSC client for udp://console.invalid:8000, retrying every 1s: {self._DNS_FAILURE}"
+        assert [r.getMessage() for r in caplog.records] == [
+            started,
+            "Created OSC client for udp://console.invalid:8000 after 2 failed attempts",
+            started,
+        ]
+
+    def test_an_eviction_retries_at_once_but_keeps_the_streak(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An address change is no new failure, so it is not announced again."""
+        attempts: list[str] = []
+
+        def _fail(host: str, *_a: Any, **_k: Any) -> Any:
+            attempts.append(host)
+            raise InterfaceUnavailable("cannot send via eth1")
+
+        monkeypatch.setattr(service_module, "time", SimpleNamespace(monotonic=lambda: 100.0))
+        monkeypatch.setattr(service_module, "_make_client", _fail)
+        egress = Egress("eth1", "198.51.100.10")
+        svc = OscService(close_async=lambda _clients: None)
+        with caplog.at_level(logging.INFO, logger="openfollow"):
+            svc.send("/x", host="198.51.100.20", port=9000, egress=egress)
+            svc.evict_egress("eth1")
+            svc.send("/x", host="198.51.100.20", port=9000, egress=egress)
+        assert len(attempts) == 2
+        assert [r.getMessage() for r in caplog.records] == [
+            "Cannot create OSC client for udp://198.51.100.20:9000, retrying every 1s: cannot send via eth1"
+        ]
+
+    @pytest.mark.parametrize(
+        ("failure", "egress"),
+        [
+            (OSError("DNS lookup for '198.51.100.20' failed"), None),
+            (InterfaceUnavailable("cannot send via eth1"), Egress("eth1", "198.51.100.10")),
+            (ValueError("bad host string"), None),
+        ],
+        ids=["unresolvable", "refused-pin", "malformed-host"],
+    )
+    def test_every_failed_creation_waits_before_retrying(
+        self, monkeypatch: pytest.MonkeyPatch, failure: Exception, egress: Egress | None
+    ) -> None:
+        now = [100.0]
+        attempts: list[str] = []
+
+        def _fail(host: str, *_a: Any, **_k: Any) -> Any:
+            attempts.append(host)
+            raise failure
+
+        monkeypatch.setattr(service_module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+        monkeypatch.setattr(service_module, "_make_client", _fail)
+        svc = OscService()
+        for _ in range(5):
+            assert svc.send("/x", host="198.51.100.20", port=9000, egress=egress) is False
+        assert len(attempts) == 1
+        now[0] += 1.0
+        svc.send("/x", host="198.51.100.20", port=9000, egress=egress)
+        assert len(attempts) == 2
 
 
 def test_send_message_failure_increments_error_counter(
@@ -818,6 +969,21 @@ def test_listener_with_allowlist_logs_info(
     info_records = [r for r in caplog.records if "accepting packets only" in r.message]
     assert len(info_records) == 1
     svc.shutdown()
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
+def test_listener_with_no_ipv4_allowlist_entry_warns_that_it_accepts_nothing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    svc = OscService()
+    with caplog.at_level(logging.INFO):
+        bind_free_udp_port(lambda p: svc.start_listener(p, allowed_ips=["2001:db8::1"]))
+    svc.shutdown()
+    records = [r for r in caplog.records if "OSC input listening" in r.message]
+    assert [r.levelno for r in records] == [logging.WARNING]
+    assert "accepting no packets" in records[0].message
+    assert "2001:db8::1" in records[0].message
 
 
 @pytest.mark.integration

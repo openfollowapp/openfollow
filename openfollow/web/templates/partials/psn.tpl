@@ -28,8 +28,12 @@
                        aria-describedby="psn-psn-mcast-ip-error" aria-invalid="false">
                 <span id="psn-psn-mcast-ip-error" class="field-error"></span>
             </div>
+            %# Simple has one interface for everything and no Assignment panel to point at.
+            % _advanced = config.network_mode == 'advanced'
             <div class="field">
+                % if _advanced:
                 <label>Network Interface</label>
+                % end
                 %# Read-only pointer: the pin is edited in one place for every
                 %# protocol (General > Network Interface Assignment), so this section
                 %# reports where PSN is bound rather than offering a second
@@ -40,12 +44,14 @@
                 % if _adv.get('banner'):
                 <div class="notice warning" role="status">{{_adv['banner']}}</div>
                 % end
+                % if _advanced:
                 <div class="ia-pointer">
                     % from openfollow.net_adapters import display_name
                     <span class="ia-pointer-value">{{display_name(config.psn_source_iface, config.interface_labels) or 'Auto-detect'}}</span>
                     <a class="ia-link" href="#interface-assignment"
                        onclick="goToSection('general', 'interface-assignment'); return false;">Change in General &rsaquo; Network Interface Assignment</a>
                 </div>
+                % end
             </div>
         </div>
     </div>

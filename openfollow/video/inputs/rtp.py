@@ -18,8 +18,10 @@ from openfollow.video.inputs._base import (
     InputCapabilities,
     ReconnectPolicy,
     VideoInputBase,
+    configure_pre_decode_queue,
     video_input_pin_field,
 )
+from openfollow.video.inputs._hevc_guard import guard_hevc_decoder
 from openfollow.video.inputs._pin import PinRefusal, check_listen_address, check_video_pin, config_pin
 
 logger = logging.getLogger(__name__)
@@ -68,6 +70,7 @@ class RtpInput(VideoInputBase):
     input_id = "rtp"
     display_name = "RTP"
     source_element_name = "udpsrc"
+    frame_meter_element_name = "post_queue"
     source_kind = SourceKind.LISTENER
     pins_interface = True
 
@@ -168,6 +171,7 @@ class RtpInput(VideoInputBase):
         if factory:
             factory.set_rank(Gst.Rank.MARGINAL)
             logger.info("Decoder priority: openh264dec → MARGINAL")
+        guard_hevc_decoder(Gst)
 
     def create_pipeline(
         self,
@@ -178,7 +182,7 @@ class RtpInput(VideoInputBase):
     ) -> Any:
         """Build an RTP receive pipeline.
 
-        ``udpsrc(caps) → queue → rtpjitterbuffer → decodebin
+        ``udpsrc(caps) → rtpjitterbuffer → queue → decodebin
           → queue → videoconvert → [overlay tail] → sink``
 
         For multicast addresses (224.x–239.x) the ``multicast-group``
@@ -228,10 +232,7 @@ class RtpInput(VideoInputBase):
 
         # --- Pre-decode leaky queue ---
         pre_queue = Gst.ElementFactory.make("queue", "pre_queue")
-        pre_queue.set_property("max-size-buffers", 4)
-        pre_queue.set_property("max-size-bytes", 0)
-        pre_queue.set_property("max-size-time", 0)
-        pre_queue.set_property("leaky", 2)  # downstream – drop old data
+        configure_pre_decode_queue(pre_queue)
 
         # --- RTP jitter buffer ---
         jitterbuf = Gst.ElementFactory.make("rtpjitterbuffer", "jitterbuf")
@@ -257,24 +258,25 @@ class RtpInput(VideoInputBase):
             raise RuntimeError("No video sink available for RTP pipeline")
 
         # Build element chain (skip jitterbuf if unavailable)
-        elements = [udpsrc, pre_queue]
+        elements = [udpsrc]
         if jitterbuf is not None:
             elements.append(jitterbuf)
-        elements.extend([decodebin, post_queue, convert, sink])
+        elements.extend([pre_queue, decodebin, post_queue, convert, sink])
 
         for elem in elements:
             pipeline.add(elem)
 
-        # Static links: udpsrc → queue → [jitterbuf →] decodebin
-        if not udpsrc.link(pre_queue):
-            raise RuntimeError("Failed to link udpsrc → pre_queue")
-        pre_decode = pre_queue
+        # Static links: udpsrc → [jitterbuf →] queue → decodebin. The bounded queue sits after the
+        # jitterbuffer, so a decoder stall fills the queue, never the jitterbuffer (unbounded at latency 0).
+        head = udpsrc
         if jitterbuf is not None:
-            if not pre_queue.link(jitterbuf):
-                raise RuntimeError("Failed to link pre_queue → rtpjitterbuffer")
-            pre_decode = jitterbuf
-        if not pre_decode.link(decodebin):
-            raise RuntimeError("Failed to link → decodebin")
+            if not udpsrc.link(jitterbuf):
+                raise RuntimeError("Failed to link udpsrc → rtpjitterbuffer")
+            head = jitterbuf
+        if not head.link(pre_queue):
+            raise RuntimeError(f"Failed to link {head.get_name()} → pre_queue")
+        if not pre_queue.link(decodebin):
+            raise RuntimeError("Failed to link pre_queue → decodebin")
         if not post_queue.link(convert):
             raise RuntimeError("Failed to link post_queue → videoconvert")
 

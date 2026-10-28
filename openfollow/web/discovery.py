@@ -106,10 +106,15 @@ class BeaconPacket:
         if not (1 <= web_port <= 65535):
             return None
 
-        name = _sanitize_beacon_text(d.get("name", ""), BEACON_NAME_MAX_LEN)
+        name = clean_peer_name(d.get("name", ""))
         version = _sanitize_beacon_text(d.get("version", "0.1.0"), BEACON_VERSION_MAX_LEN)
 
         return cls(name=name, web_port=web_port, version=version)
+
+
+def clean_peer_name(value: object) -> str:
+    """A station name another station sent, cleaned the way a beacon's is."""
+    return _sanitize_beacon_text(value, BEACON_NAME_MAX_LEN)
 
 
 def _sanitize_beacon_text(value: object, max_len: int) -> str:
@@ -161,6 +166,10 @@ class BeaconSender:
     def update_name(self, name: str) -> None:
         """Update the beacon name (e.g., after config change)."""
         self._packet.name = name
+
+    def update_web_port(self, port: int) -> None:
+        """Advertise the port the web UI serves on."""
+        self._packet.web_port = port
 
     def update_iface_ip(self, iface_ip: str | None, iface: str = "") -> None:
         """Repoint the multicast send interface after a host IP change.

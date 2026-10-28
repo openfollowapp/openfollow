@@ -1865,6 +1865,43 @@ def test_trigger_form_accepts_trigger_type_query_param(live_server) -> None:
     assert "Modifiers" in body
 
 
+@pytest.mark.parametrize(
+    ("style", "options"),
+    [
+        ("standard", ['<option value="A" >A</option>', '<option value="BACK" >Back</option>']),
+        ("playstation", ['<option value="A" >Cross</option>', '<option value="BACK" >Create</option>']),
+        ("xbox", ['<option value="BACK" >View</option>', '<option value="START" >Menu</option>']),
+        ("nintendo", ['<option value="BACK" >Minus</option>', '<option value="START" >Plus</option>']),
+    ],
+)
+def test_controller_button_trigger_names_buttons_in_the_stations_style(live_server, style, options) -> None:
+    _, base, cfg_path = live_server
+    _post_form(base, "/section/gamepad", {"enabled": "true", "deadzone": "0.15", "button_name_style": style})
+    _post_form(base, "/section/osc_bindings/add", {})
+    row_id = load_config(cfg_path).osc_transmitters.transmitters[0].id
+    status, body = _get(base, f"/section/osc_binding/{row_id}/trigger_form?trigger.kind=controller_button")
+    assert status == 200
+    assert all(option in body for option in options)
+    assert "btn-symbol" not in body
+
+
+def test_the_osc_bindings_section_names_a_saved_trigger_button_in_the_stations_style(live_server) -> None:
+    """The section as the page loads it, not only the trigger form swapped in on a type change."""
+    _, base, cfg_path = live_server
+    _post_form(base, "/section/gamepad", {"enabled": "true", "deadzone": "0.15", "button_name_style": "nintendo"})
+    _post_form(base, "/section/osc_bindings/add", {})
+    row_id = load_config(cfg_path).osc_transmitters.transmitters[0].id
+    _post_form(
+        base,
+        f"/section/osc_binding/{row_id}",
+        {"trigger.type": "controller_button", "trigger.button": "BACK", "trigger.edge": "press"},
+    )
+    status, body = _get(base, "/section/osc_bindings")
+    assert status == 200
+    assert '<option value="BACK" selected>Minus</option>' in body
+    assert '<option value="START" >Plus</option>' in body
+
+
 def test_trigger_form_accepts_legacy_trigger_kind_query_param(live_server) -> None:
     """Backwards compat: a stale tab might post ``?trigger.kind=``;
     the route must still resolve it correctly."""
@@ -3957,7 +3994,7 @@ def test_nested_marker_rows_line_up_with_the_binding_above() -> None:
 def _seed_overlap_rows(cfg_path: str) -> None:
     cfg = load_config(cfg_path)
     cfg.osc_transmitters.transmitters = [
-        _row(id="r-zones", name="Zones on", trigger=ControllerButtonTrigger(button="B")),
+        _row(id="r-help", name="Help on", trigger=ControllerButtonTrigger(button="Y")),
         _row(id="r-free", name="Free key", trigger=HotkeyTrigger(key="p")),
     ]
     save_config(cfg, cfg_path)
@@ -3974,16 +4011,16 @@ def test_collapsed_row_names_the_action_its_trigger_shares(live_server) -> None:
     _seed_overlap_rows(cfg_path)
     status, body = _get(base, "/section/osc_bindings")
     assert status == 200
-    zones = _pill(body, "r-zones")
-    assert "Also 'Toggle Zone Overlay' on gamepad input" in unescape(zones)
-    assert "hidden" not in zones
+    help_pill = _pill(body, "r-help")
+    assert "Also 'Toggle Help' on gamepad input" in unescape(help_pill)
+    assert "hidden" not in help_pill
     assert "hidden" in _pill(body, "r-free")
 
 
 def test_trigger_form_opens_with_the_caution(live_server) -> None:
     _, base, cfg_path = live_server
     _seed_overlap_rows(cfg_path)
-    status, body = _get(base, "/section/osc_binding/r-zones/trigger_form?trigger.type=controller_button")
+    status, body = _get(base, "/section/osc_binding/r-help/trigger_form?trigger.type=controller_button")
     assert status == 200
     assert 'class="field-caution-msg"' in body
     assert "data-binding-overlap" in body
@@ -3994,7 +4031,7 @@ def test_gamepad_save_announces_itself_and_the_pills_follow(live_server) -> None
     _seed_overlap_rows(cfg_path)
     req = urllib.request.Request(
         f"{base}/section/gamepad",
-        data=urllib.parse.urlencode({"enabled": "on", "btn_toggle_zones": "Y", "btn_toggle_help": ""}).encode(),
+        data=urllib.parse.urlencode({"enabled": "on", "btn_toggle_help": ""}).encode(),
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         method="POST",
     )
@@ -4002,9 +4039,9 @@ def test_gamepad_save_announces_itself_and_the_pills_follow(live_server) -> None
         assert r.headers.get("HX-Trigger") == "controllerBindingsSaved"
     status, body = _get(base, "/section/osc_bindings/overlaps")
     assert status == 200
-    zones = _pill(body, "r-zones")
-    assert "hx-swap-oob" in zones
-    assert "hidden" in zones
+    help_pill = _pill(body, "r-help")
+    assert "hx-swap-oob" in help_pill
+    assert "hidden" in help_pill
 
 
 def test_keyboard_save_announces_itself(live_server) -> None:

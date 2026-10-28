@@ -16,12 +16,15 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Long enough for the request that asked for the restart to get its answer out.
+RESTART_GRACE_S = 0.5
+
 
 def check_restart_request(app: OpenFollowApp) -> None:
     """Check if web UI requested app restart."""
     if app._update_worker is not None and app._update_worker.is_alive():
         return
-    if app._web_commands.consume_restart_requested():
+    if app._web_commands.consume_restart_requested(grace_s=RESTART_GRACE_S):
         logger.info("Restart requested from web UI.")
         app._restart_app()
 
@@ -55,6 +58,14 @@ def check_controller_slot_actions(app: OpenFollowApp) -> None:
         except Exception:
             # One failed action must not drop the others already taken off the queue.
             logger.exception("Controller slot action %s on C%d failed.", action, index + 1)
+
+
+def check_latency_requests(app: OpenFollowApp) -> None:
+    """Start a camera latency run the web UI asked for, and report the run back to it."""
+    services = app._runtime_services
+    if app._web_commands.consume_latency_requested():
+        services.start_latency_run()
+    app._web_commands.set_latency_status(services.latency_status())
 
 
 def check_camera_setup_requests(app: OpenFollowApp) -> None:

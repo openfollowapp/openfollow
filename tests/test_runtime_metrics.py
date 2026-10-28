@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""Tests for ``FrameMetrics`` and ``OverlayStatePool`` in ``runtime_metrics``."""
+"""Tests for ``FrameMetrics`` in ``runtime_metrics``."""
 
 from __future__ import annotations
 
 import pytest
 
-from openfollow.runtime_metrics import FrameMetrics, OverlayStatePool
+from openfollow.runtime_metrics import FrameMetrics
 
 pytestmark = pytest.mark.unit
 
@@ -109,51 +109,3 @@ class TestFrameMetrics:
         m.add_frame(0.030)  # under 50ms – fast
         m.add_frame(0.060)  # over 50ms – slow
         assert m.slow_frames == 1
-
-
-# ---------------------------------------------------------------------------
-# OverlayStatePool
-# ---------------------------------------------------------------------------
-
-
-class TestOverlayStatePool:
-    def test_acquire_returns_reset_state(self) -> None:
-        pool = OverlayStatePool(pool_size=2)
-        state = pool.acquire()
-        assert state.markers == []
-        assert state.selected_id is None
-
-    def test_pool_exhaustion_creates_new_instance(self) -> None:
-        pool = OverlayStatePool(pool_size=1)
-        s1 = pool.acquire()
-        s2 = pool.acquire()  # pool exhausted, fallback allocation
-        assert s1 is not s2
-        assert pool._fallback_count == 1
-
-    def test_release_and_reuse(self) -> None:
-        pool = OverlayStatePool(pool_size=1)
-        s1 = pool.acquire()
-        pool.release(s1)
-        s2 = pool.acquire()
-        assert s2 is s1  # reused from pool
-
-    def test_release_caps_at_pool_size(self) -> None:
-        # release() caps at the configured pool_size, not a hardcoded 3.
-        pool = OverlayStatePool(pool_size=2)
-        states = [pool.acquire() for _ in range(2)]
-        extra = pool.acquire()  # fallback (pool empty)
-        for s in states:
-            pool.release(s)
-        pool.release(extra)
-        # Only pool_size (2) fit; the extra release is dropped.
-        assert len(pool._pool) == 2
-
-    def test_release_honours_larger_pool_size(self) -> None:
-        """A pool_size > 3 keeps up to pool_size states (the old hardcoded 3
-        cap silently shrank larger pools)."""
-        pool = OverlayStatePool(pool_size=4)
-        states = [pool.acquire() for _ in range(4)]
-        for s in states:
-            pool.release(s)
-        # All four refit (previously the 4th was dropped at the hardcoded 3).
-        assert len(pool._pool) == 4

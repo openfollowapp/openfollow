@@ -13,11 +13,11 @@ build's own bundled-in-venv assertion.
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 from typing import Any
 
 import pytest
-import tomllib
 
 import openfollow
 
@@ -59,3 +59,18 @@ def test_libhidapi_is_a_deb_runtime_dependency() -> None:
     assert "libhidapi-hidraw0" in control.read_text(encoding="utf-8"), (
         "libhidapi-hidraw0 must be a Depends in debian/control.in"
     )
+
+
+def test_pyopengl_is_a_base_runtime_dependency() -> None:
+    deps = _pyproject()["project"]["dependencies"]
+    # The .deb bundles only base dependencies, so the GL Operator Screen reaches stations through an update.
+    assert any(req.lower().startswith("pyopengl") for req in deps)
+
+
+def test_the_gl_libraries_are_deb_runtime_dependencies() -> None:
+    control = _REPO_ROOT / "packaging" / "debian" / "control.in"
+    if not control.is_file():
+        pytest.skip("no debian/control.in in this tree")
+    text = control.read_text(encoding="utf-8")
+    # PyOpenGL loads them at runtime: they must be present on an offline target.
+    assert "libegl1" in text and "libgles2" in text

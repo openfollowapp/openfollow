@@ -41,7 +41,11 @@
                 <span class="slot-port">{{('on ' + str(c.get('port_label') or '')) if c.get('port_key') else 'no stable port'}}</span>
             </td>
             % if c.get('marker_id') is not None:
-            <td><span class="slot-marker"><span class="slot-marker-dot" style="--marker-color: {{c.get('marker_color', '')}}"></span>{{c.get('marker_label') or c['marker_id']}}</span></td>
+            <td><span class="slot-marker"><span class="slot-marker-dot" style="--marker-color: {{c.get('marker_color', '')}}"></span>{{c.get('marker_label') or c['marker_id']}}\\
+            % if c.get('parked'):
+<span class="park-badge"><span aria-hidden="true">P</span><span class="visually-hidden">Parked</span></span>\\
+            % end
+</span></td>
             % else:
             <td>-</td>
             % end

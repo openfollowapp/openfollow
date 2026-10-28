@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from openfollow.button_names import ButtonNameStyle, hud_label
+
 
 @dataclass(frozen=True)
 class CenteredPanelLayout:
@@ -55,33 +57,19 @@ _MOUSE3D_BTN_LABELS: tuple[tuple[str, str], ...] = (
     ("prev_marker", "Marker prev"),
     ("speed_up", "Speed +"),
     ("speed_down", "Speed -"),
-    ("toggle_help", "Toggle help"),
+    ("toggle_help", "Toggle Help (this overlay)"),
     ("toggle_zones", "Toggle zones"),
+    ("pathfinder", "Toggle Pathfinder"),
+    ("toggle_paths", "Toggle paths"),
 )
 
 
-# Friendly short names shown in the help overlay for each button code.
-_BUTTON_HELP_NAMES: dict[str, str] = {
-    "A": "A",
-    "B": "B",
-    "X": "X",
-    "Y": "Y",
-    "LB": "LB",
-    "RB": "RB",
-    "LT": "LT",
-    "RT": "RT",
-    "BACK": "Back",
-    "START": "Start",
-    "DPAD_UP": "D-Up",
-    "DPAD_DOWN": "D-Down",
-    "DPAD_LEFT": "D-Left",
-    "DPAD_RIGHT": "D-Right",
-}
+_PATH_HELP: tuple[tuple[str, str], ...] = (("pathfinder", "Toggle Pathfinder"), ("toggle_paths", "Toggle paths"))
 
 
-def friendly_button_label(raw: str) -> str:
-    """Map button codes like DPAD_RIGHT to short labels like D-Right."""
-    return _BUTTON_HELP_NAMES.get(raw, raw)
+def friendly_button_label(raw: str, style: ButtonNameStyle = ButtonNameStyle.STANDARD) -> str:
+    """Short name for a stored button in ``style``; a symbol as its stand-in character."""
+    return hud_label(raw, style)
 
 
 # Type alias for help sections: list of (title, lines) pairs.
@@ -178,6 +166,7 @@ def build_help_sections(
     mouse3d_axis_map: dict[str, str] | None = None,
     mouse3d_buttons: dict[str, int] | None = None,
     marker_cycle_enabled: bool = True,
+    button_name_style: ButtonNameStyle = ButtonNameStyle.STANDARD,
 ) -> HelpSections:
     """Build titled help-line sections for overlay display."""
     keyboard: list[str] = []
@@ -193,7 +182,7 @@ def build_help_sections(
         raw = bl.get(action, default)
         if raw == "":
             return ""
-        return friendly_button_label(raw)
+        return friendly_button_label(raw, button_name_style)
 
     if mode == "normal":
         if keyboard_connected:
@@ -218,10 +207,13 @@ def build_help_sections(
             if reset_raw:
                 keyboard.append(f"{_key_label(reset_raw)}: Reset marker")
             if help_raw:
-                keyboard.append(f"{_key_label(help_raw)}: Toggle help")
+                keyboard.append(f"{_key_label(help_raw)}: Toggle Help (this overlay)")
             zones_key = kl.get("toggle_zones", "")
             if zones_key:
                 keyboard.append(f"{_key_label(zones_key)}: Toggle zone overlay")
+            for action, label in _PATH_HELP:
+                if kl.get(action):
+                    keyboard.append(f"{_key_label(kl[action])}: {label}")
             if settings_key:
                 keyboard.append(f"{_key_label(settings_key)}: Settings menu")
         if controller_connected:
@@ -257,12 +249,15 @@ def build_help_sections(
                 controller.append(f"{reset_btn}: Reset marker")
             help_btn = _btn("toggle_help", "Y")
             if help_btn:
-                controller.append(f"{help_btn}: Toggle help")
-            settings_btn = _btn("settings", "Back")
-            if settings_btn:
-                controller.append(f"{settings_btn}: Settings menu")
+                controller.append(f"{help_btn}: Toggle Help (this overlay)")
             if bl.get("toggle_zones"):
                 controller.append(f"{_btn('toggle_zones', 'B')}: Toggle zone overlay")
+            for action, label in _PATH_HELP:
+                if bl.get(action):
+                    controller.append(f"{_btn(action, '')}: {label}")
+            settings_btn = _btn("settings", "BACK")
+            if settings_btn:
+                controller.append(f"{settings_btn}: Settings menu")
         if mouse_enabled:
             mouse = [
                 "Left click: Grab marker",
@@ -288,81 +283,27 @@ def build_help_sections(
                 idx = buttons.get(action, -1)
                 if idx >= 0:
                     mouse3d.append(f"Btn {idx}: {label}")
-    elif mode == "source-selection":
-        if keyboard_connected:
-            keyboard = [
-                "Arrow Up/Down: Select source",
-                "Enter: Confirm source",
-                "Esc: Cancel source menu",
-            ]
-        if controller_connected:
-            controller = [
-                "D-Pad Up/Down: Select source",
-                f"{_btn('menu_confirm', 'A')}: Confirm source",
-                f"{_btn('menu_cancel', 'B')}: Cancel source menu",
-            ]
-    elif mode == "source-type-selection":
-        if keyboard_connected:
-            keyboard = [
-                "Arrow Up/Down: Select source type",
-                "Enter: Confirm source type",
-                "Esc: Cancel source type menu",
-            ]
-        if controller_connected:
-            controller = [
-                "D-Pad Up/Down: Select source type",
-                f"{_btn('menu_confirm', 'A')}: Confirm source type",
-                f"{_btn('menu_cancel', 'B')}: Cancel source type menu",
-            ]
-    elif mode == "button-detection":
-        if keyboard_connected:
-            keyboard = [
-                "Esc: Cancel detection",
-            ]
-        if controller_connected:
-            controller = [
-                "Press the prompted button",
-            ]
-    elif mode == "media-picker":
-        if keyboard_connected:
-            keyboard = ["Arrow Up/Down: Select USB storage device", "Enter: Save to it", "Esc: Cancel"]
-        if controller_connected:
-            controller = [
-                "D-Pad Up/Down: Select USB storage device",
-                f"{_btn('menu_confirm', 'A')}: Save to it",
-                f"{_btn('menu_cancel', 'B')}: Cancel",
-            ]
-    elif mode in ("media-export", "media-export-done"):
-        # Once the export has ended, confirm picks a device for the next one.
-        ended = mode == "media-export-done"
-        if keyboard_connected:
-            keyboard = [*(["Enter: Pick a USB storage device"] if ended else []), "Esc: Back to Settings"]
-        if controller_connected:
-            confirm = f"{_btn('menu_confirm', 'A')}: Pick a USB storage device"
-            controller = [*([confirm] if ended else []), f"{_btn('menu_cancel', 'B')}: Back to Settings"]
-    elif mode == "settings":
-        # Two ways out, and they differ: cancel steps back one screen, the
-        # button that opened the menus leaves them entirely. An operator three
-        # screens down has no way to know the second one exists unless it is
-        # listed here.
+    elif mode == "menus":
+        # One list for every menu screen, so an operator learns it once. Cancel
+        # steps back one screen; the button that opened the menus leaves them
+        # all, which an operator three screens down has no other way to know.
         settings_key = kl.get("settings", "m")
-        settings_btn = _btn("settings", "Back")
+        settings_btn = _btn("settings", "BACK")
         if keyboard_connected:
-            keyboard = [
-                "Arrow Up/Down: Navigate",
-                "Enter: Confirm",
-                "Esc: Back one screen",
-            ]
+            keyboard = ["Enter: Confirm", "Esc: Back", "Arrow Up/Down: Move", "Backspace: Delete in a text field"]
             if settings_key:
-                keyboard.append(f"{_key_label(settings_key)}: Close Menu")
+                keyboard.append(f"{_key_label(settings_key)}: Close all menus")
         if controller_connected:
+            confirm = _btn("menu_confirm", "A")
+            cancel = _btn("menu_cancel", "B")
             controller = [
-                "D-Pad Up/Down: Navigate",
-                f"{_btn('menu_confirm', 'A')}: Confirm",
-                f"{_btn('menu_cancel', 'B')}: Back one screen",
+                *([f"{confirm}: Confirm"] if confirm else []),
+                *([f"{cancel}: Back"] if cancel else []),
+                "D-Pad Up/Down: Move, or change a digit",
+                "D-Pad Left/Right: Move between digits",
             ]
             if settings_btn:
-                controller.append(f"{settings_btn}: Close Menu")
+                controller.append(f"{settings_btn}: Close all menus")
     sections: HelpSections = []
     if keyboard:
         sections.append(("Keyboard", keyboard))

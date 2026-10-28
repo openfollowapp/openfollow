@@ -243,7 +243,7 @@ def read_backup(path: Path) -> BackupContents:
         except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
             raise BackupDamagedError(f"its marker catalog does not read: {exc}") from exc
     for name in files:
-        if name in folders or any(str(parent) in files for parent in PurePosixPath(name).parents):
+        if any(str(parent) in files for parent in PurePosixPath(name).parents):
             raise BackupDamagedError(f"{name!r} needs a folder where the archive holds a file")
     held: dict[str, dict[str, bytes]] = {}
     for folder in _FOLDERS:
@@ -444,7 +444,6 @@ def recover_interrupted_restore(state_dir: Path, catalog_path: Path) -> None:
                 logger.warning("Could not put back %s from %s: %s", target, candidates[0], exc)
                 continue
             logger.warning("Put back %s from %s, left by a restore cut short", target, candidates[0].name)
-            candidates = candidates[1:]
         for leftover in candidates:
             _remove(leftover)
 

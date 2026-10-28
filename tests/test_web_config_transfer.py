@@ -6,11 +6,12 @@ confirmation that outlives the reload it ends in."""
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 from bottle import template
 
-from openfollow.web import server as _server_module  # noqa: F401  (registers the template path)
+from openfollow.web import server as _server_module  # registers the template path
 from tests._template_source import function_body
 
 pytestmark = pytest.mark.unit
@@ -139,7 +140,39 @@ class TestBackupOutcome:
         assert "toastAfterReload('Imported ' + name);" in after
 
     def test_a_restore_without_a_backup_is_confirmed_in_caution_after_the_restart(self) -> None:
-        body = function_body(_page(), "restoreDefaults")
+        page = _page()
+        assert (
+            "_sendRestarting('/api/config/reset', {method: 'POST'}, _restoreFailed, 'Restored defaults.');"
+            in function_body(page, "restoreDefaults")
+        )
+        assert "}, _backupFailed, 'Restored the backup.');" in function_body(page, "restoreBackup")
+        body = function_body(page, "_sendRestarting")
         checked = body.index("if (result.backup_error) {")
-        noted = body.index("toastOnNextLoad('Restored defaults. ' + NO_BACKUP_MADE, 'caution');")
+        noted = body.index("toastOnNextLoad(done + ' ' + NO_BACKUP_MADE, 'caution');")
         assert checked < noted < body.index("openfollowAwaitRestart(")
+
+
+class TestBackupsGroup:
+    def test_the_group_comes_last_and_is_filled_from_the_station(self) -> None:
+        page = _page()
+        markup = page[: page.index("<script>")]
+        group = markup[markup.index('id="backups-heading">Backups on this station</h3>') :]
+        assert '<div id="backups-list"></div>' in group
+        assert "<p" not in group
+        assert page.rstrip().endswith("loadBackups();\n</script>")
+
+    def test_the_row_button_is_small_and_not_red(self) -> None:
+        body = function_body(_page(), "_backupRow")
+        assert "button.className = 'btn-secondary small';" in body
+        assert "danger" not in body
+
+    def test_the_restore_question_takes_the_danger_button(self) -> None:
+        body = function_body(_page(), "restoreBackup")
+        question = body[body.index("modalConfirm({") : body.index("});")]
+        assert "confirmLabel: 'Restore and Restart'," in question
+        assert "danger: true," in question
+
+    def test_a_newer_backup_reads_muted_with_its_reason_in_caution_text(self) -> None:
+        base = (Path(_server_module.__file__).parent / "templates" / "base.tpl").read_text(encoding="utf-8")
+        assert ".backups-table tr.backup-newer td:not(.row-actions) { color: var(--muted); }" in base
+        assert ".backup-note { display: block; color: var(--caution-text);" in base

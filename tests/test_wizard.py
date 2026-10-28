@@ -460,7 +460,11 @@ class TestWizardPage:
                 "Choose this if the camera, the lens and the zoom have not changed.",
             ),
             ("clear", "Clear it and measure the lens again", "Trace new lines to calibrate the lens."),
-            ("load", "Load another lens calibration", "Saved on this station or in a settings file."),
+            (
+                "load",
+                "Load another lens calibration",
+                "Saved on this station, in a settings file or in an OpenCV calibration.",
+            ),
         ]
         # The question sits above the notices, the notices above the picture, and the picture's controls end
         # before the step's own Next.

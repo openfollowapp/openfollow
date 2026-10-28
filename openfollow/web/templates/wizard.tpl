@@ -460,7 +460,7 @@
       <div class="tier-list" role="radiogroup" aria-labelledby="lens-current-q">
         <label class="tier-option"><input type="radio" name="lens_current" value="keep"><span><strong>Keep the current calibration</strong><small>Choose this if the camera, the lens and the zoom have not changed.</small></span></label>
         <label class="tier-option"><input type="radio" name="lens_current" value="clear"><span><strong>Clear it and measure the lens again</strong><small>Trace new lines to calibrate the lens.</small></span></label>
-        <label class="tier-option"><input type="radio" name="lens_current" value="load"><span><strong>Load another lens calibration</strong><small>Saved on this station or in a settings file.</small></span></label>
+        <label class="tier-option"><input type="radio" name="lens_current" value="load"><span><strong>Load another lens calibration</strong><small>Saved on this station, in a settings file or in an OpenCV calibration.</small></span></label>
       </div>
       <div id="lens-current-backup">
         <button type="button" class="secondary" style="margin-top:0.72rem;" onclick="lensSaveCurrent()">Save lens calibration&hellip;</button>

@@ -423,9 +423,10 @@ class V4l2Input(VideoInputBase):
         ``src_caps`` pins a mode from the camera's own list (``_choose_mode``),
         never a fixed size: a capture card only lists the incoming signal's
         resolution. With no list to choose from the source stays open. A
-        render-resolution preset adds videoscale + a size-pinning capsfilter to
-        scale the stream down; ``native`` omits videoscale so the device's own
-        resolution flows through (the sink scales it for the widget).
+        render-resolution preset adds videoscale + a capsfilter pinning the size
+        and square pixels, so a mode of another shape keeps it between bars;
+        ``native`` omits videoscale so the device's own resolution flows through
+        (the sink scales it for the widget).
         """
         from gi.repository import Gst
 
@@ -491,7 +492,9 @@ class V4l2Input(VideoInputBase):
         # scaler would let the sink's widget size shrink the buffer below the
         # device resolution.
         if dims is not None:
-            chain.append(make("videoscale", "videoscale"))
+            scale = make("videoscale", "videoscale")
+            scale.set_property("add-borders", True)
+            chain.append(scale)
         chain += [rate, capsfilter, convert]
 
         for elem in (*chain, sink):

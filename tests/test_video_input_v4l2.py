@@ -1285,11 +1285,13 @@ def test_a_four_three_camera_at_a_fixed_render_size_is_pillarboxed() -> None:
     gst = real_gst()
     built = _chain_after_queue(_build_v4l2({"v4l2_render_resolution": "1080p", "v4l2_framerate": 30}))
     assert [e.name for e in built] == ["videoscale", "videorate", "capsfilter", "convert"]
+    assert built[0].properties["add-borders"] is True
     caps = built[2].properties["caps"].to_string()
     # The plugin's own chain and caps, fed by a camera mode of 640x480 square pixels.
     pipeline = gst.parse_launch(
         "videotestsrc pattern=white num-buffers=1 ! video/x-raw,width=640,height=480,framerate=30/1"
-        f" ! videoscale ! videorate ! {caps} ! videoconvert ! video/x-raw,format=GRAY8 ! appsink name=frames sync=false"
+        f" ! videoscale add-borders=true ! videorate ! {caps} ! videoconvert"
+        " ! video/x-raw,format=GRAY8 ! appsink name=frames sync=false"
     )
     sink = pipeline.get_by_name("frames")
     pipeline.set_state(gst.State.PLAYING)

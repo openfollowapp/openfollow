@@ -35,4 +35,4 @@ The **Camera & Lens Calibration** section of the Camera & Grid tab now shows pos
 
 ## Pictures keep their shape
 
-An image or clip in the **Media Gallery** that is not 16:9 now plays in its own shape, with black bars at the sides or at the top and bottom, where it used to be stretched to fill the screen. So does a **USB Camera** whose picture has another shape than its **Render resolution**, such as a 4:3 camera at `1080p`. A station calibrated on such a picture needs the **Setup Wizard** again.
+An image or clip in the **Media Gallery** that is not 16:9 now plays in its own shape, with black bars at the sides or at the top and bottom, where it used to be stretched to fill the screen. So does a **USB Camera** whose picture has a different shape from its **Render resolution**, such as a 4:3 camera at `1080p`. A station calibrated on such a picture needs the **Setup Wizard** again.

@@ -1255,7 +1255,10 @@ def test_an_unreadable_file_is_replaced_by_an_import(temp_config_path) -> None:
 
     problem = config_file_problem(str(temp_config_path))
     assert problem is not None
-    assert config_problem_words(problem) == ("could not be read", "Import a settings file to replace it")
+    assert config_problem_words(problem) == (
+        "could not be read",
+        "Import a settings file or restore a backup to replace it",
+    )
 
 
 @pytest.mark.parametrize(
@@ -3107,7 +3110,7 @@ def test_a_switch_that_could_not_be_saved_is_saved_by_switching_again_once_the_f
     assert banners == [
         (
             "RTSP is live but could not be saved. The settings file could not be read.",
-            "Import a settings file to replace it, then switch again.",
+            "Import a settings file or restore a backup to replace it, then switch again.",
         )
     ]
 

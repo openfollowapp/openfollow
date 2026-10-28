@@ -33,7 +33,7 @@ pytestmark = pytest.mark.integration
 _EMPTY_ERROR = "The settings file on this station is empty"
 _EMPTY_ACTION = "Restart OpenFollow to restore the settings from the latest backup copy."
 _UNREADABLE_ERROR = "The settings file on this station could not be read"
-_UNREADABLE_ACTION = "Import a settings file to replace it."
+_UNREADABLE_ACTION = "Import a settings file or restore a backup to replace it."
 
 _BROKEN = pytest.mark.parametrize(
     "content",

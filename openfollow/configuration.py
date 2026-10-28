@@ -3721,7 +3721,7 @@ def config_problem_kind(error: ConfigFileUnreadableError) -> str:
 _PROBLEM_WORDS = {
     "empty-restorable": ("is empty", "Restart OpenFollow to restore the settings from the latest backup copy"),
     "empty": ("is empty", "Restart OpenFollow to start again with default settings"),
-    "unreadable": ("could not be read", "Import a settings file to replace it"),
+    "unreadable": ("could not be read", "Import a settings file or restore a backup to replace it"),
 }
 
 

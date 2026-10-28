@@ -4468,7 +4468,7 @@ def _push_path(path: str, sender: str) -> str:
 _PEER_SETTINGS_FILE: dict[object, str] = {
     "empty-restorable": "its settings file is empty; restart it to restore the settings from its latest backup copy",
     "empty": "its settings file is empty; restart it to start again with default settings",
-    "unreadable": "its settings file could not be read; import a settings file there to replace it",
+    "unreadable": "its settings file could not be read; import a settings file or restore a backup there to replace it",
 }
 
 

@@ -3194,7 +3194,7 @@ class TestSourcePickSave:
         [
             ("", "is empty", "Restart OpenFollow to restore the settings from the latest backup copy"),
             ("  \n\t\n", "is empty", "Restart OpenFollow to restore the settings from the latest backup copy"),
-            ("not [[ toml", "could not be read", "Import a settings file to replace it"),
+            ("not [[ toml", "could not be read", "Import a settings file or restore a backup to replace it"),
         ],
         ids=["empty", "whitespace", "unparseable"],
     )

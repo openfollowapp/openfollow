@@ -2177,7 +2177,10 @@ def test_a_peer_that_said_why_it_did_not_apply_is_reported_with_its_reason(monke
             "its settings file is empty; restart it to restore the settings from its latest backup copy",
         ),
         ("empty", "its settings file is empty; restart it to start again with default settings"),
-        ("unreadable", "its settings file could not be read; import a settings file there to replace it"),
+        (
+            "unreadable",
+            "its settings file could not be read; import a settings file or restore a backup there to replace it",
+        ),
     ],
 )
 def test_a_peer_s_settings_file_is_named_as_its_own_not_the_sender_s(monkeypatch, kind: str, reason: str) -> None:

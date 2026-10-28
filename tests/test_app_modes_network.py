@@ -3451,7 +3451,10 @@ class TestTheSimpleInterfacePicker:
         ("content", "why"),
         [
             (b"", "The settings file is empty. Restart OpenFollow to start again with default settings"),
-            (b"grid = 5\n", "The settings file could not be read. Import a settings file to replace it"),
+            (
+                b"grid = 5\n",
+                "The settings file could not be read. Import a settings file or restore a backup to replace it",
+            ),
         ],
         ids=["empty", "not-a-config"],
     )

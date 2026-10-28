@@ -11,6 +11,7 @@ import numpy.typing as npt
 import pytest
 
 from openfollow.lens_model import C_BOUND, lens_warp_is_valid, pull_back_to_valid
+from openfollow.scene import opencv_lens
 from openfollow.scene.opencv_lens import (
     MAX_FILE_BYTES,
     MIN_COVERAGE,
@@ -317,11 +318,18 @@ def test_a_wide_polynomial_that_folds_inside_the_picture_is_fitted_where_it_rise
 
 
 def test_a_fisheye_is_fitted_no_further_than_80_degrees_off_its_axis() -> None:
-    # The corners of this picture lie more than 80 degrees off the lens's axis.
-    text = opencv_xml(810.0, (959.5, 539.5), [-0.05, 0.011, -0.011, 0.002], fisheye="1")
+    # The corners of this picture lie between 80 and 90 degrees off the lens's axis.
+    text = opencv_xml(850.0, (959.5, 539.5), [-0.05, 0.011, -0.011, 0.002], fisheye="1")
     fit = fit_opencv_lens(parse_opencv_calibration(text), _W, _H)
     assert 0.9 < fit.coverage < 1.0 and fit.corner_px is None
     assert lens_warp_is_valid(fit.k1, fit.k2, fit.cx, fit.cy)
+
+
+def test_the_corner_error_waits_for_every_corner() -> None:
+    # Off centre, the polynomial reaches the two near corners and turns back before the far ones.
+    text = opencv_xml(1250.0, (1159.5, 539.5), [-0.42, 0.16, 0.0, 0.0, -0.03])
+    fit = fit_opencv_lens(parse_opencv_calibration(text), _W, _H)
+    assert fit.coverage < 1.0 and fit.corner_px is None
 
 
 def test_a_calibration_that_describes_little_of_the_picture_is_refused() -> None:
@@ -364,3 +372,17 @@ def test_a_lens_centre_beyond_the_bound_is_refused(axis: str) -> None:
 def test_the_corner_error_is_given_when_the_file_reaches_every_corner() -> None:
     fit = fit_opencv_lens(parse_opencv_calibration(_LENSES["wide, off centre"]), _W, _H)
     assert fit.coverage == 1.0 and fit.corner_px is not None and fit.corner_px >= fit.rms_px
+
+
+def test_distortion_values_written_as_a_plain_list_read() -> None:
+    text = f"<opencv_storage>{_MATRIX}<dist_coeffs>-0.1 0.02 0 0 0.01</dist_coeffs></opencv_storage>"
+    assert parse_opencv_calibration(text).coeffs == (-0.1, 0.02, 0.0, 0.0, 0.01)
+
+
+def test_a_fit_cut_short_by_its_step_budget_still_gives_a_valid_lens(monkeypatch: pytest.MonkeyPatch) -> None:
+    cal = parse_opencv_calibration(_LENSES["wide, off centre"])
+    full = fit_opencv_lens(cal, _W, _H)
+    monkeypatch.setattr(opencv_lens, "_LM_ITERS", 1)
+    cut = fit_opencv_lens(cal, _W, _H)
+    assert lens_warp_is_valid(cut.k1, cut.k2, cut.cx, cut.cy)
+    assert full.rms_px <= cut.rms_px < math.inf

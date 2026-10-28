@@ -845,9 +845,10 @@ class TestV4l2Pipeline:
         for name in ("post_queue", "videoscale", "videorate", "convert"):
             assert pipeline.get_by_name(name) is not None
 
-    def test_source_is_unconstrained_links_to_queue(self) -> None:
+    def test_source_is_unconstrained_links_to_queue(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # No caps pinned on the source – it links straight to the queue so it
         # negotiates the device's native resolution.
+        monkeypatch.setattr(v4l2_module, "_read_capture_modes", lambda path: None)
         pipeline = _build_v4l2({"v4l2_render_resolution": "1080p"})
         src = pipeline.get_by_name("v4l2src")
         assert [e.name for e in src.links] == ["post_queue"]
@@ -1281,13 +1282,15 @@ def _chain_after_queue(pipeline: FakePipeline) -> list[FakeElement]:
     return chain
 
 
-def test_a_four_three_camera_at_a_fixed_render_size_is_pillarboxed() -> None:
+def test_a_four_three_camera_at_a_fixed_render_size_is_pillarboxed(monkeypatch: pytest.MonkeyPatch) -> None:
     gst = real_gst()
+    # No mode list, so no host camera decides the chain.
+    monkeypatch.setattr(v4l2_module, "_read_capture_modes", lambda path: None)
     built = _chain_after_queue(_build_v4l2({"v4l2_render_resolution": "1080p", "v4l2_framerate": 30}))
     assert [e.name for e in built] == ["videoscale", "videorate", "capsfilter", "convert"]
-    assert built[0].properties["add-borders"] is True
+    assert built[0].properties.get("add-borders") is True
     caps = built[2].properties["caps"].to_string()
-    # The plugin's own chain and caps, fed by a camera mode of 640x480 square pixels.
+    # The plugin's chain as checked above, with its own caps, fed by a camera mode of 640x480 square pixels.
     pipeline = gst.parse_launch(
         "videotestsrc pattern=white num-buffers=1 ! video/x-raw,width=640,height=480,framerate=30/1"
         f" ! videoscale add-borders=true ! videorate ! {caps} ! videoconvert"

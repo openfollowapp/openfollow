@@ -424,7 +424,7 @@ class V4l2Input(VideoInputBase):
         never a fixed size: a capture card only lists the incoming signal's
         resolution. With no list to choose from the source stays open. A
         render-resolution preset adds videoscale + a capsfilter pinning the size
-        and square pixels, so a mode of another shape keeps it between bars;
+        and square pixels, so a mode of another shape keeps its shape between bars;
         ``native`` omits videoscale so the device's own resolution flows through
         (the sink scales it for the widget).
         """

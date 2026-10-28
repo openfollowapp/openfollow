@@ -1859,7 +1859,7 @@ def test_the_saved_list_or_why_it_could_not_be_read(answer: str, got: dict) -> N
 
 
 _DIALOG_PAGE = """
-var body = null, lensLines = [], imageWidth = 1920, imageHeight = 1080;
+var body = null, lensLines = [], imageWidth = 1920, imageHeight = 1080, S = { lensLoaded: null };
 function openModal(o) { body = o.bodyHTML; }
 function lensMeasured() { return true; } function wizLensValid() { return true; }
 function wizLens() { return [-0.1, -0.1, 0, 0]; } function wizLensCentreText() { return ''; }
@@ -1874,6 +1874,8 @@ _DIALOG_FUNCTIONS = (
     "lensOption",
     "lensSavedList",
     "lensListFailed",
+    "lensSame",
+    "lensSaveName",
 )
 _UNREAD = "The saved lens calibrations could not be read."
 
@@ -7781,7 +7783,7 @@ def test_loading_a_calibration_sets_its_centre_and_shows_it_in_pixels() -> None:
     assert out[0] == {"wiz_lens_k1": "-0.2000", "wiz_lens_k2": "-0.0700"}
     assert out[1] == pytest.approx(_C42) and out[2] is False
     assert out[3] == {"name": "Wide", "src": "Saved on this station on 2026-10-14", "k1": -0.2, "k2": -0.07,
-                      "cx": pytest.approx(_C42[0]), "cy": pytest.approx(_C42[1])}  # fmt: skip
+                      "cx": pytest.approx(_C42[0]), "cy": pytest.approx(_C42[1]), "fromFile": False}  # fmt: skip
     assert out[4:] == [42, 18, 275, -275]
 
 
@@ -8563,6 +8565,95 @@ def test_save_under_the_choices_backs_up_the_cameras_own_calibration(save: str, 
     assert [text, display] == ["Saved \u201cBackup\u201d on this station.", ""]
 
 
+_FILE_LOADED = {"name": "CV504 - 3.6mm", "k1": -0.1, "k2": -0.1, "cx": 0, "cy": 0, "fromFile": True}
+
+
+@pytest.mark.parametrize(
+    ("station", "choice", "loaded", "hidden"),
+    [
+        (_STATION, "load", _FILE_LOADED, False),
+        (_STATION, "load", {**_FILE_LOADED, "fromFile": False}, True),
+        (_STATION, "load", None, True),
+        (_STATION, "keep", _FILE_LOADED, True),
+        (_STATION, "clear", _FILE_LOADED, True),
+        ([0, 0, 0, 0], "", _FILE_LOADED, True),
+    ],
+    ids=["from a file", "saved on this station", "none loaded yet", "kept", "cleared", "toolbar shown"],
+)
+def test_a_calibration_loaded_from_a_file_is_saved_from_under_its_notices(station, choice, loaded, hidden) -> None:
+    out = run_wizard_js(
+        "(function() { renderLensCurrent(); return $('lens-loaded-save').hidden; })()",
+        functions=_CURRENT_FUNCTIONS,
+        prelude=_CURRENT_PAGE
+        + f"var SAVED = {{ lens: {json.dumps(station)} }};"
+        + f" var S = {{ lensChoice: {json.dumps(choice)}, lensTouched: true, lensLoaded: {json.dumps(loaded)} }};",
+    )
+    # One saved on this station is saved already; without a calibration the picture's toolbar saves it.
+    assert out is hidden
+
+
+def _save_dialog(expression: str, loaded: dict, lines: int = 0):
+    return run_wizard_js(
+        "(async function() { " + expression + " })()",
+        functions=_DIALOG_FUNCTIONS,
+        prelude=_SAVE_ERROR
+        + _DOM
+        + _DIALOG_PAGE
+        + f"S.lensLoaded = {json.dumps(loaded)}; lensLines = new Array({lines});"
+        + f" var SAVED = {{ lens: {json.dumps(_STATION)} }}, buttons = [], sent = null;"
+        " openModal = function(o) { buttons = o.footerButtons; }; function closeModal() {}"
+        " document.querySelector = function() { return null; };"
+        " function fetch(url, o) {"
+        " if (o && o.method === 'POST') { sent = o.body; return Promise.resolve({ ok: true }); }"
+        " return Promise.resolve({ ok: true, json: function() { return Promise.resolve({ calibrations: [] }); } }); }\n"
+        + wizard_window_function("lensSaveDialog")
+        + "\n"
+        + wizard_window_function("lensSaveCurrent")
+        + "\nvar lensSaveDialog = window.lensSaveDialog, lensSaveCurrent = window.lensSaveCurrent;",
+    )
+
+
+@pytest.mark.parametrize(
+    ("save", "loaded", "lines", "name"),
+    [
+        ("lensSaveDialog(null, 'lens-loaded-saved')", _FILE_LOADED, 0, "CV504 - 3.6mm"),
+        ("lensSaveDialog()", _FILE_LOADED, 0, "CV504 - 3.6mm"),
+        ("lensSaveDialog()", {**_FILE_LOADED, "name": "x" * 70}, 0, "x" * 60),
+        ("lensSaveDialog()", {**_FILE_LOADED, "fromFile": False}, 0, ""),
+        ("lensSaveDialog()", {**_FILE_LOADED, "k1": -0.3}, 0, ""),
+        ("lensSaveDialog()", _FILE_LOADED, 2, ""),
+        ("lensSaveCurrent()", _FILE_LOADED, 0, ""),
+    ],
+    ids=[
+        "under the notices",
+        "from the toolbar",
+        "cut to the field",
+        "saved on this station",
+        "changed",
+        "lines",
+        "the camera's own",
+    ],  # fmt: skip
+)
+def test_saving_a_calibration_loaded_from_a_file_offers_the_file_s_name(save, loaded, lines, name) -> None:
+    out = _save_dialog(save + "; await new Promise(function(r) { setImmediate(r); }); return $('ls-name').value;",
+                       loaded, lines)  # fmt: skip
+    # Only the file's values, still as loaded, carry its name; the camera's own backup never does.
+    assert out == name
+
+
+def test_save_under_the_notices_saves_the_loaded_calibration_and_says_so_there() -> None:
+    out = _save_dialog(
+        "lensSaveDialog(null, 'lens-loaded-saved'); await new Promise(function(r) { setImmediate(r); });"
+        " buttons[1].onClick({}); await new Promise(function(r) { setImmediate(r); });"
+        " return [JSON.parse(sent), $('lens-loaded-saved').textContent, $('lens-loaded-saved').style.display,"
+        " $('lens-saved').style.display];",
+        _FILE_LOADED,
+    )
+    body, text, display, toolbar = out
+    assert [body["name"], body["k1"], body["k2"], body["cx"], body["cy"]] == ["CV504 - 3.6mm", -0.1, -0.1, 0, 0]
+    assert [text, display, toolbar] == ["Saved \u201cCV504 - 3.6mm\u201d on this station.", "", None]
+
+
 # ---------------------------------------------------------------------------
 # Lens: an OpenCV calibration file, converted by the station
 # ---------------------------------------------------------------------------
@@ -8797,6 +8888,27 @@ def test_loading_a_converted_lens_keeps_what_it_is() -> None:
     assert (out["kind"], out["rms_px"], out["corner_px"], out["coverage"]) == ("opencv", 1.0, None, 0.95)
 
 
+@pytest.mark.parametrize(("file", "from_file"), [("Wide.xml", True), (None, False)], ids=["file", "station"])
+def test_a_loaded_calibration_knows_whether_it_came_from_a_file(file: str | None, from_file: bool) -> None:
+    out = run_wizard_js(
+        "(function() { $('lens-loaded-saved').style.display = ''; lensApplyLoaded(c, 'src');"
+        " return [S.lensLoaded.fromFile, $('lens-loaded-saved').style.display]; })()",
+        functions=(
+            *_LENS_MODEL,
+            "wizLensShownPair",
+            *_CENTRE_PX,
+            "wizShowLensCentre",
+            "wizSetLensCentre",
+            "lensApplyLoaded",
+        ),
+        prelude=_DOM + _LOAD_PAGE,
+        LENS_C_BOUND=C_BOUND,
+        c={"name": "Wide", "k1": -0.2, "k2": -0.07, "cx": 0.0, "cy": 0.0, **({"file": file} if file else {})},
+    )
+    # A new load hides the last one's saved note.
+    assert out == [from_file, "none"]
+
+
 def test_a_late_answer_for_an_earlier_file_does_not_replace_the_file_chosen_after_it() -> None:
     settings = json.dumps({"camera": {"lens_k1": -0.1, "lens_k2": 0.0, "lens_cx": 0.0, "lens_cy": 0.0}})
     out = run_wizard_js(
@@ -8993,6 +9105,31 @@ def test_a_converted_lens_survives_a_reload_only_with_numbers_that_read(loaded: 
         " cornerPins: {}, cornerMoved: {}, lensChoice: '', lensTouched: false, lensLoaded: null };",
     )
     assert out == ["Wide", kind]
+
+
+@pytest.mark.parametrize(
+    ("stored", "from_file"),
+    [(True, True), (False, False), ("yes", False), (1, False), ("missing", False)],
+    ids=["file", "station", "text", "number", "missing"],
+)
+def test_a_reload_keeps_where_a_loaded_calibration_came_from_only_as_a_boolean(stored, from_file: bool) -> None:
+    loaded = {"name": "Wide", "k1": -0.2, "k2": -0.07, "cx": 0.0, "cy": 0.0}
+    if stored != "missing":
+        loaded["fromFile"] = stored
+    raw = {"units": "metric", "lensLoaded": loaded}
+    out = run_wizard_js(
+        "(function() { restoreFromSession(); return S.lensLoaded.fromFile; })()",
+        functions=("pairOk", "fracPinOk", "restoreFromSession", "lensHasCurrent"),
+        variables=("CORNERS",),
+        prelude=length_page("metric", {})
+        + _DOM
+        + _SESSION_PAGE
+        + f"var raw = {json.dumps(json.dumps(raw))}; var SAVED = {{ lens: [0, 0, 0, 0] }};"
+        " var imageWidth = 1920, imageHeight = 1080;"
+        " var S = { mode: 'simple', simpleLoc: '', rect: { origin: 'dsc' }, pinSize: null, nextId: 1, points: [],"
+        " cornerPins: {}, cornerMoved: {}, lensChoice: '', lensTouched: false, lensLoaded: null };",
+    )
+    assert out is from_file
 
 
 def test_a_conversion_answered_after_its_dialog_closed_stays_out_of_the_next_one() -> None:

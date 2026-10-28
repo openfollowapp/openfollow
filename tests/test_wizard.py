@@ -436,6 +436,14 @@ class TestWizardPage:
         assert re.search(
             r'<button type="button" class="secondary" id="lens-save" onclick="lensSaveDialog\(\)" disabled>', step
         )
+        # With the picture's toolbar hidden, a loaded calibration is saved from under the notices.
+        notices = step[step.index('<div id="lens-notices">') : step.index('<div id="lens-work">')]
+        assert re.search(
+            r'<div id="lens-loaded-save" hidden>\s*<button type="button" class="secondary"[^>]*'
+            r"onclick=\"lensSaveDialog\(null, 'lens-loaded-saved'\)\">Save lens calibration&hellip;</button>"
+            r'\s*<div id="lens-loaded-saved" class="notice success" role="status"',
+            notices,
+        )
         script = _wizard_script(body)
         assert "window.lensLoadDialog = function" in script and "window.lensSaveDialog = function" in script
 
@@ -991,7 +999,7 @@ function $(id) { return els[id] = els[id] || { value: '', hidden: false, textCon
 var document = { getElementById: $, querySelector: function() { return {}; } };
 function openModal(o) { body = o.bodyHTML; buttons = o.footerButtons; } function closeModal() {}
 function lensMeasured() { return true; } function wizLensValid() { return true; }
-function wizLens() { return LENS; }
+function wizLens() { return LENS; } var S = { lensLoaded: null }, lensLines = [];
 function fetch(url, opts) {
   if (opts) { posted = JSON.parse(opts.body); return Promise.resolve({ ok: true }); }
   return Promise.resolve({ ok: true, json: function() { return Promise.resolve({ calibrations: [] }); } });
@@ -1014,6 +1022,7 @@ def test_a_lens_calibration_the_wizard_saves_is_kept_with_its_centre(live_server
             "lensVals",
             "lensSavedList",
             "lensListFailed",
+            "lensSaveName",
             "wizHalfDiag",
             "wizLensCentrePxMax",
             "wizLensCentrePx",

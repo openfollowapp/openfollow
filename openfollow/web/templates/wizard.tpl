@@ -476,6 +476,10 @@
       </div>
       <div class="notice-sub" id="lens-result-hint"></div>
     </div>
+    <div id="lens-loaded-save" hidden>
+      <button type="button" class="secondary" style="margin-top:0.72rem;" onclick="lensSaveDialog(null, 'lens-loaded-saved')">Save lens calibration&hellip;</button>
+      <div id="lens-loaded-saved" class="notice success" role="status" style="display:none;margin-top:0.72rem;"></div>
+    </div>
     </div>
     <div id="lens-work">
     <div id="lens-container" class="wizard-preview-container" style="display:none;">
@@ -2736,6 +2740,8 @@
     }
     $('lens-notices').hidden = cur && S.lensChoice !== 'clear' && S.lensChoice !== 'load';
     $('lens-work').hidden = cur && S.lensChoice !== 'clear';
+    // With the picture's toolbar hidden, a calibration loaded from a file is saved from under its notices.
+    $('lens-loaded-save').hidden = !(cur && S.lensChoice === 'load' && S.lensLoaded && S.lensLoaded.fromFile);
     $('lens-next').hidden = ask;
   }
   function lensCurrentInit() {
@@ -2827,9 +2833,9 @@
     wizSetLensCentre([cx, cy]);
     wizShowLensLimit();
     S.lensTouched = true;
-    S.lensLoaded = { name: c.name, src: src, k1: Number(shown[0]), k2: Number(shown[1]), cx: cx, cy: cy };
+    S.lensLoaded = { name: c.name, src: src, k1: Number(shown[0]), k2: Number(shown[1]), cx: cx, cy: cy, fromFile: !!c.file };
     if (c.kind === 'opencv') Object.assign(S.lensLoaded, { kind: 'opencv', rms_px: c.rms_px, corner_px: c.corner_px, coverage: c.coverage });
-    $('lens-saved').style.display = 'none';
+    $('lens-saved').style.display = 'none'; $('lens-loaded-saved').style.display = 'none';
     lensShowNotice('');
     renderLens(); renderLensResult(); onLensCoeffChanged();
   }
@@ -2951,9 +2957,14 @@
   // could not be read says so, and that saving may replace a calibration of that name.
   // Under the question, Save backs up the camera's own calibration, whatever the fields show by then.
   window.lensSaveCurrent = function() { lensSaveDialog(SAVED.lens, 'lens-current-saved'); };
+  // A calibration loaded from a file, still as loaded, offers the file's name to save it under.
+  function lensSaveName() {
+    var ld = S.lensLoaded;
+    return ld && ld.fromFile && !lensLines.length && lensSame(wizLens(), [ld.k1, ld.k2, ld.cx, ld.cy]) ? ld.name.slice(0, 60) : '';
+  }
   window.lensSaveDialog = function(current, noteId) {
     if (!current && (!lensMeasured() || !wizLensValid())) return;
-    var l = current || wizLens(), saved = [], failed = null, saving = false;
+    var l = current || wizLens(), name = current ? '' : lensSaveName(), saved = [], failed = null, saving = false;
     function open() {
       openModal({
         title: 'Save Lens Calibration',
@@ -2983,6 +2994,7 @@
         ],
       });
       var ok = $('modal-footer').lastChild, inp = $('ls-name');
+      inp.value = name;
       function sync() {
         var n = inp.value.trim().toLowerCase();
         ok.disabled = !n || saving;
@@ -4282,6 +4294,7 @@
       if (raw.lensLoaded && typeof raw.lensLoaded.name === 'string' && [raw.lensLoaded.k1, raw.lensLoaded.k2, raw.lensLoaded.cx, raw.lensLoaded.cy].every(isFinite)) {
         S.lensLoaded = raw.lensLoaded;
         var ld = S.lensLoaded;
+        ld.fromFile = ld.fromFile === true;
         if (ld.kind === 'opencv' && !(typeof ld.rms_px === 'number' && isFinite(ld.rms_px) && typeof ld.coverage === 'number' && isFinite(ld.coverage) && (ld.corner_px === null || (typeof ld.corner_px === 'number' && isFinite(ld.corner_px))))) delete ld.kind;
       }
       if (sameUnits && (raw.mode === 'simple' || raw.mode === 'advanced')) {

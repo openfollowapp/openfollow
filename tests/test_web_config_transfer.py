@@ -142,10 +142,10 @@ class TestBackupOutcome:
     def test_a_restore_without_a_backup_is_confirmed_in_caution_after_the_restart(self) -> None:
         page = _page()
         assert (
-            "_sendRestarting('/api/config/reset', {method: 'POST'}, _restoreFailed, 'Restored defaults.');"
+            "_sendRestarting('/api/config/reset', {method: 'POST'}, _restoreFailed, 'Restored defaults.',"
             in function_body(page, "restoreDefaults")
         )
-        assert "}, _backupFailed, 'Restored the backup.');" in function_body(page, "restoreBackup")
+        assert "}, _backupFailed, 'Restored the backup.'," in function_body(page, "restoreBackup")
         body = function_body(page, "_sendRestarting")
         checked = body.index("if (result.backup_error) {")
         noted = body.index("toastOnNextLoad(done + ' ' + NO_BACKUP_MADE, 'caution');")

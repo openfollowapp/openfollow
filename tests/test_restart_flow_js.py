@@ -360,15 +360,17 @@ _BACKUPS = [
         "name": "Stage-v0.6.0-import-20261029T071200.000Z.ofbackup",
         "kind": "import",
         "before": "Import",
+        "made_before": "an import",
         "version": "0.6.0",
         "created": "2026-10-29T07:12:00+00:00",
         "newer": True,
     },
     {
-        "name": "Stage-v0.5.0rc3-defaults-20261028T204000.000Z.ofbackup",
-        "kind": "defaults",
-        "before": "Restore Defaults",
-        "version": "0.5.0rc3",
+        "name": "Stage-v0.5.0rc2-20261028T204000Z.ofbackup",
+        "kind": "update",
+        "before": "Update to 0.5.0rc3",
+        "made_before": "the update to 0.5.0rc3",
+        "version": "0.5.0rc2",
         "created": "2026-10-28T20:40:00+00:00",
         "newer": False,
     },
@@ -378,7 +380,8 @@ function rows() {
     return document.querySelectorAll('#backups-list tbody tr').map(function (tr) {
         var button = tr.querySelector('button');
         return { row: tr.className, cells: tr.querySelectorAll('td').map(function (td) { return td.textContent; }),
-                 button: [button.className, button.disabled] };
+                 button: [button.className, button.disabled],
+                 named: [button.getAttribute('aria-label'), button.getAttribute('aria-describedby')] };
     });
 }
 function listed() { return document.getElementById('backups-list').textContent; }
@@ -396,7 +399,10 @@ def _backups(steps: str, listing: str = f"{{ body: {{ backups: {json.dumps(_BACK
 
 
 def test_the_list_shows_each_backup_and_keeps_a_newer_one_from_being_restored() -> None:
-    out = _backups("out.rows = rows(); out.head = document.querySelector('#backups-list thead').textContent;")
+    out = _backups(
+        "out.rows = rows(); out.head = document.querySelector('#backups-list thead').textContent;"
+        "out.note = document.getElementById('backup-note-0').textContent;"
+    )
     assert out == {
         "head": "MadeBeforeVersionRestore",
         "rows": [
@@ -404,13 +410,16 @@ def test_the_list_shows_each_backup_and_keeps_a_newer_one_from_being_restored() 
                 "row": "backup-newer",
                 "cells": ["29 Oct 2026, 07:12", "Import", "0.6.0Newer than this station", "Restore\u2026"],
                 "button": ["btn-secondary small", True],
+                "named": ["Restore the backup from 29 Oct 2026, 07:12, made before an import", "backup-note-0"],
             },
             {
                 "row": "",
-                "cells": ["28 Oct 2026, 20:40", "Restore Defaults", "0.5.0rc3", "Restore\u2026"],
+                "cells": ["28 Oct 2026, 20:40", "Update to 0.5.0rc3", "0.5.0rc2", "Restore\u2026"],
                 "button": ["btn-secondary small", False],
+                "named": ["Restore the backup from 28 Oct 2026, 20:40, made before the update to 0.5.0rc3", None],
             },
         ],
+        "note": "Newer than this station",
     }
 
 
@@ -434,8 +443,10 @@ def test_a_station_without_backups_says_so() -> None:
         ),
         ("'unreachable'", "The backups on this station could not be read.Reload the page."),
         ("{ body: 'not json' }", "The backups on this station could not be read.Reload the page."),
+        ("{ body: {} }", "The backups on this station could not be read.Reload the page."),
+        ("{ body: { backups: 'none' } }", "The backups on this station could not be read.Reload the page."),
     ],
-    ids=["refused", "unreachable", "not-json"],
+    ids=["refused", "unreachable", "not-json", "no-list", "not-a-list"],
 )
 def test_a_list_that_cannot_be_read_says_so(listing: str, text: str) -> None:
     out = _backups(
@@ -463,10 +474,10 @@ def test_the_question_names_the_backup_and_only_its_final_button_is_red() -> Non
         "asked": [
             {
                 "title": "Restore this backup?",
-                "message": "The settings from 28 Oct 2026, 20:40 (made before Restore Defaults, version 0.5.0rc3) "
-                "replace the current ones, together with the marker catalog, saved templates and lens calibrations "
-                "of that time, and the station restarts. This station's name, network access and local file paths "
-                "stay as they are. A backup of the current settings is saved on the station first.",
+                "message": "The settings from 28 Oct 2026, 20:40 (made before the update to 0.5.0rc3, "
+                "version 0.5.0rc2) replace the current ones, together with the marker catalog, saved templates and "
+                "lens calibrations of that time, and the station restarts. This station's name, network access and "
+                "local file paths stay as they are. A backup of the current settings is saved on the station first.",
                 "confirmLabel": "Restore and Restart",
                 "danger": True,
             }
@@ -530,7 +541,7 @@ def test_a_restore_without_a_backup_says_so_after_the_reload() -> None:
         (
             "'unreachable'",
             "Not restored. The station did not answer. Check that it is switched on and on this network, "
-            "then save again.",
+            "then try again.",
         ),
     ],
     ids=["newer", "damaged", "gone", "unreachable"],

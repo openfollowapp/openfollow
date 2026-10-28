@@ -156,11 +156,12 @@ async function restoreDefaults() {
         danger: true,
     });
     if (!ok) return;
-    _sendRestarting('/api/config/reset', {method: 'POST'}, _restoreFailed, 'Restored defaults.');
+    _sendRestarting('/api/config/reset', {method: 'POST'}, _restoreFailed, 'Restored defaults.',
+        window.OpenFollow.saveError.UNREACHABLE);
 }
 
 /* A change the station restarts for: the restart's progress shows from the moment it is sent. */
-async function _sendRestarting(url, init, failed, done) {
+async function _sendRestarting(url, init, failed, done, unreachable) {
     openfollowRestartProgress();
     var res, text;
     try {
@@ -168,7 +169,7 @@ async function _sendRestarting(url, init, failed, done) {
         text = await res.text();
     } catch (e) {
         closeModal();
-        failed(window.OpenFollow.saveError.UNREACHABLE);
+        failed(unreachable);
         return;
     }
     var result = {};
@@ -202,7 +203,7 @@ function _backupCell(row, text, className) {
     return cell;
 }
 
-function _backupRow(backup) {
+function _backupRow(backup, index) {
     var row = document.createElement('tr');
     _backupCell(row, _backupTime(backup.created), 'backup-made');
     _backupCell(row, backup.before);
@@ -211,11 +212,15 @@ function _backupRow(backup) {
     button.setAttribute('type', 'button');
     button.className = 'btn-secondary small';
     button.textContent = 'Restore\u2026';
+    button.setAttribute('aria-label', 'Restore the backup from ' + _backupTime(backup.created)
+        + ', made before ' + backup.made_before);
     if (backup.newer) {
         row.className = 'backup-newer';
         var note = document.createElement('span');
         note.className = 'backup-note';
+        note.id = 'backup-note-' + index;
         note.textContent = 'Newer than this station';
+        button.setAttribute('aria-describedby', note.id);
         version.appendChild(note);
         button.disabled = true;
     }
@@ -246,6 +251,7 @@ async function loadBackups() {
             return;
         }
         backups = (await res.json()).backups;
+        if (!Array.isArray(backups)) throw new TypeError('no list of backups');
     } catch (e) {
         _backupsUnread(list, {error: 'The backups on this station could not be read.', action: 'Reload the page.'});
         return;
@@ -263,7 +269,7 @@ async function loadBackups() {
     table.innerHTML = '<thead><tr><th scope="col">Made</th><th scope="col">Before</th><th scope="col">Version</th>'
         + '<th scope="col"><span class="visually-hidden">Restore</span></th></tr></thead>';
     var body = document.createElement('tbody');
-    backups.forEach(function(backup) { body.appendChild(_backupRow(backup)); });
+    backups.forEach(function(backup, index) { body.appendChild(_backupRow(backup, index)); });
     table.appendChild(body);
     var wrap = document.createElement('div');
     wrap.className = 'backups-table-wrap';
@@ -279,7 +285,7 @@ async function restoreBackup(backup) {
     window.OpenFollow.saveError.clear(document.getElementById('config-transfer-section'));
     var ok = await modalConfirm({
         title: 'Restore this backup?',
-        message: 'The settings from ' + _backupTime(backup.created) + ' (made before ' + backup.before
+        message: 'The settings from ' + _backupTime(backup.created) + ' (made before ' + backup.made_before
             + ', version ' + backup.version + ') replace the current ones, together with the marker '
             + 'catalog, saved templates and lens calibrations of that time, and the station restarts. '
             + 'This station\'s name, network access and local file paths stay as they are. A backup '
@@ -292,7 +298,7 @@ async function restoreBackup(backup) {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({name: backup.name}),
-    }, _backupFailed, 'Restored the backup.');
+    }, _backupFailed, 'Restored the backup.', window.OpenFollow.saveError.UNREACHABLE_ACTION);
 }
 
 loadBackups();

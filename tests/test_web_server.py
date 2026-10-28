@@ -9110,11 +9110,14 @@ def test_a_busy_answer_reaches_a_client_still_sending(live_server, monkeypatch, 
 
     caplog.set_level(logging.INFO, logger="openfollow.web.server")
     _, base = live_server
-    slot, _ = _busy(monkeypatch, drain_places=4)
+    slot, drains = _busy(monkeypatch)
     body = b"x" * (server_module._BUSY_DRAIN_MAX_BYTES - 4096)  # the head fits under the cap too
     failures: list[str] = []
     try:
         for _ in range(30):
+            # A drain frees its place once the client's close reaches it, which can trail the client.
+            assert drains.acquire(timeout=5)
+            drains.release()
             try:
                 answer = _post_whole(base, chunked=False, body=body)
             except OSError as exc:

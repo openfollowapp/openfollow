@@ -261,6 +261,7 @@
   .modal-body .tier-list { max-width: none; max-height: 16rem; overflow-y: auto; padding: 4px; margin: -4px; }
   .lens-dlg-title { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 0.2rem 0 0.45rem; }
   .lens-dlg-sep { height: 1px; background: var(--border-soft); margin: 1rem 0 0.8rem; }
+  #ll-file-opt { margin-bottom: 0.6rem; }
   #ll-size { margin: 0.8rem 0 0; }
   .ll-size-row { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
   .ll-size-row input { width: 6.5rem; }

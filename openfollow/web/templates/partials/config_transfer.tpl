@@ -218,9 +218,8 @@ function _backupRow(backup) {
         note.textContent = 'Newer than this station';
         version.appendChild(note);
         button.disabled = true;
-    } else {
-        button.addEventListener('click', function() { restoreBackup(backup); });
     }
+    button.addEventListener('click', function() { restoreBackup(backup); });
     _backupCell(row, '', 'row-actions').appendChild(button);
     return row;
 }

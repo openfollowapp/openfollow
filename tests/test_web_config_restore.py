@@ -7,6 +7,7 @@ from __future__ import annotations
 import io
 import json
 import tarfile
+import tomllib
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime, timedelta
@@ -288,8 +289,9 @@ def test_the_station_s_network_mode_decides_the_restored_pins(station, mode: str
 
     assert _restore(base, name)[0] == 200
 
-    saved = load_config(str(state / "config.toml"), strict=True)
-    assert (saved.network_mode, saved.osc.listen_iface) == (mode, pin)
+    # Read raw: a load clears a Simple station's pins again, so only the file shows one written.
+    saved = tomllib.loads((state / "config.toml").read_text(encoding="utf-8"))
+    assert (saved["network_mode"], saved["osc"]["listen_iface"]) == (mode, pin)
 
 
 # --- refusals -----------------------------------------------------------------

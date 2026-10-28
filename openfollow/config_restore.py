@@ -365,28 +365,62 @@ def find_backup(config_path: str | os.PathLike[str], name: str, running: str) ->
 
 @dataclass
 class StagedRestore:
-    """The archive's catalog and folders written beside their targets, swapped in by :meth:`commit`."""
+    """The archive's catalog and folders written beside their targets, swapped in by :meth:`commit`.
+
+    Everything that takes space is made by :func:`stage_restore`, the place each
+    folder is moved aside to included, so a commit only renames.
+    """
 
     files: list[tuple[Path, Path]] = field(default_factory=list)
-    folders: list[tuple[Path, Path]] = field(default_factory=list)
+    # ``(part, staged, aside, target)``: the archive's folder name, its copy, where the station's goes.
+    folders: list[tuple[str, Path, Path, Path]] = field(default_factory=list)
+    committed: bool = False
 
-    def commit(self) -> None:
-        """Move each staged copy into place: a rename each, so a target is never half written."""
+    def commit(self) -> list[str]:
+        """Move each staged copy into place, as far as each goes; the parts that kept the station's own.
+
+        A folder that cannot move in gets its own back; one that cannot do
+        either is left with both copies beside it for
+        :func:`recover_interrupted_restore`.
+        """
+        self.committed = True
+        failed = []
         for staged, target in self.files:
-            os.replace(staged, target)
-        for staged, target in self.folders:
-            old = Path(tempfile.mkdtemp(prefix=f".{target.name}.", suffix=_REPLACED, dir=target.parent))
-            with contextlib.suppress(FileNotFoundError):
-                os.replace(target, old)
-            os.replace(staged, target)
-            shutil.rmtree(old, ignore_errors=True)
+            try:
+                os.replace(staged, target)
+            except OSError as exc:
+                logger.warning("Could not restore %s: %s", target, exc)
+                failed.append(CATALOG)
+                staged.unlink(missing_ok=True)
+        for part, staged, aside, target in self.folders:
+            moved = False
+            try:
+                with contextlib.suppress(FileNotFoundError):
+                    os.replace(target, aside)
+                    moved = True
+                os.replace(staged, target)
+            except OSError as exc:
+                logger.warning("Could not restore %s: %s", target, exc)
+                failed.append(part)
+                if moved:
+                    try:
+                        os.replace(aside, target)
+                    except OSError as back:
+                        logger.warning("Could not put back %s, left for the next start: %s", target, back)
+                        continue
+                shutil.rmtree(staged, ignore_errors=True)
+            shutil.rmtree(aside, ignore_errors=True)
+        return failed
 
     def discard(self) -> None:
-        """Remove whatever :meth:`commit` did not move into place."""
+        """Remove what was staged; after a commit, what it moved and left is its own business."""
+        if self.committed:
+            return
         for staged, _target in self.files:
             staged.unlink(missing_ok=True)
-        for staged, _target in self.folders:
+        for _part, staged, aside, _target in self.folders:
             shutil.rmtree(staged, ignore_errors=True)
+            shutil.rmtree(aside, ignore_errors=True)
 
 
 def stage_restore(contents: BackupContents, catalog_path: Path, state_dir: Path) -> StagedRestore:
@@ -408,7 +442,12 @@ def stage_restore(contents: BackupContents, catalog_path: Path, state_dir: Path)
             target = state_dir / folder
             target.parent.mkdir(parents=True, exist_ok=True)
             tmp_dir = Path(tempfile.mkdtemp(prefix=f".{target.name}.", suffix=_STAGED, dir=target.parent))
-            staged.folders.append((tmp_dir, target))
+            try:
+                aside = Path(tempfile.mkdtemp(prefix=f".{target.name}.", suffix=_REPLACED, dir=target.parent))
+            except OSError:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                raise
+            staged.folders.append((folder, tmp_dir, aside, target))
             for relative, data in inside.items():
                 dest = tmp_dir / relative
                 dest.parent.mkdir(parents=True, exist_ok=True)

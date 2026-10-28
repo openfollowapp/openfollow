@@ -149,7 +149,7 @@ class TestBackupOutcome:
         body = function_body(page, "_sendRestarting")
         checked = body.index("if (result.backup_error) {")
         noted = body.index("toastOnNextLoad(done + ' ' + NO_BACKUP_MADE, 'caution');")
-        assert checked < noted < body.index("openfollowAwaitRestart(")
+        assert checked < noted < body.rindex("openfollowAwaitRestart(")
 
 
 class TestBackupsGroup:

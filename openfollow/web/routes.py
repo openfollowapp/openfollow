@@ -27,7 +27,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Mapping, MutableSequence, Sequence
+from collections.abc import Callable, Iterable, Mapping, MutableSequence, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -4072,6 +4072,17 @@ def _export_status(status: ExportStatus) -> dict[str, Any]:
 
 _UPDATE_RUNNING = "An update is running."
 _BACKUPS_UNREADABLE = "The backups on this station could not be read."
+_RESTORED_PART_WORDS = {
+    config_restore.CATALOG: "the marker catalog",
+    config_restore.TEMPLATES: "the saved templates",
+    config_restore.LENSES: "the lens calibrations",
+}
+
+
+def _and(words: Iterable[str]) -> str:
+    """``a``, ``a and b``, ``a, b and c``."""
+    listed = list(words)
+    return ", ".join(listed[:-1]) + (" and " if len(listed) > 1 else "") + listed[-1]
 
 
 _RESTART_AFTER_UPDATE = "Restart once it has finished."
@@ -4088,7 +4099,7 @@ def _update_refused(server: Any) -> str:
 _LATENCY_WARNING_TOKEN = re.compile(r"[A-Za-z0-9_-]{16,64}")
 
 
-def _save_failed(status: int, error: str, action: str = "", **detail: str) -> HTTPResponse:
+def _save_failed(status: int, error: str, action: str = "", **detail: Any) -> HTTPResponse:
     """A refused or failed save, in the ``{error, action}`` shape the save-feedback line reads."""
     body = json.dumps({"error": error, "action": action, **detail})
     return HTTPResponse(body=body, status=status, headers={"Content-Type": "application/json"})
@@ -10545,6 +10556,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         except OSError as exc:
             return _restore_not_written(found.name, exc)
 
+        not_restored: list[str] = []
+
         def write_backup() -> None:
             with _config_write_lock:
                 current, replacing_now = _import_base(may_replace=True)
@@ -10559,7 +10572,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 catalog = server.get_marker_catalog()
                 if catalog is not None:
                     catalog.hold_saves()
-                staged.commit()
+                # Renames only: past the held save, a part that fails stays as it is and the restart goes ahead.
+                not_restored.extend(staged.commit())
 
         try:
             # Checked again with the write: an update queued during the backup leaves the settings as they are.
@@ -10572,11 +10586,18 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             staged.discard()
         if not restarting:
             return _save_failed(409, _UPDATE_RUNNING, after_update)
+        restart = {"needs_restart": True, "restarting": True, "instance": server.instance_id, **backup}
+        if not_restored:
+            logger.warning("Restored settings backup %s without %s; restarting", found.name, ", ".join(not_restored))
+            return _save_failed(
+                500,
+                f"{_and(_RESTORED_PART_WORDS[part] for part in not_restored).capitalize()} could not be written.",
+                "OpenFollow is restarting with the rest of the backup.",
+                **restart,
+            )
         logger.info("Restored settings backup %s; restarting", found.name)
         response.content_type = "application/json"
-        return json.dumps(
-            {"success": True, "needs_restart": True, "restarting": True, "instance": server.instance_id, **backup}
-        )
+        return json.dumps({"success": True, **restart})
 
     @app.post("/api/config/broadcast-all")
     def api_broadcast_all() -> Any:

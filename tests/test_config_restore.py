@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import io
 import tarfile
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -597,3 +598,116 @@ def test_a_leftover_that_cannot_be_put_back_is_logged_and_left(
     config_restore.recover_interrupted_restore(station, station / "markers.toml")
     assert (station / ".lens-calibrations.aaaa1111.old").is_dir()
     assert "lens-calibrations" in caplog.text
+
+
+# --- a commit that cannot finish --------------------------------------------------
+
+
+def _all_parts(station: Path) -> config_restore.BackupContents:
+    return config_restore.BackupContents(
+        b"",
+        b"[[marker]]\nid = 7\n",
+        {"templates/user": {"new.oftemplate": b"new"}, "lens-calibrations": {"tele.json": b"[]"}},
+    )
+
+
+def _refusing(monkeypatch: pytest.MonkeyPatch, refused: Callable[[Path, Path], bool]) -> None:
+    real = config_restore.os.replace
+
+    def replace(src: str | Path, dst: str | Path) -> None:
+        if refused(Path(src), Path(dst)):
+            raise PermissionError(13, "Permission denied")
+        real(src, dst)
+
+    monkeypatch.setattr(config_restore.os, "replace", replace)
+
+
+def test_a_commit_needs_no_new_space(station: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    staged = stage_restore(_all_parts(station), station / "markers.toml", station)
+
+    def no_space(*_args: object, **_kwargs: object) -> str:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(config_restore.tempfile, "mkdtemp", no_space)
+    monkeypatch.setattr(config_restore.tempfile, "mkstemp", no_space)
+    assert staged.commit() == []
+    assert _tree(station / "lens-calibrations") == {"tele.json": b"[]"}
+    assert list(station.rglob(".*")) == []
+
+
+def test_a_part_that_cannot_move_in_is_named_and_the_rest_restored(
+    station: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    staged = stage_restore(_all_parts(station), station / "markers.toml", station)
+    _refusing(monkeypatch, lambda src, dst: dst.name == "markers.toml")
+
+    assert staged.commit() == ["markers.toml"]
+    staged.discard()
+
+    assert (station / "markers.toml").read_bytes() == b'[[marker]]\nid = 1\nname = "Lead"\n'
+    assert _tree(station / "templates" / "user") == {"new.oftemplate": b"new"}
+    assert _tree(station / "lens-calibrations") == {"tele.json": b"[]"}
+    assert list(station.rglob(".*")) == []
+
+
+def test_a_folder_that_cannot_move_in_gets_its_own_back(station: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    staged = stage_restore(_all_parts(station), station / "markers.toml", station)
+    _refusing(monkeypatch, lambda src, dst: dst.name == "lens-calibrations" and src.name.endswith(".restore"))
+
+    assert staged.commit() == ["lens-calibrations"]
+    staged.discard()
+
+    assert _tree(station / "lens-calibrations") == {"zoom.json": b"{}"}
+    assert _tree(station / "templates" / "user") == {"new.oftemplate": b"new"}
+    assert list(station.rglob(".*")) == []
+
+
+def test_a_folder_that_cannot_be_moved_aside_is_left_as_it_is(station: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    staged = stage_restore(_all_parts(station), station / "markers.toml", station)
+    _refusing(monkeypatch, lambda src, dst: src.name == "lens-calibrations")
+
+    assert staged.commit() == ["lens-calibrations"]
+
+    assert _tree(station / "lens-calibrations") == {"zoom.json": b"{}"}
+    assert list(station.rglob(".*")) == []
+
+
+def test_a_folder_that_cannot_move_in_nor_back_is_finished_at_the_next_start(
+    station: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    staged = stage_restore(_all_parts(station), station / "markers.toml", station)
+    _refusing(monkeypatch, lambda src, dst: dst.name == "lens-calibrations" and src.name != "lens-calibrations")
+
+    assert staged.commit() == ["lens-calibrations"]
+    staged.discard()
+    assert not (station / "lens-calibrations").exists()
+
+    monkeypatch.undo()
+    config_restore.recover_interrupted_restore(station, station / "markers.toml")
+    assert _tree(station / "lens-calibrations") == {"tele.json": b"[]"}
+    assert list(station.rglob(".*")) == []
+
+
+def test_a_folder_the_station_did_not_have_is_left_absent_when_it_cannot_move_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    contents = config_restore.BackupContents(b"", None, {"lens-calibrations": {"a.json": b"{}"}})
+    staged = stage_restore(contents, tmp_path / "markers.toml", tmp_path)
+    _refusing(monkeypatch, lambda src, dst: dst.name == "lens-calibrations")
+
+    assert staged.commit() == ["lens-calibrations"]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_no_room_to_move_a_folder_aside_stages_nothing(station: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    real = config_restore.tempfile.mkdtemp
+
+    def no_room_aside(*args: object, **kwargs: object) -> str:
+        if kwargs.get("suffix") == ".old":
+            raise OSError(28, "No space left on device")
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(config_restore.tempfile, "mkdtemp", no_room_aside)
+    with pytest.raises(OSError):
+        stage_restore(_all_parts(station), station / "markers.toml", station)
+    assert list(station.rglob(".*")) == []

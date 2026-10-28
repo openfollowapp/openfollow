@@ -174,6 +174,14 @@ async function _sendRestarting(url, init, failed, done, unreachable) {
     }
     var result = {};
     try { result = JSON.parse(text); } catch (e) { /* not JSON: reported below */ }
+    if (!res.ok && result.restarting) {
+        /* Part way: what was not written is said while the station restarts on the rest. */
+        var info = window.OpenFollow.saveError.fromText(res.status, text);
+        openfollowRestartProgress('Not all restored. ' + info.error + ' ' + info.action);
+        toastOnNextLoad('Not all restored. ' + info.error + ' Details in Logs.', 'caution');
+        openfollowAwaitRestart(result.instance || '');
+        return;
+    }
     if (!res.ok || !result.success) {
         closeModal();
         failed(window.OpenFollow.saveError.fromText(res.status, text));

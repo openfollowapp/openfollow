@@ -521,6 +521,31 @@ def test_a_restore_without_a_backup_says_so_after_the_reload() -> None:
     }
 
 
+def test_a_restore_that_went_part_way_says_what_was_not_restored_and_waits_for_the_restart() -> None:
+    partial = {
+        "error": "The marker catalog could not be written.",
+        "action": "OpenFollow is restarting with the rest of the backup.",
+        "needs_restart": True,
+        "restarting": True,
+        "instance": "old",
+    }
+    out = _backups(
+        f"answers['POST /api/config/backups/restore'] = {{ status: 500, body: {json.dumps(partial)} }};"
+        + _press_restore()
+        + "release(); await settle(); out.waiting = shown(); out.error = errorLine();"
+        "info = { body: { instance: 'new' } }; await tick(2000); out.back = reloaded; out.toasts = toasts;"
+    )
+    assert out == {
+        "waiting": _progress(
+            "Not all restored. The marker catalog could not be written. "
+            "OpenFollow is restarting with the rest of the backup."
+        ),
+        "error": None,
+        "back": 1,
+        "toasts": [["Not all restored. The marker catalog could not be written. Details in Logs.", "caution"]],
+    }
+
+
 @pytest.mark.parametrize(
     ("answer", "error"),
     [

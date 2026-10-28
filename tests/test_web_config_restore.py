@@ -485,7 +485,13 @@ def test_a_restore_while_the_list_cannot_be_read_is_refused(station) -> None:
     assert server.check_restart_requested() is False
 
 
-def test_a_restore_that_cannot_be_staged_writes_nothing(station) -> None:
+def _nothing_held(server: ConfigWebServer, state: Path) -> None:
+    """The running station still saves: no restore holds its files."""
+    save_catalog(server.get_marker_catalog(), str(state / "elsewhere.toml"))
+    save_config(load_config(str(state / "config.toml"), strict=True), str(state / "config.toml"))
+
+
+def test_a_restore_that_cannot_be_staged_writes_nothing_and_holds_nothing(station) -> None:
     server, base, state = station
     _the_old_show(state)
     name = _update_backup(state)
@@ -501,25 +507,80 @@ def test_a_restore_that_cannot_be_staged_writes_nothing(station) -> None:
     assert (status, body) == (500, {"error": "The settings could not be written.", "action": "Details in Logs."})
     assert (state / "config.toml").read_bytes() == before
     assert _tree(state / "templates" / "user") == {"now.oftemplate": "now"}
-    assert list(state.rglob(".*.restore")) == []
+    assert list(state.rglob(".*.restore")) + list(state.rglob(".*.old")) == []
     assert server.check_restart_requested() is False
+    _nothing_held(server, state)
 
 
-def test_a_restore_that_fails_to_write_never_restarts(station, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_config_that_cannot_be_saved_restores_nothing_and_holds_nothing(
+    station, monkeypatch: pytest.MonkeyPatch
+) -> None:
     server, base, state = station
     _the_old_show(state)
     name = _update_backup(state)
     _the_show_now(state)
+    before = (state / "config.toml").read_bytes()
+    real_save = routes_module.save_config
 
-    def fail(self: config_restore.StagedRestore) -> None:
-        raise OSError(28, "No space left on device")
+    def disk_full(cfg: AppConfig, path: str, **kwargs: Any) -> None:
+        if kwargs.get("last"):
+            raise OSError(28, "No space left on device")
+        real_save(cfg, path, **kwargs)
 
-    monkeypatch.setattr(config_restore.StagedRestore, "commit", fail)
+    monkeypatch.setattr(routes_module, "save_config", disk_full)
     status, body = _restore(base, name)
 
     assert (status, body) == (500, {"error": "The settings could not be written.", "action": "Details in Logs."})
-    assert list(state.rglob(".*.restore")) == []
+    assert (state / "config.toml").read_bytes() == before
+    assert (state / "show" / "markers.toml").read_text(encoding="utf-8") == "[[marker]]\nid = 9\n"
+    assert _tree(state / "templates" / "user") == {"now.oftemplate": "now"}
+    assert list(state.rglob(".*.restore")) + list(state.rglob(".*.old")) == []
     assert server.check_restart_requested() is False
+    _nothing_held(server, state)
+
+
+@pytest.mark.parametrize(
+    ("refused", "said"),
+    [
+        ({"markers.toml"}, "The marker catalog could not be written."),
+        ({"user", "lens-calibrations"}, "The saved templates and the lens calibrations could not be written."),
+        (
+            {"markers.toml", "user", "lens-calibrations"},
+            "The marker catalog, the saved templates and the lens calibrations could not be written.",
+        ),
+    ],
+    ids=["catalog", "folders", "all"],
+)
+def test_a_part_that_cannot_be_moved_in_after_the_config_still_restarts(
+    station, monkeypatch: pytest.MonkeyPatch, refused: set[str], said: str
+) -> None:
+    server, base, state = station
+    _the_old_show(state)
+    name = _update_backup(state)
+    _the_show_now(state)
+    real_replace = config_restore.os.replace
+
+    def refuse(src: Any, dst: Any) -> None:
+        if Path(dst).name in refused and Path(src).name.endswith(".restore"):
+            raise PermissionError(13, "Permission denied")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(config_restore.os, "replace", refuse)
+    status, body = _restore(base, name)
+
+    assert status == 500
+    assert body["error"] == said
+    assert body["action"] == "OpenFollow is restarting with the rest of the backup."
+    assert (body["restarting"], body["instance"]) == (True, server.instance_id)
+    assert server.check_restart_requested() is True
+    assert load_config(str(state / "config.toml"), strict=True).grid.width == 42.0
+    assert (state / "show" / "markers.toml").read_text(encoding="utf-8") == (
+        "[[marker]]\nid = 9\n" if "markers.toml" in refused else _OLD_CATALOG.decode()
+    )
+    assert _tree(state / "templates" / "user") == (
+        {"now.oftemplate": "now"} if "user" in refused else {"old.oftemplate": "old"}
+    )
+    assert list(state.rglob(".*.restore")) + list(state.rglob(".*.old")) == []
 
 
 # --- a settings file that does not read -----------------------------------------

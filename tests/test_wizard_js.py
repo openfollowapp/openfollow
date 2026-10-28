@@ -8573,11 +8573,11 @@ def test_save_under_the_choices_backs_up_the_cameras_own_calibration(save: str, 
         ({"rms_px": 1.234, "corner_px": 3.45, "coverage": 1.0}, "Typical error 1.2 px, corners 3.5 px."),
         (
             {"rms_px": 0.8, "corner_px": None, "coverage": 0.912},
-            "Typical error 0.8 px. The file describes 91% of the picture, not its corners.",
+            "Typical error 0.8 px. The file describes 91% of the picture, not all its corners.",
         ),
         (
             {"rms_px": 0.8, "corner_px": None, "coverage": 0.997},
-            "Typical error 0.8 px. The file describes 99% of the picture, not its corners.",
+            "Typical error 0.8 px. The file describes 99% of the picture, not all its corners.",
         ),
     ],
     ids=["reaches the corners", "stops short of them", "short of the corners only"],
@@ -8699,7 +8699,7 @@ def test_an_opencv_file_is_offered_with_its_accuracy_and_loads_as_one() -> None:
         [{"ok": True, "data": _CONVERTED}],
     )
     offered, size_hidden, posts, applied = out
-    assert "Typical error 0.8 px. The file describes 90% of the picture, not its corners." in offered
+    assert "Typical error 0.8 px. The file describes 90% of the picture, not all its corners." in offered
     assert size_hidden is True and posts == [{"xml": "<opencv_storage/>", "image_width": 1920, "image_height": 1080}]
     ((lens, src),) = applied
     assert src == "From the OpenCV calibration file Wide 2.8.xml"
@@ -8991,3 +8991,40 @@ def test_a_converted_lens_survives_a_reload_only_with_numbers_that_read(loaded: 
         " cornerPins: {}, cornerMoved: {}, lensChoice: '', lensTouched: false, lensLoaded: null };",
     )
     assert out == ["Wide", kind]
+
+
+def test_a_conversion_answered_after_its_dialog_closed_stays_out_of_the_next_one() -> None:
+    out = run_wizard_js(
+        "(async function() { lensLoadDialog(); await tick(); var old = $('ll-body');"
+        " old.onchange({ target: { id: 'll-file', files: [{ name: 'A.xml', text: '<opencv_storage/>' }] } });"
+        " els['ll-body'] = { id: 'll-body' }; els['ll-file-opt'] = { id: 'll-file-opt', hidden: true, innerHTML: '' };"
+        " gates[0](); await tick(); await tick();"
+        " return [$('ll-file-opt').hidden, $('ll-file-opt').innerHTML]; })()",
+        functions=(*_DIALOG_FUNCTIONS, "lensFromOpencv", "lensOpencvAccuracy", "lensFromSettings"),
+        prelude=_SAVE_ERROR
+        + _FROM_TEXT
+        + _DOM
+        + _DIALOG_PAGE
+        + _OPENCV_DIALOG
+        + "var gates = []; fetch = function(url, o) {"
+        " if (!o) return Promise.resolve({ ok: true,"
+        " json: function() { return Promise.resolve({ calibrations: [] }); } });"
+        " return new Promise(function(done) { gates.push(function() {"
+        " done({ ok: true, status: 200, text: function() { return Promise.resolve(converted); } }); }); }); };\n"
+        + wizard_window_function("lensLoadDialog")
+        + "\nvar lensLoadDialog = window.lensLoadDialog;",
+        converted=json.dumps(_CONVERTED),
+    )
+    # The dialog it was asked for has gone; the next one's picture of the offer stays as it was.
+    assert out == [True, ""]
+
+
+def test_enter_in_a_size_field_converts_with_that_size() -> None:
+    out = _opencv_dialog(
+        "await choose('tele.xml'); $('ll-size-w').value = '3840'; $('ll-size-h').value = '2160';"
+        " var held = false; $('ll-size-h').onkeydown({ key: 'Enter', preventDefault: function() { held = true; } });"
+        " await tick(); await tick(); $('ll-size-w').onkeydown({ key: 'a', preventDefault: function() {} });"
+        " await tick(); return [held, posts.length, posts[1].calibration_width, posts[1].calibration_height];",
+        [{"ok": False, "data": {"error": "No size.", "needs_size": True}}, {"ok": True, "data": _CONVERTED}],
+    )
+    assert out == [True, 2, 3840, 2160]

@@ -50,6 +50,9 @@ _FISHEYE_KEYS = ("isFisheye", "fisheye_model")
 SHAPE_TOLERANCE = 0.01
 # Toward 90 degrees the pinhole picture runs off to infinity; a stage overlay ends well before.
 MAX_OFF_AXIS_DEG = 80.0
+# How far from the middle of a size the operator gave the camera matrix's principal point may lie, in
+# half-diagonals: a camera's lies near the middle, so one far off says the size is not the calibrated one.
+SIZE_CHECK = 0.1
 # The share of the snapshot a calibration must describe to give a lens.
 MIN_COVERAGE = 0.25
 # Screen points the fit samples along the snapshot's long side; the short side in proportion.
@@ -82,6 +85,9 @@ class OpenCvCalibration:
     # The calibrated image's size; None when the file does not carry it.
     width: int | None
     height: int | None
+    # The principal point of the camera matrix alone, before ``cxcy_offset``.
+    matrix_cx: float
+    matrix_cy: float
 
 
 @dataclass(frozen=True)
@@ -135,13 +141,13 @@ def _first(root: ET.Element, keys: tuple[str, ...]) -> ET.Element | None:
 def _size(root: ET.Element) -> tuple[int | None, int | None]:
     node = root.find("cameraResolution")
     if node is not None:
-        values = _matrix(node, "image size")
+        values = _matrix(node, "picture size")
     else:
         values = _numbers(root.findtext("image_width")) + _numbers(root.findtext("image_height"))
     if not values:
         return None, None
     if len(values) != 2 or not all(v.is_integer() and 0 < v <= MAX_SIDE for v in values):
-        raise OpenCvLensError("The calibration file's image size is not two whole numbers.")
+        raise OpenCvLensError("The calibration file's picture size is not two whole numbers.")
     return int(values[0]), int(values[1])
 
 
@@ -171,8 +177,10 @@ def parse_opencv_calibration(text: str) -> OpenCvCalibration:
     if len(matrix) != 9:
         raise OpenCvLensError("The calibration file's camera matrix is not 3 x 3.")
     fx, skew, cx, _, fy, cy, *bottom = matrix
-    if fx <= 0.0 or fy <= 0.0 or skew != 0.0 or bottom != [0.0, 0.0, 1.0]:
+    if fx <= 0.0 or fy <= 0.0 or bottom != [0.0, 0.0, 1.0]:
         raise OpenCvLensError("The calibration file's camera matrix is not a camera's.")
+    if skew != 0.0:
+        raise OpenCvLensError("The calibration models a skewed sensor, which the overlay cannot follow.")
     dist_node = _first(root, _DIST_KEYS)
     if dist_node is None:
         raise OpenCvLensError("The calibration file has no distortion values, so it gives no lens.")
@@ -197,7 +205,7 @@ def parse_opencv_calibration(text: str) -> OpenCvCalibration:
     if len(offset) != 2:
         raise OpenCvLensError("The calibration file's lens centre offset is not two values.")
     width, height = _size(root)
-    return OpenCvCalibration(fx, fy, cx + offset[0], cy + offset[1], coeffs, fisheye, width, height)
+    return OpenCvCalibration(fx, fy, cx + offset[0], cy + offset[1], coeffs, fisheye, width, height, cx, cy)
 
 
 def _padded(cal: OpenCvCalibration) -> tuple[float, ...]:
@@ -284,12 +292,12 @@ def calibrated_size(
     """The calibrated image's size, from the file or else ``size``; raises when unknown or of another shape."""
     got = (cal.width, cal.height) if cal.width and cal.height else size
     if got is None:
-        raise OpenCvSizeUnknown("The calibration file does not say which image size it was calibrated on.")
+        raise OpenCvSizeUnknown("The calibration file does not say which picture size it was calibrated on.")
     cal_w, cal_h = got
     here = width / height
     if abs(cal_w / cal_h - here) > SHAPE_TOLERANCE * here:
         raise OpenCvLensError(
-            f"The lens was calibrated on a {cal_w} x {cal_h} picture, this one is {width:g} x {height:g}. "
+            f"The lens was calibrated on a {cal_w} \u00d7 {cal_h} picture, this one is {width:g} \u00d7 {height:g}. "
             "A calibration only fits a picture of the same shape."
         )
     return cal_w, cal_h
@@ -310,6 +318,13 @@ def fit_opencv_lens(
     little of the picture.
     """
     cal_w, cal_h = calibrated_size(cal, width, height, size)
+    if not (cal.width and cal.height):
+        off = math.hypot(cal.matrix_cx + 0.5 - cal_w / 2.0, cal.matrix_cy + 0.5 - cal_h / 2.0)
+        if not off <= SIZE_CHECK * 0.5 * math.hypot(cal_w, cal_h):
+            raise OpenCvLensError(
+                f"The lens centre in the file lies far from the middle of a {cal_w} \u00d7 {cal_h} picture. "
+                "Check the calibrated picture size."
+            )
     # The width sets the scale: within the shape tolerance, sides differ by a crop, not a resample.
     scale = width / cal_w
     half_diag = 0.5 * math.hypot(width, height)

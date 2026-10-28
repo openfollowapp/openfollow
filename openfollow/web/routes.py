@@ -3838,7 +3838,7 @@ def _parse_lens_opencv_body(data: Any) -> tuple[str, float, float, tuple[int, in
         return text, img_w, img_h, None
     sides = [_json_int(data[key], key) for key in ("calibration_width", "calibration_height")]
     if not all(0 < side <= MAX_SIDE for side in sides):
-        raise ValueError(f"The calibrated image size must be two whole numbers from 1 to {MAX_SIDE}.")
+        raise ValueError(f"The calibrated picture size must be two whole numbers from 1 to {MAX_SIDE}.")
     return text, img_w, img_h, (sides[0], sides[1])
 
 

@@ -2792,7 +2792,7 @@
   function lensOpencvAccuracy(c) {
     var text = 'Typical error ' + fmt(c.rms_px, 1) + ' px';
     if (c.corner_px !== null && c.corner_px !== undefined) return text + ', corners ' + fmt(c.corner_px, 1) + ' px.';
-    return text + '. The file describes ' + Math.floor(100 * c.coverage) + '% of the picture, not its corners.';
+    return text + '. The file describes ' + Math.floor(100 * c.coverage) + '% of the picture, not all its corners.';
   }
   // The station converts an OpenCV calibration for this snapshot: ``{ fit }``, ``{ needsSize }`` or ``{ error }``.
   function lensFromOpencv(text, size) {
@@ -2882,7 +2882,8 @@
       var ok = $('modal-footer').lastChild;
       function sync() { ok.disabled = !document.querySelector('input[name="lens_src"]:checked'); }
       sync();
-      $('ll-body').onchange = function(e) {
+      var dialog = $('ll-body');
+      dialog.onchange = function(e) {
         if (e.target.id !== 'll-file') { sync(); return; }
         var f = e.target.files[0]; if (!f) return;
         var rd = new FileReader();
@@ -2911,7 +2912,7 @@
       function convert(size) {
         var mine = ++seq, file = pendingXml.file;
         lensFromOpencv(pendingXml.text, size).then(function(got) {
-          if (mine !== seq) return;
+          if (mine !== seq || $('ll-body') !== dialog) return;
           var asking = !!got.needsSize || (!!size && !!got.error);
           $('ll-size').hidden = !asking;
           if (got.needsSize && !size) { $('ll-size-w').value = imageWidth; $('ll-size-h').value = imageHeight; }
@@ -2923,6 +2924,9 @@
         if (!pendingXml) return;
         if (!(Number.isInteger(w) && Number.isInteger(h) && w > 0 && h > 0)) { show({ error: 'Enter the calibrated picture size as two whole numbers.' }, pendingXml.file, true); return; }
         convert([w, h]);
+      };
+      $('ll-size-w').onkeydown = $('ll-size-h').onkeydown = function(e) {
+        if (e.key === 'Enter') { e.preventDefault(); $('ll-size-btn').onclick(); }
       };
       $('ll-file-btn').onclick = function() { $('ll-file').click(); };
     }

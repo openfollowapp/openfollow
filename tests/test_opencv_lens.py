@@ -213,7 +213,7 @@ def test_a_file_past_the_size_cap_is_refused() -> None:
         ("<cameraMatrix><rows>x</rows><cols>3</cols><data>1</data></cameraMatrix>", "has no valid size"),
         (opencv_matrix("cameraMatrix", 3, 3, [0, 0, 959.5, 0, 1500, 539.5, 0, 0, 1]), "not a camera's"),
         (opencv_matrix("cameraMatrix", 3, 3, [1500, 0, 959.5, 0, -1500, 539.5, 0, 0, 1]), "not a camera's"),
-        (opencv_matrix("cameraMatrix", 3, 3, [1500, 2, 959.5, 0, 1500, 539.5, 0, 0, 1]), "not a camera's"),
+        (opencv_matrix("cameraMatrix", 3, 3, [1500, 2, 959.5, 0, 1500, 539.5, 0, 0, 1]), "skewed sensor"),
         (opencv_matrix("cameraMatrix", 3, 3, [1500, 0, 959.5, 0, 1500, 539.5, 0, 1, 1]), "not a camera's"),
         (
             "<cameraMatrix><rows>3</rows><cols>3</cols><data>1500 0 abc 0 1500 539 0 0 1</data></cameraMatrix>",
@@ -267,10 +267,10 @@ def test_distortion_values_of_no_model_are_refused(dist: list[float], flag: str 
     ("extra", "reason"),
     [
         (opencv_matrix("cxcy_offset", 1, 3, [1, 2, 3]), "lens centre offset is not two values"),
-        ("<cameraResolution>1920 1080 3</cameraResolution>", "image size is not two whole numbers"),
-        ("<cameraResolution>1920.5 1080</cameraResolution>", "image size is not two whole numbers"),
-        ("<cameraResolution>0 1080</cameraResolution>", "image size is not two whole numbers"),
-        ("<cameraResolution>99999 1080</cameraResolution>", "image size is not two whole numbers"),
+        ("<cameraResolution>1920 1080 3</cameraResolution>", "picture size is not two whole numbers"),
+        ("<cameraResolution>1920.5 1080</cameraResolution>", "picture size is not two whole numbers"),
+        ("<cameraResolution>0 1080</cameraResolution>", "picture size is not two whole numbers"),
+        ("<cameraResolution>99999 1080</cameraResolution>", "picture size is not two whole numbers"),
     ],
     ids=["offset three", "size three", "size fraction", "size zero", "size huge"],
 )
@@ -385,10 +385,26 @@ def test_a_calibration_that_describes_little_of_the_picture_is_refused() -> None
 
 def test_a_calibration_without_a_size_needs_one() -> None:
     cal = parse_opencv_calibration(opencv_xml(size=None))
-    with pytest.raises(OpenCvSizeUnknown, match="does not say which image size"):
+    with pytest.raises(OpenCvSizeUnknown, match="does not say which picture size"):
         fit_opencv_lens(cal, _W, _H)
     fit = fit_opencv_lens(cal, _W, _H, (1920, 1080))
     assert (fit.calibration_width, fit.calibration_height, fit.size_from_file) == (1920, 1080, False)
+
+
+@pytest.mark.parametrize("size", [(1280, 720), (1600, 900), (3840, 2160)], ids=["720p", "close in scale", "4K"])
+def test_a_given_size_the_principal_point_does_not_sit_in_the_middle_of_is_refused(size: tuple[int, int]) -> None:
+    # Calibrated at 1920 x 1080 without saying so; the operator gives another size of the same shape.
+    cal = parse_opencv_calibration(opencv_xml(1500.0, (965.5, 531.5), size=None))
+    reason = f"lies far from the middle of a {size[0]} × {size[1]} picture. Check the calibrated picture size."
+    with pytest.raises(OpenCvLensError, match=reason):
+        fit_opencv_lens(cal, _W, _H, size)
+
+
+def test_the_size_check_reads_the_matrix_s_principal_point_not_the_offset_one() -> None:
+    # The offset moves the lens centre, not the matrix's principal point that tells the size.
+    text = opencv_xml(1500.0, (961.52, 541.52), size=None, offset=[-200.0, 120.0])
+    fit = fit_opencv_lens(parse_opencv_calibration(text), _W, _H, (1920, 1080))
+    assert fit.cx < -0.15 and fit.cy > 0.1
 
 
 def test_the_size_in_the_file_wins_over_one_given() -> None:
@@ -400,7 +416,7 @@ def test_the_size_in_the_file_wins_over_one_given() -> None:
 def test_a_calibration_of_another_picture_shape_is_refused_naming_both(size: tuple[int, int]) -> None:
     cal = parse_opencv_calibration(opencv_xml(size=size, c=(size[0] / 2 - 0.5, size[1] / 2 - 0.5)))
     with pytest.raises(
-        OpenCvLensError, match=f"calibrated on a {size[0]} x {size[1]} picture, this one is 1920 x 1080"
+        OpenCvLensError, match=f"calibrated on a {size[0]} × {size[1]} picture, this one is 1920 × 1080"
     ):
         fit_opencv_lens(cal, _W, _H)
 

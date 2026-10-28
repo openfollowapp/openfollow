@@ -71,7 +71,7 @@ def test_a_file_without_its_size_asks_for_one_then_takes_it(base: str) -> None:
     text = opencv_xml(3000.0, (1919.5, 1079.5), size=None)
     status, data = _send(base, {"xml": text, **_SNAP})
     assert (status, data["needs_size"]) == (422, True)
-    assert "does not say which image size" in data["error"]
+    assert "does not say which picture size" in data["error"]
     status, data = _send(base, {"xml": text, **_SNAP, "calibration_width": 3840, "calibration_height": 2160})
     assert status == 200
     assert (data["calibration_width"], data["calibration_height"], data["size_from_file"]) == (3840, 2160, False)
@@ -83,7 +83,7 @@ def test_a_file_without_its_size_asks_for_one_then_takes_it(base: str) -> None:
         ("%YAML:1.0\ncameraMatrix: !!opencv-matrix\n", "Only XML calibration files can be read."),
         (
             opencv_xml(size=(1440, 1080), c=(719.5, 539.5)),
-            "calibrated on a 1440 x 1080 picture, this one is 1920 x 1080",
+            "calibrated on a 1440 × 1080 picture, this one is 1920 × 1080",
         ),
         (opencv_xml(dist=[-0.1, 0.02, 0.0, 0.0]), "does not say whether it is a fisheye calibration"),
         ("<opencv_storage>\ud800</opencv_storage>", "not a readable XML file"),

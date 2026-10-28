@@ -109,6 +109,9 @@ def _crafted(state: Path, members: list[tuple[tarfile.TarInfo, bytes]], minutes:
         ("0.5.0rc3", Version("0.5.0rc3")),
         ("0.5.0-rc3", Version("0.5.0rc3")),
         ("1:0.5.0", Version("0.5.0")),
+        ("0.5.0-1", Version("0.5.0")),
+        ("0.5.0~rc2-1", Version("0.5.0rc2")),
+        ("1:0.4.3-2+rpi1", Version("0.4.3")),
         (" 0.4.3 ", Version("0.4.3")),
         ("garbage", None),
         ("", None),
@@ -134,6 +137,7 @@ def test_a_version_is_shown_as_the_footer_spells_it(text: str, shown: str) -> No
         ("0.5.0~rc3", "0.5.0rc3", False),
         ("0.5.0rc2", "0.5.0rc3", False),
         ("0.4.3", "0.5.0rc3", False),
+        ("0.5.0-1", "0.5.0", False),
         ("garbage", "0.5.0rc3", False),
         ("", "0.5.0rc3", False),
         ("0.6.0", "garbage", False),
@@ -163,13 +167,13 @@ def test_both_folders_are_listed_together_newest_first(station: Path) -> None:
 
     rows = list_backups(_config(station), "0.5.0rc3")
 
-    assert [(row.name, row.kind, row.before) for row in rows] == [
-        (restored, "restore", "Restore"),
-        (pushed, "push", "Settings push"),
-        (update_new, "update", "Update to 0.5.0rc3"),
-        (defaults, "defaults", "Restore Defaults"),
-        (imported, "import", "Import"),
-        (update_old, "update", "Update to 0.5.0rc2"),
+    assert [(row.name, row.kind, row.before, row.made_before) for row in rows] == [
+        (restored, "restore", "Restore", "a restore"),
+        (pushed, "push", "Settings push", "a settings push"),
+        (update_new, "update", "Update to 0.5.0rc3", "the update to 0.5.0rc3"),
+        (defaults, "defaults", "Restore Defaults", "Restore Defaults"),
+        (imported, "import", "Import", "an import"),
+        (update_old, "update", "Update to 0.5.0rc2", "the update to 0.5.0rc2"),
     ]
 
 
@@ -184,6 +188,7 @@ def test_a_row_carries_the_version_that_wrote_it_and_when(station: Path) -> None
             "name": rows[0].name,
             "kind": "import",
             "before": "Import",
+            "made_before": "an import",
             "version": "0.5.0rc2",
             "created": "2026-10-28T20:41:00+00:00",
             "newer": False,
@@ -192,6 +197,7 @@ def test_a_row_carries_the_version_that_wrote_it_and_when(station: Path) -> None
             "name": rows[1].name,
             "kind": "update",
             "before": "Update to 0.5.0rc2",
+            "made_before": "the update to 0.5.0rc2",
             "version": "0.4.3",
             "created": "2026-10-28T20:40:00+00:00",
             "newer": False,
@@ -209,7 +215,7 @@ def test_a_backup_from_a_newer_version_is_marked(station: Path) -> None:
 def test_a_row_never_carries_the_archive_or_its_path(station: Path) -> None:
     _web(station, "import", 0)
     (row,) = list_backups(_config(station), "0.5.0rc3")
-    assert set(row.as_json()) == {"name", "kind", "before", "version", "created", "newer"}
+    assert set(row.as_json()) == {"name", "kind", "before", "made_before", "version", "created", "newer"}
 
 
 def _rewritten_manifest(archive: Path, manifest: bytes | None) -> None:
@@ -249,12 +255,13 @@ def test_a_backup_that_is_no_archive_is_still_listed_by_its_name(station: Path) 
     name = archive_name("OpenFollow cam-v2", "0.5.0", _NOW)
     (station / "backups" / name).write_bytes(b"not an archive")
     (row,) = list_backups(_config(station), "0.5.0rc3")
-    assert (row.name, row.version, row.before) == (name, "0.5.0", "Update")
+    assert (row.name, row.version, row.before, row.made_before) == (name, "0.5.0", "Update", "an update")
 
 
 def test_an_unknown_kind_is_a_settings_change(station: Path) -> None:
     _web(station, "wizard", 0)
-    assert [row.before for row in list_backups(_config(station), "0.5.0rc3")] == ["Settings change"]
+    rows = list_backups(_config(station), "0.5.0rc3")
+    assert [(row.before, row.made_before) for row in rows] == [("Settings change", "a settings change")]
 
 
 def test_a_manifest_time_without_a_zone_is_utc(station: Path) -> None:
@@ -484,3 +491,109 @@ def test_a_restore_that_fails_inside_a_folder_cleans_up(station: Path) -> None:
         stage_restore(contents, station / "markers.toml", station)
     assert _tree(station) == before
     assert list(station.rglob(".*")) == []
+
+
+@pytest.mark.parametrize(
+    "members",
+    [
+        [_CONFIG, _file("templates/user/a", b"a"), _file("templates/user/a/b", b"b")],
+        [_CONFIG, _file("lens-calibrations/x/y", b"y"), _file("lens-calibrations/x", b"x")],
+        [_CONFIG, _file("templates/user/a/b/c", b"c"), _file("templates/user/a", b"a")],
+    ],
+    ids=["file-then-inside", "inside-then-file", "grandparent"],
+)
+def test_a_file_where_another_needs_a_folder_is_damage(station: Path, members: list) -> None:
+    with pytest.raises(BackupDamagedError):
+        read_backup(_crafted(station, members))
+
+
+def test_a_folder_member_beside_files_inside_it_reads(station: Path) -> None:
+    archive = _crafted(
+        station,
+        [_CONFIG, _folder("templates/user"), _folder("templates/user/osc"), _file("templates/user/osc/a", b"a")],
+    )
+    assert read_backup(archive).folders == {"templates/user": {"osc/a": b"a"}}
+
+
+def test_a_header_that_unpacks_past_the_cap_is_refused(station: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A pax header is read whole before its member is yielded: its size is no member's.
+    info, data = _file("templates/user/" + "a" * 4000, b"x")
+    archive = path = station / "backups" / archive_name("OpenFollow", "0.4.3", _NOW)
+    path.parent.mkdir()
+    with tarfile.open(path, "w:gz", format=tarfile.PAX_FORMAT) as tar:
+        tar.addfile(_CONFIG[0], io.BytesIO(_CONFIG[1]))
+        tar.addfile(info, io.BytesIO(data))
+    read_backup(archive)
+    monkeypatch.setattr(config_restore, "MAX_UNPACKED_BYTES", 4096)
+    with pytest.raises(BackupDamagedError):
+        read_backup(archive)
+
+
+# --- a restore cut short --------------------------------------------------------
+
+
+def _leftover(parent: Path, name: str, files: dict[str, str]) -> Path:
+    folder = parent / name
+    folder.mkdir(parents=True)
+    for relative, text in files.items():
+        (folder / relative).write_text(text, encoding="utf-8")
+    return folder
+
+
+def test_a_folder_gone_between_the_renames_is_finished_from_its_staged_copy(station: Path) -> None:
+    (station / "lens-calibrations").rename(station / ".lens-calibrations.aaaa1111.old")
+    _leftover(station, ".lens-calibrations.bbbb2222.restore", {"new.json": "[]"})
+    (station / "templates" / "user").rename(station / "templates" / ".user.cccc3333.old")
+    _leftover(station / "templates", ".user.dddd4444.restore", {"new.oftemplate": "new"})
+
+    config_restore.recover_interrupted_restore(station, station / "markers.toml")
+
+    assert _tree(station / "lens-calibrations") == {"new.json": b"[]"}
+    assert _tree(station / "templates" / "user") == {"new.oftemplate": b"new"}
+    assert list(station.rglob(".*")) == []
+
+
+def test_a_folder_gone_with_only_its_old_copy_left_is_put_back(station: Path) -> None:
+    (station / "lens-calibrations").rename(station / ".lens-calibrations.aaaa1111.old")
+    config_restore.recover_interrupted_restore(station, station / "markers.toml")
+    assert _tree(station / "lens-calibrations") == {"zoom.json": b"{}"}
+    assert list(station.rglob(".*")) == []
+
+
+@pytest.mark.parametrize("suffix", [".old", ".restore"])
+def test_a_leftover_beside_a_folder_in_place_is_removed(station: Path, suffix: str) -> None:
+    _leftover(station, f".lens-calibrations.aaaa1111{suffix}", {"stale.json": "{}"})
+    _leftover(station / "templates", f".user.bbbb2222{suffix}", {"stale": "x"})
+    config_restore.recover_interrupted_restore(station, station / "markers.toml")
+    assert _tree(station / "lens-calibrations") == {"zoom.json": b"{}"}
+    assert _tree(station / "templates" / "user") == {"grid.oftemplate": b"grid"}
+    assert list(station.rglob(".*")) == []
+
+
+def test_a_staged_catalog_left_behind_is_removed(station: Path) -> None:
+    catalog = station / "show" / "markers.toml"
+    catalog.parent.mkdir()
+    catalog.write_text("[[marker]]\nid = 2\n", encoding="utf-8")
+    (catalog.parent / ".markers.toml.aaaa1111.restore").write_text("half", encoding="utf-8")
+    config_restore.recover_interrupted_restore(station, catalog)
+    assert catalog.read_text(encoding="utf-8") == "[[marker]]\nid = 2\n"
+    assert [p.name for p in catalog.parent.iterdir()] == ["markers.toml"]
+
+
+def test_a_station_without_leftovers_is_left_as_it_is(tmp_path: Path) -> None:
+    config_restore.recover_interrupted_restore(tmp_path / "state", tmp_path / "state" / "markers.toml")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_leftover_that_cannot_be_put_back_is_logged_and_left(
+    station: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    (station / "lens-calibrations").rename(station / ".lens-calibrations.aaaa1111.old")
+
+    def refuse(*_args: object) -> None:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(config_restore.os, "replace", refuse)
+    config_restore.recover_interrupted_restore(station, station / "markers.toml")
+    assert (station / ".lens-calibrations.aaaa1111.old").is_dir()
+    assert "lens-calibrations" in caplog.text

@@ -12,27 +12,28 @@ to the web UI, each with a Restore button. Issue #422.
 |---|---|
 | Entry point | A list of **this station's own** backups. No upload, and Import keeps taking `.ofsettings` only: an archive holds secrets and never leaves the station. |
 | Placement | The Configuration card (`partials/config_transfer.tpl`), as a **Backups on this station** group under Export, Import and Restore Defaults. |
-| Rows | Newest first. Each row names when it was made (the browser's local time), what made it (**Before update from 0.4.3**, **Before import**, **Before Restore Defaults**, **Before settings push**, **Before restore**) and the version that wrote it. The update and web folders are listed together. |
-| Scope | Everything the archive holds: `config.toml`, the marker catalog, `templates/user/` and `lens-calibrations/`. This station's device identity (`_DEVICE_IDENTITY_FIELDS`) is kept. Gallery media is not in an archive and stays as it is. |
-| Apply | Archive the current settings first (kind `restore`), write the archive's files, restart. The same shape as Restore Defaults: `server.restart_after`, the restart dialog that becomes the progress view. A failed backup does not block the restore, as with import. |
+| Rows | Newest first, the update and web folders together. Columns **Made** (the browser's local time, "28 Oct 2026, 21:40"), **Before** (**Update to 0.5.0**, **Import**, **Restore Defaults**, **Settings push**, **Restore**; **Settings change** for a kind this version does not know) and **Version** (the version that wrote it). Running text says it in a sentence: "made before the update to 0.5.0", "an import", "Restore Defaults", "a settings push", "a restore". Each row's button is named for screen readers by its time and kind. |
+| Scope | Everything the archive holds: `config.toml`, the marker catalog, `templates/user/` and `lens-calibrations/`. A part the archive does not hold stays as it is. Gallery media is not in an archive and stays as it is. |
+| Kept on restore | `_DEVICE_IDENTITY_FIELDS` and the station name (`psn_system_name`), as the confirm dialog says. `enforce_network_mode` runs for the kept mode: a Simple station takes no pin back, an Advanced one gets the backup's own plane pins. The catalog goes to this station's `markers_catalog_path`. |
+| Apply | Read and check the archive whole, then archive the current settings (kind `restore`), stage the catalog and folders beside their targets, and under the update lock (`server.restart_after`) save the config, rename the staged copies into place and request the restart. The restart dialog becomes the progress view, as for Restore Defaults. A failed backup does not block the restore, as with import. |
+| Until the restart | The restore saves `config.toml` with `last=True` and holds the catalog (`MarkerCatalog.hold_saves`) before its rename: every later save in this process, a peer's catalog change, a marker edit or a section Save, is refused (`ConfigWritesHeldError`, `CatalogSavesHeldError`; a web save answers 409 "OpenFollow is restarting."), so the restart reads what the restore wrote. |
 | Catalog | Written back from the archive. After the restart the normal catalog sync with peers applies: newer entries and deletions from other stations win. The help says so. |
-| Version | A backup written by a **newer** OpenFollow version is refused, with the reason. Same or older: restored, every field through `__post_init__` as a hand-edited `config.toml`. |
-| Unreadable config | Restore works while `config.toml` does not read. The refusal on an unreadable config then reads "Import a settings file or restore a backup to replace it." |
-| Kept on restore | `_DEVICE_IDENTITY_FIELDS` and the station name, as the confirm dialog says. `enforce_network_mode` runs for the kept mode: a Simple station takes no pin back, an Advanced one gets the backup's own plane pins. |
-| Damaged archive | 422 "This backup could not be read.", nothing written, no backup made. A folder that does not list: 500, the list shows the error notice. |
-| Confirmation | A confirm dialog naming the backup and saying the station restarts. Only its final button (**Restore and restart**) is red; the row's Restore button is not. |
+| Cut short | A crash between a folder's two renames leaves it missing beside its `.restore` / `.old` copies. `recover_interrupted_restore`, at start and before the next restore, puts the staged copy in place (whole before the first rename), else the old one, and removes every other leftover. |
+| Version | A backup written by a **newer** OpenFollow version is refused, with the reason. Debian `~rc` is a pre-release; an epoch and a revision (`-1`) are dropped. A version that does not parse, or a running 0.0.0, is never newer. Same or older: restored, every field through `__post_init__` as a hand-edited `config.toml`. |
+| Damaged archive | 422 "This backup could not be read.", before any backup, nothing written. Caps: 64 MiB archive, 8 MiB a member, 64 MiB of members, 4096 members, 72 MiB unpacked in all (pax and long-name headers included). Refused too: an absolute or `..` name, a link or device, a file where another needs a folder, a catalog that is no TOML, a `config.toml` that does not load. A folder that does not list: 500, the list shows the error notice. |
+| Unreadable config | Restore works while `config.toml` does not read, keeping the identity of its last whole read. An empty one is refused with the 409 every write gives (a restart restores it). The refusal on an unreadable config reads "Import a settings file or restore a backup to replace it." |
+| Confirmation | A confirm dialog naming the backup and saying the station restarts. Only its final button (**Restore and Restart**) is red; the row's **Restore…** button is not. A refusal shows under the list with the lead "Not restored."; an unanswered request ends "then try again". |
 
 ## Design
 
 - **Listing** (`GET /api/config/backups`): names, kinds, versions and times only, read from file names and manifests. Never the archive bytes or contents. Kind and version come from the manifest (`kind` / `version` for web backups, `from` for update backups); the file name is the fallback.
 - **Restoring** (`POST /api/config/backups/restore`, body `{"name": …}`):
-  - The name must be one the listing returns: matched against `list_archives` of both folders, never joined into a path from the request.
-  - The archive is opened with `tarfile` (`filter="data"`). Only the members a backup writes are read (`config.toml`, `markers.toml`, `manifest.json`, `templates/user/…`, `lens-calibrations/…`), regular files only, each under a size cap.
-  - Its version is compared with `openfollow.__version__` through `packaging.version` (a Debian `~rc` read as a pre-release); newer answers 409 with the reason.
+  - The name must be one the listing returns, never joined into a path from the request.
+  - The archive is read as a capped gzip stream through `tarfile`, never extracted; the `data` filter's rules are applied by hand. Only the members a backup writes are kept (`config.toml`, `markers.toml`, `templates/user/…`, `lens-calibrations/…`).
+  - Its version is compared with `openfollow.__version__` through `packaging.version`; newer answers 409 with the reason.
   - `config.toml` is loaded through `load_config` from a temporary file, so it gets the same normalisation as a hand-edited one; identity fields are copied from the running config.
-  - Under the update lock, through `server.restart_after`: write `config.toml`, the catalog at this station's `markers_catalog_path`, and replace `templates/user/` and `lens-calibrations/` with the archive's. Then restart.
-  - Busy update: 409 as Restore Defaults. Malformed body: 400. Unknown name: 404.
-- **Module**: the reading lives outside `privilege/settings_backup.py`, which stays the standard-library writer inlined into `preinst`.
+  - Busy update: 409 as Restore Defaults. Malformed body: 400. Unknown name: 404. Damaged: 422. A write that fails: 500.
+- **Module**: `config_restore.py`; the reading lives outside `privilege/settings_backup.py`, which stays the standard-library writer inlined into `preinst`.
 
 ## Work items
 

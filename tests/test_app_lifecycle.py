@@ -18,6 +18,7 @@ runtime-helper tests:
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -1036,3 +1037,16 @@ def test_startup_reconciles_the_station_fqdn() -> None:
     )
     OpenFollowApp._reconcile_station_fqdn(fake)
     assert asked == ["of-1.stage.example.com"]
+
+
+def test_a_restore_cut_short_is_put_right_before_the_catalog_loads(patched_ctor) -> None:  # noqa: ANN001
+    state = Path(patched_ctor.cfg_path).parent
+    staged = state / ".lens-calibrations.abcd1234.restore"
+    staged.mkdir()
+    (staged / "tele.json").write_text("{}", encoding="utf-8")
+    (state / ".markers.toml.efgh5678.restore").write_text("half", encoding="utf-8")
+
+    OpenFollowApp(config_path=patched_ctor.cfg_path)
+
+    assert [p.name for p in (state / "lens-calibrations").iterdir()] == ["tele.json"]
+    assert sorted(p.name for p in state.iterdir() if p.name.startswith(".")) == []

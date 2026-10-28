@@ -18,6 +18,7 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from openfollow.config_restore import recover_interrupted_restore
 from openfollow.configuration import (
     AppConfig,
     bootstrap_config_if_missing,
@@ -244,6 +245,7 @@ class OpenFollowApp:
         bootstrap_config_if_missing(self._config_path)
         self._config: AppConfig = load_config(self._config_path)
         self._bootstrap_station_identity()
+        recover_interrupted_restore(Path(self._config_path).parent, Path(self._marker_catalog_path()))
         self._marker_catalog: MarkerCatalog = self._load_or_seed_marker_catalog()
         self._marker_catalog_sync: Any = None
         self._config_mtime: float = self._get_config_mtime()

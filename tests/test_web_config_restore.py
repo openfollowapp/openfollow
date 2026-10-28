@@ -21,7 +21,8 @@ import openfollow.services as services_module
 import openfollow.web.discovery as discovery_module
 import openfollow.web.routes as routes_module
 from openfollow import config_restore
-from openfollow.configuration import AppConfig, load_config, save_config
+from openfollow.configuration import AppConfig, ConfigWritesHeldError, load_config, save_config
+from openfollow.marker_catalog.catalog import CatalogSavesHeldError, MarkerCatalog, save_catalog
 from openfollow.privilege import settings_backup
 from openfollow.privilege.settings_backup import WebBackup, archive_name, run_backup, run_web_backup, web_backup_dir
 from openfollow.web.server import ConfigWebServer
@@ -57,8 +58,15 @@ def station(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):  # noqa: ANN201
     monkeypatch.setattr(openfollow, "__version__", _RUNNING)
     config_path = tmp_path / "config.toml"
     save_config(_identity(AppConfig()), str(config_path))
+    catalog = MarkerCatalog()
     with live_on_free_port(
-        lambda port: ConfigWebServer(config_path=str(config_path), host="127.0.0.1", port=port, system_name="T")
+        lambda port: ConfigWebServer(
+            config_path=str(config_path),
+            host="127.0.0.1",
+            port=port,
+            system_name="T",
+            marker_catalog_provider=lambda: catalog,
+        )
     ) as (server, base):
         yield server, base, tmp_path
 
@@ -151,6 +159,7 @@ def test_the_list_names_each_backup_newest_first(station) -> None:
                 "name": web,
                 "kind": "defaults",
                 "before": "Restore Defaults",
+                "made_before": "Restore Defaults",
                 "version": "0.6.0",
                 "created": "2026-10-28T20:41:00+00:00",
                 "newer": True,
@@ -159,6 +168,7 @@ def test_the_list_names_each_backup_newest_first(station) -> None:
                 "name": update,
                 "kind": "update",
                 "before": "Update to 0.5.0rc2",
+                "made_before": "the update to 0.5.0rc2",
                 "version": "0.4.3",
                 "created": "2026-10-28T20:40:00+00:00",
                 "newer": False,
@@ -213,8 +223,9 @@ def test_an_update_backup_is_restored_with_this_station_s_identity(station) -> N
     assert _tree(state / "lens-calibrations") == {"old.json": "{}"}
 
 
-def test_a_web_backup_is_restored(station) -> None:
+def test_a_web_backup_is_restored(station, monkeypatch: pytest.MonkeyPatch) -> None:
     server, base, state = station
+    monkeypatch.setattr(server, "get_marker_catalog", lambda: None)  # a station whose catalog is not up yet
     _the_old_show(state)
     name = _web_backup(state)
     _the_show_now(state)
@@ -542,3 +553,123 @@ def test_a_restore_over_an_empty_settings_file_is_refused_for_the_restart_that_r
     assert body["settings_file"] == "empty-restorable"
     assert (state / "config.toml").read_bytes() == b""
     assert server.check_restart_requested() is False
+
+
+# --- nothing the running station saves lands over a restore before its restart --------------
+
+
+def test_a_catalog_save_after_the_restore_leaves_the_restored_file(station) -> None:
+    server, base, state = station
+    _the_old_show(state)
+    name = _update_backup(state)
+    _the_show_now(state)
+    catalog = server.get_marker_catalog()
+
+    assert _restore(base, name)[0] == 200
+
+    # A peer's change synced in, or a marker edited on this page, before the process went down.
+    catalog.upsert(9, "Changed since", "#ffffff", origin="peer")
+    with pytest.raises(CatalogSavesHeldError):
+        save_catalog(catalog, str(state / "show" / "markers.toml"))
+    status, _body = _put(base, "/api/markers/catalog/5", {"name": "New", "color": "#00ff00"})
+    assert status == 500
+    assert (state / "show" / "markers.toml").read_bytes() == _OLD_CATALOG
+
+
+def test_a_config_save_after_the_restore_leaves_the_restored_file(station) -> None:
+    _server, base, state = station
+    _the_old_show(state)
+    name = _update_backup(state)
+    _the_show_now(state)
+
+    assert _restore(base, name)[0] == 200
+    restored = (state / "config.toml").read_bytes()
+
+    with pytest.raises(ConfigWritesHeldError):
+        save_config(AppConfig(), str(state / "config.toml"))
+    status, body = _post(base, "/api/config/grid", json.dumps({"width": 7.0}).encode())
+    assert (status, body) == (409, {"error": "OpenFollow is restarting.", "action": "Save again once it is back."})
+    assert (state / "config.toml").read_bytes() == restored
+
+
+def _breaking_the_file_after_the_backup(monkeypatch: pytest.MonkeyPatch, content: bytes, state: Path) -> None:
+    real_backup = routes_module._backup_before
+
+    def back_up_then_break(*args: Any) -> dict[str, str]:
+        fields = real_backup(*args)
+        (state / "config.toml").write_bytes(content)
+        return fields
+
+    monkeypatch.setattr(routes_module, "_backup_before", back_up_then_break)
+
+
+def test_a_file_emptied_after_the_check_is_refused_for_its_restart(station, monkeypatch: pytest.MonkeyPatch) -> None:
+    server, base, state = station
+    name = _update_backup(state)
+    save_config(_identity(AppConfig()), str(state / "config.toml"))  # leaves a backup copy a restart restores
+    _breaking_the_file_after_the_backup(monkeypatch, b"", state)
+
+    status, body = _restore(base, name)
+
+    assert status == 409
+    assert body["settings_file"] == "empty-restorable"
+    assert (state / "config.toml").read_bytes() == b""
+    assert list(state.rglob(".*.restore")) == []
+    assert server.check_restart_requested() is False
+
+
+def test_a_file_made_unreadable_after_the_check_is_replaced(station, monkeypatch: pytest.MonkeyPatch) -> None:
+    server, base, state = station
+    _the_old_show(state)
+    name = _update_backup(state)
+    _the_show_now(state)
+    _breaking_the_file_after_the_backup(monkeypatch, b"not [[ toml", state)
+
+    status, body = _restore(base, name)
+
+    assert status == 200, body
+    saved = load_config(str(state / "config.toml"), strict=True)
+    assert (saved.grid.width, saved.station_id) == (42.0, "abc123")
+    assert server.check_restart_requested() is True
+
+
+def test_a_backup_whose_paths_collide_is_refused_before_any_backup(station) -> None:
+    server, base, state = station
+    name = archive_name("OpenFollow", "0.4.3", _NOW)
+    (state / "backups").mkdir()
+    (state / "backups" / name).write_bytes(
+        _archive([_CONFIG, _member("templates/user/a", b"a"), _member("templates/user/a/b", b"b")])
+    )
+
+    status, body = _restore(base, name)
+
+    assert (status, body) == (422, {"error": "This backup could not be read.", "action": "Choose another one."})
+    assert _web_archives(state) == []
+    assert server.check_restart_requested() is False
+
+
+def test_a_restore_left_half_done_is_put_right_before_the_next(station) -> None:
+    _server, base, state = station
+    _the_old_show(state)
+    name = _update_backup(state)
+    _the_show_now(state)
+    # Down between the two renames: the folder is gone, the staged copy and the old one beside it.
+    (state / "lens-calibrations").rename(state / ".lens-calibrations.abcd1234.old")
+    (state / ".lens-calibrations.efgh5678.restore").mkdir()
+    (state / ".lens-calibrations.efgh5678.restore" / "half.json").write_text("{}", encoding="utf-8")
+
+    assert _restore(base, name)[0] == 200
+
+    assert _tree(state / "lens-calibrations") == {"old.json": "{}"}
+    assert list(state.rglob(".*.old")) + list(state.rglob(".*.restore")) == []
+
+
+def _put(base: str, path: str, data: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    req = urllib.request.Request(
+        f"{base}{path}", data=json.dumps(data).encode(), headers={"Content-Type": "application/json"}, method="PUT"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status, json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())

@@ -77,6 +77,7 @@ from openfollow.configuration import (
     CameraConfig,
     ConfigFileEmptyError,
     ConfigFileUnreadableError,
+    ConfigWritesHeldError,
     DetectionMaskConfig,
     OscDestinationConfig,
     OscTransmitterConfig,
@@ -5819,6 +5820,9 @@ def _refuse_over_unreadable_config(callback: Callable[..., Any]) -> Callable[...
             return _save_failed(
                 409, f"The settings file on this station {said}", f"{step}.", settings_file=config_problem_kind(error)
             )
+        except ConfigWritesHeldError as error:
+            logger.warning("Not saved: %s", error)
+            return _save_failed(409, "OpenFollow is restarting.", "Save again once it is back.")
 
     return wrapper
 
@@ -10512,6 +10516,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         if server.is_update_busy():
             return _save_failed(409, _UPDATE_RUNNING, after_update)
         base, replacing = _import_base(may_replace=True)
+        catalog_path = Path(_resolve_marker_catalog_path(server.config_path, base.markers_catalog_path))
+        config_restore.recover_interrupted_restore(Path(server.config_path).parent, catalog_path)
         try:
             found = config_restore.find_backup(server.config_path, name, openfollow.__version__)
         except config_restore.BackupsUnreadableError as exc:
@@ -10534,7 +10540,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             return _save_failed(422, "This backup could not be read.", "Choose another one.")
 
         backup = _backup_before(server.config_path, "restore", base if replacing else None)
-        catalog_path = Path(_resolve_marker_catalog_path(server.config_path, base.markers_catalog_path))
         try:
             staged = config_restore.stage_restore(contents, catalog_path, Path(server.config_path).parent)
         except OSError as exc:
@@ -10543,14 +10548,24 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         def write_backup() -> None:
             with _config_write_lock:
                 current, replacing_now = _import_base(may_replace=True)
+                # ``last``, and the catalog held before its rename: until the restart, nothing the
+                # running station saves may land over what the restart is to read.
                 save_config(
-                    restored_from_backup(restored, current), server.config_path, replace_unreadable=replacing_now
+                    restored_from_backup(restored, current),
+                    server.config_path,
+                    replace_unreadable=replacing_now,
+                    last=True,
                 )
+                catalog = server.get_marker_catalog()
+                if catalog is not None:
+                    catalog.hold_saves()
                 staged.commit()
 
         try:
             # Checked again with the write: an update queued during the backup leaves the settings as they are.
             restarting = server.restart_after(write_backup)
+        except (ConfigFileUnreadableError, ConfigWritesHeldError):
+            raise  # answered by the route plugin, as every other write
         except OSError as exc:
             return _restore_not_written(found.name, exc)
         finally:

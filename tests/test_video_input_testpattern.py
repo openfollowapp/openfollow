@@ -19,6 +19,7 @@ from openfollow.configuration import AppConfig
 from openfollow.video import media_store
 from openfollow.video.inputs.testpattern import MediaGalleryInput, _resolve_stage_asset
 from tests._fake_gst import FakeCaps, FakeElement, FakePad, FakePipeline, make_fake_gst
+from tests._real_gst import real_gst
 
 pytestmark = pytest.mark.unit
 
@@ -575,3 +576,81 @@ class TestConfigAndLabels:
         html = MediaGalleryInput.web_ui_html({"testpattern_selected_media": "default:grey"})
         assert "res.ok" in html
         assert "node.id!=='gallery-grid'" in html
+
+
+# --------------------------------------------------------------------------- #
+# Frames on a real GStreamer pipeline
+# --------------------------------------------------------------------------- #
+
+
+def _run_to_eos(gst: Any, description: str) -> None:
+    pipeline = gst.parse_launch(description)
+    pipeline.set_state(gst.State.PLAYING)
+    try:
+        msg = pipeline.get_bus().timed_pop_filtered(10 * gst.SECOND, gst.MessageType.EOS | gst.MessageType.ERROR)
+        assert msg is not None, f"no end of stream within 10 s: {description}"
+        assert msg.type == gst.MessageType.EOS, msg.parse_error()[0].message
+    finally:
+        pipeline.set_state(gst.State.NULL)
+
+
+def _select_white_four_three_media(gst: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str) -> str:
+    """Write a white 640x480 still or clip and make it the item the gallery resolves; returns its id."""
+    src = "videotestsrc pattern=white num-buffers={n} ! video/x-raw,width=640,height=480,framerate=30/1"
+    if kind == "image":
+        path = tmp_path / "four_three.jpg"
+        _run_to_eos(gst, f"{src.format(n=1)} ! jpegenc ! filesink location={path}")
+    else:
+        path = tmp_path / "four_three.webm"
+        _run_to_eos(gst, f"{src.format(n=15)} ! vp8enc ! webmmux ! filesink location={path}")
+    monkeypatch.setattr(media_store, "resolve", lambda _mid: _user_item("0123456789abcdef", kind, path))
+    return "0123456789abcdef"
+
+
+def _first_frame(gst: Any, selected: str) -> tuple[Any, bytes]:
+    """The caps and GRAY8 bytes of the first frame the gallery plays for ``selected``."""
+    sink = gst.ElementFactory.make("appsink", "frames")
+    sink.set_property("caps", gst.Caps.from_string("video/x-raw,format=GRAY8"))
+    sink.set_property("sync", False)
+    pipeline = MediaGalleryInput().create_pipeline(
+        config={"testpattern_selected_media": selected},
+        sink=sink,
+        build_overlay_tail=lambda _pipeline, head, prepared: head.link(prepared),
+        prepare_sink=lambda: sink,
+    )
+    pipeline.set_state(gst.State.PLAYING)
+    try:
+        sample = sink.emit("try-pull-sample", 10 * gst.SECOND)
+        assert sample is not None, "no frame within 10 s"
+        buffer = sample.get_buffer()
+        return sample.get_caps().get_structure(0), buffer.extract_dup(0, buffer.get_size())
+    finally:
+        pipeline.set_state(gst.State.NULL)
+
+
+class TestFramesOnRealGstreamer:
+    @pytest.mark.parametrize("kind", ["grey", "image", "video"])
+    def test_every_item_plays_square_pixel_1080p_frames(
+        self, kind: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        gst = real_gst()
+        if kind == "grey":
+            selected = media_store.DEFAULT_GREY_ID
+        else:
+            selected = _select_white_four_three_media(gst, tmp_path, monkeypatch, kind)
+        caps, _frame = _first_frame(gst, selected)
+        assert (caps.get_value("width"), caps.get_value("height")) == (1920, 1080)
+        assert caps.get_fraction("pixel-aspect-ratio")[1:] == (1, 1)
+
+    @pytest.mark.parametrize("kind", ["image", "video"])
+    def test_four_three_media_is_pillarboxed(self, kind: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        gst = real_gst()
+        _caps, frame = _first_frame(gst, _select_white_four_three_media(gst, tmp_path, monkeypatch, kind))
+        rows = [frame[y * 1920 : (y + 1) * 1920] for y in range(1080)]
+        # A 4:3 picture fills the 1080 rows and is 1440 columns wide, centred between black bars.
+        lit = [x for x, value in enumerate(rows[540]) if value > 128]
+        assert lit, "no picture in the middle row"
+        assert abs(lit[0] - 240) <= 2
+        assert abs(lit[-1] - 1679) <= 2
+        assert all(max(row[:236]) < 32 and max(row[1684:]) < 32 for row in rows)
+        assert rows[0][960] > 128 and rows[-1][960] > 128

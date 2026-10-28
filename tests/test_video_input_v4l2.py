@@ -33,6 +33,7 @@ from openfollow.video.inputs.v4l2 import (
 from openfollow.video.receiver import _caps_dimensions
 from openfollow.video.source_limits import FrameMeter, limits_row, limits_snapshot
 from tests._fake_gst import FakeElement, FakePipeline, make_fake_gst
+from tests._real_gst import real_gst
 
 pytestmark = pytest.mark.unit
 
@@ -861,6 +862,12 @@ class TestV4l2Pipeline:
         assert "height=" not in caps
         assert "framerate=(fraction)30/1" in caps
 
+    @pytest.mark.parametrize(("render", "pinned"), [("1080p", True), ("720p", True), ("native", False)])
+    def test_a_fixed_render_size_pins_square_pixels(self, render: str, pinned: bool) -> None:
+        caps = _build_v4l2({"v4l2_render_resolution": render}).get_by_name("capsfilter").properties["caps"]
+        # Scaled to a size, a mode of another shape keeps its shape in bars; native has no scaler to do it.
+        assert ("pixel-aspect-ratio=(fraction)1/1" in caps.to_string()) is pinned
+
     def test_missing_v4l2src_raises(self) -> None:
         fake = make_fake_gst(missing_elements={"v4l2src"})
         with pytest.raises(RuntimeError, match="v4l2src"):
@@ -1258,3 +1265,44 @@ class TestV4l2Label:
         )
         assert "/dev/video42" in label
         assert "720p@15" in label
+
+
+# --------------------------------------------------------------------------- #
+# Frames on a real GStreamer pipeline
+# --------------------------------------------------------------------------- #
+
+
+def _chain_after_queue(pipeline: FakePipeline) -> list[FakeElement]:
+    """The elements the plugin links from the queue on, in order."""
+    chain, elem = [], pipeline.get_by_name("post_queue")
+    while elem.links:
+        elem = elem.links[0]
+        chain.append(elem)
+    return chain
+
+
+def test_a_four_three_camera_at_a_fixed_render_size_is_pillarboxed() -> None:
+    gst = real_gst()
+    built = _chain_after_queue(_build_v4l2({"v4l2_render_resolution": "1080p", "v4l2_framerate": 30}))
+    assert [e.name for e in built] == ["videoscale", "videorate", "capsfilter", "convert"]
+    caps = built[2].properties["caps"].to_string()
+    # The plugin's own chain and caps, fed by a camera mode of 640x480 square pixels.
+    pipeline = gst.parse_launch(
+        "videotestsrc pattern=white num-buffers=1 ! video/x-raw,width=640,height=480,framerate=30/1"
+        f" ! videoscale ! videorate ! {caps} ! videoconvert ! video/x-raw,format=GRAY8 ! appsink name=frames sync=false"
+    )
+    sink = pipeline.get_by_name("frames")
+    pipeline.set_state(gst.State.PLAYING)
+    try:
+        sample = sink.emit("try-pull-sample", 10 * gst.SECOND)
+        assert sample is not None, "no frame within 10 s"
+        structure = sample.get_caps().get_structure(0)
+        buffer = sample.get_buffer()
+        frame = buffer.extract_dup(0, buffer.get_size())
+    finally:
+        pipeline.set_state(gst.State.NULL)
+    assert (structure.get_value("width"), structure.get_value("height")) == (1920, 1080)
+    assert structure.get_fraction("pixel-aspect-ratio")[1:] == (1, 1)
+    middle = frame[540 * 1920 : 541 * 1920]
+    lit = [x for x, value in enumerate(middle) if value > 128]
+    assert lit and abs(lit[0] - 240) <= 2 and abs(lit[-1] - 1679) <= 2

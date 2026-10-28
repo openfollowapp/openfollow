@@ -456,6 +456,8 @@ class V4l2Input(VideoInputBase):
         if dims is not None:
             caps_parts.append(f"width=(int){dims[0]}")
             caps_parts.append(f"height=(int){dims[1]}")
+            # Square pixels make videoscale letterbox a mode of another shape instead of stretching it.
+            caps_parts.append("pixel-aspect-ratio=(fraction)1/1")
         caps_parts.append(f"framerate=(fraction){framerate}/1")
         caps_str = ",".join(caps_parts)
         capsfilter.set_property("caps", Gst.Caps.from_string(caps_str))

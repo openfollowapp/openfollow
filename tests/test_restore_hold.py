@@ -39,5 +39,6 @@ def test_what_a_restore_did_not_write_is_written(tmp_path: Path, path: str) -> N
 def test_a_held_path_is_matched_through_a_link(tmp_path: Path) -> None:
     (tmp_path / "real").mkdir()
     (tmp_path / "link").symlink_to(tmp_path / "real")
-    hold(tmp_path / "real")
+    hold(tmp_path / "link")
+    assert is_held(tmp_path / "real" / "a.json")
     assert is_held(tmp_path / "link" / "a.json")

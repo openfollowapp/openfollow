@@ -36,3 +36,7 @@ The **Camera & Lens Calibration** section of the Camera & Grid tab now shows pos
 ## Media Gallery pictures keep their shape
 
 An image or clip in the **Media Gallery** that is not 16:9 now plays in its own shape, with black bars at the sides or at the top and bottom, where it used to be stretched to fill the screen. A station calibrated on such a picture needs the **Setup Wizard** again.
+
+## Restore a settings backup
+
+**General → Configuration** lists the settings backups the station saved before each update, import, restore to defaults and settings push. **Restore…** brings one back and restarts the station; its name, network access and local file paths stay as they are.

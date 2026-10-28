@@ -333,7 +333,7 @@ Read the guide before changing code in its paths.
 
 | Paths | Guide |
 |---|---|
-| `configuration.py`, config import / export / reset / push, hot reload | [config](docs/architecture/config.md) |
+| `configuration.py`, `config_restore.py`, config import / export / reset / push / restore, hot reload | [config](docs/architecture/config.md) |
 | `video/` (not detection), `video/inputs/`, `privilege/camera_config.py` | [video](docs/architecture/video.md) |
 | `video/overlay.py`, `video/hud_render.py`, `video/gl_*.py`, `runtime/overlay_*`, `window.py`, on-screen menus, `scene/ground_grid.py` | [hud](docs/architecture/hud.md) |
 | `psn/`, `otp/`, `rttrpm/`, the OSC transmitter, `packet_chunking.py`, the stall watchdog | [outputs](docs/architecture/outputs.md) |

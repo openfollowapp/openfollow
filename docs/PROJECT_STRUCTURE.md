@@ -6,6 +6,7 @@ openfollow/              # Single unified package
 ├── main.py              # CLI entry point
 ├── app.py               # Main application class + event loop
 ├── configuration.py     # Config model, TOML I/O, hot-reload logic
+├── config_restore.py    # Lists and reads back the station's own settings backups for a web restore
 ├── services.py          # Runtime service orchestration
 ├── system_stats.py      # Runtime system stats collector
 ├── runtime_metrics.py   # Frame metrics

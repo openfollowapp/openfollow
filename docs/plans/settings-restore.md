@@ -18,6 +18,8 @@ to the web UI, each with a Restore button. Issue #422.
 | Catalog | Written back from the archive. After the restart the normal catalog sync with peers applies: newer entries and deletions from other stations win. The help says so. |
 | Version | A backup written by a **newer** OpenFollow version is refused, with the reason. Same or older: restored, every field through `__post_init__` as a hand-edited `config.toml`. |
 | Unreadable config | Restore works while `config.toml` does not read. The refusal on an unreadable config then reads "Import a settings file or restore a backup to replace it." |
+| Kept on restore | `_DEVICE_IDENTITY_FIELDS` and the station name, as the confirm dialog says. `enforce_network_mode` runs for the kept mode: a Simple station takes no pin back, an Advanced one gets the backup's own plane pins. |
+| Damaged archive | 422 "This backup could not be read.", nothing written, no backup made. A folder that does not list: 500, the list shows the error notice. |
 | Confirmation | A confirm dialog naming the backup and saying the station restarts. Only its final button (**Restore and restart**) is red; the row's Restore button is not. |
 
 ## Design
@@ -35,11 +37,11 @@ to the web UI, each with a Restore button. Issue #422.
 ## Work items
 
 - [x] Plan approved, UI mockup approved (Artifact). A backup from a newer version stays in the list with its Restore button off and the row saying "Newer than this station"; the server refuses it too.
-- [ ] Listing: route, kind and version per archive, newest first, both folders; tests for each kind, a missing manifest, an unreadable folder.
-- [ ] Restore: route, name check, member filter and caps, version refusal, identity kept, catalog / templates / lens calibrations written, restart through `restart_after`; tests for each refusal (400, 404, 409 busy, 409 newer, a damaged archive) and each restored part.
-- [ ] Backup before restore (kind `restore`), and the restore going ahead when it fails.
-- [ ] Unreadable-config refusal text, with its tests.
-- [ ] UI: the list, the confirm dialog, the restart progress, errors through `window.OpenFollow.saveError`; JS tests.
-- [ ] Help `config-transfer.md` (also: a backup holds lens calibrations), `docs/architecture/config.md`, `docs/architecture/update.md`, `docs/PACKAGING.md` (the web restore beside the manual one).
-- [ ] What's new: a line that a station can now restore its own backups.
+- [x] Listing: route, kind and version per archive, newest first, both folders; tests for each kind, a missing manifest, an unreadable folder.
+- [x] Restore: route, name check, member filter and caps, version refusal, identity kept, catalog / templates / lens calibrations written, restart through `restart_after`; tests for each refusal (400, 404, 409 busy, 409 newer, a damaged archive) and each restored part.
+- [x] Backup before restore (kind `restore`), and the restore going ahead when it fails.
+- [x] Unreadable-config refusal text, with its tests.
+- [x] UI: the list, the confirm dialog, the restart progress, errors through `window.OpenFollow.saveError`; JS tests.
+- [x] Help `config-transfer.md` (also: a backup holds lens calibrations), `docs/architecture/config.md`, `docs/architecture/update.md`, `docs/PACKAGING.md` (the web restore beside the manual one).
+- [x] What's new: a line that a station can now restore its own backups.
 - [ ] Review to cosmetic, `make ci-remote`, station check on pi66 (restore an update backup and a web backup, check identity kept and the restart).

@@ -8,6 +8,7 @@
 % import json
 % from openfollow.configuration import MAX_CALIBRATION_MARKS
 % from openfollow.lens_model import C_BOUND
+% from openfollow.scene.opencv_lens import MAX_FILE_BYTES
 % _cam = config.camera
 % _lens_k1, _lens_k2, _lens_cx, _lens_cy = _cam.lens_k1, _cam.lens_k2, _cam.lens_cx, _cam.lens_cy
 % _suggest_on = config.ui.feature_on('lens_suggestions')
@@ -260,6 +261,10 @@
   .modal-body .tier-list { max-width: none; max-height: 16rem; overflow-y: auto; padding: 4px; margin: -4px; }
   .lens-dlg-title { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 0.2rem 0 0.45rem; }
   .lens-dlg-sep { height: 1px; background: var(--border-soft); margin: 1rem 0 0.8rem; }
+  #ll-file-opt { margin-bottom: 0.6rem; }
+  #ll-size { margin: 0.8rem 0 0; }
+  .ll-size-row { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+  .ll-size-row input { width: 6.5rem; }
   /* Camera Calibration: pins, the drawn rectangle, the origin and the distance lines. */
   .pin-handle { cursor: grab; pointer-events: all; outline: none; }
   .pin-handle:active { cursor: grabbing; }
@@ -455,7 +460,7 @@
       <div class="tier-list" role="radiogroup" aria-labelledby="lens-current-q">
         <label class="tier-option"><input type="radio" name="lens_current" value="keep"><span><strong>Keep the current calibration</strong><small>Choose this if the camera, the lens and the zoom have not changed.</small></span></label>
         <label class="tier-option"><input type="radio" name="lens_current" value="clear"><span><strong>Clear it and measure the lens again</strong><small>Trace new lines to calibrate the lens.</small></span></label>
-        <label class="tier-option"><input type="radio" name="lens_current" value="load"><span><strong>Load another lens calibration</strong><small>Saved on this station or in a settings file.</small></span></label>
+        <label class="tier-option"><input type="radio" name="lens_current" value="load"><span><strong>Load another lens calibration</strong><small>Saved on this station, in a settings file or in an OpenCV calibration.</small></span></label>
       </div>
       <div id="lens-current-backup">
         <button type="button" class="secondary" style="margin-top:0.72rem;" onclick="lensSaveCurrent()">Save lens calibration&hellip;</button>
@@ -470,6 +475,10 @@
         <span id="lens-result-text"></span>
       </div>
       <div class="notice-sub" id="lens-result-hint"></div>
+    </div>
+    <div id="lens-loaded-save" hidden>
+      <button type="button" class="secondary" style="margin-top:0.72rem;" onclick="lensSaveDialog(null, 'lens-loaded-saved')">Save lens calibration&hellip;</button>
+      <div id="lens-loaded-saved" class="notice success" role="status" style="display:none;margin-top:0.72rem;"></div>
     </div>
     </div>
     <div id="lens-work">
@@ -860,6 +869,7 @@
   // The lens: Barrel / fisheye and Corner correction in their fields, the lens centre in S.lensCentre (half-diagonals
   // from the picture centre, x right, y down), shown in whole pixels of the snapshot. Mirrors openfollow.lens_model.
   var LENS_C_BOUND = {{C_BOUND}};
+  var LENS_FILE_MAX = {{MAX_FILE_BYTES}};
   // Smallest positive root of 1 + b s + a s^2, Infinity when none.
   function wizLensRoot(a, b) {
     if (a === 0) return b < 0 ? -1 / b : Infinity;
@@ -2180,9 +2190,9 @@
     lensHintLines = lines ? lensLinesHint() : null;
     if (lensPending) { h = 'Click the other end of the straight edge.'; sub = 'Esc cancels the line.'; }
     else if (lensHold && lensSelected && lensSelected.point != null) { h = 'Move the point exactly onto the edge.'; sub = 'Drag it, or use the arrow keys while the loupe shows the edge. Press Enter when it is in the right place.'; }
-    else if (open) { h = 'Check the suggested lines.'; sub = 'Confirm each of the lines that is straight in reality by pressing ✔. Reject the others, such as a curtain, a cloth or a cable, by pressing ✖. ' + open + ' left to check. Or load a saved lens calibration.'; }
-    else if (!lines && S.lensLoaded) { h = 'A saved lens calibration is loaded.'; sub = lensHasCurrent() ? 'Press Next, or choose Clear it and measure the lens again.' : 'Press Next, or draw straight lines to measure the lens again.'; }
-    else if (!lines) { h = 'Draw straight lines on the picture.'; sub = 'Click the start and the end of an edge that is straight in reality, such as a stage edge, a tape line or a truss. Then move its points exactly onto the edge. Or load a saved lens calibration.'; }
+    else if (open) { h = 'Check the suggested lines.'; sub = 'Confirm each of the lines that is straight in reality by pressing ✔. Reject the others, such as a curtain, a cloth or a cable, by pressing ✖. ' + open + ' left to check. Or load a lens calibration.'; }
+    else if (!lines && S.lensLoaded) { h = 'A lens calibration is loaded.'; sub = lensHasCurrent() ? 'Press Next, or choose Clear it and measure the lens again.' : 'Press Next, or draw straight lines to measure the lens again.'; }
+    else if (!lines) { h = 'Draw straight lines on the picture.'; sub = 'Click the start and the end of an edge that is straight in reality, such as a stage edge, a tape line or a truss. Then move its points exactly onto the edge. Or load a lens calibration.'; }
     else { h = lensHintLines[0]; sub = lensHintLines[1]; }
     // A started line keeps the box's height, so the picture stays put between the line's two taps.
     var box = $('lens-hint');
@@ -2320,7 +2330,7 @@
       var tuned = !lensSame(l, [ld.k1, ld.k2, ld.cx, ld.cy]);
       box.style.display = ''; box.className = 'notice'; meter.style.display = 'none';
       setLive($('lens-result-text'), esc('Loaded \u201c' + ld.name + '\u201d \u2013 barrel / fisheye ' + fmt(l[0], 3) + ', corner correction ' + fmt(l[1], 3) + lensCentreSuffix([l[2], l[3]])));
-      setLive($('lens-result-hint'), esc((tuned ? 'Changed by user input after loading. ' : '') + S.lensLoaded.src + '.'));
+      setLive($('lens-result-hint'), esc((tuned ? 'Changed by user input after loading. ' : '') + S.lensLoaded.src + '.' + (ld.kind === 'opencv' && !tuned ? ' ' + lensOpencvAccuracy(ld) : '')));
       return;
     }
     meter.style.display = '';
@@ -2730,6 +2740,8 @@
     }
     $('lens-notices').hidden = cur && S.lensChoice !== 'clear' && S.lensChoice !== 'load';
     $('lens-work').hidden = cur && S.lensChoice !== 'clear';
+    // With the picture's toolbar hidden, a calibration loaded from a file is saved from under its notices.
+    $('lens-loaded-save').hidden = !(cur && S.lensChoice === 'load' && S.lensLoaded && S.lensLoaded.fromFile);
     $('lens-next').hidden = ask;
   }
   function lensCurrentInit() {
@@ -2785,6 +2797,28 @@
     if (!wizLensIsValid(k1, k2, cx, cy)) return { error: 'With the lens values of this file, the overlay cannot follow the picture out to its corners.' };
     return { k1: k1, k2: k2, cx: cx, cy: cy };
   }
+  // How closely the converted lens follows the file: typical error, and the corners' when the file reaches them.
+  function lensOpencvAccuracy(c) {
+    var text = 'Typical error ' + fmt(c.rms_px, 1) + ' px';
+    if (c.corner_px !== null && c.corner_px !== undefined) return text + ', corners ' + fmt(c.corner_px, 1) + ' px.';
+    return text + '. The file describes ' + Math.floor(100 * c.coverage) + '% of the picture, not all its corners.';
+  }
+  // The station converts an OpenCV calibration for this snapshot: ``{ fit }``, ``{ needsSize }`` or ``{ error }``.
+  function lensFromOpencv(text, size) {
+    var saveError = window.OpenFollow.saveError;
+    if (!imageWidth || !imageHeight) return Promise.resolve({ error: 'An OpenCV calibration is converted for the picture. Load it once the picture is shown.' });
+    var body = { xml: text, image_width: imageWidth, image_height: imageHeight };
+    if (size) { body.calibration_width = size[0]; body.calibration_height = size[1]; }
+    return fetch('/api/wizard/lens/opencv', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(function(r) {
+      return r.text().then(function(text) {
+        var data = null;
+        try { data = JSON.parse(text); } catch (e) { /* the station's own text */ }
+        if (r.ok) return data && typeof data === 'object' ? { fit: data } : { error: saveError.UNREACHABLE.error };
+        if (data && data.needs_size) return { needsSize: true, error: data.error };
+        return { error: saveError.fromText(r.status, text).error };
+      }, function() { return { error: saveError.UNREACHABLE.error }; });
+    }, function() { return { error: saveError.UNREACHABLE.error }; });
+  }
   function lensOption(i, name, sub, checked, warn) {
     return '<label class="tier-option"><input type="radio" name="lens_src" value="' + i + '"' + (checked ? ' checked' : '') + '><span><strong>' + esc(name) + '</strong><small>' + esc(sub) + '</small>' +
       (warn ? '<small class="caution-text">' + esc(warn) + '</small>' : '') + '</span></label>';
@@ -2799,8 +2833,9 @@
     wizSetLensCentre([cx, cy]);
     wizShowLensLimit();
     S.lensTouched = true;
-    S.lensLoaded = { name: c.name, src: src, k1: Number(shown[0]), k2: Number(shown[1]), cx: cx, cy: cy };
-    $('lens-saved').style.display = 'none';
+    S.lensLoaded = { name: c.name, src: src, k1: Number(shown[0]), k2: Number(shown[1]), cx: cx, cy: cy, fromFile: !!c.file };
+    if (c.kind === 'opencv') Object.assign(S.lensLoaded, { kind: 'opencv', rms_px: c.rms_px, corner_px: c.corner_px, coverage: c.coverage });
+    $('lens-saved').style.display = 'none'; $('lens-loaded-saved').style.display = 'none';
     lensShowNotice('');
     renderLens(); renderLensResult(); onLensCoeffChanged();
   }
@@ -2819,17 +2854,21 @@
     return '<div class="notice error" id="lens-list-error" role="alert">The saved lens calibrations could not be read.' + (sub ? '<div class="notice-sub">' + esc(sub) + '</div>' : '') + '</div>';
   }
   window.lensLoadDialog = function(loaded) {
-    var fromFile = null, saved = [], failed = null;
+    // ``seq`` numbers every file choice and conversion; only the latest one's answer lands.
+    var fromFile = null, saved = [], failed = null, pendingXml = null, seq = 0;
     function render() {
       var lines = lensLines;
       return '<div id="ll-body"><div class="lens-dlg-title">Saved on this station</div>' +
         (failed !== null ? lensListFailed(failed, false) : saved.length ? '<div class="tier-list" role="radiogroup" aria-label="Saved lens calibrations">' + saved.map(function(c, i) { return lensOption(i, c.name, lensVals(c.k1, c.k2, c.cx, c.cy, imageWidth || c.width, imageHeight || c.height) + ' · ' + c.saved + (lensSized(c) ? ' · ' + lensSize(c.width, c.height) : ''), false, lensShapeWarning(c)); }).join('') + '</div>'
           : '<p>No lens calibrations are saved on this station.</p>') +
-        '<div class="lens-dlg-sep"></div><div class="lens-dlg-title">From a settings file</div>' +
-        '<p>Only the lens values of an exported <code>.ofsettings</code> file are loaded.</p>' +
+        '<div class="lens-dlg-sep"></div><div class="lens-dlg-title">From a file</div>' +
+        '<p>Only the lens values of an exported <code>.ofsettings</code> file or of an OpenCV calibration (<code>.xml</code>) are loaded.</p>' +
         '<div class="tier-list" id="ll-file-opt" hidden></div>' +
-        '<button type="button" class="secondary" id="ll-file-btn">Choose settings file&hellip;</button>' +
-        '<input type="file" id="ll-file" accept=".ofsettings,.openfollowsettings" hidden>' +
+        '<button type="button" class="secondary" id="ll-file-btn">Choose file&hellip;</button>' +
+        '<input type="file" id="ll-file" accept=".ofsettings,.openfollowsettings,.xml,.yml,.yaml" hidden>' +
+        '<div id="ll-size" hidden><div class="lens-dlg-title" id="ll-size-label">Calibrated picture size</div><p id="ll-size-note"></p>' +
+        '<div class="ll-size-row" role="group" aria-labelledby="ll-size-label" aria-describedby="ll-size-note"><input type="number" id="ll-size-w" min="1" step="1" aria-label="Calibrated width" aria-describedby="ll-size-note"> \u00d7 <input type="number" id="ll-size-h" min="1" step="1" aria-label="Calibrated height" aria-describedby="ll-size-note"> ' +
+        '<button type="button" class="secondary" id="ll-size-btn">Convert</button></div></div>' +
         '<div class="wizard-field-error" id="ll-file-error" role="alert" hidden></div>' +
         (lines.length ? '<p style="margin-top:0.8rem;">Loading removes the ' + lines.length + ' line' + (lines.length === 1 ? '' : 's') + ' on the picture.</p>' : '') + '</div>';
     }
@@ -2844,7 +2883,7 @@
             var c = v === 'file' ? fromFile : saved[+v];
             if (!c) return;
             closeModal();
-            lensApplyLoaded(c, v === 'file' ? 'From the settings file ' + c.file : 'Saved on this station on ' + c.saved);
+            lensApplyLoaded(c, v !== 'file' ? 'Saved on this station on ' + c.saved : c.kind === 'opencv' ? 'From the OpenCV calibration file ' + c.file : 'From the settings file ' + c.file);
             if (typeof loaded === 'function') loaded();
           } }
         ],
@@ -2852,21 +2891,63 @@
       var ok = $('modal-footer').lastChild;
       function sync() { ok.disabled = !document.querySelector('input[name="lens_src"]:checked'); }
       sync();
-      $('ll-body').onchange = function(e) {
+      var dialog = $('ll-body');
+      dialog.onchange = function(e) {
         if (e.target.id !== 'll-file') { sync(); return; }
         var f = e.target.files[0]; if (!f) return;
         var rd = new FileReader();
         rd.onload = function() {
-          var res = lensFromSettings(String(rd.result)), err = $('ll-file-error');
-          err.hidden = !res.error; err.textContent = res.error || '';
-          if (res.error) { e.target.value = ''; return; }
-          fromFile = { name: f.name.replace(/\.(ofsettings|openfollowsettings)$/i, ''), file: f.name, k1: res.k1, k2: res.k2, cx: res.cx, cy: res.cy };
-          var box = $('ll-file-opt'); box.hidden = false;
-          box.innerHTML = lensOption('file', f.name, lensVals(res.k1, res.k2, res.cx, res.cy, imageWidth, imageHeight), true);
-          $('ll-file-btn').textContent = 'Choose another file…';
-          sync();
+          var text = String(rd.result);
+          seq++; fromFile = null; pendingXml = null;
+          $('ll-file-opt').hidden = true; $('ll-file-opt').innerHTML = ''; $('ll-size').hidden = true; sync();
+          // An XML or YAML file is an OpenCV calibration, for the station; anything else a settings file.
+          // The station reads at most LENS_FILE_MAX bytes; a larger calibration is refused before it is sent.
+          if (/\.(xml|ya?ml)$/i.test(f.name) || /^\s*(<|%YAML)/.test(text)) {
+            if (f.size > LENS_FILE_MAX) show({ error: 'This file is too large for a lens calibration.' }, f.name, null);
+            else { pendingXml = { text: text, file: f.name }; convert(null); }
+          }
+          else show(lensFromSettings(text), f.name, null);
+          e.target.value = '';
         };
         rd.readAsText(f);
+      };
+      function show(res, file, opencv) {
+        var err = $('ll-file-error');
+        err.hidden = !res.error; err.textContent = res.error || '';
+        if (res.error) return;
+        fromFile = { name: file.replace(/\.(ofsettings|openfollowsettings|xml|ya?ml)$/i, ''), file: file, k1: res.k1, k2: res.k2, cx: res.cx, cy: res.cy };
+        if (opencv) Object.assign(fromFile, { kind: 'opencv', rms_px: res.rms_px, corner_px: res.corner_px, coverage: res.coverage });
+        var box = $('ll-file-opt'); box.hidden = false;
+        box.innerHTML = lensOption('file', file, lensVals(res.k1, res.k2, res.cx, res.cy, imageWidth, imageHeight) + (opencv ? ' · ' + lensOpencvAccuracy(res) : ''), true);
+        $('ll-file-btn').textContent = 'Choose another file…';
+        sync();
+      }
+      function convert(size) {
+        var mine = ++seq, file = pendingXml.file;
+        lensFromOpencv(pendingXml.text, size).then(function(got) {
+          if (mine !== seq || $('ll-body') !== dialog) return;
+          var asking = !!got.needsSize || (!!size && !!got.error);
+          $('ll-size').hidden = !asking;
+          // Asked only when no size was sent; the question is no error, so it stays with the fields.
+          if (got.needsSize) {
+            $('ll-size-note').textContent = got.error;
+            $('ll-size-w').value = imageWidth; $('ll-size-h').value = imageHeight;
+            var err = $('ll-file-error'); err.hidden = true; err.textContent = '';
+            // Focus brings the question to a screen reader, through the row's description.
+            $('ll-size-w').focus(); $('ll-size-w').select();
+            return;
+          }
+          show(got.fit ? got.fit : { error: got.error }, file, true);
+        });
+      }
+      $('ll-size-btn').onclick = function() {
+        var w = Number($('ll-size-w').value), h = Number($('ll-size-h').value);
+        if (!pendingXml) return;
+        if (!(Number.isInteger(w) && Number.isInteger(h) && w > 0 && h > 0)) { show({ error: 'Enter the calibrated picture size as two whole numbers.' }, pendingXml.file, true); return; }
+        convert([w, h]);
+      };
+      $('ll-size-w').onkeydown = $('ll-size-h').onkeydown = function(e) {
+        if (e.key === 'Enter') { e.preventDefault(); $('ll-size-btn').onclick(); }
       };
       $('ll-file-btn').onclick = function() { $('ll-file').click(); };
     }
@@ -2876,9 +2957,14 @@
   // could not be read says so, and that saving may replace a calibration of that name.
   // Under the question, Save backs up the camera's own calibration, whatever the fields show by then.
   window.lensSaveCurrent = function() { lensSaveDialog(SAVED.lens, 'lens-current-saved'); };
+  // A calibration loaded from a file, still as loaded, offers the file's name to save it under.
+  function lensSaveName() {
+    var ld = S.lensLoaded;
+    return ld && ld.fromFile && !lensLines.length && lensSame(wizLens(), [ld.k1, ld.k2, ld.cx, ld.cy]) ? ld.name.slice(0, 60) : '';
+  }
   window.lensSaveDialog = function(current, noteId) {
     if (!current && (!lensMeasured() || !wizLensValid())) return;
-    var l = current || wizLens(), saved = [], failed = null, saving = false;
+    var l = current || wizLens(), name = current ? '' : lensSaveName(), saved = [], failed = null, saving = false;
     function open() {
       openModal({
         title: 'Save Lens Calibration',
@@ -2908,6 +2994,7 @@
         ],
       });
       var ok = $('modal-footer').lastChild, inp = $('ls-name');
+      inp.value = name;
       function sync() {
         var n = inp.value.trim().toLowerCase();
         ok.disabled = !n || saving;
@@ -3887,7 +3974,7 @@
     if (lensHasCurrent() && S.lensChoice === 'keep') return SAVED.lens_rating;
     if (lensIsTheFits(l)) return LENS_RATING_RECORD[lensShownRating(lensFit)] || '';
     if (lensFit) return lensFitApplies(lensFit) || lensHandTuned() ? 'user_input' : lensFit.keptRating || '';
-    if (S.lensLoaded) return lensSame(l, [S.lensLoaded.k1, S.lensLoaded.k2, S.lensLoaded.cx, S.lensLoaded.cy]) ? 'loaded' : 'user_input';
+    if (S.lensLoaded) return lensSame(l, [S.lensLoaded.k1, S.lensLoaded.k2, S.lensLoaded.cx, S.lensLoaded.cy]) ? (S.lensLoaded.kind === 'opencv' ? 'opencv' : 'loaded') : 'user_input';
     if (S.lensTouched) return 'user_input';
     return lensMeasured() ? SAVED.lens_rating : '';
   }
@@ -4204,7 +4291,12 @@
       if (pairOk(raw.lensCentre)) S.lensCentre = raw.lensCentre.slice();
       S.lensTouched = raw.lensTouched === true;
       if (['keep', 'clear', 'load'].indexOf(raw.lensChoice) >= 0 && lensHasCurrent()) S.lensChoice = raw.lensChoice;
-      if (raw.lensLoaded && typeof raw.lensLoaded.name === 'string' && [raw.lensLoaded.k1, raw.lensLoaded.k2, raw.lensLoaded.cx, raw.lensLoaded.cy].every(isFinite)) S.lensLoaded = raw.lensLoaded;
+      if (raw.lensLoaded && typeof raw.lensLoaded.name === 'string' && [raw.lensLoaded.k1, raw.lensLoaded.k2, raw.lensLoaded.cx, raw.lensLoaded.cy].every(isFinite)) {
+        S.lensLoaded = raw.lensLoaded;
+        var ld = S.lensLoaded;
+        ld.fromFile = ld.fromFile === true;
+        if (ld.kind === 'opencv' && !(typeof ld.rms_px === 'number' && isFinite(ld.rms_px) && typeof ld.coverage === 'number' && isFinite(ld.coverage) && (ld.corner_px === null || (typeof ld.corner_px === 'number' && isFinite(ld.corner_px))))) delete ld.kind;
+      }
       if (sameUnits && (raw.mode === 'simple' || raw.mode === 'advanced')) {
         S.mode = raw.mode;
         S.simpleLoc = CAM_PRESETS.some(function(p) { return p[0] === raw.simpleLoc; }) ? raw.simpleLoc : '';

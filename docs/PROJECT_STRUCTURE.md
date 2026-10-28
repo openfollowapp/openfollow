@@ -30,6 +30,7 @@ openfollow/              # Single unified package
 │   ├── solver.py        # Projection, homography, DLT camera solve + the division-model overlay warp about the lens centre, both ways
 │   ├── calibration_points.py # The Setup Wizard's camera solve from known and triangulated marks
 │   ├── lens_fit.py      # k1 / k2 from traced straight lines (the Setup Wizard's Lens step)
+│   ├── opencv_lens.py   # An OpenCV calibration file read and the lens model fitted to it
 │   ├── edge_snap.py     # Snap a traced line's points onto a brightness edge
 │   └── edge_chains.py   # Edge suggestions: line-like edges found in a scaled snapshot
 ├── video/               # Video pipeline + overlay

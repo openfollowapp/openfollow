@@ -178,7 +178,8 @@ async function _sendRestarting(url, init, failed, done, unreachable) {
         /* Part way: what was not written is said while the station restarts on the rest. */
         var info = window.OpenFollow.saveError.fromText(res.status, text);
         openfollowRestartProgress('Not all restored. ' + info.error + ' ' + info.action);
-        toastOnNextLoad('Not all restored. ' + info.error + ' Details in Logs.', 'caution');
+        toastOnNextLoad('Not all restored. ' + info.error + ' '
+            + (result.backup_error ? NO_BACKUP_MADE : 'Details in Logs.'), 'caution');
         openfollowAwaitRestart(result.instance || '');
         return;
     }

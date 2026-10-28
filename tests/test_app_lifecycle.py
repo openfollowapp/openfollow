@@ -1044,9 +1044,11 @@ def test_a_restore_cut_short_is_put_right_before_the_catalog_loads(patched_ctor)
     staged = state / ".lens-calibrations.abcd1234.restore"
     staged.mkdir()
     (staged / "tele.json").write_text("{}", encoding="utf-8")
-    (state / ".markers.toml.efgh5678.restore").write_text("half", encoding="utf-8")
+    (state / ".markers.toml.efgh5678.restore").write_text("[[marker]]\nid = 3\n", encoding="utf-8")
+    (state / ".restore-commit").write_bytes(b"")  # the restore had committed
 
     OpenFollowApp(config_path=patched_ctor.cfg_path)
 
     assert [p.name for p in (state / "lens-calibrations").iterdir()] == ["tele.json"]
+    assert (state / "markers.toml").read_text(encoding="utf-8") == "[[marker]]\nid = 3\n"
     assert sorted(p.name for p in state.iterdir() if p.name.startswith(".")) == []

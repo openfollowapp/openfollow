@@ -3217,6 +3217,24 @@ class TestSourcePickSave:
             )
         ]
 
+    def test_a_save_after_a_restore_says_the_station_is_restarting(self, tmp_path) -> None:  # noqa: ANN001
+        from openfollow import restore_hold
+        from openfollow.runtime.app_modes import save_source_pick
+
+        app, path, banners = self._station(tmp_path)
+        before = path.read_bytes()
+        restore_hold.hold(path)
+
+        save_source_pick(app, "ndi_source_name", "NEW (B)")
+
+        assert path.read_bytes() == before
+        assert banners == [
+            (
+                "The NDI® source is live but could not be saved. OpenFollow is restarting after a restore.",
+                "Once it is back, pick it again.",
+            )
+        ]
+
     def test_a_save_that_failed_for_another_reason_points_at_the_storage(self, tmp_path) -> None:  # noqa: ANN001
         from openfollow.runtime.app_modes import save_source_pick
 

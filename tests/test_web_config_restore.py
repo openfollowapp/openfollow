@@ -21,10 +21,13 @@ import openfollow.services as services_module
 import openfollow.web.discovery as discovery_module
 import openfollow.web.routes as routes_module
 from openfollow import config_restore
-from openfollow.configuration import AppConfig, ConfigWritesHeldError, load_config, save_config
-from openfollow.marker_catalog.catalog import CatalogSavesHeldError, MarkerCatalog, save_catalog
+from openfollow.configuration import AppConfig, load_config, save_config
+from openfollow.marker_catalog.catalog import MarkerCatalog, save_catalog
 from openfollow.privilege import settings_backup
 from openfollow.privilege.settings_backup import WebBackup, archive_name, run_backup, run_web_backup, web_backup_dir
+from openfollow.restore_hold import HeldForRestartError
+from openfollow.templates.writer import write_user_template
+from openfollow.web import lens_calibrations
 from openfollow.web.server import ConfigWebServer
 from tests._ports import live_on_free_port
 
@@ -34,6 +37,8 @@ _RUNNING = "0.5.0rc3"
 _NOW = datetime(2026, 10, 28, 20, 40, 0, tzinfo=UTC)
 _RESTORE = "/api/config/backups/restore"
 _OLD_CATALOG = b'[[marker]]\nid = 4\nname = "Old lead"\n'
+_RESTARTING = {"error": "OpenFollow is restarting.", "action": "Save again once it is back."}
+_ANOTHER = {"error": "Another restore is running.", "action": "Restore again once the station is back."}
 
 
 def _identity(cfg: AppConfig) -> AppConfig:
@@ -223,9 +228,8 @@ def test_an_update_backup_is_restored_with_this_station_s_identity(station) -> N
     assert _tree(state / "lens-calibrations") == {"old.json": "{}"}
 
 
-def test_a_web_backup_is_restored(station, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_web_backup_is_restored(station) -> None:
     server, base, state = station
-    monkeypatch.setattr(server, "get_marker_catalog", lambda: None)  # a station whose catalog is not up yet
     _the_old_show(state)
     name = _web_backup(state)
     _the_show_now(state)
@@ -520,12 +524,9 @@ def test_a_config_that_cannot_be_saved_restores_nothing_and_holds_nothing(
     name = _update_backup(state)
     _the_show_now(state)
     before = (state / "config.toml").read_bytes()
-    real_save = routes_module.save_config
 
     def disk_full(cfg: AppConfig, path: str, **kwargs: Any) -> None:
-        if kwargs.get("last"):
-            raise OSError(28, "No space left on device")
-        real_save(cfg, path, **kwargs)
+        raise OSError(28, "No space left on device")
 
     monkeypatch.setattr(routes_module, "save_config", disk_full)
     status, body = _restore(base, name)
@@ -630,11 +631,33 @@ def test_a_catalog_save_after_the_restore_leaves_the_restored_file(station) -> N
 
     # A peer's change synced in, or a marker edited on this page, before the process went down.
     catalog.upsert(9, "Changed since", "#ffffff", origin="peer")
-    with pytest.raises(CatalogSavesHeldError):
+    with pytest.raises(HeldForRestartError):
         save_catalog(catalog, str(state / "show" / "markers.toml"))
-    status, _body = _put(base, "/api/markers/catalog/5", {"name": "New", "color": "#00ff00"})
-    assert status == 500
+    assert _put(base, "/api/markers/catalog/5", {"name": "New", "color": "#00ff00"}) == (409, _RESTARTING)
+    assert catalog.get(5) is None  # the edit was taken back, as for any refused write
+    status, body = _delete(base, "/api/markers/catalog/9")
+    assert (status, body) == (409, _RESTARTING)
+    assert catalog.get(9) is not None
     assert (state / "show" / "markers.toml").read_bytes() == _OLD_CATALOG
+
+
+def test_a_template_or_lens_save_after_the_restore_leaves_the_restored_files(station) -> None:
+    _server, base, state = station
+    _the_old_show(state)
+    name = _update_backup(state)
+    _the_show_now(state)
+
+    assert _restore(base, name)[0] == 200
+
+    with pytest.raises(HeldForRestartError):
+        write_user_template(state / "templates", "zones", "Areas", {"zones": []})
+    lens = {"name": "Zoom", "k1": -0.1, "k2": 0.0, "cx": 0.0, "cy": 0.0}
+    assert _post(base, "/api/wizard/lens/calibrations", json.dumps(lens).encode()) == (409, _RESTARTING)
+    status, body = _post(base, "/api/templates/zones/save", json.dumps({"name": "Areas"}).encode())
+    assert (status, body) == (409, _RESTARTING)
+    assert _tree(state / "templates" / "user") == {"old.oftemplate": "old"}
+    assert _tree(state / "lens-calibrations") == {"old.json": "{}"}
+    assert lens_calibrations.calibrations_dir(state / "config.toml") == state / "lens-calibrations"
 
 
 def test_a_config_save_after_the_restore_leaves_the_restored_file(station) -> None:
@@ -646,10 +669,10 @@ def test_a_config_save_after_the_restore_leaves_the_restored_file(station) -> No
     assert _restore(base, name)[0] == 200
     restored = (state / "config.toml").read_bytes()
 
-    with pytest.raises(ConfigWritesHeldError):
+    with pytest.raises(HeldForRestartError):
         save_config(AppConfig(), str(state / "config.toml"))
     status, body = _post(base, "/api/config/grid", json.dumps({"width": 7.0}).encode())
-    assert (status, body) == (409, {"error": "OpenFollow is restarting.", "action": "Save again once it is back."})
+    assert (status, body) == (409, _RESTARTING)
     assert (state / "config.toml").read_bytes() == restored
 
 
@@ -734,3 +757,37 @@ def _put(base: str, path: str, data: dict[str, Any]) -> tuple[int, dict[str, Any
             return r.status, json.loads(r.read())
     except urllib.error.HTTPError as e:
         return e.code, json.loads(e.read())
+
+
+def _delete(base: str, path: str) -> tuple[int, dict[str, Any]]:
+    req = urllib.request.Request(f"{base}{path}", method="DELETE")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status, json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+def test_a_restore_while_another_runs_or_holds_is_refused(station, monkeypatch: pytest.MonkeyPatch) -> None:
+    server, base, state = station
+    _the_old_show(state)
+    first = _update_backup(state)
+    second = _web_backup(state, 5)
+    _the_show_now(state)
+    real_backup = routes_module._backup_before
+    meanwhile: list[tuple[int, dict[str, Any]]] = []
+
+    def back_up_while_another_is_asked_for(*args: Any) -> dict[str, str]:
+        meanwhile.append(_restore(base, second))
+        return real_backup(*args)
+
+    monkeypatch.setattr(routes_module, "_backup_before", back_up_while_another_is_asked_for)
+    status, body = _restore(base, first)
+
+    assert status == 200, body
+    assert meanwhile == [(409, _ANOTHER)]
+    assert _tree(state / "lens-calibrations") == {"old.json": "{}"}
+    assert list(state.rglob(".*.restore")) + list(state.rglob(".*.old")) == []
+    monkeypatch.setattr(routes_module, "_backup_before", real_backup)
+    assert _restore(base, second) == (409, _ANOTHER)
+    assert server.check_restart_requested() is True

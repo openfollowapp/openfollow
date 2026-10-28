@@ -40,6 +40,7 @@ from openfollow.marker_catalog import (
 )
 from openfollow.palette import AUTO_PICK_ORDER as _PALETTE_AUTO_PICK_ORDER
 from openfollow.paths.engine import PathEngine
+from openfollow.restore_hold import HeldForRestartError
 from openfollow.runtime.app_commands import (
     check_button_detection_request as runtime_check_button_detection_request,
 )
@@ -869,6 +870,8 @@ class OpenFollowApp:
             # Persist remote changes.
             try:
                 save_catalog(self._marker_catalog, self._marker_catalog_path())
+            except HeldForRestartError:
+                logger.info("Catalog changes from a peer not saved: OpenFollow is restarting after a restore.")
             except OSError:
                 logger.exception(
                     "Failed to persist catalog updates from peer",

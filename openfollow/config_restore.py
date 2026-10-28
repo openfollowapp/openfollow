@@ -36,12 +36,14 @@ from openfollow.privilege import settings_backup
 __all__ = [
     "CATALOG",
     "CONFIG",
+    "JOURNAL",
     "LENSES",
     "MAX_ARCHIVE_BYTES",
     "MAX_MEMBERS",
     "MAX_MEMBER_BYTES",
     "MAX_TOTAL_BYTES",
     "MAX_UNPACKED_BYTES",
+    "PENDING_JOURNAL",
     "TEMPLATES",
     "Backup",
     "BackupContents",
@@ -95,6 +97,9 @@ _NAMED_VERSION_RE = re.compile(r".*-v(\d[A-Za-z0-9._-]*)")
 _DEBIAN_REVISION_RE = re.compile(r"-\d[A-Za-z0-9.+]*$")
 # What a commit leaves beside its target until it finishes: the staged copy and the one it replaced.
 _STAGED, _REPLACED = ".restore", ".old"
+# Beside the config: staged with the copies, renamed once the restored config is saved, removed when done.
+PENDING_JOURNAL = ".restore-commit.pending"
+JOURNAL = ".restore-commit"
 
 logger = logging.getLogger(__name__)
 
@@ -363,14 +368,36 @@ def find_backup(config_path: str | os.PathLike[str], name: str, running: str) ->
     return next((row for row in list_backups(config_path, running) if row.name == name), None)
 
 
+def _sync(path: Path) -> None:
+    """Flush *path*, a file or a folder's entries, to the disk; a folder that cannot be synced is no failure."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        with contextlib.suppress(OSError):
+            os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _write_synced(path: Path, data: bytes) -> None:
+    with open(path, "wb") as fh:
+        fh.write(data)
+        fh.flush()
+        os.fsync(fh.fileno())
+    _sync(path)
+
+
 @dataclass
 class StagedRestore:
     """The archive's catalog and folders written beside their targets, swapped in by :meth:`commit`.
 
     Everything that takes space is made by :func:`stage_restore`, the place each
-    folder is moved aside to included, so a commit only renames.
+    folder is moved aside to and the journal included, so a commit only renames.
     """
 
+    journal: Path
     files: list[tuple[Path, Path]] = field(default_factory=list)
     # ``(part, staged, aside, target)``: the archive's folder name, its copy, where the station's goes.
     folders: list[tuple[str, Path, Path, Path]] = field(default_factory=list)
@@ -379,11 +406,19 @@ class StagedRestore:
     def commit(self) -> list[str]:
         """Move each staged copy into place, as far as each goes; the parts that kept the station's own.
 
-        A folder that cannot move in gets its own back; one that cannot do
-        either is left with both copies beside it for
-        :func:`recover_interrupted_restore`.
+        The journal marks the commit for :func:`recover_interrupted_restore`
+        until it ends: a power cut before then finishes the restore at the
+        next start. A part that cannot move in keeps the station's own: a
+        folder moved aside is put back now, or, when that fails too, by the
+        next start, which finds no journal and takes the copy moved aside.
         """
         self.committed = True
+        done = self.journal.with_name(JOURNAL)
+        try:
+            os.replace(self.journal, done)
+        except OSError as exc:
+            logger.warning("Could not mark the restore as committed: %s", exc)
+        _sync(done.parent)
         failed = []
         for staged, target in self.files:
             try:
@@ -392,30 +427,42 @@ class StagedRestore:
                 logger.warning("Could not restore %s: %s", target, exc)
                 failed.append(CATALOG)
                 staged.unlink(missing_ok=True)
+            _sync(target.parent)
         for part, staged, aside, target in self.folders:
-            moved = False
-            try:
-                with contextlib.suppress(FileNotFoundError):
-                    os.replace(target, aside)
-                    moved = True
-                os.replace(staged, target)
-            except OSError as exc:
-                logger.warning("Could not restore %s: %s", target, exc)
+            if not self._move_in(staged, aside, target):
                 failed.append(part)
-                if moved:
-                    try:
-                        os.replace(aside, target)
-                    except OSError as back:
-                        logger.warning("Could not put back %s, left for the next start: %s", target, back)
-                        continue
-                shutil.rmtree(staged, ignore_errors=True)
-            shutil.rmtree(aside, ignore_errors=True)
+            _sync(target.parent)
+        done.unlink(missing_ok=True)
+        _sync(done.parent)
         return failed
+
+    @staticmethod
+    def _move_in(staged: Path, aside: Path, target: Path) -> bool:
+        moved = False
+        try:
+            with contextlib.suppress(FileNotFoundError):
+                os.replace(target, aside)
+                moved = True
+            os.replace(staged, target)
+        except OSError as exc:
+            logger.warning("Could not restore %s: %s", target, exc)
+            if moved:
+                try:
+                    os.replace(aside, target)
+                except OSError as back:
+                    logger.warning("Could not put back %s, the next start does: %s", target, back)
+                    return False
+            shutil.rmtree(staged, ignore_errors=True)
+            shutil.rmtree(aside, ignore_errors=True)
+            return False
+        shutil.rmtree(aside, ignore_errors=True)
+        return True
 
     def discard(self) -> None:
         """Remove what was staged; after a commit, what it moved and left is its own business."""
         if self.committed:
             return
+        self.journal.unlink(missing_ok=True)
         for staged, _target in self.files:
             staged.unlink(missing_ok=True)
         for _part, staged, aside, _target in self.folders:
@@ -426,18 +473,19 @@ class StagedRestore:
 def stage_restore(contents: BackupContents, catalog_path: Path, state_dir: Path) -> StagedRestore:
     """Write the archive's catalog and folders next to where they go, ready for :meth:`StagedRestore.commit`.
 
-    A part the archive does not hold is left as it is on the station.
+    Every file and folder is synced, so a staged copy is whole on the disk
+    before the first rename. A part the archive does not hold is left as it is.
     """
-    staged = StagedRestore()
+    staged = StagedRestore(state_dir / PENDING_JOURNAL)
     try:
+        state_dir.mkdir(parents=True, exist_ok=True)
+        _write_synced(staged.journal, b"")
         if contents.catalog is not None:
             catalog_path.parent.mkdir(parents=True, exist_ok=True)
             fd, tmp = tempfile.mkstemp(prefix=f".{catalog_path.name}.", suffix=_STAGED, dir=catalog_path.parent)
+            os.close(fd)
             staged.files.append((Path(tmp), catalog_path))
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(contents.catalog)
-                fh.flush()
-                os.fsync(fh.fileno())
+            _write_synced(Path(tmp), contents.catalog)
         for folder, inside in contents.folders.items():
             target = state_dir / folder
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -451,7 +499,11 @@ def stage_restore(contents: BackupContents, catalog_path: Path, state_dir: Path)
             for relative, data in inside.items():
                 dest = tmp_dir / relative
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_bytes(data)
+                _write_synced(dest, data)
+            for made in sorted({tmp_dir, *(p.parent for p in tmp_dir.rglob("*"))}, reverse=True):
+                _sync(made)
+        for parent in {state_dir, catalog_path.parent, *(target.parent for *_rest, target in staged.folders)}:
+            _sync(parent)
     except BaseException:
         staged.discard()
         raise
@@ -465,26 +517,48 @@ def _leftovers(target: Path, suffix: str) -> list[Path]:
 
 
 def recover_interrupted_restore(state_dir: Path, catalog_path: Path) -> None:
-    """Put right a restore cut short between its renames; run at start and before the next restore.
+    """Put right a restore cut short; run at start and before the next restore.
 
-    A folder gone between the two renames takes its staged copy, which was
-    whole before the first rename, else the copy it replaced. Every other
-    leftover is removed. A failure is logged: a start never stops on it.
+    With the commit's journal on the disk the restore is finished from its
+    staged copies, which were whole before the first rename. Without it the
+    restore never committed, or committed and ended: its copies are discarded,
+    and a folder left moved aside is put back. A failure is logged: a start
+    never stops on it.
     """
-    for leftover in _leftovers(catalog_path, _STAGED):
-        _remove(leftover)
+    committed = (state_dir / JOURNAL).exists()
+    staged_catalog = _leftovers(catalog_path, _STAGED)
+    source = staged_catalog[0] if committed and staged_catalog else None
+    if source is not None:
+        _install(source, catalog_path)
+    for leftover in staged_catalog:
+        if leftover != source:
+            _remove(leftover)
     for folder in _FOLDERS:
         target = state_dir / folder
-        candidates = _leftovers(target, _STAGED) + _leftovers(target, _REPLACED)
-        if candidates and not target.exists():
-            try:
-                os.replace(candidates[0], target)
-            except OSError as exc:
-                logger.warning("Could not put back %s from %s: %s", target, candidates[0], exc)
-                continue
-            logger.warning("Put back %s from %s, left by a restore cut short", target, candidates[0].name)
-        for leftover in candidates:
-            _remove(leftover)
+        staged, aside = _leftovers(target, _STAGED), _leftovers(target, _REPLACED)
+        # An empty one is the place a commit never reached: nothing of the station's is in it.
+        moved = [path for path in aside if any(path.iterdir())]
+        source = staged[0] if committed and staged else moved[0] if moved and not target.exists() else None
+        if source is not None:
+            _install(source, target)
+        for leftover in staged + aside:
+            if leftover != source:
+                _remove(leftover)
+    for journal in (JOURNAL, PENDING_JOURNAL):
+        (state_dir / journal).unlink(missing_ok=True)
+
+
+def _install(source: Path, target: Path) -> None:
+    """*source* in place of *target*; a failure leaves both for the next start."""
+    try:
+        if target.is_dir() and not target.is_symlink():
+            shutil.rmtree(target)
+        os.replace(source, target)
+    except OSError as exc:
+        logger.warning("Could not put %s in place from %s: %s", target, source.name, exc)
+        return
+    _sync(target.parent)
+    logger.warning("Put %s in place from %s, left by a restore cut short", target, source.name)
 
 
 def _remove(path: Path) -> None:

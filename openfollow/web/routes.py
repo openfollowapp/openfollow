@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 import binascii
 import collections
+import contextlib
 import copy
 import functools
 import hashlib
@@ -27,7 +28,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Iterable, Mapping, MutableSequence, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, MutableSequence, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -51,7 +52,7 @@ if TYPE_CHECKING:
     from openfollow.web.discovery import PeerInfo
     from openfollow.web.server import ConfigWebServer
 
-from openfollow import config_restore
+from openfollow import config_restore, restore_hold
 from openfollow.button_names import ButtonNameStyle, name_style
 from openfollow.configuration import (
     CALIBRATION_CORNERS,
@@ -77,7 +78,6 @@ from openfollow.configuration import (
     CameraConfig,
     ConfigFileEmptyError,
     ConfigFileUnreadableError,
-    ConfigWritesHeldError,
     DetectionMaskConfig,
     OscDestinationConfig,
     OscTransmitterConfig,
@@ -4079,6 +4079,27 @@ _RESTORED_PART_WORDS = {
 }
 
 
+_ANOTHER_RESTORE = ("Another restore is running.", "Restore again once the station is back.")
+# Serialises restores from their recovery to their commit.
+_RESTORE_LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def _one_restore() -> Iterator[bool]:
+    """Whether this request is the only restore under way; held for its ``with`` block."""
+    if not _RESTORE_LOCK.acquire(blocking=False):
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        _RESTORE_LOCK.release()
+
+
+def _sentence(words: str) -> str:
+    return words[:1].upper() + words[1:]
+
+
 def _and(words: Iterable[str]) -> str:
     """``a``, ``a and b``, ``a, b and c``."""
     listed = list(words)
@@ -4926,6 +4947,8 @@ def _register_marker_catalog_routes(
                 # equality is the exact check we want.
                 if catalog.get_any(marker_id) is entry:
                     catalog.restore_entry(marker_id, prev)
+                if isinstance(exc, restore_hold.HeldForRestartError):
+                    raise  # a restore's restart: the route plugin answers it
                 logger.exception("Failed to persist catalog: %s", exc)
                 response.status = 500
                 return json.dumps({"error": "could not persist catalog"})
@@ -4983,6 +5006,8 @@ def _register_marker_catalog_routes(
                 # clobber that peer's newer state.
                 if catalog.get_any(marker_id) is tomb:
                     catalog.restore_entry(marker_id, prev)
+                if isinstance(exc, restore_hold.HeldForRestartError):
+                    raise  # a restore's restart: the route plugin answers it
                 logger.exception("Failed to persist catalog: %s", exc)
                 response.status = 500
                 return json.dumps({"error": "could not persist catalog"})
@@ -5831,7 +5856,7 @@ def _refuse_over_unreadable_config(callback: Callable[..., Any]) -> Callable[...
             return _save_failed(
                 409, f"The settings file on this station {said}", f"{step}.", settings_file=config_problem_kind(error)
             )
-        except ConfigWritesHeldError as error:
+        except restore_hold.HeldForRestartError as error:
             logger.warning("Not saved: %s", error)
             return _save_failed(409, "OpenFollow is restarting.", "Save again once it is back.")
 
@@ -10523,81 +10548,88 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         name = data.get("name") if isinstance(data, dict) else None
         if not isinstance(name, str) or not name:
             return _save_failed(400, "The request named no backup.")
-        after_update = "Restore the backup once it has finished."
-        if server.is_update_busy():
-            return _save_failed(409, _UPDATE_RUNNING, after_update)
-        base, replacing = _import_base(may_replace=True)
-        catalog_path = Path(_resolve_marker_catalog_path(server.config_path, base.markers_catalog_path))
-        config_restore.recover_interrupted_restore(Path(server.config_path).parent, catalog_path)
-        try:
-            found = config_restore.find_backup(server.config_path, name, openfollow.__version__)
-        except config_restore.BackupsUnreadableError as exc:
-            logger.warning("Settings backup not restored: %s", exc)
-            return _save_failed(500, _BACKUPS_UNREADABLE, "Details in Logs.")
-        if found is None:
-            return _save_failed(404, "This backup is no longer on the station.", "Reload the page.")
-        if found.newer:
-            return _save_failed(
-                409,
-                f"This backup was made by OpenFollow {config_restore.shown_version(found.version)}, which is "
-                f"newer than this station ({config_restore.shown_version(openfollow.__version__)}).",
-                "Update the station first.",
-            )
-        try:
-            contents = config_restore.read_backup(found.path)
-            restored = config_restore.load_backup_config(contents)
-        except config_restore.BackupDamagedError as exc:
-            logger.warning("Settings backup %s not restored: %s", found.name, exc)
-            return _save_failed(422, "This backup could not be read.", "Choose another one.")
-
-        backup = _backup_before(server.config_path, "restore", base if replacing else None)
-        try:
-            staged = config_restore.stage_restore(contents, catalog_path, Path(server.config_path).parent)
-        except OSError as exc:
-            return _restore_not_written(found.name, exc)
-
-        not_restored: list[str] = []
-
-        def write_backup() -> None:
-            with _config_write_lock:
-                current, replacing_now = _import_base(may_replace=True)
-                # ``last``, and the catalog held before its rename: until the restart, nothing the
-                # running station saves may land over what the restart is to read.
-                save_config(
-                    restored_from_backup(restored, current),
-                    server.config_path,
-                    replace_unreadable=replacing_now,
-                    last=True,
+        # One at a time, recovery to commit: another's recovery would take this one's staged copies.
+        with _one_restore() as alone:
+            if not alone or restore_hold.is_held(server.config_path):
+                return _save_failed(409, *_ANOTHER_RESTORE)
+            after_update = "Restore the backup once it has finished."
+            if server.is_update_busy():
+                return _save_failed(409, _UPDATE_RUNNING, after_update)
+            base, replacing = _import_base(may_replace=True)
+            catalog_path = Path(_resolve_marker_catalog_path(server.config_path, base.markers_catalog_path))
+            config_restore.recover_interrupted_restore(Path(server.config_path).parent, catalog_path)
+            try:
+                found = config_restore.find_backup(server.config_path, name, openfollow.__version__)
+            except config_restore.BackupsUnreadableError as exc:
+                logger.warning("Settings backup not restored: %s", exc)
+                return _save_failed(500, _BACKUPS_UNREADABLE, "Details in Logs.")
+            if found is None:
+                return _save_failed(404, "This backup is no longer on the station.", "Reload the page.")
+            if found.newer:
+                return _save_failed(
+                    409,
+                    f"This backup was made by OpenFollow {config_restore.shown_version(found.version)}, which is "
+                    f"newer than this station ({config_restore.shown_version(openfollow.__version__)}).",
+                    "Update the station first.",
                 )
-                catalog = server.get_marker_catalog()
-                if catalog is not None:
-                    catalog.hold_saves()
-                # Renames only: past the held save, a part that fails stays as it is and the restart goes ahead.
-                not_restored.extend(staged.commit())
+            try:
+                contents = config_restore.read_backup(found.path)
+                restored = config_restore.load_backup_config(contents)
+            except config_restore.BackupDamagedError as exc:
+                logger.warning("Settings backup %s not restored: %s", found.name, exc)
+                return _save_failed(422, "This backup could not be read.", "Choose another one.")
 
-        try:
-            # Checked again with the write: an update queued during the backup leaves the settings as they are.
-            restarting = server.restart_after(write_backup)
-        except (ConfigFileUnreadableError, ConfigWritesHeldError):
-            raise  # answered by the route plugin, as every other write
-        except OSError as exc:
-            return _restore_not_written(found.name, exc)
-        finally:
-            staged.discard()
-        if not restarting:
-            return _save_failed(409, _UPDATE_RUNNING, after_update)
-        restart = {"needs_restart": True, "restarting": True, "instance": server.instance_id, **backup}
-        if not_restored:
-            logger.warning("Restored settings backup %s without %s; restarting", found.name, ", ".join(not_restored))
-            return _save_failed(
-                500,
-                f"{_and(_RESTORED_PART_WORDS[part] for part in not_restored).capitalize()} could not be written.",
-                "OpenFollow is restarting with the rest of the backup.",
-                **restart,
-            )
-        logger.info("Restored settings backup %s; restarting", found.name)
-        response.content_type = "application/json"
-        return json.dumps({"success": True, **restart})
+            backup = _backup_before(server.config_path, "restore", base if replacing else None)
+            try:
+                staged = config_restore.stage_restore(contents, catalog_path, Path(server.config_path).parent)
+            except OSError as exc:
+                return _restore_not_written(found.name, exc)
+
+            not_restored: list[str] = []
+
+            state_dir = Path(server.config_path).parent
+
+            def write_backup() -> None:
+                with _config_write_lock, restore_hold.GATE:
+                    current, replacing_now = _import_base(may_replace=True)
+                    save_config(
+                        restored_from_backup(restored, current), server.config_path, replace_unreadable=replacing_now
+                    )
+                    # Until the restart nothing the running station writes may land over what it is to read.
+                    restore_hold.hold(
+                        server.config_path,
+                        catalog_path,
+                        state_dir / config_restore.TEMPLATES,
+                        state_dir / config_restore.LENSES,
+                    )
+                    # Renames only: past the hold, a part that fails stays as it is and the restart goes ahead.
+                    not_restored.extend(staged.commit())
+
+            try:
+                # Checked again with the write: an update queued during the backup leaves the settings as they are.
+                restarting = server.restart_after(write_backup)
+            except (ConfigFileUnreadableError, restore_hold.HeldForRestartError):
+                raise  # answered by the route plugin, as every other write
+            except OSError as exc:
+                return _restore_not_written(found.name, exc)
+            finally:
+                staged.discard()
+            if not restarting:
+                return _save_failed(409, _UPDATE_RUNNING, after_update)
+            restart = {"needs_restart": True, "restarting": True, "instance": server.instance_id, **backup}
+            if not_restored:
+                logger.warning(
+                    "Restored settings backup %s without %s; restarting", found.name, ", ".join(not_restored)
+                )
+                return _save_failed(
+                    500,
+                    f"{_sentence(_and(_RESTORED_PART_WORDS[part] for part in not_restored))} could not be written.",
+                    "OpenFollow is restarting with the rest of the backup.",
+                    **restart,
+                )
+            logger.info("Restored settings backup %s; restarting", found.name)
+            response.content_type = "application/json"
+            return json.dumps({"success": True, **restart})
 
     @app.post("/api/config/broadcast-all")
     def api_broadcast_all() -> Any:
@@ -11224,6 +11256,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 width=width,
                 height=height,
             )
+        except restore_hold.HeldForRestartError:
+            raise  # a restore's restart: the route plugin answers it
         except OSError as exc:
             logger.warning("saving lens calibration failed: %s", exc)
             response.status = 500

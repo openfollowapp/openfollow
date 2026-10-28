@@ -541,17 +541,88 @@ def _leftover(parent: Path, name: str, files: dict[str, str]) -> Path:
     return folder
 
 
-def test_a_folder_gone_between_the_renames_is_finished_from_its_staged_copy(station: Path) -> None:
+def _cut_short_mid_commit(station: Path) -> None:
+    """Down between the lens folder's two renames; the templates were not reached yet."""
     (station / "lens-calibrations").rename(station / ".lens-calibrations.aaaa1111.old")
     _leftover(station, ".lens-calibrations.bbbb2222.restore", {"new.json": "[]"})
-    (station / "templates" / "user").rename(station / "templates" / ".user.cccc3333.old")
     _leftover(station / "templates", ".user.dddd4444.restore", {"new.oftemplate": "new"})
+    (station / "templates" / ".user.eeee5555.old").mkdir()
+    (station / ".markers.toml.ffff6666.restore").write_text("[[marker]]\nid = 7\n", encoding="utf-8")
+
+
+def test_a_committed_restore_cut_short_is_finished(station: Path) -> None:
+    _cut_short_mid_commit(station)
+    (station / config_restore.JOURNAL).write_bytes(b"")
 
     config_restore.recover_interrupted_restore(station, station / "markers.toml")
 
     assert _tree(station / "lens-calibrations") == {"new.json": b"[]"}
     assert _tree(station / "templates" / "user") == {"new.oftemplate": b"new"}
+    assert (station / "markers.toml").read_text(encoding="utf-8") == "[[marker]]\nid = 7\n"
     assert list(station.rglob(".*")) == []
+
+
+def test_a_restore_that_never_committed_leaves_the_station_s_own(station: Path) -> None:
+    _cut_short_mid_commit(station)
+    (station / config_restore.PENDING_JOURNAL).write_bytes(b"")
+
+    config_restore.recover_interrupted_restore(station, station / "markers.toml")
+
+    assert _tree(station / "lens-calibrations") == {"zoom.json": b"{}"}
+    assert _tree(station / "templates" / "user") == {"grid.oftemplate": b"grid"}
+    assert (station / "markers.toml").read_bytes() == b'[[marker]]\nid = 1\nname = "Lead"\n'
+    assert list(station.rglob(".*")) == []
+
+
+def test_a_power_cut_while_staging_never_installs_a_folder_the_station_did_not_have(tmp_path: Path) -> None:
+    contents = config_restore.BackupContents(b"", b"[[marker]]\n", {"lens-calibrations": {"a.json": b"{}"}})
+    stage_restore(contents, tmp_path / "markers.toml", tmp_path)  # and then the power went
+
+    config_restore.recover_interrupted_restore(tmp_path, tmp_path / "markers.toml")
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_commit_cut_short_by_a_power_cut_is_finished_at_the_start(
+    station: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    staged = stage_restore(_all_parts(station), station / "markers.toml", station)
+    real = config_restore.os.replace
+
+    def power_cut(src: str | Path, dst: str | Path) -> None:
+        if Path(dst).name == "lens-calibrations" and str(src).endswith(".restore"):
+            raise SystemExit("power cut")
+        real(src, dst)
+
+    monkeypatch.setattr(config_restore.os, "replace", power_cut)
+    with pytest.raises(SystemExit):
+        staged.commit()
+    monkeypatch.undo()
+
+    config_restore.recover_interrupted_restore(station, station / "markers.toml")
+
+    assert (station / "markers.toml").read_bytes() == b"[[marker]]\nid = 7\n"
+    assert _tree(station / "templates" / "user") == {"new.oftemplate": b"new"}
+    assert _tree(station / "lens-calibrations") == {"tele.json": b"[]"}
+    assert list(station.rglob(".*")) == []
+
+
+def test_what_a_restore_writes_reaches_the_disk(station: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    synced: list[Path] = []
+    real = config_restore._sync
+    monkeypatch.setattr(config_restore, "_sync", lambda path: synced.append(Path(path)) or real(path))
+
+    staged = stage_restore(_all_parts(station), station / "markers.toml", station)
+    staged_paths = {p for p in station.rglob(".*") if p.suffix == ".restore"}
+    staged_files = {p for folder in staged_paths if folder.is_dir() for p in folder.rglob("*")} | {
+        p for p in staged_paths if p.is_file()
+    }
+    assert staged_files | staged_paths <= set(synced)
+    synced.clear()
+
+    staged.commit()
+
+    assert {station, station / "templates"} <= set(synced)
 
 
 def test_a_folder_gone_with_only_its_old_copy_left_is_put_back(station: Path) -> None:
@@ -672,7 +743,7 @@ def test_a_folder_that_cannot_be_moved_aside_is_left_as_it_is(station: Path, mon
     assert list(station.rglob(".*")) == []
 
 
-def test_a_folder_that_cannot_move_in_nor_back_is_finished_at_the_next_start(
+def test_a_folder_that_cannot_move_in_nor_back_gets_its_own_back_at_the_next_start(
     station: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     staged = stage_restore(_all_parts(station), station / "markers.toml", station)
@@ -683,8 +754,9 @@ def test_a_folder_that_cannot_move_in_nor_back_is_finished_at_the_next_start(
     assert not (station / "lens-calibrations").exists()
 
     monkeypatch.undo()
+    # The commit had finished: as its answer said, the station keeps its own.
     config_restore.recover_interrupted_restore(station, station / "markers.toml")
-    assert _tree(station / "lens-calibrations") == {"tele.json": b"[]"}
+    assert _tree(station / "lens-calibrations") == {"zoom.json": b"{}"}
     assert list(station.rglob(".*")) == []
 
 
@@ -710,4 +782,16 @@ def test_no_room_to_move_a_folder_aside_stages_nothing(station: Path, monkeypatc
     monkeypatch.setattr(config_restore.tempfile, "mkdtemp", no_room_aside)
     with pytest.raises(OSError):
         stage_restore(_all_parts(station), station / "markers.toml", station)
+    assert list(station.rglob(".*")) == []
+
+
+def test_syncing_what_is_not_there_is_no_failure(tmp_path: Path) -> None:
+    config_restore._sync(tmp_path / "gone")
+
+
+def test_a_commit_whose_journal_is_gone_still_restores(station: Path) -> None:
+    staged = stage_restore(_all_parts(station), station / "markers.toml", station)
+    (station / config_restore.PENDING_JOURNAL).unlink()
+    assert staged.commit() == []
+    assert _tree(station / "lens-calibrations") == {"tele.json": b"[]"}
     assert list(station.rglob(".*")) == []

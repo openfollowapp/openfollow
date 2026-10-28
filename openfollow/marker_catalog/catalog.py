@@ -29,6 +29,8 @@ from typing import Any
 
 import tomli_w
 
+from openfollow.restore_hold import unless_held
+
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - python 3.10 fallback
@@ -116,10 +118,6 @@ def _entry_rank(entry: MarkerEntry) -> tuple[int, float, str]:
     return (entry.version, entry.updated_at, entry.origin)
 
 
-class CatalogSavesHeldError(OSError):
-    """A catalog save after a restore wrote the file this process restarts on."""
-
-
 class MarkerCatalog:
     """Thread-safe collection of :class:`MarkerEntry` with LWW merge.
 
@@ -131,19 +129,10 @@ class MarkerCatalog:
         self._lock = threading.Lock()
         # Serialises save_catalog calls to prevent writer interleaving.
         self._save_lock = threading.Lock()
-        self._saves_held = False
         # Lamport logical clock: the highest version this station has ever seen
         # (local edits + merged remotes). A local edit stamps ``_lamport + 1`` so
         # it out-ranks anything seen, even when peer wall clocks disagree.
         self._lamport = 0
-
-    def hold_saves(self) -> None:
-        """Refuse every later :func:`save_catalog`: a restore wrote the file this process restarts on.
-
-        Taken under the save lock, so a save already under way lands first.
-        """
-        with self._save_lock:
-            self._saves_held = True
 
     def get(self, marker_id: int) -> MarkerEntry | None:
         """Return the live (non-tombstoned) entry for ``marker_id``, or None."""
@@ -356,12 +345,8 @@ def load_catalog(path: str) -> MarkerCatalog:
 
 
 def save_catalog(catalog: MarkerCatalog, path: str) -> None:
-    """Atomically write catalog (including tombstones) via tempfile+rename."""
-    with catalog._save_lock:
-        if catalog._saves_held:
-            raise CatalogSavesHeldError(
-                f"Marker catalog {path} is not saved again before the restart a restore asked for."
-            )
+    """Atomically write catalog (including tombstones) via tempfile+rename; a held one raises HeldForRestartError."""
+    with catalog._save_lock, unless_held(path):
         entries = catalog.all_entries()
         data: dict[str, Any] = {
             "marker": [asdict(e) for e in entries],

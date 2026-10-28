@@ -30,6 +30,7 @@ from openfollow.keyboard_layout import LAYOUT_RE as XKB_LAYOUT_RE
 from openfollow.keyboard_layout import VARIANT_RE as XKB_VARIANT_RE
 from openfollow.lens_model import C_BOUND, pull_back_to_valid
 from openfollow.net_adapters import normalize_labels
+from openfollow.restore_hold import unless_held
 from openfollow.station_fqdn import normalize_fqdn
 from openfollow.text_hygiene import CONTROL_CHARS_RE
 from openfollow.units import UnitSystem
@@ -3373,15 +3374,6 @@ class ConfigFileEmptyError(ConfigFileUnreadableError):
     """The config file holds only whitespace, which would load as every default."""
 
 
-class ConfigWritesHeldError(OSError):
-    """A save after a restore wrote the file this process restarts on; the restart must find it as written."""
-
-
-# Serialises every save with the check that a restore has not held its file.
-_SAVE_GATE = threading.Lock()
-_HELD_PATHS: set[str] = set()
-
-
 # The state of each config file whose recovery was last logged; a web request reads it every time.
 _RECOVERY_LOGGED: dict[str, tuple[int, ...]] = {}
 
@@ -3750,18 +3742,13 @@ def config_file_health(path: str) -> str:
     return f"{state}; {backup}"
 
 
-def save_config(
-    config: AppConfig, path: str = "config.toml", *, replace_unreadable: bool = False, last: bool = False
-) -> None:
+def save_config(config: AppConfig, path: str = "config.toml", *, replace_unreadable: bool = False) -> None:
     """Serialize the full config to a TOML file, overwriting existing content.
 
     A file that is there but empty or unreadable is left alone and raises
     ``ConfigFileUnreadableError``, unless *replace_unreadable*: the config
     written was not read from it. Replacing one takes no snapshot, so the last
-    good ``.bak`` stays.
-
-    *last* holds the file once written: every later save of it in this process
-    raises ``ConfigWritesHeldError``, so a restore is what its restart reads.
+    good ``.bak`` stays. A file a restore holds raises ``HeldForRestartError``.
 
     Durable, atomic write: content is streamed to a temp file in the same
     directory, ``fsync``-ed, ``os.replace``-d into place, then the parent
@@ -3771,12 +3758,7 @@ def save_config(
     (a failure is logged and swallowed); ``load_config`` recovers from it when
     the primary is missing or unreadable.
     """
-    key = os.path.realpath(path)
-    with _SAVE_GATE:
-        if key in _HELD_PATHS:
-            raise ConfigWritesHeldError(
-                f"Config file {path} is not saved again before the restart a restore asked for."
-            )
+    with unless_held(path):
         try:
             whole = _read_whole(path)
         except ConfigFileUnreadableError:
@@ -3794,8 +3776,6 @@ def save_config(
                 # The save itself is fine; the cause is what a missing .bak is later diagnosed from.
                 logger.warning("Could not write config backup %s; continuing", backup_path, exc_info=True)
         _replace_file(target, data)
-        if last:
-            _HELD_PATHS.add(key)
 
 
 def save_config_change(path: str, running: AppConfig, change: Callable[[AppConfig], None]) -> None:

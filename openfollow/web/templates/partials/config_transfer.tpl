@@ -28,6 +28,11 @@
                     onclick="restoreDefaults()">Restore Defaults</button>
         </div>
     </div>
+
+    <div class="group">
+        <h3 class="group-title" id="backups-heading">Backups on this station</h3>
+        <div id="backups-list"></div>
+    </div>
 </div>
 
 <script>
@@ -151,28 +156,165 @@ async function restoreDefaults() {
         danger: true,
     });
     if (!ok) return;
+    _sendRestarting('/api/config/reset', {method: 'POST'}, _restoreFailed, 'Restored defaults.',
+        window.OpenFollow.saveError.UNREACHABLE);
+}
 
-    /* The reset restarts the station: its progress shows from the moment it is sent. */
+/* A change the station restarts for: the restart's progress shows from the moment it is sent. */
+async function _sendRestarting(url, init, failed, done, unreachable) {
     openfollowRestartProgress();
     var res, text;
     try {
-        res = await fetch('/api/config/reset', {method: 'POST'});
+        res = await fetch(url, init);
         text = await res.text();
     } catch (e) {
         closeModal();
-        _restoreFailed(window.OpenFollow.saveError.UNREACHABLE);
+        failed(unreachable);
         return;
     }
     var result = {};
     try { result = JSON.parse(text); } catch (e) { /* not JSON: reported below */ }
+    if (!res.ok && result.restarting) {
+        /* Part way: what was not written is said while the station restarts on the rest. */
+        var info = window.OpenFollow.saveError.fromText(res.status, text);
+        openfollowRestartProgress('Not all restored. ' + info.error + ' ' + info.action);
+        toastOnNextLoad('Not all restored. ' + info.error + ' '
+            + (result.backup_error ? NO_BACKUP_MADE : 'Details in Logs.'), 'caution');
+        openfollowAwaitRestart(result.instance || '');
+        return;
+    }
     if (!res.ok || !result.success) {
         closeModal();
-        _restoreFailed(window.OpenFollow.saveError.fromText(res.status, text));
+        failed(window.OpenFollow.saveError.fromText(res.status, text));
         return;
     }
     if (result.backup_error) {
-        toastOnNextLoad('Restored defaults. ' + NO_BACKUP_MADE, 'caution');
+        toastOnNextLoad(done + ' ' + NO_BACKUP_MADE, 'caution');
     }
     openfollowAwaitRestart(result.instance || '');
 }
+
+var _MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/* "28 Oct 2026, 21:40" in this browser's time zone. */
+function _backupTime(iso) {
+    var d = new Date(iso);
+    var two = function(n) { return (n < 10 ? '0' : '') + n; };
+    return d.getDate() + ' ' + _MONTHS[d.getMonth()] + ' ' + d.getFullYear()
+        + ', ' + two(d.getHours()) + ':' + two(d.getMinutes());
+}
+
+function _backupCell(row, text, className) {
+    var cell = document.createElement('td');
+    if (className) cell.className = className;
+    cell.textContent = text;
+    row.appendChild(cell);
+    return cell;
+}
+
+function _backupRow(backup, index) {
+    var row = document.createElement('tr');
+    _backupCell(row, _backupTime(backup.created), 'backup-made');
+    _backupCell(row, backup.before);
+    var version = _backupCell(row, backup.version);
+    var button = document.createElement('button');
+    button.setAttribute('type', 'button');
+    button.className = 'btn-secondary small';
+    button.textContent = 'Restore\u2026';
+    button.setAttribute('aria-label', 'Restore the backup from ' + _backupTime(backup.created)
+        + ', made before ' + backup.made_before);
+    if (backup.newer) {
+        row.className = 'backup-newer';
+        var note = document.createElement('span');
+        note.className = 'backup-note';
+        note.id = 'backup-note-' + index;
+        note.textContent = 'Newer than this station';
+        button.setAttribute('aria-describedby', note.id);
+        version.appendChild(note);
+        button.disabled = true;
+    }
+    button.addEventListener('click', function() { restoreBackup(backup); });
+    _backupCell(row, '', 'row-actions').appendChild(button);
+    return row;
+}
+
+function _backupsUnread(list, info) {
+    var notice = document.createElement('div');
+    notice.className = 'notice error';
+    notice.setAttribute('role', 'alert');
+    notice.textContent = info.error;
+    var sub = document.createElement('div');
+    sub.className = 'notice-sub';
+    sub.textContent = info.action || 'Details in Logs.';
+    notice.appendChild(sub);
+    list.replaceChildren(notice);
+}
+
+async function loadBackups() {
+    var list = document.getElementById('backups-list');
+    var backups;
+    try {
+        var res = await fetch('/api/config/backups');
+        if (!res.ok) {
+            _backupsUnread(list, await window.OpenFollow.saveError.fromResponse(res));
+            return;
+        }
+        backups = (await res.json()).backups;
+        if (!Array.isArray(backups)) throw new TypeError('no list of backups');
+    } catch (e) {
+        _backupsUnread(list, {error: 'The backups on this station could not be read.', action: 'Reload the page.'});
+        return;
+    }
+    if (!backups.length) {
+        var empty = document.createElement('p');
+        empty.className = 'backups-empty';
+        empty.textContent = 'No backups are saved on this station yet.';
+        list.replaceChildren(empty);
+        return;
+    }
+    var table = document.createElement('table');
+    table.className = 'data-table backups-table';
+    table.setAttribute('aria-labelledby', 'backups-heading');
+    table.innerHTML = '<thead><tr><th scope="col">Made</th><th scope="col">Before</th><th scope="col">Version</th>'
+        + '<th scope="col"><span class="visually-hidden">Restore</span></th></tr></thead>';
+    var body = document.createElement('tbody');
+    backups.forEach(function(backup, index) { body.appendChild(_backupRow(backup, index)); });
+    table.appendChild(body);
+    var wrap = document.createElement('div');
+    wrap.className = 'backups-table-wrap';
+    wrap.appendChild(table);
+    list.replaceChildren(wrap);
+}
+
+function _backupFailed(info) {
+    _transferFailed(info, 'Not restored.', 'backups-list');
+}
+
+/* The parts besides the configuration the backup holds, as running text; nothing when it holds none. */
+function _backupParts(parts) {
+    if (!parts || !parts.length) return '';
+    var named = parts.length > 1 ? parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1] : parts[0];
+    return 'together with ' + named + ' of that time, ';
+}
+
+async function restoreBackup(backup) {
+    window.OpenFollow.saveError.clear(document.getElementById('config-transfer-section'));
+    var ok = await modalConfirm({
+        title: 'Restore this backup?',
+        message: 'The settings from ' + _backupTime(backup.created) + ' (made before ' + backup.made_before
+            + ', version ' + backup.version + ') replace the current ones, ' + _backupParts(backup.parts)
+            + 'and the station restarts. This station\'s name, network access and local file paths stay as they are. A backup '
+            + 'of the current settings is saved on the station first.',
+        confirmLabel: 'Restore and Restart',
+        danger: true,
+    });
+    if (!ok) return;
+    _sendRestarting('/api/config/backups/restore', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: backup.name}),
+    }, _backupFailed, 'Restored the backup.', window.OpenFollow.saveError.UNREACHABLE_ACTION);
+}
+
+loadBackups();
 </script>

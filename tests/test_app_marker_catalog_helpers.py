@@ -761,3 +761,40 @@ class TestMarkerCatalogSyncFollowsTheStationInterface:
         built = self._run(fake, monkeypatch)
         assert [k["iface_ip"] for k in built] == ["10.20.0.5"]
         assert [k["iface"] for k in built] == ["eth1"]
+
+
+def test_a_peer_change_after_a_restore_is_logged_as_the_restart(tmp_path, monkeypatch, caplog) -> None:  # noqa: ANN001
+    from openfollow import restore_hold
+
+    helper = TestInitMarkerCatalogSyncOnChange()
+    fake = helper._build_fake(tmp_path, server=types.SimpleNamespace(update_marker_name=lambda *_: None))
+    captured = helper._capture_on_change(fake, monkeypatch)
+    (tmp_path / "markers.toml").write_text("[[marker]]\nid = 4\n", encoding="utf-8")
+    restore_hold.hold(tmp_path / "markers.toml")
+
+    with caplog.at_level("INFO"):
+        captured["on_change"]([1])
+
+    assert (tmp_path / "markers.toml").read_text(encoding="utf-8") == "[[marker]]\nid = 4\n"
+    assert "OpenFollow is restarting after a restore" in caplog.text
+    assert [r for r in caplog.records if r.levelname in ("ERROR", "WARNING")] == []
+
+
+def test_a_peer_delete_after_a_restore_is_logged_as_the_restart(tmp_path, monkeypatch, caplog) -> None:  # noqa: ANN001
+    from openfollow import restore_hold
+    from openfollow.configuration import save_config
+
+    helper = TestInitMarkerCatalogSyncOnChange()
+    fake = helper._build_fake(tmp_path, server=types.SimpleNamespace(update_marker_name=lambda *_: None))
+    save_config(fake._config, fake._config_path)
+    before = Path(fake._config_path).read_bytes()
+    fake._marker_catalog.delete(2)
+    captured = helper._capture_on_change(fake, monkeypatch)
+    restore_hold.hold(fake._config_path, tmp_path / "markers.toml")
+
+    with caplog.at_level("INFO"):
+        captured["on_change"]([2])
+
+    assert Path(fake._config_path).read_bytes() == before
+    assert "Selection after a peer deleted markers [2] not saved: OpenFollow is restarting" in caplog.text
+    assert [r for r in caplog.records if r.levelname in ("ERROR", "WARNING")] == []

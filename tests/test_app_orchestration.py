@@ -995,6 +995,19 @@ class TestCheckMarkerSpeedsPersist:
         assert app._marker_speeds_dirty_since == 100.0
         assert app._marker_speeds_dirty_since != before
 
+    def test_a_flush_during_a_restore_s_restart_is_logged_as_the_restart(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from openfollow import restore_hold
+
+        monkeypatch.setattr(orch.time, "monotonic", lambda: 100.0)
+        app = self._app(tmp_path, {5: 2.7}, dirty=True, dirty_since=90.0)
+        restore_hold.hold(app._config_path)
+        with caplog.at_level("INFO"):
+            orch.check_marker_speeds_persist(app)
+        assert "OpenFollow is restarting after a restore" in caplog.text
+        assert [r for r in caplog.records if r.levelname == "ERROR"] == []
+
     def test_malformed_config_is_not_overwritten(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
         """The flush loads ``strict=True``, so a malformed / unparseable
         ``config.toml`` (e.g. an in-progress hand-edit) is left byte-for-byte

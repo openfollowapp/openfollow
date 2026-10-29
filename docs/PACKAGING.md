@@ -177,6 +177,12 @@ The backup program is `openfollow/privilege/settings_backup.py`. Nothing from
 the package is on disk when the `preinst` runs, so `render-preinst.sh` inlines
 the program into `preinst.in` at build time; keep it standard-library only.
 
+The web UI restores one: **General → Configuration → Backups on this station**
+lists both folders, and **Restore…** writes the archive back, keeping the
+station's name, network access and local file paths, and restarts (see the
+[config guide](architecture/config.md#config-transfer-export--import--restore-defaults--restore-a-backup)).
+It refuses a backup written by a newer version.
+
 To restore by hand (the command restores whatever the archive holds, so an
 older archive without `lens-calibrations/` restores the same way):
 

@@ -57,6 +57,7 @@ from openfollow.net_utils import plane_source_iface
 from openfollow.osc.input import OscMarkerAdapter
 from openfollow.osc.operator_message import OperatorMessageOscAdapter
 from openfollow.osc.paths import PathOscAdapter
+from openfollow.restore_hold import HeldForRestartError
 from openfollow.runtime import paths_runtime
 from openfollow.runtime.services_detection_pin import (
     get_or_create_manual_marker,
@@ -722,6 +723,8 @@ class InputManager:
             return
         try:
             save_config_fields(app._config, app._config_path, ("detection.enabled",))
+        except HeldForRestartError:
+            logger.info("Person detection switched off, not saved: OpenFollow is restarting after a restore.")
         except Exception:
             logger.exception("Failed to save person detection switched off.")
         logger.warning("The touch remote took a marker: person detection is switched off.")

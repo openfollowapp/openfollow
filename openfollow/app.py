@@ -18,6 +18,7 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from openfollow.config_restore import recover_interrupted_restore
 from openfollow.configuration import (
     AppConfig,
     bootstrap_config_if_missing,
@@ -39,6 +40,7 @@ from openfollow.marker_catalog import (
 )
 from openfollow.palette import AUTO_PICK_ORDER as _PALETTE_AUTO_PICK_ORDER
 from openfollow.paths.engine import PathEngine
+from openfollow.restore_hold import HeldForRestartError, release_all
 from openfollow.runtime.app_commands import (
     check_button_detection_request as runtime_check_button_detection_request,
 )
@@ -240,6 +242,10 @@ class OpenFollowApp:
         # a station that has silently respawned several times reads exactly
         # like a healthy one in every other section.
         self._crash_restarts: int = crash_restarts
+        # A respawn in this process is the restart a restore held its files for.
+        release_all()
+        # Before anything reads the config: a restore cut short is finished or undone as a whole.
+        recover_interrupted_restore(Path(self._config_path))
         restore_empty_config(self._config_path)
         bootstrap_config_if_missing(self._config_path)
         self._config: AppConfig = load_config(self._config_path)
@@ -824,6 +830,11 @@ class OpenFollowApp:
                 cfg.viewer_marker_ids = new_viewer
                 cfg.parked_marker_ids = parked_within(new_controlled, cfg.parked_marker_ids)
                 save_config(cfg, self._config_path)
+            except HeldForRestartError:
+                logger.info(
+                    "Selection after a peer deleted markers %s not saved: OpenFollow is restarting after a restore.",
+                    sorted(drop),
+                )
             except OSError:
                 logger.exception(
                     "Failed to persist selection after a peer deleted markers %s",
@@ -869,6 +880,8 @@ class OpenFollowApp:
             # Persist remote changes.
             try:
                 save_catalog(self._marker_catalog, self._marker_catalog_path())
+            except HeldForRestartError:
+                logger.info("Catalog changes from a peer not saved: OpenFollow is restarting after a restore.")
             except OSError:
                 logger.exception(
                     "Failed to persist catalog updates from peer",

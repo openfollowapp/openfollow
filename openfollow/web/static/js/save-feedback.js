@@ -18,7 +18,8 @@
  *   origin()                   the section last clicked outside a dialog
  *   fromResponse(res)          -> Promise<info> for a failed fetch Response
  *   fromText(status, text)     -> info for a body already read
- *   UNREACHABLE                info for a request that got no answer
+ *   UNREACHABLE                info for a save that got no answer
+ *   UNREACHABLE_ACTION         the same for an action that saves nothing ("then try again")
  *   peerFailure(peers, notDone, again)
  *                              -> info naming the stations a broadcast did not
  *                              reach, each with the reason it gave
@@ -179,5 +180,6 @@
         fromText: fromText,
         peerFailure: peerFailure,
         UNREACHABLE: UNREACHABLE,
+        UNREACHABLE_ACTION: UNREACHABLE_ACTION,
     };
 })();

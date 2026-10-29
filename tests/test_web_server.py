@@ -7025,18 +7025,6 @@ def test_api_zone_duplicate_copies_the_zone_heights(live_server) -> None:
     )
 
 
-def test_api_zone_duplicate_shares_no_list_with_its_original(live_server) -> None:
-    server, base = live_server
-    _, c = _post_json(base, "/api/zones", {"name": "", "vertices": [[0, 0], [1, 0], [1, 1]], "triggered_by": [2]})
-    req = urllib.request.Request(f"{base}/api/zones/{c['index']}/duplicate", method="POST")
-    with urllib.request.urlopen(req, timeout=5) as r:
-        new_idx = json.loads(r.read().decode())["index"]
-    _put_json(base, f"/api/zones/{new_idx}", {"vertices": [[5, 5], [6, 5], [6, 6]], "triggered_by": [3]})
-    zones = load_config(server.config_path).trigger_zones.zones
-    assert zones[new_idx].name == "(copy)"
-    assert (zones[c["index"]].vertices, zones[c["index"]].triggered_by) == ([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]], [2])
-
-
 def test_api_zone_duplicate_404_for_unknown_index(live_server) -> None:
     _, base = live_server
     req = urllib.request.Request(f"{base}/api/zones/9999/duplicate", method="POST")

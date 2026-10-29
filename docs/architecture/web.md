@@ -26,6 +26,22 @@ and "manage X under Y" pointers – goes in that section's **help drawer markdow
   not help: "Marker speed limits, default speed, and default position" is fine;
   a sentence teaching behaviour is not.
 
+### Writing a drawer
+
+The drawer is read beside the control, often mid-setup: it holds what the
+operator needs while using the section, one short entry per control. Aim under
+2,000 characters; `TestHelpDocLength` fails a drawer whose text with every
+section closed reaches 3,000. Error banners and status boxes already say what
+happened and what to do, so a drawer never lists their states. The full-length
+detail for the website docs lives in `docs/help-reference/<section>.md`.
+
+A `### Heading` makes a closed section, up to the next heading of level 1–3 (a
+heading inside a code block does not count). The heading is its title; a
+first paragraph, when the section opens with exactly one, is the summary line
+shown beside it. Use it for detail only some operators need, such as one
+section per video source type: the text inside may run longer, since it is
+read only when opened.
+
 ## Key routes
 | Route | Method | Description |
 |---|---|---|

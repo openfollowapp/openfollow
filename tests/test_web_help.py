@@ -83,6 +83,70 @@ class TestRenderHelpMarkdown:
         assert "target=" not in anchor
 
 
+class TestHelpSections:
+    """A ``###`` heading opens a section the drawer shows closed."""
+
+    pytestmark = pytest.mark.unit
+
+    def test_the_heading_and_first_paragraph_are_the_row(self) -> None:
+        html = render_help_markdown("### RTSP\n\nIP cameras.\n\n- **URL** – the address")
+        assert html.startswith(
+            '<details class="help-more"><summary><b>RTSP</b><span>IP cameras.</span></summary>'
+            '<div class="help-more-content"><ul>'
+        )
+        assert "<details open" not in html
+
+    @pytest.mark.parametrize(
+        "body",
+        ["- a list first", "| A |\n| - |\n| 1 |", "A paragraph\n- running into a list", "> a quote"],
+        ids=["list", "table", "paragraph-and-list", "quote"],
+    )
+    def test_a_section_not_opening_with_one_paragraph_has_no_summary(self, body: str) -> None:
+        html = render_help_markdown(f"### Title\n\n{body}")
+        assert '<summary><b>Title</b></summary><div class="help-more-content">' in html
+
+    @pytest.mark.parametrize("heading", ["# Next", "## Next", "### Next"])
+    def test_a_section_ends_at_the_next_heading(self, heading: str) -> None:
+        html = render_help_markdown(f"### First\n\nOne.\n\n- inside\n\n{heading}\n\nafter")
+        first = html.split("</details>", 1)
+        assert "inside" in first[0] and "after" not in first[0]
+        assert "after" in first[1]
+
+    def test_a_fourth_level_heading_stays_inside(self) -> None:
+        html = render_help_markdown("### First\n\n#### Sub\n\ntext")
+        assert html.count("<details") == 1 and "<h4>Sub</h4>" in html.split("</details>")[0]
+
+    def test_a_heading_inside_a_code_block_opens_nothing(self) -> None:
+        html = render_help_markdown("```\n### not a section\n```")
+        assert "<details" not in html and "### not a section" in html
+
+    def test_text_before_and_after_keeps_its_markup(self) -> None:
+        html = render_help_markdown("# Doc\n\nIntro.\n\n### S\n\nx\n\n## After\n\nend")
+        assert html.startswith("<h1>Doc</h1>\n<p>Intro.</p>")
+        assert html.endswith("<h2>After</h2>\n<p>end</p>\n")
+
+    def test_title_and_summary_are_escaped(self) -> None:
+        html = render_help_markdown("### <b>x</b>\n\n<script>alert(1)</script>\n\nbody")
+        assert "<script>" not in html and "<b>x</b>" not in html
+        assert "&lt;script&gt;" in html and "&lt;b&gt;x&lt;/b&gt;" in html
+
+    def test_a_title_markdown_reads_as_a_list_is_kept_as_written(self) -> None:
+        assert "<summary><b>1. &lt;Lens&gt;</b>" in render_help_markdown("### 1. <Lens>\n\n- a")
+
+
+class TestHelpDocLength:
+    """A drawer is read only while it is short: what shows with every section closed stays under 3000 characters."""
+
+    pytestmark = pytest.mark.unit
+
+    @pytest.mark.parametrize("doc", sorted(_WEB_HELP_DIR.glob("*.md")), ids=lambda p: p.stem)
+    def test_the_closed_drawer_is_under_3000_characters(self, doc) -> None:
+        html = render_help_markdown(doc.read_text(encoding="utf-8"))
+        closed = re.sub(r'<div class="help-more-content">.*?</div></details>', "</details>", html, flags=re.S)
+        text = re.sub(r"<[^>]+>", "", closed)
+        assert len(text) < 3000, len(text)
+
+
 # ---------------------------------------------------------------------------
 # Section markup + packaging (unit)
 # ---------------------------------------------------------------------------
@@ -273,6 +337,12 @@ class TestHelpRoute:
         status, body, ctype = _get(live_server, "/help/video_source.html")
         assert status == 200
         assert "text/html" in ctype
+
+    def test_the_video_source_doc_folds_each_source_type(self, live_server) -> None:
+        status, body, _ = _get(live_server, "/help/video_source.html")
+        assert status == 200
+        for name in ("RTSP", "SRT", "RTP", "USB Camera", "Pi Camera", "Media Gallery"):
+            assert f'<details class="help-more"><summary><b>{name}</b><span>' in body
 
     def test_missing_doc_404(self, live_server) -> None:
         status, _, _ = _get(live_server, "/help/doesnotexist.html")

@@ -46,6 +46,7 @@ def _state_with_zone(
     is_occupied: bool = False,
     count: int = 0,
     z_offset: float = 0.0,
+    height: float = 0.0,
     show_zones: bool = True,
     with_camera: bool = True,
 ) -> OverlayState:
@@ -54,7 +55,7 @@ def _state_with_zone(
         state.camera_params = _camera_params()
     state.show_zones = show_zones
     state.zone_z_offset = z_offset
-    state.zone_polygons = [(vertices, color, name, is_occupied, count)]
+    state.zone_polygons = [(vertices, color, name, is_occupied, count, height)]
     return state
 
 
@@ -102,8 +103,8 @@ class TestEarlyReturns:
         good = _square()
         state = _state_with_zone(vertices=bad)
         state.zone_polygons = [
-            (bad, "#ff0000", "", False, 0),
-            (good, "#00ff00", "", False, 0),
+            (bad, "#ff0000", "", False, 0, 0.0),
+            (good, "#00ff00", "", False, 0, 0.0),
         ]
         cr = FakeCairo()
         draw_zones(FakeRenderer(), cr, state, 1920, 1080)
@@ -121,7 +122,7 @@ class TestEarlyReturns:
         # Force project_points → NaN by pointing the camera straight at a
         # point that coincides with the camera position.
         state.camera_params = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 60.0], dtype=np.float64)
-        state.zone_polygons = [([(0.0, 0.0), (0.0, 0.0), (0.0, 0.0)], "#00ff00", "", False, 0)]
+        state.zone_polygons = [([(0.0, 0.0), (0.0, 0.0), (0.0, 0.0)], "#00ff00", "", False, 0, 0.0)]
         draw_zones(FakeRenderer(), cr, state, 1920, 1080)
         assert cr.fill_preserves == 0
         assert cr.strokes == 0
@@ -160,8 +161,8 @@ class TestEarlyReturns:
         state = _state_with_zone(vertices=straddling, name="")
         state.camera_params = cam
         state.zone_polygons = [
-            (straddling, "#ff0000", "Behind", False, 0),
-            (visible, "#00ff00", "Front", False, 0),
+            (straddling, "#ff0000", "Behind", False, 0, 0.0),
+            (visible, "#00ff00", "Front", False, 0, 0.0),
         ]
         cr = FakeCairo()
 
@@ -292,12 +293,26 @@ class TestRendering:
         raised_first = raised_cr.move_tos[0]
         assert flat_first != raised_first
 
+    def test_a_zone_is_drawn_at_its_height_above_the_stage_plane(self) -> None:
+        """The stage plane and a zone's own height add up: a zone 0.5 m up on a stage at 1.5 m stands at 2 m."""
+        verts = _square()
+        raised = _state_with_zone(vertices=verts, name="", z_offset=1.5, height=0.5)
+        at_two = _state_with_zone(vertices=verts, name="", z_offset=2.0)
+        on_the_stage = _state_with_zone(vertices=verts, name="", z_offset=1.5)
+        drawn = []
+        for state in (raised, at_two, on_the_stage):
+            cr = FakeCairo()
+            draw_zones(FakeRenderer(), cr, state, 1920, 1080)
+            drawn.append(cr.move_tos[0])
+        assert drawn[0] == pytest.approx(drawn[1])
+        assert drawn[0] != pytest.approx(drawn[2])
+
     def test_multiple_polygons_draw_in_order(self) -> None:
         """Two labelled polygons → two filled regions + two text labels."""
         state = _state_with_zone(vertices=_square(cx=-3.0), name="")
         state.zone_polygons = [
-            (_square(cx=-3.0), "#ff0000", "Left", False, 0),
-            (_square(cx=3.0), "#00ff00", "Right", True, 2),
+            (_square(cx=-3.0), "#ff0000", "Left", False, 0, 0.0),
+            (_square(cx=3.0), "#00ff00", "Right", True, 2, 0.0),
         ]
         cr = FakeCairo()
         draw_zones(FakeRenderer(), cr, state, 1920, 1080)
@@ -378,10 +393,10 @@ class TestZoneCache:
         state.camera_params = _camera_params()
         state.show_zones = True
         state.zone_polygons = [
-            (_square(0.0, 2.0, 1.0), "#ffaa00", "Pit", False, 0),
-            (_square(-2.5, 4.0, 0.8), "#33aaff", "Wing", True, 2),
+            (_square(0.0, 2.0, 1.0), "#ffaa00", "Pit", False, 0, 0.0),
+            (_square(-2.5, 4.0, 0.8), "#33aaff", "Wing", True, 2, 0.0),
             # Smaller than its label, which then reaches past the outline.
-            (_square(2.5, 3.0, 0.05), "#ff3333", "A long label on a tiny zone", False, 0),
+            (_square(2.5, 3.0, 0.05), "#ff3333", "A long label on a tiny zone", False, 0, 0.0),
         ]
         for name, value in overrides.items():
             setattr(state, name, value)
@@ -397,7 +412,7 @@ class TestZoneCache:
             # Seen from low down, the corners turn sharp enough for a miter tip to reach well past them.
             (1.0, {"camera_params": np.array([0.0, -10.0, 0.6, -2.0, 0.0, 0.0, 60.0])}),
             # Leading spaces put the glyphs well left of where the label's box starts.
-            (1.0, {"zone_polygons": [(_square(0.0, 2.0, 0.05), "#ffaa00", "      Pit", True, 3)]}),
+            (1.0, {"zone_polygons": [(_square(0.0, 2.0, 0.05), "#ffaa00", "      Pit", True, 3, 0.0)]}),
         ],
         ids=["screen", "hidpi", "lens", "acute-corners", "spaced-label"],
     )
@@ -406,7 +421,7 @@ class TestZoneCache:
     ) -> None:
         """Over a frame already drawn, so a picture pasted in place of the frame shows."""
         if "camera_params" in overrides:
-            overrides = {**overrides, "zone_polygons": [(_square(0.0, 0.0, 2.0), "#ffaa00", "", False, 0)]}
+            overrides = {**overrides, "zone_polygons": [(_square(0.0, 0.0, 2.0), "#ffaa00", "", False, 0, 0.0)]}
         self._assert_cached_looks_direct(self._state(**overrides), scale, background)
 
     def _assert_cached_looks_direct(
@@ -467,7 +482,7 @@ class TestZoneCache:
         camera[5] = roll
         # Its near end is almost level with the lens, which puts it tens of thousands of pixels out.
         zone = [(-0.05, -6.6), (0.05, -6.6), (0.05, 2.0), (-0.05, 2.0)]
-        state = self._state(camera_params=camera, zone_polygons=[(zone, "#ffaa00", "Z", False, 0)])
+        state = self._state(camera_params=camera, zone_polygons=[(zone, "#ffaa00", "Z", False, 0, 0.0)])
         self._assert_cached_looks_direct(state)
 
     @pytest.mark.parametrize("roll", [0.0, 90.0], ids=["too-wide", "too-tall"])
@@ -478,8 +493,8 @@ class TestZoneCache:
         state = self._state(
             camera_params=camera,
             zone_polygons=[
-                ([(-6.0, -6.6698), (6.0, -6.6698), (6.0, -2.9), (-6.0, -2.9)], "#ffaa00", "Front", False, 0),
-                (_square(0.0, 3.0, 1.0), "#33aaff", "Pit", False, 0),
+                ([(-6.0, -6.6698), (6.0, -6.6698), (6.0, -2.9), (-6.0, -2.9)], "#ffaa00", "Front", False, 0, 0.0),
+                (_square(0.0, 3.0, 1.0), "#33aaff", "Pit", False, 0, 0.0),
             ],
         )
         self._assert_cached_looks_direct(state)
@@ -493,7 +508,7 @@ class TestZoneCache:
                 FakeRenderer._set_ui_font(cr, size * (0.9 + 0.1 * cr.get_target().get_device_scale()[0]), bold)
 
         state = self._state(
-            zone_polygons=[(_square(0.0, 2.0, 0.05), "#ffaa00", "A long label on a tiny zone", False, 0)]
+            zone_polygons=[(_square(0.0, 2.0, 0.05), "#ffaa00", "A long label on a tiny zone", False, 0, 0.0)]
         )
         self._assert_cached_looks_direct(state, scale=2.0, renderer=_HintedRenderer())
 
@@ -510,7 +525,7 @@ class TestZoneCache:
                 pictures.append((surface.get_width(), surface.get_height()))
                 super().set_source_surface(surface, x, y)
 
-        state = self._state(zone_polygons=[(_square(-1.0, 2.0, 0.5), "#ffaa00", "Pit", False, 0)])
+        state = self._state(zone_polygons=[(_square(-1.0, 2.0, 0.5), "#ffaa00", "Pit", False, 0, 0.0)])
         clear = (0.0, 0.0, 0.0, 0.0)
         surface = _blank(scale, clear)
         surface.set_device_scale(scale, scale)
@@ -535,12 +550,13 @@ class TestZoneCache:
     @pytest.mark.parametrize(
         "change",
         [
-            {"zone": (0, (_square(0.2, 2.0, 1.0), "#ffaa00", "Pit", False, 0))},
-            {"zone": (0, (_square(0.0, 2.0, 1.0), "#00ff00", "Pit", False, 0))},
-            {"zone": (0, (_square(0.0, 2.0, 1.0), "#ffaa00", "Stage", False, 0))},
-            {"zone": (0, (_square(0.0, 2.0, 1.0), "#ffaa00", "Pit", True, 0))},
+            {"zone": (0, (_square(0.2, 2.0, 1.0), "#ffaa00", "Pit", False, 0, 0.0))},
+            {"zone": (0, (_square(0.0, 2.0, 1.0), "#00ff00", "Pit", False, 0, 0.0))},
+            {"zone": (0, (_square(0.0, 2.0, 1.0), "#ffaa00", "Stage", False, 0, 0.0))},
+            {"zone": (0, (_square(0.0, 2.0, 1.0), "#ffaa00", "Pit", True, 0, 0.0))},
             # Another occupant of the occupied Wing.
-            {"zone": (1, (_square(-2.5, 4.0, 0.8), "#33aaff", "Wing", True, 3))},
+            {"zone": (1, (_square(-2.5, 4.0, 0.8), "#33aaff", "Wing", True, 3, 0.0))},
+            {"zone": (0, (_square(0.0, 2.0, 1.0), "#ffaa00", "Pit", False, 0, 0.4))},
             {"state": {"zone_z_offset": 0.5}},
             {"state": {"camera_params": np.array([0.2, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0])}},
             {"state": {"lens_k1": 0.05}},
@@ -558,6 +574,7 @@ class TestZoneCache:
             "name",
             "occupied",
             "count",
+            "zone-height",
             "z-offset",
             "camera",
             "k1",
@@ -623,7 +640,7 @@ class TestZoneCache:
     def test_zones_all_behind_the_camera_paint_nothing(self) -> None:
         from openfollow.runtime.overlay_draw_zones import ZoneCache
 
-        state = self._state(zone_polygons=[(_square(0.0, -20.0, 1.0), "#ffaa00", "Behind", False, 0)])
+        state = self._state(zone_polygons=[(_square(0.0, -20.0, 1.0), "#ffaa00", "Behind", False, 0, 0.0)])
         cr = FakeCairo()
         draw_zones(FakeRenderer(), cr, state, 1920, 1080, ZoneCache())
         assert ("paint",) not in cr.calls
@@ -640,7 +657,7 @@ class TestZoneCache:
     def test_zones_entirely_outside_the_frame_paint_nothing(self, zone: list) -> None:
         from openfollow.runtime.overlay_draw_zones import ZoneCache
 
-        state = self._state(zone_polygons=[(zone, "#ffaa00", "Z", False, 0)])
+        state = self._state(zone_polygons=[(zone, "#ffaa00", "Z", False, 0, 0.0)])
         cr = FakeCairo()
         draw_zones(FakeRenderer(), cr, state, 1920, 1080, ZoneCache())
         assert ("paint",) not in cr.calls

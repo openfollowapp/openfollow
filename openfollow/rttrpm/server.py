@@ -37,7 +37,7 @@ Centroid Position module (type 0x02) – struct "!BHHddd" = 29 bytes:
   double  y        (metres, IEEE 754 double precision)
   double  z        (metres, IEEE 754 double precision)
 
-Positions are taken directly from Marker.pos (metres) with no unit
+Positions are taken directly from Marker.sent_pos (metres) with no unit
 conversion – RTTrPM uses doubles where OTP uses integer micrometres.
 
 Example sizes:
@@ -183,7 +183,7 @@ def encode_rttrpm_packet(
 
     Args:
         pkt_id: Sequence number (masked to 32 bits).
-        markers: Marker objects whose ``.pos`` and ``.name`` are read.
+        markers: objects whose ``.pos`` and ``.name`` are read (the server freezes each marker's ``sent_pos``).
         context: User-definable 32-bit context field (default 0).
 
     Returns:
@@ -407,7 +407,7 @@ class RttrpmServer:
         # is 34 octets plus the name, and the size the split budgets against is
         # read separately from the size the datagram is encoded at - a rename
         # landing between the two would put a chunk over the MTU.
-        frozen = [_FrozenMarker(marker.name, marker.pos) for marker in markers]
+        frozen = [_FrozenMarker(marker.name, marker.sent_pos) for marker in markers]
         pkt_id = self._next_pkt_id()
         payload = encode_rttrpm_packet(pkt_id, frozen, self._context)
         if len(payload) <= MAX_DATAGRAM_BYTES:

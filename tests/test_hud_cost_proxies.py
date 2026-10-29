@@ -84,7 +84,7 @@ def test_paths_are_drawn_once_while_they_do_not_change() -> None:
 
 def test_zones_are_drawn_again_only_when_a_zone_s_occupancy_changes() -> None:
     occupancy = [
-        tuple((occupied, count) for _verts, _color, _name, occupied, count in state.zone_polygons)
+        tuple((occupied, count) for _verts, _color, _name, occupied, count, _height in state.zone_polygons)
         for _w, _h, state in frames("full", FRAMES)
     ]
     changes = sum(a != b for a, b in zip(occupancy, occupancy[1:], strict=False))

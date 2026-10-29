@@ -450,7 +450,8 @@ def _populate_zone_overlay(state: OverlayState, cfg: Any, app: Any) -> None:
             for idx, is_occupied, count in zone_engine.get_zone_states():
                 occupancy_by_index[idx] = (is_occupied, count)
 
-    polygons: list[tuple[list[tuple[float, float]], str, str, bool, int]] = []
+    heights = feature_on(cfg, "zone_heights")
+    polygons: list[tuple[list[tuple[float, float]], str, str, bool, int, float]] = []
     for idx, zone in enumerate(tz.zones):
         if not zone.enabled or len(zone.vertices) < 3:
             continue
@@ -459,7 +460,8 @@ def _populate_zone_overlay(state: OverlayState, cfg: Any, app: Any) -> None:
         # zone-membership comparison.
         verts_world = [(float(v[0]), float(v[1])) for v in zone.vertices]
         is_occupied, count = occupancy_by_index.get(idx, (False, 0))
-        polygons.append((verts_world, zone.color, zone.name, is_occupied, count))
+        height = float(zone.z_offset) if heights else 0.0
+        polygons.append((verts_world, zone.color, zone.name, is_occupied, count, height))
     state.zone_polygons = polygons
 
 
@@ -524,7 +526,8 @@ def build_marker_visual_state(
         if marker is None:
             continue
         vstate: MarkerVelocityState = get_or_create(velocity_states, marker_id, MarkerVelocityState)
-        marker.set_speed(*estimate_marker_velocity(vstate, marker.pos, dt))
+        # The velocity of what is sent: a zone's lift easing in moves the sent Z.
+        marker.set_speed(*estimate_marker_velocity(vstate, marker.sent_pos, dt))
 
     # Fetch controller info once and build a reverse map so the per-marker
     # loop can stamp each marker card with its bound controller without an
@@ -719,6 +722,8 @@ def build_marker_visual_state(
         # snapshot. The receiver thread can call ``apply_remote`` between separate
         # ``marker.pos`` accesses, which would tear X/Y/Z across two packets.
         px, py, pz = marker.pos
+        # A zone's lift: the floor and Z are drawn where they are sent.
+        lift = marker.lift
 
         # Each assist-controlled marker's card sits at its operator-steered
         # anchor, not the broadcast position. Capture the registered (AI-
@@ -730,7 +735,8 @@ def build_marker_visual_state(
                     marker_id=marker_id,
                     x=px,
                     y=py,
-                    z=pz,
+                    z=pz + lift,
+                    lift=lift,
                     color=color,
                     radius=cfg.marker.ball_size,
                     speed=None,
@@ -749,7 +755,8 @@ def build_marker_visual_state(
                 marker_id=marker_id,
                 x=px,
                 y=py,
-                z=pz,
+                z=pz + lift,
+                lift=lift,
                 color=color,
                 radius=cfg.marker.ball_size,
                 speed=speed,

@@ -37,6 +37,9 @@ from openfollow.configuration import (
     VALID_TRIGGER_EDGES,
     VALID_TRIGGER_KINDS,
     VALID_ZONE_EVAL_FPS,
+    ZONE_HEIGHT_TRANSITION_MAX_S,
+    ZONE_Z_OFFSET_MAX,
+    ZONE_Z_OFFSET_MIN,
     AppConfig,
     _canonical_marker_token,
 )
@@ -56,6 +59,7 @@ from openfollow.web.routes import (
     _as_int_list,
     _as_ip_list,
     _as_network_mode,
+    _as_number,
     _as_optional_int,
     _as_positive_int,
     _as_str,
@@ -824,6 +828,19 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
             max_len=2048,
             custom=_validate_osc_message,
             human_error=("OSC message must start with '/' and be ≤ 2048 characters."),
+        ),
+        "z_offset": FieldRule(
+            _as_number,
+            lo=ZONE_Z_OFFSET_MIN,
+            hi=ZONE_Z_OFFSET_MAX,
+            human_error=f"Z offset must be between {ZONE_Z_OFFSET_MIN:g} and {ZONE_Z_OFFSET_MAX:g} m.",
+        ),
+        "raise_markers": FieldRule(_as_bool),
+        "height_transition_s": FieldRule(
+            _as_number,
+            lo=0.0,
+            hi=ZONE_HEIGHT_TRANSITION_MAX_S,
+            human_error=f"Height transition must be between 0 and {ZONE_HEIGHT_TRANSITION_MAX_S:g} s.",
         ),
     },
     # Special sections handled inline in apply_section_data.

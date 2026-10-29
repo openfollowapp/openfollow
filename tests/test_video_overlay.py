@@ -851,7 +851,9 @@ def _zone_renderer() -> CairoOverlayRenderer:
     renderer = CairoOverlayRenderer()
     renderer.state.camera_params = np.array([0.0, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0])
     renderer.state.show_zones = True
-    renderer.state.zone_polygons = [([(-1.0, 1.0), (1.0, 1.0), (1.0, 3.0), (-1.0, 3.0)], "#ffaa00", "Pit", False, 0)]
+    renderer.state.zone_polygons = [
+        ([(-1.0, 1.0), (1.0, 1.0), (1.0, 3.0), (-1.0, 3.0)], "#ffaa00", "Pit", False, 0, 0.0)
+    ]
     return renderer
 
 

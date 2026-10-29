@@ -45,7 +45,8 @@ window.markFormClean = function () {};
 function modalConfirm() { return Promise.resolve(true); }
 var model = {
     zones: [{ name: 'Square', color: '#ff8000', vertices: [[0, 2], [2, 2], [2, 4], [0, 4]], enabled: true,
-              trigger_source: 'markers', triggered_by: [], is_occupied: false, occupant_count: 0 }],
+              trigger_source: 'markers', triggered_by: [], is_occupied: false, occupant_count: 0,
+              z_offset: 0, raise_markers: false, height_transition_s: 0.3 }],
 };
 station = function (req) {
     var m;
@@ -352,3 +353,102 @@ def test_a_replaced_editor_stops_listening() -> None:
         "await settle(); var was = zoneGets(); announce(); await settle(); out.asked = zoneGets() - was;"
     )
     assert _editor(steps, _ZONE_GETS)["asked"] == 1
+
+
+# -- zone heights in the details panel ---------------------------------------------
+
+_CHOOSE_THE_ZONE = """
+at('mousedown', 725, 360); at('mouseup', 725, 360);
+await settle();
+function field(name) { return document.querySelector('#zone-details [data-zone-field="' + name + '"]'); }
+"""
+
+
+def test_the_zone_height_fields_sit_in_a_row_gated_on_their_feature() -> None:
+    out = _editor(
+        _CHOOSE_THE_ZONE
+        + """
+        var row = document.querySelector('#zone-details [data-feature="zone_heights"]');
+        out.labels = Array.prototype.map.call(row.querySelectorAll('label'), function (l) { return l.textContent; });
+        out.inRow = ['z_offset', 'raise_markers', 'height_transition_s']
+            .every(function (n) { return row.contains(field(n)); });
+        out.values = [field('z_offset').value, field('height_transition_s').value,
+                      field('raise_markers').hasAttribute('checked')];
+        """
+    )
+    assert out["labels"] == [
+        "Z offset (m)",
+        "Marker height",
+        "Add the Z offset inside this zone",
+        "Height transition (s)",
+    ]
+    assert out["inRow"] is True
+    assert out["values"] == ["0.000", "0.3", False]
+
+
+def test_saving_a_zone_sends_its_heights() -> None:
+    out = _editor(
+        _CHOOSE_THE_ZONE
+        + """
+        field('z_offset').value = '0.45';
+        field('height_transition_s').value = '1.2';
+        field('raise_markers').click();
+        button('zone-save-btn');
+        await settle();
+        var body = puts()[puts().length - 1].body;
+        out.sent = [body.z_offset, body.raise_markers, body.height_transition_s];
+        """,
+        setup="model.zones[0].z_offset = 0.2;",
+    )
+    assert out["sent"] == ["0.45", True, "1.2"]
+
+
+def test_a_zone_height_is_checked_when_it_loses_focus() -> None:
+    out = _editor(
+        _CHOOSE_THE_ZONE
+        + """
+        field('z_offset').value = '99';
+        field('z_offset').dispatchEvent(makeEvent('blur'));
+        field('height_transition_s').value = '-1';
+        field('height_transition_s').dispatchEvent(makeEvent('blur'));
+        await settle();
+        out.asked = requests.filter(function (r) { return r.url.indexOf('/api/validate/zone/') === 0; })
+            .map(function (r) { return r.url; });
+        """
+    )
+    assert out["asked"] == [
+        "/api/validate/zone/z_offset?z_offset=99",
+        "/api/validate/zone/height_transition_s?height_transition_s=-1",
+    ]
+
+
+def test_an_imperial_station_types_the_z_offset_in_feet_and_sends_metres() -> None:
+    out = _editor(
+        _CHOOSE_THE_ZONE
+        + """
+        out.label = field('z_offset').parentNode.querySelector('label').textContent;
+        out.shown = field('z_offset').value;
+        field('z_offset').value = '2 ft';
+        button('zone-save-btn');
+        await settle();
+        out.sent = puts()[puts().length - 1].body.z_offset;
+        """,
+        setup="window.OpenFollow.units.setSystem('imperial'); model.zones[0].z_offset = 0.3048;",
+    )
+    assert out["label"] == "Z offset (ft / in)"
+    assert out["shown"] == "1 ft 0.00 in"
+    assert out["sent"] == pytest.approx(0.6096)
+
+
+def test_an_imperial_length_the_parser_refuses_is_sent_as_typed() -> None:
+    out = _editor(
+        _CHOOSE_THE_ZONE
+        + """
+        field('z_offset').value = 'high';
+        button('zone-save-btn');
+        await settle();
+        out.sent = puts()[puts().length - 1].body.z_offset;
+        """,
+        setup="window.OpenFollow.units.setSystem('imperial');",
+    )
+    assert out["sent"] == "high"

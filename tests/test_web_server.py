@@ -6951,6 +6951,92 @@ def test_api_zone_duplicate_clones_in_place(live_server) -> None:
     assert saved.trigger_zones.zones[new_idx].osc_address_first_entry == "/orig/enter"
 
 
+# -- zone heights through the zone routes ----------------------------------------
+
+
+def test_api_zone_heights_round_trip(live_server) -> None:
+    server, base = live_server
+    _, c = _post_json(base, "/api/zones", {"name": "Riser", "z_offset": 0.6, "raise_markers": True})
+    idx = c["index"]
+    _put_json(base, f"/api/zones/{idx}", {"height_transition_s": "1.5"})
+    zone = load_config(server.config_path).trigger_zones.zones[idx]
+    assert (zone.z_offset, zone.raise_markers, zone.height_transition_s) == (0.6, True, 1.5)
+    _, payload = _get_json(base, "/api/zones")
+    listed = next(z for z in payload["zones"] if z["index"] == idx)
+    assert (listed["z_offset"], listed["raise_markers"], listed["height_transition_s"]) == (0.6, True, 1.5)
+
+
+@pytest.mark.parametrize(
+    ("field", "sent", "kept"),
+    [
+        ("z_offset", 99, 20.0),
+        ("z_offset", -99, -10.0),
+        ("height_transition_s", 60, 10.0),
+        ("height_transition_s", -1, 0.0),
+    ],
+)
+def test_api_zone_heights_out_of_range_clamp(live_server, field: str, sent: float, kept: float) -> None:
+    server, base = live_server
+    _, c = _post_json(base, "/api/zones", {"name": "Z"})
+    _put_json(base, f"/api/zones/{c['index']}", {field: sent})
+    assert getattr(load_config(server.config_path).trigger_zones.zones[c["index"]], field) == kept
+
+
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [
+        ("z_offset", None),
+        ("z_offset", "abc"),
+        ("z_offset", True),
+        ("raise_markers", None),
+        ("raise_markers", "abc"),
+        ("raise_markers", 1),
+        ("height_transition_s", None),
+        ("height_transition_s", "abc"),
+        ("height_transition_s", False),
+    ],
+)
+def test_api_zone_heights_wrong_type_keeps_the_saved_value(live_server, field: str, bad: object) -> None:
+    server, base = live_server
+    _, c = _post_json(
+        base, "/api/zones", {"name": "Z", "z_offset": 0.4, "raise_markers": True, "height_transition_s": 2}
+    )
+    before = getattr(load_config(server.config_path).trigger_zones.zones[c["index"]], field)
+    status, _ = _put_json(base, f"/api/zones/{c['index']}", {field: bad})
+    assert status == 200
+    assert getattr(load_config(server.config_path).trigger_zones.zones[c["index"]], field) == before
+
+
+def test_api_zone_duplicate_copies_the_zone_heights(live_server) -> None:
+    server, base = live_server
+    _, c = _post_json(
+        base, "/api/zones", {"name": "Riser", "z_offset": 0.4, "raise_markers": True, "height_transition_s": 0.8}
+    )
+    req = urllib.request.Request(f"{base}/api/zones/{c['index']}/duplicate", method="POST")
+    with urllib.request.urlopen(req, timeout=5) as r:
+        new_idx = json.loads(r.read().decode())["index"]
+    zones = load_config(server.config_path).trigger_zones.zones
+    clone = zones[new_idx]
+    assert (clone.name, clone.z_offset, clone.raise_markers, clone.height_transition_s) == (
+        "Riser (copy)",
+        0.4,
+        True,
+        0.8,
+    )
+
+
+def test_api_zone_duplicate_shares_no_list_with_its_original(live_server) -> None:
+    server, base = live_server
+    _, c = _post_json(base, "/api/zones", {"name": "", "vertices": [[0, 0], [1, 0], [1, 1]], "triggered_by": [2]})
+    req = urllib.request.Request(f"{base}/api/zones/{c['index']}/duplicate", method="POST")
+    with urllib.request.urlopen(req, timeout=5) as r:
+        new_idx = json.loads(r.read().decode())["index"]
+    _put_json(base, f"/api/zones/{new_idx}", {"vertices": [[5, 5], [6, 5], [6, 6]], "triggered_by": [3]})
+    zones = load_config(server.config_path).trigger_zones.zones
+    assert zones[new_idx].name == "(copy)"
+    assert (zones[c["index"]].vertices, zones[c["index"]].triggered_by) == ([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]], [2])
+
+
 def test_api_zone_duplicate_404_for_unknown_index(live_server) -> None:
     _, base = live_server
     req = urllib.request.Request(f"{base}/api/zones/9999/duplicate", method="POST")
@@ -8461,6 +8547,39 @@ def test_validate_zone_osc_field_unclosed_quote_returns_error(
     assert status == 200
     assert 'class="field-error-msg"' in body
     assert "Unclosed quote" in body
+
+
+@pytest.mark.parametrize(
+    ("field", "raw", "valid"),
+    [
+        ("z_offset", "0.4", True),
+        ("z_offset", "-10", True),
+        ("z_offset", "20.5", False),
+        ("z_offset", "abc", False),
+        ("height_transition_s", "0", True),
+        ("height_transition_s", "10", True),
+        ("height_transition_s", "-0.1", False),
+        ("height_transition_s", "11", False),
+        ("height_transition_s", "abc", False),
+    ],
+)
+def test_validate_zone_height_fields(live_server, field: str, raw: str, valid: bool) -> None:
+    _, base = live_server
+    status, body = _get(base, f"/api/validate/zone/{field}?{field}={raw}")
+    assert status == 200
+    assert (body == "") is valid
+    assert ('class="field-error-msg"' in body) is not valid
+
+
+def test_validate_zone_z_offset_reads_an_imperial_length(live_server) -> None:
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.ui.unit_system = "imperial"
+    save_config(cfg, server.config_path)
+    ok = _get(base, "/api/validate/zone/z_offset?z_offset=" + urllib.parse.quote("1 ft 6 in"))
+    too_high = _get(base, "/api/validate/zone/z_offset?z_offset=" + urllib.parse.quote("70 ft"))
+    assert ok == (200, "")
+    assert 'class="field-error-msg"' in too_high[1]
 
 
 def test_validate_zone_unknown_field_returns_404(live_server) -> None:

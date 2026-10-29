@@ -1248,7 +1248,7 @@ class OscTransmitterManager:
         if marker is None:
             return None
         try:
-            return marker.pos
+            return marker.sent_pos
         except Exception:  # pragma: no cover - defensive
             return None
 
@@ -1378,7 +1378,7 @@ class OscTransmitterManager:
                 )
             else:
                 try:
-                    pos = marker.pos
+                    pos = marker.sent_pos
                 except Exception:  # pragma: no cover - defensive
                     logger.debug(
                         "OSC transmitter: marker %d position read raised",

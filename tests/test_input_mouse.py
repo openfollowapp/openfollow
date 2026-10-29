@@ -1359,6 +1359,37 @@ class TestGrabOnTheGroundGrid:
         assert MouseHandler(app).on_pointer_down(*self._seen(app, 0.0), 1) is True
 
 
+class TestGrabOnALiftedRing:
+    """A zone's lift raises the ring the Operator Screen draws; the mouse grabs and drags it there."""
+
+    @staticmethod
+    def _lifted(app: _DummyApp) -> float:
+        app._config.marker.ground_circle = True
+        app._server.get_marker(1).set_lift(1.0)
+        return app._config.grid.z_offset + 1.0
+
+    def test_the_lifted_ring_grabs(self) -> None:
+        app = _DummyApp()
+        floor = self._lifted(app)
+        assert MouseHandler(app).on_pointer_down(*TestGrabOnTheGroundGrid._seen(app, floor), 1) is True
+
+    def test_the_stage_level_spot_below_it_does_not(self) -> None:
+        app = _DummyApp()
+        self._lifted(app)
+        seen = TestGrabOnTheGroundGrid._seen(app, app._config.grid.z_offset)
+        assert MouseHandler(app).on_pointer_down(*seen, 1) is False
+
+    def test_a_marker_grabbed_on_its_lifted_ring_does_not_jump_when_the_mouse_moves(self) -> None:
+        app = _DummyApp()
+        x, y = TestGrabOnTheGroundGrid._seen(app, self._lifted(app))
+        handler = MouseHandler(app)
+        assert handler.on_pointer_down(x, y, 1) is True
+        handler.on_pointer_move(x + 1.0, y)
+        handler.update()
+        mx, my, _ = app._server.get_marker(1).pos
+        assert (mx, my) == (pytest.approx(0.0, abs=0.05), pytest.approx(0.0, abs=0.05))
+
+
 def test_an_unreadable_operator_screen_size_ignores_the_click_instead_of_raising() -> None:
     """The frame loop must survive a GTK size read that raises; the click just does nothing."""
 

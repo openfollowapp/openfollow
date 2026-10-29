@@ -93,10 +93,16 @@ class _FakeMarker:
     pinned against an injected clock in ``test_marker_freshness.py``.
     """
 
-    def __init__(self, pos: tuple[float, float, float], *, stale: bool = False) -> None:
+    def __init__(self, pos: tuple[float, float, float], *, stale: bool = False, lift: float = 0.0) -> None:
         self.pos = pos
+        self.lift = lift
         self.is_remote = False
         self._stale = stale
+
+    @property
+    def sent_pos(self) -> tuple[float, float, float]:
+        x, y, z = self.pos
+        return (x, y, z + self.lift)
 
     @property
     def clock_now_us(self) -> int:
@@ -379,6 +385,29 @@ class TestRendering:
         addr, args, *_ = svc.calls[0]
         assert all(isinstance(a, float) for a in args)
         assert args == [1.5, -2.0, 0.25]
+
+    def test_xyz_args_carry_a_zones_lift(self) -> None:
+        manager, svc = _manager(markers={0: _FakeMarker((1.5, -2.0, 0.25), lift=0.5)})
+        manager.restart(OscTransmittersConfig(transmitters=[_row(args=["[x]", "[y]", "[z]"])]))
+        manager._tick_once()
+        assert svc.calls[0][1] == [1.5, -2.0, 0.75]
+
+    def test_an_explicit_marker_carries_its_lift(self) -> None:
+        manager, svc = _manager(markers={7: _FakeMarker((1.0, 2.0, 3.0), lift=-1.0)})
+        manager.restart(OscTransmittersConfig(transmitters=[_row(marker_id=None, address="/z", args=["[z:7]"])]))
+        manager._tick_once()
+        assert svc.calls[0][1] == [2.0]
+
+    def test_a_real_markers_lift_is_sent(self) -> None:
+        from openfollow.psn.marker import Marker
+
+        marker = Marker(1, "T1")
+        marker.set_pos(1.0, 2.0, 1.5)
+        marker.set_lift(0.75)
+        manager, svc = _manager(markers={1: marker})  # type: ignore[dict-item]
+        manager.restart(OscTransmittersConfig(transmitters=[_row(marker_id=1, args=["[z]"])]))
+        manager._tick_once()
+        assert svc.calls[0][1] == [2.25]
 
     def test_marker_id_arg_emits_int(self) -> None:
         manager, svc = _manager(markers={7: _FakeMarker((0.0, 0.0, 0.0))})

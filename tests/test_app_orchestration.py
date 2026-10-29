@@ -80,6 +80,7 @@ class _RecordingServices:
         self.calls: list[str] = []
         self.frame_times: list[float] = []
         self.marker_visual_dts: list[float] = []
+        self.zone_dts: list[float] = []
         self.runtime_stats_calls = 0
         self._frame_metrics = SimpleNamespace(add_frame=self._record_frame_time)
         self.shutdown_calls = 0
@@ -93,8 +94,9 @@ class _RecordingServices:
     def apply_detection_pin(self, dt: float = 0.0) -> None:
         self.calls.append("apply_detection_pin")
 
-    def update_zone_triggers(self) -> None:
+    def update_zone_triggers(self, dt: float) -> None:
         self.calls.append("update_zone_triggers")
+        self.zone_dts.append(dt)
 
     def update_marker_visuals(self, dt: float = 0.0) -> None:
         self.calls.append("update_marker_visuals")
@@ -226,6 +228,17 @@ class TestAnimate:
         stalled = app._runtime_services.marker_visual_dts[1]
         assert stalled > orch._MAX_FRAME_DT
         assert stalled == pytest.approx(5.0, abs=0.5)
+
+    def test_the_zone_lift_eases_on_the_clamped_step(self) -> None:
+        """A stalled frame must not finish a lift's ramp in one catch-up jump any more than it may teleport a marker."""
+        app = _make_fake_app()
+        orch.animate(app)
+        app._last_animate_time -= 5.0
+        orch.animate(app)
+        assert app._runtime_services.zone_dts == [
+            pytest.approx(orch._DEFAULT_FRAME_DT),
+            pytest.approx(orch._MAX_FRAME_DT),
+        ]
 
     def test_no_input_manager_skips_keyboard_poll(self) -> None:
         app = _make_fake_app(input_manager=None)

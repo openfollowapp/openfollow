@@ -1106,7 +1106,7 @@ class TestFeatureGates:
         services._zone_engine = _Engine()
         services._app._config = replace(services._app._config, trigger_zones=TriggerZonesConfig(enabled=True))
         _with_features(services)
-        services.update_zone_triggers()
+        services.update_zone_triggers(1 / 60)
         assert _Engine.updates == 0
 
 

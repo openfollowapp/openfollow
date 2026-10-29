@@ -1085,6 +1085,12 @@ VALID_TRIGGER_SOURCES = ("markers", "detection", "both")
 VALID_ZONE_EVAL_FPS = (1, 5, 10, 15, 30, 60)
 
 
+# Bounds of a zone's height above the stage plane, and of its height transition.
+ZONE_Z_OFFSET_MIN = -10.0
+ZONE_Z_OFFSET_MAX = 20.0
+ZONE_HEIGHT_TRANSITION_MAX_S = 10.0
+
+
 @dataclass
 class TriggerZoneConfig:
     """A single polygonal trigger zone in world coordinates."""
@@ -1105,8 +1111,23 @@ class TriggerZoneConfig:
     # selected → the zone emits nothing.
     destination_id: str = ""
     enabled: bool = True
+    # Zone heights: metres above the stage plane (the main grid's ``z_offset``).
+    z_offset: float = 0.0
+    raise_markers: bool = False
+    height_transition_s: float = 0.3
 
     def __post_init__(self) -> None:
+        self.z_offset = (
+            0.0
+            if isinstance(self.z_offset, bool)
+            else _coerce_float(self.z_offset, 0.0, lo=ZONE_Z_OFFSET_MIN, hi=ZONE_Z_OFFSET_MAX)
+        )
+        self.raise_markers = _coerce_bool(self.raise_markers, False)
+        self.height_transition_s = (
+            0.3
+            if isinstance(self.height_transition_s, bool)
+            else _coerce_float(self.height_transition_s, 0.3, lo=0.0, hi=ZONE_HEIGHT_TRANSITION_MAX_S)
+        )
         if self.trigger_source not in VALID_TRIGGER_SOURCES:
             logger.warning(
                 "Invalid zone trigger_source %r, falling back to 'markers'",
@@ -2757,9 +2778,10 @@ FEATURE_KEYS: tuple[str, ...] = (
     "paths",
     "ground_grid",
     "touch_remote",
+    "zone_heights",
 )
 EXPERIMENTAL_FEATURES: frozenset[str] = frozenset(
-    {"lens_suggestions", "detection", "rttrpm", "paths", "ground_grid", "touch_remote"}
+    {"lens_suggestions", "detection", "rttrpm", "paths", "ground_grid", "touch_remote", "zone_heights"}
 )
 DEFAULT_SHOWN_FEATURES: tuple[str, ...] = tuple(key for key in FEATURE_KEYS if key not in EXPERIMENTAL_FEATURES)
 # Gated like any feature but not offered: no Features row, no web route turns one on.

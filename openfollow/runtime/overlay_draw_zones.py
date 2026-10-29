@@ -44,11 +44,11 @@ def draw_zones(renderer: Any, cr: Any, state: OverlayState, w: int, h: int, cach
 def _zone_outlines(state: OverlayState, w: int, h: int) -> list[_Zone]:
     """Each zone's outline on screen; a zone with a corner behind the camera is left out whole."""
     cam = state.camera_params
-    z = state.zone_z_offset
     zones = []
-    for vertices_xy, color_hex, name, is_occupied, count in state.zone_polygons:
+    for vertices_xy, color_hex, name, is_occupied, count, height in state.zone_polygons:
         if len(vertices_xy) < 3:
             continue
+        z = state.zone_z_offset + height
 
         pts = [(vx, vy, z) for vx, vy in vertices_xy]
         # Under lens distortion each straight edge bows, so build the outline
@@ -144,8 +144,8 @@ class ZoneCache:
         # Every input a zone is projected or drawn from; one missing here freezes on screen.
         key = (
             tuple(
-                (tuple(tuple(v) for v in vertices), color, name, is_occupied, count)
-                for vertices, color, name, is_occupied, count in state.zone_polygons
+                (tuple(tuple(v) for v in vertices), color, name, is_occupied, count, height)
+                for vertices, color, name, is_occupied, count, height in state.zone_polygons
             ),
             state.zone_z_offset,
             tuple(float(v) for v in cam),

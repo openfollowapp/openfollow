@@ -409,6 +409,17 @@
         html += '        <span class="field-error" id="zone-triggered-by-error" data-zone-field-error="triggered_by" aria-live="polite"></span>';
         html += '      </div>';
         html += '    </div>';
+        // Zone heights: shown only while that feature is on.
+        var zOffset = Number(z.z_offset) || 0;
+        html += '    <div class="row" data-feature="zone_heights">';
+        html += blurField('Z offset (' + vertexUnitLabel() + ')', 'z_offset',
+            IS_IMPERIAL ? formatLength(zOffset) : zOffset.toFixed(3), IS_IMPERIAL ? 'text' : 'number', '0.01');
+        html += '      <div class="field checkbox-field"><label for="zone-detail-raise-markers">Marker height</label>' +
+            '<div class="checkbox-wrap checkbox-field inline">' +
+            '<input type="checkbox" id="zone-detail-raise-markers" data-zone-field="raise_markers" ' + (z.raise_markers ? 'checked' : '') + '>' +
+            '<label for="zone-detail-raise-markers">Add the Z offset inside this zone</label></div></div>';
+        html += blurField('Height transition (s)', 'height_transition_s', String(z.height_transition_s), 'number', '0.1');
+        html += '    </div>';
         html += '  </div>';
 
         // ---- Area tab: vertex coordinate list (canvas stays at top) ----
@@ -700,8 +711,23 @@
             + '</div>';
     }
 
+    // A number field validated on blur like the OSC addresses.
+    function blurField(label, name, value, type, step) {
+        var id = 'zone-detail-' + name.replace(/_/g, '-');
+        return '      <div class="field">'
+            + '<label for="' + id + '">' + label + '</label>'
+            + '<input type="' + type + '"' + (type === 'number' ? ' step="' + step + '"' : '')
+            + ' id="' + id + '" data-zone-field="' + name + '"'
+            + ' data-zone-blur-field="' + name + '"'
+            + ' value="' + escapeAttr(value) + '"'
+            + ' aria-describedby="' + id + '-error">'
+            + '<span class="field-error" id="' + id + '-error"'
+            + ' data-zone-field-error="' + name + '" aria-live="polite"></span>'
+            + '</div>';
+    }
+
     function bindOscFieldValidators() {
-        var inputs = detailsEl.querySelectorAll('[data-zone-osc-field]');
+        var inputs = detailsEl.querySelectorAll('[data-zone-osc-field], [data-zone-blur-field]');
         inputs.forEach(function(inp) {
             inp.addEventListener('blur', onOscFieldBlur);
         });
@@ -709,7 +735,7 @@
 
     function onOscFieldBlur(evt) {
         var inp = evt.target;
-        var field = inp.getAttribute('data-zone-osc-field');
+        var field = inp.getAttribute('data-zone-osc-field') || inp.getAttribute('data-zone-blur-field');
         if (!field) return;
         var errSpan = detailsEl.querySelector(
             '[data-zone-field-error="' + field + '"]'
@@ -810,6 +836,11 @@
         // Parse strictly (regex check before parseInt so "1abc" doesn't
         // coerce to 1). Reject save if any token invalid (don't silently
         // drop: strict regex matches server-side _validate_int_list).
+        // Metres on the wire; a length the parser refuses keeps the saved one.
+        if (IS_IMPERIAL && typeof out.z_offset === 'string') {
+            var zMetres = parseLength(out.z_offset);
+            if (isFinite(zMetres)) out.z_offset = zMetres;
+        }
         if (typeof out.triggered_by === 'string') {
             var parsed = parseTriggeredBy(out.triggered_by);
             if (parsed === null) {

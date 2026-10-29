@@ -62,6 +62,11 @@ FEATURE_LABELS: dict[str, FeatureLabel] = {
         "Drives a marker from a tablet or phone in the web UI.",
         "every touch remote lets go of its marker, and its launcher disappears.",
     ),
+    "zone_heights": FeatureLabel(
+        "Zone heights",
+        "Draws a zone at a height above the stage, and can raise a marker's Z while it is inside.",
+        "zones are drawn on the stage floor again and markers keep their own height.",
+    ),
 }
 
 # Tokens that must keep their canonical casing rather than Title-case.

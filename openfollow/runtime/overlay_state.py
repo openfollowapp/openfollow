@@ -92,6 +92,8 @@ class MarkerOverlayData:
     # crosshair + ground ring (no filled ball, no card) so it reads as secondary
     # to the solid marker the operator steers (the manual anchor).
     is_assist_ghost: bool = False
+    # A zone's lift, already in ``z``; the floor elements are drawn this much higher.
+    lift: float = 0.0
 
 
 @dataclass
@@ -318,8 +320,8 @@ class OverlayState:
     operator_message_scale: float = 1.0
     # Trigger zones
     show_zones: bool = False
-    # Each entry: (vertices_world_xy, color_hex, name, is_occupied, count)
-    zone_polygons: list[tuple[list[tuple[float, float]], str, str, bool, int]] = field(default_factory=list)
+    # Each entry: (vertices_world_xy, color_hex, name, is_occupied, count, height above the stage plane)
+    zone_polygons: list[tuple[list[tuple[float, float]], str, str, bool, int, float]] = field(default_factory=list)
     zone_z_offset: float = 0.0
     # Paths: (curve, ends, locked) each, world X/Y/Z; an end is (at, a point just inside the path, releases).
     show_paths: bool = False

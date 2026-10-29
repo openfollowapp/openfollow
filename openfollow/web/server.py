@@ -1191,7 +1191,7 @@ class ConfigWebServer:
         return self._marker_positions_provider()
 
     def get_marker_position(self, marker_id: int) -> tuple[float, float, float] | None:
-        """Where ``marker_id`` is on the wire now, X/Y/Z; ``None`` when it is not here or offline."""
+        """Where ``marker_id`` is now, X/Y/Z without a zone's lift; ``None`` when it is not here or offline."""
         if self._marker_position_provider is None:
             return None
         return self._marker_position_provider(marker_id)

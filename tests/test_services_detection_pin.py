@@ -1014,6 +1014,31 @@ def test_assist_drives_two_controlled_markers_independently(monkeypatch) -> None
     assert s2.attached_marker_id == 2
 
 
+@pytest.mark.parametrize("pin_point", ["top", "bottom"])
+def test_assist_markers_on_one_plane_unproject_each_detection_once(monkeypatch, pin_point: str) -> None:
+    from openfollow.psn import Marker
+
+    m1, m2 = Marker(1, ""), Marker(2, "")
+    app = _make_app(
+        detection_cfg=_assist_cfg(pin_point=pin_point),
+        server=_MultiMarkerServer({1: m1, 2: m2}),
+        selected_id=1,
+        controlled_ids=[1, 2],
+        resolution=(1000, 1000),
+    )
+    _seed_anchor(app, 1.0, 0.0, 1.5, mid=1)
+    _seed_anchor(app, 8.0, 0.0, 1.5, mid=2)
+    calls: list[float] = []
+
+    def _counting(params, screen_pt, w, h, plane_z):  # noqa: ANN001, ANN202
+        calls.append(plane_z)
+        return _linear_unproject(params, screen_pt, w, h, plane_z)
+
+    _run(app, _AssistDetector([_det(0.1, 11), _det(0.8, 22)]), monkeypatch, unproject=_counting)
+
+    assert len(calls) == 2
+
+
 def test_assist_two_markers_glide_home_without_detector(monkeypatch) -> None:
     """No detector / no detections: every controlled marker glides toward its
     own anchor (operator keeps control), never snaps, never freezes."""

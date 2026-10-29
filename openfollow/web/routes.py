@@ -10558,11 +10558,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 return _save_failed(409, _UPDATE_RUNNING, after_update)
             base, replacing = _import_base(may_replace=True)
             catalog_path = Path(_resolve_marker_catalog_path(server.config_path, base.markers_catalog_path))
-            # A committed one is finished only by a start, never under a running station.
+            # A committed one is finished only by a start, never under a running station: this one's failed.
             if (Path(server.config_path).parent / config_restore.JOURNAL).exists():
-                return _save_failed(
-                    409, "An earlier restore is not finished.", "Restart OpenFollow to finish it, then restore again."
-                )
+                return _save_failed(409, "An earlier restore could not be finished.", "Details in Logs.")
             config_restore.recover_interrupted_restore(Path(server.config_path))
             try:
                 found = config_restore.find_backup(server.config_path, name, openfollow.__version__)

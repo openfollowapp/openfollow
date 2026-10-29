@@ -599,9 +599,10 @@ def recover_interrupted_restore(config_path: Path) -> None:
     committed = done.exists()
     faults = 0
     after = (
-        "The restore is finished at the next start, replacing a change made meanwhile to a part not yet restored."
+        "The restore is retried at every start until it finishes, replacing a change made meanwhile to a part"
+        " not yet restored."
         if committed
-        else "It is put right at the next start."
+        else "It is retried at every start."
     )
     try:
         catalog = _journal_catalog(done if committed else pending)

@@ -837,8 +837,8 @@ def test_a_restore_while_an_earlier_one_waits_to_be_finished_is_refused(station)
     assert (status, body) == (
         409,
         {
-            "error": "An earlier restore is not finished.",
-            "action": "Restart OpenFollow to finish it, then restore again.",
+            "error": "An earlier restore could not be finished.",
+            "action": "Details in Logs.",
         },
     )
     assert (state / "config.toml").read_bytes() == before

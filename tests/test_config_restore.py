@@ -1167,7 +1167,8 @@ def test_a_folder_that_cannot_be_listed_is_a_fault_not_nothing(
     finally:
         (station / "templates").chmod(0o700)
     assert (station / config_restore.JOURNAL).exists()
-    assert "finished at the next start" in caplog.text
+    assert "retried at every start" in caplog.text
+    assert "replacing a change made meanwhile to a part not yet restored" in caplog.text
 
     config_restore.recover_interrupted_restore(station / "config.toml")
     assert _tree(station / "templates" / "user") == {"backup.oftemplate": b"restored"}

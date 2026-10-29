@@ -16,7 +16,7 @@ import os
 import threading
 from collections.abc import Iterator
 
-__all__ = ["GATE", "HeldForRestartError", "hold", "is_held", "unless_held"]
+__all__ = ["GATE", "HeldForRestartError", "hold", "is_held", "release_all", "unless_held"]
 
 GATE = threading.RLock()
 _HELD: set[str] = set()
@@ -30,6 +30,12 @@ def hold(*paths: str | os.PathLike[str]) -> None:
     """Refuse every later write to *paths*, and to anything inside one, in this process."""
     with GATE:
         _HELD.update(os.path.realpath(path) for path in paths)
+
+
+def release_all() -> None:
+    """Hold nothing: a new app instance starts on what the restore wrote, the restart it was held for."""
+    with GATE:
+        _HELD.clear()
 
 
 def is_held(path: str | os.PathLike[str]) -> bool:

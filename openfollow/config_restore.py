@@ -459,6 +459,11 @@ class StagedRestore:
         except Exception:
             logger.exception("Restore cut short after its config was written; restarting on what is in place")
             failed += [part for part, *_rest in pending]
+            # A staged catalog has no journal left to find it by; a folder's copies are the start's to sort.
+            for _part, staged, aside, _target in pending:
+                if aside is None:
+                    with contextlib.suppress(OSError):
+                        staged.unlink(missing_ok=True)
         with contextlib.suppress(OSError):
             done.unlink(missing_ok=True)
         _sync(done.parent)
@@ -573,34 +578,49 @@ def recover_interrupted_restore(config_path: Path) -> None:
     With the commit's journal on the disk the restore is finished from its
     staged copies, config included, which were whole before the first rename.
     Without it the restore never committed, or committed and ended: its copies
-    are discarded, and a folder left moved aside is put back. A failure is
-    logged: a start never stops on it.
+    are discarded, and a folder left moved aside is put back. A part that fails
+    is logged and the next one goes on: a start never stops on it.
     """
     state_dir = config_path.parent
     done, pending = state_dir / JOURNAL, state_dir / PENDING_JOURNAL
     committed = done.exists()
     catalog = _journal_catalog(done if committed else pending)
-    for target in [config_path, *([catalog] if catalog is not None else [])]:
-        staged = _leftovers(target, _STAGED)
-        source = staged[0] if committed and staged else None
-        if source is not None:
-            _install(source, target)
-        for leftover in staged:
-            if leftover != source:
-                _remove(leftover)
-    for folder in _FOLDERS:
-        target = state_dir / folder
-        staged, aside = _leftovers(target, _STAGED), _leftovers(target, _REPLACED)
-        # An empty one is the place a commit never reached: nothing of the station's is in it.
-        moved = [path for path in aside if any(path.iterdir())]
-        source = staged[0] if committed and staged else moved[0] if moved and not target.exists() else None
-        if source is not None:
-            _install(source, target)
-        for leftover in staged + aside:
-            if leftover != source:
-                _remove(leftover)
-    for journal in (done, pending):
-        journal.unlink(missing_ok=True)
+    steps: list[tuple[Callable[[Path, bool], None], Path]] = [(_recover_file, config_path)]
+    if catalog is not None:
+        steps.append((_recover_file, catalog))
+    steps += [(_recover_folder, state_dir / folder) for folder in _FOLDERS]
+    steps += [(_drop_journal, done), (_drop_journal, pending)]
+    for step, target in steps:
+        try:
+            step(target, committed)
+        except OSError as exc:
+            logger.warning("Could not put right a restore cut short at %s: %s", target, exc)
+
+
+def _recover_file(target: Path, committed: bool) -> None:
+    staged = _leftovers(target, _STAGED)
+    source = staged[0] if committed and staged else None
+    if source is not None:
+        _install(source, target)
+    for leftover in staged:
+        if leftover != source:
+            _remove(leftover)
+
+
+def _recover_folder(target: Path, committed: bool) -> None:
+    staged, aside = _leftovers(target, _STAGED), _leftovers(target, _REPLACED)
+    # An empty one is the place a commit never reached: nothing of the station's is in it.
+    moved = [path for path in aside if any(path.iterdir())]
+    source = staged[0] if committed and staged else moved[0] if moved and not target.exists() else None
+    if source is not None:
+        _install(source, target)
+    for leftover in staged + aside:
+        if leftover != source:
+            _remove(leftover)
+
+
+def _drop_journal(journal: Path, _committed: bool) -> None:
+    journal.unlink(missing_ok=True)
 
 
 def _install(source: Path, target: Path) -> None:

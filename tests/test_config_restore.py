@@ -959,3 +959,34 @@ def test_a_name_no_file_can_take_is_damage(station: Path, monkeypatch: pytest.Mo
     monkeypatch.setattr(tarfile.TarFile, "next", as_a_crafted_header_names_it)
     with pytest.raises(BackupDamagedError):
         read_backup(path)
+
+
+def test_a_catalog_left_staged_by_an_unexpected_error_is_removed(
+    station: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    staged = _with_config(station)
+    real = os.replace
+
+    def broken(src: str | Path, dst: str | Path) -> None:
+        if Path(dst).name == "markers.toml":
+            raise RuntimeError("unexpected")
+        real(src, dst)
+
+    monkeypatch.setattr(os, "replace", broken)
+    assert staged.commit() == ["markers.toml", "templates/user", "lens-calibrations"]
+    assert list(station.glob(".markers.toml.*")) == []
+
+
+def test_a_recovery_that_meets_an_unreadable_leftover_logs_and_goes_on(
+    station: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    (station / "templates" / "user").rename(station / "templates" / ".user.aaaa1111.old")
+    locked = station / "templates" / ".user.aaaa1111.old"
+    _leftover(station, ".lens-calibrations.bbbb2222.restore", {"stale.json": "{}"})
+    locked.chmod(0)
+    try:
+        config_restore.recover_interrupted_restore(station / "config.toml")
+    finally:
+        locked.chmod(0o700)
+    assert "restore cut short" in caplog.text
+    assert list(station.glob(".lens-calibrations.*")) == []  # the next part was still put right

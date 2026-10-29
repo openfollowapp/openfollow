@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from openfollow.restore_hold import HeldForRestartError, hold, is_held, unless_held
+from openfollow.restore_hold import HeldForRestartError, hold, is_held, release_all, unless_held
 
 pytestmark = pytest.mark.unit
 
@@ -36,3 +36,10 @@ def test_a_held_path_is_matched_through_a_link(tmp_path: Path) -> None:
     hold(tmp_path / "link")
     assert is_held(tmp_path / "real" / "a.json")
     assert is_held(tmp_path / "link" / "a.json")
+
+
+def test_releasing_everything_lets_every_write_through(tmp_path: Path) -> None:
+    hold(tmp_path / "config.toml", tmp_path / "lens-calibrations")
+    release_all()
+    assert not is_held(tmp_path / "config.toml")
+    assert not is_held(tmp_path / "lens-calibrations" / "a.json")

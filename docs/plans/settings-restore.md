@@ -4,7 +4,7 @@ The station already writes a settings backup (`.ofbackup`) before every update
 and before every import, Restore defaults and settings push
 (`privilege/settings_backup.py`). Today the only way back is a `tar` command on
 the station (`docs/PACKAGING.md`). This adds a list of the station's own backups
-to the web UI, each with a Restore button. Issue #422.
+to the web UI, each with a Restore button.
 
 ## Decisions
 

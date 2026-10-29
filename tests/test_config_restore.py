@@ -990,3 +990,126 @@ def test_a_recovery_that_meets_an_unreadable_leftover_logs_and_goes_on(
         locked.chmod(0o700)
     assert "restore cut short" in caplog.text
     assert list(station.glob(".lens-calibrations.*")) == []  # the next part was still put right
+
+
+# --- a recovery that meets a storage fault ------------------------------------------------
+
+
+def _faulty(monkeypatch: pytest.MonkeyPatch, names: set[str]) -> None:
+    """``os.replace`` into any of *names* fails as a bad disk does."""
+    real = os.replace
+
+    def replace(src: str | Path, dst: str | Path) -> None:
+        if Path(dst).name in names:
+            raise OSError(5, "Input/output error")
+        real(src, dst)
+
+    monkeypatch.setattr(os, "replace", replace)
+
+
+def test_a_folder_that_cannot_be_put_in_place_keeps_both_copies_for_the_next_start(
+    station: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Down after the commit moved the station's templates aside, before the backup's moved in.
+    (station / "templates" / "user").rename(station / "templates" / ".user.aaaa1111.old")
+    _leftover(station / "templates", ".user.bbbb2222.restore", {"backup.oftemplate": "restored"})
+    _journal(station, config_restore.JOURNAL)
+
+    _faulty(monkeypatch, {"user"})
+    config_restore.recover_interrupted_restore(station / "config.toml")
+    monkeypatch.undo()
+
+    assert _tree(station / "templates" / ".user.aaaa1111.old") == {"grid.oftemplate": b"grid"}
+    assert _tree(station / "templates" / ".user.bbbb2222.restore") == {"backup.oftemplate": b"restored"}
+    assert (station / config_restore.JOURNAL).exists()
+    assert [r.levelname for r in caplog.records if "templates" in r.getMessage()] == ["ERROR"]
+
+    config_restore.recover_interrupted_restore(station / "config.toml")
+
+    assert _tree(station / "templates" / "user") == {"backup.oftemplate": b"restored"}
+    assert list(station.rglob(".*")) == []
+
+
+def test_a_config_that_cannot_be_put_in_place_keeps_the_journal_for_the_next_start(
+    station: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    before = (station / "config.toml").read_bytes()
+    (station / ".config.toml.aaaa1111.restore").write_text('psn_system_name = "Restored"\n', encoding="utf-8")
+    _journal(station, config_restore.JOURNAL)
+
+    _faulty(monkeypatch, {"config.toml"})
+    config_restore.recover_interrupted_restore(station / "config.toml")
+    monkeypatch.undo()
+
+    assert (station / "config.toml").read_bytes() == before
+    assert (station / config_restore.JOURNAL).exists()
+
+    config_restore.recover_interrupted_restore(station / "config.toml")
+
+    assert (station / "config.toml").read_text(encoding="utf-8") == 'psn_system_name = "Restored"\n'
+    assert list(station.rglob(".*")) == []
+
+
+def test_a_retry_after_a_partial_recovery_finishes_only_what_is_left(
+    station: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _cut_short_mid_commit(station)
+    _journal(station, config_restore.JOURNAL)
+
+    _faulty(monkeypatch, {"lens-calibrations"})
+    config_restore.recover_interrupted_restore(station / "config.toml")
+    monkeypatch.undo()
+
+    assert (station / "config.toml").read_text(encoding="utf-8") == 'psn_system_name = "Restored"\n'
+    assert _tree(station / "templates" / "user") == {"new.oftemplate": b"new"}
+    assert (station / "markers.toml").read_text(encoding="utf-8") == "[[marker]]\nid = 7\n"
+    assert not (station / "lens-calibrations").exists()
+    (station / "templates" / "user" / "edited.oftemplate").write_text("kept", encoding="utf-8")
+
+    config_restore.recover_interrupted_restore(station / "config.toml")
+
+    assert _tree(station / "lens-calibrations") == {"new.json": b"[]"}
+    assert _tree(station / "templates" / "user") == {"new.oftemplate": b"new", "edited.oftemplate": b"kept"}
+    assert (station / "config.toml").read_text(encoding="utf-8") == 'psn_system_name = "Restored"\n'
+    assert list(station.rglob(".*")) == []
+
+
+def test_a_folder_in_place_that_a_committed_copy_cannot_replace_is_finished_next_time(
+    station: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Down before the commit reached this folder: the station's is still in place.
+    _leftover(station / "templates", ".user.bbbb2222.restore", {"backup.oftemplate": "restored"})
+    _journal(station, config_restore.JOURNAL)
+    real = os.replace
+
+    def fail_moving_in(src: str | Path, dst: str | Path) -> None:
+        if Path(dst).name == "user" and str(src).endswith(".restore"):
+            raise OSError(5, "Input/output error")
+        real(src, dst)
+
+    monkeypatch.setattr(os, "replace", fail_moving_in)
+    config_restore.recover_interrupted_restore(station / "config.toml")
+    monkeypatch.undo()
+    assert (station / config_restore.JOURNAL).exists()
+    assert _tree(station / "templates" / ".user.bbbb2222.restore") == {"backup.oftemplate": b"restored"}
+
+    config_restore.recover_interrupted_restore(station / "config.toml")
+
+    assert _tree(station / "templates" / "user") == {"backup.oftemplate": b"restored"}
+    assert list(station.rglob(".*")) == []
+
+
+def test_a_journal_that_cannot_be_removed_is_logged(
+    station: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    _journal(station, config_restore.JOURNAL)
+    real = Path.unlink
+
+    def stuck(self: Path, missing_ok: bool = False) -> None:
+        if self.name == config_restore.JOURNAL:
+            raise OSError(5, "Input/output error")
+        real(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", stuck)
+    config_restore.recover_interrupted_restore(station / "config.toml")
+    assert "Storage fault" in caplog.text

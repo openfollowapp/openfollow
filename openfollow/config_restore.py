@@ -579,7 +579,9 @@ def recover_interrupted_restore(config_path: Path) -> None:
     staged copies, config included, which were whole before the first rename.
     Without it the restore never committed, or committed and ended: its copies
     are discarded, and a folder left moved aside is put back. A part that fails
-    is logged and the next one goes on: a start never stops on it.
+    keeps every copy it needs, and the journal stays, so the next start retries
+    it; each part is safe to run again. The failure is logged and the next part
+    goes on: a start never stops on it.
     """
     state_dir = config_path.parent
     done, pending = state_dir / JOURNAL, state_dir / PENDING_JOURNAL
@@ -589,12 +591,20 @@ def recover_interrupted_restore(config_path: Path) -> None:
     if catalog is not None:
         steps.append((_recover_file, catalog))
     steps += [(_recover_folder, state_dir / folder) for folder in _FOLDERS]
-    steps += [(_drop_journal, done), (_drop_journal, pending)]
+    faults = 0
     for step, target in steps:
         try:
             step(target, committed)
         except OSError as exc:
-            logger.warning("Could not put right a restore cut short at %s: %s", target, exc)
+            faults += 1
+            logger.error("Storage fault: a restore cut short at %s is left to retry at the next start: %s", target, exc)
+    if faults:
+        return
+    for journal in (done, pending):
+        try:
+            journal.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.error("Storage fault: could not remove %s: %s", journal, exc)
 
 
 def _recover_file(target: Path, committed: bool) -> None:
@@ -614,24 +624,19 @@ def _recover_folder(target: Path, committed: bool) -> None:
     source = staged[0] if committed and staged else moved[0] if moved and not target.exists() else None
     if source is not None:
         _install(source, target)
-    for leftover in staged + aside:
-        if leftover != source:
-            _remove(leftover)
-
-
-def _drop_journal(journal: Path, _committed: bool) -> None:
-    journal.unlink(missing_ok=True)
+    # Read again: the install moved one in and maybe the station's aside.
+    for leftover in _leftovers(target, _STAGED) + _leftovers(target, _REPLACED):
+        _remove(leftover)
 
 
 def _install(source: Path, target: Path) -> None:
-    """*source* in place of *target*; a failure leaves both for the next start."""
-    try:
-        if target.is_dir() and not target.is_symlink():
-            shutil.rmtree(target)
-        os.replace(source, target)
-    except OSError as exc:
-        logger.warning("Could not put %s in place from %s: %s", target, source.name, exc)
-        return
+    """*source* in place of *target*, by renames only; raises ``OSError``, every copy kept, when one fails.
+
+    A folder in place is moved aside first, beside the others its next run removes.
+    """
+    if target.is_dir() and not target.is_symlink():
+        os.replace(target, target.with_name(f".{target.name}.recovered{_REPLACED}"))
+    os.replace(source, target)
     _sync(target.parent)
     logger.warning("Put %s in place from %s, left by a restore cut short", target, source.name)
 

@@ -722,6 +722,12 @@
         if (!which) return;
         var z = state.zones[state.selectedIndex];
         var pre = document.getElementById('zone-diag-test-result');
+        var near = detailsEl.querySelector('.actions'), saveError = window.OpenFollow.saveError;
+        // Under the zone's actions, or under the buttons once its details are gone.
+        var notSent = function(info) {
+            if (pre) pre.setAttribute('hidden', '');
+            saveError.show(editorSection, info, 'Not sent.', near && near.isConnected ? near : deleteBtn.parentNode);
+        };
         if (pre) {
             pre.textContent = 'Sending…';
             pre.removeAttribute('hidden');
@@ -739,6 +745,10 @@
                 });
             });
         }).then(function(res) {
+            if (!res && state.zones.indexOf(z) < 0) {
+                notSent({error: 'The zone was deleted before the test was sent.', action: '', href: ''});
+                return;
+            }
             if (!pre) return;
             if (!res) {
                 // Not sent: the line under the actions says why the save failed.
@@ -750,9 +760,7 @@
             } catch (_) {
                 pre.textContent = res.body;
             }
-        }).catch(function(err) {
-            if (pre) pre.textContent = 'Error: ' + (err && err.message ? err.message : err);
-        });
+        }).catch(function() { notSent(saveError.UNREACHABLE_ACTION); });
     }
 
     function renderZoneDiagnostics(z) {
@@ -1141,9 +1149,11 @@
                 if (state.selectedIndex === at) state.selectedIndex = -1;
                 else if (state.selectedIndex > at) state.selectedIndex--;
                 // Another zone's details being typed into are kept, as the poll keeps them.
-                var a = document.activeElement;
-                if (state.selectedIndex >= 0 && a && detailsEl.contains(a)) state.detailsRenderedIndex = state.selectedIndex;
-                else renderDetails();
+                var a = document.activeElement, title = detailsEl.querySelector('.group-title');
+                if (state.selectedIndex >= 0 && a && detailsEl.contains(a)) {
+                    state.detailsRenderedIndex = state.selectedIndex;
+                    if (title) title.textContent = 'Zone ' + (state.selectedIndex + 1) + ' Details';
+                } else renderDetails();
                 render();
             });
         }).then(fetchZones);

@@ -1831,13 +1831,14 @@ def test_a_delete_landing_keeps_what_is_typed_in_another_zone() -> None:
         holdWhen = null;
         release(); await settle();
         out.same = document.querySelector('#zone-details .group') === panel;
+        out.heading = document.querySelector('#zone-details .group-title').textContent;
         out.typed = document.querySelector('#zone-details [data-zone-field="name"]').value;
         tickIntervals(); await settle();
         out.afterPoll = document.querySelector('#zone-details [data-zone-field="name"]').value;
         """,
         _THREE,
     )
-    assert out == {"same": True, "typed": "Lead vocal", "afterPoll": "Lead vocal"}
+    assert out == {"same": True, "heading": "Zone 1 Details", "typed": "Lead vocal", "afterPoll": "Lead vocal"}
 
 
 def test_a_saved_zone_brings_the_list_up_to_date_at_once() -> None:
@@ -1867,7 +1868,9 @@ def test_a_test_send_with_no_answer_is_given_up() -> None:
         document.querySelector('[data-zone-test="first"]').click();
         await settle();
         runTimeouts(); await settle();
-        out.shown = document.getElementById('zone-diag-test-result').textContent;
+        out.shown = !document.getElementById('zone-diag-test-result').hidden;
+        var line = document.querySelector('#zone-editor-section .save-error');
+        out.error = line ? line.textContent : null;
         holdWhen = null;
         model.zones[0].name = 'Renamed';
         // Off the details, so the poll may refresh the chosen zone too.
@@ -1876,5 +1879,37 @@ def test_a_test_send_with_no_answer_is_given_up() -> None:
         out.status = document.getElementById('zone-fs-status').textContent;
         """
     )
-    assert out["shown"].startswith("Error:")
+    assert out["shown"] is False
+    assert out["error"] is not None and "The station did not answer." in out["error"]
+    assert "abort" not in out["error"].lower()
     assert out["status"] == "Renamed · 4 corners"
+
+
+def test_a_test_send_for_a_zone_deleted_meanwhile_says_so() -> None:
+    out = _camera(
+        _ZONE_STEPS
+        + """
+        tickIntervals(); await settle();
+        choose('camera'); await showPicture();
+        await chooseZone(0, 400, 400);
+        holdWhen = function (r) { return r.method === 'DELETE'; };
+        document.getElementById('zone-delete-btn').click();
+        await settle();
+        document.querySelector('[data-zone-test="first"]').click();
+        await settle();
+        holdWhen = null;
+        release(); await settle();
+        out.writes = writes();
+        var pre = document.getElementById('zone-diag-test-result');
+        out.shown = !!pre && !pre.hidden;
+        out.error = errorLine();
+        // The zone's details are gone: the line sits under the editor's buttons.
+        var line = document.querySelector('#zone-editor-section .save-error');
+        out.underButtons = line.previousSibling === document.getElementById('zone-delete-btn').parentNode;
+        """,
+        _THREE,
+    )
+    assert out["writes"] == ["DELETE /api/zones/0"]
+    assert out["underButtons"] is True
+    assert out["shown"] is False
+    assert out["error"] is not None and "The zone was deleted before the test was sent." in out["error"]

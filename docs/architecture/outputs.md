@@ -11,7 +11,7 @@ Covers `psn/`, `otp/`, `rttrpm/`, the OSC transmitter, `packet_chunking.py`. The
 | Site | Frame |
 |---|---|
 | `psn/receiver.py` (`apply_remote` from incoming PSN packet) | PSN-absolute (raw) |
-| `psn/server.py` (`marker.to_psn_marker()` outbound) | PSN-absolute (verbatim) |
+| `psn/server.py` (`marker.to_psn_marker()` outbound) | PSN-absolute (verbatim, plus a zone's lift on Z) |
 | `input/mouse.py` (`unproject_to_plane` → `set_pos`) | PSN-absolute (direct) |
 | `runtime/services_detection_pin.py` (pin target) | PSN-absolute (direct) |
 | `services._collect_marker_positions` (zone-engine input) | PSN-absolute (verbatim) |
@@ -23,6 +23,12 @@ Covers `psn/`, `otp/`, `rttrpm/`, the OSC transmitter, `packet_chunking.py`. The
 `grid.{x,y}_offset` is **display-positioning metadata** for the grid rectangle itself – used by the web setup wizard / `scene/solver.py` to build the four grid corners in world space, and by the web zone editor to centre its viewport on the grid origin. It is **never** added to or subtracted from `marker.pos`, a detection world-point, or a zone vertex.
 
 **Do not add offset arithmetic to any marker-position flow.** The shape to watch for is "subtract offset on write, add offset on read": a hidden convention that works only at zero offset. The regression suite in `tests/test_coordinate_system_invariants.py` parametrises nine invariants across three offset configurations (zero, positive, mixed-sign), so an offset at any of these sites fails across every non-zero case.
+
+## Zone lift (`Marker.sent_pos`)
+
+A zone with **Marker height** raises a controlled marker's Z by its `z_offset` while the marker is inside ([zones](zones.md#zone-heights)). The lift is kept on the marker apart from its position: `Marker.set_lift(dz)` stores it, `Marker.sent_pos` returns `pos` with it added to Z under the one lock, and every output reads that: PSN (`to_psn_marker`), OTP (`encode_otp_transform_packet`), RTTrPM (the frozen copy `_send_packet` encodes) and the OSC transmitter (default-marker and `[x:N]` / `[x:cN]` placeholders). The broadcast velocity is estimated from `sent_pos` too, so a lift easing in moves the speed vector with the position it describes. Nothing else reads it: input, paths, zone occupancy, the detection pin and `get_marker_position` work on `marker.pos`, so the operator's Z is never written by a zone and a path point taken from a marker is not raised twice.
+
+`set_lift` is not a data write: it does not stamp `timestamp` and does not mark the marker valid, so the per-frame `set_speed` stays the only freshness stamp and a frozen marker stays stale however its lift changes. The lift never goes through `set_pos`, so position and status still land in one write. A received marker is never lifted (its sender's Z already carries its own station's lift).
 
 ## Marker freshness (`is_marker_stale`, shared by every output)
 
@@ -67,7 +73,7 @@ Every marker-carrying output grows its datagram with the marker count, and **147
 - Sends PSN multicast at `data_fps` (default 60 Hz)
 - `add_marker(id, name)` / `remove_marker(id)` / `get_marker(id)`
 - `marker.set_pos(x, y, z)`, `marker.set_speed(vx, vy, vz)`
-- **Speed encoding:** every frame in `build_marker_visual_state`, each controlled marker's speed is its estimated **velocity vector** in m/s, PSN-absolute frame ([`runtime/marker_velocity.py`](../../openfollow/runtime/marker_velocity.py): position delta over the **real** elapsed seconds – `animate` hands `update_marker_visuals` the unclamped `elapsed`, not the clamped motion `dt`, because a clamped divisor inflates the rate of a slow frame – EMA-smoothed at alpha 0.3 per nominal frame, frame-rate independent via `ema_factor`). Two bounds, neither of which classifies motion: the sample rate is **clamped** to `_MAX_REPORTED_SPEED_MPS` (20 m/s), so a repositioning (reset, OSC snap) can't put an unbounded rate on the wire while a fast mouse drag still reports as moving; and the smoothed output snaps to exactly `(0, 0, 0)` below `_STILL_SPEED_MPS`, so a marker that comes to rest reads as stopped rather than asymptotically slow. The HUD card of a controlled marker shows the configured move speed (what R / T and the bumpers adjust), not this vector; viewer cards show `‖speed‖` of the received marker.
+- **Speed encoding:** every frame in `build_marker_visual_state`, each controlled marker's speed is its estimated **velocity vector** in m/s of `sent_pos`, PSN-absolute frame ([`runtime/marker_velocity.py`](../../openfollow/runtime/marker_velocity.py): position delta over the **real** elapsed seconds – `animate` hands `update_marker_visuals` the unclamped `elapsed`, not the clamped motion `dt`, because a clamped divisor inflates the rate of a slow frame – EMA-smoothed at alpha 0.3 per nominal frame, frame-rate independent via `ema_factor`). Two bounds, neither of which classifies motion: the sample rate is **clamped** to `_MAX_REPORTED_SPEED_MPS` (20 m/s), so a repositioning (reset, OSC snap) can't put an unbounded rate on the wire while a fast mouse drag still reports as moving; and the smoothed output snaps to exactly `(0, 0, 0)` below `_STILL_SPEED_MPS`, so a marker that comes to rest reads as stopped rather than asymptotically slow. The HUD card of a controlled marker shows the configured move speed (what R / T and the bumpers adjust), not this vector; viewer cards show `‖speed‖` of the received marker.
 
 ## PsnReceiver (`psn/receiver.py`)
 - Receives PSN multicast in background thread

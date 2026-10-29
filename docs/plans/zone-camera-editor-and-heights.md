@@ -55,9 +55,10 @@ The interactive mockup, built on the Media Gallery's Concert picture and its cal
 - [ ] Review to cosmetic, gate, station check on pi66.
 
 **Zone heights (#570)**
-- [ ] `zone_heights` feature: its key, its Features row, and the off behaviour.
-- [ ] The three zone fields: config, validation, form (shown with the feature on), tests.
-- [ ] Camera view and HUD overlay at the zone's height; the cache key and its redraw test.
-- [ ] The per-marker lift with its ramp, applied to every sender and the Operator Screen; tests for the overlap rule, the transition times, feature off, and a marker whose own Z the operator changes meanwhile.
-- [ ] Help drawers, `docs/architecture/zones.md` and `outputs.md`, What's new (experimental, so a short line).
+- [x] `zone_heights` feature: its key, its Features row, and the off behaviour.
+- [x] The three zone fields: config, validation, form (shown with the feature on), tests.
+- [x] HUD overlay at the zone's height; the cache key and its redraw test.
+- [ ] Camera view at the zone's height (drawn and picked on that plane, with the camera editor).
+- [x] The per-marker lift with its ramp, applied to every sender and the Operator Screen; tests for the overlap rule, the transition times, feature off, and a marker whose own Z the operator changes meanwhile.
+- [x] Help drawers, `docs/architecture/zones.md` and `outputs.md`, What's new (experimental, so a short line).
 - [ ] Review to cosmetic, gate, station check on pi66: a marker walked onto a raised zone, watched in the PSN output and on the Operator Screen.

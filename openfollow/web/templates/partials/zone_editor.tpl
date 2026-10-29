@@ -720,7 +720,7 @@
         if (state.selectedIndex < 0) return;
         var which = evt.target.getAttribute('data-zone-test');
         if (!which) return;
-        var idx = state.selectedIndex;
+        var z = state.zones[state.selectedIndex];
         var pre = document.getElementById('zone-diag-test-result');
         if (pre) {
             pre.textContent = 'Sending…';
@@ -732,12 +732,12 @@
         // saved. saveSelectedZone() returns a Promise.
         saveSelectedZone().then(function(saved) {
             if (!saved) return null;
-            var url = '/api/zones/' + idx + '/test_send'
-                + '?which=' + encodeURIComponent(which);
-            return fetch(url, {method: 'POST'});
-        }).then(function(r) {
-            if (!r) return null;
-            return r.text().then(function(body) { return {ok: r.ok, body: body}; });
+            return zoneJob(z, function(at) {
+                var url = '/api/zones/' + at + '/test_send' + '?which=' + encodeURIComponent(which);
+                return timedFetch(url, {method: 'POST'}).then(function(r) {
+                    return r.text().then(function(body) { return {ok: r.ok, body: body}; });
+                });
+            });
         }).then(function(res) {
             if (!pre) return;
             if (!res) {
@@ -802,13 +802,12 @@
 
     function duplicateSelectedZone() {
         if (state.selectedIndex < 0) return;
-        var idx = state.selectedIndex;
+        var z = state.zones[state.selectedIndex], near = detailsEl.querySelector('.actions');
         // Persist any pending edits before cloning so the copy matches
         // what the operator currently sees in the form.
         saveSelectedZone().then(function(saved) {
             if (!saved) return null;
-            return zoneWrite(fetch('/api/zones/' + idx + '/duplicate', {method: 'POST'}),
-                detailsEl.querySelector('.actions'));
+            return zoneJob(z, function(at) { return timedWrite('/api/zones/' + at + '/duplicate', {method: 'POST'}, near); });
         }).then(function(r) { return r ? r.json() : null; })
           .then(function(data) {
               if (!data) return;
@@ -1001,8 +1000,7 @@
     // on the form the operator sees, never an older saved state.
     function saveSelectedZone() {
         if (state.selectedIndex < 0) return Promise.resolve(null);
-        var idx = state.selectedIndex;
-        var z = state.zones[idx];
+        var z = state.zones[state.selectedIndex];
         if (!z) return Promise.resolve(null);
         var body = collectDetailFields();
         // Refuse to save when
@@ -1027,12 +1025,15 @@
             }
             return Promise.resolve(null);
         }
-        body.vertices = z.vertices;
-        return zoneWrite(fetch('/api/zones/' + idx, {
-            method: 'PUT',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(body),
-        }), detailsEl.querySelector('.actions')).then(function(r) {
+        var near = detailsEl.querySelector('.actions');
+        return zoneJob(z, function(at) {
+            body.vertices = z.vertices;
+            return timedWrite('/api/zones/' + at, {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(body),
+            }, near);
+        }).then(function(r) {
             if (!r) return r;
             // Persisted: clear the section's dirty flag so the
             // "Save as template" button re-enables. The per-vertex
@@ -1080,17 +1081,29 @@
     // A write with no answer is given up, so the poll does not wait forever.
     var WRITE_TIMEOUT_MS = 10000;
     var writes = Promise.resolve(), queuedSaves = [];
+    // Resolves (or rejects) with what ``job`` gave once the queue has counted it done.
     function enqueue(job) {
         saving++;
-        var done = function() { saving--; edits++; };
-        writes = writes.then(job).then(done, done);
-        return writes;
+        var mine = writes.then(job);
+        var after = mine.then(function() {}, function() {}).then(function() { saving--; edits++; });
+        writes = after;
+        return mine.then(function(r) { return after.then(function() { return r; }); },
+            function(err) { return after.then(function() { throw err; }); });
     }
-    function timedWrite(url, opts, near) {
-        var ctl = new AbortController(), timer = setTimeout(function() { ctl.abort(); }, WRITE_TIMEOUT_MS);
+    // The job for the zone object ``zone``, sent to its index at that moment; null when it is gone by then.
+    function zoneJob(zone, send) {
+        return enqueue(function() {
+            var at = state.zones.indexOf(zone);
+            return at < 0 ? null : send(at);
+        });
+    }
+    function timedFetch(url, opts) {
+        var ctl = new AbortController();
+        setTimeout(function() { ctl.abort(); }, WRITE_TIMEOUT_MS);
         opts.signal = ctl.signal;
-        return zoneWrite(fetch(url, opts), near).then(function(r) { clearTimeout(timer); return r; });
+        return fetch(url, opts);
     }
+    function timedWrite(url, opts, near) { return zoneWrite(timedFetch(url, opts), near); }
     function updateZoneVertices(idx) {
         var zone = state.zones[idx];
         if (!zone || queuedSaves.indexOf(zone) >= 0) return;
@@ -1120,18 +1133,17 @@
             danger: true,
         });
         if (!ok || state.selectedIndex !== idx) return;
-        var zone = state.zones[idx];
-        enqueue(function() {
-            var at = state.zones.indexOf(zone);
-            if (at < 0) return null;
+        zoneJob(state.zones[idx], function(at) {
             // Said under the buttons: the zone's details may be gone by then.
             return timedWrite('/api/zones/' + at, {method: 'DELETE'}, deleteBtn.parentNode).then(function(r) {
                 if (!r) return;
-                var now = state.zones.indexOf(zone);
-                state.zones.splice(now, 1);
-                if (state.selectedIndex === now) state.selectedIndex = -1;
-                else if (state.selectedIndex > now) state.selectedIndex--;
-                renderDetails();
+                state.zones.splice(at, 1);
+                if (state.selectedIndex === at) state.selectedIndex = -1;
+                else if (state.selectedIndex > at) state.selectedIndex--;
+                // Another zone's details being typed into are kept, as the poll keeps them.
+                var a = document.activeElement;
+                if (state.selectedIndex >= 0 && a && detailsEl.contains(a)) state.detailsRenderedIndex = state.selectedIndex;
+                else renderDetails();
                 render();
             });
         }).then(fetchZones);

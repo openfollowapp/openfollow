@@ -261,7 +261,12 @@
         svg.addEventListener('pointerup', function (ev) { self._end(ev); });
         svg.addEventListener('pointercancel', function (ev) { self._end(ev); });
         svg.addEventListener('lostpointercapture', function (ev) { self._end(ev); });
-        svg.addEventListener('contextmenu', function () { self.cancelDrag(); });
+        // A right click cancels a mouse drag; a long press on a touch screen or with a pen keeps its drag.
+        svg.addEventListener('contextmenu', function (ev) {
+            if (!self._drag) return;
+            if (self._drag.start.type === 'mouse') self.cancelDrag();
+            else ev.preventDefault();
+        });
         svg.addEventListener('pointerleave', function () { if (!self._drag) self._hover({ target: null }); });
         svg.addEventListener('keydown', function (ev) { self._key(ev); });
         svg.addEventListener('blur', function () { self.flush(); });

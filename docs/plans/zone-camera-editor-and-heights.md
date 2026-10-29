@@ -43,6 +43,7 @@ The interactive mockup, built on the Media Gallery's Concert picture and its cal
 ## Not in this change / known limits
 
 - A corner save given up after 10 s without an answer may still reach the station later and land after a newer one; preventing that needs revisions on the server.
+- The station addresses zones by index, so while edits keep the poll held, a zone deleted from another browser, or a delete that failed or timed out but still landed, can leave the page's list stale, and a later queued write can reach another zone; closing it needs stable zone ids on the station.
 
 ## Work items
 

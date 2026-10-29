@@ -1700,3 +1700,181 @@ def test_a_deleted_zone_brings_the_list_up_to_date_at_once() -> None:
         _THREE,
     )
     assert out == {"asked": 1, "lines": 2, "status": "Renamed · 4 corners"}
+
+
+@pytest.mark.parametrize("kind", ["touch", "pen"])
+def test_a_long_press_keeps_a_touch_or_pen_drag(kind: str) -> None:
+    out = _camera(
+        f"""
+        await pick();
+        pointer(pin(3), 'pointerdown', 840, 260, '{kind}');
+        var menu = makeEvent('contextmenu', {{ clientX: 840, clientY: 260 }});
+        svg().dispatchEvent(menu);
+        out.prevented = menu.defaultPrevented;
+        pointer(svg(), 'pointermove', 900, 260, '{kind}');
+        out.during = spot(3);
+        pointer(svg(), 'pointerup', 900, 260, '{kind}');
+        await settle();
+        out.saved = stored();
+        """
+    )
+    assert out == {"prevented": True, "during": [900, 260], "saved": [[[0, 2], [2, 2], [2.6, 4], [0, 4]]]}
+
+
+def test_a_context_menu_without_a_drag_is_left_alone() -> None:
+    out = _camera(
+        """
+        await pick();
+        var menu = makeEvent('contextmenu', { clientX: 840, clientY: 260 });
+        svg().dispatchEvent(menu);
+        out.prevented = menu.defaultPrevented;
+        """
+    )
+    assert out == {"prevented": False}
+
+
+# -- the details panel's writes keep to their zone too -------------------------------------
+
+_DETAIL_ROUTES = """
+var base2 = station;
+station = function (req) {
+    var m = /^\\/api\\/zones\\/(\\d+)\\/(duplicate|test_send)/.exec(req.url);
+    if (m && m[2] === 'duplicate') {
+        model.zones.push(JSON.parse(JSON.stringify(model.zones[+m[1]])));
+        return { body: { success: true, index: model.zones.length - 1 } };
+    }
+    if (m) return { body: { sent: model.zones[+m[1]].name } };
+    return base2(req);
+};
+"""
+
+_DELETE_OTHER = """
+tickIntervals(); await settle();
+choose('camera'); await showPicture();
+await chooseZone(0, 400, 400);
+holdWhen = function (r) { return r.method === 'DELETE'; };
+document.getElementById('zone-delete-btn').click();
+await settle();
+await chooseZone(1, 740, 360);
+"""
+
+
+@pytest.mark.parametrize(
+    "act, then",
+    [
+        ("document.getElementById('zone-save-btn').click();", ["PUT /api/zones/0"]),
+        (
+            "document.getElementById('zone-save-btn').click(); await settle(); await chooseZone(2, 1040, 360);",
+            ["PUT /api/zones/0"],
+        ),
+        ("document.getElementById('zone-duplicate-btn').click();", ["PUT /api/zones/0", "POST /api/zones/0/duplicate"]),
+        (
+            "document.querySelector('[data-zone-test=\"first\"]').click();",
+            ["PUT /api/zones/0", "POST /api/zones/0/test_send?which=first"],
+        ),
+    ],
+    ids=["save", "save then choose another", "duplicate", "test send"],
+)
+def test_a_details_write_after_a_delete_reaches_its_own_zone(act: str, then: list[str]) -> None:
+    out = _camera(
+        _ZONE_STEPS
+        + _DELETE_OTHER
+        + act
+        + """
+        await settle();
+        out.held = writes();
+        holdWhen = null;
+        release(); await settle();
+        out.writes = writes();
+        out.names = model.zones.map(function (z) { return z.name; });
+        var pre = document.getElementById('zone-diag-test-result');
+        out.sent = pre && !pre.hidden ? pre.textContent : null;
+        """,
+        _THREE + _DETAIL_ROUTES,
+    )
+    assert out["held"] == ["DELETE /api/zones/0"]
+    assert out["writes"] == ["DELETE /api/zones/0", *then]
+    assert out["names"][:2] == ["Square", "Third"]
+    if "test_send" in then[-1]:
+        assert out["sent"] is not None and '"sent": "Square"' in out["sent"]
+
+
+def test_a_details_save_for_a_zone_deleted_meanwhile_is_dropped() -> None:
+    out = _camera(
+        _ZONE_STEPS
+        + """
+        tickIntervals(); await settle();
+        choose('camera'); await showPicture();
+        await chooseZone(0, 400, 400);
+        holdWhen = function (r) { return r.method === 'DELETE'; };
+        document.getElementById('zone-delete-btn').click();
+        await settle();
+        document.getElementById('zone-save-btn').click();
+        await settle();
+        holdWhen = null;
+        release(); await settle();
+        out.writes = writes();
+        """,
+        _THREE,
+    )
+    assert out == {"writes": ["DELETE /api/zones/0"]}
+
+
+def test_a_delete_landing_keeps_what_is_typed_in_another_zone() -> None:
+    out = _camera(
+        _ZONE_STEPS
+        + _DELETE_OTHER
+        + """
+        var panel = document.querySelector('#zone-details .group');
+        var name = document.querySelector('#zone-details [data-zone-field="name"]');
+        typeInto(name, 'Lead vocal');
+        holdWhen = null;
+        release(); await settle();
+        out.same = document.querySelector('#zone-details .group') === panel;
+        out.typed = document.querySelector('#zone-details [data-zone-field="name"]').value;
+        tickIntervals(); await settle();
+        out.afterPoll = document.querySelector('#zone-details [data-zone-field="name"]').value;
+        """,
+        _THREE,
+    )
+    assert out == {"same": True, "typed": "Lead vocal", "afterPoll": "Lead vocal"}
+
+
+def test_a_saved_zone_brings_the_list_up_to_date_at_once() -> None:
+    out = _camera(
+        """
+        await pick();
+        var gets = function () {
+            return requests.filter(function (r) { return r.method === 'GET' && r.url === '/api/zones'; }).length;
+        };
+        var was = gets();
+        // Another browser adds a zone meanwhile: the reload after the save shows it.
+        model.zones.push({ name: 'Elsewhere', color: '#33aaff', vertices: [[-3, 2], [-2, 2], [-2, 3]] });
+        document.getElementById('zone-save-btn').click();
+        await settle();
+        out.asked = gets() - was;
+        out.lines = zoneLines().length;
+        """
+    )
+    assert out == {"asked": 1, "lines": 2}
+
+
+def test_a_test_send_with_no_answer_is_given_up() -> None:
+    out = _camera(
+        """
+        await pick();
+        holdWhen = function (r) { return r.url.indexOf('/test_send') > 0; };
+        document.querySelector('[data-zone-test="first"]').click();
+        await settle();
+        runTimeouts(); await settle();
+        out.shown = document.getElementById('zone-diag-test-result').textContent;
+        holdWhen = null;
+        model.zones[0].name = 'Renamed';
+        // Off the details, so the poll may refresh the chosen zone too.
+        document.activeElement.blur();
+        tickIntervals(); await settle();
+        out.status = document.getElementById('zone-fs-status').textContent;
+        """
+    )
+    assert out["shown"].startswith("Error:")
+    assert out["status"] == "Renamed · 4 corners"

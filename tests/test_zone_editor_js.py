@@ -664,6 +664,7 @@ def test_the_poll_does_not_undo_a_corner_in_hand() -> None:
         tickIntervals(); await settle();
         out.drag = { spot: spot(3), same: zoneLines()[0] === line };
         pointer(svg(), 'pointerup', 900, 260);
+        await settle();
         key('Tab');
         key('ArrowRight');
         tickIntervals(); await settle();
@@ -682,6 +683,8 @@ def test_a_poll_asked_before_an_edit_is_not_applied_after_it() -> None:
         tickIntervals();
         drag(pin(3), [840, 260], [900, 260]);
         holdWhen = null;
+        // The save lands first, then the answer asked before the drag.
+        await settle();
         release(); await settle();
         out.spot = spot(3);
         // The next poll, once the save has landed, carries the new corner.
@@ -705,6 +708,39 @@ def test_the_poll_holds_while_a_save_is_on_its_way() -> None:
         """
     )
     assert out == {"spot": [900, 260]}
+
+
+def test_a_poll_asked_while_a_save_was_on_its_way_is_not_applied() -> None:
+    out = _camera(
+        """
+        await pick();
+        holdWhen = function (r) { return r.method === 'PUT' || r.method === 'GET'; };
+        drag(pin(3), [840, 260], [900, 260]);
+        // The station has not taken the save in when the poll asks.
+        var landed = JSON.parse(JSON.stringify(model.zones[0].vertices));
+        model.zones[0].vertices = [[0, 2], [2, 2], [2, 4], [0, 4]];
+        tickIntervals();
+        model.zones[0].vertices = landed;
+        holdWhen = null;
+        releaseFirst(); await settle();
+        release(); await settle();
+        out.spot = spot(3);
+        """
+    )
+    assert out == {"spot": [900, 260]}
+
+
+def test_pressing_the_chosen_zone_keeps_its_details_open() -> None:
+    out = _camera(
+        """
+        await pick();
+        var panel = document.querySelector('#zone-details .group');
+        pointer(zoneLines()[0], 'pointerdown', 700, 400);
+        await settle();
+        out.same = document.querySelector('#zone-details .group') === panel;
+        """
+    )
+    assert out == {"same": True}
 
 
 def test_an_idle_poll_does_not_redraw_the_picture() -> None:

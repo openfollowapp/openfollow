@@ -29,8 +29,8 @@
     // opts (each a function): corners() the chosen polygon's corners as picture points (null where the camera does
     // not see one), or null without a polygon; edge(i) picture points along the edge from corner i to the next;
     // place(i, at), insert(i, at) (a corner after corner i) and remove(i), each true when done; readout(i);
-    // changed() redraws, calling draw(); save(); press(ev) for a press off the corners; leave() for Esc with
-    // nothing chosen, true when it did something. ``min`` is the fewest corners a polygon keeps.
+    // changed() redraws, calling draw(); save(); press(ev) for a press off the corners. ``min`` is the fewest
+    // corners a polygon keeps. Esc with nothing chosen is left to the page.
     function PicturePolygon(view, opts) {
         this.view = view;
         this.opts = opts;
@@ -188,7 +188,6 @@
         var corners = this.opts.corners();
         if (ev.key === 'Escape') {
             if (this.chosen !== null) { this.choose(null); this.opts.changed(); ev.preventDefault(); }
-            else if (this.opts.leave()) ev.preventDefault();
             return;
         }
         if (!corners) return;

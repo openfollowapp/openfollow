@@ -19,18 +19,15 @@
         return best;
     }
 
-    // The limit screen radius and the largest pinhole radius with a screen point (the fold's, else Infinity).
-    function limits(k1, k2) {
-        var pole = firstPositiveRoot(k2, k1), fold = firstPositiveRoot(-3 * k2, -k1), s = Math.min(pole, fold);
-        var rLim = Math.sqrt(s);
-        return { rLim: rLim, reach: fold < pole ? rLim / (1 + k1 * s + k2 * s * s) : Infinity };
+    // The screen radius where the lens map first stops rising: its pole or its fold (lens_model.lens_limit_radius).
+    function limitRadius(k1, k2) {
+        return Math.sqrt(Math.min(firstPositiveRoot(k2, k1), firstPositiveRoot(-3 * k2, -k1)));
     }
 
-    // The screen radius whose pinhole radius is ru: closed form for k2 == 0, else Newton kept inside [0, rLim].
-    function distortRadius(ru, k1, k2, lim) {
-        ru = Math.min(ru, lim.reach);
-        if (k2 === 0) return 2 * ru / (1 + Math.sqrt(Math.max(1 - 4 * k1 * ru * ru, 0)));
-        var lo = 0, hi = lim.rLim, r = Math.min(ru, hi);
+    // The screen radius whose pinhole radius is ru, by Newton kept inside [0, rLim]: a pinhole radius past a
+    // fold has none, and lands on the fold as in the solver.
+    function distortRadius(ru, k1, k2, rLim) {
+        var lo = 0, hi = rLim, r = Math.min(ru, hi);
         for (var n = 0; n < 80; n++) {
             var s = r * r, h = ru * ((k2 * s + k1) * s + 1) - r;
             var step = h / (ru * r * (4 * k2 * s + 2 * k1) - 1);
@@ -66,7 +63,7 @@
         this.cx = num(cam.cx);
         this.cy = num(cam.cy);
         this.hd = 0.5 * Math.hypot(w, h);
-        this.lim = limits(this.k1, this.k2);
+        this.rLim = limitRadius(this.k1, this.k2);
         this.lens = this.k1 !== 0 || this.k2 !== 0;
     }
 
@@ -101,7 +98,7 @@
         var fx = this.w / 2, fy = this.h / 2, ox = fx + this.cx * this.hd, oy = fy + this.cy * this.hd;
         if (!this.lens) return [sx + (ox - fx), sy + (oy - fy)];
         var dx = sx - fx, dy = sy - fy, ru = Math.hypot(dx, dy) / this.hd;
-        var scale = ru > 0 ? distortRadius(ru, this.k1, this.k2, this.lim) / ru : 1;
+        var scale = ru > 0 ? distortRadius(ru, this.k1, this.k2, this.rLim) / ru : 1;
         return [ox + dx * scale, oy + dy * scale];
     };
 
@@ -110,7 +107,7 @@
         var fx = this.w / 2, fy = this.h / 2;
         var dx = px - (fx + this.cx * this.hd), dy = py - (fy + this.cy * this.hd);
         var s = (dx * dx + dy * dy) / (this.hd * this.hd);
-        if (!(s < this.lim.rLim * this.lim.rLim)) return null;
+        if (!(s < this.rLim * this.rLim)) return null;
         var scale = 1 / ((this.k2 * s + this.k1) * s + 1);
         return [fx + dx * scale, fy + dy * scale];
     };

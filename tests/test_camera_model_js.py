@@ -79,6 +79,23 @@ _CAMERAS = {
         1280,
         720,
     ),
+    "pincushion without k2": (
+        {
+            "pos_x": 0.5,
+            "pos_y": -6.0,
+            "pos_z": 4.0,
+            "pitch": -28.0,
+            "yaw": 5.0,
+            "roll": 0.0,
+            "fov": 75.0,
+            "k1": 0.2,
+            "k2": 0.0,
+            "cx": 0.0,
+            "cy": 0.0,
+        },
+        1280,
+        720,
+    ),
     "centre shift only": (
         {
             "pos_x": 0.0,
@@ -219,6 +236,16 @@ def test_a_picture_point_past_the_lens_limit_reaches_no_stage() -> None:
     out = _node(cam, 1280, 720)
     want = _python_unproject(cam, 1280, 720, 0.0)
     corner = _picture_grid(1280, 720).index([0.0, 0.0])
+    assert want[corner] is None and out["unproject"][0][corner] is None
+    _same(out["unproject"][0], want, 1e-7)
+
+
+def test_a_picture_point_past_a_pincushion_fold_reaches_no_stage() -> None:
+    # Past the fold the lens map still has a value, but no pinhole point maps there.
+    cam = dict(_CAMERAS["pincushion with a fold"][0], k1=0.3, k2=0.3, cx=0.0, cy=0.0)
+    out = _node(cam, 1280, 720)
+    want = _python_unproject(cam, 1280, 720, 0.0)
+    corner = _picture_grid(1280, 720).index([0.0, 720.0])
     assert want[corner] is None and out["unproject"][0][corner] is None
     _same(out["unproject"][0], want, 1e-7)
 

@@ -216,11 +216,6 @@
             state.selectedIndex = +line.dataset.zone;
             renderDetails();
         },
-        leave: function() {
-            if (fsShell.hidden) return false;
-            closeFull();
-            return true;
-        },
     });
 
     function renderPicture() {

@@ -38,7 +38,7 @@ Default tuning:
 ## Marker pinning (`services.py: apply_detection_pin`)
 - Runs every frame at 60 FPS in `_animate()` loop. Gated on `detection.enabled` alone; off ⇒ prune all ghosts + pin states and return
 - Per-marker smoothing state lives in `app._detection_pin_states: dict[int, DetectionPinState]` (lazy via `_get_pin_state`, pruned by `_prune_pin_states(keep=...)`). `replace` mode uses a 1-entry dict for the resolved marker; `assist` uses one entry per controlled marker
-- `pin_point`: `"top"` pins to head (top-center of box, unprojects at marker Z, in assist at the anchor's Z, plus a [zone height](zones.md#zone-heights) consistent with where the head lands, never the ramped lift), `"bottom"` pins to feet (bottom-center, unprojects at grid `z_offset` = stage floor)
+- `pin_point`: `"top"` pins to head (top-center of box, unprojects at marker Z, in assist at the anchor's Z), `"bottom"` pins to feet (bottom-center, unprojects at grid `z_offset` = stage floor); either plane is raised by the [zone height](zones.md#zone-heights) the person's feet stand at, never by the marker's ramped lift
 - Velocity estimation: EMA-smoothed (alpha=0.3) from target position deltas, normalised to a per-nominal-frame rate
 - Prediction: `predicted = target + velocity × prediction` – lookahead to compensate for detection lag on fast-moving persons
 - EMA smoothing applied **after** prediction: `smooth += alpha × (predicted - smooth)` – smooths the final output including lookahead

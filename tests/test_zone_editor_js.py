@@ -984,8 +984,9 @@ def test_tab_stays_inside_full_screen() -> None:
         document.getElementById('zone-fs-btn').click();
         document.getElementById('zone-fs-refresh').focus();
         out.back = key('Tab', true); out.toLast = document.activeElement.id;
-        // On the picture Tab goes round the corners first, then on to the bar's first button.
-        out.corners = [1, 2, 3, 4].map(function () { return key('Tab'); });
+        // Entered from after it, the picture starts at its last corner; Tab past it goes on to the bar's first button.
+        svg().dispatchEvent(makeEvent('keyup', { key: 'Tab' }));
+        out.entered = chosen();
         out.forward = key('Tab'); out.toFirst = document.activeElement.id;
         document.getElementById('zone-fs-refresh').focus();
         out.middle = key('Tab');
@@ -994,7 +995,7 @@ def test_tab_stays_inside_full_screen() -> None:
     assert out == {
         "back": True,
         "toLast": "zone-picture-svg",
-        "corners": [True] * 4,
+        "entered": "V4",
         "forward": True,
         "toFirst": "zone-fs-refresh",
         "middle": False,
@@ -1118,3 +1119,275 @@ def test_a_replaced_editor_stops_listening() -> None:
         "await settle(); var was = zoneGets(); announce(); await settle(); out.asked = zoneGets() - was;"
     )
     assert _editor(steps, _ZONE_GETS)["asked"] == 1
+
+
+# -- a drag always ends ----------------------------------------------------------------
+
+
+def test_escape_mid_drag_puts_the_corner_back_and_saves_nothing() -> None:
+    out = _camera(
+        _FULL
+        + """
+        await pick();
+        document.getElementById('zone-fs-btn').click();
+        pointer(pin(3), 'pointerdown', 840, 260);
+        pointer(svg(), 'pointermove', 900, 260);
+        out.held = key('Escape');
+        out.open = !shell().hidden;
+        out.spot = spot(3); out.loupe = loupe();
+        model.zones[0].name = 'Renamed';
+        tickIntervals(); await settle();
+        out.status = document.getElementById('zone-fs-status').textContent;
+        out.puts = puts().length;
+        pointer(svg(), 'pointerup', 900, 260);
+        await settle();
+        out.after = puts().length;
+        out.tab = key('Tab');
+        """
+    )
+    assert out == {
+        "held": True,
+        "open": True,
+        "spot": [840, 260],
+        "loupe": False,
+        "status": "Renamed · 4 corners",
+        "puts": 0,
+        "after": 0,
+        "tab": True,
+    }
+
+
+def test_escape_mid_edge_drag_takes_the_new_corner_away() -> None:
+    out = _camera(
+        """
+        await pick();
+        pointer(bands(0)[0], 'pointerdown', 740, 460);
+        pointer(svg(), 'pointermove', 740, 480);
+        out.during = pins().length;
+        key('Escape');
+        await settle();
+        out.pins = pins(); out.chosen = chosen(); out.puts = puts().length;
+        out.area = document.querySelectorAll('#zone-details [data-vertex-field="x"]').length;
+        """
+    )
+    assert out == {"during": 5, "pins": ["V1", "V2", "V3", "V4"], "chosen": None, "puts": 0, "area": 4}
+
+
+def test_leaving_full_screen_mid_drag_ends_the_drag() -> None:
+    out = _camera(
+        _FULL
+        + """
+        await pick();
+        document.getElementById('zone-fs-btn').click();
+        pointer(pin(3), 'pointerdown', 840, 260);
+        pointer(svg(), 'pointermove', 900, 260);
+        document.getElementById('zone-fs-exit').click();
+        out.spot = spot(3); out.loupe = loupe();
+        model.zones[0].vertices[0] = [0.5, 2];
+        tickIntervals(); await settle();
+        out.polled = spot(1);
+        out.puts = puts().length;
+        """
+    )
+    assert out == {"spot": [840, 260], "loupe": False, "polled": [690, 460], "puts": 0}
+
+
+@pytest.mark.parametrize("how", ["lostpointercapture", "pointercancel"])
+def test_a_drag_the_browser_takes_away_keeps_the_corner_and_saves(how: str) -> None:
+    out = _camera(
+        f"""
+        await pick();
+        pointer(pin(3), 'pointerdown', 840, 260);
+        pointer(svg(), 'pointermove', 900, 260);
+        pointer(svg(), '{how}', 900, 260);
+        await settle();
+        out.saved = stored(); out.loupe = loupe();
+        model.zones[0].name = 'Renamed';
+        tickIntervals(); await settle();
+        out.status = document.getElementById('zone-fs-status').textContent;
+        """
+    )
+    assert out == {"saved": [[[0, 2], [2, 2], [2.6, 4], [0, 4]]], "loupe": False, "status": "Renamed · 4 corners"}
+
+
+def test_a_second_pointer_does_not_take_over_a_drag() -> None:
+    out = _camera(
+        """
+        function touch(target, type, x, y, id) {
+            target.dispatchEvent(makeEvent(type, { clientX: x, clientY: y, pointerId: id, pointerType: 'touch' }));
+        }
+        await pick();
+        touch(pin(3), 'pointerdown', 840, 260, 1);
+        touch(svg(), 'pointermove', 900, 260, 1);
+        touch(pin(1), 'pointerdown', 640, 460, 2);
+        touch(svg(), 'pointermove', 600, 460, 2);
+        touch(svg(), 'pointerup', 900, 260, 1);
+        touch(svg(), 'pointerup', 600, 460, 2);
+        await settle();
+        out.saved = stored(); out.chosen = chosen();
+        tickIntervals(); await settle();
+        out.spots = [spot(1), spot(3)];
+        """
+    )
+    assert out == {"saved": [[[0, 2], [2, 2], [2.6, 4], [0, 4]]], "chosen": "V3", "spots": [[640, 460], [900, 260]]}
+
+
+def test_after_a_delete_the_nearest_seen_corner_is_chosen() -> None:
+    out = _camera(
+        """
+        // V4 sits upstage of the picture.
+        model.zones[0].vertices = [[0, 2], [2, 2], [2, 4], [0, 10], [0, 4]];
+        await pick();
+        pointer(pin(3), 'pointerdown', 840, 260); pointer(svg(), 'pointerup', 840, 260);
+        key('Delete');
+        out.chosen = chosen();
+        key('Delete');
+        await settle();
+        out.saved = stored();
+        """
+    )
+    assert out["chosen"] == "V2"
+    assert out["saved"][-1] == [[0, 2], [0, 10], [0, 4]]
+
+
+def test_after_a_delete_with_no_seen_corner_left_nothing_is_chosen() -> None:
+    out = _camera(
+        """
+        model.zones[0].vertices = [[0, 2], [0, 10], [1, 10], [2, 10]];
+        await pick();
+        pointer(pin(1), 'pointerdown', 640, 460); pointer(svg(), 'pointerup', 640, 460);
+        document.getElementById('zone-corner-delete-btn').click();
+        await settle();
+        out.chosen = chosen(); out.puts = puts().length;
+        out.button = document.getElementById('zone-corner-delete-btn').disabled;
+        """
+    )
+    assert out == {"chosen": None, "puts": 1, "button": True}
+
+
+# -- saves in order --------------------------------------------------------------------
+
+
+def test_corner_saves_go_one_at_a_time_and_the_latest_follows() -> None:
+    out = _camera(
+        """
+        await pick();
+        holdWhen = function (r) { return r.method === 'PUT'; };
+        drag(pin(3), [840, 260], [900, 260]);
+        drag(pin(3), [900, 260], [920, 260]);
+        drag(pin(3), [920, 260], [940, 260]);
+        await settle();
+        out.first = puts().length;
+        releaseFirst(); await settle();
+        out.second = stored();
+        holdWhen = null;
+        release(); await settle();
+        out.total = puts().length;
+        """
+    )
+    assert out["first"] == 1
+    assert out["second"] == [[[0, 2], [2, 2], [2.6, 4], [0, 4]], [[0, 2], [2, 2], [3, 4], [0, 4]]]
+    assert out["total"] == 2
+
+
+def test_a_corner_save_that_hangs_is_given_up_and_says_so() -> None:
+    out = _camera(
+        """
+        await pick();
+        holdWhen = function (r) { return r.method === 'PUT'; };
+        drag(pin(3), [840, 260], [900, 260]);
+        await settle();
+        runTimeouts(); await settle();
+        var line = document.querySelector('#zone-editor-section .save-error');
+        out.error = line ? line.textContent : null;
+        holdWhen = null;
+        model.zones[0].name = 'Renamed';
+        tickIntervals(); await settle();
+        out.status = document.getElementById('zone-fs-status').textContent;
+        """
+    )
+    assert out["error"] is not None and "The station did not answer." in out["error"]
+    assert out["status"] == "Renamed · 4 corners"
+
+
+# -- screen readers and Shift+Tab --------------------------------------------------------
+
+
+def test_the_stage_position_is_announced_once_when_the_drag_ends() -> None:
+    out = _camera(
+        """
+        await pick();
+        pointer(pin(3), 'pointerdown', 840, 260);
+        pointer(svg(), 'pointermove', 900, 260);
+        var live = function () { return document.querySelector('#zone-picture [aria-live]'); };
+        out.readoutLive = document.querySelector('#zone-picture .pv-readout').getAttribute('aria-live');
+        out.during = live() ? live().textContent : '';
+        pointer(svg(), 'pointerup', 900, 260);
+        out.after = live().textContent;
+        """
+    )
+    assert out == {"readoutLive": None, "during": "", "after": "V3 · X 2.600 m · Y 4.000 m"}
+
+
+def test_the_stage_position_is_announced_when_a_key_edit_is_saved() -> None:
+    out = _camera(
+        """
+        await pick();
+        var live = function () {
+            var l = document.querySelector('#zone-picture [aria-live]');
+            return l ? l.textContent : '';
+        };
+        svg().focus(); key('Tab'); key('ArrowRight');
+        out.during = live();
+        runTimeouts();
+        out.after = live();
+        """
+    )
+    assert out == {"during": "", "after": "V1 · X 0.010 m · Y 2.000 m"}
+
+
+def test_shift_tab_into_the_picture_enters_at_the_last_seen_corner() -> None:
+    out = _camera(
+        """
+        model.zones[0].vertices = [[0, 2], [2, 2], [2, 4], [0, 10]];
+        await pick();
+        var after = document.getElementById('zone-fs-btn');
+        after.focus();
+        after.dispatchEvent(makeEvent('keydown', { key: 'Tab', shiftKey: true }));
+        svg().focus();
+        out.back = [chosen(), ringed()];
+        svg().dispatchEvent(makeEvent('keyup', { key: 'Tab', shiftKey: true }));
+        key('Escape'); svg().blur();
+        document.body.dispatchEvent(makeEvent('keydown', { key: 'Tab' }));
+        svg().focus();
+        out.forward = chosen();
+        """
+    )
+    assert out == {"back": ["V3", "V3"], "forward": None}
+
+
+def test_after_a_delete_a_seen_corner_further_on_is_chosen_when_none_before_is() -> None:
+    out = _camera(
+        """
+        // V1 and V3 sit upstage of the picture.
+        model.zones[0].vertices = [[0, 10], [2, 2], [1, 10], [2, 4], [0, 4]];
+        await pick();
+        pointer(pin(2), 'pointerdown', 840, 460); pointer(svg(), 'pointerup', 840, 460);
+        key('Delete');
+        out.chosen = chosen();
+        """
+    )
+    assert out == {"chosen": "V3"}
+
+
+def test_a_focus_after_shift_tab_was_let_go_enters_with_nothing_chosen() -> None:
+    out = _camera(
+        """
+        await pick();
+        document.body.dispatchEvent(makeEvent('keydown', { key: 'Tab', shiftKey: true }));
+        document.body.dispatchEvent(makeEvent('keyup', { key: 'Tab', shiftKey: true }));
+        svg().focus();
+        out.chosen = chosen();
+        """
+    )
+    assert out == {"chosen": None}

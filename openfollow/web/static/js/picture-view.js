@@ -171,7 +171,6 @@
                 + '<path class="pv-loupe-shade" d="M60 40V80M40 60H80"/><path class="pv-loupe-cross" d="M60 40V80M40 60H80"/></svg>';
             this._readout = document.createElement('div');
             this._readout.className = 'pv-readout';
-            this._readout.setAttribute('aria-live', 'polite');
             this.stage.appendChild(this._loupe);
             this.stage.appendChild(this._readout);
         }
@@ -189,6 +188,17 @@
         this._readout.style.left = at[0] + 'px';
         // Under the loupe, or over it where the picture ends.
         this._readout.style.top = (at[1] + LOUPE + 30 > box.height ? at[1] - 30 : at[1] + LOUPE + 6) + 'px';
+    };
+
+    // Reads ``text`` out once to a screen reader, where the moving readout would chatter.
+    P.announce = function (text) {
+        if (!this._live) {
+            this._live = document.createElement('div');
+            this._live.className = 'visually-hidden';
+            this._live.setAttribute('aria-live', 'polite');
+            this.stage.appendChild(this._live);
+        }
+        this._live.textContent = text;
     };
 
     P.hideLoupe = function () {

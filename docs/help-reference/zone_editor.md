@@ -25,7 +25,7 @@ Interactive top-down stage view; the grid and any placed markers stay visible as
 - The **full screen** button at the top right of the picture opens it over the page, with the zone's name and corner count, **Refresh Image**, **Delete corner** and **Exit full screen**. **Esc** leaves it.
 - **Refresh Image** takes a new snapshot.
 
-With the picture focused (click it, or Tab to it): **Tab** and **Shift+Tab** go round the chosen zone's corners, skipping those the camera does not see; the **arrow keys** move the corner one picture pixel, ten with **Shift**; **Delete** or **Backspace** removes it; **Esc** lets go of it, and a second **Esc** leaves full screen. A corner moved by keys is saved a moment after the last step.
+With the picture focused (click it, or Tab to it): **Tab** and **Shift+Tab** go round the chosen zone's corners, skipping those the camera does not see; the **arrow keys** move the corner one picture pixel, ten with **Shift**; **Delete** or **Backspace** removes it; **Esc** lets go of it, and a second **Esc** leaves full screen. **Esc** during a drag puts the corner back where the drag started. A corner moved by keys is saved a moment after the last step.
 
 New zones are drawn in the top-down view. Without a video picture the view says so. The zones follow the saved camera position: after changing the camera, save it before checking zones here.
 

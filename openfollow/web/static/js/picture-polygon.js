@@ -28,9 +28,10 @@
 
     // opts (each a function): corners() the chosen polygon's corners as picture points (null where the camera does
     // not see one), or null without a polygon; edge(i) picture points along the edge from corner i to the next;
-    // place(i, at), insert(i, at) (a corner after corner i) and remove(i), each true when done; readout(i);
-    // changed() redraws, calling draw(); save(); press(ev) for a press off the corners. ``min`` is the fewest
-    // corners a polygon keeps. Esc with nothing chosen is left to the page.
+    // place(i, at), insert(i, at) (a corner after corner i) and remove(i), each true when done; snapshot() and
+    // restore(snap) to put a cancelled drag back; readout(i); changed() redraws, calling draw(); save(); press(ev)
+    // for a press off the corners. ``min`` is the fewest corners a polygon keeps. Esc with nothing chosen is left
+    // to the page.
     function PicturePolygon(view, opts) {
         this.view = view;
         this.opts = opts;
@@ -40,6 +41,7 @@
         this._drag = null;
         this._soon = 0;          // the pending key save's token; a newer step or a flush replaces it
         this._waiting = false;
+        this._backTab = false;   // Shift+Tab is down: focus arriving now came from after the picture
         this._bind();
     }
 
@@ -59,34 +61,53 @@
         return this.chosen !== null && !!corners && corners.length > this.min;
     };
 
-    // One save for the corner gone, with any key edit still waiting in it.
+    // One save for the corner gone, with any key edit still waiting in it. The nearest corner the camera sees,
+    // the next one first, is chosen in its place.
     P.deleteChosen = function () {
         if (!this.canDelete() || !this.opts.remove(this.chosen)) return;
         this._waiting = false;
         this._soon++;
-        this.chosen = Math.min(this.chosen, this.opts.corners().length - 1);
+        var corners = this.opts.corners(), at = Math.min(this.chosen, corners.length - 1), next = null;
+        for (var d = 0; d < corners.length && next === null; d++) {
+            if (this.view.inPicture(corners[at - d])) next = at - d;
+            else if (this.view.inPicture(corners[at + d])) next = at + d;
+        }
+        this.chosen = next;
         this.opts.changed();
         this.opts.save();
+    };
+
+    // Ends a drag without keeping it: the corner goes back, a corner the drag added goes, nothing is saved.
+    P.cancelDrag = function () {
+        var d = this._drag;
+        if (!d) return;
+        this._drag = null;
+        if (this.view.svg.releasePointerCapture) this.view.svg.releasePointerCapture(d.id);
+        this.view.hideLoupe();
+        if (d.moved) this.opts.restore(d.before);
+        if (d.edge !== undefined) this.chosen = null;
+        this.opts.changed();
     };
 
     // Saves a key edit still waiting for its moment.
     P.flush = function () {
         if (!this._waiting) return;
-        this._waiting = false;
         this._soon++;
-        this.view.hideLoupe();
-        this.opts.save();
+        this._saved();
     };
 
     P._saveSoon = function () {
         var self = this, token = ++this._soon;
         this._waiting = true;
-        setTimeout(function () {
-            if (token !== self._soon) return;
-            self._waiting = false;
-            self.view.hideLoupe();
-            self.opts.save();
-        }, KEY_SAVE_MS);
+        setTimeout(function () { if (token === self._soon) self._saved(); }, KEY_SAVE_MS);
+    };
+
+    // A key edit is saved: the loupe goes and its readout is read out once.
+    P._saved = function () {
+        this._waiting = false;
+        this.view.hideLoupe();
+        if (this.chosen !== null) this.view.announce(this.opts.readout(this.chosen));
+        this.opts.save();
     };
 
     // The edge bands, the hover dot and the pins, over whatever the caller drew.
@@ -138,6 +159,8 @@
     P._press = function (ev) {
         var target = ev.target && ev.target.closest ? ev.target : null;
         var pin = target && target.closest('.pv-pin'), band = !pin && target && target.closest('.pv-edge');
+        // One corner at a time: another pointer waits for the drag to end.
+        if (this._drag) { ev.preventDefault(); return; }
         this.flush();
         if (!pin && !band) {
             this.choose(null);
@@ -146,13 +169,16 @@
             return;
         }
         ev.preventDefault();
-        var start = { x: ev.clientX, y: ev.clientY, slop: window.OpenFollow.PictureView.tapSlop(ev.pointerType), type: ev.pointerType };
+        var slop = window.OpenFollow.PictureView.tapSlop(ev.pointerType);
+        var drag = { i: null, start: { x: ev.clientX, y: ev.clientY, slop: slop, type: ev.pointerType },
+            moved: false, id: ev.pointerId, before: this.opts.snapshot() };
         if (pin) {
             this.choose(+pin.dataset.corner);
-            this._drag = { i: this.chosen, start: start, moved: false, id: ev.pointerId };
+            drag.i = this.chosen;
         } else {
-            this._drag = { i: null, edge: +band.dataset.edge, start: start, moved: false, id: ev.pointerId };
+            drag.edge = +band.dataset.edge;
         }
+        this._drag = drag;
         this.view.svg.setPointerCapture(ev.pointerId);
         this.view.svg.focus({ preventScroll: true });
         this.opts.changed();
@@ -174,17 +200,23 @@
         this.view.showLoupe(at, d.start.type, this.opts.readout(d.i));
     };
 
+    // A let-go drag keeps its corner, and so does one the browser takes away (a cancel, a lost capture).
     P._end = function (ev) {
         var d = this._drag;
         if (!d || ev.pointerId !== d.id) return;
         this._drag = null;
         this.view.hideLoupe();
         this.opts.changed();
-        if (d.moved) this.opts.save();
+        if (!d.moved) return;
+        this.view.announce(this.opts.readout(d.i));
+        this.opts.save();
     };
 
     P._key = function (ev) {
-        if (this._drag) return;
+        if (this._drag) {
+            if (ev.key === 'Escape') { this.cancelDrag(); ev.preventDefault(); }
+            return;
+        }
         var corners = this.opts.corners();
         if (ev.key === 'Escape') {
             if (this.chosen !== null) { this.choose(null); this.opts.changed(); ev.preventDefault(); }
@@ -221,9 +253,20 @@
         svg.addEventListener('pointermove', function (ev) { self._move(ev); });
         svg.addEventListener('pointerup', function (ev) { self._end(ev); });
         svg.addEventListener('pointercancel', function (ev) { self._end(ev); });
+        svg.addEventListener('lostpointercapture', function (ev) { self._end(ev); });
         svg.addEventListener('pointerleave', function () { if (!self._drag) self._hover({ target: null }); });
         svg.addEventListener('keydown', function (ev) { self._key(ev); });
         svg.addEventListener('blur', function () { self.flush(); });
+        // Shift+Tab into the picture enters at its last corner the camera sees.
+        document.addEventListener('keydown', function (ev) { self._backTab = ev.key === 'Tab' && ev.shiftKey; }, true);
+        document.addEventListener('keyup', function () { self._backTab = false; }, true);
+        svg.addEventListener('focus', function () {
+            var corners = self.opts.corners();
+            if (!self._backTab || self.chosen !== null || !corners) return;
+            for (var i = corners.length - 1; i >= 0; i--) {
+                if (self.view.inPicture(corners[i])) { self.choose(i, true); self.opts.changed(); return; }
+            }
+        });
     };
 
     window.OpenFollow = window.OpenFollow || {};

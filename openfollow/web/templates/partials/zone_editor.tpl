@@ -203,6 +203,12 @@
             renderDetails();
             return true;
         },
+        snapshot: function() { return JSON.stringify(chosenZone().vertices); },
+        restore: function(snap) {
+            chosenZone().vertices = JSON.parse(snap);
+            edits++;
+            renderDetails();
+        },
         readout: function(i) {
             var zone = chosenZone(), v = zone.vertices[i];
             return 'V' + (i + 1) + ' · X ' + formatLength(v[0]) + ' · Y ' + formatLength(v[1])
@@ -276,6 +282,7 @@
     }
     function closeFull() {
         if (fsShell.hidden) return;
+        corners.cancelDrag();
         corners.choose(null);
         pv.hideLoupe();
         fsHolder.parentNode.insertBefore(pictureEl, fsHolder);
@@ -1066,15 +1073,29 @@
           });
     }
 
+    // One corner save per zone at a time, so an older one cannot land last: a save asked meanwhile follows it
+    // with the corners as they are then. A save with no answer is given up, so the poll does not wait forever.
+    var CORNER_SAVE_TIMEOUT_MS = 10000;
+    var cornerSaves = {};
     function updateZoneVertices(idx) {
         var z = state.zones[idx];
         if (!z) return;
+        if (cornerSaves[idx]) { cornerSaves[idx].again = true; return; }
+        var run = cornerSaves[idx] = { again: false };
+        var ctl = new AbortController(), timer = setTimeout(function() { ctl.abort(); }, CORNER_SAVE_TIMEOUT_MS);
         saving++;
         zoneWrite(fetch('/api/zones/' + idx, {
             method: 'PUT',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({vertices: z.vertices}),
-        })).then(function() { saving--; edits++; });
+            signal: ctl.signal,
+        })).then(function() {
+            clearTimeout(timer);
+            saving--;
+            edits++;
+            delete cornerSaves[idx];
+            if (run.again) updateZoneVertices(idx);
+        });
     }
 
     async function deleteSelected() {

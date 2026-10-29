@@ -19,6 +19,15 @@ def raising_zones(cfg: Any) -> list[TriggerZoneConfig]:
     return [zone for zone in cfg.trigger_zones.zones if zone.enabled and zone.raise_markers and len(zone.vertices) >= 3]
 
 
+def height_at(zones: Sequence[TriggerZoneConfig], x: float, y: float) -> float:
+    """The height a marker at ``(x, y)`` is lifted to: the highest ``z_offset`` of the zones holding it, else 0."""
+    return max((zone.z_offset for zone in zones if point_in_polygon(x, y, _outline(zone))), default=0.0)
+
+
+def _outline(zone: TriggerZoneConfig) -> _Outline:
+    return tuple((v[0], v[1]) for v in zone.vertices)
+
+
 _Outline = tuple[tuple[float, float], ...]
 _Held = tuple[TriggerZoneConfig, _Outline]
 
@@ -58,7 +67,7 @@ class ZoneHeights:
         for marker_id in [m for m in self._lifts if m not in positions]:
             del self._lifts[marker_id]
         dt = max(0.0, dt)
-        outlines = [(zone, tuple((v[0], v[1]) for v in zone.vertices)) for zone in zones]
+        outlines = [(zone, _outline(zone)) for zone in zones]
         lifts: dict[int, float] = {}
         for marker_id, (x, y) in positions.items():
             lift = self._lifts.setdefault(marker_id, _Lift())

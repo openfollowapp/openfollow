@@ -16,9 +16,14 @@ from openfollow.input.touch_remote import holds
 from openfollow.runtime.frame_timing import NOMINAL_FRAME_DT, dt_steps, ema_factor
 from openfollow.runtime.state_maps import get_or_create, prune_to_keep
 from openfollow.scene.solver import invert_overlay_distortion, unproject_to_plane
+from openfollow.zones.heights import height_at, raising_zones
 
 if TYPE_CHECKING:
     from openfollow.psn.marker import Marker
+
+
+# A detection unprojected for assist: track id, world X, Y, and the zone height it was unprojected on.
+_DetWorld = tuple[int, float, float, float]
 
 
 @dataclass
@@ -49,6 +54,8 @@ class DetectionPinState:
     # Replace mode: the PSN tracker status last written to the driven marker, so
     # /api/stats can show the pin's own view beside the wire. None once released.
     status: float | None = None
+    # The zone height the head pin unprojected on last (``_unproject_head``).
+    head_height: float = 0.0
 
     def reset(self) -> None:
         """Clear smoothing/velocity so the next acquisition re-seeds fresh.
@@ -63,6 +70,7 @@ class DetectionPinState:
         self.prev_target_x = None
         self.prev_target_y = None
         self.locked_track_id = None
+        self.head_height = 0.0
         self.ai_smooth_x = None
         self.ai_smooth_y = None
         self.attached_track_id = None
@@ -201,6 +209,30 @@ def _release_status(app: Any, marker_id: int, state: DetectionPinState) -> None:
     marker = app._server.get_marker(marker_id)
     if marker is not None:
         marker.set_status(1.0)
+
+
+def _unproject_head(
+    params: npt.NDArray[Any],
+    screen_pt: npt.NDArray[Any],
+    w: float,
+    h: float,
+    base_z: float,
+    zones: list[Any],
+    keep: float,
+) -> tuple[npt.NDArray[Any], float]:
+    """A head's world point on ``base_z`` plus a zone height consistent with where it lands, and that height.
+
+    A height is consistent when the raising zones lift the point unprojected at it by exactly that height.
+    ``keep`` (the previous frame's) stands while consistent, else the highest consistent one, else 0.
+    Never the marker's ramped lift: the pinned position moves that lift, and the two would chase each
+    other at a zone's edge.
+    """
+    heights = sorted({0.0, *(zone.z_offset for zone in zones)}, reverse=True)
+    for height in [keep, *heights] if keep in heights else heights:
+        world = unproject_to_plane(params, screen_pt, w, h, base_z + height)
+        if np.all(np.isfinite(world[0])) and height_at(zones, float(world[0, 0]), float(world[0, 1])) == height:
+            return world, height
+    return unproject_to_plane(params, screen_pt, w, h, base_z), 0.0
 
 
 def _load_camera_params(app: Any, buffer: npt.NDArray[Any]) -> npt.NDArray[Any]:
@@ -367,9 +399,12 @@ def apply_detection_pin(
     # distortion is configured.
     screen_pt = invert_overlay_distortion(screen_pt, float(w), float(h), *effective_lens(cfg))
 
-    # The head stands where the marker is drawn and sent: its Z plus a zone's lift.
-    plane_z = cfg.grid.z_offset if use_bottom else marker.pos[2] + marker.lift
-    world = unproject_to_plane(params, screen_pt, float(w), float(h), plane_z)
+    if use_bottom:
+        world = unproject_to_plane(params, screen_pt, float(w), float(h), cfg.grid.z_offset)
+    else:
+        world, pin_state.head_height = _unproject_head(
+            params, screen_pt, float(w), float(h), marker.pos[2], raising_zones(cfg), pin_state.head_height
+        )
 
     if not np.all(np.isfinite(world[0])):
         _write_status(marker, pin_state, 0.0)
@@ -444,26 +479,30 @@ def _apply_assist_all(
     # Unproject each detection's pin point ONCE per plane and memoise by plane Z,
     # so N markers don't re-unproject M detections N times. ``pin_point ==
     # "bottom"`` shares the stage-floor plane across every marker (one pass);
-    # ``"top"`` uses each anchor's Z, so markers at the same height still share a
-    # single pass and only genuinely-different heights cost extra.
-    det_world_cache: dict[float, list[tuple[int, float, float]]] = {}
+    # ``"top"`` uses each anchor's Z (and the zone height kept from the last
+    # frame), so markers alike still share a single pass.
+    zones = raising_zones(cfg)
+    det_world_cache: dict[tuple[float, float], list[_DetWorld]] = {}
 
-    def _det_worlds_for(plane_z: float) -> list[tuple[int, float, float]]:
-        cached = det_world_cache.get(plane_z)
+    def _det_worlds_for(base_z: float, keep: float) -> list[_DetWorld]:
+        cached = det_world_cache.get((base_z, keep))
         if cached is not None:
             return cached
-        worlds: list[tuple[int, float, float]] = []
+        worlds: list[_DetWorld] = []
         for box in detections:
             screen_pt[0, 0] = (box.x1 + box.x2) / 2.0 * w
             screen_pt[0, 1] = (box.y2 if use_bottom else box.y1) * h
             # Undistort the detection pin point (it sits on the distorted video)
             # back to the pinhole frame; identity when no lens distortion is set.
             undistorted = invert_overlay_distortion(screen_pt, float(w), float(h), *effective_lens(cfg))
-            world = unproject_to_plane(params, undistorted, float(w), float(h), plane_z)
+            if use_bottom:
+                world, height = unproject_to_plane(params, undistorted, float(w), float(h), base_z), 0.0
+            else:
+                world, height = _unproject_head(params, undistorted, float(w), float(h), base_z, zones, keep)
             if not np.all(np.isfinite(world[0])):
                 continue
-            worlds.append((box.track_id, float(world[0, 0]), float(world[0, 1])))
-        det_world_cache[plane_z] = worlds
+            worlds.append((box.track_id, float(world[0, 0]), float(world[0, 1]), height))
+        det_world_cache[(base_z, keep)] = worlds
         return worlds
 
     radius_sq = cfg.detection.assist_radius_m**2
@@ -475,7 +514,9 @@ def _apply_assist_all(
         anchor = get_or_create_manual_marker(app, mid)
         state = _get_pin_state(app, mid)
         manual_x, manual_y, manual_z = anchor.pos
-        plane_z = cfg.grid.z_offset if use_bottom else manual_z + out_marker.lift
+        det_worlds = (
+            _det_worlds_for(cfg.grid.z_offset, 0.0) if use_bottom else _det_worlds_for(manual_z, state.head_height)
+        )
         _assist_one(
             cfg,
             state,
@@ -484,7 +525,7 @@ def _apply_assist_all(
             manual_x,
             manual_y,
             manual_z,
-            _det_worlds_for(plane_z),
+            det_worlds,
             radius_sq,
             steps,
             paths,
@@ -499,16 +540,16 @@ def _assist_one(
     manual_x: float,
     manual_y: float,
     manual_z: float,
-    det_worlds: list[tuple[int, float, float]],
+    det_worlds: list[_DetWorld],
     radius_sq: float,
     steps: float,
     paths: Any = None,
 ) -> None:
     """Glide one assist marker's output toward the person nearest its anchor.
 
-    ``det_worlds`` is the precomputed ``(track_id, x, y)`` of every detection on
-    this marker's unproject plane (PSN-absolute). Mutates ``state`` and writes
-    ``out_marker``.
+    ``det_worlds`` is the precomputed ``(track_id, x, y, zone height)`` of every
+    detection on this marker's unproject plane (PSN-absolute). Mutates ``state``
+    and writes ``out_marker``.
     """
     # Always follow the detection nearest the operator's manual anchor – never a
     # bigger box, never a previously-locked one. The operator retargets simply by
@@ -517,11 +558,12 @@ def _assist_one(
     chosen_id: int | None = None
     chosen_world: tuple[float, float] | None = None
     best_dsq = radius_sq
-    for track_id, wx, wy in det_worlds:
+    for track_id, wx, wy, height in det_worlds:
         dsq = (wx - manual_x) ** 2 + (wy - manual_y) ** 2
         if dsq <= best_dsq:
             best_dsq = dsq
             chosen_id, chosen_world = track_id, (wx, wy)
+            state.head_height = height
 
     if chosen_world is None:
         # No detection near the anchor – target the anchor itself so the AI

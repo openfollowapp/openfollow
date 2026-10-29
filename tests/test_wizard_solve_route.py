@@ -236,6 +236,11 @@ def test_advanced_suggests_the_floor_the_most_points_share(base: str, lift: floa
     assert data["floor"] == {"z": pytest.approx(lift), "ids": [1, 2, 5]}
 
 
+def test_simple_suggests_no_floor(base: str) -> None:
+    status, data = _solve(base, _body("simple"))
+    assert (status, data["floor"]) == (200, None)
+
+
 def test_advanced_with_no_two_points_at_one_height_suggests_no_floor(base: str) -> None:
     marks = _lifted(0.0)
     marks[1] = _known(2, (CORNERS[1][0], CORNERS[1][1], 0.3))

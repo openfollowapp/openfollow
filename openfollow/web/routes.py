@@ -11194,7 +11194,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             response.status = 422
             return json.dumps({"error": solved.error, "marks": answers})
         cam = solved.camera
-        floor = floor_height(solve_input)
+        floor = floor_height(solve_input) if mode == "advanced" else None
         return json.dumps(
             {
                 "camera": {

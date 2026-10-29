@@ -757,7 +757,6 @@ _SIMPLE_STATE = {
 }
 _ADVANCED_STATE = {
     "mode": "advanced",
-    "floor": "1.2",
     "solve": {
         "cam": _SOLVED,
         "worst": 2.4,
@@ -794,7 +793,7 @@ function wizLens() { return [-0.21, 0.03, S.lensCentre[0], S.lensCentre[1]]; }
 function lensRatingRecord(l) { return 'rated ' + l.join(' '); }
 function localIsoNow() { return '2026-10-25T11:04:05+01:00'; }
 function calibGrid() { return RECT; }
-function len(t) { var n = String(t == null ? '' : t).trim(); return n === '' || isNaN(Number(n)) ? NaN : Number(n); }
+function floorState(s) { return { v: floorValue }; }
 """
 
 
@@ -806,8 +805,11 @@ def _apply(
     pair_valid: bool = True,
     pending: bool = False,
     problem: str = "pair",
+    floor: float | None = 0.0,
 ) -> dict:
     """Press Apply & Finish on a page in ``state``, the station answering each write with its status.
+
+    ``floor`` is Advanced's Floor height as Review reads it, on a station whose grid is at 0.
 
     ``problem`` is what keeps the lens from being saved while ``pair_valid`` is false; each shown error's
     action is under ``actions`` when one was shown.
@@ -819,6 +821,7 @@ def _apply(
         + wizard_function("wizLensSaveError")
         + wizard_function("applyBlocked")
         + wizard_function("marksIncomplete")
+        + wizard_function("floorMoved")
         + wizard_window_function("applyAndFinish"),
         variables=("APPLY_MAX_PX",),
         S={"lensCentre": [0.02, -0.01], **state},
@@ -827,6 +830,8 @@ def _apply(
         pairValid=pair_valid,
         solvePending=pending,
         problem=problem,
+        floorValue=floor,
+        SAVED={"grid": {"z_offset": 0.0}},
     )
     if not out["actions"]:
         del out["actions"]
@@ -870,28 +875,45 @@ class TestWizardApply:
         assert "calibration_height" in camera and camera["calibration_height"] == height
         assert out["href"] == "/"
 
-    def test_advanced_writes_its_floor_height_as_the_grid_s_z_offset_alone_then_every_mark(self) -> None:
-        out = _apply(_ADVANCED_STATE)
-        assert [url for url, _ in out["calls"]] == ["/api/config/grid", "/api/config/camera"]
-        assert out["calls"][0][1] == {"z_offset": 1.2}
-        marks = out["calls"][1][1]["calibration_marks"]
+    def test_advanced_saves_every_mark_then_its_floor_height_as_the_grid_s_z_offset_alone(self) -> None:
+        out = _apply(_ADVANCED_STATE, floor=1.2)
+        assert [url for url, _ in out["calls"]] == ["/api/config/camera", "/api/config/grid"]
+        assert out["calls"][1][1] == {"z_offset": 1.2}
+        marks = out["calls"][0][1]["calibration_marks"]
         assert [m["id"] for m in marks] == [1, 2, 3, 4]
         assert marks[2]["pin"] == []
         assert marks[3] == {
             "id": 4, "name": "Spike", "kind": "triangulated", "pin": [0.5, 0.6], "from_a": 1, "from_b": 2,
             "distance_a": 7.0, "distance_b": 7.5, "z": 0.0, "position": [0.4, 5.1, 0.0],
         }  # fmt: skip
-        assert (out["calls"][1][1]["calibration_mode"], out["href"]) == ("advanced", "/")
+        assert (out["calls"][0][1]["calibration_mode"], out["href"]) == ("advanced", "/")
 
-    @pytest.mark.parametrize("floor", ["", "abc"], ids=["empty", "no-length"])
-    def test_advanced_without_a_floor_height_saves_nothing(self, floor: str) -> None:
-        out = _apply({**_ADVANCED_STATE, "floor": floor})
+    def test_advanced_leaves_a_grid_already_at_its_floor_height(self) -> None:
+        out = _apply(_ADVANCED_STATE, floor=0.0)
+        assert ([url for url, _ in out["calls"]], out["href"]) == (["/api/config/camera"], "/")
+
+    def test_advanced_without_a_usable_floor_height_saves_nothing_and_says_so(self) -> None:
+        out = _apply(_ADVANCED_STATE, floor=None)
         assert (out["calls"], out["href"]) == ([], "/wizard")
+        assert out["shown"] == [["The floor height is not a usable length.", "Not saved."]]
+        assert out["actions"] == ["Correct Floor height before you finish."]
 
-    def test_a_refused_floor_height_keeps_the_camera_unsaved(self) -> None:
-        out = _apply(_ADVANCED_STATE, grid=500)
-        assert [url for url, _ in out["calls"]] == ["/api/config/grid"]
-        assert (out["shown"], out["href"]) == ([["Refused with 500.", "The grid settings were not saved."]], "/wizard")
+    def test_a_refused_camera_leaves_the_grid_unwritten(self) -> None:
+        out = _apply(_ADVANCED_STATE, floor=1.2, camera=500)
+        assert [url for url, _ in out["calls"]] == ["/api/config/camera"]
+        assert (out["shown"], out["href"]) == (
+            [["Refused with 500.", "The camera settings were not saved."]],
+            "/wizard",
+        )
+
+    def test_a_refused_floor_height_says_so_and_stays(self) -> None:
+        out = _apply(_ADVANCED_STATE, floor=1.2, grid=500)
+        assert [url for url, _ in out["calls"]] == ["/api/config/camera", "/api/config/grid"]
+        assert (out["shown"], out["removed"], out["href"]) == (
+            [["Refused with 500.", "The floor height was not saved."]],
+            [],
+            "/wizard",
+        )
 
     @pytest.mark.parametrize(
         ("answers", "sent", "said"),
@@ -2201,15 +2223,35 @@ function refreshEchoes() {}
 
 def _review_floor(state: dict, *, saved_z: float = 0.0, system: str = "metric") -> dict:
     """Review's Floor height for ``state`` on a station whose grid is at ``saved_z``."""
-    fields = {"floor_h": {"value": ""}, "review-floor": {"hidden": True}, "review-floor-note": {}}
+    fields = {
+        "floor_h": {"value": ""},
+        "review-floor": {"hidden": True},
+        "review-floor-note": {},
+        "floor-h-error": {"hidden": True},
+    }
     return run_wizard_js(
         "(function() { var v = reviewFloor(s), f = fields;"
         " return { v: v, field: f.floor_h.value, hidden: f['review-floor'].hidden, kept: S.floor,"
-        " note: f['review-floor-note'].innerHTML || '', invalid: f.floor_h['aria-invalid'] }; })()",
+        " note: f['review-floor-note'].innerHTML || '', invalid: f.floor_h['aria-invalid'],"
+        " error: f['floor-h-error'].hidden ? '' : f['floor-h-error'].textContent, touched: S.floorTouched }; })()",
         prelude=length_page(system, fields) + _FLOOR_PAGE,
-        functions=("len", "lenField", "lenText", "fmt", "esc", "$", "setLive", "andList", "reviewFloor"),
+        functions=(
+            "len",
+            "lenField",
+            "lenText",
+            "lenRough",
+            "fmt",
+            "esc",
+            "$",
+            "setLive",
+            "andList",
+            "floorMoved",
+            "floorState",
+            "reviewFloor",
+        ),
         variables=("exactLen",),
-        S={"mode": "advanced", "floor": "", "floorTouched": False, **state.get("S", {})},
+        MARK_REACH_M=10000,
+        S={"mode": "advanced", "floor": "", "floorTouched": False, "floorFrom": None, **state.get("S", {})},
         s={"cam": _SOLVED, "marks": _FLOOR_MARKS, "floor": None, **state.get("s", {})},
         SAVED={"grid": {"z_offset": saved_z}},
     )
@@ -2238,18 +2280,43 @@ class TestWizardFloorHeight:
         assert (out["v"], out["field"]) == (0, "0")
         assert out["note"] == _note("No floor found from the points", "Suggested: 0.00 m. The grid is at 0.80 m now.")
 
-    def test_a_typed_height_is_kept_over_the_suggestion(self) -> None:
-        out = _review_floor({"S": {"floor": "2.5", "floorTouched": True}, "s": {"floor": {"z": 1.2, "ids": [1, 2]}}})
-        assert (out["v"], out["kept"], out["field"]) == (2.5, "2.5", "")
+    def test_a_typed_height_is_kept_over_the_suggestion_it_was_typed_against(self) -> None:
+        out = _review_floor(
+            {"S": {"floor": "2.5", "floorTouched": True, "floorFrom": 1.2}, "s": {"floor": {"z": 1.2, "ids": [1, 2]}}}
+        )
+        assert (out["v"], out["kept"], out["field"], out["touched"]) == (2.5, "2.5", "", True)
         assert out["note"] == _note(
             "Suggested: 1.20 m", "The height that Centre and DSL share. The grid is at 0.00 m now."
         )
 
-    @pytest.mark.parametrize("typed", ["", "abc", "1.2.3"])
-    def test_a_typed_value_that_is_no_length_is_invalid_and_gives_no_floor(self, typed: str) -> None:
-        out = _review_floor({"S": {"floor": typed, "floorTouched": True}}, saved_z=0.8)
-        assert (out["v"], out["invalid"]) == (None, "true")
+    @pytest.mark.parametrize("before", [1.0, 0])
+    def test_new_points_suggest_afresh_over_a_typed_height(self, before: float) -> None:
+        out = _review_floor(
+            {
+                "S": {"floor": "2.5", "floorTouched": True, "floorFrom": before},
+                "s": {"floor": {"z": 1.2, "ids": [1, 2]}},
+            }
+        )
+        assert (out["v"], out["field"], out["touched"]) == (1.2, "1.2", False)
+
+    @pytest.mark.parametrize(
+        ("typed", "error"),
+        [
+            ("", "Enter the height of the floor."),
+            ("abc", "Enter the height of the floor."),
+            ("1.2.3", "Enter the height of the floor."),
+            ("10001", "Enter a height within 10000.0 m of the point of origin."),
+            ("-10001", "Enter a height within 10000.0 m of the point of origin."),
+        ],
+    )
+    def test_a_typed_value_that_cannot_be_used_says_why_and_gives_no_floor(self, typed: str, error: str) -> None:
+        out = _review_floor({"S": {"floor": typed, "floorTouched": True, "floorFrom": 0}}, saved_z=0.8)
+        assert (out["v"], out["invalid"], out["error"]) == (None, "true", error)
         assert out["note"] == _note("No floor found from the points", "Suggested: 0.00 m.")
+
+    def test_a_usable_height_shows_no_error(self) -> None:
+        out = _review_floor({"S": {"floor": "10000", "floorTouched": True, "floorFrom": 0}})
+        assert (out["v"], out["invalid"], out["error"]) == (10000, "false", "")
 
     def test_an_imperial_station_suggests_in_feet(self) -> None:
         out = _review_floor({"s": {"floor": {"z": 1.2192, "ids": [1, 2]}}}, saved_z=1.2192, system="imperial")
@@ -2262,3 +2329,27 @@ class TestWizardFloorHeight:
     def test_simple_and_an_uncalculated_camera_show_no_floor_height(self, state: dict) -> None:
         out = _review_floor(state)
         assert (out["v"], out["hidden"], out["note"]) == (None, True, "")
+
+    @pytest.mark.parametrize(
+        ("state", "z"),
+        [
+            ({"solve": {"cam": _SOLVED, "floor": {"z": 1.2, "ids": [1, 2]}}}, 1.2),
+            ({"solve": {"cam": _SOLVED, "floor": None}}, 0),
+            ({"solve": {"cam": _SOLVED, "floor": None}, "floor": "2.5", "floorTouched": True, "floorFrom": 0}, 2.5),
+            ({"solve": {"cam": _SOLVED, "floor": None}, "floor": "abc", "floorTouched": True, "floorFrom": 0}, 0.8),
+            ({"solve": {"floor": {"z": 1.2, "ids": [1, 2]}}}, 0.8),
+            ({"solve": None}, 0.8),
+        ],
+        ids=["suggested", "no-floor", "typed", "typed-unusable", "not-calculated", "no-solve"],
+    )
+    def test_camera_calibration_draws_advanced_s_grid_at_the_floor_height(self, state: dict, z: float) -> None:
+        grid = run_wizard_js(
+            "calibGrid()",
+            prelude=length_page("metric", {}),
+            functions=("len", "lenField", "lenRough", "floorState", "calibGrid"),
+            variables=("exactLen",),
+            MARK_REACH_M=10000,
+            S={"mode": "advanced", "floor": "", "floorTouched": False, "floorFrom": None, **state},
+            SAVED={"grid": {"width": 12, "depth": 6, "x_offset": 0, "y_offset": 3, "z_offset": 0.8, "spacing": 2}},
+        )
+        assert grid == {"w": 12, "d": 6, "cx": 0, "cy": 3, "z": z, "spacing": 2}

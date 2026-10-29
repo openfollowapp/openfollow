@@ -131,6 +131,18 @@ class TestLift:
         _run(heights, (0.5, 0.5), [high, middle, low], 1, 0.1)
         assert heights.step({1: (1.5, 0.5)}, [high, middle, low], 0.5)[1] == pytest.approx(2.5)
 
+    def test_of_several_zones_entered_below_the_one_setting_the_height_the_highest_decides(self) -> None:
+        heights = ZoneHeights()
+        high = _square_at(0.0, 3.0, transition=0.0)
+        middle = _zone(2.5, 0.0, size=4.0)
+        lower = _square_at(1.0, 1.0, transition=0.0)
+        upper = TriggerZoneConfig(
+            vertices=[[1, 0], [2, 0], [2, 2], [1, 2]], z_offset=2.0, raise_markers=True, height_transition_s=1.0
+        )
+        zones = [high, middle, lower, upper]
+        _run(heights, (0.5, 0.5), zones, 1, 0.1)
+        assert heights.step({1: (1.5, 0.5)}, zones, 0.5)[1] == pytest.approx(2.75)
+
     def test_neighbouring_zones_at_one_height_do_not_ease(self) -> None:
         heights = ZoneHeights()
         left = _zone(1.0, 0.0)

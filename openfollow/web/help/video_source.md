@@ -1,96 +1,28 @@
 # Video Source
 
-Where OpenFollow receives its video feed – every detection, overlay, and position output depends on it. Saving rebuilds the pipeline within about a second; markers and PSN output keep running during the rebuild.
+Where OpenFollow receives its video feed. Saving rebuilds the pipeline within about a second; markers and PSN keep running. A red box names what went wrong with the last attempt.
 
-When the last attempt failed, a red box at the top of the section names what went wrong – nothing answered, the login was rejected, no video reached this station, and so on – and below it the one thing to try. It is the same box **Live Statistics → Video** and the Setup Wizard's Video Source step show, and it refreshes on its own, so a failure that starts while this page is open appears without reloading. **Live Statistics → Video** lists what each reading means.
-
-The station is sized for video up to Full HD at 30 fps: the longer side at most 1920 pixels and the shorter at most 1080, so a 1080 × 1920 portrait feed is within it and a 2560 × 1080 ultrawide is not. A source over either limit gets a red box here as well, with what arrives beside the limit and the one thing to change, and an error row on the Operator Screen (`Video 3840×2160 > Full HD`, `Video 60 fps > 30 fps`). The video keeps playing, but decoding and drawing the extra pixels or frames takes the processor time the Operator Screen and the outputs need, which shows as lag. Both are judged from the frames that actually arrive, not from what the source advertises: the size, always the source's own, from the first frame; the rate counted over about five seconds and confirmed over the next few, so a feed at 30 fps never reads as over it. A USB camera is measured in the mode it is read in, which can be larger or faster than its **Render resolution** and **FPS** when the camera lists nothing smaller, and a capture card at its incoming signal. For RTSP, SRT and RTP the rate is what comes out of the station's decoder, so a station whose decoder falls behind can read a faster source below the limit. The box clears a few seconds after the source is set within the limits, and at once when the source changes. Media Gallery uploads are held to the same limits.
+Video above Full HD or 30 fps gets a red box and an error row; it keeps playing, but lags.
 
 ## Source Type
 
-Pick the protocol or device for your setup; the fields below update to match.
+The protocol or device; the fields follow it. RTSP, SRT and RTP use the interface from **Network Interface Assignment**.
 
-- **RTSP** – most IP cameras and HDMI/SDI-to-IP encoders; codec auto-negotiated.
-- **SRT** – long-haul or lossy networks and internet bridges.
-- **RTP** – tightly controlled local pipelines you generate yourself (FFmpeg, hardware encoder).
-- **USB Camera** – UVC webcams and USB capture cards.
-- **Pi Camera** – CSI camera modules and HDMI/SDI-to-CSI adapters on the ribbon-cable port.
-- **Media Gallery** – play a stored still image or short looping clip, or capture a frame from a live source; ships with a Stage scene, a Concert, a Festival and a Grey card for bench-testing calibration, lens correction and detection without a camera.
+- **RTSP URL** – the full `rtsp://` address. **Username (optional)** / **Password (optional)** override the URL's credentials.
+- **SRT URL** – `srt://0.0.0.0:5000` to listen, `srt://203.0.113.10:5000` to connect. **Passphrase (optional)** is the encryption key.
+- **RTP URL** + **Encoding** – e.g. `rtp://0.0.0.0:5004` or a `224.x–239.x` multicast address. Set **Encoding** (`H264`, `H265`, `MP2T`) to the sender's.
+- **USB Camera** – pick the **Device**, **Render resolution** (default `1080p`) and **FPS** (default 30).
+- **Pi Camera** – **Camera** shows the camera in use; **Width** / **Height** (default 1920×1080) and **FPS** (default 30) set the stream. **Change** names the **Camera module** and **Connector**; a camera the station booted with changes at the next restart.
+- **Media Gallery** – click a tile to make it the source. **Stage**, **Concert**, **Festival** and **Grey** cannot be deleted. **Upload** takes JPEG/PNG/WebP images and **VP8 WebM** clips (Full HD, ≤30 fps, ≤60 s). **Capture frame** saves the current frame.
 
-Which network interface SRT, RTSP and RTP use is set under **Network Interface Assignment**, in the Video input row. In Simple network mode they use the station interface.
-
-## Settings (by Source Type)
-
-- **RTSP URL** – the full `rtsp://` address, e.g. `rtsp://192.168.0.182:554/stream1`. Best results: 1080p/720p, 25–30 fps, H.264, ~4–8 Mbps CBR, 1 keyframe/s.
-- **Username (optional)** / **Password (optional)** – the camera's login, where one is required. Type the password as it is: no URL-encoding, and `@` or `:` are fine here where they would break a URL. Credentials in the URL (`rtsp://user:pass@host/path`) still work, but these fields override them.
-- **SRT URL** – `srt://0.0.0.0:5000` to listen (listener mode) or `srt://203.0.113.10:5000` to connect (caller mode); a bare `host:port` also works.
-- **Passphrase (optional)** – the SRT stream's encryption key, when the sender encrypts. Same precedence as the RTSP login: filling it in overrides a `?passphrase=` carried in the URL.
-- **RTP URL** + **Encoding** – receive address, e.g. `rtp://0.0.0.0:5004` (unicast) or a `224.x–239.x` multicast address; set **Encoding** (`H264`, `H265`, `MP2T`) to match the sender.
-- **H.265 (HEVC)** over RTSP, SRT or RTP decodes in software on a Raspberry Pi: the Pi's hardware HEVC decoder can take the station down when a stream loses packets or is joined between keyframes. At 1080p30 that takes about 0.6 of a Pi 5 core.
-- **USB Camera** – pick the **Device** (Scan to re-enumerate), then choose a **Render resolution** and **FPS** (default 30). The station reads the camera in a mode from the camera's own list that reaches the render size and FPS: its uncompressed mode where the camera's USB connection carries it, otherwise its compressed (MJPEG) mode, which the station decodes (about 0.4 of a Pi 5 core at 1080p30). The picture is then scaled to the render size: a preset (`2160p` / `1080p` / `720p`, default `1080p`) downscales for lower CPU, `Native size` keeps the largest size the camera offers, at the fastest rate up to **FPS** it offers there. A camera whose picture has a different shape from the render size, such as a 4:3 camera at `1080p`, shows it in its own shape with black bars. Capture cards that only output the incoming signal's resolution (e.g. a 4K HDMI feed) list just that, and are read at it. A camera whose list the station cannot read chooses its own mode.
-- **Pi Camera** – the **Camera** row shows the camera the station uses: its Raspberry Pi module name and sensor (*Camera Module 3 (imx708)*), the connector it is named on (CAM/DISP 0 or 1, as printed on the board), or *found automatically* when the Pi recognised it by itself; *set in config.txt* marks a camera named there by hand. With more than one camera found, the row is a choice of which one to stream, saved with the section. **Width** / **Height** (default 1920×1080) and **FPS** (default 30) set the stream.
-- **Change** (Pi Camera) – names the **Camera module** and **Connector** in the Pi's boot configuration. **Automatic** leaves it to the Pi, which recognises Raspberry Pi camera modules on a regular Pi but never on a Compute Module. Raspberry Pi's own modules are listed first by name, other sensors below. A camera named while none was loaded at boot starts at once and is checked again a few seconds later; one the station booted with changes at the next restart, shown as **Takes effect after the next restart** beside what runs now, with a **Restart now** button. A camera line added to `config.txt` by hand is replaced (kept, commented out) when another camera is applied here. **No camera found on this station** opens this choice by itself.
-- **Media Gallery** – a device-local library of images and looping clips, managed entirely from the browser (the on-display menu can select this source but not change its content). Click a tile to make it the source; the selected tile has an amber border. The bundled **Stage**, **Concert**, **Festival** and **Grey** items can't be deleted; per-tile buttons download or delete your own media. **Upload** accepts JPEG/PNG/WebP images (normalised to JPEG, at most 1920 pixels on the longer side) and **VP8 WebM** clips (up to Full HD in either orientation, ≤30 fps, ≤60 s, audio ignored); other codecs are rejected. Media that is not 16:9 plays in its own shape, with black bars at the sides or top and bottom. Every other source shows a **Capture frame** button that saves the current clean frame into the gallery at its native resolution. A selection that no longer resolves (deleted media, an imported config from another station) falls back to Stage.
-
-  **Concert** is a concert stage seen from a camera on the upstage back truss, looking down over the stage into the crowd through a 2.8 mm lens. It was drawn with this camera, which puts the grid on the deck seams. The tape on the stage marks a 12 × 6 m grid with the Reference Point at the middle of its downstage edge; the stage decks are 1 m across and 2 m deep.
-
-  | Camera setting | Value |
-  |---|---|
-  | Position X / Y / Z | 0 / 10 / 9 m |
-  | Pitch | -48° |
-  | Yaw | 180° |
-  | Roll | 0° |
-  | Horizontal Field of View | 82.5° |
-  | Barrel / fisheye | -0.37 |
-  | Corner correction | -0.17 |
-
-  **Festival** is a festival stage seen from a camera on the front truss over the crowd barrier, looking steeply down onto the stage through a 2.8 mm lens whose centre sits off the centre of the picture. It was drawn with this camera, which puts the grid on the tape; its lens centre is typed in, under User input in the Setup Wizard's Lens step. The tape on the stage marks a 12 × 6 m grid with the Reference Point at the middle of its downstage edge; the stage decks are 2 m across and 1 m deep.
-
-  | Camera setting | Value |
-  |---|---|
-  | Position X / Y / Z | 0 / -4 / 9.3 m |
-  | Pitch | -42° |
-  | Yaw | 0° |
-  | Roll | 0° |
-  | Horizontal Field of View | 84.2° |
-  | Barrel / fisheye | -0.31 |
-  | Corner correction | -0.01 |
-  | Lens centre, right of the picture centre | 28 px |
-  | Lens centre, above the picture centre | 16 px |
-
-  Clips are not transcoded on-device – prepare a conforming VP8 WebM on a workstation, e.g.:
-
-  ```
-  ffmpeg -i in.mp4 \
-    -vf "scale='if(gte(iw,ih),min(1920,iw),min(1080,iw))':'if(gte(iw,ih),min(1080,ih),min(1920,ih))':force_original_aspect_ratio=decrease,fps=30" \
-    -t 60 -an -c:v libvpx -b:v 6M -crf 10 out.webm
-  ```
+  **Stage** shows a 10 × 6 m grid; **Concert** (from the upstage back truss) and **Festival** (from the front truss) a taped 12 × 6 m grid. In all three the Reference Point is the middle of the grid's downstage edge.
 
 ## Connection recovery
 
-Two safeguards keep a feed alive without operator intervention. Both take effect on the current feed without rebuilding it. They cover two different failure modes:
-
-- **Stall Timeout (s)** – the *silent-stall* watchdog, for a stream that is still "connected" but has quietly stopped delivering frames with no error to signal it. This is common on UDP, multicast, and some RTSP cameras: the last frame just freezes on screen and nothing recovers on its own. If no new frame arrives within this many seconds, OpenFollow tears the pipeline down and reconnects. It watches every source type: a capture card whose HDMI signal drops, for example, is rebuilt the same way. Default `3.0`. Raise it if a healthy source has long legitimate gaps (very low frame rate, sparse keyframes) and is being reconnected unnecessarily; lower it to react to freezes faster. `0` disables the watchdog.
-- **Heal Interval (s)** – the *self-healing* re-probe, for a network feed (RTSP, SRT, RTP) that is already down and showing the "No Signal" placeholder (source unplugged, encoder rebooting, network blip). OpenFollow retries the URL this often until the source returns, so the picture comes back by itself with no one re-saving. Default `5.0`. Shorter intervals recover faster but probe the network more often; `0` disables auto-recovery, and the feed then stays on the placeholder. Saving an interval above `0` starts healing a feed that is down; the first retry follows one interval after the save.
-
-NDI and the cameras (USB, Pi Camera, macOS) recover differently. When their source is lost, the station shows the source picker and keeps looking for that source every few seconds. Once it is announced again, video returns to it by itself, whether the picker is still open or was closed with BACK. A source that is announced but sent no video is tried again after about half a minute, or as soon as it disappears and is announced again. Picking another source in the picker ends the wait. A Pi Camera or macOS camera left on the default camera has no name to look for and is not reconnected this way.
-
-**Preview** – an inline snapshot of the current video input, refreshed every two seconds while the section is open and in view.
+- **Stall Timeout (s)** – a feed that delivers no frame for this long is rebuilt. Default `3.0`; `0` disables it.
+- **Heal Interval (s)** – how often a network feed showing "No Signal" is retried. Default `5.0`; `0` disables it.
+- **Preview** – a snapshot of the input, every two seconds.
 
 ## Camera Latency
 
-The row shows the last successful measurement: its round trip, the shortest and longest change beside it, and when it was measured, in the station's time. **Measure latency** opens the **Measure Camera Latency** dialog.
-
-The dialog opens on two warnings: the Operator Screen will flash black and white, which can trigger seizures in people sensitive to flashing light, and it shows no video and no markers while it does, so a measurement never belongs in a show. While the dialog shows them, the Operator Screen shows a **WARNING** card, "Latency test about to start", at the position and size set for operator messages, even when operator messages are switched off; it goes when the dialog is closed or measuring starts, and a few seconds after the browser leaves the page.
-
-**Start** times the round trip from this station's Operator Screen through the camera and back, with the camera pointed at the Operator Screen. The screen shows plain black and then flashes white five times, for about 5 s with a camera of usual latency and longer with a slow one: each change is waited for up to 3 s, so a measurement never lasts more than about 35 s. Video and HUD are hidden until it ends. Only the overall brightness of the picture is read, so the screen does not need to fill the frame, and focus, stage light and the camera's auto exposure hardly matter. A measurement cannot be cut short: it always ends by itself, and the dialog cannot be closed meanwhile.
-
-Each change of the screen, white and back to black, is timed from the display refresh that showed it to the first decoded frame in which the picture changed: ten changes in all. The result is the median of the ten, with the shortest and longest beside it. It includes everything between the screen and the decoded frame: the camera's exposure and processing, encoding, the network, buffering in the stream and in the station, decoding, and the delay of the screen itself, so the same camera can read differently on another monitor.
-
-The result is green below 120 ms, amber from 120 to 250 ms and red from 250 ms. At walking pace, about 1.5 m/s, a performer moves about 15 cm in 100 ms before the Operator Screen shows it. **Measure again**, and **Try again** after a measurement that failed, measure straight away, without the warnings.
-
-**No flash seen in the video within 3 s** means the picture never got brighter after the screen turned white: the camera does not see the Operator Screen, or the screen is too small a part of its picture to change the brightness. **The video did not go dark again within 3 s of the flash** means the picture stayed bright after the screen turned black. A measurement also ends when the video source changes, its video is rebuilt (the station reconnecting, or the Operator Screen changing how it draws) or it stops while the measurement lasts.
-
-The button is unavailable while no screen shows the Operator Screen or no video is decoded, and the row is hidden for the Media Gallery, which plays stored pictures. The last successful result is listed in the diagnostics bundle and stays there until a later measurement succeeds: one that fails neither replaces nor clears it.
-
-**Save** – write and apply the settings; the pipeline restarts with the new source within about a second.
+**Measure latency** times the round trip through the camera, which must point at the Operator Screen. The screen flashes black and white and shows no video or markers meanwhile, which can trigger seizures: never during a show. Green below 120 ms, amber to 250 ms, red above.

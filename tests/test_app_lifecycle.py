@@ -150,7 +150,7 @@ class TestConstruction:
         assert app._server is None
         assert app._settings_menu_active is False
         assert app._settings_menu_index == 0
-        assert app._show_hud_help is True
+        assert app._show_hud_help is False
         assert app._speed_key_streak == {}
         assert app._update_worker is None
         assert app._viewer_ids == []

@@ -8,9 +8,10 @@ from __future__ import annotations
 import pytest
 
 from openfollow.button_names import SYMBOL_CHARS, ButtonNameStyle
+from openfollow.runtime import overlay_layout
 from openfollow.runtime.overlay_layout import (
+    HelpLine,
     bottom_left_info_panel_layout,
-    build_help_sections,
     centered_panel_layout,
     format_source_text,
     help_sections_height,
@@ -20,6 +21,22 @@ from openfollow.runtime.overlay_layout import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+def build_help_sections(**kwargs: object) -> list[tuple[str, list[str]]]:
+    """The help sections with each line as an operator reads it: ``keys: action``."""
+    return [
+        (title, [f"{'/'.join(line.keys)}: {line.action}" for line in lines])
+        for title, lines in overlay_layout.build_help_sections(**kwargs)  # type: ignore[arg-type]
+    ]
+
+
+def test_a_help_line_keeps_each_key_apart_from_its_action() -> None:
+    sections = dict(
+        overlay_layout.build_help_sections(mode="normal", keyboard_connected=True, controller_connected=True)
+    )
+    assert sections["Keyboard"][0] == HelpLine(("W", "A", "S", "D"), "Move X/Y")
+    assert HelpLine(("D-Right", "D-Left"), "Marker next/prev") in sections["Controller"]
 
 
 def test_build_help_sections_normal_mode_advertises_settings_menu() -> None:
@@ -311,15 +328,15 @@ def test_build_help_sections_cycle_line_omitted_when_both_unbound() -> None:
 _MENU_KEYBOARD = [
     "Enter: Confirm",
     "Esc: Back",
-    "Arrow Up/Down: Move",
+    "Up/Down: Move",
     "Backspace: Delete in a text field",
     "M: Close all menus",
 ]
 _MENU_CONTROLLER = [
     "A: Confirm",
     "B: Back",
-    "D-Pad Up/Down: Move, or change a digit",
-    "D-Pad Left/Right: Move between digits",
+    "D-Up/D-Down: Move, or change a digit",
+    "D-Left/D-Right: Move between digits",
     "Back: Close all menus",
 ]
 
@@ -386,7 +403,7 @@ def test_the_menus_list_only_the_keyboard_and_controller_this_station_has(
 def test_help_sections_height_matches_section_math() -> None:
     sections = [("Keyboard", ["A", "B"]), ("Controller", ["C"])]
     height = help_sections_height(sections)
-    assert height == pytest.approx(76.0)
+    assert height == pytest.approx(82.0)
     assert help_sections_height([]) == 0.0
 
 
@@ -508,14 +525,14 @@ def test_movement_lines_omit_z_up_when_unbound() -> None:
     from openfollow.runtime.overlay_layout import _movement_lines
 
     lines = _movement_lines({"move_z_up": ""})
-    assert not any("Z+" in line for line in lines)
+    assert not any(line.action == "Z+" for line in lines)
 
 
 def test_movement_lines_omit_z_down_when_unbound() -> None:
     from openfollow.runtime.overlay_layout import _movement_lines
 
     lines = _movement_lines({"move_z_down": ""})
-    assert not any("Z-" in line for line in lines)
+    assert not any(line.action == "Z-" for line in lines)
 
 
 def test_pair_line_returns_prev_only_form_when_only_prev_bound() -> None:
@@ -531,7 +548,7 @@ def test_pair_line_returns_prev_only_form_when_only_prev_bound() -> None:
         next_only="Marker next",
         prev_only="Marker prev",
     )
-    assert line == "PREV: Marker prev"
+    assert line == HelpLine(("PREV",), "Marker prev")
 
 
 def test_pair_line_returns_none_when_both_sides_unbound() -> None:
@@ -558,7 +575,7 @@ def test_build_help_sections_normal_drops_lines_for_empty_keyboard_actions() -> 
     )
     keyboard = next(lines for title, lines in sections if title == "Keyboard")
     assert not any("Reset marker" in line for line in keyboard)
-    assert not any("Toggle Help" in line for line in keyboard)
+    assert not any("Hide help" in line for line in keyboard)
     assert not any("Settings menu" in line for line in keyboard)
     # Movement still rendered (non-empty defaults).
     assert any("Move X/Y" in line for line in keyboard)
@@ -600,7 +617,7 @@ def test_build_help_sections_normal_btn_returns_empty_when_action_explicitly_cle
     )
     controller = next(lines for title, lines in sections if title == "Controller")
     assert not any("Reset marker" in line for line in controller)
-    assert not any("Toggle Help" in line for line in controller)
+    assert not any("Hide help" in line for line in controller)
     assert not any("Settings menu" in line for line in controller)
     # The L-Stick movement line is unconditional.
     assert any("Move X/Y" in line for line in controller)
@@ -720,7 +737,7 @@ def test_build_help_sections_lists_the_toggles_as_one_group(section: str) -> Non
         )
     )
     lines = sections[section]
-    labels = ("Toggle Help (this overlay)", "Toggle zone", "Toggle Pathfinder", "Toggle paths")
+    labels = ("Hide help", "Toggle zone", "Toggle Pathfinder", "Toggle paths")
     rows = [next((i for i, line in enumerate(lines) if label in line), None) for label in labels]
     assert None not in rows, f"{section} lacks {labels[rows.index(None)]!r}: {lines}"
     assert rows == list(range(rows[0], rows[0] + len(labels))), lines
@@ -763,7 +780,7 @@ def test_the_menus_list_names_buttons_in_the_stations_style(style: ButtonNameSty
                 "L2: Z-",
                 "L1/R1: Speed - / +",
                 f"{_SQUARE}: Reset marker",
-                f"{_TRIANGLE}: Toggle Help (this overlay)",
+                f"{_TRIANGLE}: Hide help",
                 "Create: Settings menu",
             ],
         ),
@@ -774,7 +791,7 @@ def test_the_menus_list_names_buttons_in_the_stations_style(style: ButtonNameSty
                 "ZL: Z-",
                 "L/R: Speed - / +",
                 "X: Reset marker",
-                "Y: Toggle Help (this overlay)",
+                "Y: Hide help",
                 "-: Settings menu",
             ],
         ),

@@ -1092,6 +1092,8 @@ def test_a_folder_in_place_that_a_committed_copy_cannot_replace_is_finished_next
     monkeypatch.undo()
     assert (station / config_restore.JOURNAL).exists()
     assert _tree(station / "templates" / ".user.bbbb2222.restore") == {"backup.oftemplate": b"restored"}
+    # Nothing is deleted before its replacement is in place.
+    assert _tree(station / "templates" / ".user.recovered.old") == {"grid.oftemplate": b"grid"}
 
     config_restore.recover_interrupted_restore(station / "config.toml")
 

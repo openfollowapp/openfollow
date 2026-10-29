@@ -19,6 +19,10 @@ def raising_zones(cfg: Any) -> list[TriggerZoneConfig]:
     return [zone for zone in cfg.trigger_zones.zones if zone.enabled and zone.raise_markers and len(zone.vertices) >= 3]
 
 
+_Outline = tuple[tuple[float, float], ...]
+_Held = tuple[TriggerZoneConfig, _Outline]
+
+
 @dataclass
 class _Lift:
     value: float = 0.0
@@ -26,15 +30,21 @@ class _Lift:
     start: float = 0.0
     elapsed: float = 0.0
     duration: float = 0.0
-    # The transition time of the zone that set the target last, used when the marker leaves it.
+    # The zone that set the target last, by outline, and its transition time as last seen.
+    setter: _Outline = ()
     transition_s: float = 0.0
+    # The raising zones that held the marker on the previous step, by outline.
+    inside: frozenset[_Outline] = frozenset()
 
 
 class ZoneHeights:
     """Each marker's lift: the highest ``z_offset`` of the raising zones holding its X/Y, ramped linearly.
 
     A change of target eases from the current lift over the transition time of
-    the zone that now sets it, or else of the zone that set it before; 0 s steps.
+    the zone entered (one holding the marker now and not on the previous step;
+    of several, the one setting the target, else the highest), or else of the
+    zone that set the previous target; 0 s steps. A zone is known by its
+    outline, so one whose outline changes to take the marker in is entered.
     Timed only by the ``dt`` it is stepped with.
     """
 
@@ -48,20 +58,32 @@ class ZoneHeights:
         for marker_id in [m for m in self._lifts if m not in positions]:
             del self._lifts[marker_id]
         dt = max(0.0, dt)
-        polygons = [(zone, [(v[0], v[1]) for v in zone.vertices]) for zone in zones]
+        outlines = [(zone, tuple((v[0], v[1]) for v in zone.vertices)) for zone in zones]
         lifts: dict[int, float] = {}
         for marker_id, (x, y) in positions.items():
             lift = self._lifts.setdefault(marker_id, _Lift())
-            holding = [zone for zone, polygon in polygons if point_in_polygon(x, y, polygon)]
-            zone = max(holding, key=lambda z: z.z_offset) if holding else None
-            target = zone.z_offset if zone is not None else 0.0
+            holding = [(zone, outline) for zone, outline in outlines if point_in_polygon(x, y, outline)]
+            top = max(holding, key=lambda held: held[0].z_offset) if holding else None
+            target = top[0].z_offset if top is not None else 0.0
             if target != lift.target:
                 lift.target, lift.start, lift.elapsed = target, lift.value, 0.0
-                lift.duration = zone.height_transition_s if zone is not None else lift.transition_s
-            if zone is not None:
-                lift.transition_s = zone.height_transition_s
+                lift.duration = _transition_s(lift, holding, top)
+            if top is not None:
+                lift.setter, lift.transition_s = top[1], top[0].height_transition_s
+            lift.inside = frozenset(outline for _, outline in holding)
             lifts[marker_id] = _advance(lift, dt)
         return lifts
+
+
+def _transition_s(lift: _Lift, holding: list[_Held], top: _Held | None) -> float:
+    """The time of the zone entered (the one setting the target, else the highest), else of the zone left."""
+    entered = [held for held in holding if held[1] not in lift.inside]
+    if entered:
+        chosen = top if top in entered else max(entered, key=lambda held: held[0].z_offset)
+        return chosen[0].height_transition_s
+    # The zone left is still here when it was only edited: its time as it is now.
+    still = [zone for zone, outline in holding if outline == lift.setter]
+    return still[0].height_transition_s if still else lift.transition_s
 
 
 def _advance(lift: _Lift, dt: float) -> float:

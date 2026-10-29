@@ -20,6 +20,12 @@ def _zone(z: float = 1.0, transition: float = 0.4, *, size: float = 2.0, **kw: o
     return TriggerZoneConfig(vertices=square, z_offset=z, raise_markers=True, height_transition_s=transition, **kw)
 
 
+def _square_at(x0: float, z: float, *, transition: float) -> TriggerZoneConfig:
+    """A 1 m square from ``x0`` along X, at height ``z``."""
+    square = [[x0, 0.0], [x0 + 1.0, 0.0], [x0 + 1.0, 1.0], [x0, 1.0]]
+    return TriggerZoneConfig(vertices=square, z_offset=z, raise_markers=True, height_transition_s=transition)
+
+
 def _run(heights: ZoneHeights, at: tuple[float, float], zones: list[TriggerZoneConfig], steps: int, dt: float) -> float:
     lift = 0.0
     for _ in range(steps):
@@ -88,15 +94,42 @@ class TestLift:
     def test_a_zone_below_the_stage_lowers(self) -> None:
         assert _run(ZoneHeights(), _INSIDE, [_zone(-0.5, 0.0)], 1, 0.1) == -0.5
 
-    def test_moving_into_a_lower_overlapping_zone_eases_over_the_zone_entered(self) -> None:
-        # A small high zone inside a big low one: stepping out of the high one lands in the low one.
+    def test_stepping_from_a_high_zone_into_a_neighbouring_low_one_eases_over_the_zone_entered(self) -> None:
         heights = ZoneHeights()
-        high = TriggerZoneConfig(
-            vertices=[[0, 0], [1, 0], [1, 1], [0, 1]], z_offset=2.0, raise_markers=True, height_transition_s=0.0
-        )
-        low = _zone(1.0, 1.0, size=4.0)
+        high = _square_at(0.0, 2.0, transition=0.0)
+        low = _square_at(1.0, 1.0, transition=1.0)
         _run(heights, (0.5, 0.5), [high, low], 1, 0.1)
+        assert heights.step({1: (1.5, 0.5)}, [high, low], 0.5)[1] == pytest.approx(1.5)
+
+    def test_stepping_out_of_a_high_zone_into_a_low_one_already_holding_it_eases_over_the_zone_left(self) -> None:
+        # A small high zone inside a big low one: nothing is entered, the high zone is left.
+        heights = ZoneHeights()
+        high = _square_at(0.0, 2.0, transition=1.0)
+        low = _zone(1.0, 0.0, size=4.0)
+        _run(heights, (0.5, 0.5), [high, low], 1, 1.0)
         assert heights.step({1: (3.0, 3.0)}, [high, low], 0.5)[1] == pytest.approx(1.5)
+
+    def test_stepping_into_a_high_zone_inside_a_low_one_eases_over_the_zone_entered(self) -> None:
+        heights = ZoneHeights()
+        high = _square_at(0.0, 2.0, transition=1.0)
+        low = _zone(1.0, 0.0, size=4.0)
+        _run(heights, (3.0, 3.0), [high, low], 1, 0.1)
+        assert heights.step({1: (0.5, 0.5)}, [high, low], 0.5)[1] == pytest.approx(1.5)
+
+    def test_entering_several_zones_at_once_eases_over_the_one_setting_the_height(self) -> None:
+        heights = ZoneHeights()
+        low = _zone(1.0, 0.0, size=4.0)
+        high = _zone(2.0, 1.0, size=3.0)
+        assert heights.step({1: (0.5, 0.5)}, [low, high], 0.5)[1] == pytest.approx(1.0)
+
+    def test_entering_a_lower_zone_while_leaving_the_one_setting_the_height_eases_over_the_zone_entered(self) -> None:
+        # Held by a high and a middle zone; one step leaves the high one and enters a low one.
+        heights = ZoneHeights()
+        high = _square_at(0.0, 3.0, transition=0.0)
+        middle = _zone(2.0, 0.0, size=4.0)
+        low = _square_at(1.0, 1.0, transition=1.0)
+        _run(heights, (0.5, 0.5), [high, middle, low], 1, 0.1)
+        assert heights.step({1: (1.5, 0.5)}, [high, middle, low], 0.5)[1] == pytest.approx(2.5)
 
     def test_neighbouring_zones_at_one_height_do_not_ease(self) -> None:
         heights = ZoneHeights()

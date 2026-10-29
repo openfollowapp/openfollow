@@ -36,7 +36,7 @@ Each button drives one action. Choosing a button another action uses moves it: t
 ### Normal Mode
 
 - **Reset Marker** – active marker to its default position. Default `X`.
-- **Toggle Help** – Operator Screen help overlay. Default `Y`.
+- **Toggle Help** – opens or closes the key list on the Operator Screen; it starts closed as a Show help chip. Default `Y`.
 - **Settings Menu** – opens the Settings menu; in any menu it closes them all. Default `Back`.
 - **Move X/Y** – `Left Stick` or `Right Stick`. Default `Left Stick`.
 - **Marker fader stick** – which stick Y axis drives the marker's fader value, or `– (unused)`.

@@ -10,4 +10,4 @@ Every point is saved, so **Save and finish** stays off while a point is not comp
 
 Advanced only. The grid's Z Offset: the floor that a marker's Z line, ground circle and cone are drawn down to, and that a mouse drag moves a marker on. Width, depth and offsets stay as set on the Grid tab.
 
-It starts at the height that the most points share, within 5 cm, and the note names those points. When no two points share a height, or two groups are the same size, it starts at 0. When the grid is at another height now, the note says so. The green grid follows the value as you type.
+It starts at the height that the most points share, within 5 cm, and the note names those points. When no two points share a height, or two separate groups are the same size, it starts at 0. When the grid is at another height now, the note says so. The green grid follows the value as you type.

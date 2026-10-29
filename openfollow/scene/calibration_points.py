@@ -603,19 +603,17 @@ def plausibility(
 
 def floor_height(marks: Sequence[Mark]) -> tuple[float, tuple[int, ...]] | None:
     """The floor the marks suggest: the mean height of the largest group whose heights lie within
-    FLOOR_GROUP_M of each other, and the group's ids. None when no two agree or two groups are the same size."""
+    FLOOR_GROUP_M of each other, and the group's ids. Overlapping groups of that size are one floor
+    measured loosely: the tightest, then the lowest, stands for it. None when no two agree or two
+    separate groups are the same size."""
     ordered = sorted(marks, key=lambda m: m.z)
-    best: list[Mark] = []
-    tie = False
-    for i, low in enumerate(ordered):
-        group = [m for m in ordered[i:] if m.z - low.z <= FLOOR_GROUP_M + 1e-9]
-        if len(group) > len(best):
-            best, tie = group, False
-        elif len(group) == len(best):
-            tie = True
-    if len(best) < 2 or tie:
+    groups = [[m for m in ordered[i:] if m.z - low.z <= FLOOR_GROUP_M + 1e-9] for i, low in enumerate(ordered)]
+    size = max((len(g) for g in groups), default=0)
+    largest = [g for g in groups if len(g) == size]
+    if size < 2 or any(not {m.id for m in a} & {m.id for m in b} for a in largest for b in largest):
         return None
-    return round(sum(m.z for m in best) / len(best), 3), tuple(m.id for m in best)
+    best = min(largest, key=lambda g: (g[-1].z - g[0].z, g[0].z))
+    return round(sum(m.z for m in best) / size, 3), tuple(m.id for m in best)
 
 
 def pin_errors(cam: CameraConfig, width: float, height: float) -> dict[int, float]:

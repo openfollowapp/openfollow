@@ -59,7 +59,7 @@ Move X/Y and the marker fader stick never share a stick. A fader stick on the st
 Controls active during show operation.
 
 - **Reset Marker** – snaps the active marker to its configured default position. Default: `X`.
-- **Toggle Help** – shows or hides the help overlay on the Operator Screen. Default: `Y`.
+- **Toggle Help** – opens or closes the key list on the Operator Screen. It starts closed, a small Show help chip in the top-left corner. Default: `Y`.
 - **Settings Menu** – opens the on-screen Settings menu; pressed in any menu, it closes them all. Default: `Back`.
 - **Move X/Y** – which stick drives the marker's horizontal position: `Left Stick` or `Right Stick`. Default: `Left Stick`. The deadzone and response curve above apply to the chosen stick.
 - **Marker fader stick** – which stick Y axis continuously drives the fader value of the marker this controller currently controls: `Left Stick Y`, `Right Stick Y`, or `– (unused)`. The same deadzone and response curve apply. See Hardware Inputs → Marker Faders to send this value via OSC.

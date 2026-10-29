@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence, Sized
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from openfollow.button_names import ButtonNameStyle, hud_label
 
@@ -57,7 +59,7 @@ _MOUSE3D_BTN_LABELS: tuple[tuple[str, str], ...] = (
     ("prev_marker", "Marker prev"),
     ("speed_up", "Speed +"),
     ("speed_down", "Speed -"),
-    ("toggle_help", "Toggle Help (this overlay)"),
+    ("toggle_help", "Hide help"),
     ("toggle_zones", "Toggle zones"),
     ("pathfinder", "Toggle Pathfinder"),
     ("toggle_paths", "Toggle paths"),
@@ -72,8 +74,15 @@ def friendly_button_label(raw: str, style: ButtonNameStyle = ButtonNameStyle.STA
     return hud_label(raw, style)
 
 
+class HelpLine(NamedTuple):
+    """One help row: what it does, and the keys or buttons that do it."""
+
+    keys: tuple[str, ...]
+    action: str
+
+
 # Type alias for help sections: list of (title, lines) pairs.
-HelpSections = list[tuple[str, list[str]]]
+HelpSections = list[tuple[str, list[HelpLine]]]
 
 
 _MOVEMENT_LAYOUT_KEYS: dict[str, tuple[str, str, str, str]] = {
@@ -96,21 +105,20 @@ def _key_label(key: str, fallback: str = "?") -> str:
 key_label = _key_label
 
 
-def _movement_xy_label(labels: dict[str, str]) -> str:
+def _movement_xy_keys(labels: dict[str, str]) -> tuple[str, ...]:
     layout = labels.get("move_layout", "wasd")
     forward, left, back, right = _MOVEMENT_LAYOUT_KEYS.get(layout, _MOVEMENT_LAYOUT_KEYS["wasd"])
-    return "/".join(_key_label(p) for p in (forward, left, back, right))
+    return tuple(_key_label(p) for p in (forward, left, back, right))
 
 
-def _movement_lines(labels: dict[str, str]) -> list[str]:
-    xy = _movement_xy_label(labels)
-    lines = [f"{xy}: Move X/Y"]
+def _movement_lines(labels: dict[str, str]) -> list[HelpLine]:
+    lines = [HelpLine(_movement_xy_keys(labels), "Move X/Y")]
     z_up = labels.get("move_z_up", "q")
     if z_up:
-        lines.append(f"{_key_label(z_up)}: Z+")
+        lines.append(HelpLine((_key_label(z_up),), "Z+"))
     z_down = labels.get("move_z_down", "v")
     if z_down:
-        lines.append(f"{_key_label(z_down)}: Z-")
+        lines.append(HelpLine((_key_label(z_down),), "Z-"))
     return lines
 
 
@@ -121,14 +129,14 @@ def _pair_line(
     *,
     next_only: str | None = None,
     prev_only: str | None = None,
-) -> str | None:
+) -> HelpLine | None:
     """Format next/prev pair line, handling empty labels gracefully."""
     if next_lbl and prev_lbl:
-        return f"{next_lbl}/{prev_lbl}: {both}"
+        return HelpLine((next_lbl, prev_lbl), both)
     if next_lbl:
-        return f"{next_lbl}: {next_only if next_only is not None else both}"
+        return HelpLine((next_lbl,), next_only if next_only is not None else both)
     if prev_lbl:
-        return f"{prev_lbl}: {prev_only if prev_only is not None else both}"
+        return HelpLine((prev_lbl,), prev_only if prev_only is not None else both)
     return None
 
 
@@ -137,7 +145,7 @@ def _cycle_line(
     label_prefix: str,
     *,
     default_next: str = "Tab",
-) -> str | None:
+) -> HelpLine | None:
     """Format the next/prev cycle line or return None if nothing is bound."""
     next_key = labels.get("next_marker", default_next)
     prev_key = labels.get("prev_marker", "")
@@ -169,10 +177,10 @@ def build_help_sections(
     button_name_style: ButtonNameStyle = ButtonNameStyle.STANDARD,
 ) -> HelpSections:
     """Build titled help-line sections for overlay display."""
-    keyboard: list[str] = []
-    controller: list[str] = []
-    mouse: list[str] = []
-    mouse3d: list[str] = []
+    keyboard: list[HelpLine] = []
+    controller: list[HelpLine] = []
+    mouse: list[HelpLine] = []
+    mouse3d: list[HelpLine] = []
 
     bl = button_labels or {}
     kl = keyboard_labels or {}
@@ -205,17 +213,17 @@ def build_help_sections(
                 *([speed_line] if speed_line else []),
             ]
             if reset_raw:
-                keyboard.append(f"{_key_label(reset_raw)}: Reset marker")
+                keyboard.append(HelpLine((_key_label(reset_raw),), "Reset marker"))
             if help_raw:
-                keyboard.append(f"{_key_label(help_raw)}: Toggle Help (this overlay)")
+                keyboard.append(HelpLine((_key_label(help_raw),), "Hide help"))
             zones_key = kl.get("toggle_zones", "")
             if zones_key:
-                keyboard.append(f"{_key_label(zones_key)}: Toggle zone overlay")
+                keyboard.append(HelpLine((_key_label(zones_key),), "Toggle zone overlay"))
             for action, label in _PATH_HELP:
                 if kl.get(action):
-                    keyboard.append(f"{_key_label(kl[action])}: {label}")
+                    keyboard.append(HelpLine((_key_label(kl[action]),), label))
             if settings_key:
-                keyboard.append(f"{_key_label(settings_key)}: Settings menu")
+                keyboard.append(HelpLine((_key_label(settings_key),), "Settings menu"))
         if controller_connected:
             stick = bl.get("move_xy_stick", "left")
             stick_label = "L-Stick" if stick == "left" else "R-Stick"
@@ -233,48 +241,48 @@ def build_help_sections(
                 next_only="Speed -",
                 prev_only="Speed +",
             )
-            controller = [f"{stick_label}: Move X/Y"]
+            controller = [HelpLine((stick_label,), "Move X/Y")]
             z_up = _btn("move_z_up", "RT")
             if z_up:
-                controller.append(f"{z_up}: Z+")
+                controller.append(HelpLine((z_up,), "Z+"))
             z_down = _btn("move_z_down", "LT")
             if z_down:
-                controller.append(f"{z_down}: Z-")
+                controller.append(HelpLine((z_down,), "Z-"))
             if marker_cycle and marker_cycle_enabled:
                 controller.append(marker_cycle)
             if speed_line:
                 controller.append(speed_line)
             reset_btn = _btn("reset", "X")
             if reset_btn:
-                controller.append(f"{reset_btn}: Reset marker")
+                controller.append(HelpLine((reset_btn,), "Reset marker"))
             help_btn = _btn("toggle_help", "Y")
             if help_btn:
-                controller.append(f"{help_btn}: Toggle Help (this overlay)")
+                controller.append(HelpLine((help_btn,), "Hide help"))
             if bl.get("toggle_zones"):
-                controller.append(f"{_btn('toggle_zones', 'B')}: Toggle zone overlay")
+                controller.append(HelpLine((_btn("toggle_zones", "B"),), "Toggle zone overlay"))
             for action, label in _PATH_HELP:
                 if bl.get(action):
-                    controller.append(f"{_btn(action, '')}: {label}")
+                    controller.append(HelpLine((_btn(action, ""),), label))
             settings_btn = _btn("settings", "BACK")
             if settings_btn:
-                controller.append(f"{settings_btn}: Settings menu")
+                controller.append(HelpLine((settings_btn,), "Settings menu"))
         if mouse_enabled:
             mouse = [
-                "Left click: Grab marker",
-                "Move: Set X/Y position",
-                "Right click: Release",
+                HelpLine(("Left click",), "Grab marker"),
+                HelpLine(("Move",), "Set X/Y position"),
+                HelpLine(("Right click",), "Release"),
             ]
             if double_click_reset:
-                mouse.append("Double right click: Reset")
+                mouse.append(HelpLine(("Double right click",), "Reset"))
             if scroll_z:
-                mouse.append("Scroll wheel: Adjust Z")
+                mouse.append(HelpLine(("Scroll wheel",), "Adjust Z"))
         if mouse3d_connected:
             axis_map = mouse3d_axis_map or {}
             buttons = mouse3d_buttons or {}
             for axis, axis_name in _MOUSE3D_AXIS_NAMES.items():
                 target_label = _MOUSE3D_TARGET_LABELS.get(axis_map.get(axis, "none"))
                 if target_label is not None:  # "none" -> not shown
-                    mouse3d.append(f"{axis_name}: {target_label}")
+                    mouse3d.append(HelpLine((axis_name,), target_label))
             for action, label in _MOUSE3D_BTN_LABELS:
                 # Marker next/prev hidden in multi-controller mode (the action
                 # is suppressed there, same as the gamepad cycle row).
@@ -282,7 +290,7 @@ def build_help_sections(
                     continue
                 idx = buttons.get(action, -1)
                 if idx >= 0:
-                    mouse3d.append(f"Btn {idx}: {label}")
+                    mouse3d.append(HelpLine((f"Btn {idx}",), label))
     elif mode == "menus":
         # One list for every menu screen, so an operator learns it once. Cancel
         # steps back one screen; the button that opened the menus leaves them
@@ -290,20 +298,25 @@ def build_help_sections(
         settings_key = kl.get("settings", "m")
         settings_btn = _btn("settings", "BACK")
         if keyboard_connected:
-            keyboard = ["Enter: Confirm", "Esc: Back", "Arrow Up/Down: Move", "Backspace: Delete in a text field"]
+            keyboard = [
+                HelpLine(("Enter",), "Confirm"),
+                HelpLine(("Esc",), "Back"),
+                HelpLine(("Up", "Down"), "Move"),
+                HelpLine(("Backspace",), "Delete in a text field"),
+            ]
             if settings_key:
-                keyboard.append(f"{_key_label(settings_key)}: Close all menus")
+                keyboard.append(HelpLine((_key_label(settings_key),), "Close all menus"))
         if controller_connected:
             confirm = _btn("menu_confirm", "A")
             cancel = _btn("menu_cancel", "B")
             controller = [
-                *([f"{confirm}: Confirm"] if confirm else []),
-                *([f"{cancel}: Back"] if cancel else []),
-                "D-Pad Up/Down: Move, or change a digit",
-                "D-Pad Left/Right: Move between digits",
+                *([HelpLine((confirm,), "Confirm")] if confirm else []),
+                *([HelpLine((cancel,), "Back")] if cancel else []),
+                HelpLine(("D-Up", "D-Down"), "Move, or change a digit"),
+                HelpLine(("D-Left", "D-Right"), "Move between digits"),
             ]
             if settings_btn:
-                controller.append(f"{settings_btn}: Close all menus")
+                controller.append(HelpLine((settings_btn,), "Close all menus"))
     sections: HelpSections = []
     if keyboard:
         sections.append(("Keyboard", keyboard))
@@ -316,14 +329,18 @@ def build_help_sections(
     return sections
 
 
-def help_sections_height(sections: HelpSections) -> float:
-    """Calculate pixel height required by a list of help sections."""
+# Help block rhythm: a row is tall enough for its key caps.
+HELP_TITLE_H = 13.0
+HELP_ROW_H = 16.0
+HELP_SECTION_GAP = 8.0
+
+
+def help_sections_height(sections: Sequence[tuple[str, Sized]]) -> float:
+    """Pixel height of help sections, one row per entry in each section's lines."""
     if not sections:
         return 0.0
-    title_h = 13.0
-    line_h = 14.0
-    section_gap = 8.0
-    return sum(title_h + line_h * len(lines) for _, lines in sections) + section_gap * (len(sections) - 1)
+    rows = sum(HELP_TITLE_H + HELP_ROW_H * len(lines) for _, lines in sections)
+    return rows + HELP_SECTION_GAP * (len(sections) - 1)
 
 
 def format_source_text(video_source_type: str, source_label: str, max_len: int = 38) -> str:

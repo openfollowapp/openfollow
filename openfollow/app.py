@@ -426,7 +426,7 @@ class OpenFollowApp:
         self._pi_network_worker_lock = threading.Lock()
         self._pi_network_pending_result: tuple[Any, str, str, int, Any] | None = None
 
-        self._show_hud_help: bool = True
+        self._show_hud_help: bool = False
 
         # Tap-streak acceleration per marker (avoids leaking multiplier between controllers).
         self._speed_key_streak: dict[int, int] = {}

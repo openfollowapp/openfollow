@@ -22,14 +22,18 @@ from openfollow.runtime.overlay_draw_style import (
     COLOR_ACCENT,
     COLOR_ACCENT_SOFT,
     COLOR_BG_BASE,
+    COLOR_BORDER,
     COLOR_BORDER_SOFT,
     COLOR_INFO_BORDER,
     COLOR_INFO_FILL,
+    COLOR_KEYCAP_BORDER,
+    COLOR_KEYCAP_FILL,
     COLOR_OK,
     COLOR_SUPPORT_BORDER,
     COLOR_TEXT,
     COLOR_TEXT_MUTED,
     COLOR_WARNING_FILL,
+    KEYCAP_RADIUS,
     MODAL_RADIUS,
     PANEL_RADIUS,
     ROW_RADIUS,
@@ -48,7 +52,11 @@ from openfollow.runtime.overlay_draw_style import (
 )
 from openfollow.runtime.overlay_layers import cut, keep_fill
 from openfollow.runtime.overlay_layout import (
+    HELP_ROW_H,
+    HELP_SECTION_GAP,
+    HELP_TITLE_H,
     INFO_PANEL_ROW_H,
+    HelpLine,
     HelpSections,
     bottom_left_info_panel_layout,
     build_help_sections,
@@ -119,33 +127,71 @@ def _help_sections_for(
 
 
 _HELP_FONT = 10.0
-_HELP_BULLET = "• "
+_KEYCAP_FONT = 8.5
+_KEYCAP_H = 12.0
+_KEYCAP_PAD = 4.0
+_KEYCAP_MIN_TEXT_W = 9.0
+_KEYCAP_GAP = 2.0
+# Between an action and its key caps.
+_HELP_KEYS_GAP = 8.0
 
 
-def _wrapped_help(renderer: Any, cr: Any, width: float, sections: HelpSections) -> list[tuple[str, list[list[str]]]]:
-    """Each line wrapped after its bullet to *width*: a help line is never cut."""
-    renderer._set_ui_font(cr, _HELP_FONT)
-    text_w = width - cr.text_extents(_HELP_BULLET).x_advance
+def _keycap_width(cr: Any, key: str) -> float:
+    return max(_KEYCAP_MIN_TEXT_W, symbols.text_advance(cr, key, _KEYCAP_FONT)) + 2.0 * _KEYCAP_PAD
+
+
+def keycaps_width(renderer: Any, cr: Any, keys: Sequence[str]) -> float:
+    """Width :func:`draw_keycaps` takes for *keys*."""
+    renderer._set_ui_font(cr, _KEYCAP_FONT, bold=True)
+    return sum(_keycap_width(cr, key) for key in keys) + _KEYCAP_GAP * max(0, len(keys) - 1)
+
+
+def draw_keycaps(renderer: Any, cr: Any, keys: Sequence[str], x: float, baseline: float) -> float:
+    """Each key in its own box, left edge at *x*, centred on a 10 px text line at *baseline*; returns the right edge."""
+    renderer._set_ui_font(cr, _KEYCAP_FONT, bold=True)
+    top = baseline - 9.5
+    for i, key in enumerate(keys):
+        if i:
+            x += _KEYCAP_GAP
+        cap_w = _keycap_width(cr, key)
+        draw_rounded_rect(cr, x + 0.5, top + 0.5, cap_w - 1.0, _KEYCAP_H - 1.0, KEYCAP_RADIUS)
+        cr.set_source_rgba(*COLOR_KEYCAP_FILL)
+        cr.fill_preserve()
+        cr.set_source_rgba(*COLOR_KEYCAP_BORDER)
+        cr.set_line_width(1.0)
+        cr.stroke()
+        cr.set_source_rgb(*COLOR_TEXT)
+        text_w = symbols.text_advance(cr, key, _KEYCAP_FONT)
+        symbols.show_text(cr, key, x + (cap_w - text_w) / 2.0, top + 9.0, _KEYCAP_FONT)
+        x += cap_w
+    return x
+
+
+def _wrapped_help(
+    renderer: Any, cr: Any, width: float, sections: HelpSections
+) -> list[tuple[str, list[tuple[HelpLine, float, list[str]]]]]:
+    """Each line's action wrapped beside its key caps: a help line is never cut."""
 
     def measure(text: str) -> float:
         return symbols.text_advance(cr, text, _HELP_FONT)
 
-    return [
-        (
-            title,
-            [
-                _wrap_error_message(renderer, cr, line, text_w, _HELP_FONT, bold=False, measure=measure)
-                for line in lines
-            ],
-        )
-        for title, lines in sections
-    ]
+    wrapped = []
+    for title, lines in sections:
+        rows = []
+        for line in lines:
+            caps_w = keycaps_width(renderer, cr, line.keys)
+            renderer._set_ui_font(cr, _HELP_FONT)
+            text_w = width - caps_w - _HELP_KEYS_GAP
+            parts = _wrap_error_message(renderer, cr, line.action, text_w, _HELP_FONT, bold=False, measure=measure)
+            rows.append((line, caps_w, parts))
+        wrapped.append((title, rows))
+    return wrapped
 
 
 def help_block_height(renderer: Any, cr: Any, width: float, sections: HelpSections) -> float:
     """The height :func:`draw_help_block` takes for *sections* at *width*."""
     wrapped = _wrapped_help(renderer, cr, width, sections)
-    return help_sections_height([(title, [part for parts in lines for part in parts]) for title, lines in wrapped])
+    return help_sections_height([(title, [p for _, _, parts in rows for p in parts]) for title, rows in wrapped])
 
 
 def draw_help_block(
@@ -156,28 +202,26 @@ def draw_help_block(
     width: float,
     sections: HelpSections,
 ) -> None:
+    """Section titles, then each action with its key caps at the right edge."""
     wrapped = _wrapped_help(renderer, cr, width, sections)
-    indent = cr.text_extents(_HELP_BULLET).x_advance
     y_cursor = y
-    for idx, (title, lines) in enumerate(wrapped):
+    for idx, (title, rows) in enumerate(wrapped):
         renderer._set_ui_font(cr, 10.5, bold=True)
         cr.set_source_rgb(*COLOR_ACCENT)
         cr.move_to(x, y_cursor)
         cr.show_text(title.upper())
-        y_cursor += 13.0
+        y_cursor += HELP_TITLE_H
 
-        renderer._set_ui_font(cr, _HELP_FONT)
-        cr.set_source_rgb(*COLOR_TEXT)
-        for parts in lines:
-            # A wrapped line continues under its own text, not under the bullet.
-            for i, part in enumerate(parts):
-                symbols.show_text(
-                    cr, part if i else f"{_HELP_BULLET}{part}", x + indent if i else x, y_cursor, _HELP_FONT
-                )
-                y_cursor += 14.0
+        for line, caps_w, parts in rows:
+            draw_keycaps(renderer, cr, line.keys, x + width - caps_w, y_cursor)
+            renderer._set_ui_font(cr, _HELP_FONT)
+            cr.set_source_rgb(*COLOR_TEXT)
+            for part in parts:
+                symbols.show_text(cr, part, x, y_cursor, _HELP_FONT)
+                y_cursor += HELP_ROW_H
 
         if idx < len(wrapped) - 1:
-            y_cursor += 8.0
+            y_cursor += HELP_SECTION_GAP
 
 
 def draw_modal_scrim(cr: Any, w: int, h: int, alpha: float = 0.62) -> None:
@@ -1185,46 +1229,92 @@ def draw_about_overlay(renderer: Any, cr: Any, state: OverlayState, w: int, h: i
     draw_about_screen(renderer, cr, state, w, h)
 
 
-_CORNER_ICON_X = _CORNER_ICON_Y = 10.0
-_CORNER_ICON_SIZE = 24.0
+_HELP_X = _HELP_Y = 10.0
+_HELP_PAD = 12.0
+_HELP_LOGO_W = 140.0
+# The wordmark's viewBox aspect (694.06 x 189.96).
+_HELP_LOGO_H = _HELP_LOGO_W * 189.96 / 694.06
+# Logo padding above and below, plus the 1 px rule under it.
+_HELP_HEADER_H = 10.0 + _HELP_LOGO_H + 10.0 + 1.0
+_HUD_HELP_W = 220.0
 # The menu list's lines run longer than the HUD's.
 _MENU_HELP_W = 260.0
 _MENU_HELP_GAP = 8.0
+_CHIP_H = 30.0
+_CHIP_ICON = 20.0
+
+
+def _draw_help_logo(renderer: Any, cr: Any, x: float, y: float) -> None:
+    if getattr(renderer, "_logo_handle", None) is not None:
+        renderer._draw_logo(cr, x, y, _HELP_LOGO_W)
+        return
+    renderer._set_ui_font(cr, 22.0, bold=True)
+    cr.set_source_rgb(*COLOR_ACCENT)
+    cr.move_to(x, y + _HELP_LOGO_H * 0.75)
+    cr.show_text("OpenFollow")
 
 
 def _draw_corner_help(renderer: Any, cr: Any, sections: HelpSections, panel_w: float) -> None:
-    """A help panel under the icon in the top-left corner; nothing when *sections* is empty."""
-    help_h = help_block_height(renderer, cr, panel_w - 24.0, sections)
+    """The help panel in the top-left corner, the logo over the key list; nothing when *sections* is empty."""
+    inner_w = panel_w - 2.0 * _HELP_PAD
+    help_h = help_block_height(renderer, cr, inner_w, sections)
     if help_h <= 0:
         return
-    panel_x = 10.0
-    panel_y = _CORNER_ICON_Y + _CORNER_ICON_SIZE + 4.0
-    draw_panel_background(renderer, cr, panel_x, panel_y, panel_w, help_h + 20.0, radius=PANEL_RADIUS)
-    draw_help_block(renderer, cr, panel_x + 12.0, panel_y + 18.0, panel_w - 24.0, sections)
+    x, y = _HELP_X, _HELP_Y
+    draw_panel_background(renderer, cr, x, y, panel_w, _HELP_HEADER_H + help_h + 20.0, radius=PANEL_RADIUS)
+    _draw_help_logo(renderer, cr, x + _HELP_PAD, y + 10.0)
+    cr.set_source_rgba(*COLOR_BORDER)
+    cr.rectangle(x, y + _HELP_HEADER_H - 1.0, panel_w, 1.0)
+    cr.fill()
+    draw_help_block(renderer, cr, x + _HELP_PAD, y + _HELP_HEADER_H + 18.0, inner_w, sections)
 
 
-def _draw_corner_icon(renderer: Any, cr: Any, w: int, h: int) -> None:
-    renderer._panel_cache.draw(
-        cr,
-        "icon",
-        None,
-        lambda ctx: renderer._draw_icon(ctx, _CORNER_ICON_X, _CORNER_ICON_Y, _CORNER_ICON_SIZE),
-        w,
-        h,
-    )
+def _draw_help_chip(renderer: Any, cr: Any, keys: tuple[str, ...]) -> None:
+    """The closed help: the icon, then "Show help" and its keys; the icon alone when nothing is bound."""
+    x, y = _HELP_X, _HELP_Y
+    baseline = y + _CHIP_H / 2.0 + 3.5
+    label_x = x + 6.0 + _CHIP_ICON + 7.0
+    renderer._set_ui_font(cr, _HELP_FONT)
+    sep_w = cr.text_extents(" / ").x_advance
+    label = "Show help " if keys else ""
+    content_w = cr.text_extents(label).x_advance + sum(keycaps_width(renderer, cr, (k,)) for k in keys)
+    content_w += sep_w * max(0, len(keys) - 1)
+    chip_w = label_x - x + content_w + 10.0 if keys else 6.0 + _CHIP_ICON + 6.0
+    draw_panel_background(renderer, cr, x, y, chip_w, _CHIP_H, radius=PANEL_RADIUS)
+    renderer._draw_icon(cr, x + 6.0, y + (_CHIP_H - _CHIP_ICON) / 2.0, _CHIP_ICON)
+    if not keys:
+        return
+    renderer._set_ui_font(cr, _HELP_FONT)
+    cr.set_source_rgb(*COLOR_TEXT)
+    cr.move_to(label_x, baseline)
+    cr.show_text(label)
+    cursor = label_x + cr.text_extents(label).x_advance
+    for i, key in enumerate(keys):
+        if i:
+            renderer._set_ui_font(cr, _HELP_FONT)
+            cr.set_source_rgb(*COLOR_TEXT)
+            cr.move_to(cursor, baseline)
+            cr.show_text(" / ")
+            cursor += sep_w
+        cursor = draw_keycaps(renderer, cr, (key,), cursor, baseline)
 
 
 def _draw_kept_corner_help(renderer: Any, cr: Any, sections: HelpSections, panel_w: float, w: int, h: int) -> None:
-    key = (tuple((title, tuple(lines)) for title, lines in sections), panel_w)
+    key = ("panel", tuple((title, tuple(lines)) for title, lines in sections), panel_w)
     renderer._panel_cache.draw(cr, "help", key, lambda ctx: _draw_corner_help(renderer, ctx, sections, panel_w), w, h)
+
+
+def _help_toggle_keys(state: OverlayState) -> tuple[str, ...]:
+    help_key = key_label(state.keyboard_labels.get("toggle_help") or "h", fallback="")
+    help_btn = friendly_button_label(state.button_labels.get("toggle_help") or "Y", state.button_name_style)
+    return tuple(p for p in (help_key, help_btn) if p)
 
 
 def draw_menu_help(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
     """The menus' one key list, in the HUD help's corner, while any menu screen is open."""
-    _draw_corner_icon(renderer, cr, w, h)
     # Clear of the centred menu, which starts nearer the edge on a narrower window.
     menu_x = (w - panel_width(w)) / 2.0
-    panel_w = min(_MENU_HELP_W, menu_x - 10.0 - _MENU_HELP_GAP)
+    panel_w = min(_MENU_HELP_W, menu_x - _HELP_X - _MENU_HELP_GAP)
     _draw_kept_corner_help(renderer, cr, _help_sections_for(renderer, "menus", state), panel_w, w, h)
 
 
@@ -1234,22 +1324,12 @@ def draw_hud(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> Non
     info_key = (tuple(build_info_panel_rows(state)), info_panel_in_error(state))
     panels.draw(cr, "info", info_key, lambda ctx: draw_bottom_left_info_panel(renderer, ctx, state, w, h), w, h)
 
-    icon_size = _CORNER_ICON_SIZE
-    icon_x, icon_y = _CORNER_ICON_X, _CORNER_ICON_Y
-    _draw_corner_icon(renderer, cr, w, h)
-
-    if state.show_hud_help:
-        sections = _help_sections_for(renderer, "normal", state)
-        _draw_kept_corner_help(renderer, cr, sections, max(160.0, min(220.0, w - 20.0)), w, h)
+    sections = _help_sections_for(renderer, "normal", state) if state.show_hud_help else []
+    if sections:
+        _draw_kept_corner_help(renderer, cr, sections, max(160.0, min(_HUD_HELP_W, w - 20.0)), w, h)
     else:
-        renderer._set_ui_font(cr, 9)
-        cr.set_source_rgba(*COLOR_TEXT_MUTED)
-        help_key = key_label(state.keyboard_labels.get("toggle_help") or "h", fallback="")
-        help_btn = friendly_button_label(state.button_labels.get("toggle_help") or "Y", state.button_name_style)
-        parts = [p for p in (help_key, help_btn) if p]
-        if parts:
-            hint = f"{' / '.join(parts)}: help"
-            symbols.show_text(cr, hint, icon_x + icon_size + 4.0, icon_y + icon_size * 0.7, 9.0)
+        keys = _help_toggle_keys(state)
+        panels.draw(cr, "help", ("chip", keys), lambda ctx: _draw_help_chip(renderer, ctx, keys), w, h)
 
     stats_text = build_system_stats_text(state.cpu_percent, state.ram_percent, state.temperature)
     panels.draw(cr, "stats", stats_text, lambda ctx: draw_system_stats(renderer, ctx, state, w), w, h)

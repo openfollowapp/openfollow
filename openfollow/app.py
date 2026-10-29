@@ -826,6 +826,11 @@ class OpenFollowApp:
                 cfg.viewer_marker_ids = new_viewer
                 cfg.parked_marker_ids = parked_within(new_controlled, cfg.parked_marker_ids)
                 save_config(cfg, self._config_path)
+            except HeldForRestartError:
+                logger.info(
+                    "Selection after a peer deleted markers %s not saved: OpenFollow is restarting after a restore.",
+                    sorted(drop),
+                )
             except OSError:
                 logger.exception(
                     "Failed to persist selection after a peer deleted markers %s",

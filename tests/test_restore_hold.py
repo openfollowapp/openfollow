@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""What a restore holds until its restart."""
+"""What a restore holds until its restart. Every test holds paths of its own, under its own ``tmp_path``."""
 
 from __future__ import annotations
 
@@ -8,15 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from openfollow import restore_hold
 from openfollow.restore_hold import HeldForRestartError, hold, is_held, unless_held
 
 pytestmark = pytest.mark.unit
-
-
-@pytest.fixture(autouse=True)
-def _nothing_held(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(restore_hold, "_HELD", set())
 
 
 def test_a_held_file_and_everything_in_a_held_folder_are_refused(tmp_path: Path) -> None:

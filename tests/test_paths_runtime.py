@@ -353,3 +353,16 @@ class TestRelease:
         app._paths.press(3, (0.0, 1.0, 0.0))
         paths_runtime.release(app, None)
         assert app._paths.is_locked(3)
+
+
+def test_a_change_during_a_restore_s_restart_is_logged_as_the_restart(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    from openfollow import restore_hold
+
+    app = _App(tmp_path, _cross(active=False))
+    restore_hold.hold(app._config_path)
+    with caplog.at_level(logging.INFO):
+        paths_runtime.apply_commands(app, [PathActive("cross", True)], [], lambda _id: None)
+    assert "OpenFollow is restarting after a restore" in caplog.text
+    assert [r for r in caplog.records if r.levelname == "ERROR"] == []

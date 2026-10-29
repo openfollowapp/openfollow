@@ -19,9 +19,14 @@ def raising_zones(cfg: Any) -> list[TriggerZoneConfig]:
     return [zone for zone in cfg.trigger_zones.zones if zone.enabled and zone.raise_markers and len(zone.vertices) >= 3]
 
 
-def height_at(zones: Sequence[TriggerZoneConfig], x: float, y: float) -> float:
+def zone_outlines(zones: Sequence[TriggerZoneConfig]) -> list[tuple[_Outline, float]]:
+    """Each zone's outline and ``z_offset``, built once for many ``height_at`` calls."""
+    return [(_outline(zone), zone.z_offset) for zone in zones]
+
+
+def height_at(outlines: Sequence[tuple[_Outline, float]], x: float, y: float) -> float:
     """The height a marker at ``(x, y)`` is lifted to: the highest ``z_offset`` of the zones holding it, else 0."""
-    return max((zone.z_offset for zone in zones if point_in_polygon(x, y, _outline(zone))), default=0.0)
+    return max((z for outline, z in outlines if point_in_polygon(x, y, outline)), default=0.0)
 
 
 def _outline(zone: TriggerZoneConfig) -> _Outline:

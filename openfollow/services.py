@@ -52,6 +52,9 @@ from openfollow.runtime.latency_probe import MEDIA_GALLERY, FailureReason, Laten
 from openfollow.runtime.latency_warning import LatencyWarning
 from openfollow.runtime.network_observer import DOWN_POLLS_BEFORE_SUSPEND, NetworkPlaneObserver, Plane
 from openfollow.runtime.services_detection_pin import (
+    UnprojectCache,
+)
+from openfollow.runtime.services_detection_pin import (
     apply_detection_pin as apply_detection_pin_helper,
 )
 from openfollow.runtime.services_frame import (
@@ -805,6 +808,8 @@ class AppRuntimeServices:
         self._cam_params_buffer = np.zeros(7, dtype=np.float64)
         self._unproject_cam_buffer = np.zeros(7, dtype=np.float64)
         self._screen_point_buffer = np.zeros((1, 2), dtype=np.float64)
+        # Detection pin points and feet heights between detector steps.
+        self._pin_unproject_cache = UnprojectCache()
 
         # Unified OSC service: one shared client cache and listener for
         # zone OSC output, marker OSC input, and the transmitter system.
@@ -3894,6 +3899,7 @@ class AppRuntimeServices:
             unproject_cam_buffer=self._unproject_cam_buffer,
             screen_point_buffer=self._screen_point_buffer,
             dt=dt,
+            unproject_cache=self._pin_unproject_cache,
         )
 
     def init_zone_engine(self) -> None:

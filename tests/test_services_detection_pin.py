@@ -650,6 +650,17 @@ def test_a_marker_that_joins_later_reads_the_band_on_its_own(monkeypatch) -> Non
     assert m1.pos[1] < _ON_THE_STAGE_PLANE < m2.pos[1]
 
 
+def test_a_track_missing_from_a_frame_is_forgotten() -> None:
+    """Track 1 stood on the riser, then left the frame for one; seen again in the band it keeps nothing."""
+    marker = _StubMarker(1)
+    marker.set_pos(0.0, 0.05, 1.7)
+    app = _riser_app(_assist_cfg(pin_point="top"), 0.0, marker)
+    _seed_anchor(app, 0.0, 0.05, 1.7)
+    on_riser = _person_box(app, 0.0, 0.05, 0.5, 2.2, track_id=1)
+    elsewhere = _person_box(app, 0.0, 0.3, 0.5, 2.2, track_id=2)
+    assert _band_y_after(app, marker, [[on_riser], [elsewhere]], "assist", track_id=1) > _ON_THE_STAGE_PLANE
+
+
 def test_assist_reads_another_persons_height_from_their_own_feet() -> None:
     """A lock on someone on the stage says nothing about the next person, on the riser."""
     marker = _StubMarker(1)
@@ -1180,6 +1191,93 @@ def test_a_second_frame_with_one_locked_and_one_free_marker_still_unprojects_eac
     assert app._detection_pin_states[1].locked_track_id == 11
     assert app._detection_pin_states[2].locked_track_id is None
     assert len(calls) == 2
+
+
+class TestUnprojectionsAreKeptBetweenResults:
+    """The detector steps slower than the frame loop: a frame asking the same as the last one unprojects nothing."""
+
+    @staticmethod
+    def _setup(mode: str, monkeypatch) -> tuple[SimpleNamespace, _StubMarker, list[float], object]:
+        from openfollow.runtime.services_detection_pin import UnprojectCache
+
+        marker = _StubMarker(1)
+        marker.set_pos(0.0, 2.0, 1.7)
+        cfg = _replace_cfg(pin_point="top") if mode == "replace" else _assist_cfg(pin_point="top")
+        app = _riser_app(cfg, 0.0, marker)
+        if mode == "assist":
+            _seed_anchor(app, 0.0, 2.0, 1.7)
+        calls: list[float] = []
+        import openfollow.runtime.services_detection_pin as module
+
+        real = module.unproject_to_plane
+
+        def _counting(params, screen_pt, w, h, plane_z):  # noqa: ANN001, ANN202
+            calls.append(plane_z)
+            return real(params, screen_pt, w, h, plane_z)
+
+        monkeypatch.setattr(module, "unproject_to_plane", _counting)
+        return app, marker, calls, UnprojectCache()
+
+    @staticmethod
+    def _frame(app: SimpleNamespace, mode: str, box: _StubDetection, cache: object) -> None:
+        cam, pt = _buffers()
+        apply_detection_pin(
+            app,
+            person_detector=_StubDetector(box) if mode == "replace" else _AssistDetector([box]),
+            unproject_cam_buffer=cam,
+            screen_point_buffer=pt,
+            unproject_cache=cache,
+        )
+
+    @pytest.mark.parametrize("mode", ["replace", "assist"])
+    def test_a_frame_without_a_new_result_unprojects_nothing(self, monkeypatch, mode: str) -> None:
+        app, _marker, calls, cache = self._setup(mode, monkeypatch)
+        box = _person_box(app, 0.0, 2.0, 0.5, 2.2)
+        self._frame(app, mode, box, cache)
+        assert calls
+        calls.clear()
+        self._frame(app, mode, box, cache)
+        assert calls == []
+
+    @pytest.mark.parametrize("mode", ["replace", "assist"])
+    @pytest.mark.parametrize("change", ["result", "zones", "camera", "marker z"])
+    def test_anything_the_unprojection_reads_unprojects_again(self, monkeypatch, mode: str, change: str) -> None:
+        app, marker, calls, cache = self._setup(mode, monkeypatch)
+        box = _person_box(app, 0.0, 2.0, 0.5, 2.2)
+        self._frame(app, mode, box, cache)
+        calls.clear()
+        if change == "result":
+            box = _person_box(app, 0.0, 2.1, 0.5, 2.2)
+        elif change == "zones":
+            app._config.trigger_zones.zones[0].z_offset = 0.6
+        elif change == "camera":
+            moved = CameraConfig(pos_x=0.0, pos_y=-15.0, pos_z=8.5, pitch=-20.0, yaw=0.0, roll=0.0, fov=60.0)
+            app._camera = SimpleNamespace(to_config=lambda: moved)
+        elif mode == "replace":
+            marker.set_pos(0.0, 2.0, 1.8)
+        else:
+            _seed_anchor(app, 0.0, 2.0, 1.8)
+        self._frame(app, mode, box, cache)
+        assert calls
+
+    def test_a_marker_z_change_keeps_the_feet(self, monkeypatch) -> None:
+        app, marker, calls, cache = self._setup("replace", monkeypatch)
+        box = _person_box(app, 0.0, 2.0, 0.5, 2.2)
+        self._frame(app, "replace", box, cache)
+        calls.clear()
+        marker.set_pos(0.0, 2.0, 1.8)
+        self._frame(app, "replace", box, cache)
+        assert calls == [pytest.approx(1.8 + 0.5)]
+
+    def test_what_no_frame_asked_for_is_let_go(self, monkeypatch) -> None:
+        app, _marker, calls, cache = self._setup("replace", monkeypatch)
+        first = _person_box(app, 0.0, 2.0, 0.5, 2.2)
+        self._frame(app, "replace", first, cache)
+        self._frame(app, "replace", _person_box(app, 0.0, 2.1, 0.5, 2.2), cache)
+        self._frame(app, "replace", _person_box(app, 0.0, 2.2, 0.5, 2.2), cache)
+        calls.clear()
+        self._frame(app, "replace", first, cache)
+        assert calls
 
 
 def test_assist_two_markers_glide_home_without_detector(monkeypatch) -> None:

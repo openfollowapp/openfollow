@@ -172,7 +172,7 @@
  body { transition: padding-right 0.28s ease; }
  body.help-open { padding-right: var(--help-drawer-w); }
  @media (prefers-reduced-motion: reduce) {
- body, .container, .help-drawer { transition: none; }
+ body, .container, .help-drawer, .help-more > summary::after { transition: none; }
  }
  .hero-panel {
  position: relative;
@@ -374,6 +374,37 @@
  padding: 0.3rem 0.5rem;
  text-align: left;
  }
+ /* a ``###`` section: title and summary line, opened by a click. */
+ .help-more { border-top: 1px solid var(--border-soft); }
+ .help-more:not(:has(+ .help-more)) { border-bottom: 1px solid var(--border-soft); margin-bottom: 0.7rem; }
+ .help-more > summary {
+ cursor: pointer;
+ list-style: none;
+ display: grid;
+ grid-template-columns: 1fr auto;
+ gap: 2px 10px;
+ padding: 0.5rem 0;
+ }
+ .help-more > summary::-webkit-details-marker { display: none; }
+ .help-more > summary b { font-weight: 600; }
+ .help-more > summary span { grid-column: 1; color: var(--muted); font-size: 0.85rem; }
+ .help-more > summary::after {
+ content: "";
+ grid-column: 2;
+ grid-row: 1 / span 2;
+ align-self: center;
+ width: 0.45rem;
+ height: 0.45rem;
+ margin-right: 4px;
+ border-right: 2px solid var(--muted);
+ border-bottom: 2px solid var(--muted);
+ transform: rotate(45deg);
+ transition: transform 0.15s ease;
+ }
+ .help-more[open] > summary::after { transform: rotate(-135deg); }
+ .help-more > summary:hover b { color: var(--accent); }
+ .help-more > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+ .help-more-content { padding: 0 0 0.6rem; }
  /* narrow viewports: overlay full-width instead of shrinking
  the already single-column content (would crush the forms). Declared
  after the global body.help-open rule so it wins. */

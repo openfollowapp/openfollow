@@ -18,7 +18,7 @@ Interactive top-down stage view; the grid and any placed markers stay visible as
 **Top-down / Camera** above the canvas switches to the camera picture, with every zone drawn on the stage floor as the saved camera and lens see it. Use it to check that a zone sits where it should on the real stage, and to place its corners on marks you can see. This browser remembers the choice.
 
 - **Click a zone** to choose it; its corners show as named handles (V1, V2, …), as in the top-down view.
-- **Drag a corner** to move it. The loupe magnifies the spot under it and shows the corner's stage position. The corner lands on the stage floor under the pointer and is saved when you let go. A press that does not move only chooses the corner.
+- **Drag a corner** to move it. The loupe magnifies the spot under it and shows the corner's stage position; it stays open on the chosen corner, however it was chosen, until you let go of it. The corner lands on the stage floor under the pointer and is saved when you let go. A press that does not move only chooses the corner.
 - **Drag from an edge** of the chosen zone to add a corner between the edge's two corners. With a mouse, a dashed dot on the edge shows where it starts. A press on an edge that does not move adds nothing.
 - **Delete corner** removes the chosen corner; a zone keeps at least three.
 - A corner outside the picture, or behind the camera, has no handle. Move it in the top-down view.

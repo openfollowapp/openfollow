@@ -33,7 +33,7 @@ pytestmark = pytest.mark.integration
 _EMPTY_ERROR = "The settings file on this station is empty"
 _EMPTY_ACTION = "Restart OpenFollow to restore the settings from the latest backup copy."
 _UNREADABLE_ERROR = "The settings file on this station could not be read"
-_UNREADABLE_ACTION = "Import a settings file to replace it."
+_UNREADABLE_ACTION = "Import a settings file or restore a backup to replace it."
 
 _BROKEN = pytest.mark.parametrize(
     "content",
@@ -124,6 +124,9 @@ _WRITES: dict[tuple[str, str], tuple[str, str, Any]] = {
     ),
 }
 
+# Writes that replace a file that does not read and refuse only an empty one, in test_web_config_restore.py.
+_REPLACES = {("POST", "/api/config/backups/restore")}
+
 # Writes that read the file to hand it on, or that land in more than one way.
 _EXTRA = [
     ("POST", "/api/config/grid?from=Other%20Station", "json", _GRID),
@@ -137,6 +140,9 @@ _REQUESTS = [(method, *_WRITES[(method, pattern)]) for method, pattern in _WRITE
 _IDS = [f"{method} {path}" for method, path, _, _ in _REQUESTS]
 
 
+_WRITING_CALLS = ("save_config(", "stage_config(", "_save_section_from_form(", "_persist_ui_change(")
+
+
 def _writing_routes() -> set[tuple[str, str]]:
     """``(method, pattern)`` of every route in ``routes.py`` whose handler writes the config."""
     source = Path(routes_module.__file__).read_text(encoding="utf-8")
@@ -145,7 +151,10 @@ def _writing_routes() -> set[tuple[str, str]]:
         if not isinstance(node, ast.FunctionDef):
             continue
         body = ast.unparse(node)
-        if not any(call in body for call in ("save_config(", "_save_section_from_form(", "_persist_ui_change(")):
+        if not any(
+            call in body
+            for call in ("save_config(", "stage_config(", "_save_section_from_form(", "_persist_ui_change(")
+        ):
             continue
         for deco in node.decorator_list:
             if (
@@ -162,7 +171,7 @@ def _writing_routes() -> set[tuple[str, str]]:
 def test_every_route_that_writes_the_config_is_in_the_matrix() -> None:
     found = _writing_routes()
     assert len(found) >= 60, "the scan no longer finds the writing routes"
-    assert found == set(_WRITES)
+    assert found == set(_WRITES) | _REPLACES
 
 
 def _request(base: str, method: str, path: str, kind: str, body: Any) -> tuple[int, str]:

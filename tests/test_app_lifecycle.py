@@ -18,6 +18,8 @@ runtime-helper tests:
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -1036,3 +1038,27 @@ def test_startup_reconciles_the_station_fqdn() -> None:
     )
     OpenFollowApp._reconcile_station_fqdn(fake)
     assert asked == ["of-1.stage.example.com"]
+
+
+def test_a_restore_cut_short_is_put_right_before_the_catalog_loads(patched_ctor) -> None:  # noqa: ANN001
+    state = Path(patched_ctor.cfg_path).parent
+    staged = state / ".lens-calibrations.abcd1234.restore"
+    staged.mkdir()
+    (staged / "tele.json").write_text("{}", encoding="utf-8")
+    (state / ".markers.toml.efgh5678.restore").write_text("[[marker]]\nid = 3\n", encoding="utf-8")
+    # The restore had committed; its journal names the catalog.
+    (state / ".restore-commit").write_text(json.dumps({"catalog": str(state / "markers.toml")}), encoding="utf-8")
+
+    OpenFollowApp(config_path=patched_ctor.cfg_path)
+
+    assert [p.name for p in (state / "lens-calibrations").iterdir()] == ["tele.json"]
+    assert (state / "markers.toml").read_text(encoding="utf-8") == "[[marker]]\nid = 3\n"
+    assert sorted(p.name for p in state.iterdir() if p.name.startswith(".")) == []
+
+
+def test_a_new_instance_starts_with_nothing_a_restore_held(patched_ctor) -> None:  # noqa: ANN001
+    from openfollow import restore_hold
+
+    restore_hold.hold(patched_ctor.cfg_path)  # an instance that crashed in its restart's grace
+    OpenFollowApp(config_path=patched_ctor.cfg_path)
+    assert not restore_hold.is_held(patched_ctor.cfg_path)

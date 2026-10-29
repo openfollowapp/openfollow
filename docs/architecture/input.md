@@ -241,7 +241,7 @@ entries are not pruned at runtime (a brief live-reload remove-and-re-add
 keeps the operator's per-marker speed).
 
 The speeds are device-local: an export leaves them out, and an import
-keeps this station's live ones (see [config](config.md#config-transfer-export--import--restore-defaults)).
+keeps this station's live ones (see [config](config.md#config-transfer-export--import--restore-defaults--restore-a-backup)).
 
 ## Marker card → controller binding
 Each `MarkerOverlayData` carries `controller_idx`, `controller_connected`,

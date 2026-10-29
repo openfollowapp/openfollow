@@ -29,6 +29,8 @@ from typing import Any
 
 import tomli_w
 
+from openfollow.restore_hold import unless_held
+
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - python 3.10 fallback
@@ -343,8 +345,8 @@ def load_catalog(path: str) -> MarkerCatalog:
 
 
 def save_catalog(catalog: MarkerCatalog, path: str) -> None:
-    """Atomically write catalog (including tombstones) via tempfile+rename."""
-    with catalog._save_lock:
+    """Atomically write catalog (including tombstones) via tempfile+rename; a held one raises HeldForRestartError."""
+    with catalog._save_lock, unless_held(path):
         entries = catalog.all_entries()
         data: dict[str, Any] = {
             "marker": [asdict(e) for e in entries],

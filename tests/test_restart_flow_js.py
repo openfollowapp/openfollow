@@ -349,7 +349,287 @@ def test_a_restore_that_fails_closes_the_progress_and_says_why(answer: str, erro
         answer,
         "release(); await settle(); await tick(2000);out.modal = shown(); out.error = errorLine(); out.urls = urls();",
     )
-    assert out == {"modal": None, "error": error, "urls": ["POST /api/config/reset"]}
+    # The page asked for its backups list when it loaded.
+    assert out == {"modal": None, "error": error, "urls": ["GET /api/config/backups", "POST /api/config/reset"]}
+
+
+# -- Restore a backup: the list, the question, the restart ---------------------------------
+
+_BACKUPS = [
+    {
+        "name": "Stage-v0.6.0-import-20261029T071200.000Z.ofbackup",
+        "kind": "import",
+        "before": "Import",
+        "made_before": "an import",
+        "version": "0.6.0",
+        "created": "2026-10-29T07:12:00+00:00",
+        "newer": True,
+        "parts": ["the marker catalog", "saved templates", "lens calibrations"],
+    },
+    {
+        "name": "Stage-v0.5.0rc2-20261028T204000Z.ofbackup",
+        "kind": "update",
+        "before": "Update to 0.5.0rc3",
+        "made_before": "the update to 0.5.0rc3",
+        "version": "0.5.0rc2",
+        "created": "2026-10-28T20:40:00+00:00",
+        "newer": False,
+        "parts": ["the marker catalog", "saved templates", "lens calibrations"],
+    },
+]
+_ROWS = """
+function rows() {
+    return document.querySelectorAll('#backups-list tbody tr').map(function (tr) {
+        var button = tr.querySelector('button');
+        return { row: tr.className, cells: tr.querySelectorAll('td').map(function (td) { return td.textContent; }),
+                 button: [button.className, button.disabled],
+                 named: [button.getAttribute('aria-label'), button.getAttribute('aria-describedby')] };
+    });
+}
+function listed() { return document.getElementById('backups-list').textContent; }
+"""
+
+
+def _backups(steps: str, listing: str = f"{{ body: {{ backups: {json.dumps(_BACKUPS)} }} }}", tz: str = "UTC") -> Any:
+    """The Configuration card with its list as the station answers *listing*, then *steps*."""
+    return _run(
+        f"process.env.TZ = {json.dumps(tz)}; answers['GET /api/config/backups'] = {listing};"
+        "requests.length = 0; await loadBackups();" + steps,
+        markup=_TRANSFER_MARKUP,
+        script=_TRANSFER_SCRIPT + _ROWS,
+    )
+
+
+def test_the_list_shows_each_backup_and_keeps_a_newer_one_from_being_restored() -> None:
+    out = _backups(
+        "out.rows = rows(); out.head = document.querySelector('#backups-list thead').textContent;"
+        "out.note = document.getElementById('backup-note-0').textContent;"
+    )
+    assert out == {
+        "head": "MadeBeforeVersionRestore",
+        "rows": [
+            {
+                "row": "backup-newer",
+                "cells": ["29 Oct 2026, 07:12", "Import", "0.6.0Newer than this station", "Restore\u2026"],
+                "button": ["btn-secondary small", True],
+                "named": ["Restore the backup from 29 Oct 2026, 07:12, made before an import", "backup-note-0"],
+            },
+            {
+                "row": "",
+                "cells": ["28 Oct 2026, 20:40", "Update to 0.5.0rc3", "0.5.0rc2", "Restore\u2026"],
+                "button": ["btn-secondary small", False],
+                "named": ["Restore the backup from 28 Oct 2026, 20:40, made before the update to 0.5.0rc3", None],
+            },
+        ],
+        "note": "Newer than this station",
+    }
+
+
+def test_the_list_shows_the_browser_s_local_time() -> None:
+    out = _backups("out.made = rows().map(function (r) { return r.cells[0]; });", tz="Europe/Berlin")
+    assert out == {"made": ["29 Oct 2026, 08:12", "28 Oct 2026, 21:40"]}
+
+
+def test_a_station_without_backups_says_so() -> None:
+    out = _backups("out.text = listed(); out.rows = rows();", listing="{ body: { backups: [] } }")
+    assert out == {"text": "No backups are saved on this station yet.", "rows": []}
+
+
+@pytest.mark.parametrize(
+    ("listing", "text"),
+    [
+        (
+            "{ status: 500, body: { error: 'The backups on this station could not be read.',"
+            " action: 'Details in Logs.' } }",
+            "The backups on this station could not be read.Details in Logs.",
+        ),
+        ("'unreachable'", "The backups on this station could not be read.Reload the page."),
+        ("{ body: 'not json' }", "The backups on this station could not be read.Reload the page."),
+        ("{ body: {} }", "The backups on this station could not be read.Reload the page."),
+        ("{ body: { backups: 'none' } }", "The backups on this station could not be read.Reload the page."),
+    ],
+    ids=["refused", "unreachable", "not-json", "no-list", "not-a-list"],
+)
+def test_a_list_that_cannot_be_read_says_so(listing: str, text: str) -> None:
+    out = _backups(
+        "out.text = listed(); out.notice = document.querySelector('#backups-list .notice.error') !== null;",
+        listing=listing,
+    )
+    assert out == {"text": text, "notice": True}
+
+
+def _press_restore(row: int = 1) -> str:
+    return (
+        "holdWhen = function (r) { return r.method === 'POST'; };"
+        f"document.querySelectorAll('#backups-list button')[{row}].click(); await settle();"
+    )
+
+
+def test_a_newer_backup_cannot_be_restored() -> None:
+    out = _backups(_press_restore(0) + "out.asked = asked; out.urls = urls();")
+    assert out == {"asked": [], "urls": ["GET /api/config/backups"]}
+
+
+def test_the_question_names_the_backup_and_only_its_final_button_is_red() -> None:
+    out = _backups("answer = false;" + _press_restore() + "out.asked = asked; out.urls = urls(); out.modal = shown();")
+    assert out == {
+        "asked": [
+            {
+                "title": "Restore this backup?",
+                "message": "The settings from 28 Oct 2026, 20:40 (made before the update to 0.5.0rc3, "
+                "version 0.5.0rc2) replace the current ones, together with the marker catalog, saved templates and "
+                "lens calibrations of that time, and the station restarts. This station's name, network access and "
+                "local file paths stay as they are. A backup of the current settings is saved on the station first.",
+                "confirmLabel": "Restore and Restart",
+                "danger": True,
+            }
+        ],
+        "urls": ["GET /api/config/backups"],
+        "modal": None,
+    }
+
+
+@pytest.mark.parametrize(
+    ("parts", "named"),
+    [
+        (
+            ["the marker catalog", "saved templates"],
+            "together with the marker catalog and saved templates of that time, ",
+        ),
+        (["lens calibrations"], "together with lens calibrations of that time, "),
+        ([], ""),
+    ],
+    ids=["two", "one", "config only"],
+)
+def test_the_question_names_only_the_parts_the_backup_holds(parts: list, named: str) -> None:
+    listing = [dict(_BACKUPS[0]), {**_BACKUPS[1], "parts": parts}]
+    out = _backups(
+        "answer = false;" + _press_restore() + "out.asked = asked;",
+        listing=f"{{ body: {{ backups: {json.dumps(listing)} }} }}",
+    )
+    assert out["asked"][0]["message"] == (
+        "The settings from 28 Oct 2026, 20:40 (made before the update to 0.5.0rc3, version 0.5.0rc2) replace the "
+        f"current ones, {named}and the station restarts. This station's name, network access and local file paths "
+        "stay as they are. A backup of the current settings is saved on the station first."
+    )
+
+
+def test_a_restore_names_its_backup_and_waits_for_a_new_openfollow() -> None:
+    out = _backups(
+        f"answers['POST /api/config/backups/restore'] = {{ body: {json.dumps(_RESET)} }};"
+        + _press_restore()
+        + "out.sent = [shown(), requests[requests.length - 1]];"
+        "release(); await settle();"
+        "info = { body: { instance: 'old' } }; await tick(2000); out.dying = [shown(), reloaded];"
+        "info = { body: { instance: 'new' } }; await tick(2000); out.back = reloaded;"
+        "out.toasts = toasts; out.error = errorLine();"
+    )
+    assert out == {
+        "sent": [
+            _progress(),
+            {"method": "POST", "url": "/api/config/backups/restore", "body": {"name": _BACKUPS[1]["name"]}},
+        ],
+        "dying": [_progress(), 0],
+        "back": 1,
+        "toasts": [],
+        "error": None,
+    }
+
+
+def test_a_restore_without_a_backup_says_so_after_the_reload() -> None:
+    out = _backups(
+        f"answers['POST /api/config/backups/restore'] = {{ body: {json.dumps({**_RESET, 'backup_error': 'x'})} }};"
+        + _press_restore()
+        + "release(); await settle(); out.toasts = toasts; out.modal = shown();"
+    )
+    assert out == {
+        "toasts": [["Restored the backup. No backup was made. Details in Logs.", "caution"]],
+        "modal": _progress(),
+    }
+
+
+def test_a_restore_that_went_part_way_says_what_was_not_restored_and_waits_for_the_restart() -> None:
+    partial = {
+        "error": "The marker catalog could not be written.",
+        "action": "OpenFollow is restarting with the rest of the backup.",
+        "needs_restart": True,
+        "restarting": True,
+        "instance": "old",
+    }
+    out = _backups(
+        f"answers['POST /api/config/backups/restore'] = {{ status: 500, body: {json.dumps(partial)} }};"
+        + _press_restore()
+        + "release(); await settle(); out.waiting = shown(); out.error = errorLine();"
+        "info = { body: { instance: 'new' } }; await tick(2000); out.back = reloaded; out.toasts = toasts;"
+    )
+    assert out == {
+        "waiting": _progress(
+            "Not all restored. The marker catalog could not be written. "
+            "OpenFollow is restarting with the rest of the backup."
+        ),
+        "error": None,
+        "back": 1,
+        "toasts": [["Not all restored. The marker catalog could not be written. Details in Logs.", "caution"]],
+    }
+
+
+def test_a_restore_part_way_without_a_backup_says_both() -> None:
+    partial = {
+        "error": "The marker catalog could not be written.",
+        "action": "OpenFollow is restarting with the rest of the backup.",
+        "restarting": True,
+        "instance": "old",
+        "backup_error": "disk full",
+    }
+    out = _backups(
+        f"answers['POST /api/config/backups/restore'] = {{ status: 500, body: {json.dumps(partial)} }};"
+        + _press_restore()
+        + "release(); await settle(); out.toasts = toasts;"
+    )
+    assert out == {
+        "toasts": [
+            [
+                "Not all restored. The marker catalog could not be written. No backup was made. Details in Logs.",
+                "caution",
+            ]
+        ]
+    }
+
+
+@pytest.mark.parametrize(
+    ("answer", "error"),
+    [
+        (
+            "{ status: 409, body: { error: 'This backup was made by OpenFollow 0.6.0, which is newer than this "
+            "station (0.5.0rc3).', action: 'Update the station first.' } }",
+            "Not restored. This backup was made by OpenFollow 0.6.0, which is newer than this station (0.5.0rc3). "
+            "Update the station first.",
+        ),
+        (
+            "{ status: 422, body: { error: 'This backup could not be read.', action: 'Choose another one.' } }",
+            "Not restored. This backup could not be read. Choose another one.",
+        ),
+        (
+            "{ status: 404, body: { error: 'This backup is no longer on the station.', action: 'Reload the page.' } }",
+            "Not restored. This backup is no longer on the station. Reload the page.",
+        ),
+        (
+            "'unreachable'",
+            "Not restored. The station did not answer. Check that it is switched on and on this network, "
+            "then try again.",
+        ),
+    ],
+    ids=["newer", "damaged", "gone", "unreachable"],
+)
+def test_a_refused_restore_closes_the_progress_and_says_why_under_the_list(answer: str, error: str) -> None:
+    out = _backups(
+        f"answers['POST /api/config/backups/restore'] = {answer};"
+        + _press_restore()
+        + "release(); await settle(); await tick(2000);"
+        "out.modal = shown(); out.error = errorLine();"
+        "out.under = document.querySelector('#backups-list').nextSibling.className;"
+    )
+    assert out == {"modal": None, "error": error, "under": "save-error"}
 
 
 # -- A switch to Simple network mode that clears a web UI pin in force ---------------------

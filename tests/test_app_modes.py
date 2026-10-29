@@ -3194,7 +3194,7 @@ class TestSourcePickSave:
         [
             ("", "is empty", "Restart OpenFollow to restore the settings from the latest backup copy"),
             ("  \n\t\n", "is empty", "Restart OpenFollow to restore the settings from the latest backup copy"),
-            ("not [[ toml", "could not be read", "Import a settings file to replace it"),
+            ("not [[ toml", "could not be read", "Import a settings file or restore a backup to replace it"),
         ],
         ids=["empty", "whitespace", "unparseable"],
     )
@@ -3214,6 +3214,24 @@ class TestSourcePickSave:
             (
                 f"The NDI® source is live but could not be saved. The settings file {said}.",
                 f"{step}, then pick it again.",
+            )
+        ]
+
+    def test_a_save_after_a_restore_says_the_station_is_restarting(self, tmp_path) -> None:  # noqa: ANN001
+        from openfollow import restore_hold
+        from openfollow.runtime.app_modes import save_source_pick
+
+        app, path, banners = self._station(tmp_path)
+        before = path.read_bytes()
+        restore_hold.hold(path)
+
+        save_source_pick(app, "ndi_source_name", "NEW (B)")
+
+        assert path.read_bytes() == before
+        assert banners == [
+            (
+                "The NDI® source is live but could not be saved. OpenFollow is restarting after a restore.",
+                "Once it is back, pick it again.",
             )
         ]
 

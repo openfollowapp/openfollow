@@ -21,6 +21,7 @@ from openfollow.input.keyboard import text_entry_owns_input
 from openfollow.input.parking import is_parked, select
 from openfollow.input.slot_pin_capture import CAPTURE_TIMEOUT_S, PINNED
 from openfollow.input.touch_remote import holds
+from openfollow.restore_hold import is_held
 from openfollow.runtime import paths_runtime
 from openfollow.video.failure import SourceKind, VideoFailure, failure_action, failure_sentence
 
@@ -1179,6 +1180,8 @@ def confirm_source_type_selection(app: OpenFollowApp) -> None:
 
 def _unsaved_reason(app: OpenFollowApp, again: str) -> tuple[str, str]:
     """What is wrong with the settings file (``""`` if it reads), and the step before the operator tries *again*."""
+    if is_held(app._config_path):
+        return "OpenFollow is restarting after a restore.", f"Once it is back, {again}."
     problem = config_file_problem(app._config_path)
     if problem is None:
         return "", f"Check the station's storage, then {again}."

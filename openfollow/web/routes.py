@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 import binascii
 import collections
+import contextlib
 import copy
 import functools
 import hashlib
@@ -27,7 +28,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Mapping, MutableSequence, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, MutableSequence, Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -51,6 +52,7 @@ if TYPE_CHECKING:
     from openfollow.web.discovery import PeerInfo
     from openfollow.web.server import ConfigWebServer
 
+from openfollow import config_restore, restore_hold
 from openfollow.button_names import ButtonNameStyle, name_style
 from openfollow.configuration import (
     CALIBRATION_CORNERS,
@@ -102,6 +104,7 @@ from openfollow.configuration import (
     plane_pins,
     reconcile_simple_corners,
     save_config,
+    stage_config,
     viewed_with_controlled,
 )
 from openfollow.input.midi import bound_identifiers
@@ -3429,6 +3432,15 @@ def restore_device_identity(cfg: AppConfig, snapshot: Mapping[str, Any]) -> None
         setattr(owner, name, value)
 
 
+def restored_from_backup(restored: AppConfig, current: AppConfig) -> AppConfig:
+    """*restored* with this station's identity, name and network access kept from *current*."""
+    restore_device_identity(restored, capture_device_identity(current))
+    restored.psn_system_name = current.psn_system_name
+    # The kept mode decides: a Simple station never takes a pin back from its past.
+    enforce_network_mode(restored)
+    return restored
+
+
 def reset_config_to_defaults(current_cfg: AppConfig) -> AppConfig:
     """Return a fresh ``AppConfig()`` carrying this device's identity over.
 
@@ -4069,6 +4081,41 @@ def _export_status(status: ExportStatus) -> dict[str, Any]:
 
 
 _UPDATE_RUNNING = "An update is running."
+_BACKUPS_UNREADABLE = "The backups on this station could not be read."
+_RESTORED_PART_WORDS = {
+    config_restore.CATALOG: "the marker catalog",
+    config_restore.TEMPLATES: "the saved templates",
+    config_restore.LENSES: "the lens calibrations",
+}
+
+
+_ANOTHER_RESTORE = ("Another restore is running.", "Restore again once the station is back.")
+# Serialises restores from their recovery to their commit.
+_RESTORE_LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def _one_restore() -> Iterator[bool]:
+    """Whether this request is the only restore under way; held for its ``with`` block."""
+    if not _RESTORE_LOCK.acquire(blocking=False):
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        _RESTORE_LOCK.release()
+
+
+def _sentence(words: str) -> str:
+    return words[:1].upper() + words[1:]
+
+
+def _and(words: Iterable[str]) -> str:
+    """``a``, ``a and b``, ``a, b and c``."""
+    listed = list(words)
+    return ", ".join(listed[:-1]) + (" and " if len(listed) > 1 else "") + listed[-1]
+
+
 _RESTART_AFTER_UPDATE = "Restart once it has finished."
 
 
@@ -4083,10 +4130,15 @@ def _update_refused(server: Any) -> str:
 _LATENCY_WARNING_TOKEN = re.compile(r"[A-Za-z0-9_-]{16,64}")
 
 
-def _save_failed(status: int, error: str, action: str = "", **detail: str) -> HTTPResponse:
+def _save_failed(status: int, error: str, action: str = "", **detail: Any) -> HTTPResponse:
     """A refused or failed save, in the ``{error, action}`` shape the save-feedback line reads."""
     body = json.dumps({"error": error, "action": action, **detail})
     return HTTPResponse(body=body, status=status, headers={"Content-Type": "application/json"})
+
+
+def _restore_not_written(name: str, error: OSError) -> HTTPResponse:
+    logger.warning("Settings backup %s not restored: %s", name, error)
+    return _save_failed(500, "The settings could not be written.", "Details in Logs.")
 
 
 def build_diagnostics_bundle(server: ConfigWebServer, cfg: AppConfig | None = None) -> tuple[str, str]:
@@ -4477,7 +4529,7 @@ def _push_path(path: str, sender: str) -> str:
 _PEER_SETTINGS_FILE: dict[object, str] = {
     "empty-restorable": "its settings file is empty; restart it to restore the settings from its latest backup copy",
     "empty": "its settings file is empty; restart it to start again with default settings",
-    "unreadable": "its settings file could not be read; import a settings file there to replace it",
+    "unreadable": "its settings file could not be read; import a settings file or restore a backup there to replace it",
 }
 
 
@@ -4905,6 +4957,8 @@ def _register_marker_catalog_routes(
                 # equality is the exact check we want.
                 if catalog.get_any(marker_id) is entry:
                     catalog.restore_entry(marker_id, prev)
+                if isinstance(exc, restore_hold.HeldForRestartError):
+                    raise  # a restore's restart: the route plugin answers it
                 logger.exception("Failed to persist catalog: %s", exc)
                 response.status = 500
                 return json.dumps({"error": "could not persist catalog"})
@@ -4962,6 +5016,8 @@ def _register_marker_catalog_routes(
                 # clobber that peer's newer state.
                 if catalog.get_any(marker_id) is tomb:
                     catalog.restore_entry(marker_id, prev)
+                if isinstance(exc, restore_hold.HeldForRestartError):
+                    raise  # a restore's restart: the route plugin answers it
                 logger.exception("Failed to persist catalog: %s", exc)
                 response.status = 500
                 return json.dumps({"error": "could not persist catalog"})
@@ -5810,6 +5866,9 @@ def _refuse_over_unreadable_config(callback: Callable[..., Any]) -> Callable[...
             return _save_failed(
                 409, f"The settings file on this station {said}", f"{step}.", settings_file=config_problem_kind(error)
             )
+        except restore_hold.HeldForRestartError as error:
+            logger.warning("Not saved: %s", error)
+            return _save_failed(409, "OpenFollow is restarting.", "Save again once it is back.")
 
     return wrapper
 
@@ -10485,6 +10544,110 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             {"success": True, "needs_restart": True, "restarting": True, "instance": server.instance_id, **backup}
         )
 
+    @app.get("/api/config/backups")
+    def api_config_backups() -> Any:
+        """This station's settings backups, newest first: names, kinds, versions and times only."""
+        try:
+            rows = config_restore.list_backups(server.config_path, openfollow.__version__)
+        except config_restore.BackupsUnreadableError as exc:
+            logger.warning("Settings backups not listed: %s", exc)
+            return _save_failed(500, _BACKUPS_UNREADABLE, "Details in Logs.")
+        response.content_type = "application/json"
+        return json.dumps({"backups": [row.as_json() for row in rows]})
+
+    @app.post("/api/config/backups/restore")
+    def api_config_backups_restore() -> Any:
+        """Restore one of this station's own settings backups, keeping its identity, then restart.
+
+        The name is matched against the listing, never joined into a path. The
+        archive is read whole and checked before the backup of the current
+        settings is made, so a refused restore leaves nothing behind.
+        """
+        data = _load_json_body()
+        name = data.get("name") if isinstance(data, dict) else None
+        if not isinstance(name, str) or not name:
+            return _save_failed(400, "The request named no backup.")
+        # One at a time, recovery to commit: another's recovery would take this one's staged copies.
+        with _one_restore() as alone:
+            if not alone or restore_hold.is_held(server.config_path):
+                return _save_failed(409, *_ANOTHER_RESTORE)
+            after_update = "Restore the backup once it has finished."
+            if server.is_update_busy():
+                return _save_failed(409, _UPDATE_RUNNING, after_update)
+            base, replacing = _import_base(may_replace=True)
+            catalog_path = Path(_resolve_marker_catalog_path(server.config_path, base.markers_catalog_path))
+            # A committed one is finished only by a start, never under a running station: this one's failed.
+            if (Path(server.config_path).parent / config_restore.JOURNAL).exists():
+                return _save_failed(409, "An earlier restore could not be finished.", "Details in Logs.")
+            config_restore.recover_interrupted_restore(Path(server.config_path))
+            try:
+                found = config_restore.find_backup(server.config_path, name, openfollow.__version__)
+            except config_restore.BackupsUnreadableError as exc:
+                logger.warning("Settings backup not restored: %s", exc)
+                return _save_failed(500, _BACKUPS_UNREADABLE, "Details in Logs.")
+            if found is None:
+                return _save_failed(404, "This backup is no longer on the station.", "Reload the page.")
+            if found.newer:
+                return _save_failed(
+                    409,
+                    f"This backup was made by OpenFollow {config_restore.shown_version(found.version)}, which is "
+                    f"newer than this station ({config_restore.shown_version(openfollow.__version__)}).",
+                    "Update the station first.",
+                )
+            try:
+                contents = config_restore.read_backup(found.path)
+                restored = config_restore.load_backup_config(contents)
+            except config_restore.BackupDamagedError as exc:
+                logger.warning("Settings backup %s not restored: %s", found.name, exc)
+                return _save_failed(422, "This backup could not be read.", "Choose another one.")
+
+            backup = _backup_before(server.config_path, "restore", base if replacing else None)
+            try:
+                staged = config_restore.stage_restore(contents, catalog_path, Path(server.config_path))
+            except OSError as exc:
+                return _restore_not_written(found.name, exc)
+
+            not_restored: list[str] = []
+
+            def write_backup() -> None:
+                with _config_write_lock, restore_hold.GATE:
+                    current, replacing_now = _import_base(may_replace=True)
+                    stage_config(
+                        restored_from_backup(restored, current),
+                        server.config_path,
+                        staged.config_slot(),
+                        replace_unreadable=replacing_now,
+                    )
+                    # Renames only. Past the config every restored part is held, nothing raises and the
+                    # restart follows: a part that fails stays as it is.
+                    not_restored.extend(staged.commit())
+
+            try:
+                # Checked again with the write: an update queued during the backup leaves the settings as they are.
+                restarting = server.restart_after(write_backup)
+            except (ConfigFileUnreadableError, restore_hold.HeldForRestartError):
+                raise  # answered by the route plugin, as every other write
+            except OSError as exc:
+                return _restore_not_written(found.name, exc)
+            finally:
+                staged.discard()
+            if not restarting:
+                return _save_failed(409, _UPDATE_RUNNING, after_update)
+            restart = {"needs_restart": True, "restarting": True, "instance": server.instance_id, **backup}
+            if not_restored:
+                logger.warning(
+                    "Restored settings backup %s without %s; restarting", found.name, ", ".join(not_restored)
+                )
+                return _save_failed(
+                    500,
+                    f"{_sentence(_and(_RESTORED_PART_WORDS[part] for part in not_restored))} could not be written.",
+                    "OpenFollow is restarting with the rest of the backup.",
+                    **restart,
+                )
+            logger.info("Restored settings backup %s; restarting", found.name)
+            response.content_type = "application/json"
+            return json.dumps({"success": True, **restart})
+
     @app.post("/api/config/broadcast-all")
     def api_broadcast_all() -> Any:
         """Broadcast full config to all peers via their import endpoint."""
@@ -11110,6 +11273,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 width=width,
                 height=height,
             )
+        except restore_hold.HeldForRestartError:
+            raise  # a restore's restart: the route plugin answers it
         except OSError as exc:
             logger.warning("saving lens calibration failed: %s", exc)
             response.status = 500

@@ -212,6 +212,7 @@ holds the line.
 | Station list: offline | `--error-row` tint with an `--error-line` border; never faded |
 | A broken OSC binding | `--error-line` outline, no fill |
 | An OSC binding marker the station does not control | Red `--error-mark` dot, `--error-text` text |
+| A settings backup the station cannot restore (written by a newer version) | Its cells in `--muted`, its Restore button disabled, and under the version the reason in `--caution-text` (`.backup-note`), no fill |
 
 ### Borders and flashes
 

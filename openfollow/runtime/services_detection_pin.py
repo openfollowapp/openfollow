@@ -54,8 +54,8 @@ class DetectionPinState:
     # Replace mode: the PSN tracker status last written to the driven marker, so
     # /api/stats can show the pin's own view beside the wire. None once released.
     status: float | None = None
-    # The zone height the head pin unprojected on last (``_unproject_head``).
-    head_height: float = 0.0
+    # The zone height the head pin unprojected on last (``_unproject_head``); None before the first.
+    head_height: float | None = None
 
     def reset(self) -> None:
         """Clear smoothing/velocity so the next acquisition re-seeds fresh.
@@ -70,7 +70,7 @@ class DetectionPinState:
         self.prev_target_x = None
         self.prev_target_y = None
         self.locked_track_id = None
-        self.head_height = 0.0
+        self.head_height = None
         self.ai_smooth_x = None
         self.ai_smooth_y = None
         self.attached_track_id = None
@@ -218,7 +218,7 @@ def _unproject_head(
     h: float,
     base_z: float,
     zones: list[Any],
-    keep: float,
+    keep: float | None,
 ) -> tuple[npt.NDArray[Any], float]:
     """A head's world point on ``base_z`` plus a zone height consistent with where it lands, and that height.
 
@@ -482,9 +482,9 @@ def _apply_assist_all(
     # ``"top"`` uses each anchor's Z (and the zone height kept from the last
     # frame), so markers alike still share a single pass.
     zones = raising_zones(cfg)
-    det_world_cache: dict[tuple[float, float], list[_DetWorld]] = {}
+    det_world_cache: dict[tuple[float, float | None], list[_DetWorld]] = {}
 
-    def _det_worlds_for(base_z: float, keep: float) -> list[_DetWorld]:
+    def _det_worlds_for(base_z: float, keep: float | None) -> list[_DetWorld]:
         cached = det_world_cache.get((base_z, keep))
         if cached is not None:
             return cached

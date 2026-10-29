@@ -489,6 +489,68 @@ def test_a_head_away_from_any_edge_is_pinned_where_it_is(
     assert sent[-1][1] == pytest.approx(1.7 + lift)
 
 
+class _SeenFromDownstage:
+    """``unproject_to_plane`` for a camera at y = -15, z = 8 looking at one head: a higher plane lands nearer."""
+
+    def __init__(self, y: float, z: float) -> None:
+        self.y, self.z = y, z
+
+    def __call__(self, _params, _screen_pt, _w, _h, plane_z):  # noqa: ANN001, ANN204
+        landed = -15.0 + (self.y + 15.0) * (8.0 - plane_z) / (8.0 - self.z)
+        return np.array([[0.0, landed, plane_z]], dtype=np.float64)
+
+
+# On the riser (y 0..5, 0.5 m) a head at 2.0 m seen just past its upstage edge lands outside it
+# on the marker's own 1.7 m plane and inside it on 2.2 m: both heights are consistent.
+_BOTH_CONSISTENT = (5.1, 2.0)
+_ONLY_THE_STAGE = (7.0, 2.0)
+_ONLY_THE_RISER = (2.5, 2.0)
+# Just inside its downstage edge neither is: the stage plane lands on the riser, the riser plane off it.
+_NEITHER = (0.3, 2.0)
+
+
+def _pinned_y(monkeypatch, mode: str, heads: list[tuple[float, float]], *, lose_between: bool = False) -> float:
+    marker = _StubMarker(1)
+    marker.set_pos(0.0, heads[0][0], 1.7)
+    cfg = _replace_cfg(pin_point="top") if mode == "replace" else _assist_cfg(pin_point="top", assist_radius_m=50.0)
+    app = _riser_app(cfg, 0.0, marker)
+    if mode == "assist":
+        _seed_anchor(app, 0.0, heads[0][0], 1.7)
+    box = _StubDetection(0.45, 0.2, 0.55, 0.8, track_id=1)
+    seen = _SeenFromDownstage(*heads[0])
+    for y, z in heads:
+        seen.y, seen.z = y, z
+        detector = _StubDetector(box) if mode == "replace" else _AssistDetector([box])
+        if lose_between:
+            _run(app, _StubDetector(None) if mode == "replace" else _AssistDetector([]), monkeypatch, unproject=seen)
+        _run(app, detector, monkeypatch, unproject=seen)
+    return marker.pos[1]
+
+
+@pytest.mark.parametrize("mode", ["replace", "assist"])
+class TestHeadHeight:
+    """Which zone height the head pin unprojects on, frame to frame."""
+
+    def test_a_first_sighting_takes_the_highest_consistent_height(self, monkeypatch, mode: str) -> None:
+        assert _pinned_y(monkeypatch, mode, [_BOTH_CONSISTENT]) < 5.0
+
+    def test_a_head_from_the_stage_keeps_the_stage_while_it_stays_consistent(self, monkeypatch, mode: str) -> None:
+        assert _pinned_y(monkeypatch, mode, [_ONLY_THE_STAGE, _BOTH_CONSISTENT]) > 5.0
+
+    def test_a_head_from_the_riser_keeps_the_riser_while_it_stays_consistent(self, monkeypatch, mode: str) -> None:
+        assert _pinned_y(monkeypatch, mode, [_ONLY_THE_RISER, _BOTH_CONSISTENT]) < 5.0
+
+    def test_with_no_consistent_height_the_head_is_unprojected_on_the_marker_itself(
+        self, monkeypatch, mode: str
+    ) -> None:
+        # The stage plane lands it on the riser (y > 0); the riser kept from before would land it off.
+        assert _pinned_y(monkeypatch, mode, [_ONLY_THE_RISER, _NEITHER]) > 0.0
+
+
+def test_a_lost_head_starts_again_from_the_highest_consistent_height(monkeypatch) -> None:
+    assert _pinned_y(monkeypatch, "replace", [_ONLY_THE_STAGE, _BOTH_CONSISTENT], lose_between=True) < 5.0
+
+
 def test_non_finite_world_point_is_dropped(monkeypatch) -> None:
     app = _make_app(detection_cfg=_replace_cfg())
     detector = _StubDetector(_StubDetection(0.4, 0.4, 0.6, 0.6))

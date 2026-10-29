@@ -231,3 +231,42 @@ def test_the_zone_editor_learns_the_floor_height(live) -> None:  # noqa: ANN001
     status, data = _call(base, "/api/zones", method="GET")
     assert status == 200
     assert data["grid"]["z_offset"] == 0.4
+
+
+def test_the_zone_editor_gets_the_saved_camera_and_lens(live) -> None:  # noqa: ANN001
+    base, config_path = live
+    cfg = load_config(config_path)
+    c = cfg.camera
+    c.pos_x, c.pos_y, c.pos_z, c.pitch, c.yaw, c.roll, c.fov = 1.0, -7.0, 4.5, -30.0, 12.0, 2.0, 75.0
+    c.lens_k1, c.lens_k2, c.lens_cx, c.lens_cy = -0.2, -0.05, 0.03, -0.01
+    save_config(cfg, config_path)
+    status, data = _call(base, "/api/zones", method="GET")
+    assert status == 200
+    assert data["camera"] == {
+        "pos_x": 1.0,
+        "pos_y": -7.0,
+        "pos_z": 4.5,
+        "pitch": -30.0,
+        "yaw": 12.0,
+        "roll": 2.0,
+        "fov": 75.0,
+        "k1": -0.2,
+        "k2": -0.05,
+        "cx": 0.03,
+        "cy": -0.01,
+    }
+
+
+@pytest.mark.parametrize(
+    "line, key, want",
+    [('fov = "abc"', "fov", 60.0), ("pitch = 1e999", "pitch", -22.0), ("lens_k1 = 50.0", "k1", 0.99)],
+    ids=["text", "infinite", "out of range"],
+)
+def test_a_hand_edited_camera_reaches_the_zone_editor_as_numbers(live, line: str, key: str, want: float) -> None:  # noqa: ANN001
+    base, config_path = live
+    with open(config_path, "w", encoding="utf-8") as fh:
+        fh.write(f"[camera]\n{line}\n")
+    status, data = _call(base, "/api/zones", method="GET")
+    assert status == 200
+    assert data["camera"][key] == pytest.approx(want)
+    assert all(isinstance(v, float) and np.isfinite(v) for v in data["camera"].values())

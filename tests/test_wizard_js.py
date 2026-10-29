@@ -5743,7 +5743,9 @@ var els = { cam_height: height };
 function $(id) {
   return els[id] || (els[id] = { hidden: false, textContent: '', setAttribute: function() {} });
 }
-var document = { querySelectorAll: function(sel) { return sel === '#wizard-step-calib [data-echo]' ? [echo] : []; } };
+var document = { querySelectorAll: function(sel) {
+  return sel.split(', ').indexOf('#wizard-step-calib [data-echo]') >= 0 ? [echo] : [];
+} };
 var S = { height: null };
 """
 

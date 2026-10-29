@@ -153,7 +153,7 @@ def test_simple_pins_on_a_curved_lens_give_the_camera_and_the_seen_places_on_the
     status, data = _solve(base, _body(lens=LENS))
     assert status == 200
     np.testing.assert_allclose(_camera_vector(data["camera"]), TRUE, atol=1e-3)
-    assert set(data) == {"camera", "marks", "count", "largest_error", "steep", "reasons"}
+    assert set(data) == {"camera", "marks", "count", "largest_error", "steep", "floor", "reasons"}
     assert (data["count"], data["reasons"]) == (4, [])
     assert data["largest_error"] == pytest.approx(0.0, abs=1e-3)
     pins = [m["pin"] for m in _simple_marks(LENS)]

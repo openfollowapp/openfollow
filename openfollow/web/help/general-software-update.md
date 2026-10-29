@@ -2,38 +2,30 @@
 
 Install a newer OpenFollow release and restart the service – no SSH session needed.
 
-**Installed** shows the version currently running on this device.
+**Installed** shows the version currently running.
 
-**Version … is available** appears when the station's own background check, at startup and when its address changes, found a newer release on GitHub. The section then starts unfolded, unless this browser remembers it folded. Without an internet uplink the check finds nothing and no box appears. While an install is under way it is not shown, and after a failed install the failure shows in its place: what went wrong, with the reason on a second line.
+**Version … is available** appears when the station's own background check, at startup and when its address changes, found a newer release on GitHub. Without an internet uplink no box appears. After a failed install the failure shows in its place, with the reason on a second line.
 
-**Install Latest Version Online** queries GitHub for the newest published release. If it is newer than the installed version, a confirmation dialog appears; confirming downloads the signed update bundle (`.ofupdate`) for this device's architecture, verifies it, and installs it. Progress is shown in a locked dialog and the page reloads automatically once the new version is up. The reloaded page then opens **What's new**: the installed release's notes, or a pointer to the full release notes when the package carries none. It appears once per update on this station, and closing it marks it seen; **(What's new)** after the version at the foot of the page opens it again at any time. It also names the settings backup the update made, or why it couldn't make one. Beside **Continue**, a **Support OpenFollow** card links to how to support the project, with a QR code to scan from a phone when the station has no internet. If the device is already current, you'll see an "already up to date" message and nothing is changed.
+**Install Latest Version Online** checks GitHub for the newest release. If it is newer, a confirmation dialog appears; confirming downloads the signed update bundle (`.ofupdate`) for this device's architecture, verifies it and installs it. A locked dialog shows progress and the page reloads once the new version is up, then opens **What's new** once per update. **(What's new)** after the version at the foot of the page opens it again. If the device is already current, nothing is changed.
 
-The install runs detached from the running service (the package restarts the service itself), so the device briefly goes away and comes back on the new version. An install that fails before the service has stopped shows its reason in the dialog, and the running version stays. An update is refused while OpenFollow is restarting. If the updater is missing the privilege it needs, install fails with a hint to run **Apply Permissions** on the Device page first.
+The device briefly goes away while the service restarts. An install that fails before the service has stopped shows its reason in the dialog, and the running version stays. An update is refused while OpenFollow is restarting. If the updater lacks a privilege, run **Apply Permissions** on the Device page first.
 
-> **Needs internet.** This option reaches `api.github.com` and the release download. On an isolated show LAN with no uplink, **Install .ofupdate File** is the path that works.
+> **Needs internet.** This option reaches GitHub. On an isolated show LAN with no uplink, use **Install .ofupdate File**.
 
 ## Settings backup
 
-Before an update installs, the station saves its settings: the configuration, the marker catalog, your own templates and the saved lens calibrations. The Media Gallery and the detection models are not included. Backups are kept in `/var/lib/openfollow/backups/`, one per install, named after the station, the version it came from and the time, for example `brave-otter-v0.4.3-20260929T180000Z.ofbackup`. The ten newest are kept.
+Before an update installs, the station saves its configuration, marker catalog, your own templates and saved lens calibrations. The Media Gallery and the detection models are not included. Backups are kept in `/var/lib/openfollow/backups/`, one per install; the ten newest are kept. A backup holds the web PIN and stream passwords, so only the OpenFollow service user can read it.
 
-The backup holds the web PIN and stream passwords, so only the OpenFollow service user can read it.
-
-If the backup can't be made, for example because the disk is full, the update still installs: the update is often the fix. On a full disk the oldest backups are deleted to make room first, but never the most recent one. To keep a copy of your own, use **Export Configuration** under **General → Configuration** before updating.
-
-To restore a backup, stop the service, then extract `config.toml` and `templates/user/` from the archive into `/var/lib/openfollow/` as the `openfollow` user, and copy `markers.toml` back to the path its `manifest.json` names. A backup is a gzip tar, so `tar xzf` opens it.
+If the backup can't be made, the update still installs. To keep your own copy, use **Export Configuration** under **General → Configuration** first.
 
 ## What's verified before install
 
-Every update – online or offline – is checked before anything is installed as root, and refused on any failure:
+Every update, online or offline, is refused on any failure of these checks:
 
-- **Signature** – the bundle carries a signature made with the OpenFollow release key. The device holds the matching public key and rejects anything not signed by it, so a tampered or third-party package cannot install.
-- **Checksum** – the package's SHA-256 must match the signed manifest, so a truncated or corrupted download is caught.
-- **Identity** – the package inside must be `openfollow` and match this device's architecture.
+- **Signature** – made with the OpenFollow release key.
+- **Checksum** – the package's SHA-256 must match the signed manifest.
+- **Identity** – the package must be `openfollow` and match this device's architecture.
 
 ## Offline install
 
-For venues with no internet, **Install .ofupdate File** installs an update bundle you supply. It opens a file picker for an `openfollow_<version>_<arch>.ofupdate` bundle, downloaded from the release on a machine that does have internet. Choosing the file starts the install straight away: it uploads over your local network and installs after the same signature + checksum verification as the online path. A locked dialog shows the upload percentage, then the verification and the install, until the page reloads on the new version.
-
-Unlike the online check, the offline path does **not** gate on version – you can deliberately reinstall the same version or downgrade, as long as the bundle is properly signed.
-
-> The bundle is a single file that contains the `.deb`, its checksum, and the signature. Only an `.ofupdate` signed for an OpenFollow release will install – an unsigned or hand-built package is rejected.
+**Install .ofupdate File** opens a file picker for an `openfollow_<version>_<arch>.ofupdate` bundle, downloaded from the release on a machine with internet. Choosing the file starts the install straight away, after the same verification. Unlike the online path, it does not gate on version: you can reinstall the same version or downgrade. Only a bundle signed for an OpenFollow release installs.

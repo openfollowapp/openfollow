@@ -5,6 +5,9 @@
 from __future__ import annotations
 
 import io
+import json
+import os
+import sys
 import tarfile
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -13,7 +16,7 @@ from pathlib import Path
 import pytest
 from packaging.version import Version
 
-from openfollow import config_restore
+from openfollow import config_restore, restore_hold
 from openfollow.config_restore import (
     BackupDamagedError,
     BackupsUnreadableError,
@@ -447,7 +450,7 @@ def test_a_staged_restore_replaces_the_catalog_and_both_folders(station: Path) -
         ],
     )
     catalog = station / "show" / "catalog.toml"
-    staged = stage_restore(read_backup(archive), catalog, station)
+    staged = stage_restore(read_backup(archive), catalog, station / "config.toml")
     assert not catalog.exists()
     assert _tree(station / "templates" / "user") == {"grid.oftemplate": b"grid"}
 
@@ -463,7 +466,7 @@ def test_a_staged_restore_replaces_the_catalog_and_both_folders(station: Path) -
 
 
 def test_a_part_the_archive_lacks_stays_as_it_is(station: Path) -> None:
-    staged = stage_restore(read_backup(_crafted(station, [_CONFIG])), station / "markers.toml", station)
+    staged = stage_restore(read_backup(_crafted(station, [_CONFIG])), station / "markers.toml", station / "config.toml")
     staged.commit()
     assert (station / "markers.toml").read_bytes() == b'[[marker]]\nid = 1\nname = "Lead"\n'
     assert _tree(station / "templates" / "user") == {"grid.oftemplate": b"grid"}
@@ -472,7 +475,7 @@ def test_a_part_the_archive_lacks_stays_as_it_is(station: Path) -> None:
 
 def test_a_folder_the_station_does_not_have_yet_is_made(tmp_path: Path) -> None:
     contents = config_restore.BackupContents(b"", None, {"lens-calibrations": {"a.json": b"{}"}})
-    stage_restore(contents, tmp_path / "markers.toml", tmp_path).commit()
+    stage_restore(contents, tmp_path / "markers.toml", tmp_path / "config.toml").commit()
     assert _tree(tmp_path / "lens-calibrations") == {"a.json": b"{}"}
     assert [p.name for p in tmp_path.iterdir()] == ["lens-calibrations"]
 
@@ -480,7 +483,7 @@ def test_a_folder_the_station_does_not_have_yet_is_made(tmp_path: Path) -> None:
 def test_a_discarded_restore_leaves_nothing_behind(station: Path) -> None:
     contents = read_backup(station / "backups" / "web" / _web(station, "import", 0))
     before = _tree(station)
-    stage_restore(contents, station / "markers.toml", station).discard()
+    stage_restore(contents, station / "markers.toml", station / "config.toml").discard()
     assert _tree(station) == before
     assert list(station.rglob(".*")) == []
 
@@ -489,7 +492,7 @@ def test_a_restore_that_fails_inside_a_folder_cleans_up(station: Path) -> None:
     contents = config_restore.BackupContents(b"", b"[[marker]]\n", {"templates/user": {"a": b"a", "a/b": b"b"}})
     before = _tree(station)
     with pytest.raises(OSError):
-        stage_restore(contents, station / "markers.toml", station)
+        stage_restore(contents, station / "markers.toml", station / "config.toml")
     assert _tree(station) == before
     assert list(station.rglob(".*")) == []
 
@@ -541,8 +544,13 @@ def _leftover(parent: Path, name: str, files: dict[str, str]) -> Path:
     return folder
 
 
+def _journal(station: Path, name: str, catalog: Path | None = None) -> None:
+    (station / name).write_text(json.dumps({"catalog": str(catalog or station / "markers.toml")}), encoding="utf-8")
+
+
 def _cut_short_mid_commit(station: Path) -> None:
-    """Down between the lens folder's two renames; the templates were not reached yet."""
+    """Down between the lens folder's two renames; the config and templates were not reached yet."""
+    (station / ".config.toml.gggg7777.restore").write_text('psn_system_name = "Restored"\n', encoding="utf-8")
     (station / "lens-calibrations").rename(station / ".lens-calibrations.aaaa1111.old")
     _leftover(station, ".lens-calibrations.bbbb2222.restore", {"new.json": "[]"})
     _leftover(station / "templates", ".user.dddd4444.restore", {"new.oftemplate": "new"})
@@ -552,10 +560,11 @@ def _cut_short_mid_commit(station: Path) -> None:
 
 def test_a_committed_restore_cut_short_is_finished(station: Path) -> None:
     _cut_short_mid_commit(station)
-    (station / config_restore.JOURNAL).write_bytes(b"")
+    _journal(station, config_restore.JOURNAL)
 
-    config_restore.recover_interrupted_restore(station, station / "markers.toml")
+    config_restore.recover_interrupted_restore(station / "config.toml")
 
+    assert (station / "config.toml").read_text(encoding="utf-8") == 'psn_system_name = "Restored"\n'
     assert _tree(station / "lens-calibrations") == {"new.json": b"[]"}
     assert _tree(station / "templates" / "user") == {"new.oftemplate": b"new"}
     assert (station / "markers.toml").read_text(encoding="utf-8") == "[[marker]]\nid = 7\n"
@@ -564,10 +573,12 @@ def test_a_committed_restore_cut_short_is_finished(station: Path) -> None:
 
 def test_a_restore_that_never_committed_leaves_the_station_s_own(station: Path) -> None:
     _cut_short_mid_commit(station)
-    (station / config_restore.PENDING_JOURNAL).write_bytes(b"")
+    _journal(station, config_restore.PENDING_JOURNAL)
+    config = (station / "config.toml").read_bytes()
 
-    config_restore.recover_interrupted_restore(station, station / "markers.toml")
+    config_restore.recover_interrupted_restore(station / "config.toml")
 
+    assert (station / "config.toml").read_bytes() == config
     assert _tree(station / "lens-calibrations") == {"zoom.json": b"{}"}
     assert _tree(station / "templates" / "user") == {"grid.oftemplate": b"grid"}
     assert (station / "markers.toml").read_bytes() == b'[[marker]]\nid = 1\nname = "Lead"\n'
@@ -576,9 +587,9 @@ def test_a_restore_that_never_committed_leaves_the_station_s_own(station: Path) 
 
 def test_a_power_cut_while_staging_never_installs_a_folder_the_station_did_not_have(tmp_path: Path) -> None:
     contents = config_restore.BackupContents(b"", b"[[marker]]\n", {"lens-calibrations": {"a.json": b"{}"}})
-    stage_restore(contents, tmp_path / "markers.toml", tmp_path)  # and then the power went
+    stage_restore(contents, tmp_path / "markers.toml", tmp_path / "config.toml")  # and then the power went
 
-    config_restore.recover_interrupted_restore(tmp_path, tmp_path / "markers.toml")
+    config_restore.recover_interrupted_restore(tmp_path / "config.toml")
 
     assert list(tmp_path.iterdir()) == []
 
@@ -586,7 +597,7 @@ def test_a_power_cut_while_staging_never_installs_a_folder_the_station_did_not_h
 def test_a_commit_cut_short_by_a_power_cut_is_finished_at_the_start(
     station: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    staged = stage_restore(_all_parts(station), station / "markers.toml", station)
+    staged = stage_restore(_all_parts(station), station / "markers.toml", station / "config.toml")
     real = config_restore.os.replace
 
     def power_cut(src: str | Path, dst: str | Path) -> None:
@@ -599,7 +610,7 @@ def test_a_commit_cut_short_by_a_power_cut_is_finished_at_the_start(
         staged.commit()
     monkeypatch.undo()
 
-    config_restore.recover_interrupted_restore(station, station / "markers.toml")
+    config_restore.recover_interrupted_restore(station / "config.toml")
 
     assert (station / "markers.toml").read_bytes() == b"[[marker]]\nid = 7\n"
     assert _tree(station / "templates" / "user") == {"new.oftemplate": b"new"}
@@ -607,13 +618,30 @@ def test_a_commit_cut_short_by_a_power_cut_is_finished_at_the_start(
     assert list(station.rglob(".*")) == []
 
 
-def test_what_a_restore_writes_reaches_the_disk(station: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def _synced_paths(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """Every path ``os.fsync`` is called on from here on."""
     synced: list[Path] = []
-    real = config_restore._sync
-    monkeypatch.setattr(config_restore, "_sync", lambda path: synced.append(Path(path)) or real(path))
+    real = os.fsync
 
-    staged = stage_restore(_all_parts(station), station / "markers.toml", station)
-    staged_paths = {p for p in station.rglob(".*") if p.suffix == ".restore"}
+    def fsync(fd: int) -> None:
+        if sys.platform == "darwin":
+            import fcntl
+
+            raw = fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024))  # type: ignore[attr-defined]
+            synced.append(Path(raw.rstrip(b"\0").decode()).resolve())
+        else:
+            synced.append(Path(os.readlink(f"/proc/self/fd/{fd}")).resolve())
+        real(fd)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    return synced
+
+
+def test_what_a_restore_writes_reaches_the_disk(station: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    synced = _synced_paths(monkeypatch)
+
+    staged = stage_restore(_all_parts(station), station / "markers.toml", station / "config.toml")
+    staged_paths = {p.resolve() for p in station.rglob(".*") if p.suffix in (".restore", ".pending")}
     staged_files = {p for folder in staged_paths if folder.is_dir() for p in folder.rglob("*")} | {
         p for p in staged_paths if p.is_file()
     }
@@ -622,12 +650,27 @@ def test_what_a_restore_writes_reaches_the_disk(station: Path, monkeypatch: pyte
 
     staged.commit()
 
-    assert {station, station / "templates"} <= set(synced)
+    assert {station.resolve(), (station / "templates").resolve()} <= set(synced)
+
+
+def test_a_folder_whose_entries_cannot_be_synced_is_no_failure(station: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    real = os.open
+
+    def no_folders(path: str | Path, flags: int, *args: int, **kwargs: int) -> int:
+        if kwargs.get("dir_fd") is None and Path(path).is_dir():
+            raise PermissionError(13, "Permission denied")
+        return real(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", no_folders)
+    staged = stage_restore(_all_parts(station), station / "markers.toml", station / "config.toml")
+    assert staged.commit() == []
+    monkeypatch.undo()
+    assert _tree(station / "lens-calibrations") == {"tele.json": b"[]"}
 
 
 def test_a_folder_gone_with_only_its_old_copy_left_is_put_back(station: Path) -> None:
     (station / "lens-calibrations").rename(station / ".lens-calibrations.aaaa1111.old")
-    config_restore.recover_interrupted_restore(station, station / "markers.toml")
+    config_restore.recover_interrupted_restore(station / "config.toml")
     assert _tree(station / "lens-calibrations") == {"zoom.json": b"{}"}
     assert list(station.rglob(".*")) == []
 
@@ -636,7 +679,7 @@ def test_a_folder_gone_with_only_its_old_copy_left_is_put_back(station: Path) ->
 def test_a_leftover_beside_a_folder_in_place_is_removed(station: Path, suffix: str) -> None:
     _leftover(station, f".lens-calibrations.aaaa1111{suffix}", {"stale.json": "{}"})
     _leftover(station / "templates", f".user.bbbb2222{suffix}", {"stale": "x"})
-    config_restore.recover_interrupted_restore(station, station / "markers.toml")
+    config_restore.recover_interrupted_restore(station / "config.toml")
     assert _tree(station / "lens-calibrations") == {"zoom.json": b"{}"}
     assert _tree(station / "templates" / "user") == {"grid.oftemplate": b"grid"}
     assert list(station.rglob(".*")) == []
@@ -647,13 +690,14 @@ def test_a_staged_catalog_left_behind_is_removed(station: Path) -> None:
     catalog.parent.mkdir()
     catalog.write_text("[[marker]]\nid = 2\n", encoding="utf-8")
     (catalog.parent / ".markers.toml.aaaa1111.restore").write_text("half", encoding="utf-8")
-    config_restore.recover_interrupted_restore(station, catalog)
+    _journal(station, config_restore.PENDING_JOURNAL, catalog)
+    config_restore.recover_interrupted_restore(station / "config.toml")
     assert catalog.read_text(encoding="utf-8") == "[[marker]]\nid = 2\n"
     assert [p.name for p in catalog.parent.iterdir()] == ["markers.toml"]
 
 
 def test_a_station_without_leftovers_is_left_as_it_is(tmp_path: Path) -> None:
-    config_restore.recover_interrupted_restore(tmp_path / "state", tmp_path / "state" / "markers.toml")
+    config_restore.recover_interrupted_restore(tmp_path / "state" / "config.toml")
     assert list(tmp_path.iterdir()) == []
 
 
@@ -666,7 +710,7 @@ def test_a_leftover_that_cannot_be_put_back_is_logged_and_left(
         raise PermissionError(13, "Permission denied")
 
     monkeypatch.setattr(config_restore.os, "replace", refuse)
-    config_restore.recover_interrupted_restore(station, station / "markers.toml")
+    config_restore.recover_interrupted_restore(station / "config.toml")
     assert (station / ".lens-calibrations.aaaa1111.old").is_dir()
     assert "lens-calibrations" in caplog.text
 
@@ -694,7 +738,7 @@ def _refusing(monkeypatch: pytest.MonkeyPatch, refused: Callable[[Path, Path], b
 
 
 def test_a_commit_needs_no_new_space(station: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    staged = stage_restore(_all_parts(station), station / "markers.toml", station)
+    staged = stage_restore(_all_parts(station), station / "markers.toml", station / "config.toml")
 
     def no_space(*_args: object, **_kwargs: object) -> str:
         raise OSError(28, "No space left on device")
@@ -709,7 +753,7 @@ def test_a_commit_needs_no_new_space(station: Path, monkeypatch: pytest.MonkeyPa
 def test_a_part_that_cannot_move_in_is_named_and_the_rest_restored(
     station: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    staged = stage_restore(_all_parts(station), station / "markers.toml", station)
+    staged = stage_restore(_all_parts(station), station / "markers.toml", station / "config.toml")
     _refusing(monkeypatch, lambda src, dst: dst.name == "markers.toml")
 
     assert staged.commit() == ["markers.toml"]
@@ -722,7 +766,7 @@ def test_a_part_that_cannot_move_in_is_named_and_the_rest_restored(
 
 
 def test_a_folder_that_cannot_move_in_gets_its_own_back(station: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    staged = stage_restore(_all_parts(station), station / "markers.toml", station)
+    staged = stage_restore(_all_parts(station), station / "markers.toml", station / "config.toml")
     _refusing(monkeypatch, lambda src, dst: dst.name == "lens-calibrations" and src.name.endswith(".restore"))
 
     assert staged.commit() == ["lens-calibrations"]
@@ -734,7 +778,7 @@ def test_a_folder_that_cannot_move_in_gets_its_own_back(station: Path, monkeypat
 
 
 def test_a_folder_that_cannot_be_moved_aside_is_left_as_it_is(station: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    staged = stage_restore(_all_parts(station), station / "markers.toml", station)
+    staged = stage_restore(_all_parts(station), station / "markers.toml", station / "config.toml")
     _refusing(monkeypatch, lambda src, dst: src.name == "lens-calibrations")
 
     assert staged.commit() == ["lens-calibrations"]
@@ -746,7 +790,7 @@ def test_a_folder_that_cannot_be_moved_aside_is_left_as_it_is(station: Path, mon
 def test_a_folder_that_cannot_move_in_nor_back_gets_its_own_back_at_the_next_start(
     station: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    staged = stage_restore(_all_parts(station), station / "markers.toml", station)
+    staged = stage_restore(_all_parts(station), station / "markers.toml", station / "config.toml")
     _refusing(monkeypatch, lambda src, dst: dst.name == "lens-calibrations" and src.name != "lens-calibrations")
 
     assert staged.commit() == ["lens-calibrations"]
@@ -755,7 +799,7 @@ def test_a_folder_that_cannot_move_in_nor_back_gets_its_own_back_at_the_next_sta
 
     monkeypatch.undo()
     # The commit had finished: as its answer said, the station keeps its own.
-    config_restore.recover_interrupted_restore(station, station / "markers.toml")
+    config_restore.recover_interrupted_restore(station / "config.toml")
     assert _tree(station / "lens-calibrations") == {"zoom.json": b"{}"}
     assert list(station.rglob(".*")) == []
 
@@ -764,7 +808,7 @@ def test_a_folder_the_station_did_not_have_is_left_absent_when_it_cannot_move_in
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     contents = config_restore.BackupContents(b"", None, {"lens-calibrations": {"a.json": b"{}"}})
-    staged = stage_restore(contents, tmp_path / "markers.toml", tmp_path)
+    staged = stage_restore(contents, tmp_path / "markers.toml", tmp_path / "config.toml")
     _refusing(monkeypatch, lambda src, dst: dst.name == "lens-calibrations")
 
     assert staged.commit() == ["lens-calibrations"]
@@ -781,17 +825,137 @@ def test_no_room_to_move_a_folder_aside_stages_nothing(station: Path, monkeypatc
 
     monkeypatch.setattr(config_restore.tempfile, "mkdtemp", no_room_aside)
     with pytest.raises(OSError):
-        stage_restore(_all_parts(station), station / "markers.toml", station)
+        stage_restore(_all_parts(station), station / "markers.toml", station / "config.toml")
     assert list(station.rglob(".*")) == []
 
 
-def test_syncing_what_is_not_there_is_no_failure(tmp_path: Path) -> None:
-    config_restore._sync(tmp_path / "gone")
+def _with_config(station: Path) -> config_restore.StagedRestore:
+    staged = stage_restore(_all_parts(station), station / "markers.toml", station / "config.toml")
+    staged.config_slot().write_text('psn_system_name = "Restored"\n', encoding="utf-8")
+    return staged
 
 
-def test_a_commit_whose_journal_is_gone_still_restores(station: Path) -> None:
-    staged = stage_restore(_all_parts(station), station / "markers.toml", station)
-    (station / config_restore.PENDING_JOURNAL).unlink()
+def _untouched(station: Path, config: bytes) -> None:
+    assert (station / "config.toml").read_bytes() == config
+    assert (station / "markers.toml").read_bytes() == b'[[marker]]\nid = 1\nname = "Lead"\n'
+    assert _tree(station / "lens-calibrations") == {"zoom.json": b"{}"}
+    assert not restore_hold.is_held(station / "config.toml")
+    assert list(station.rglob(".*")) == []
+
+
+def test_a_commit_puts_the_config_in_place_and_holds_every_part(station: Path) -> None:
+    staged = _with_config(station)
     assert staged.commit() == []
+    assert (station / "config.toml").read_text(encoding="utf-8") == 'psn_system_name = "Restored"\n'
+    for part in ("config.toml", "markers.toml", "templates/user/x", "lens-calibrations"):
+        assert restore_hold.is_held(station / part), part
+    assert list(station.rglob(".*")) == []
+
+
+@pytest.mark.parametrize("refused", [config_restore.JOURNAL, "config.toml"])
+def test_a_commit_that_cannot_start_changes_nothing(
+    station: Path, monkeypatch: pytest.MonkeyPatch, refused: str
+) -> None:
+    config = (station / "config.toml").read_bytes()
+    staged = _with_config(station)
+    real = os.replace
+
+    def refuse(src: str | Path, dst: str | Path) -> None:
+        if Path(dst).name == refused:
+            raise PermissionError(13, "Permission denied")
+        real(src, dst)
+
+    monkeypatch.setattr(os, "replace", refuse)
+    with pytest.raises(OSError):
+        staged.commit()
+    staged.discard()
+    monkeypatch.undo()
+    _untouched(station, config)
+
+
+def test_a_power_cut_between_journal_and_config_is_finished_at_the_start(
+    station: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    staged = _with_config(station)
+    real = os.replace
+
+    def power_cut(src: str | Path, dst: str | Path) -> None:
+        if Path(dst).name == "config.toml":
+            raise SystemExit("power cut")
+        real(src, dst)
+
+    monkeypatch.setattr(os, "replace", power_cut)
+    with pytest.raises(SystemExit):
+        staged.commit()
+    monkeypatch.undo()
+
+    config_restore.recover_interrupted_restore(station / "config.toml")
+
+    assert (station / "config.toml").read_text(encoding="utf-8") == 'psn_system_name = "Restored"\n'
+    assert (station / "markers.toml").read_bytes() == b"[[marker]]\nid = 7\n"
     assert _tree(station / "lens-calibrations") == {"tele.json": b"[]"}
     assert list(station.rglob(".*")) == []
+
+
+def test_a_power_cut_while_the_config_is_staged_undoes_the_restore(station: Path) -> None:
+    config = (station / "config.toml").read_bytes()
+    _with_config(station)  # and then the power went
+    config_restore.recover_interrupted_restore(station / "config.toml")
+    _untouched(station, config)
+
+
+def test_a_commit_whose_clean_up_fails_still_returns(station: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    staged = _with_config(station)
+    real = os.replace
+
+    def refuse_the_catalog(src: str | Path, dst: str | Path) -> None:
+        if Path(dst).name == "markers.toml":
+            raise PermissionError(13, "Permission denied")
+        real(src, dst)
+
+    def read_only(self: Path, missing_ok: bool = False) -> None:
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(os, "replace", refuse_the_catalog)
+    monkeypatch.setattr(Path, "unlink", read_only)
+    assert staged.commit() == ["markers.toml"]
+    assert restore_hold.is_held(station / "config.toml")
+
+
+def test_a_commit_that_breaks_after_the_config_names_what_it_did_not_reach(
+    station: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    staged = _with_config(station)
+    real = os.replace
+
+    def broken(src: str | Path, dst: str | Path) -> None:
+        if Path(dst).name == "user":
+            raise RuntimeError("unexpected")
+        real(src, dst)
+
+    monkeypatch.setattr(os, "replace", broken)
+    assert staged.commit() == ["templates/user", "lens-calibrations"]
+    assert (station / "markers.toml").read_bytes() == b"[[marker]]\nid = 7\n"
+    assert not (station / config_restore.JOURNAL).exists()
+
+
+@pytest.mark.parametrize("name", ["templates/user/\udcffx", "templates/user/a\x00b"], ids=["not-text", "nul"])
+def test_a_name_no_file_can_take_is_damage(station: Path, monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    info = tarfile.TarInfo("templates/user/x")
+    info.size = 1
+    path = station / "backups" / archive_name("OpenFollow", "0.4.3", _NOW)
+    path.parent.mkdir()
+    with tarfile.open(path, "w:gz", format=tarfile.PAX_FORMAT) as tar:
+        tar.addfile(_CONFIG[0], io.BytesIO(_CONFIG[1]))
+        tar.addfile(info, io.BytesIO(b"x"))
+    real = tarfile.TarFile.next
+
+    def as_a_crafted_header_names_it(self: tarfile.TarFile) -> tarfile.TarInfo | None:
+        member = real(self)
+        if member is not None and member.name == "templates/user/x":
+            member.name = name
+        return member
+
+    monkeypatch.setattr(tarfile.TarFile, "next", as_a_crafted_header_names_it)
+    with pytest.raises(BackupDamagedError):
+        read_backup(path)

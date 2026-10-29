@@ -30,6 +30,7 @@ from typing import IO, Any, cast
 
 from packaging.version import InvalidVersion, Version
 
+from openfollow import restore_hold
 from openfollow.configuration import AppConfig, ConfigFileUnreadableError, load_config
 from openfollow.privilege import settings_backup
 
@@ -180,8 +181,12 @@ def is_newer(version: str, running: str) -> bool:
 
 def _member_name(member: tarfile.TarInfo) -> str:
     """The member's name; refuses what the ``data`` extraction filter refuses, though nothing is extracted."""
+    try:
+        member.name.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise BackupDamagedError("the archive holds a name that is no text") from exc
     pure = PurePosixPath(member.name)
-    if pure.is_absolute() or ".." in pure.parts or not (member.isfile() or member.isdir()):
+    if "\0" in member.name or pure.is_absolute() or ".." in pure.parts or not (member.isfile() or member.isdir()):
         raise BackupDamagedError(f"the archive holds {member.name!r}, which no settings backup does")
     return str(pure)
 
@@ -391,50 +396,84 @@ def _write_synced(path: Path, data: bytes) -> None:
 
 @dataclass
 class StagedRestore:
-    """The archive's catalog and folders written beside their targets, swapped in by :meth:`commit`.
+    """The archive's config, catalog and folders written beside their targets, swapped in by :meth:`commit`.
 
-    Everything that takes space is made by :func:`stage_restore`, the place each
+    Everything that takes space is made before the commit, the place each
     folder is moved aside to and the journal included, so a commit only renames.
     """
 
     journal: Path
+    config_target: Path
+    catalog_target: Path
+    config: Path | None = None
     files: list[tuple[Path, Path]] = field(default_factory=list)
     # ``(part, staged, aside, target)``: the archive's folder name, its copy, where the station's goes.
     folders: list[tuple[str, Path, Path, Path]] = field(default_factory=list)
     committed: bool = False
 
-    def commit(self) -> list[str]:
-        """Move each staged copy into place, as far as each goes; the parts that kept the station's own.
+    def config_slot(self) -> Path:
+        """An empty file beside the config for :func:`~openfollow.configuration.stage_config` to fill."""
+        fd, tmp = tempfile.mkstemp(prefix=f".{self.config_target.name}.", suffix=_STAGED, dir=self.config_target.parent)
+        os.close(fd)
+        self.config = Path(tmp)
+        return self.config
 
-        The journal marks the commit for :func:`recover_interrupted_restore`
-        until it ends: a power cut before then finishes the restore at the
-        next start. A part that cannot move in keeps the station's own: a
-        folder moved aside is put back now, or, when that fails too, by the
-        next start, which finds no journal and takes the copy moved aside.
+    def commit(self) -> list[str]:
+        """Put the restore in place; the parts that kept the station's own.
+
+        Raises ``OSError``, with nothing changed, when the journal or the config
+        cannot move in. From the config on, every restored part is held
+        (:mod:`openfollow.restore_hold`) and nothing raises: the caller's restart
+        must follow. The journal marks the commit until it ends, so a power cut
+        before then finishes the restore at the next start. A part that cannot
+        move in keeps the station's own: a folder moved aside is put back now,
+        or, when that fails too, by the next start, which finds no journal.
         """
-        self.committed = True
         done = self.journal.with_name(JOURNAL)
-        try:
-            os.replace(self.journal, done)
-        except OSError as exc:
-            logger.warning("Could not mark the restore as committed: %s", exc)
+        os.replace(self.journal, done)
         _sync(done.parent)
-        failed = []
-        for staged, target in self.files:
+        if self.config is not None:
             try:
-                os.replace(staged, target)
-            except OSError as exc:
-                logger.warning("Could not restore %s: %s", target, exc)
-                failed.append(CATALOG)
-                staged.unlink(missing_ok=True)
-            _sync(target.parent)
-        for part, staged, aside, target in self.folders:
-            if not self._move_in(staged, aside, target):
-                failed.append(part)
-            _sync(target.parent)
-        done.unlink(missing_ok=True)
+                os.replace(self.config, self.config_target)
+            except OSError:
+                with contextlib.suppress(OSError):
+                    os.replace(done, self.journal)
+                raise
+        self.committed = True
+        state_dir = self.journal.parent
+        restore_hold.hold(self.config_target, self.catalog_target, state_dir / TEMPLATES, state_dir / LENSES)
+        failed: list[str] = []
+        pending: list[tuple[str, Path, Path | None, Path]] = [
+            (CATALOG, staged, None, target) for staged, target in self.files
+        ]
+        pending += self.folders
+        try:
+            _sync(self.config_target.parent)
+            while pending:
+                part, staged, aside, target = pending[0]
+                moved_in = self._move_file(staged, target) if aside is None else self._move_in(staged, aside, target)
+                pending.pop(0)
+                if not moved_in:
+                    failed.append(part)
+                _sync(target.parent)
+        except Exception:
+            logger.exception("Restore cut short after its config was written; restarting on what is in place")
+            failed += [part for part, *_rest in pending]
+        with contextlib.suppress(OSError):
+            done.unlink(missing_ok=True)
         _sync(done.parent)
         return failed
+
+    @staticmethod
+    def _move_file(staged: Path, target: Path) -> bool:
+        try:
+            os.replace(staged, target)
+        except OSError as exc:
+            logger.warning("Could not restore %s: %s", target, exc)
+            with contextlib.suppress(OSError):
+                staged.unlink(missing_ok=True)
+            return False
+        return True
 
     @staticmethod
     def _move_in(staged: Path, aside: Path, target: Path) -> bool:
@@ -459,27 +498,30 @@ class StagedRestore:
         return True
 
     def discard(self) -> None:
-        """Remove what was staged; after a commit, what it moved and left is its own business."""
+        """Remove what was staged, the journal last; after a commit, what it moved and left is its own business."""
         if self.committed:
             return
-        self.journal.unlink(missing_ok=True)
-        for staged, _target in self.files:
+        for staged in [*(staged for staged, _target in self.files), *([self.config] if self.config else [])]:
             staged.unlink(missing_ok=True)
         for _part, staged, aside, _target in self.folders:
             shutil.rmtree(staged, ignore_errors=True)
             shutil.rmtree(aside, ignore_errors=True)
+        self.journal.unlink(missing_ok=True)
 
 
-def stage_restore(contents: BackupContents, catalog_path: Path, state_dir: Path) -> StagedRestore:
+def stage_restore(contents: BackupContents, catalog_path: Path, config_path: Path) -> StagedRestore:
     """Write the archive's catalog and folders next to where they go, ready for :meth:`StagedRestore.commit`.
 
-    Every file and folder is synced, so a staged copy is whole on the disk
-    before the first rename. A part the archive does not hold is left as it is.
+    The journal goes first, naming the catalog for the recovery. Every file and
+    folder is synced, so a staged copy is whole on the disk before the first
+    rename. The config is staged later, through :meth:`StagedRestore.config_slot`.
+    A part the archive does not hold is left as it is.
     """
-    staged = StagedRestore(state_dir / PENDING_JOURNAL)
+    state_dir = config_path.parent
+    staged = StagedRestore(state_dir / PENDING_JOURNAL, config_path, catalog_path)
     try:
         state_dir.mkdir(parents=True, exist_ok=True)
-        _write_synced(staged.journal, b"")
+        _write_synced(staged.journal, json.dumps({"catalog": str(catalog_path)}).encode())
         if contents.catalog is not None:
             catalog_path.parent.mkdir(parents=True, exist_ok=True)
             fd, tmp = tempfile.mkstemp(prefix=f".{catalog_path.name}.", suffix=_STAGED, dir=catalog_path.parent)
@@ -516,23 +558,36 @@ def _leftovers(target: Path, suffix: str) -> list[Path]:
     return sorted(found, key=lambda path: path.lstat().st_mtime_ns, reverse=True)
 
 
-def recover_interrupted_restore(state_dir: Path, catalog_path: Path) -> None:
-    """Put right a restore cut short; run at start and before the next restore.
+def _journal_catalog(journal: Path) -> Path | None:
+    """The catalog a journal names, or ``None``."""
+    try:
+        named = json.loads(journal.read_bytes()).get("catalog")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return Path(named) if isinstance(named, str) and named else None
+
+
+def recover_interrupted_restore(config_path: Path) -> None:
+    """Put right a restore cut short; run at start before the config is read, and before the next restore.
 
     With the commit's journal on the disk the restore is finished from its
-    staged copies, which were whole before the first rename. Without it the
-    restore never committed, or committed and ended: its copies are discarded,
-    and a folder left moved aside is put back. A failure is logged: a start
-    never stops on it.
+    staged copies, config included, which were whole before the first rename.
+    Without it the restore never committed, or committed and ended: its copies
+    are discarded, and a folder left moved aside is put back. A failure is
+    logged: a start never stops on it.
     """
-    committed = (state_dir / JOURNAL).exists()
-    staged_catalog = _leftovers(catalog_path, _STAGED)
-    source = staged_catalog[0] if committed and staged_catalog else None
-    if source is not None:
-        _install(source, catalog_path)
-    for leftover in staged_catalog:
-        if leftover != source:
-            _remove(leftover)
+    state_dir = config_path.parent
+    done, pending = state_dir / JOURNAL, state_dir / PENDING_JOURNAL
+    committed = done.exists()
+    catalog = _journal_catalog(done if committed else pending)
+    for target in [config_path, *([catalog] if catalog is not None else [])]:
+        staged = _leftovers(target, _STAGED)
+        source = staged[0] if committed and staged else None
+        if source is not None:
+            _install(source, target)
+        for leftover in staged:
+            if leftover != source:
+                _remove(leftover)
     for folder in _FOLDERS:
         target = state_dir / folder
         staged, aside = _leftovers(target, _STAGED), _leftovers(target, _REPLACED)
@@ -544,8 +599,8 @@ def recover_interrupted_restore(state_dir: Path, catalog_path: Path) -> None:
         for leftover in staged + aside:
             if leftover != source:
                 _remove(leftover)
-    for journal in (JOURNAL, PENDING_JOURNAL):
-        (state_dir / journal).unlink(missing_ok=True)
+    for journal in (done, pending):
+        journal.unlink(missing_ok=True)
 
 
 def _install(source: Path, target: Path) -> None:

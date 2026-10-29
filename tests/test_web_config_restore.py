@@ -20,7 +20,7 @@ import openfollow
 import openfollow.services as services_module
 import openfollow.web.discovery as discovery_module
 import openfollow.web.routes as routes_module
-from openfollow import config_restore
+from openfollow import config_restore, restore_hold
 from openfollow.configuration import AppConfig, load_config, save_config
 from openfollow.marker_catalog.catalog import MarkerCatalog, save_catalog
 from openfollow.privilege import settings_backup
@@ -525,10 +525,10 @@ def test_a_config_that_cannot_be_saved_restores_nothing_and_holds_nothing(
     _the_show_now(state)
     before = (state / "config.toml").read_bytes()
 
-    def disk_full(cfg: AppConfig, path: str, **kwargs: Any) -> None:
+    def disk_full(cfg: AppConfig, path: str, staged: Path, **kwargs: Any) -> None:
         raise OSError(28, "No space left on device")
 
-    monkeypatch.setattr(routes_module, "save_config", disk_full)
+    monkeypatch.setattr(routes_module, "stage_config", disk_full)
     status, body = _restore(base, name)
 
     assert (status, body) == (500, {"error": "The settings could not be written.", "action": "Details in Logs."})
@@ -791,3 +791,34 @@ def test_a_restore_while_another_runs_or_holds_is_refused(station, monkeypatch: 
     monkeypatch.setattr(routes_module, "_backup_before", real_backup)
     assert _restore(base, second) == (409, _ANOTHER)
     assert server.check_restart_requested() is True
+
+
+def test_a_restore_whose_clean_up_fails_after_the_config_still_restarts(
+    station, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server, base, state = station
+    _the_old_show(state)
+    name = _update_backup(state)
+    _the_show_now(state)
+    real_replace = config_restore.os.replace
+    real_unlink = Path.unlink
+
+    def refuse_the_catalog(src: Any, dst: Any) -> None:
+        if Path(dst).name == "markers.toml":
+            raise PermissionError(13, "Permission denied")
+        real_replace(src, dst)
+
+    def read_only_after_the_config(self: Path, missing_ok: bool = False) -> None:
+        if restore_hold.is_held(state / "config.toml"):
+            raise OSError(30, "Read-only file system")
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(config_restore.os, "replace", refuse_the_catalog)
+    monkeypatch.setattr(Path, "unlink", read_only_after_the_config)
+    status, body = _restore(base, name)
+
+    assert status == 500
+    assert body["error"] == "The marker catalog could not be written."
+    assert body["restarting"] is True
+    assert server.check_restart_requested() is True
+    assert load_config(str(state / "config.toml"), strict=True).grid.width == 42.0

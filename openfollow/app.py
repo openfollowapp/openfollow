@@ -242,11 +242,12 @@ class OpenFollowApp:
         # a station that has silently respawned several times reads exactly
         # like a healthy one in every other section.
         self._crash_restarts: int = crash_restarts
+        # Before anything reads the config: a restore cut short is finished or undone as a whole.
+        recover_interrupted_restore(Path(self._config_path))
         restore_empty_config(self._config_path)
         bootstrap_config_if_missing(self._config_path)
         self._config: AppConfig = load_config(self._config_path)
         self._bootstrap_station_identity()
-        recover_interrupted_restore(Path(self._config_path).parent, Path(self._marker_catalog_path()))
         self._marker_catalog: MarkerCatalog = self._load_or_seed_marker_catalog()
         self._marker_catalog_sync: Any = None
         self._config_mtime: float = self._get_config_mtime()

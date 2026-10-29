@@ -140,6 +140,9 @@ _REQUESTS = [(method, *_WRITES[(method, pattern)]) for method, pattern in _WRITE
 _IDS = [f"{method} {path}" for method, path, _, _ in _REQUESTS]
 
 
+_WRITING_CALLS = ("save_config(", "stage_config(", "_save_section_from_form(", "_persist_ui_change(")
+
+
 def _writing_routes() -> set[tuple[str, str]]:
     """``(method, pattern)`` of every route in ``routes.py`` whose handler writes the config."""
     source = Path(routes_module.__file__).read_text(encoding="utf-8")
@@ -148,7 +151,10 @@ def _writing_routes() -> set[tuple[str, str]]:
         if not isinstance(node, ast.FunctionDef):
             continue
         body = ast.unparse(node)
-        if not any(call in body for call in ("save_config(", "_save_section_from_form(", "_persist_ui_change(")):
+        if not any(
+            call in body
+            for call in ("save_config(", "stage_config(", "_save_section_from_form(", "_persist_ui_change(")
+        ):
             continue
         for deco in node.decorator_list:
             if (

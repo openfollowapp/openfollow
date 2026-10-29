@@ -18,6 +18,7 @@ runtime-helper tests:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -1045,7 +1046,8 @@ def test_a_restore_cut_short_is_put_right_before_the_catalog_loads(patched_ctor)
     staged.mkdir()
     (staged / "tele.json").write_text("{}", encoding="utf-8")
     (state / ".markers.toml.efgh5678.restore").write_text("[[marker]]\nid = 3\n", encoding="utf-8")
-    (state / ".restore-commit").write_bytes(b"")  # the restore had committed
+    # The restore had committed; its journal names the catalog.
+    (state / ".restore-commit").write_text(json.dumps({"catalog": str(state / "markers.toml")}), encoding="utf-8")
 
     OpenFollowApp(config_path=patched_ctor.cfg_path)
 

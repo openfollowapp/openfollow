@@ -3742,6 +3742,24 @@ def config_file_health(path: str) -> str:
     return f"{state}; {backup}"
 
 
+def _prepare_save(config: AppConfig, path: str, *, replace_unreadable: bool) -> bytes:
+    """The bytes *config* saves as, once *path* is checked and snapshotted to ``.bak``."""
+    try:
+        whole = _read_whole(path)
+    except ConfigFileUnreadableError:
+        if not replace_unreadable:
+            raise
+        whole = None
+    if whole is not None:
+        backup_path = Path(path).with_name(Path(path).name + ".bak")
+        try:
+            _replace_file(backup_path, whole[0])
+        except OSError:
+            # The save itself is fine; the cause is what a missing .bak is later diagnosed from.
+            logger.warning("Could not write config backup %s; continuing", backup_path, exc_info=True)
+    return tomli_w.dumps(config_to_toml_dict(config)).encode("utf-8")
+
+
 def save_config(config: AppConfig, path: str = "config.toml", *, replace_unreadable: bool = False) -> None:
     """Serialize the full config to a TOML file, overwriting existing content.
 
@@ -3759,23 +3777,21 @@ def save_config(config: AppConfig, path: str = "config.toml", *, replace_unreada
     the primary is missing or unreadable.
     """
     with unless_held(path):
-        try:
-            whole = _read_whole(path)
-        except ConfigFileUnreadableError:
-            if not replace_unreadable:
-                raise
-            whole = None
-        current = None if whole is None else whole[0]
-        data = tomli_w.dumps(config_to_toml_dict(config)).encode("utf-8")
-        target = Path(path)
-        if current is not None:
-            backup_path = target.with_name(target.name + ".bak")
-            try:
-                _replace_file(backup_path, current)
-            except OSError:
-                # The save itself is fine; the cause is what a missing .bak is later diagnosed from.
-                logger.warning("Could not write config backup %s; continuing", backup_path, exc_info=True)
-        _replace_file(target, data)
+        _replace_file(Path(path), _prepare_save(config, path, replace_unreadable=replace_unreadable))
+
+
+def stage_config(config: AppConfig, path: str, staged: Path, *, replace_unreadable: bool = False) -> None:
+    """Write *config* to *staged*, synced, as :func:`save_config` would save *path*; the caller renames it in.
+
+    The same checks and ``.bak`` snapshot as a save, for a restore that puts
+    every part in place together.
+    """
+    with unless_held(path):
+        data = _prepare_save(config, path, replace_unreadable=replace_unreadable)
+        with open(staged, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
 
 
 def save_config_change(path: str, running: AppConfig, change: Callable[[AppConfig], None]) -> None:

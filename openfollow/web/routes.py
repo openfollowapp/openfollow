@@ -104,6 +104,7 @@ from openfollow.configuration import (
     plane_pins,
     reconcile_simple_corners,
     save_config,
+    stage_config,
     viewed_with_controlled,
 )
 from openfollow.input.midi import bound_identifiers
@@ -10557,7 +10558,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 return _save_failed(409, _UPDATE_RUNNING, after_update)
             base, replacing = _import_base(may_replace=True)
             catalog_path = Path(_resolve_marker_catalog_path(server.config_path, base.markers_catalog_path))
-            config_restore.recover_interrupted_restore(Path(server.config_path).parent, catalog_path)
+            config_restore.recover_interrupted_restore(Path(server.config_path))
             try:
                 found = config_restore.find_backup(server.config_path, name, openfollow.__version__)
             except config_restore.BackupsUnreadableError as exc:
@@ -10581,28 +10582,23 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
             backup = _backup_before(server.config_path, "restore", base if replacing else None)
             try:
-                staged = config_restore.stage_restore(contents, catalog_path, Path(server.config_path).parent)
+                staged = config_restore.stage_restore(contents, catalog_path, Path(server.config_path))
             except OSError as exc:
                 return _restore_not_written(found.name, exc)
 
             not_restored: list[str] = []
 
-            state_dir = Path(server.config_path).parent
-
             def write_backup() -> None:
                 with _config_write_lock, restore_hold.GATE:
                     current, replacing_now = _import_base(may_replace=True)
-                    save_config(
-                        restored_from_backup(restored, current), server.config_path, replace_unreadable=replacing_now
-                    )
-                    # Until the restart nothing the running station writes may land over what it is to read.
-                    restore_hold.hold(
+                    stage_config(
+                        restored_from_backup(restored, current),
                         server.config_path,
-                        catalog_path,
-                        state_dir / config_restore.TEMPLATES,
-                        state_dir / config_restore.LENSES,
+                        staged.config_slot(),
+                        replace_unreadable=replacing_now,
                     )
-                    # Renames only: past the hold, a part that fails stays as it is and the restart goes ahead.
+                    # Renames only. Past the config every restored part is held, nothing raises and the
+                    # restart follows: a part that fails stays as it is.
                     not_restored.extend(staged.commit())
 
             try:

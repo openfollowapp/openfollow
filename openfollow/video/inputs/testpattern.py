@@ -30,15 +30,14 @@ from openfollow.video.inputs._base import (
 
 logger = logging.getLogger(__name__)
 
-# Fixed output resolution for the Grey pattern, images, and clips. It must be a
-# fixed size, not a range: with a range, videoscale defers to the gtksink's
-# preferred size (a tiny default), so the picture renders at that size and looks
-# soft on the HDMI display. videoscale runs with add-borders so non-16:9 media
-# letterboxes (preserving aspect) instead of stretching.
+# Fixed output size for every item: a range lets videoscale defer to the
+# gtksink's tiny preferred size, which looks soft on HDMI. add-borders letterboxes
+# non-16:9 media only while the caps pin pixel-aspect-ratio=1/1; left open,
+# videoscale changes the pixel aspect instead and the frames carry the media stretched.
 _OUTPUT_WIDTH = 1920
 _OUTPUT_HEIGHT = 1080
 _FRAMERATE = "30/1"
-_OUTPUT_CAPS = f"video/x-raw,width={_OUTPUT_WIDTH},height={_OUTPUT_HEIGHT}"
+_OUTPUT_CAPS = f"video/x-raw,width={_OUTPUT_WIDTH},height={_OUTPUT_HEIGHT},pixel-aspect-ratio=1/1"
 
 # Maps the Stage asset's file type to its GStreamer decoder. The asset path and
 # the JPG-preferred-over-SVG ordering live in ``media_store`` (single source).
@@ -153,10 +152,7 @@ class MediaGalleryInput(VideoInputBase):
         src.set_property("is-live", True)
 
         capsfilter = Gst.ElementFactory.make("capsfilter", "capsfilter")
-        capsfilter.set_property(
-            "caps",
-            Gst.Caps.from_string(f"video/x-raw,width={_OUTPUT_WIDTH},height={_OUTPUT_HEIGHT},framerate={_FRAMERATE}"),
-        )
+        capsfilter.set_property("caps", Gst.Caps.from_string(f"{_OUTPUT_CAPS},framerate={_FRAMERATE}"))
         convert = Gst.ElementFactory.make("videoconvert", "convert")
 
         for elem in (src, capsfilter, convert):

@@ -121,6 +121,8 @@ _NETWORK_READING_MAX_AGE_S = 1.0
 _OSC_LISTENER_ANY = "0.0.0.0"
 # The window hooks the GL Operator Screen needs: one to show it, the rest to fall back to Cairo.
 _GL_CANVAS_HOOKS = ("attach_gl_display", "detach_gl_display", "attach_hud", "gdk_window")
+# Set to "1" by every Cage launcher: the app is the kiosk session.
+KIOSK_ENV = "OPENFOLLOW_KIOSK"
 
 
 # ---------------------------------------------------------------------------
@@ -1023,7 +1025,7 @@ class AppRuntimeServices:
             max(1, int(cfg.window_width)),
             max(1, int(cfg.window_height)),
         )
-        if self._is_pi:
+        if self._is_pi or os.environ.get(KIOSK_ENV) == "1":
             win.fullscreen()
         self._app._canvas = win
 

@@ -1,41 +1,29 @@
 # Controller Slots
 
-Which controller holds which slot (`C1`, `C2`, …) on this station, and which marker each slot drives. Gamepads and 3D mice share one numbering. The table refreshes every second while it is open and in view.
+Which controller holds which slot (`C1`, `C2`, …) and which marker each slot drives. Gamepads and 3D Mice share one numbering. The table refreshes every second while open.
 
-## How slots are assigned
-
-Slots follow the **USB socket** each controller is plugged into, not the order the station happened to find them in. Controllers attached when the station starts are numbered by socket, so a station that is switched off and on again with the same cables comes back in the same order. A slot's marker is the matching entry of **Controlled Marker IDs**: `C1` drives the first, `C2` the second.
-
-With exactly one slot, that controller drives whichever marker is selected instead, and the marker-cycle buttons switch it. Empty slots don't count towards that.
-
-A slot can also be **pinned** to a socket. Whatever is plugged into a pinned socket takes that slot, whatever its make or model, and keeps it across restarts. The other controllers fill the remaining slots by socket as before.
+Slots follow the **USB socket** each controller is plugged into, so the same cables give the same order after a restart. Slot `C1` drives the first entry of **Controlled Marker IDs**, `C2` the second. With exactly one slot, that controller drives whichever marker is selected, and the marker-cycle buttons switch it. A **pinned** slot belongs to whatever is plugged into its socket.
 
 ## Columns
 
-- **Controller** – the device's name as it reports it. Two identical pads show the same name; the port tells them apart. While the controller is connected, the dot after its name lights up as it is used (a stick moved or a button held). Below the name, notes say what the controller can't do; a controller that can do everything shows none, and a missing slot keeps the notes of the controller it last held.
-  - **Buttons not recognised** – the station knows no layout for this pad and no Button Detection Map is saved, so a button may not do what its label says.
-  - **Button map is for another model** – the saved Button Detection Map was made on a different model, so a button may not do what its label says.
-  - **Can't identify** – nothing on the controller can be pulsed: it cannot vibrate and has no light the station can drive. Identify only flashes its marker card.
-- **Connection** – the kind (`Gamepad` or `3D Mouse`), the slot's state, and the socket below them.
-  - **Connected** – the controller is plugged in and drives the slot's marker.
-  - **Missing** – the controller was unplugged or dropped out, or its kind (Gamepads or 3D Mouse) was switched off. Its slot and marker stay put, so nobody else changes marker. The marker card turns red on the Operator Screen, and the status corner and the Statistics panel name it.
+- **Controller** – the device's name. Two identical pads show the same name; the port tells them apart. The dot after the name lights up as the controller is used. Notes below the name:
+  - **Buttons not recognised** – no layout is known for this pad and no Button Detection Map is saved, so a button may not do what its label says.
+  - **Button map is for another model** – the saved Button Detection Map was made on a different model.
+  - **Can't identify** – the controller cannot vibrate and has no light to drive; Identify only flashes its marker card.
+- **Connection** – the kind (`Gamepad` or `3D Mouse`), the slot's state and the socket (such as `on USB 2, port 1`, `on Bluetooth`, or `no stable port`), or **Pinned to …** for a pinned slot.
+  - **Connected** – plugged in and driving the slot's marker.
+  - **Missing** – unplugged, dropped out, or its kind was switched off. Slot and marker stay put, so nobody else changes marker. The marker card turns red on the Operator Screen, and the status corner and Statistics panel name it.
   - **Reserved** – a missing slot that was forgotten. It keeps its place in the numbering but drives no marker and raises no warning.
-  - **Empty** – a slot below a pinned one that no controller fills. It drives no marker and raises no warning, and the next controller of any kind plugged in takes it.
-  - **Pinned to …** in place of the socket – the slot belongs to that socket. While nothing is plugged into it, the slot is missing and shows the name of the controller that was pinned.
-  - The socket is the USB host controller's number and the port path: `on USB 2, port 1` is port 1 of host controller 2, and `port 1.4` is port 4 of a hub plugged into port 1. `on Bluetooth` for a wireless pad. `no stable port` for a controller whose socket the station cannot read; it keeps its slot for the session, but after a restart it is placed after every controller that has one.
-- **Marker** – the marker this slot drives right now, by its catalog name and ID, with a dot in its colour. A marker the catalog has no entry for reads `Marker 5`. A blue **P** after it means the marker is parked: the controller stays connected, but it moves and resets nothing until the marker is unparked (Marker Control & Visibility). The other slots keep their markers. A lone controller follows the selection, which skips parked markers, so it shows a **P** only while every marker is parked.
+  - **Empty** – a free slot below a pinned one; the next controller plugged in takes it.
+- **Marker** – the marker this slot drives, by name and ID, with a dot in its colour. A blue **P** means the marker is parked: the controller stays connected but moves and resets nothing until the marker is unparked (Marker Control & Visibility).
 
 ## Actions
 
-- **Identify** – on a connected slot, pulses the controller where it can (a pad vibrates, a 3D mouse blinks its light) and flashes its slot's marker card on the Operator Screen.
-- **Forget** – on a missing slot, silences it: the slot becomes reserved. A reserved slot still counts as a slot, so the other controllers keep their own markers rather than switching to follow the selected one. A forgotten pinned slot keeps its pin.
-- **Pin here** – waits up to 10 seconds for a button press on any controller, and pins that controller's socket to this slot. The controller moves to the slot at once, and the one that was there takes its old slot, with its pin if it had one. While it waits, no controller, keyboard or mouse moves a marker, the Operator Screen asks for the press, and **Cancel** (or Esc on the station's keyboard) stops it. The line under the table says how it ended. A controller with no stable port can't be pinned.
-- **Unpin** – on a pinned slot, drops the pin. Nothing moves until the next restart, which numbers by socket again.
+- **Identify** – on a connected slot, pulses the controller (a pad vibrates, a 3D Mouse blinks its light) and flashes its marker card on the Operator Screen.
+- **Forget** – on a missing slot, makes it reserved. Reserved slots still count, so the other controllers keep their markers.
+- **Pin here** – waits up to 10 seconds for a button press and pins that controller's socket to this slot, swapping it with the slot's controller. No marker moves while it waits; **Cancel** or Esc stops it. A controller with no stable port (as on macOS) can't be pinned.
+- **Unpin** – drops the pin. Slots renumber by socket at the next restart.
 
 ## When a controller comes back
 
-A controller plugged into a pinned socket takes that slot, whatever it is. A controller plugged back into its own socket takes its own slot again. A different controller of the same kind takes the lowest missing or reserved slot, so a spare picks up where a failed one left off. On a station with a single slot, any controller takes it over. Anything else joins at the end. Switching a kind back on returns each of its controllers to its own slot. A restart numbers everything by socket again, leaving out a kind that is switched off.
-
-## Where pins are kept
-
-Pins name this station's own sockets, so they stay on this station: exporting the configuration or sending it to other stations leaves them out, and importing a configuration or restoring defaults keeps them. macOS reports no stable port for controllers, so they can't be pinned there.
+A controller plugged into a pinned socket takes that slot. One plugged back into its own socket takes its own slot again. A different controller of the same kind takes the lowest missing or reserved slot. Anything else joins at the end. A restart numbers everything by socket again.

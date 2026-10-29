@@ -71,11 +71,11 @@ def test_the_calibration_puts_the_grid_on_the_tape(picture: Path) -> None:
         assert img[yi - 2 : yi + 3, xi - 2 : xi + 3].max() >= 200, (x, y)
 
 
-HELP = Path(ms.__file__).resolve().parent.parent / "web" / "help" / "video_source.md"
+HELP = Path(ms.__file__).resolve().parents[2] / "docs" / "help-reference" / "video_source.md"
 
 
 def _help_camera_table(title: str) -> dict[str, str]:
-    """The camera table under a picture's paragraph in the Video Source help drawer."""
+    """The camera table under a picture's paragraph in the Video Source help reference."""
     text = HELP.read_text()
     block = text[text.index(f"**{title}** is ") :]
     rows = {}
@@ -89,7 +89,7 @@ def _help_camera_table(title: str) -> dict[str, str]:
 
 
 @pytest.mark.parametrize(("title", "picture"), [("Concert", ms.CONCERT_ASSET_JPG), ("Festival", ms.FESTIVAL_ASSET_JPG)])
-def test_the_help_drawer_lists_the_camera_a_picture_was_drawn_with(title: str, picture: Path) -> None:
+def test_the_help_reference_lists_the_camera_a_picture_was_drawn_with(title: str, picture: Path) -> None:
     cam = _calibration(picture)["camera"]
     rows = _help_camera_table(title)
 

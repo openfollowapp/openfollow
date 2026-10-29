@@ -108,6 +108,14 @@ def _forget_shared_dns_answers() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _no_shared_port_binds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test probes the host's own addresses for a shared web port: every test
+    sees a kernel that refuses such a bind itself, as Linux does; a test that
+    cares installs macOS's semantics with ``tests._port_sharing``."""
+    monkeypatch.setattr("openfollow.net_utils.BINDS_SHARE_PORTS", False)
+
+
+@pytest.fixture(autouse=True)
 def _no_host_adapters(tmp_path: Path) -> Iterator[None]:
     """No test may describe the host's own network adapters.
 

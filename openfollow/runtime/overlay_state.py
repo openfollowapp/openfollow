@@ -204,7 +204,7 @@ class OverlayState:
     # The HUD is the only surface left when the interface that carries the
     # web UI is the one that went away.
     network_alerts: list[str] = field(default_factory=list)
-    show_hud_help: bool = True
+    show_hud_help: bool = False
     # System stats (CPU, RAM, temperature)
     cpu_percent: float = 0.0
     ram_percent: float = 0.0

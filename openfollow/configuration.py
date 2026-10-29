@@ -405,7 +405,7 @@ def _coerce_bool(value: Any, default: bool) -> bool:
 CALIBRATION_CORNERS = ("DSL", "DSR", "USR", "USL")
 CALIBRATION_MODES = ("simple", "advanced")
 # The Setup Wizard's verdict on the lens it saved with a calibration.
-CALIBRATION_LENS_RATINGS = ("excellent", "good", "fair", "poor", "user_input", "loaded")
+CALIBRATION_LENS_RATINGS = ("excellent", "good", "fair", "poor", "user_input", "loaded", "opencv")
 CALIBRATION_SOURCE_MAX_LEN = 200
 MARK_KINDS = ("known", "triangulated")
 MAX_CALIBRATION_MARKS = 12

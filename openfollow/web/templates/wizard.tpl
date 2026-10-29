@@ -315,6 +315,8 @@
   .lens-current .tier-option > span { border-color: var(--btn-secondary-border); }
   .lens-current.asking .tier-option > span { background: var(--btn-primary-bg); color: var(--btn-ink-dark); border-color: var(--btn-primary-bg); }
   .axis-note { font-weight: 400; text-transform: none; letter-spacing: 0; }
+  #review-floor .field { max-width: 26rem; }
+  #review-floor-note { margin: 0.72rem 0 0; }
   #step-calib.mode-simple .only-advanced, #step-calib.mode-advanced .only-simple { display: none; }
   #wiz-hint, #lens-hint { margin: 0.2rem 0 0.9rem; }
   /* Simple: a step is greyed out and cannot be used until the step before it is done. */
@@ -793,6 +795,16 @@
     </div>
     <div class="group">
       <div class="group-title">Grid</div>
+      <div id="review-floor" hidden>
+        <div class="row">
+          <div class="field">
+            <label for="floor_h">Floor height (<span class="u-len">{{_len}}</span>) <span class="axis-note">(offset from point of origin)</span></label>
+            <input type="{{_len_type}}"{{!_len_step}} id="floor_h" data-len aria-invalid="false">
+            <small class="metric-echo" data-echo="floor_h" hidden></small>
+          </div>
+        </div>
+        <div id="review-floor-note" class="notice" role="status"></div>
+      </div>
       <div class="wizard-solved-params" id="review-grid-params"></div>
     </div>
 
@@ -1187,7 +1199,8 @@
     cam: null, camPartial: false, height: null,
     solve: null, selPin: null, selCorner: null, pinMenu: null, pair: 0,
     lensTouched: false, lensLoaded: null, lensChoice: '',
-    lensCentre: [SAVED.lens[2], SAVED.lens[3]], lensCentreBad: false
+    lensCentre: [SAVED.lens[2], SAVED.lens[3]], lensCentreBad: false,
+    floor: '', floorTouched: false
   };
   var solveSeq = 0, solveTimer = null, solvePending = false;
 
@@ -1391,7 +1404,7 @@
     var behind = marks.filter(function(m) { return m.pin && !m.problem && res[m.id] && res[m.id].px == null; }).map(function(m) { return { kind: 'behind', id: m.id }; });
     var behindIds = {};
     behind.forEach(function(b) { behindIds[b.id] = true; });
-    return { marks: marks, cam: data.camera, steep: data.steep === true, positions: positions, res: res, worst: data.largest_error, pinned: sent, behind: behind.length, behindIds: behindIds,
+    return { marks: marks, cam: data.camera, steep: data.steep === true, floor: data.floor || null, positions: positions, res: res, worst: data.largest_error, pinned: sent, behind: behind.length, behindIds: behindIds,
       reasons: wordReasons((data.reasons || []).concat(behind), marks) };
   }
   function afterSolve(then) {
@@ -3072,7 +3085,7 @@
   }
   // A field showing an error echoes nothing: the value is not stored.
   function refreshEchoes() {
-    document.querySelectorAll('#wizard-step-calib [data-echo]').forEach(function(e) {
+    document.querySelectorAll('#wizard-step-calib [data-echo], #review-floor [data-echo]').forEach(function(e) {
       var el = $(e.dataset.echo), m = el ? len(el.value) : NaN;
       e.hidden = !WUNIT.isImperial() || isNaN(m) || el.getAttribute('aria-invalid') === 'true';
       if (!e.hidden) e.textContent = 'Stored: ' + WUNIT.metricEcho(m);
@@ -3081,7 +3094,7 @@
   function applyUnitMarkup() {
     var imp = WUNIT.isImperial();
     document.querySelectorAll('.u-len').forEach(function(el) { el.textContent = lenSuffix(); });
-    document.querySelectorAll('#wizard-step-calib input[data-len]').forEach(function(el) {
+    document.querySelectorAll('#wizard-step-calib input[data-len], #floor_h').forEach(function(el) {
       el.type = imp ? 'text' : 'number';
       if (imp) el.removeAttribute('step'); else el.step = '0.01';
       if (el.dataset.ph != null) el.placeholder = lenField(Number(el.dataset.ph));
@@ -3095,6 +3108,7 @@
     var height = len($('cam_height').value);
     var rect = {}; ['w', 'd', 'cx', 'cy', 'z'].forEach(function(k) { rect[k] = len(S.rect[k]); });
     var pts = S.points.map(function(p) { var o = {}; ['x', 'y', 'z', 'da', 'db'].forEach(function(k) { o[k] = p[k] == null ? NaN : len(p[k]); }); return o; });
+    var floor = len(S.floor);
     WUNIT.setSystem(sys);
     exactLen = {};
     // Retype the inputs first: a number input drops a ft / in value.
@@ -3103,6 +3117,7 @@
     if (!isNaN(height)) $('cam_height').value = lenField(height);
     ['w', 'd', 'cx', 'cy', 'z'].forEach(function(k) { if (!isNaN(rect[k])) { S.rect[k] = lenField(rect[k]); $('rect_' + k).value = S.rect[k]; } });
     S.points.forEach(function(p, i) { ['x', 'y', 'z', 'da', 'db'].forEach(function(k) { if (!isNaN(pts[i][k])) p[k] = lenField(pts[i][k]); }); });
+    if (!isNaN(floor)) { S.floor = lenField(floor); $('floor_h').value = S.floor; }
     refreshEchoes();
     readCam(); readHeight();
     renderCalibPanels(); solveSoon(); saveToSession();
@@ -3754,6 +3769,7 @@
     $('simple-loc').addEventListener('change', function(e) { S.simpleLoc = e.target.value; clearCorners(); S.selPin = null; renderReq(); solveSoon(); saveToSession(); });
     ['cam_pos_x', 'cam_pos_y', 'cam_pos_z'].forEach(function(id) { $(id).addEventListener('input', camChanged); });
     $('cam_height').addEventListener('input', function() { readHeight(); renderCalibResult(); solveSoon(); saveToSession(); });
+    $('floor_h').addEventListener('input', function() { S.floor = $('floor_h').value; S.floorTouched = true; renderReview(); saveToSession(); });
     // An empty field the camera does not ask for goes once the focus leaves it; only the field's group is
     // drawn, as a rebuilt control would lose the focus Tab is moving to it.
     document.addEventListener('focusout', function(e) {
@@ -3929,7 +3945,9 @@
     $('btn-apply-finish').disabled = !ok || solvePending || applyBlocked(s) || marksIncomplete(s);
     showLive($('review-caution'), ok && s.reasons.length && cautionHtml(s), !!(ok && s.reasons.length));
     $('review-lens-note').hidden = !(ok && stationLensOnly());
-    var grid = calibGrid();
+    var grid = calibGrid(), floor = reviewFloor(s);
+    if (floor != null) grid = Object.assign({}, grid, { z: floor });
+    if (S.mode === 'advanced' && floor == null) $('btn-apply-finish').disabled = true;
     if (imageWidth) svg.setAttribute('viewBox', '0 0 ' + imageWidth + ' ' + imageHeight);
     $('review-grid').innerHTML = ok && imageWidth ? gridLines(s.cam, grid).map(function(l) { return '<polyline class="wizard-grid-line" points="' + poly(l) + '"/>'; }).join('') : '';
     $('review-pins').innerHTML = ok && imageWidth ? originMarkup(originPixel(s), u) + s.marks.map(function(m) {
@@ -3949,8 +3967,26 @@
     var pairs = pairsFor(s);
     $('review-dist-group').hidden = !pairs.length;
     $('review-dist-table').innerHTML = distTable(pairs, false);
-    $('review-grid-params').innerHTML = paramRows([['Width', lenText(grid.w, 2)], ['Depth', lenText(grid.d, 2)], ['Spacing', lenText(grid.spacing, 2)], ['X Offset', lenText(grid.cx, 2)], ['Y Offset', lenText(grid.cy, 2)], ['Z Offset', lenText(grid.z, 2)], ['Grid', S.mode === 'simple' ? 'From the rectangle' : 'Kept']]);
+    // Advanced shows the Z Offset as Floor height above.
+    var moved = floor != null && Math.abs(floor - SAVED.grid.z_offset) > 5e-4;
+    $('review-grid-params').innerHTML = paramRows([['Width', lenText(grid.w, 2)], ['Depth', lenText(grid.d, 2)], ['Spacing', lenText(grid.spacing, 2)], ['X Offset', lenText(grid.cx, 2)], ['Y Offset', lenText(grid.cy, 2)]]
+      .concat(S.mode === 'simple' ? [['Z Offset', lenText(grid.z, 2)], ['Grid', 'From the rectangle']] : [['Grid', moved ? 'Kept, new Z Offset' : 'Kept']]));
     renderFsBar();
+  }
+  // Advanced: the grid's height, the station's suggestion until one is typed; null while it is no length.
+  function reviewFloor(s) {
+    var on = S.mode === 'advanced' && !!s.cam, el = $('floor_h'), f = s.floor, names = {};
+    $('review-floor').hidden = !on;
+    if (!on) return null;
+    if (!S.floorTouched) { S.floor = lenField(f ? f.z : 0); el.value = S.floor; }
+    var v = len(S.floor), ok = !isNaN(v), now = SAVED.grid.z_offset;
+    el.setAttribute('aria-invalid', ok ? 'false' : 'true');
+    s.marks.forEach(function(m) { names[m.id] = m.name; });
+    var sub = f ? 'The height that ' + andList(f.ids.map(function(id) { return names[id]; })) + ' share.' : 'Suggested: ' + lenText(0, 2) + '.';
+    if (ok && Math.abs(v - now) > 5e-4) sub += ' The grid is at ' + lenText(now, 2) + ' now.';
+    setLive($('review-floor-note'), esc(f ? 'Suggested: ' + lenText(f.z, 2) : 'No floor found from the points') + '<div class="notice-sub">' + esc(sub) + '</div>');
+    refreshEchoes();
+    return ok ? v : null;
   }
   // A kept calibration first; the rating while the pair is the fit's own, User input once typed over; a loaded calibration by its name; else whether values were typed.
   function reviewLensCoverage(l) {
@@ -3990,7 +4026,7 @@
     if (p.kind === 'centre') return { error: 'With this lens centre, the overlay cannot follow the picture out to its corners.', action: 'Set the lens centre closer to 0 in the Lens step before you finish.' };
     return { error: 'With these lens values, the overlay cannot follow the picture out to its corners.', action: 'Set one of the lens values closer to 0 in the Lens step before you finish.' };
   }
-  // Save and finish writes Simple's rectangle as the grid first: a grid write that moves the corners unpins the saved corners.
+  // Save and finish writes the grid first (Simple's rectangle, Advanced's floor height): a grid write that moves Simple's corners unpins them.
   window.applyAndFinish = function() {
     var saveError = window.OpenFollow.saveError, reviewBox = document.querySelector('#wizard-step-review .section');
     var s = S.solve;
@@ -4010,10 +4046,10 @@
       calibration_mode: S.mode, calibration_marks: marks, calibration_height: S.height,
       calibration_lens_rating: lensRatingRecord(wizLens()), calibration_time: localIsoNow(),
       lens_k1: wizReadLensCoeff('wiz_lens_k1'), lens_k2: wizReadLensCoeff('wiz_lens_k2'), lens_cx: S.lensCentre[0], lens_cy: S.lensCentre[1] };
-    var g = calibGrid();
-    var gridWrite = S.mode === 'simple'
-      ? fetch('/api/config/grid', { method: 'POST', headers: headers, body: JSON.stringify({ width: g.w, depth: g.d, x_offset: g.cx, y_offset: g.cy, z_offset: g.z }) })
-      : Promise.resolve(null);
+    var g = calibGrid(), floor = len(S.floor);
+    if (S.mode === 'advanced' && isNaN(floor)) return;
+    var gridWrite = fetch('/api/config/grid', { method: 'POST', headers: headers, body: JSON.stringify(S.mode === 'simple'
+      ? { width: g.w, depth: g.d, x_offset: g.cx, y_offset: g.cy, z_offset: g.z } : { z_offset: floor }) });
     gridWrite.then(async function(grid) {
       if (grid && !grid.ok) { saveError.show(reviewBox, await saveError.fromResponse(grid), 'The grid settings were not saved.'); return; }
       var cam = await fetch('/api/config/camera', { method: 'POST', headers: headers, body: JSON.stringify(camera) });
@@ -4264,7 +4300,8 @@
         mode: S.mode, simpleLoc: S.simpleLoc, rect: S.rect, cornerPins: corners, cornerMoved: S.cornerMoved,
         points: S.points.map(function(p) { return Object.assign({}, p, { pin: keepPins ? p.pin : frac(p.pin) }); }), nextId: S.nextId,
         cam: ['x', 'y', 'z'].map(function(k) { return $('cam_pos_' + k).value; }), height: $('cam_height').value, units: WUNIT.isImperial() ? 'imperial' : 'metric',
-        lensTouched: S.lensTouched, lensLoaded: S.lensLoaded, lensChoice: S.lensChoice
+        lensTouched: S.lensTouched, lensLoaded: S.lensLoaded, lensChoice: S.lensChoice,
+        floor: S.floorTouched ? S.floor : null
       }));
     } catch (e) {}
   }
@@ -4312,6 +4349,7 @@
         S.nextId = Math.max(isFinite(raw.nextId) ? raw.nextId : 1, 1 + Math.max.apply(null, [0].concat(S.points.map(function(p) { return p.id; }))));
         if (Array.isArray(raw.cam)) ['x', 'y', 'z'].forEach(function(k, i) { if (typeof raw.cam[i] === 'string') $('cam_pos_' + k).value = raw.cam[i]; });
         if (typeof raw.height === 'string') $('cam_height').value = raw.height;
+        if (typeof raw.floor === 'string') { S.floor = raw.floor; S.floorTouched = true; $('floor_h').value = raw.floor; }
       }
       if (typeof raw.stepKey === 'string' && WIZ[raw.stepKey] !== undefined) currentStep = WIZ[raw.stepKey];
       return true;

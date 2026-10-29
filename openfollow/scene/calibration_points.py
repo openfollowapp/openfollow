@@ -48,6 +48,7 @@ SCOUT_ITERATIONS = 25
 FIT_ITERATIONS = 300
 # Two measured circles may miss each other by this much and still be one point: the noise of two distances.
 MEET_TOLERANCE = 3.0 * math.sqrt(2.0) * DISTANCE_SIGMA
+FLOOR_GROUP_M = 0.05  # m: marks whose heights agree this closely suggest one floor
 # Four pinned known marks within this of one height, every triangle of them at least this large, seed the solve.
 _LEVEL_M = 0.01
 _MIN_TRIANGLE_M2 = 0.05
@@ -598,6 +599,23 @@ def plausibility(
         if fit.distance_error is not None and fit.distance_error > FLAG_DISTANCE_M:
             out.append({"kind": "distance", "id": fit.id, "m": fit.distance_error})
     return out
+
+
+def floor_height(marks: Sequence[Mark]) -> tuple[float, tuple[int, ...]] | None:
+    """The floor the marks suggest: the mean height of the largest group whose heights lie within
+    FLOOR_GROUP_M of each other, and the group's ids. None when no two agree or two groups are the same size."""
+    ordered = sorted(marks, key=lambda m: m.z)
+    best: list[Mark] = []
+    tie = False
+    for i, low in enumerate(ordered):
+        group = [m for m in ordered[i:] if m.z - low.z <= FLOOR_GROUP_M + 1e-9]
+        if len(group) > len(best):
+            best, tie = group, False
+        elif len(group) == len(best):
+            tie = True
+    if len(best) < 2 or tie:
+        return None
+    return round(sum(m.z for m in best) / len(best), 3), tuple(m.id for m in best)
 
 
 def pin_errors(cam: CameraConfig, width: float, height: float) -> dict[int, float]:

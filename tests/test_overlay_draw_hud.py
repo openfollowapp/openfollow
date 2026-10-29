@@ -26,7 +26,7 @@ from typing import Any
 
 import pytest
 
-from openfollow.button_names import SYMBOL_STROKE, ButtonNameStyle
+from openfollow.button_names import SYMBOL_CHARS, SYMBOL_STROKE, ButtonNameStyle
 from openfollow.runtime import overlay_draw_hud as hud_mod
 from openfollow.runtime.overlay_draw_hud import (
     draw_about_overlay,
@@ -59,6 +59,7 @@ from openfollow.runtime.overlay_draw_hud import (
     draw_url_editor_overlay,
     draw_virtual_fader_card,
     draw_virtual_faders,
+    keycaps_width,
 )
 from openfollow.runtime.overlay_draw_style import (
     CHEVRON_SIZE,
@@ -82,6 +83,7 @@ from openfollow.runtime.overlay_draw_style import (
     COLOR_WARNING_FILL,
     SUPPORT_DASH,
 )
+from openfollow.runtime.overlay_layout import HelpLine
 from openfollow.runtime.overlay_links import LINKS, QUIET_MODULES, SUPPORT
 from openfollow.runtime.overlay_state import (
     ButtonDetectionState,
@@ -919,8 +921,8 @@ class TestMenuHelp:
         (hud_title,) = [t for t in hud.texts if t.text == "KEYBOARD"]
         (menus_title,) = [t for t in menus.texts if t.text == "KEYBOARD"]
         assert (menus_title.x, menus_title.y) == (hud_title.x, hud_title.y)
-        assert menus_renderer.draw_icon_calls == hud_renderer.draw_icon_calls
-        assert "• Enter: Confirm" in menus.show_text_strings()
+        assert menus_renderer.draw_icon_calls == hud_renderer.draw_icon_calls == []
+        assert {"Confirm", "Enter"} <= set(menus.show_text_strings())
 
     @pytest.mark.parametrize("w", [1280, 1920])
     def test_the_list_stays_clear_of_the_centred_menu(self, w: int) -> None:
@@ -966,12 +968,26 @@ class TestDrawHud:
     # The bottom-center controller panel was retired; the per-marker
     # controller badge on each marker card now carries that information.
 
-    def test_icon_is_requested_from_renderer(self) -> None:
-        state = _base_state()
-        cr = FakeCairo()
+    def test_the_closed_help_is_a_chip_with_the_icon(self) -> None:
+        state = _base_state(show_hud_help=False)
         renderer = FakeRenderer(state=state)
-        draw_hud(renderer, cr, state, 1920, 1080)
-        assert renderer.draw_icon_calls == [(10.0, 10.0, 24.0)]
+        draw_hud(renderer, FakeCairo(), state, 1920, 1080)
+        assert renderer.draw_icon_calls == [(16.0, 15.0, 20.0)]
+        assert renderer.draw_logo_calls == []
+
+    def test_the_open_help_carries_the_logo_in_place_of_the_icon(self) -> None:
+        state = _base_state(show_hud_help=True)
+        renderer = FakeRenderer(state=state)
+        renderer._logo_handle = object()
+        draw_hud(renderer, FakeCairo(), state, 1920, 1080)
+        assert renderer.draw_icon_calls == []
+        assert renderer.draw_logo_calls == [(22.0, 20.0, 140.0)]
+
+    def test_the_open_help_names_the_station_without_a_logo(self) -> None:
+        state = _base_state(show_hud_help=True)
+        cr = FakeCairo()
+        draw_hud(FakeRenderer(state=state), cr, state, 1920, 1080)
+        assert "OpenFollow" in cr.show_text_strings()
 
     def test_hud_help_on_renders_help_block(self) -> None:
         state = _base_state(show_hud_help=True)
@@ -983,39 +999,40 @@ class TestDrawHud:
     @pytest.mark.parametrize(
         ("style", "texts", "symbols"),
         [
-            (ButtonNameStyle.STANDARD, ["H / Y: help"], 0),
-            (ButtonNameStyle.NINTENDO, ["H / Y: help"], 0),
-            (ButtonNameStyle.XBOX, ["H / Y: help"], 0),
-            (ButtonNameStyle.PLAYSTATION, ["H / ", ": help"], 1),
+            (ButtonNameStyle.STANDARD, ["Show help ", "H", " / ", "Y"], 0),
+            (ButtonNameStyle.NINTENDO, ["Show help ", "H", " / ", "Y"], 0),
+            (ButtonNameStyle.XBOX, ["Show help ", "H", " / ", "Y"], 0),
+            (ButtonNameStyle.PLAYSTATION, ["Show help ", "H", " / "], 1),
         ],
     )
-    def test_the_help_hint_names_the_button_in_the_stations_style(self, style, texts, symbols: int) -> None:
+    def test_the_help_chip_names_the_button_in_the_stations_style(self, style, texts, symbols: int) -> None:
         state = _base_state(show_hud_help=False, button_name_style=style)
         state.keyboard_labels = {"toggle_help": "h"}
         state.button_labels = {"toggle_help": "Y"}
         cr = FakeCairo()
         draw_hud(FakeRenderer(state=state), cr, state, 1920, 1080)
         assert all(t in cr.show_text_strings() for t in texts)
-        assert _symbols_drawn(cr, 9.0) == symbols
+        assert _symbols_drawn(cr, 8.5) == symbols
 
     @pytest.mark.parametrize(
-        ("style", "line", "symbols"),
+        ("style", "key", "symbols"),
         [
-            (ButtonNameStyle.STANDARD, "• Back: Settings menu", 0),
-            (ButtonNameStyle.PLAYSTATION, "• Create: Settings menu", 2),
-            (ButtonNameStyle.XBOX, ": Settings menu", 1),
+            (ButtonNameStyle.STANDARD, "Back", 0),
+            (ButtonNameStyle.PLAYSTATION, "Create", 2),
+            (ButtonNameStyle.XBOX, None, 1),
         ],
     )
-    def test_the_help_panel_draws_symbols_in_place_of_their_names(self, style, line: str, symbols: int) -> None:
+    def test_the_help_panel_draws_symbols_in_place_of_their_names(self, style, key, symbols: int) -> None:
         state = _base_state(show_hud_help=True, controller_connected=True, button_name_style=style)
         state.button_labels = {"settings": "BACK", "reset": "X", "toggle_help": "Y"}
         cr = FakeCairo()
         draw_hud(FakeRenderer(state=state), cr, state, 1920, 1080)
         texts = cr.show_text_strings()
-        assert line in texts
+        assert "Settings menu" in texts
+        assert key is None or key in texts
         assert not any(0xE000 <= ord(ch) <= 0xF8FF for t in texts for ch in t)
         # PlayStation: Square (reset) and Triangle (help); Xbox: View (settings).
-        assert _symbols_drawn(cr, 10.0) == symbols
+        assert _symbols_drawn(cr, 8.5) == symbols
 
     def test_the_help_panel_follows_a_change_of_style(self) -> None:
         state = _base_state(show_hud_help=True, controller_connected=True, button_name_style=ButtonNameStyle.STANDARD)
@@ -1026,33 +1043,26 @@ class TestDrawHud:
         state.button_name_style = ButtonNameStyle.PLAYSTATION
         cr_after = FakeCairo()
         draw_hud(renderer, cr_after, state, 1920, 1080)
-        assert "• Back: Settings menu" in cr.show_text_strings()
-        assert "• Create: Settings menu" in cr_after.show_text_strings()
+        assert "Back" in cr.show_text_strings()
+        assert "Create" in cr_after.show_text_strings()
 
-    def test_hud_help_off_shows_hint_next_to_icon(self) -> None:
-        state = _base_state(show_hud_help=False)
-        state.keyboard_labels = {"toggle_help": "h"}
-        state.button_labels = {}
-        cr = FakeCairo()
-        draw_hud(FakeRenderer(state=state), cr, state, 1920, 1080)
-        assert any(": help" in t for t in cr.show_text_strings())
-
-    def test_hud_help_off_with_no_key_or_btn_renders_no_hint(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Defensive branch: if both label lookups somehow yield empty
-        strings (which shouldn't happen with the ``or "h"`` / ``or "Y"``
-        fallbacks), the hint line is suppressed rather than rendering
-        ": help".  We force the situation by patching the name lookups at
-        the overlay-hud import site.
-        """
-        from openfollow.runtime import overlay_draw_hud as hud_mod
-
+    def test_hud_help_off_with_no_key_or_btn_shows_the_icon_alone(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """With both label lookups empty the chip holds the icon and no "Show help" without a key."""
         monkeypatch.setattr(hud_mod, "key_label", lambda *a, **kw: "")
         monkeypatch.setattr(hud_mod, "friendly_button_label", lambda *a, **kw: "")
 
         state = _base_state(show_hud_help=False)
         cr = FakeCairo()
+        renderer = FakeRenderer(state=state)
+        draw_hud(renderer, cr, state, 1920, 1080)
+        assert renderer.draw_icon_calls == [(16.0, 15.0, 20.0)]
+        assert all("Show help" not in t for t in cr.show_text_strings())
+
+    def test_help_open_with_nothing_to_list_shows_the_chip(self) -> None:
+        state = _base_state(show_hud_help=True, keyboard_connected=False, controller_connected=False)
+        cr = FakeCairo()
         draw_hud(FakeRenderer(state=state), cr, state, 1920, 1080)
-        assert all(": help" not in t for t in cr.show_text_strings())
+        assert "Show help " in cr.show_text_strings()
 
     def test_help_block_suppressed_when_no_inputs_connected(self) -> None:
         state = _base_state(keyboard_connected=False, controller_connected=False)
@@ -2034,33 +2044,52 @@ class TestSettingsUnboundControllersBox:
 
 
 class TestHelpBlock:
-    def test_emits_section_title_then_lines(self) -> None:
+    def test_emits_section_title_then_each_action_before_its_keys(self) -> None:
         cr = FakeCairo()
-        sections = [("Keyboard", ["W/A/S/D: Move", "R/T: Speed"])]
+        sections = [("Keyboard", [HelpLine(("W", "A"), "Move"), HelpLine(("R",), "Speed")])]
         draw_help_block(FakeRenderer(), cr, 10, 20, 200, sections)
-        texts = cr.show_text_strings()
-        assert texts[0] == "KEYBOARD"
-        # Bullet prefix is added by the block.
-        assert any(t.startswith("• W/A/S/D") for t in texts)
-        assert any(t.startswith("• R/T") for t in texts)
+        texts = {t.text: t for t in cr.texts}
+        assert cr.texts[0].text == "KEYBOARD"
+        assert texts["Move"].x == 10
+        assert texts["Move"].x < texts["W"].x < texts["A"].x
+        assert texts["W"].y == pytest.approx(texts["Move"].y, abs=1.0)
+        assert texts["R"].y > texts["Move"].y
 
-    def test_a_long_line_wraps_under_its_own_text_and_is_never_cut(self) -> None:
+    def test_key_caps_end_at_the_right_edge(self) -> None:
         cr = FakeCairo()
-        line = "D-Pad Up/Down: Move, or change a digit"
+        draw_help_block(FakeRenderer(), cr, 10, 20, 200, [("K", [HelpLine(("W", "A"), "Move")])])
+        assert max(cx + r for cx, _cy, r in cr.arcs) == pytest.approx(10 + 200 - 0.5)
+
+    def test_a_long_action_wraps_under_its_own_text_and_is_never_cut(self) -> None:
+        cr = FakeCairo()
+        line = HelpLine(("D-Up", "D-Down"), "Move, or change a digit")
         draw_help_block(FakeRenderer(), cr, 10, 20, 120, [("K", [line])])
-        first, *rest = [t for t in cr.texts if t.text != "K"]
-        assert rest, "the line did not wrap"
-        assert " ".join([first.text.removeprefix("• "), *(t.text for t in rest)]) == line
-        assert all(t.x > first.x for t in rest)
-        assert [t.y for t in rest] == sorted({t.y for t in rest}) and rest[0].y > first.y
+        parts = [t for t in cr.texts if t.text not in ("K", *line.keys)]
+        assert len(parts) > 1, "the line did not wrap"
+        assert " ".join(t.text for t in parts) == line.action
+        assert {t.x for t in parts} == {10}
+        assert [t.y for t in parts] == sorted({t.y for t in parts})
 
     def test_gap_between_sections_does_not_break_rendering(self) -> None:
         cr = FakeCairo()
-        sections = [("A", ["line1"]), ("B", ["line2"])]
+        sections = [("A", [HelpLine(("1",), "line1")]), ("B", [HelpLine(("2",), "line2")])]
         draw_help_block(FakeRenderer(), cr, 10, 20, 300, sections)
         texts = cr.show_text_strings()
         assert "A" in texts
         assert "B" in texts
+
+    def test_a_key_cap_measures_a_symbol_one_em_wide(self) -> None:
+        cross = SYMBOL_CHARS["cross"]
+        symbols_w = keycaps_width(FakeRenderer(), FakeCairo(), (cross * 2,))
+        letters_w = keycaps_width(FakeRenderer(), FakeCairo(), ("XX",))
+        assert symbols_w == pytest.approx(2 * 8.5 + 8.0)
+        assert symbols_w > letters_w
+
+    def test_a_key_cap_draws_its_symbol(self) -> None:
+        cr = FakeCairo()
+        draw_help_block(FakeRenderer(), cr, 10, 20, 200, [("K", [HelpLine((SYMBOL_CHARS["cross"],), "Confirm")])])
+        assert _symbols_drawn(cr, 8.5) == 1
+        assert not any(0xE000 <= ord(ch) <= 0xF8FF for t in cr.show_text_strings() for ch in t)
 
 
 # --------------------------------------------------------------------------- #
@@ -3175,10 +3204,10 @@ class TestPerFrameCaches:
         st.mouse_enabled = True
         st.mouse_wheel_z_enabled = True
         mouse = dict(hud._help_sections_for(renderer, "normal", st))["Mouse"]
-        assert "Scroll wheel: Adjust Z" in mouse
+        assert HelpLine(("Scroll wheel",), "Adjust Z") in mouse
         st.mouse_wheel_z_enabled = False
         mouse = dict(hud._help_sections_for(renderer, "normal", st))["Mouse"]
-        assert not any("Scroll wheel" in line for line in mouse)
+        assert not any("Scroll wheel" in line.keys for line in mouse)
 
 
 class TestVideoFailureReachesTheDeviceSurfaces:
@@ -3739,14 +3768,12 @@ def test_the_hud_loads_no_input_device_library(module: str) -> None:
     assert done.stdout == "False\n"
 
 
-def test_a_help_line_wraps_by_its_symbols_width() -> None:
-    """A symbol is one em wide: a line that fits as plain text can need two lines."""
-    from openfollow.button_names import SYMBOL_CHARS
+def test_a_help_action_wraps_by_the_width_of_its_key_caps() -> None:
+    """A wider key cap leaves less room, so the same action can need two lines."""
     from openfollow.runtime.overlay_draw_hud import help_block_height
 
-    sections = [("Controller", [f"{SYMBOL_CHARS['cross']}: Confirm"])]
     renderer = FakeRenderer()
-    # Bullet 12 px; the line is 10 (symbol) + 54 px, 60 px if the symbol were a 6 px character.
-    narrow = help_block_height(renderer, FakeCairo(), 12.0 + 62.0, sections)
-    wide = help_block_height(renderer, FakeCairo(), 12.0 + 70.0, sections)
-    assert narrow > wide
+    short = [("Controller", [HelpLine(("A",), "Confirm the choice")])]
+    long = [("Controller", [HelpLine(("Double right click",), "Confirm the choice")])]
+    long_h = help_block_height(renderer, FakeCairo(), 200.0, long)
+    assert long_h > help_block_height(renderer, FakeCairo(), 200.0, short)

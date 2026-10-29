@@ -33,9 +33,9 @@ The **Setup Wizard** now runs Video Source, Lens, **Camera Calibration** and Rev
 
 The **Camera & Lens Calibration** section of the Camera & Grid tab now shows position, orientation, field of view and lens read-only: to change them, run the **Setup Wizard** again. **Apply to all stations** copies the camera with its calibration. Ctrl/Cmd+S on the Operator Screen no longer saves the camera. Its **Calibration** column shows when the calibration was saved, from which video source, the lens rating and how closely the pinned points fit the saved camera.
 
-## Media Gallery pictures keep their shape
+## Pictures keep their shape
 
-An image or clip in the **Media Gallery** that is not 16:9 now plays in its own shape, with black bars at the sides or at the top and bottom, where it used to be stretched to fill the screen. A station calibrated on such a picture needs the **Setup Wizard** again.
+An image or clip in the **Media Gallery** that is not 16:9 now plays in its own shape, with black bars at the sides or at the top and bottom, where it used to be stretched to fill the screen. So does a **USB Camera** whose picture has a different shape from its **Render resolution**, such as a 4:3 camera at `1080p`. A station calibrated on such a picture needs the **Setup Wizard** again.
 
 ## Restore a settings backup
 

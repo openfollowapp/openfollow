@@ -457,13 +457,10 @@
         cancelBtn.disabled = !drawing;
         deleteBtn.disabled = (state.selectedIndex < 0);
         addBtn.disabled = drawing || mode === 'camera';
-        if (drawing) {
-            statusEl.textContent = 'Drawing: ' + plan.draft.vertices.length + ' point(s). Click first vertex or double-click to close.';
-        } else if (state.selectedIndex >= 0) {
-            statusEl.textContent = 'Editing zone ' + (state.selectedIndex + 1);
-        } else {
-            statusEl.textContent = '';
-        }
+        // The chosen zone is named by its details heading, so the line only speaks while drawing.
+        statusEl.textContent = drawing
+            ? 'Drawing: ' + plan.draft.vertices.length + ' point(s). Click first vertex or double-click to close.'
+            : '';
         // Drawing-in-progress is a form of unsaved state: vertices
         // are on the canvas but not yet on disk. Mark the section
         // dirty so "Save as template" disables until the operator

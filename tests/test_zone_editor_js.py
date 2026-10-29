@@ -184,6 +184,18 @@ def test_pressing_inside_a_zone_selects_it_and_dragging_a_corner_saves_it() -> N
     assert moved[2] == [pytest.approx(3.0), pytest.approx(4.0)]
 
 
+def test_a_chosen_zone_is_named_by_its_details_heading_not_the_status_line() -> None:
+    out = _editor(
+        """
+        at('mousedown', 725, 360); at('mouseup', 725, 360);
+        await settle();
+        out.status = document.getElementById('zone-editor-status').textContent;
+        out.heading = document.querySelector('#zone-details').textContent.indexOf('Zone 1 Details') >= 0;
+        """
+    )
+    assert out == {"status": "", "heading": True}
+
+
 # -- the camera view ---------------------------------------------------------------
 
 _CAMERA = """

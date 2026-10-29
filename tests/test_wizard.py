@@ -31,6 +31,7 @@ from tests._wizard_js import (
     length_page,
     needs_node,
     run_wizard_js,
+    wizard_block,
     wizard_function,
     wizard_window_function,
 )
@@ -2289,7 +2290,30 @@ class TestWizardFloorHeight:
             "Suggested: 1.20 m", "The height that Centre and DSL share. The grid is at 0.00 m now."
         )
 
-    @pytest.mark.parametrize("before", [1.0, 0])
+    @pytest.mark.parametrize("before", [1.2, 1.2019, 1.1981])
+    def test_a_suggestion_within_2_mm_keeps_a_typed_height(self, before: float) -> None:
+        out = _review_floor(
+            {
+                "S": {"floor": "2.5", "floorTouched": True, "floorFrom": before},
+                "s": {"floor": {"z": 1.2, "ids": [1, 2]}},
+            }
+        )
+        assert (out["v"], out["touched"]) == (2.5, True)
+
+    def test_typing_marks_the_floor_height_typed_and_keeps_it(self) -> None:
+        out = run_wizard_js(
+            "(function() { $('floor_h').value = '2.5'; listener();"
+            " return [S.floor, S.floorTouched, rendered, saved]; })()",
+            prelude=length_page("metric", {"floor_h": {"value": ""}})
+            + "var listener; fields.floor_h.addEventListener = function(t, f) { if (t === 'input') listener = f; };"
+            " var rendered = 0, saved = 0;"
+            " function renderReview() { rendered++; } function saveToSession() { saved++; }"
+            " function $(id) { return document.getElementById(id); }"
+            " var S = { floor: '1.2', floorTouched: false };" + wizard_block("$('floor_h').addEventListener('input'"),
+        )
+        assert out == ["2.5", True, 1, 1]
+
+    @pytest.mark.parametrize("before", [1.0, 1.197, 0])
     def test_new_points_suggest_afresh_over_a_typed_height(self, before: float) -> None:
         out = _review_floor(
             {

@@ -3977,7 +3977,8 @@
   // suggestion it was typed against stands, so new points suggest afresh. `v` is null while it cannot be saved.
   function floorState(s) {
     var f = s.floor, sug = f ? f.z : 0;
-    if (S.floorTouched && S.floorFrom !== sug) S.floorTouched = false;
+    // Within 2 mm it is the same suggestion: a unit switch re-solves with heights rounded to the millimetre.
+    if (S.floorTouched && !(Math.abs(S.floorFrom - sug) <= 0.002)) S.floorTouched = false;
     if (!S.floorTouched) { S.floor = lenField(sug); S.floorFrom = sug; }
     var v = len(S.floor), problem = isNaN(v) ? 'Enter the height of the floor.'
       : Math.abs(v) > MARK_REACH_M ? 'Enter a height within ' + lenRough(MARK_REACH_M) + ' of the point of origin.' : '';

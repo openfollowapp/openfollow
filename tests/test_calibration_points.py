@@ -959,7 +959,7 @@ def _at(*heights: float) -> list[Mark]:
     ],
 )
 def test_the_floor_is_the_mean_of_the_largest_group_within_5_cm(heights, floor) -> None:
-    assert cp.floor_height(_at(*heights)) == floor
+    assert cp.suggested_floor(_at(*heights)) == floor
 
 
 @pytest.mark.parametrize(
@@ -968,7 +968,7 @@ def test_the_floor_is_the_mean_of_the_largest_group_within_5_cm(heights, floor) 
     ids=["none", "one", "just-over-5-cm", "two-groups-tie", "two-loose-groups-tie", "all-apart"],
 )
 def test_no_floor_without_one_largest_group_of_two(heights) -> None:
-    assert cp.floor_height(_at(*heights)) is None
+    assert cp.suggested_floor(_at(*heights)) is None
 
 
 def test_a_triangulated_point_counts_by_its_typed_height() -> None:
@@ -977,4 +977,4 @@ def test_a_triangulated_point_counts_by_its_typed_height() -> None:
         Mark(2, "triangulated", 1.2, from_a=1, from_b=3),
         Mark(3, "known", 0.0, (0.0, 0.0)),
     ]
-    assert cp.floor_height(marks) == (1.2, (1, 2))
+    assert cp.suggested_floor(marks) == (1.2, (1, 2))

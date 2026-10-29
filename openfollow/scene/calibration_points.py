@@ -601,7 +601,7 @@ def plausibility(
     return out
 
 
-def floor_height(marks: Sequence[Mark]) -> tuple[float, tuple[int, ...]] | None:
+def suggested_floor(marks: Sequence[Mark]) -> tuple[float, tuple[int, ...]] | None:
     """The floor the marks suggest: the mean height of the largest group whose heights lie within
     FLOOR_GROUP_M of each other, and the group's ids. Overlapping groups of that size are one floor
     measured loosely: the tightest, then the lowest, stands for it. None when no two agree or two

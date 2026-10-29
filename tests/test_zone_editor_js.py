@@ -23,6 +23,8 @@ _STATIC = _TESTS.parent / "openfollow" / "web" / "static" / "js"
 
 # A 1280x720 canvas whose client pixels are canvas pixels, what base.tpl gives
 # every partial, and a station with one square zone on a 10 x 6 m grid at y = 3.
+# Its camera looks straight down from 6.4 m over (0, 3) with a 90 degree picture:
+# stage (x, y) on the floor is picture pixel (640 + 100 x, 360 - 100 (y - 3)).
 _PAGE = """
 var ops = [];
 El.prototype.getContext = function () {
@@ -44,6 +46,7 @@ window.markFormDirty = function () {};
 window.markFormClean = function () {};
 function modalConfirm() { return Promise.resolve(true); }
 var model = {
+    camera: { pos_x: 0, pos_y: 3, pos_z: 6.4, pitch: -90, yaw: 0, roll: 0, fov: 90, k1: 0, k2: 0, cx: 0, cy: 0 },
     zones: [{ name: 'Square', color: '#ff8000', vertices: [[0, 2], [2, 2], [2, 4], [0, 4]], enabled: true,
               trigger_source: 'markers', triggered_by: [], is_occupied: false, occupant_count: 0 }],
 };
@@ -51,24 +54,18 @@ station = function (req) {
     var m;
     if (req.url === '/api/zones' && req.method === 'GET') {
         return { body: { zones: JSON.parse(JSON.stringify(model.zones)), markers: [], destinations: [],
-                         grid: { width: 10, depth: 6, spacing: 1, x_offset: 0, y_offset: 3 } } };
+                         grid: { width: 10, depth: 6, spacing: 1, x_offset: 0, y_offset: 3,
+                                 z_offset: model.floor || 0 },
+                         camera: model.camera } };
     }
     if (req.url === '/api/zones' && req.method === 'POST') {
         model.zones.push(req.body);
         return { body: { success: true, index: model.zones.length - 1 } };
     }
-    // The picture shows stage (x, y) at pixel (640 + 100 x, 360 - 100 y).
-    if (req.url === '/api/scene/project') {
-        var seen = function (p) { return [640 + 100 * p[0], 360 - 100 * p[1]]; };
-        return { body: { polylines: req.body.polylines.map(function (l) { return l.map(seen); }),
-                         points: req.body.points.map(seen) } };
-    }
-    if (req.url === '/api/scene/unproject') {
-        return { body: { x: (req.body.x - 640) / 100, y: (360 - req.body.y) / 100, z: req.body.z } };
-    }
     if (req.url === '/api/video/snapshot/full') return { body: 'jpeg' };
     if ((m = /^\\/api\\/zones\\/(\\d+)$/.exec(req.url)) && req.method === 'PUT') {
-        Object.assign(model.zones[+m[1]], req.body);
+        if (model.refuse) return { status: 400, body: { error: model.refuse } };
+        Object.assign(model.zones[+m[1]], JSON.parse(JSON.stringify(req.body)));
         return { body: { success: true } };
     }
     return { body: '' };
@@ -104,6 +101,8 @@ def _editor(steps: str, setup: str = "") -> Any:
             (_STATIC / "save-feedback.js").read_text(encoding="utf-8"),
             (_STATIC / "polygon-plan.js").read_text(encoding="utf-8"),
             (_STATIC / "picture-view.js").read_text(encoding="utf-8"),
+            (_STATIC / "camera-model.js").read_text(encoding="utf-8"),
+            (_STATIC / "picture-polygon.js").read_text(encoding="utf-8"),
             f"parseHTML({json.dumps(markup)}, document.body);",
             _SETUP_CANVAS,
             setup,
@@ -199,65 +198,814 @@ async function showPicture() {
     img.onload();
     await settle();
 }
-function svg() { return document.querySelector('#zone-picture svg'); }
-function zoneLines() { return svg().querySelectorAll('polyline'); }
-function cornerHandles() { return svg().querySelectorAll('.pv-handle'); }
-function pointer(target, type, x, y) {
-    target.dispatchEvent(makeEvent(type, { clientX: x, clientY: y, pointerId: 1 }));
+function svg() { return document.getElementById('zone-picture-svg'); }
+function zoneLines() { return svg().querySelectorAll('polyline.pv-zone'); }
+function pins() { return svg().querySelectorAll('.pv-pin').map(function (g) { return g.getAttribute('aria-label'); }); }
+function pin(n) { return svg().querySelector('.pv-pin[aria-label="V' + n + '"]'); }
+function spot(n) {
+    var m = /translate\\(([^,]+),([^)]+)\\)/.exec(pin(n).getAttribute('transform'));
+    return [Math.round(+m[1] * 100) / 100, Math.round(+m[2] * 100) / 100];
+}
+function chosen() { var g = svg().querySelector('.pv-pin.active'); return g ? g.getAttribute('aria-label') : null; }
+function ringed() {
+    var r = svg().querySelector('.pv-pin-ring');
+    return r ? r.parentNode.getAttribute('aria-label') : null;
+}
+function bands(i) { return svg().querySelectorAll('.pv-edge[data-edge="' + i + '"]'); }
+function pointer(target, type, x, y, kind) {
+    target.dispatchEvent(makeEvent(type, { clientX: x, clientY: y, pointerId: 1, pointerType: kind || 'mouse' }));
+}
+function drag(target, from, to, kind) {
+    pointer(target, 'pointerdown', from[0], from[1], kind);
+    pointer(svg(), 'pointermove', to[0], to[1], kind);
+    pointer(svg(), 'pointerup', to[0], to[1], kind);
+}
+function key(k, shift) {
+    var ev = makeEvent('keydown', { key: k, shiftKey: !!shift });
+    (document.activeElement || svg()).dispatchEvent(ev);
+    return ev.defaultPrevented;
+}
+function runTimeouts() { timeouts.splice(0).forEach(function (fn) { fn(); }); }
+function round(v) {
+    return v.map(function (p) { return [Math.round(p[0] * 1000) / 1000, Math.round(p[1] * 1000) / 1000]; });
+}
+function stored() { return puts().map(function (r) { return round(r.body.vertices); }); }
+function loupe() { var l = document.querySelector('#zone-picture .pv-loupe'); return !!l && !l.hidden; }
+function readout() {
+    var r = document.querySelector('#zone-picture .pv-readout');
+    return r && !r.hidden ? r.textContent : null;
+}
+// The camera view with the square chosen: V1 (640, 460), V2 (840, 460), V3 (840, 260), V4 (640, 260).
+async function pick() {
+    tickIntervals(); await settle();
+    choose('camera'); await showPicture();
+    pointer(zoneLines()[0], 'pointerdown', 740, 360);
+    pointer(svg(), 'pointerup', 740, 360);
+    await settle();
 }
 """
 
 
-def test_camera_view_shows_the_zones_and_hides_the_plan() -> None:
-    out = _editor(
-        _CAMERA
-        + """
+def _camera(steps: str, setup: str = "") -> Any:
+    return _editor(_CAMERA + steps, setup)
+
+
+def test_camera_view_draws_the_zones_in_the_browser_and_hides_the_plan() -> None:
+    out = _camera(
+        """
         choose('camera'); await showPicture();
         out.planHidden = document.getElementById('zone-canvas-wrap').hidden;
         out.pictureShown = !document.getElementById('zone-picture').hidden;
         out.lines = zoneLines().map(function (l) { return l.getAttribute('points'); });
         out.addDisabled = document.getElementById('zone-add-btn').disabled;
-        out.projected = requests.filter(function (r) { return r.url === '/api/scene/project'; }).map(function (r) {
-            return r.body.polylines;
-        })[0];
+        out.cornerButton = !document.getElementById('zone-corner-delete-btn').hidden;
+        out.asked = requests.filter(function (r) { return r.url.indexOf('/api/scene/') === 0; }).length;
+        out.pins = pins();
         """
     )
     assert out["planHidden"] is True and out["pictureShown"] is True
-    assert out["addDisabled"] is True
-    # The closed outline on the floor plane (the grid's z_offset, absent here: 0).
-    assert out["projected"] == [[[0, 2, 0], [2, 2, 0], [2, 4, 0], [0, 4, 0], [0, 2, 0]]]
-    assert out["lines"] == ["640,160 840,160 840,-40 640,-40 640,160"]
+    assert out["addDisabled"] is True and out["cornerButton"] is True
+    # No round trip: the saved camera came with the zones.
+    assert out["asked"] == 0
+    assert out["pins"] == []
+    corners = [[float(v) for v in p.split(",")] for p in out["lines"][0].split(" ")]
+    want = [[640, 460], [840, 460], [840, 260], [640, 260], [640, 460]]
+    assert corners == [[pytest.approx(x, abs=1e-6), pytest.approx(y, abs=1e-6)] for x, y in want]
 
 
-def test_camera_view_selects_a_zone_and_drags_its_corner_onto_the_floor() -> None:
-    out = _editor(
-        _CAMERA
-        + """
-        choose('camera'); await showPicture();
-        out.before = cornerHandles().length;
-        zoneLines()[0].dispatchEvent(makeEvent('click'));
+def test_the_plan_view_has_no_delete_corner_button() -> None:
+    out = _camera(
+        "choose('camera'); await showPicture(); choose('plan');"
+        "out.hidden = document.getElementById('zone-corner-delete-btn').hidden;"
+    )
+    assert out == {"hidden": True}
+
+
+def test_choosing_a_zone_names_its_corners_like_the_top_down_view() -> None:
+    out = _camera(
+        """
+        await pick();
+        out.pins = pins();
+        out.spots = [1, 2, 3, 4].map(spot);
+        out.chosen = zoneLines()[0].getAttribute('class');
+        out.status = document.getElementById('zone-fs-status').textContent;
+        """
+    )
+    assert out["pins"] == ["V1", "V2", "V3", "V4"]
+    assert out["spots"] == [[640, 460], [840, 460], [840, 260], [640, 260]]
+    assert out["chosen"] == "pv-zone pv-zone-selected"
+    assert out["status"] == "Square · 4 corners"
+
+
+def test_pressing_another_zone_chooses_it() -> None:
+    out = _camera(
+        """
+        model.zones.push({ name: 'Other', color: '#33aaff', vertices: [[-3, 2], [-2, 2], [-2, 3]], enabled: true,
+                           trigger_source: 'markers', triggered_by: [] });
+        tickIntervals(); await pick();
+        out.first = pins().length;
+        pointer(zoneLines()[1], 'pointerdown', 400, 400);
         await settle();
-        out.after = cornerHandles().length;
-        // The corner (2, 4) shows at (840, -40); drop it at (940, -40), stage (3, 4).
-        pointer(cornerHandles()[2], 'pointerdown', 840, -40);
-        pointer(svg(), 'pointerup', 940, -40);
+        out.second = pins();
+        out.classes = zoneLines().map(function (l) { return l.getAttribute('class'); });
+        """
+    )
+    assert out["first"] == 4
+    assert out["second"] == ["V1", "V2", "V3"]
+    assert out["classes"] == ["pv-zone", "pv-zone pv-zone-selected"]
+
+
+def test_a_dragged_corner_follows_with_the_loupe_and_saves_when_let_go() -> None:
+    out = _camera(
+        """
+        await pick();
+        pointer(pin(3), 'pointerdown', 840, 260);
+        pointer(svg(), 'pointermove', 940, 260);
+        out.during = { spot: spot(3), loupe: loupe(), readout: readout(), puts: puts().length,
+                       line: zoneLines()[0].getAttribute('points') };
+        pointer(svg(), 'pointerup', 940, 260);
         await settle();
-        var putReqs = requests.filter(function (r) { return r.method === 'PUT'; });
-        out.puts = putReqs.map(function (r) { return r.body.vertices; });
-        out.unproject = requests.filter(function (r) { return r.url === '/api/scene/unproject'; }).map(function (r) {
-            return r.body.z;
+        out.after = { loupe: loupe(), saved: stored(), chosen: chosen() };
+        """
+    )
+    assert out["during"]["spot"] == [940, 260]
+    assert out["during"]["loupe"] is True and out["during"]["puts"] == 0
+    assert out["during"]["readout"] == "V3 · X 3.000 m · Y 4.000 m"
+    assert "940" in out["during"]["line"]
+    assert out["after"] == {"loupe": False, "saved": [[[0, 2], [2, 2], [3, 4], [0, 4]]], "chosen": "V3"}
+
+
+@pytest.mark.parametrize(
+    "kind, by, moves",
+    [("mouse", 2, False), ("mouse", 3, True), ("touch", 7, False), ("pen", 7, False), ("touch", 8, True)],
+    ids=["mouse 2 px", "mouse 3 px", "touch 7 px", "pen 7 px", "touch 8 px"],
+)
+def test_a_press_that_barely_moves_only_chooses_the_corner(kind: str, by: int, moves: bool) -> None:
+    out = _camera(
+        f"""
+        await pick();
+        pointer(pin(2), 'pointerdown', 840, 460, '{kind}');
+        pointer(svg(), 'pointermove', 840 + {by}, 460, '{kind}');
+        pointer(svg(), 'pointerup', 840 + {by}, 460, '{kind}');
+        await settle();
+        out.chosen = chosen(); out.spot = spot(2); out.puts = puts().length;
+        """
+    )
+    assert out["chosen"] == "V2"
+    assert out["spot"] == ([840 + by, 460] if moves else [840, 460])
+    assert out["puts"] == (1 if moves else 0)
+
+
+def test_a_cancelled_drag_saves_where_the_corner_was_left() -> None:
+    out = _camera(
+        """
+        await pick();
+        pointer(pin(3), 'pointerdown', 840, 260);
+        pointer(svg(), 'pointermove', 860, 260);
+        pointer(svg(), 'pointercancel', 860, 260);
+        await settle();
+        out.saved = stored(); out.loupe = loupe();
+        """
+    )
+    assert out == {"saved": [[[0, 2], [2, 2], [2.2, 4], [0, 4]]], "loupe": False}
+
+
+def test_a_touch_drag_holds_the_loupe_a_finger_away() -> None:
+    out = _camera(
+        """
+        await pick();
+        var box = { left: 0, top: 0, width: 1280, height: 720 };
+        svg().getBoundingClientRect = function () { return box; };
+        pointer(pin(3), 'pointerdown', 840, 260, 'mouse');
+        pointer(svg(), 'pointermove', 900, 300, 'mouse');
+        var l = document.querySelector('#zone-picture .pv-loupe');
+        out.mouse = [l.style.left, l.style.top];
+        pointer(svg(), 'pointerup', 900, 300, 'mouse');
+        pointer(pin(3), 'pointerdown', 900, 300, 'touch');
+        pointer(svg(), 'pointermove', 900, 400, 'touch');
+        out.touch = [l.style.left, l.style.top];
+        """
+    )
+    # Up and right of the point, its edge 12 px (mouse) or 30 px (touch) away along the diagonal.
+    assert out["mouse"] == [f"{900 + (60 + 12) / 2**0.5 - 60}px", f"{300 - (60 + 12) / 2**0.5 - 60}px"]
+    assert out["touch"] == [f"{900 + (60 + 30) / 2**0.5 - 60}px", f"{400 - (60 + 30) / 2**0.5 - 60}px"]
+
+
+def test_keys_go_round_the_corners_and_tab_leaves_at_the_end() -> None:
+    out = _camera(
+        """
+        await pick();
+        svg().focus();
+        out.steps = [];
+        [[false], [false], [true], [true], [true]].forEach(function (s) {
+            var held = key('Tab', s[0]);
+            out.steps.push([chosen(), ringed(), held]);
         });
         """
     )
-    assert out["before"] == 0 and out["after"] == 4
-    assert out["unproject"] == [0]
-    assert out["puts"] == [[[0, 2], [2, 2], [pytest.approx(3.0), pytest.approx(4.0)], [0, 4]]]
+    assert out["steps"] == [
+        ["V1", "V1", True],
+        ["V2", "V2", True],
+        ["V1", "V1", True],
+        [None, None, False],
+        [None, None, False],
+    ]
+
+
+def test_tab_past_the_last_corner_lets_go_and_leaves() -> None:
+    out = _camera(
+        """
+        await pick();
+        svg().focus();
+        [1, 2, 3, 4].forEach(function () { key('Tab'); });
+        out.last = chosen();
+        out.held = key('Tab');
+        out.after = chosen();
+        """
+    )
+    assert out == {"last": "V4", "held": False, "after": None}
+
+
+def test_corners_the_camera_does_not_see_have_no_pin_and_tab_skips_them() -> None:
+    out = _camera(
+        """
+        // V2 sits 7 m upstage of the picture's top edge.
+        model.zones[0].vertices = [[0, 2], [0, 10], [2, 4], [0, 4]];
+        await pick();
+        out.pins = pins();
+        svg().focus();
+        key('Tab'); var a = chosen(); key('Tab'); var b = chosen();
+        out.tabs = [a, b];
+        out.bands = [0, 1, 2, 3].map(function (i) { return bands(i).length > 0; });
+        """
+    )
+    assert out["pins"] == ["V1", "V3", "V4"]
+    assert out["tabs"] == ["V1", "V3"]
+    assert out["bands"] == [True, True, True, True]
+
+
+def test_arrows_move_the_corner_a_pixel_or_ten_and_save_once_after_the_last() -> None:
+    out = _camera(
+        """
+        await pick();
+        svg().focus();
+        key('Tab'); key('Tab');
+        out.held = key('ArrowRight');
+        out.one = spot(2);
+        key('ArrowUp', true);
+        out.ten = spot(2);
+        out.loupe = loupe();
+        out.before = puts().length;
+        runTimeouts(); await settle();
+        out.saved = stored();
+        out.loupeAfter = loupe();
+        """
+    )
+    assert out["held"] is True
+    assert out["one"] == [841, 460] and out["ten"] == [841, 450]
+    assert out["loupe"] is True and out["before"] == 0
+    assert out["saved"] == [[[0, 2], [2.01, 2.1], [2, 4], [0, 4]]]
+    assert out["loupeAfter"] is False
+
+
+@pytest.mark.parametrize("k, d", [("ArrowLeft", [-1, 0]), ("ArrowDown", [0, 1])])
+def test_each_arrow_moves_its_own_way(k: str, d: list[int]) -> None:
+    out = _camera(f"await pick(); svg().focus(); key('Tab'); key('{k}'); out.spot = spot(1);")
+    assert out["spot"] == [640 + d[0], 460 + d[1]]
+
+
+def test_an_arrow_that_would_leave_the_picture_moves_nothing() -> None:
+    out = _camera(
+        """
+        model.zones[0].vertices = [[0, 2], [2, 2], [2, 4], [-6.4, 4]];
+        await pick();
+        svg().focus();
+        [1, 2, 3, 4].forEach(function () { key('Tab'); });
+        out.held = key('ArrowLeft');
+        out.spot = spot(4);
+        runTimeouts(); await settle();
+        out.puts = puts().length;
+        """
+    )
+    assert out == {"held": True, "spot": [0, 260], "puts": 0}
+
+
+def test_keys_do_nothing_without_a_chosen_corner() -> None:
+    out = _camera(
+        "await pick(); svg().focus(); out.held = [key('ArrowRight'), key('Delete')]; out.puts = puts().length;"
+    )
+    assert out == {"held": [False, False], "puts": 0}
+
+
+@pytest.mark.parametrize("k", ["Delete", "Backspace"])
+def test_delete_removes_the_chosen_corner_and_saves(k: str) -> None:
+    out = _camera(
+        f"""
+        await pick();
+        svg().focus();
+        key('Tab'); key('Tab');
+        out.held = key('{k}');
+        await settle();
+        out.saved = stored(); out.pins = pins(); out.chosen = chosen();
+        """
+    )
+    assert out["held"] is True
+    assert out["saved"] == [[[0, 2], [2, 4], [0, 4]]]
+    assert out["pins"] == ["V1", "V2", "V3"]
+    assert out["chosen"] == "V2"
+
+
+def test_a_zone_keeps_three_corners() -> None:
+    out = _camera(
+        """
+        model.zones[0].vertices = [[0, 2], [2, 2], [2, 4]];
+        await pick();
+        pointer(pin(1), 'pointerdown', 640, 460); pointer(svg(), 'pointerup', 640, 460);
+        out.button = document.getElementById('zone-corner-delete-btn').disabled;
+        out.fsButton = document.getElementById('zone-fs-corner-delete').disabled;
+        key('Delete'); document.getElementById('zone-corner-delete-btn').click();
+        await settle();
+        out.puts = puts().length; out.pins = pins().length;
+        """
+    )
+    assert out == {"button": True, "fsButton": True, "puts": 0, "pins": 3}
+
+
+def test_the_delete_corner_button_removes_the_chosen_corner() -> None:
+    out = _camera(
+        """
+        await pick();
+        out.idle = document.getElementById('zone-corner-delete-btn').disabled;
+        pointer(pin(4), 'pointerdown', 640, 260); pointer(svg(), 'pointerup', 640, 260);
+        out.ready = document.getElementById('zone-corner-delete-btn').disabled;
+        document.getElementById('zone-corner-delete-btn').click();
+        await settle();
+        out.saved = stored(); out.chosen = chosen();
+        out.after = document.getElementById('zone-corner-delete-btn').disabled;
+        """
+    )
+    assert out["idle"] is True and out["ready"] is False
+    assert out["saved"] == [[[0, 2], [2, 2], [2, 4]]]
+    # The last corner gone, its neighbour before it is chosen; three left, no more deleting.
+    assert out["chosen"] == "V3" and out["after"] is True
+
+
+def test_deleting_a_corner_mid_key_edit_saves_once() -> None:
+    out = _camera(
+        """
+        await pick();
+        svg().focus();
+        key('Tab'); key('ArrowRight'); key('Delete');
+        runTimeouts(); await settle();
+        out.saved = stored();
+        """
+    )
+    assert out["saved"] == [[[2, 2], [2, 4], [0, 4]]]
+
+
+def test_escape_lets_go_of_the_corner() -> None:
+    out = _camera(
+        """
+        await pick();
+        svg().focus();
+        key('Tab');
+        out.first = key('Escape');
+        out.chosen = chosen();
+        out.second = key('Escape');
+        """
+    )
+    assert out == {"first": True, "chosen": None, "second": False}
+
+
+def test_dragging_from_an_edge_adds_a_corner_between_its_two() -> None:
+    out = _camera(
+        """
+        await pick();
+        // The edge V1-V2 runs along y = 460.
+        out.band = bands(0).length;
+        pointer(bands(0)[0], 'pointerdown', 740, 460);
+        pointer(svg(), 'pointermove', 740, 480);
+        out.during = { pins: pins(), chosen: chosen(), spot: spot(2), puts: puts().length };
+        pointer(svg(), 'pointermove', 760, 490);
+        pointer(svg(), 'pointerup', 760, 490);
+        await settle();
+        out.saved = stored();
+        out.status = document.getElementById('zone-fs-status').textContent;
+        """
+    )
+    assert out["band"] == 1
+    assert out["during"] == {"pins": ["V1", "V2", "V3", "V4", "V5"], "chosen": "V2", "spot": [740, 480], "puts": 0}
+    assert out["saved"] == [[[0, 2], [1.2, 1.7], [2, 2], [2, 4], [0, 4]]]
+    assert out["status"] == "Square · 5 corners"
+
+
+@pytest.mark.parametrize("kind, by", [("mouse", 2), ("touch", 7), ("mouse", 0)])
+def test_a_press_on_an_edge_that_does_not_move_adds_nothing(kind: str, by: int) -> None:
+    out = _camera(
+        f"""
+        await pick();
+        pointer(bands(1)[0], 'pointerdown', 840, 360, '{kind}');
+        pointer(svg(), 'pointermove', 840 + {by}, 360, '{kind}');
+        pointer(svg(), 'pointerup', 840 + {by}, 360, '{kind}');
+        await settle();
+        out.pins = pins().length; out.puts = puts().length;
+        """
+    )
+    assert out == {"pins": 4, "puts": 0}
+
+
+def test_the_edge_band_is_twenty_css_pixels_wide() -> None:
+    out = _camera(
+        """
+        await pick();
+        out.narrow = bands(0)[0].getAttribute('stroke-width');
+        svg().getBoundingClientRect = function () { return { left: 0, top: 0, width: 640, height: 360 }; };
+        window.dispatchEvent && null;
+        (winListeners.resize || []).forEach(function (f) { f(); });
+        out.half = bands(0)[0].getAttribute('stroke-width');
+        out.ring = pin(1).querySelector('rect').getAttribute('width');
+        """
+    )
+    # At half size a CSS pixel is two picture pixels: the band and the 44 px target double in picture pixels.
+    assert out == {"narrow": "20", "half": "40", "ring": "88"}
+
+
+def test_a_mouse_over_an_edge_shows_where_a_corner_would_start() -> None:
+    out = _camera(
+        """
+        await pick();
+        var ghost = function () { return svg().querySelector('.pv-ghost'); };
+        pointer(bands(0)[0], 'pointermove', 700, 466);
+        out.mouse = [ghost().style.display, ghost().getAttribute('cx'), ghost().getAttribute('cy')];
+        pointer(bands(0)[0], 'pointermove', 700, 466, 'touch');
+        out.touch = ghost().style.display;
+        pointer(bands(0)[0], 'pointermove', 700, 466);
+        svg().dispatchEvent(makeEvent('pointerleave', { pointerType: 'mouse' }));
+        out.left = ghost().style.display;
+        pointer(zoneLines()[0], 'pointermove', 700, 400);
+        out.inside = ghost().style.display;
+        """
+    )
+    assert (
+        out["mouse"][0] == ""
+        and float(out["mouse"][1]) == pytest.approx(700)
+        and float(out["mouse"][2]) == pytest.approx(460)
+    )
+    assert out["touch"] == "none" and out["left"] == "none" and out["inside"] == "none"
+
+
+def test_the_poll_does_not_undo_a_corner_in_hand() -> None:
+    out = _camera(
+        """
+        await pick();
+        pointer(pin(3), 'pointerdown', 840, 260);
+        pointer(svg(), 'pointermove', 900, 260);
+        var line = zoneLines()[0];
+        tickIntervals(); await settle();
+        out.drag = { spot: spot(3), same: zoneLines()[0] === line };
+        pointer(svg(), 'pointerup', 900, 260);
+        key('Tab');
+        key('ArrowRight');
+        tickIntervals(); await settle();
+        out.key = spot(4);
+        """
+    )
+    assert out["drag"] == {"spot": [900, 260], "same": True}
+    assert out["key"] == [641, 260]
+
+
+def test_a_poll_asked_before_an_edit_is_not_applied_after_it() -> None:
+    out = _camera(
+        """
+        await pick();
+        holdWhen = function (r) { return r.method === 'GET' && r.url === '/api/zones'; };
+        tickIntervals();
+        drag(pin(3), [840, 260], [900, 260]);
+        holdWhen = null;
+        release(); await settle();
+        out.spot = spot(3);
+        // The next poll, once the save has landed, carries the new corner.
+        tickIntervals(); await settle();
+        out.later = spot(3);
+        """
+    )
+    assert out == {"spot": [900, 260], "later": [900, 260]}
+
+
+def test_the_poll_holds_while_a_save_is_on_its_way() -> None:
+    out = _camera(
+        """
+        await pick();
+        holdWhen = function (r) { return r.method === 'PUT'; };
+        drag(pin(3), [840, 260], [900, 260]);
+        await settle();
+        model.zones[0].vertices = [[0, 2], [2, 2], [2, 4], [0, 4]];
+        tickIntervals(); await settle();
+        out.spot = spot(3);
+        """
+    )
+    assert out == {"spot": [900, 260]}
+
+
+def test_an_idle_poll_does_not_redraw_the_picture() -> None:
+    out = _camera(
+        """
+        await pick();
+        var line = zoneLines()[0];
+        tickIntervals(); await settle();
+        out.same = zoneLines()[0] === line;
+        model.zones[0].vertices[2] = [3, 4];
+        tickIntervals(); await settle();
+        out.moved = spot(3);
+        """
+    )
+    assert out == {"same": True, "moved": [940, 260]}
+
+
+def test_a_refused_corner_save_says_why() -> None:
+    out = _camera(
+        """
+        await pick();
+        model.refuse = 'Vertices must be finite';
+        drag(pin(3), [840, 260], [900, 260]);
+        await settle();
+        var line = document.querySelector('#zone-editor-section .save-error');
+        out.error = line ? line.textContent : null;
+        """
+    )
+    assert out["error"] is not None and "Vertices must be finite" in out["error"]
+
+
+def test_zones_sit_on_the_stage_plane_of_the_main_grid() -> None:
+    out = _camera("model.floor = 1.6; await pick(); out.spot = spot(3); out.readout = null;")
+    # 1.6 m up, the plane is 4.8 m from the camera: 133.3 px per metre.
+    assert out["spot"] == [pytest.approx(640 + 2 * 400 / 3, abs=0.01), pytest.approx(360 - 400 / 3, abs=0.01)]
+
+
+_HEIGHTS = "document.body.classList.add('feature-zone_heights');"
+
+
+@pytest.mark.parametrize("on", [True, False], ids=["zone heights on", "zone heights off"])
+def test_a_zone_is_drawn_and_picked_at_its_z_offset_only_with_zone_heights_on(on: bool) -> None:
+    out = _camera(
+        ("" if not on else _HEIGHTS)
+        + """
+        model.zones[0].z_offset = 1.6;
+        await pick();
+        out.spot = spot(3);
+        pointer(pin(3), 'pointerdown', spot(3)[0], spot(3)[1]);
+        pointer(svg(), 'pointermove', spot(3)[0] + 100, spot(3)[1]);
+        out.readout = readout();
+        pointer(svg(), 'pointerup', spot(3)[0] + 100, spot(3)[1]);
+        await settle();
+        out.saved = stored();
+        """
+    )
+    if on:
+        assert out["spot"] == [pytest.approx(906.67, abs=0.01), pytest.approx(226.67, abs=0.01)]
+        # 100 px at 133.3 px per metre is 0.75 m.
+        assert out["saved"] == [[[0, 2], [2, 2], [2.75, 4], [0, 4]]]
+        assert out["readout"] == "V3 · X 2.750 m · Y 4.000 m · Z 1.600 m"
+    else:
+        assert out["spot"] == [840, 260]
+        assert out["saved"] == [[[0, 2], [2, 2], [3, 4], [0, 4]]]
+        assert out["readout"] == "V3 · X 3.000 m · Y 4.000 m"
+
+
+def test_a_lens_bows_each_edge_in_chords_as_the_operator_screen_does() -> None:
+    out = _camera(
+        """
+        model.camera.k1 = -0.2;
+        await pick();
+        out.points = zoneLines()[0].getAttribute('points').split(' ').length;
+        out.band = bands(0)[0].getAttribute('points').split(' ').length;
+        """
+    )
+    # 24 chords per edge, the closed outline's last point back on its first.
+    assert out == {"points": 4 * 24 + 1, "band": 25}
+
+
+def test_without_the_camera_the_picture_draws_nothing() -> None:
+    out = _camera(
+        "model.camera = undefined; tickIntervals(); choose('camera'); await showPicture();"
+        "out.lines = zoneLines().length;"
+    )
+    assert out == {"lines": 0}
+
+
+def test_the_picture_takes_the_focus_and_names_the_chosen_corner() -> None:
+    out = _camera(
+        """
+        await pick();
+        out.focusable = [svg().getAttribute('tabindex'), svg().getAttribute('aria-label')];
+        svg().focus(); key('Tab'); key('Tab');
+        out.active = svg().getAttribute('aria-activedescendant');
+        out.target = pin(2).getAttribute('id');
+        key('Escape');
+        out.after = svg().getAttribute('aria-activedescendant');
+        """
+    )
+    assert out["focusable"] == ["0", "Zone corners on the camera picture"]
+    assert out["active"] == out["target"] == "zone-picture-svg-v2"
+    assert out["after"] is None
+
+
+def test_pressing_a_corner_focuses_the_picture_for_its_keys() -> None:
+    out = _camera(
+        """
+        await pick();
+        pointer(pin(2), 'pointerdown', 840, 460); pointer(svg(), 'pointerup', 840, 460);
+        out.focused = document.activeElement === svg();
+        out.ring = ringed();
+        key('ArrowDown');
+        out.spot = spot(2); out.ringAfter = ringed();
+        """
+    )
+    assert out == {"focused": True, "ring": None, "spot": [840, 461], "ringAfter": "V2"}
+
+
+def test_leaving_the_picture_saves_a_key_edit_at_once() -> None:
+    out = _camera(
+        """
+        await pick();
+        svg().focus(); key('Tab'); key('ArrowRight');
+        document.getElementById('zone-refresh-btn').focus();
+        await settle();
+        out.saved = stored();
+        runTimeouts(); await settle();
+        out.again = puts().length;
+        """
+    )
+    assert out == {"saved": [[[0.01, 2], [2, 2], [2, 4], [0, 4]]], "again": 1}
+
+
+# -- full screen ---------------------------------------------------------------
+
+_FULL = """
+function shell() { return document.getElementById('zone-fs-shell'); }
+function inShell() { return shell().contains(document.getElementById('zone-picture')); }
+"""
+
+
+def test_full_screen_moves_the_picture_into_its_own_view() -> None:
+    out = _camera(
+        _FULL
+        + """
+        await pick();
+        document.getElementById('zone-fs-btn').click();
+        out.open = { shown: !shell().hidden, onBody: shell().parentNode === document.body, picture: inShell(),
+                     focus: document.activeElement === svg(),
+                     status: document.getElementById('zone-fs-status').textContent,
+                     scroll: document.body.style.overflow };
+        document.getElementById('zone-fs-exit').click();
+        out.closed = { shown: !shell().hidden,
+                       inSection: document.getElementById('zone-editor-section').contains(shell()),
+                       picture: inShell(), back: document.getElementById('zone-canvas-wrap').previousSibling.id,
+                       focus: document.activeElement.id, scroll: document.body.style.overflow };
+        """
+    )
+    assert out["open"] == {
+        "shown": True,
+        "onBody": True,
+        "picture": True,
+        "focus": True,
+        "status": "Square · 4 corners",
+        "scroll": "hidden",
+    }
+    assert out["closed"] == {
+        "shown": False,
+        "inSection": True,
+        "picture": False,
+        "back": "zone-picture-nofeed",
+        "focus": "zone-fs-btn",
+        "scroll": "",
+    }
+
+
+def test_escape_lets_go_of_the_corner_then_leaves_full_screen() -> None:
+    out = _camera(
+        _FULL
+        + """
+        await pick();
+        document.getElementById('zone-fs-btn').click();
+        key('Tab');
+        key('Escape');
+        out.first = [chosen(), !shell().hidden];
+        key('Escape');
+        out.second = !shell().hidden;
+        """
+    )
+    assert out == {"first": [None, True], "second": False}
+
+
+def test_escape_on_a_bar_button_leaves_full_screen() -> None:
+    out = _camera(
+        _FULL
+        + """
+        await pick();
+        document.getElementById('zone-fs-btn').click();
+        document.getElementById('zone-fs-refresh').focus();
+        out.held = key('Escape');
+        out.open = !shell().hidden;
+        """
+    )
+    assert out == {"held": True, "open": False}
+
+
+def test_the_bar_refreshes_the_picture_and_deletes_the_chosen_corner() -> None:
+    out = _camera(
+        _FULL
+        + """
+        await pick();
+        document.getElementById('zone-fs-btn').click();
+        var snaps = function () {
+            return requests.filter(function (r) { return r.url === '/api/video/snapshot/full'; }).length;
+        };
+        var was = snaps();
+        document.getElementById('zone-fs-refresh').click();
+        await settle();
+        out.refreshed = snaps() - was;
+        out.idle = document.getElementById('zone-fs-corner-delete').disabled;
+        svg().focus(); key('Tab');
+        out.ready = document.getElementById('zone-fs-corner-delete').disabled;
+        document.getElementById('zone-fs-corner-delete').click();
+        await settle();
+        out.saved = stored();
+        out.status = document.getElementById('zone-fs-status').textContent;
+        """
+    )
+    assert out["refreshed"] == 1
+    assert out["idle"] is True and out["ready"] is False
+    assert out["saved"] == [[[2, 2], [2, 4], [0, 4]]]
+    assert out["status"] == "Square · 3 corners"
+
+
+def test_tab_stays_inside_full_screen() -> None:
+    out = _camera(
+        _FULL
+        + """
+        await pick();
+        document.getElementById('zone-fs-btn').click();
+        document.getElementById('zone-fs-refresh').focus();
+        out.back = key('Tab', true); out.toLast = document.activeElement.id;
+        // On the picture Tab goes round the corners first, then on to the bar's first button.
+        out.corners = [1, 2, 3, 4].map(function () { return key('Tab'); });
+        out.forward = key('Tab'); out.toFirst = document.activeElement.id;
+        document.getElementById('zone-fs-refresh').focus();
+        out.middle = key('Tab');
+        """
+    )
+    assert out == {
+        "back": True,
+        "toLast": "zone-picture-svg",
+        "corners": [True] * 4,
+        "forward": True,
+        "toFirst": "zone-fs-refresh",
+        "middle": False,
+    }
+
+
+def test_full_screen_sizes_the_picture_to_the_screen() -> None:
+    out = _camera(
+        _FULL
+        + """
+        await pick();
+        var fsStage = document.getElementById('zone-fs-stage');
+        fsStage.getBoundingClientRect = function () { return { width: 2000, height: 900 }; };
+        document.getElementById('zone-fs-btn').click();
+        out.wide = document.getElementById('zone-picture').style.width;
+        fsStage.getBoundingClientRect = function () { return { width: 1000, height: 900 }; };
+        (winListeners.resize || []).forEach(function (f) { f(); });
+        out.narrow = document.getElementById('zone-picture').style.width;
+        document.getElementById('zone-fs-exit').click();
+        out.closed = document.getElementById('zone-picture').style.width;
+        """
+    )
+    assert out == {"wide": "1600px", "narrow": "1000px", "closed": ""}
+
+
+def test_switching_to_the_top_down_view_lets_go_of_the_corner() -> None:
+    out = _camera(
+        """
+        await pick();
+        svg().focus(); key('Tab'); key('ArrowRight');
+        choose('plan'); await settle();
+        out.saved = stored();
+        choose('camera'); await showPicture();
+        out.chosen = chosen();
+        """
+    )
+    assert out == {"saved": [[[0.01, 2], [2, 2], [2, 4], [0, 4]]], "chosen": None}
+
+
+def test_the_zone_delete_button_is_named_for_the_zone() -> None:
+    out = _camera("out.text = document.getElementById('zone-delete-btn').textContent;")
+    assert out == {"text": "Delete zone"}
 
 
 def test_no_picture_says_so() -> None:
-    out = _editor(
-        _CAMERA
-        + """
+    out = _camera(
+        """
         var real = station;
         station = function (req) {
             return req.url === '/api/video/snapshot/full' ? { status: 503, body: 'no feed' } : real(req);
@@ -293,24 +1041,6 @@ def test_storage_that_throws_leaves_the_switch_working() -> None:
         " setItem: function () { throw new Error('denied'); } };",
     )
     assert out["planHidden"] is True
-
-
-def test_a_held_corner_follows_the_pointer_before_it_drops() -> None:
-    out = _editor(
-        _CAMERA
-        + """
-        choose('camera'); await showPicture();
-        zoneLines()[0].dispatchEvent(makeEvent('click'));
-        await settle();
-        var corner = cornerHandles()[2];
-        pointer(corner, 'pointerdown', 840, -40);
-        pointer(svg(), 'pointermove', 900, -10);
-        out.at = [corner.getAttribute('cx'), corner.getAttribute('cy')];
-        out.puts = requests.filter(function (r) { return r.method === 'PUT'; }).length;
-        """
-    )
-    assert out["at"] == ["900", "-10"]
-    assert out["puts"] == 0
 
 
 _ZONE_GETS = """

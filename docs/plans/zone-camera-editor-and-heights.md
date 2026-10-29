@@ -43,15 +43,15 @@ The interactive mockup, built on the Media Gallery's Concert picture and its cal
 ## Work items
 
 **Camera editor (#569)**
-- [ ] Camera and lens in `GET /api/zones`; the client projection module, with a test against the Python.
-- [ ] Corners as named 44 px handles, the chosen zone drawn thicker, unseen corners skipped.
-- [ ] Drag with the loupe and the stage-position readout; the outline moves with the corner; click without move chooses.
-- [ ] Tab, arrows, Shift, Delete and Esc.
-- [ ] Edge drag adds a corner; the hover dot for a mouse.
-- [ ] **Delete corner** (at least three), **Delete zone** renamed.
-- [ ] Full screen with its bar.
-- [ ] Polling holds during a drag.
-- [ ] JS tests for each interaction; help drawer `zone_editor.md`; `docs/architecture/zones.md`.
+- [x] Camera and lens in `GET /api/zones`; the client projection module, with a test against the Python.
+- [x] Corners as named 44 px handles, the chosen zone drawn thicker, unseen corners skipped.
+- [x] Drag with the loupe and the stage-position readout; the outline moves with the corner; click without move chooses.
+- [x] Tab, arrows, Shift, Delete and Esc.
+- [x] Edge drag adds a corner; the hover dot for a mouse.
+- [x] **Delete corner** (at least three), **Delete zone** renamed.
+- [x] Full screen with its bar.
+- [x] Polling holds during a drag.
+- [x] JS tests for each interaction; help drawer `zone_editor.md`; `docs/architecture/zones.md`.
 - [ ] Review to cosmetic, gate, station check on pi66.
 
 **Zone heights (#570)**

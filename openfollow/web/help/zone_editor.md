@@ -6,14 +6,35 @@ Draw zone polygons that fire OSC messages when tracked markers (or detected peop
 
 - **Click a zone** to select it; drag its labelled handles (V1, V2, …) to reshape it.
 - Occupied zones brighten and show the occupant count.
-- **Top-down / Camera** switches to the camera picture with the zones drawn on the stage floor. Dragging a corner there saves straight away. **Refresh Image** takes a new snapshot. New zones are drawn in the top-down view. Zones follow the saved camera position, so save camera changes first.
+- **Top-down / Camera** switches to the camera picture with the zones drawn on the stage floor as the saved camera sees them. **Refresh Image** takes a new snapshot. New zones are drawn in the top-down view.
+
+### Camera view
+
+The chosen zone's corners, named as in the top-down view, move on the picture.
+
+- **Dragging a corner** shows the loupe and the corner's stage position; the corner is saved when let go. A press that does not move only chooses it.
+- **Dragging from an edge** of the chosen zone adds a corner there, between the edge's two corners. A mouse shows a dashed dot where it starts.
+- **Delete corner** removes the chosen corner. A zone keeps at least three.
+- A corner outside the picture or behind the camera has no handle; it moves in the top-down view.
+- The **full screen** button at the top right of the picture opens it over the page.
+
+### Keys on the picture
+
+| Key | Action |
+|---|---|
+| Tab / Shift+Tab | Next / previous corner of the chosen zone |
+| Arrows | Move the corner 1 picture pixel, 10 with Shift |
+| Delete / Backspace | Delete the corner |
+| Esc | Let go of the corner, then leave full screen |
+
+A corner moved by keys is saved a moment after the last step.
 
 ## Drawing
 
 - **+ New Zone** – each click drops a vertex.
 - **Finish Polygon** – closes the zone at three or more vertices. Clicking the first vertex or double-clicking also closes it.
 - **Cancel Drawing** – discards the polygon in progress.
-- **Delete Selected** – permanently removes the selected zone, after confirmation.
+- **Delete zone** – permanently removes the chosen zone, after confirmation.
 
 ## Zone details
 

@@ -452,3 +452,22 @@ def test_an_imperial_length_the_parser_refuses_is_sent_as_typed() -> None:
         setup="window.OpenFollow.units.setSystem('imperial');",
     )
     assert out["sent"] == "high"
+
+
+@pytest.mark.parametrize("imperial", [False, True], ids=["metric", "imperial"])
+def test_an_unrelated_edit_leaves_the_zone_heights_as_stored(imperial: bool) -> None:
+    out = _editor(
+        _CHOOSE_THE_ZONE
+        + """
+        field('name').value = 'Riser';
+        button('zone-save-btn');
+        await settle();
+        var body = puts()[puts().length - 1].body;
+        out.sentHeights = 'z_offset' in body || 'height_transition_s' in body;
+        out.stored = [model.zones[0].z_offset, model.zones[0].height_transition_s, model.zones[0].name];
+        """,
+        setup=("window.OpenFollow.units.setSystem('imperial');" if imperial else "")
+        + "model.zones[0].z_offset = 0.123456789; model.zones[0].height_transition_s = 0.25;",
+    )
+    assert out["sentHeights"] is False
+    assert out["stored"] == [0.123456789, 0.25, "Riser"]

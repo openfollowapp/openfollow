@@ -711,7 +711,8 @@
             + '</div>';
     }
 
-    // A number field validated on blur like the OSC addresses.
+    // A number field validated on blur like the OSC addresses; ``data-shown``
+    // keeps what it showed, so an untouched one is not saved back rounded.
     function blurField(label, name, value, type, step) {
         var id = 'zone-detail-' + name.replace(/_/g, '-');
         return '      <div class="field">'
@@ -719,7 +720,7 @@
             + '<input type="' + type + '"' + (type === 'number' ? ' step="' + step + '"' : '')
             + ' id="' + id + '" data-zone-field="' + name + '"'
             + ' data-zone-blur-field="' + name + '"'
-            + ' value="' + escapeAttr(value) + '"'
+            + ' value="' + escapeAttr(value) + '" data-shown="' + escapeAttr(value) + '"'
             + ' aria-describedby="' + id + '-error">'
             + '<span class="field-error" id="' + id + '-error"'
             + ' data-zone-field-error="' + name + '" aria-live="polite"></span>'
@@ -825,8 +826,13 @@
         nodes.forEach(function(n) {
             var name = n.getAttribute('data-zone-field');
             if (n.type === 'checkbox') out[name] = n.checked;
-            else out[name] = n.value;
+            else if (n.value !== n.getAttribute('data-shown')) out[name] = n.value;
         });
+        // Metres on the wire; a length the parser refuses keeps the saved one.
+        if (IS_IMPERIAL && typeof out.z_offset === 'string') {
+            var zMetres = parseLength(out.z_offset);
+            if (isFinite(zMetres)) out.z_offset = zMetres;
+        }
         // triggered_by is comma-separated text input
         // in the form, but the JSON CRUD API expects ``list[int]``.
         // Parse here so the route layer's ``_parse_triggered_by`` sees
@@ -836,11 +842,6 @@
         // Parse strictly (regex check before parseInt so "1abc" doesn't
         // coerce to 1). Reject save if any token invalid (don't silently
         // drop: strict regex matches server-side _validate_int_list).
-        // Metres on the wire; a length the parser refuses keeps the saved one.
-        if (IS_IMPERIAL && typeof out.z_offset === 'string') {
-            var zMetres = parseLength(out.z_offset);
-            if (isFinite(zMetres)) out.z_offset = zMetres;
-        }
         if (typeof out.triggered_by === 'string') {
             var parsed = parseTriggeredBy(out.triggered_by);
             if (parsed === null) {

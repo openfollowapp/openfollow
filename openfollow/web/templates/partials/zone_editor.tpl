@@ -333,6 +333,7 @@
             pictureKey = '';
             pv.load();
         } else {
+            corners.cancelDrag();
             corners.choose(null);
             pictureEl.hidden = true;
             document.getElementById('zone-picture-nofeed').hidden = true;
@@ -1073,33 +1074,44 @@
           });
     }
 
-    // One corner save per zone at a time, so an older one cannot land last: a save asked meanwhile follows it
-    // with the corners as they are then. A save with no answer is given up, so the poll does not wait forever.
-    var CORNER_SAVE_TIMEOUT_MS = 10000;
-    var cornerSaves = {};
-    function updateZoneVertices(idx) {
-        var z = state.zones[idx];
-        if (!z) return;
-        if (cornerSaves[idx]) { cornerSaves[idx].again = true; return; }
-        var run = cornerSaves[idx] = { again: false };
-        var ctl = new AbortController(), timer = setTimeout(function() { ctl.abort(); }, CORNER_SAVE_TIMEOUT_MS);
+    // Corner saves and zone deletes go out one at a time, in the order asked, each finding its zone's index as
+    // it is sent: an older save cannot land last, and none lands on the zone that moved into a deleted one's
+    // place. A save asked while its zone's is still queued is that one, sent with the corners as they are then.
+    // A write with no answer is given up, so the poll does not wait forever.
+    var WRITE_TIMEOUT_MS = 10000;
+    var writes = Promise.resolve(), queuedSaves = [];
+    function enqueue(job) {
         saving++;
-        zoneWrite(fetch('/api/zones/' + idx, {
-            method: 'PUT',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({vertices: z.vertices}),
-            signal: ctl.signal,
-        })).then(function() {
-            clearTimeout(timer);
-            saving--;
-            edits++;
-            delete cornerSaves[idx];
-            if (run.again) updateZoneVertices(idx);
+        var done = function() { saving--; edits++; };
+        writes = writes.then(job).then(done, done);
+        return writes;
+    }
+    function timedWrite(url, opts, near) {
+        var ctl = new AbortController(), timer = setTimeout(function() { ctl.abort(); }, WRITE_TIMEOUT_MS);
+        opts.signal = ctl.signal;
+        return zoneWrite(fetch(url, opts), near).then(function(r) { clearTimeout(timer); return r; });
+    }
+    function updateZoneVertices(idx) {
+        var zone = state.zones[idx];
+        if (!zone || queuedSaves.indexOf(zone) >= 0) return;
+        queuedSaves.push(zone);
+        enqueue(function() {
+            queuedSaves.splice(queuedSaves.indexOf(zone), 1);
+            var at = state.zones.indexOf(zone);
+            if (at < 0) return null;
+            return timedWrite('/api/zones/' + at, {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({vertices: zone.vertices}),
+            });
         });
     }
 
+    // Behind every corner save asked before it; the zone leaves the page's list before any later save is sent.
     async function deleteSelected() {
         if (state.selectedIndex < 0) return;
+        corners.cancelDrag();
+        corners.flush();
         var idx = state.selectedIndex;
         var ok = await modalConfirm({
             title: 'Delete zone?',
@@ -1108,13 +1120,21 @@
             danger: true,
         });
         if (!ok || state.selectedIndex !== idx) return;
-        zoneWrite(fetch('/api/zones/' + idx, {method: 'DELETE'}))
-            .then(function(r) {
-                if (r) {
-                    state.selectedIndex = -1;
-                    fetchZones();
-                }
+        var zone = state.zones[idx];
+        enqueue(function() {
+            var at = state.zones.indexOf(zone);
+            if (at < 0) return null;
+            // Said under the buttons: the zone's details may be gone by then.
+            return timedWrite('/api/zones/' + at, {method: 'DELETE'}, deleteBtn.parentNode).then(function(r) {
+                if (!r) return;
+                var now = state.zones.indexOf(zone);
+                state.zones.splice(now, 1);
+                if (state.selectedIndex === now) state.selectedIndex = -1;
+                else if (state.selectedIndex > now) state.selectedIndex--;
+                renderDetails();
+                render();
             });
+        }).then(fetchZones);
     }
 
     // Events

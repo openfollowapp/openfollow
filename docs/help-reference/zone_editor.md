@@ -2,7 +2,7 @@
 
 A canvas for drawing and editing zone polygons that drive OSC cue messages. Each zone watches for tracked markers (and optionally person-detection results) crossing its boundary, then fires OSC messages to your show-control software – e.g. triggering a QLab cue when a performer enters an area of stage.
 
-Zone coordinates use the same stage plane as the Grid: **metres**, relative to the **Reference Point** – the (0, 0, 0) of your show (see Core Concepts). The canvas is a top-down view; upstage is towards the top.
+Zone coordinates use the same stage plane as the Grid: **metres**, relative to the **Reference Point** – the (0, 0, 0) of your show (see Core Concepts). The top-down view has upstage towards the top; the camera view shows the zones on the camera picture.
 
 ## Canvas
 

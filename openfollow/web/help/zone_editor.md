@@ -1,6 +1,6 @@
 # Zone Editor
 
-Draw zone polygons that fire OSC messages when tracked markers (or detected people) enter or leave. Coordinates are in **metres** on the stage plane, relative to the Reference Point. The canvas is a top-down view; upstage is at the top.
+Draw zone polygons that fire OSC messages when tracked markers (or detected people) enter or leave. Coordinates are in **metres** on the stage plane, relative to the Reference Point. The top-down view has upstage at the top; the camera view shows the zones on the camera picture.
 
 ## Canvas
 

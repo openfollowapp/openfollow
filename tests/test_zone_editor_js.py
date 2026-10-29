@@ -1269,11 +1269,13 @@ def test_after_a_delete_with_no_seen_corner_left_nothing_is_chosen() -> None:
 
 
 def test_corner_saves_go_one_at_a_time_and_the_latest_follows() -> None:
+    # Drags while one save is out make one save after it, with the corners as they are then.
     out = _camera(
         """
         await pick();
         holdWhen = function (r) { return r.method === 'PUT'; };
         drag(pin(3), [840, 260], [900, 260]);
+        await settle();
         drag(pin(3), [900, 260], [920, 260]);
         drag(pin(3), [920, 260], [940, 260]);
         await settle();
@@ -1391,3 +1393,310 @@ def test_a_focus_after_shift_tab_was_let_go_enters_with_nothing_chosen() -> None
         """
     )
     assert out == {"chosen": None}
+
+
+# -- saves and deletes keep to their zone ----------------------------------------------
+
+_THREE = """
+model.zones.unshift({ name: 'Other', color: '#33aaff', vertices: [[-3, 2], [-2, 2], [-2, 3]], enabled: true,
+                      trigger_source: 'markers', triggered_by: [] });
+model.zones.push({ name: 'Third', color: '#33aa00', vertices: [[3, 2], [4, 2], [4, 3]], enabled: true,
+                   trigger_source: 'markers', triggered_by: [] });
+var base = station;
+station = function (req) {
+    var m = /^\\/api\\/zones\\/(\\d+)$/.exec(req.url);
+    if (m && req.method === 'DELETE') {
+        if (+m[1] >= model.zones.length) return { status: 404, body: { error: 'Zone index out of range' } };
+        model.zones.splice(+m[1], 1);
+        return { body: { success: true } };
+    }
+    if (m && req.method === 'PUT' && +m[1] >= model.zones.length) {
+        return { status: 404, body: { error: 'Zone index out of range' } };
+    }
+    return base(req);
+};
+"""
+
+_ZONE_STEPS = """
+function line(i) { return zoneLines().filter(function (l) { return l.dataset.zone === String(i); })[0]; }
+async function chooseZone(i, x, y) {
+    pointer(line(i), 'pointerdown', x, y); pointer(svg(), 'pointerup', x, y); await settle();
+}
+function writes() {
+    var sent = requests.filter(function (r) { return r.method !== 'GET'; });
+    return sent.map(function (r) { return r.method + ' ' + r.url; });
+}
+function names() { return model.zones.map(function (z) { return z.name; }); }
+function errorLine() {
+    var e = document.querySelector('#zone-editor-section .save-error');
+    return e ? e.textContent : null;
+}
+"""
+
+
+def test_a_queued_corner_save_follows_its_zone_past_a_delete() -> None:
+    out = _camera(
+        _ZONE_STEPS
+        + """
+        tickIntervals(); await settle();
+        choose('camera'); await showPicture();
+        await chooseZone(1, 740, 360);
+        holdWhen = function (r) { return r.method === 'PUT'; };
+        drag(pin(3), [840, 260], [900, 260]);
+        await settle();
+        drag(pin(3), [900, 260], [920, 260]);
+        await settle();
+        await chooseZone(0, 400, 400);
+        document.getElementById('zone-delete-btn').click();
+        await settle();
+        out.held = writes();
+        holdWhen = null;
+        release(); await settle();
+        out.writes = writes();
+        out.names = names();
+        out.square = model.zones[0].vertices;
+        out.third = model.zones[1].vertices;
+        out.error = errorLine();
+        """,
+        _THREE,
+    )
+    assert out["held"] == ["PUT /api/zones/1"]
+    assert out["writes"] == ["PUT /api/zones/1", "PUT /api/zones/1", "DELETE /api/zones/0"]
+    assert out["names"] == ["Square", "Third"]
+    assert [[round(v, 3) for v in p] for p in out["square"]] == [[0, 2], [2, 2], [2.8, 4], [0, 4]]
+    assert out["third"] == [[3, 2], [4, 2], [4, 3]]
+    assert out["error"] is None
+
+
+def test_a_corner_save_asked_after_its_zone_was_deleted_is_dropped() -> None:
+    out = _camera(
+        _ZONE_STEPS
+        + """
+        tickIntervals(); await settle();
+        choose('camera'); await showPicture();
+        await chooseZone(2, 1040, 360);
+        out.pins = pins();
+        holdWhen = function (r) { return r.method === 'PUT'; };
+        drag(pin(2), [1040, 460], [1060, 460]);
+        await settle();
+        document.getElementById('zone-delete-btn').click();
+        await settle();
+        drag(pin(2), [1060, 460], [1080, 460]);
+        await settle();
+        holdWhen = null;
+        release(); await settle();
+        out.writes = writes();
+        out.names = names();
+        out.error = errorLine();
+        """,
+        _THREE,
+    )
+    assert out["pins"] == ["V1", "V2", "V3"]
+    assert out["writes"] == ["PUT /api/zones/2", "DELETE /api/zones/2"]
+    assert out["names"] == ["Other", "Square"]
+    assert out["error"] is None
+
+
+def test_the_last_zone_deleted_twice_over_reports_the_station_answer() -> None:
+    # Another browser deleted it first: the station's 404 is shown, nothing else is written.
+    out = _camera(
+        _ZONE_STEPS
+        + """
+        tickIntervals(); await settle();
+        choose('camera'); await showPicture();
+        await chooseZone(2, 1040, 360);
+        model.zones.pop();
+        document.getElementById('zone-delete-btn').click();
+        await settle();
+        out.writes = writes();
+        out.error = errorLine();
+        """,
+        _THREE,
+    )
+    assert out["writes"] == ["DELETE /api/zones/2"]
+    assert out["error"] is not None and "Zone index out of range" in out["error"]
+
+
+def test_delete_zone_mid_drag_lets_go_of_the_corner_first() -> None:
+    out = _camera(
+        _ZONE_STEPS
+        + """
+        await pick();
+        pointer(pin(3), 'pointerdown', 840, 260, 'touch');
+        pointer(svg(), 'pointermove', 900, 260, 'touch');
+        document.getElementById('zone-delete-btn').click();
+        await settle();
+        out.writes = writes();
+        out.loupe = loupe();
+        """,
+        _THREE.replace("model.zones.unshift", "void").replace("model.zones.push", "void"),
+    )
+    assert out == {"writes": ["DELETE /api/zones/0"], "loupe": False}
+
+
+def test_no_corner_is_deleted_during_a_drag() -> None:
+    out = _camera(
+        """
+        await pick();
+        pointer(pin(3), 'pointerdown', 840, 260, 'touch');
+        pointer(svg(), 'pointermove', 900, 260, 'touch');
+        out.buttons = [document.getElementById('zone-corner-delete-btn').disabled,
+                       document.getElementById('zone-fs-corner-delete').disabled];
+        document.getElementById('zone-corner-delete-btn').click();
+        document.getElementById('zone-fs-corner-delete').click();
+        out.pins = pins().length;
+        pointer(svg(), 'pointerup', 900, 260, 'touch');
+        await settle();
+        out.after = document.getElementById('zone-corner-delete-btn').disabled;
+        out.saved = stored();
+        """
+    )
+    assert out == {"buttons": [True, True], "pins": 4, "after": False, "saved": [[[0, 2], [2, 2], [2.6, 4], [0, 4]]]}
+
+
+def test_switching_to_the_top_down_view_mid_drag_puts_the_corner_back() -> None:
+    out = _camera(
+        """
+        await pick();
+        pointer(pin(3), 'pointerdown', 840, 260);
+        pointer(svg(), 'pointermove', 900, 260);
+        choose('plan'); await settle();
+        out.puts = puts().length;
+        model.zones[0].name = 'Renamed';
+        tickIntervals(); await settle();
+        choose('camera'); await showPicture();
+        pointer(zoneLines()[0], 'pointerdown', 740, 360); pointer(svg(), 'pointerup', 740, 360); await settle();
+        out.spot = spot(3);
+        out.status = document.getElementById('zone-fs-status').textContent;
+        """
+    )
+    assert out == {"puts": 0, "spot": [840, 260], "status": "Renamed · 4 corners"}
+
+
+@pytest.mark.parametrize("button", [1, 2])
+def test_a_press_with_another_mouse_button_starts_nothing(button: int) -> None:
+    out = _camera(
+        f"""
+        await pick();
+        var press = function (target, type, x, y) {{
+            target.dispatchEvent(makeEvent(type, {{ clientX: x, clientY: y, pointerId: 1, pointerType: 'mouse',
+                                                   button: {button}, buttons: {1 << (button)} }}));
+        }};
+        press(pin(3), 'pointerdown', 840, 260);
+        press(svg(), 'pointermove', 900, 260);
+        press(svg(), 'pointerup', 900, 260);
+        press(bands(0)[0], 'pointerdown', 740, 460);
+        press(svg(), 'pointermove', 740, 480);
+        await settle();
+        out.spot = spot(3); out.pins = pins().length; out.chosen = chosen(); out.puts = puts().length;
+        """
+    )
+    assert out == {"spot": [840, 260], "pins": 4, "chosen": None, "puts": 0}
+
+
+def test_a_context_menu_mid_drag_puts_the_corner_back() -> None:
+    out = _camera(
+        """
+        await pick();
+        pointer(pin(3), 'pointerdown', 840, 260);
+        pointer(svg(), 'pointermove', 900, 260);
+        svg().dispatchEvent(makeEvent('contextmenu', { clientX: 900, clientY: 260 }));
+        await settle();
+        out.spot = spot(3); out.puts = puts().length; out.loupe = loupe();
+        """
+    )
+    assert out == {"spot": [840, 260], "puts": 0, "loupe": False}
+
+
+def test_a_move_with_no_button_held_ends_the_drag_where_it_is() -> None:
+    out = _camera(
+        """
+        await pick();
+        pointer(pin(3), 'pointerdown', 840, 260);
+        var move = function (x, held) {
+            svg().dispatchEvent(makeEvent('pointermove', { clientX: x, clientY: 260, pointerId: 1, pointerType: 'mouse',
+                                                         buttons: held }));
+        };
+        move(900, 1);
+        move(960, 0);
+        await settle();
+        out.saved = stored(); out.loupe = loupe(); out.spot = spot(3);
+        """
+    )
+    assert out == {"saved": [[[0, 2], [2, 2], [2.6, 4], [0, 4]]], "loupe": False, "spot": [900, 260]}
+
+
+# -- Esc and the help drawer, the live region, listeners ---------------------------------
+
+_HELP_ESC = """
+var helpClosed = 0;
+function closeHelp() { helpClosed++; }
+"""
+
+
+def _help_esc_listener() -> str:
+    base = (_TESTS.parent / "openfollow" / "web" / "templates" / "base.tpl").read_text(encoding="utf-8")
+    start = base.rindex("document.addEventListener('keydown'", 0, base.index("// An Esc a control already used"))
+    return base[start : base.index("\n });", start) + len("\n });")]
+
+
+def test_an_esc_the_picture_used_leaves_the_help_drawer_open() -> None:
+    out = _camera(
+        _HELP_ESC
+        + _help_esc_listener()
+        + """
+        await pick();
+        document.body.classList.add('help-open');
+        svg().focus(); key('Tab');
+        key('Escape');
+        out.used = helpClosed;
+        key('Escape');
+        out.unused = helpClosed;
+        """
+    )
+    assert out == {"used": 0, "unused": 1}
+
+
+def test_the_live_region_is_in_place_before_the_first_announcement() -> None:
+    out = _camera("out.live = !!document.querySelector('#zone-picture [aria-live]');")
+    assert out == {"live": True}
+
+
+def test_a_new_picture_polygon_adds_no_document_listeners() -> None:
+    out = _camera(
+        """
+        var count = function () { return Object.keys(document.listeners).reduce(function (n, k) {
+            return n + document.listeners[k].length; }, 0); };
+        var was = count();
+        new window.OpenFollow.PicturePolygon(new window.OpenFollow.PictureView({
+            stage: document.createElement('div'), img: document.createElement('img'),
+            svg: document.createElementNS('http://www.w3.org/2000/svg', 'svg'), nofeed: document.createElement('div'),
+        }), { corners: function () { return null; } });
+        out.added = count() - was;
+        """
+    )
+    assert out == {"added": 0}
+
+
+def test_a_deleted_zone_brings_the_list_up_to_date_at_once() -> None:
+    out = _camera(
+        _ZONE_STEPS
+        + """
+        tickIntervals(); await settle();
+        choose('camera'); await showPicture();
+        await chooseZone(0, 400, 400);
+        model.zones[1].name = 'Renamed';
+        var gets = function () {
+            return requests.filter(function (r) { return r.method === 'GET' && r.url === '/api/zones'; }).length;
+        };
+        var was = gets();
+        document.getElementById('zone-delete-btn').click();
+        await settle();
+        out.asked = gets() - was;
+        out.lines = zoneLines().length;
+        await chooseZone(0, 740, 360);
+        out.status = document.getElementById('zone-fs-status').textContent;
+        """,
+        _THREE,
+    )
+    assert out == {"asked": 1, "lines": 2, "status": "Renamed · 4 corners"}

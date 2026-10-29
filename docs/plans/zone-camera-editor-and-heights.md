@@ -40,6 +40,10 @@ The interactive mockup, built on the Media Gallery's Concert picture and its cal
 - The zone overlay draws each zone at the stage plane plus its Z offset. The Z offset is part of the `ZoneCache` key, with a redraw test case.
 - Feature off: no lift (target 0, so a lift already under way eases out), zones drawn at the stage plane, fields hidden.
 
+## Not in this change / known limits
+
+- A corner save given up after 10 s without an answer may still reach the station later and land after a newer one; preventing that needs revisions on the server.
+
 ## Work items
 
 **Camera editor (#569)**

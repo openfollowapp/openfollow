@@ -2984,7 +2984,8 @@
  if (event.target.closest('[data-help-close]')) closeHelp();
  });
  document.addEventListener('keydown', (event) => {
- if (event.key !== 'Escape') return;
+ // An Esc a control already used (a picture letting go of its point) is not the drawer's.
+ if (event.key !== 'Escape' || event.defaultPrevented) return;
  if (!document.body.classList.contains('help-open')) return;
  // A modal sits above the drawer and owns ESC while open (its handler
  // returns early when ``#modal-root`` is hidden); defer to it so one

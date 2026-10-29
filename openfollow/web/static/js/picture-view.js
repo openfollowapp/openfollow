@@ -45,6 +45,11 @@
         this._url = null;
         this._drag = null;      // {drop, dot} while a handle is held
         this._dragEnded = false; // the click that ends a drag is not a click on the picture
+        // In place from the start, so a screen reader reads the first announcement too.
+        this._live = document.createElement('div');
+        this._live.className = 'visually-hidden';
+        this._live.setAttribute('aria-live', 'polite');
+        this.stage.appendChild(this._live);
         this._bind();
     }
 
@@ -191,15 +196,7 @@
     };
 
     // Reads ``text`` out once to a screen reader, where the moving readout would chatter.
-    P.announce = function (text) {
-        if (!this._live) {
-            this._live = document.createElement('div');
-            this._live.className = 'visually-hidden';
-            this._live.setAttribute('aria-live', 'polite');
-            this.stage.appendChild(this._live);
-        }
-        this._live.textContent = text;
-    };
+    P.announce = function (text) { this._live.textContent = text; };
 
     P.hideLoupe = function () {
         if (!this._loupe) return;

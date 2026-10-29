@@ -13,6 +13,11 @@
     // Width of the band along an edge that a press adds a corner from, in CSS pixels.
     var EDGE_BAND = 20;
 
+    // Shift+Tab is down: focus arriving now came from after a picture. One pair of listeners for every picture.
+    var backTab = false;
+    document.addEventListener('keydown', function (ev) { backTab = ev.key === 'Tab' && ev.shiftKey; }, true);
+    document.addEventListener('keyup', function () { backTab = false; }, true);
+
     function nearestOn(samples, p) {
         var best = null, bd = Infinity;
         for (var i = 0; i + 1 < samples.length; i++) {
@@ -41,7 +46,6 @@
         this._drag = null;
         this._soon = 0;          // the pending key save's token; a newer step or a flush replaces it
         this._waiting = false;
-        this._backTab = false;   // Shift+Tab is down: focus arriving now came from after the picture
         this._bind();
     }
 
@@ -58,7 +62,7 @@
 
     P.canDelete = function () {
         var corners = this.opts.corners();
-        return this.chosen !== null && !!corners && corners.length > this.min;
+        return !this._drag && this.chosen !== null && !!corners && corners.length > this.min;
     };
 
     // One save for the corner gone, with any key edit still waiting in it. The nearest corner the camera sees,
@@ -159,8 +163,9 @@
     P._press = function (ev) {
         var target = ev.target && ev.target.closest ? ev.target : null;
         var pin = target && target.closest('.pv-pin'), band = !pin && target && target.closest('.pv-edge');
-        // One corner at a time: another pointer waits for the drag to end.
+        // One corner at a time: another pointer waits for the drag to end. Only the main button presses.
         if (this._drag) { ev.preventDefault(); return; }
+        if (ev.button > 0) return;
         this.flush();
         if (!pin && !band) {
             this.choose(null);
@@ -187,6 +192,8 @@
     P._move = function (ev) {
         var d = this._drag;
         if (!d || ev.pointerId !== d.id) { this._hover(ev); return; }
+        // The button was let go where the page did not see it.
+        if (ev.buttons === 0) { this._end(ev); return; }
         if (!d.moved && Math.hypot(ev.clientX - d.start.x, ev.clientY - d.start.y) < d.start.slop) return;
         var at = this._at(ev);
         if (!at) return;
@@ -254,15 +261,14 @@
         svg.addEventListener('pointerup', function (ev) { self._end(ev); });
         svg.addEventListener('pointercancel', function (ev) { self._end(ev); });
         svg.addEventListener('lostpointercapture', function (ev) { self._end(ev); });
+        svg.addEventListener('contextmenu', function () { self.cancelDrag(); });
         svg.addEventListener('pointerleave', function () { if (!self._drag) self._hover({ target: null }); });
         svg.addEventListener('keydown', function (ev) { self._key(ev); });
         svg.addEventListener('blur', function () { self.flush(); });
         // Shift+Tab into the picture enters at its last corner the camera sees.
-        document.addEventListener('keydown', function (ev) { self._backTab = ev.key === 'Tab' && ev.shiftKey; }, true);
-        document.addEventListener('keyup', function () { self._backTab = false; }, true);
         svg.addEventListener('focus', function () {
             var corners = self.opts.corners();
-            if (!self._backTab || self.chosen !== null || !corners) return;
+            if (!backTab || self.chosen !== null || !corners) return;
             for (var i = corners.length - 1; i >= 0; i--) {
                 if (self.view.inPicture(corners[i])) { self.choose(i, true); self.opts.changed(); return; }
             }

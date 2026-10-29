@@ -12,7 +12,7 @@ Draw zone polygons that fire OSC messages when tracked markers (or detected peop
 
 Corners move on the picture.
 
-- **Drag a corner** (V1, V2, …) – the loupe follows; saved when let go. A press without a move only chooses it.
+- **Drag a corner** (V1, V2, …) – saved when let go. A press without a move only chooses it. The loupe and stage position stay on the chosen corner.
 - **Drag from an edge** – adds a corner there.
 - **Delete corner** – a zone keeps three.
 - A corner off the picture has no handle; it moves in the top-down view.

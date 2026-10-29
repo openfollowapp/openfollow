@@ -233,7 +233,7 @@
         if (key === pictureKey) return;
         pictureKey = key;
         pv.clear();
-        if (!cam) return;
+        if (!cam) { pv.hideLoupe(); return; }
         state.zones.forEach(function(zone, i) {
             if (!zone || !zone.vertices || zone.vertices.length < 3) return;
             var col = zone.color || '#ff8000';
@@ -284,7 +284,6 @@
         if (fsShell.hidden) return;
         corners.cancelDrag();
         corners.choose(null);
-        pv.hideLoupe();
         fsHolder.parentNode.insertBefore(pictureEl, fsHolder);
         fsHolder.remove();
         fsHolder = null;

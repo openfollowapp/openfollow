@@ -345,7 +345,8 @@ def test_a_dragged_corner_follows_with_the_loupe_and_saves_when_let_go() -> None
     assert out["during"]["loupe"] is True and out["during"]["puts"] == 0
     assert out["during"]["readout"] == "V3 · X 3.000 m · Y 4.000 m"
     assert "940" in out["during"]["line"]
-    assert out["after"] == {"loupe": False, "saved": [[[0, 2], [2, 2], [3, 4], [0, 4]]], "chosen": "V3"}
+    # Let go, the corner stays chosen and the loupe stays open on it.
+    assert out["after"] == {"loupe": True, "saved": [[[0, 2], [2, 2], [3, 4], [0, 4]]], "chosen": "V3"}
 
 
 @pytest.mark.parametrize(
@@ -380,7 +381,7 @@ def test_a_cancelled_drag_saves_where_the_corner_was_left() -> None:
         out.saved = stored(); out.loupe = loupe();
         """
     )
-    assert out == {"saved": [[[0, 2], [2, 2], [2.2, 4], [0, 4]]], "loupe": False}
+    assert out == {"saved": [[[0, 2], [2, 2], [2.2, 4], [0, 4]]], "loupe": True}
 
 
 def test_a_touch_drag_holds_the_loupe_a_finger_away() -> None:
@@ -478,7 +479,7 @@ def test_arrows_move_the_corner_a_pixel_or_ten_and_save_once_after_the_last() ->
     assert out["one"] == [841, 460] and out["ten"] == [841, 450]
     assert out["loupe"] is True and out["before"] == 0
     assert out["saved"] == [[[0, 2], [2.01, 2.1], [2, 4], [0, 4]]]
-    assert out["loupeAfter"] is False
+    assert out["loupeAfter"] is True
 
 
 @pytest.mark.parametrize("k, d", [("ArrowLeft", [-1, 0]), ("ArrowDown", [0, 1])])
@@ -1162,7 +1163,7 @@ def test_escape_mid_drag_puts_the_corner_back_and_saves_nothing() -> None:
         "held": True,
         "open": True,
         "spot": [840, 260],
-        "loupe": False,
+        "loupe": True,
         "status": "Renamed · 4 corners",
         "puts": 0,
         "after": 0,
@@ -1220,7 +1221,7 @@ def test_a_drag_the_browser_takes_away_keeps_the_corner_and_saves(how: str) -> N
         out.status = document.getElementById('zone-fs-status').textContent;
         """
     )
-    assert out == {"saved": [[[0, 2], [2, 2], [2.6, 4], [0, 4]]], "loupe": False, "status": "Renamed · 4 corners"}
+    assert out == {"saved": [[[0, 2], [2, 2], [2.6, 4], [0, 4]]], "loupe": True, "status": "Renamed · 4 corners"}
 
 
 def test_a_second_pointer_does_not_take_over_a_drag() -> None:
@@ -1618,7 +1619,7 @@ def test_a_context_menu_mid_drag_puts_the_corner_back() -> None:
         out.spot = spot(3); out.puts = puts().length; out.loupe = loupe();
         """
     )
-    assert out == {"spot": [840, 260], "puts": 0, "loupe": False}
+    assert out == {"spot": [840, 260], "puts": 0, "loupe": True}
 
 
 def test_a_move_with_no_button_held_ends_the_drag_where_it_is() -> None:
@@ -1636,7 +1637,7 @@ def test_a_move_with_no_button_held_ends_the_drag_where_it_is() -> None:
         out.saved = stored(); out.loupe = loupe(); out.spot = spot(3);
         """
     )
-    assert out == {"saved": [[[0, 2], [2, 2], [2.6, 4], [0, 4]]], "loupe": False, "spot": [900, 260]}
+    assert out == {"saved": [[[0, 2], [2, 2], [2.6, 4], [0, 4]]], "loupe": True, "spot": [900, 260]}
 
 
 # -- Esc and the help drawer, the live region, listeners ---------------------------------
@@ -2130,3 +2131,211 @@ def test_a_corner_being_typed_in_keeps_its_place_when_the_station_answers() -> N
     )
     assert out["typed"] != [840, 260]
     assert out["after"] == out["typed"]
+
+
+# -- the loupe stays open on the chosen corner -------------------------------------------
+
+_LOUPE = """
+svg().getBoundingClientRect = function () { return { left: 0, top: 0, width: 1280, height: 720 }; };
+function loupeAt() {
+    var l = document.querySelector('#zone-picture .pv-loupe');
+    return l && !l.hidden ? [parseFloat(l.style.left), parseFloat(l.style.top)] : null;
+}
+function live() { var l = document.querySelector('#zone-picture [aria-live]'); return l ? l.textContent : ''; }
+"""
+
+
+def _spot(x: float, y: float, gap: float) -> list[float]:
+    k = (60 + gap) / 2**0.5
+    return [pytest.approx(x + k - 60), pytest.approx(y - k - 60)]
+
+
+def _loupe(steps: str, setup: str = "") -> Any:
+    return _camera("await pick();" + _LOUPE + steps, setup)
+
+
+@pytest.mark.parametrize("kind, gap", [("mouse", 12), ("touch", 30), ("pen", 30)])
+def test_a_click_on_a_corner_opens_the_loupe_on_it(kind: str, gap: int) -> None:
+    out = _loupe(
+        f"""
+        pointer(pin(3), 'pointerdown', 840, 260, '{kind}');
+        pointer(svg(), 'pointerup', 840, 260, '{kind}');
+        await settle();
+        out.at = loupeAt(); out.readout = readout(); out.live = live();
+        """
+    )
+    assert out["at"] == _spot(840, 260, gap)
+    assert out["readout"] == "V3 · X 2.000 m · Y 4.000 m"
+    # Choosing is not an edit: nothing is read out.
+    assert out["live"] == ""
+
+
+def test_tab_moves_the_loupe_from_corner_to_corner() -> None:
+    out = _loupe(
+        """
+        svg().focus();
+        key('Tab'); out.first = [loupeAt(), readout()];
+        key('Tab'); out.second = [loupeAt(), readout()];
+        key('Tab', true); out.back = loupeAt();
+        out.live = live();
+        """
+    )
+    assert out["first"] == [_spot(640, 460, 12), "V1 · X 0.000 m · Y 2.000 m"]
+    assert out["second"] == [_spot(840, 460, 12), "V2 · X 2.000 m · Y 2.000 m"]
+    assert out["back"] == _spot(640, 460, 12)
+    assert out["live"] == ""
+
+
+def test_the_loupe_follows_arrow_steps_and_stays_after_the_save() -> None:
+    out = _loupe(
+        """
+        svg().focus(); key('Tab');
+        key('ArrowRight', true);
+        out.moved = [loupeAt(), readout()];
+        runTimeouts(); await settle();
+        out.saved = [loupeAt(), readout(), live()];
+        """
+    )
+    assert out["moved"] == [_spot(650, 460, 12), "V1 · X 0.100 m · Y 2.000 m"]
+    assert out["saved"] == [_spot(650, 460, 12), "V1 · X 0.100 m · Y 2.000 m", "V1 · X 0.100 m · Y 2.000 m"]
+
+
+def test_a_touch_chosen_corner_keeps_the_finger_offset_after_a_drag() -> None:
+    out = _loupe(
+        """
+        pointer(pin(3), 'pointerdown', 840, 260, 'touch');
+        pointer(svg(), 'pointermove', 900, 300, 'touch');
+        pointer(svg(), 'pointerup', 900, 300, 'touch');
+        await settle();
+        out.at = loupeAt();
+        """
+    )
+    assert out["at"] == _spot(900, 300, 30)
+
+
+@pytest.mark.parametrize(
+    "drop",
+    [
+        "svg().focus(); key('Escape');",
+        "pointer(svg(), 'pointerdown', 100, 100); pointer(svg(), 'pointerup', 100, 100);",
+        "choose('plan'); await settle(); choose('camera'); await showPicture();",
+    ],
+    ids=["esc", "press on empty picture", "top-down"],
+)
+def test_the_loupe_closes_when_the_corner_is_let_go(drop: str) -> None:
+    out = _loupe(
+        "pointer(pin(3), 'pointerdown', 840, 260); pointer(svg(), 'pointerup', 840, 260); await settle();"
+        + "out.before = !!loupeAt();"
+        + drop
+        + "await settle(); out.after = loupeAt(); out.chosen = chosen();"
+    )
+    assert out == {"before": True, "after": None, "chosen": None}
+
+
+def test_choosing_another_zone_closes_the_loupe() -> None:
+    out = _camera(
+        """
+        model.zones.push({ name: 'Other', color: '#33aaff', vertices: [[-3, 2], [-2, 2], [-2, 3]], enabled: true,
+                           trigger_source: 'markers', triggered_by: [] });
+        await pick();
+        """
+        + _LOUPE
+        + """
+        pointer(pin(3), 'pointerdown', 840, 260); pointer(svg(), 'pointerup', 840, 260); await settle();
+        out.before = !!loupeAt();
+        pointer(zoneLines()[1], 'pointerdown', 400, 400); await settle();
+        out.after = loupeAt();
+        """
+    )
+    assert out == {"before": True, "after": None}
+
+
+def test_leaving_full_screen_closes_the_loupe_with_the_choice() -> None:
+    out = _loupe(
+        _FULL
+        + """
+        document.getElementById('zone-fs-btn').click();
+        svg().focus(); key('Tab');
+        out.before = !!loupeAt();
+        document.getElementById('zone-fs-exit').click();
+        out.after = loupeAt(); out.chosen = chosen();
+        """
+    )
+    assert out == {"before": True, "after": None, "chosen": None}
+
+
+def test_the_loupe_moves_with_the_choice_after_a_delete() -> None:
+    out = _loupe(
+        """
+        svg().focus(); key('Tab'); key('Tab');
+        key('Delete'); await settle();
+        out.at = [loupeAt(), readout(), chosen()];
+        """
+    )
+    # V2 gone, the old V3 (2, 4) is V2 now and keeps the loupe.
+    assert out["at"] == [_spot(840, 260, 12), "V2 · X 2.000 m · Y 4.000 m", "V2"]
+
+
+def test_the_loupe_closes_when_a_delete_leaves_no_corner_chosen() -> None:
+    out = _camera(
+        """
+        model.zones[0].vertices = [[0, 2], [0, 10], [1, 10], [2, 10]];
+        await pick();
+        """
+        + _LOUPE
+        + """
+        pointer(pin(1), 'pointerdown', 640, 460); pointer(svg(), 'pointerup', 640, 460); await settle();
+        out.before = !!loupeAt();
+        document.getElementById('zone-corner-delete-btn').click(); await settle();
+        out.after = loupeAt();
+        """
+    )
+    assert out == {"before": True, "after": None}
+
+
+def test_a_chosen_corner_the_camera_no_longer_sees_has_no_loupe() -> None:
+    out = _loupe(
+        """
+        pointer(pin(3), 'pointerdown', 840, 260); pointer(svg(), 'pointerup', 840, 260); await settle();
+        out.before = !!loupeAt();
+        // Moved upstage of the picture from another browser.
+        model.zones[0].vertices[2] = [2, 10];
+        tickIntervals(); await settle();
+        out.after = loupeAt();
+        """
+    )
+    assert out == {"before": True, "after": None}
+
+
+@pytest.mark.parametrize(
+    "keys, at",
+    [
+        ("svg().focus(); key('Tab');", [640, 260]),
+        ("svg().focus(); key('ArrowRight');", [841, 260]),
+        (
+            "svg().focus(); key('Escape'); svg().blur();"
+            "document.body.dispatchEvent(makeEvent('keydown', { key: 'Tab', shiftKey: true })); svg().focus();",
+            [640, 260],
+        ),
+    ],
+    ids=["tab", "arrow", "shift+tab into the picture"],
+)
+def test_a_corner_reached_by_key_after_a_touch_has_the_mouse_offset(keys: str, at: list[int]) -> None:
+    out = _loupe(
+        "pointer(pin(3), 'pointerdown', 840, 260, 'touch'); pointer(svg(), 'pointerup', 840, 260, 'touch');"
+        "await settle();" + keys + "out.at = loupeAt();"
+    )
+    assert out["at"] == _spot(at[0], at[1], 12)
+
+
+def test_the_loupe_closes_when_the_camera_goes() -> None:
+    out = _loupe(
+        """
+        pointer(pin(3), 'pointerdown', 840, 260); pointer(svg(), 'pointerup', 840, 260); await settle();
+        out.before = !!loupeAt();
+        model.camera = undefined;
+        tickIntervals(); await settle();
+        out.after = loupeAt();
+        """
+    )
+    assert out == {"before": True, "after": None}

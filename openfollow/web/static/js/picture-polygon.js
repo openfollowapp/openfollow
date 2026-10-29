@@ -43,6 +43,7 @@
         this.min = opts.min || 3;
         this.chosen = null;
         this.keyboard = false;   // the chosen corner was reached by key: it shows the focus ring
+        this._kind = 'mouse';    // what chose the corner, which sets how far off it the loupe sits
         this._drag = null;
         this._soon = 0;          // the pending key save's token; a newer step or a flush replaces it
         this._waiting = false;
@@ -87,7 +88,6 @@
         if (!d) return;
         this._drag = null;
         if (this.view.svg.releasePointerCapture) this.view.svg.releasePointerCapture(d.id);
-        this.view.hideLoupe();
         if (d.moved) this.opts.restore(d.before);
         if (d.edge !== undefined) this.chosen = null;
         this.opts.changed();
@@ -106,19 +106,19 @@
         setTimeout(function () { if (token === self._soon) self._saved(); }, KEY_SAVE_MS);
     };
 
-    // A key edit is saved: the loupe goes and its readout is read out once.
+    // A key edit is saved: its readout is read out once.
     P._saved = function () {
         this._waiting = false;
-        this.view.hideLoupe();
         if (this.chosen !== null) this.view.announce(this.opts.readout(this.chosen));
         this.opts.save();
     };
 
-    // The edge bands, the hover dot and the pins, over whatever the caller drew.
+    // The edge bands, the hover dot and the pins, over whatever the caller drew, and the loupe on the chosen corner
+    // while the camera sees it, as the Setup Wizard keeps it on a held point.
     P.draw = function () {
         var view = this.view, svg = view.svg, corners = this.opts.corners();
         svg.removeAttribute('aria-activedescendant');
-        if (!corners) { this.chosen = null; return; }
+        if (!corners) { this.chosen = null; view.hideLoupe(); return; }
         if (this.chosen !== null && this.chosen >= corners.length) this.chosen = null;
         var k = view.cssScale(), self = this;
         corners.forEach(function (_, i) {
@@ -138,9 +138,10 @@
             if (svg.id) pin.setAttribute('id', svg.id + '-v' + (i + 1));
             svg.appendChild(pin);
         });
-        if (this.chosen !== null && svg.id && view.inPicture(corners[this.chosen])) {
-            svg.setAttribute('aria-activedescendant', svg.id + '-v' + (this.chosen + 1));
-        }
+        var held = this.chosen !== null && corners[this.chosen];
+        if (!view.inPicture(held)) { view.hideLoupe(); return; }
+        if (svg.id) svg.setAttribute('aria-activedescendant', svg.id + '-v' + (this.chosen + 1));
+        view.showLoupe(held, this._kind, this.opts.readout(this.chosen));
     };
 
     P._at = function (ev) {
@@ -167,6 +168,7 @@
         if (this._drag) { ev.preventDefault(); return; }
         if (ev.button > 0) return;
         this.flush();
+        this._kind = ev.pointerType;
         if (!pin && !band) {
             this.choose(null);
             this.opts.press(ev);
@@ -204,7 +206,6 @@
         } else if (!this.opts.place(d.i, at)) return;
         d.moved = true;
         this.opts.changed();
-        this.view.showLoupe(at, d.start.type, this.opts.readout(d.i));
     };
 
     // A let-go drag keeps its corner, and so does one the browser takes away (a cancel, a lost capture).
@@ -212,7 +213,6 @@
         var d = this._drag;
         if (!d || ev.pointerId !== d.id) return;
         this._drag = null;
-        this.view.hideLoupe();
         this.opts.changed();
         if (!d.moved) return;
         this.view.announce(this.opts.readout(d.i));
@@ -231,6 +231,7 @@
         }
         if (!corners) return;
         if (ev.key === 'Tab') {
+            this._kind = 'mouse';
             if (this.chosen === null && ev.shiftKey) return;
             var dir = ev.shiftKey ? -1 : 1, next = this.chosen === null ? 0 : this.chosen + dir;
             while (next >= 0 && next < corners.length && !this.view.inPicture(corners[next])) next += dir;
@@ -249,8 +250,8 @@
         var p = corners[this.chosen], at = p && [p[0] + d[0], p[1] + d[1]];
         if (!this.view.inPicture(at) || !this.opts.place(this.chosen, at)) return;
         this.keyboard = true;
+        this._kind = 'mouse';
         this.opts.changed();
-        this.view.showLoupe(at, 'mouse', this.opts.readout(this.chosen));
         this._saveSoon();
     };
 
@@ -275,7 +276,12 @@
             var corners = self.opts.corners();
             if (!backTab || self.chosen !== null || !corners) return;
             for (var i = corners.length - 1; i >= 0; i--) {
-                if (self.view.inPicture(corners[i])) { self.choose(i, true); self.opts.changed(); return; }
+                if (self.view.inPicture(corners[i])) {
+                    self._kind = 'mouse';
+                    self.choose(i, true);
+                    self.opts.changed();
+                    return;
+                }
             }
         });
     };

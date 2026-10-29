@@ -11,6 +11,7 @@ from typing import Any
 from openfollow.configuration import MAX_PATH_POINTS, AppConfig, PathConfig, PathPointConfig, save_config_change
 from openfollow.osc.paths import MarkerPath, PathActive, PathCommand
 from openfollow.paths.engine import Press
+from openfollow.restore_hold import HeldForRestartError
 
 logger = logging.getLogger(__name__)
 
@@ -140,5 +141,7 @@ def _write(app: Any, change: Callable[[AppConfig], None]) -> None:
     """
     try:
         save_config_change(app._config_path, app._config, change)
+    except HeldForRestartError:
+        logger.info("Paths change not saved: OpenFollow is restarting after a restore.")
     except Exception:
         logger.exception("Failed to save the paths change.")

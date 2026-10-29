@@ -17,6 +17,7 @@ from openfollow.configuration import (
     save_config_fields,
 )
 from openfollow.psn.marker import MARKER_STALE_AFTER_S
+from openfollow.restore_hold import HeldForRestartError
 
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp
@@ -270,6 +271,9 @@ def check_marker_speeds_persist(app: OpenFollowApp) -> None:
 
     try:
         save_config_fields(app._config, app._config_path, ["marker_move_speeds"])
+    except HeldForRestartError:
+        logger.info("Per-marker move speeds not saved: OpenFollow is restarting after a restore.")
+        return
     except Exception:
         logger.exception("Failed to persist per-marker move speeds.")
         # Back off to the settle cadence so a persistent failure (e.g. a full

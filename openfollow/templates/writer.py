@@ -12,6 +12,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
+from openfollow.restore_hold import unless_held
 from openfollow.templates.schema import (
     TEMPLATE_FILE_SUFFIX,
     TEMPLATE_LEGACY_SUFFIX,
@@ -118,6 +119,22 @@ def _atomic_create(path: Path) -> Any:
 
 
 def write_user_template(
+    templates_root: Path,
+    template_type: str,
+    name: str,
+    payload: dict[str, Any],
+    *,
+    template_id: str | None = None,
+    app_version: str | None = None,
+) -> Path:
+    """:func:`_write_user_template`, unless a restore holds ``templates/user/`` (``HeldForRestartError``)."""
+    with unless_held(templates_root / "user"):
+        return _write_user_template(
+            templates_root, template_type, name, payload, template_id=template_id, app_version=app_version
+        )
+
+
+def _write_user_template(
     templates_root: Path,
     template_type: str,
     name: str,
@@ -249,6 +266,11 @@ def delete_user_template(templates_root: Path, filename: str) -> bool:
     rejection at the route layer (defence-in-depth – and the cost is
     one extra ``Path`` resolution per call).
     """
+    with unless_held(templates_root / "user"):
+        return _delete_user_template(templates_root, filename)
+
+
+def _delete_user_template(templates_root: Path, filename: str) -> bool:
     user_dir = (templates_root / "user").resolve()
     target = (user_dir / filename).resolve()
     # ``target.parent`` resolves through any ``..`` in the supplied

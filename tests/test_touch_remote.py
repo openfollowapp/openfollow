@@ -794,3 +794,19 @@ def test_a_hold_let_go_before_any_frame_leaves_detection_on(app: _App) -> None:
     InputManager(app).update_touch_remote(0.02)
     assert app._config.detection.enabled is True
     assert app.detection_applied == []
+
+
+@pytest.mark.integration
+def test_a_switch_off_during_a_restore_s_restart_is_logged_as_the_restart(
+    app: _App, caplog: pytest.LogCaptureFixture
+) -> None:
+    from openfollow import restore_hold
+
+    app._config.detection.enabled = True
+    restore_hold.hold(app._config_path)
+    _held(app)
+    with caplog.at_level("INFO"):
+        InputManager(app).update_touch_remote(0.02)
+    assert app._config.detection.enabled is False
+    assert "OpenFollow is restarting after a restore" in caplog.text
+    assert [r for r in caplog.records if r.levelname == "ERROR"] == []

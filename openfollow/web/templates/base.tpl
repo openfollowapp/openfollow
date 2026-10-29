@@ -1359,6 +1359,14 @@
  .feature-table th[scope="row"] .badge-experimental { margin-left: 0.4rem; }
  .feature-table td.feature-description { color: var(--muted); }
  .feature-off-list { margin: 0.4rem 0 0; padding-left: 1.2rem; }
+ /* Backups on this station: one the station cannot restore reads muted, its reason in caution text. */
+ .backups-table-wrap { overflow-x: auto; }
+ .backups-table { font-variant-numeric: tabular-nums; }
+ .backups-table td.backup-made { white-space: nowrap; }
+ .backups-table td.row-actions { width: 1%; }
+ .backups-table tr.backup-newer td:not(.row-actions) { color: var(--muted); }
+ .backup-note { display: block; color: var(--caution-text); font-size: 0.78rem; font-weight: 600; }
+ .backups-empty { margin: 0; color: var(--muted); }
  /* Controller Slots table (Input tab). */
  .slot-row.slot-missing { background: var(--error-row); }
  /* Grey while the slot needs nothing, red when its controller is missing. */

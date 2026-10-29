@@ -2055,3 +2055,66 @@ def test_a_height_saved_then_typed_back_is_saved_again(imperial: bool, typed: st
     )
     assert len(out["sent"]) == 2
     assert out["sent"][1] == (pytest.approx(0.3, abs=1e-3) if imperial else back)
+
+
+def test_a_z_offset_saved_with_the_focus_kept_in_the_panel_moves_the_zone_in_the_camera_view() -> None:
+    """Browsers leave the focus on Save: the station's new height reaches the picture, and a corner dragged
+    then is stored where the plane at that height puts it."""
+    out = _camera(
+        _HEIGHTS
+        + """
+        await pick();
+        function field(name) { return document.querySelector('#zone-details [data-zone-field="' + name + '"]'); }
+        field('z_offset').value = '1.6';
+        document.getElementById('zone-save-btn').focus();
+        button('zone-save-btn');
+        await settle();
+        tickIntervals(); await settle(); tickIntervals(); await settle();
+        out.focused = document.activeElement.id;
+        out.after = spot(3);
+        pointer(pin(3), 'pointerdown', spot(3)[0], spot(3)[1]);
+        pointer(svg(), 'pointermove', spot(3)[0] + 100, spot(3)[1]);
+        out.readout = readout();
+        pointer(svg(), 'pointerup', spot(3)[0] + 100, spot(3)[1]);
+        await settle();
+        out.saved = stored().pop();
+        """
+    )
+    assert out["focused"] == "zone-save-btn"
+    assert out["after"] == [906.67, 226.67]
+    assert out["readout"].endswith("Z 1.600 m")
+    assert out["saved"][2] == [2.75, 4]
+
+
+def test_an_edit_in_progress_keeps_its_text_while_the_stations_height_reaches_the_picture() -> None:
+    out = _camera(
+        _HEIGHTS
+        + """
+        await pick();
+        function field(name) { return document.querySelector('#zone-details [data-zone-field="' + name + '"]'); }
+        field('name').focus();
+        field('name').value = 'Riser being renamed';
+        model.zones[0].z_offset = 0.5;
+        model.zones[0].name = 'Renamed elsewhere';
+        tickIntervals(); await settle(); tickIntervals(); await settle();
+        out.typed = field('name').value;
+        out.after = spot(3);
+        """
+    )
+    assert out["typed"] == "Riser being renamed"
+    assert out["after"] != [840, 260]
+
+
+def test_a_corner_being_typed_in_keeps_its_place_when_the_station_answers() -> None:
+    out = _camera(
+        """
+        await pick();
+        var x = document.querySelector('#zone-details [data-vertex-field="x"][data-vertex-index="2"]');
+        typeInto(x, '3');
+        out.typed = spot(3);
+        tickIntervals(); await settle(); tickIntervals(); await settle();
+        out.after = spot(3);
+        """
+    )
+    assert out["typed"] != [840, 260]
+    assert out["after"] == out["typed"]

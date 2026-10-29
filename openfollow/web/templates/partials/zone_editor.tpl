@@ -359,6 +359,13 @@
                 var stored = incomingZones[state.selectedIndex];
                 if (editingSelected && state.zones[state.selectedIndex]) {
                     var preserved = state.zones[state.selectedIndex];
+                    // Keep the page's object (the write queue finds zones by identity) and its corners, but take
+                    // the station's other fields, which the picture reads; the inputs being typed in are untouched.
+                    if (stored) {
+                        Object.keys(stored).forEach(function(k) {
+                            if (k !== 'vertices') preserved[k] = stored[k];
+                        });
+                    }
                     state.zones = incomingZones;
                     if (state.selectedIndex < state.zones.length) {
                         state.zones[state.selectedIndex] = preserved;

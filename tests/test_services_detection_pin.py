@@ -1240,7 +1240,10 @@ class TestUnprojectionsAreKeptBetweenResults:
         assert calls == []
 
     @pytest.mark.parametrize("mode", ["replace", "assist"])
-    @pytest.mark.parametrize("change", ["result", "zones", "camera", "marker z"])
+    @pytest.mark.parametrize(
+        "change",
+        ["result", "zones", "camera", "marker z", "lens", "frame size", "stage plane", "zone off", "feature off"],
+    )
     def test_anything_the_unprojection_reads_unprojects_again(self, monkeypatch, mode: str, change: str) -> None:
         app, marker, calls, cache = self._setup(mode, monkeypatch)
         box = _person_box(app, 0.0, 2.0, 0.5, 2.2)
@@ -1253,6 +1256,18 @@ class TestUnprojectionsAreKeptBetweenResults:
         elif change == "camera":
             moved = CameraConfig(pos_x=0.0, pos_y=-15.0, pos_z=8.5, pitch=-20.0, yaw=0.0, roll=0.0, fov=60.0)
             app._camera = SimpleNamespace(to_config=lambda: moved)
+        elif change == "lens":
+            app._config.camera.lens_k1 = 0.05
+        elif change == "frame size":
+            # The same pixels in a smaller frame: only the frame size differs.
+            app._video_receiver.resolution = (1280, 720)
+            box = _StubDetection(box.x1 * 1.5, box.y1 * 1.5, box.x2 * 1.5, box.y2 * 1.5, track_id=box.track_id)
+        elif change == "stage plane":
+            app._config.grid.z_offset = 0.2
+        elif change == "zone off":
+            app._config.trigger_zones.zones[0].enabled = False
+        elif change == "feature off":
+            app._config.ui = UiConfig(shown_features=["zones"])
         elif mode == "replace":
             marker.set_pos(0.0, 2.0, 1.8)
         else:

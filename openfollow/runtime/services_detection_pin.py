@@ -367,7 +367,8 @@ def apply_detection_pin(
     # distortion is configured.
     screen_pt = invert_overlay_distortion(screen_pt, float(w), float(h), *effective_lens(cfg))
 
-    plane_z = cfg.grid.z_offset if use_bottom else marker.pos[2]
+    # The head stands where the marker is drawn and sent: its Z plus a zone's lift.
+    plane_z = cfg.grid.z_offset if use_bottom else marker.pos[2] + marker.lift
     world = unproject_to_plane(params, screen_pt, float(w), float(h), plane_z)
 
     if not np.all(np.isfinite(world[0])):
@@ -474,7 +475,7 @@ def _apply_assist_all(
         anchor = get_or_create_manual_marker(app, mid)
         state = _get_pin_state(app, mid)
         manual_x, manual_y, manual_z = anchor.pos
-        plane_z = cfg.grid.z_offset if use_bottom else manual_z
+        plane_z = cfg.grid.z_offset if use_bottom else manual_z + out_marker.lift
         _assist_one(
             cfg,
             state,

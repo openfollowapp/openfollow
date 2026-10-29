@@ -100,6 +100,7 @@ class _StubMarker:
         self._pos = (0.0, 0.0, 0.0)
         self.marker_id = marker_id
         self.status = 1.0
+        self.lift = 0.0
 
     @property
     def pos(self) -> tuple[float, float, float]:
@@ -329,6 +330,83 @@ def test_pin_point_top_uses_box_y1(monkeypatch) -> None:
     assert recorded["screen_y"] == pytest.approx(0.2 * 1080)
     # pin_point=top samples at the marker's current z.
     assert recorded["plane_z"] == pytest.approx(1.5)
+
+
+# -- a marker a zone lifts: the head is drawn and sent at its Z plus the lift ---------
+
+
+def _head_box(app: SimpleNamespace, head: tuple[float, float, float]) -> _StubDetection:
+    """A box whose top centre is where the camera sees ``head``."""
+    from openfollow.scene.solver import project_points
+
+    w, h = app._video_receiver.resolution
+    cam = app._camera.to_config()
+    params = np.array([cam.pos_x, cam.pos_y, cam.pos_z, cam.pitch, cam.yaw, cam.roll, cam.fov])
+    sx, sy = project_points(params, np.array([head], dtype=np.float64), float(w), float(h))[0]
+    return _StubDetection(sx / w - 0.01, sy / h, sx / w + 0.01, sy / h + 0.2)
+
+
+@pytest.mark.parametrize("lift", [0.0, 1.0], ids=["on the stage", "on a riser"])
+def test_a_marker_pinned_by_the_head_stays_where_it_stands(lift: float) -> None:
+    marker = _StubMarker()
+    marker.set_pos(2.0, 1.0, 1.5)
+    marker.lift = lift
+    app = _make_app(detection_cfg=_replace_cfg(pin_point="top"), marker=marker)
+
+    _run(app, _StubDetector(_head_box(app, (2.0, 1.0, 1.5 + lift))))
+
+    assert marker.pos == (pytest.approx(2.0, abs=1e-6), pytest.approx(1.0, abs=1e-6), 1.5)
+
+
+@pytest.mark.parametrize(("pin_point", "plane"), [("top", 2.5), ("bottom", 0.0)])
+def test_a_lifted_markers_pin_unprojects_on_its_sent_head_or_the_stage(
+    monkeypatch, pin_point: str, plane: float
+) -> None:
+    app = _make_app(detection_cfg=_replace_cfg(pin_point=pin_point))
+    marker = app._server.get_marker(0)
+    marker.set_pos(0.0, 0.0, 1.5)
+    marker.lift = 1.0
+    planes: list[float] = []
+
+    def _stub_unproject(_params, _screen_pt, _w, _h, plane_z):  # noqa: ANN001, ANN202
+        planes.append(plane_z)
+        return np.array([[1.0, 2.0, 0.0]], dtype=np.float64)
+
+    _run(app, _StubDetector(_StubDetection(0.4, 0.2, 0.6, 0.8)), monkeypatch, unproject=_stub_unproject)
+
+    assert planes == [pytest.approx(plane + app._config.grid.z_offset if pin_point == "bottom" else plane)]
+    assert marker.pos[2] == 1.5
+
+
+@pytest.mark.parametrize(("pin_point", "plane"), [("top", 2.5), ("bottom", 0.0)])
+def test_a_lifted_markers_assist_unprojects_on_its_anchors_sent_head_or_the_stage(
+    monkeypatch, pin_point: str, plane: float
+) -> None:
+    app = _assist_app(_assist_cfg(pin_point=pin_point))
+    app._server.get_marker(_PID).lift = 1.0
+    _seed_anchor(app, 0.0, 0.0, 1.5)
+    planes: list[float] = []
+
+    def _stub_unproject(_params, _screen_pt, _w, _h, plane_z):  # noqa: ANN001, ANN202
+        planes.append(plane_z)
+        return np.array([[0.5, 0.0, 0.0]], dtype=np.float64)
+
+    _run(app, _AssistDetector([_det(0.5, 1)]), monkeypatch, unproject=_stub_unproject)
+
+    assert planes == [pytest.approx(plane + app._config.grid.z_offset if pin_point == "bottom" else plane)]
+
+
+def test_a_lifted_marker_in_assist_is_held_by_the_head_it_is_drawn_with() -> None:
+    app = _assist_app(_assist_cfg(pin_point="top"))
+    out = app._server.get_marker(_PID)
+    out.lift = 1.0
+    _seed_anchor(app, 2.0, 1.0, 1.5)
+    box = _head_box(app, (2.0, 1.0, 2.5))
+    box.track_id = 1
+
+    _run(app, _AssistDetector([box]))
+
+    assert out.pos[:2] == (pytest.approx(2.0, abs=1e-6), pytest.approx(1.0, abs=1e-6))
 
 
 def test_non_finite_world_point_is_dropped(monkeypatch) -> None:

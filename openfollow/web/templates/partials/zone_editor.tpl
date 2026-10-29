@@ -218,6 +218,8 @@
                 var activeEl = document.activeElement;
                 var editingSelected = activeEl && detailsEl.contains(activeEl) && state.selectedIndex >= 0;
                 var incomingZones = data.zones || [];
+                // The station's copy of the selected zone, before an edit in progress is put back over it.
+                var stored = incomingZones[state.selectedIndex];
                 if (editingSelected && state.zones[state.selectedIndex]) {
                     var preserved = state.zones[state.selectedIndex];
                     state.zones = incomingZones;
@@ -251,8 +253,10 @@
                     // Refresh Diagnostics tab in place (don't rebuild whole
                     // panel). Rendering fresh occupants/last_event_* into
                     // existing #zone-diag-* spans leaves focus untouched.
-                    var current = data.zones[state.selectedIndex];
-                    if (current) renderZoneDiagnostics(current);
+                    if (stored) {
+                        syncHeightsShown(stored);
+                        renderZoneDiagnostics(stored);
+                    }
                 }
             })
             .catch(function() {});
@@ -410,15 +414,15 @@
         html += '      </div>';
         html += '    </div>';
         // Zone heights: shown only while that feature is on.
-        var zOffset = Number(z.z_offset) || 0;
         html += '    <div class="row" data-feature="zone_heights">';
         html += blurField('Z offset (' + vertexUnitLabel() + ')', 'z_offset',
-            IS_IMPERIAL ? formatLength(zOffset) : zOffset.toFixed(3), IS_IMPERIAL ? 'text' : 'number', '0.01');
+            heightShown('z_offset', z), IS_IMPERIAL ? 'text' : 'number', '0.01');
         html += '      <div class="field checkbox-field"><label for="zone-detail-raise-markers">Marker height</label>' +
             '<div class="checkbox-wrap checkbox-field inline">' +
             '<input type="checkbox" id="zone-detail-raise-markers" data-zone-field="raise_markers" ' + (z.raise_markers ? 'checked' : '') + '>' +
             '<label for="zone-detail-raise-markers">Add the Z offset inside this zone</label></div></div>';
-        html += blurField('Height transition (s)', 'height_transition_s', String(z.height_transition_s), 'number', '0.1');
+        html += blurField('Height transition (s)', 'height_transition_s',
+            heightShown('height_transition_s', z), 'number', '0.1');
         html += '    </div>';
         html += '  </div>';
 
@@ -709,6 +713,21 @@
             + '<span class="field-error" id="' + errId + '"'
             + ' data-zone-field-error="' + name + '" aria-live="polite"></span>'
             + '</div>';
+    }
+
+    // A zone height field's text for the value the station holds.
+    function heightShown(name, z) {
+        if (name !== 'z_offset') return String(z[name]);
+        var metres = Number(z.z_offset) || 0;
+        return IS_IMPERIAL ? formatLength(metres) : metres.toFixed(3);
+    }
+
+    // What the station holds now: an untouched field is left out of a save, so it must not compare
+    // against a value an earlier save already replaced.
+    function syncHeightsShown(z) {
+        detailsEl.querySelectorAll('[data-zone-blur-field]').forEach(function(inp) {
+            inp.setAttribute('data-shown', heightShown(inp.getAttribute('data-zone-blur-field'), z));
+        });
     }
 
     // A number field validated on blur like the OSC addresses; ``data-shown``

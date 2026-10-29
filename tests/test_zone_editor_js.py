@@ -471,3 +471,26 @@ def test_an_unrelated_edit_leaves_the_zone_heights_as_stored(imperial: bool) -> 
     )
     assert out["sentHeights"] is False
     assert out["stored"] == [0.123456789, 0.25, "Riser"]
+
+
+@pytest.mark.parametrize(
+    ("imperial", "typed", "back"),
+    [(False, "1", "0.300"), (True, "3 ft", "11.81 in")],
+    ids=["metric", "imperial"],
+)
+def test_a_height_saved_then_typed_back_is_saved_again(imperial: bool, typed: str, back: str) -> None:
+    out = _editor(
+        _CHOOSE_THE_ZONE
+        + f"""
+        field('z_offset').value = '{typed}';
+        button('zone-save-btn');
+        await settle();
+        field('z_offset').value = '{back}';
+        button('zone-save-btn');
+        await settle();
+        out.sent = puts().map(function (r) {{ return r.body.z_offset; }});
+        """,
+        setup=("window.OpenFollow.units.setSystem('imperial');" if imperial else "") + "model.zones[0].z_offset = 0.3;",
+    )
+    assert len(out["sent"]) == 2
+    assert out["sent"][1] == (pytest.approx(0.3, abs=1e-3) if imperial else back)

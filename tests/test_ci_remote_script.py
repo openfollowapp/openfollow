@@ -519,3 +519,27 @@ def test_the_local_fallback_times_a_drawing_change_too(tmp_path: Path, perf_stat
     assert result.returncode == expected, result.stderr
     assert station.made() == [f"make -C {station.local} ci", "bench against: base"]
     assert not station.perf_base().exists()
+
+
+@pytest.mark.parametrize("local", ["0", "1"], ids=["on the pi", "locally"])
+@pytest.mark.parametrize("base_has_scenes", [True, False], ids=["base with scenes", "base without scenes"])
+def test_the_merge_base_s_scenes_go_with_its_package(tmp_path: Path, local: str, base_has_scenes: bool) -> None:
+    """Each side of the comparison draws scenes its own renderer can read."""
+    station = _station(tmp_path, local_git="repo")
+    if base_has_scenes:
+        station.commit("tests/_hud_scenes.py", "base scenes")
+        subprocess.run(
+            ["git", "-C", str(station.local), "update-ref", "refs/remotes/origin/main", "HEAD"],
+            env=station.env,
+            check=True,
+            capture_output=True,
+        )
+    station.commit("openfollow/video/overlay.py", "branch")
+
+    result = station.run(
+        OPENFOLLOW_CI_LOCAL=local,
+        FAKE_PERF_HOOK='echo "scenes: $(cat "$5/tests/_hud_scenes.py" 2>/dev/null || echo none)" >> "$FAKE_MAKE_LOG"',
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert ("scenes: base scenes" if base_has_scenes else "scenes: none") in station.made()

@@ -11,12 +11,14 @@ contents to anyone but the restore that writes them back.
 from __future__ import annotations
 
 import contextlib
+import fnmatch
 import glob
 import gzip
 import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import tarfile
 import tempfile
@@ -558,16 +560,25 @@ def stage_restore(contents: BackupContents, catalog_path: Path, config_path: Pat
 
 
 def _leftovers(target: Path, suffix: str) -> list[Path]:
-    """What a commit of *target* left with *suffix*, newest first."""
-    found = target.parent.glob(f".{glob.escape(target.name)}.*{suffix}")
+    """What a commit of *target* left with *suffix*, newest first; a folder that does not list raises."""
+    pattern = f".{glob.escape(target.name)}.*{suffix}"
+    try:
+        with os.scandir(target.parent) as scan:
+            found = [Path(entry.path) for entry in scan if fnmatch.fnmatchcase(entry.name, pattern)]
+    except FileNotFoundError:
+        return []
     return sorted(found, key=lambda path: path.lstat().st_mtime_ns, reverse=True)
 
 
 def _journal_catalog(journal: Path) -> Path | None:
-    """The catalog a journal names, or ``None``."""
+    """The catalog a journal names, or ``None``; a journal there that does not read raises."""
     try:
-        named = json.loads(journal.read_bytes()).get("catalog")
-    except (OSError, ValueError, AttributeError):
+        raw = journal.read_bytes()
+    except FileNotFoundError:
+        return None
+    try:
+        named = json.loads(raw).get("catalog")
+    except (ValueError, AttributeError):
         return None
     return Path(named) if isinstance(named, str) and named else None
 
@@ -586,18 +597,28 @@ def recover_interrupted_restore(config_path: Path) -> None:
     state_dir = config_path.parent
     done, pending = state_dir / JOURNAL, state_dir / PENDING_JOURNAL
     committed = done.exists()
-    catalog = _journal_catalog(done if committed else pending)
+    faults = 0
+    after = (
+        "The restore is finished at the next start, replacing a change made meanwhile to a part not yet restored."
+        if committed
+        else "It is put right at the next start."
+    )
+    try:
+        catalog = _journal_catalog(done if committed else pending)
+    except OSError as exc:
+        faults += 1
+        catalog = None
+        logger.error("Storage fault reading %s: %s. %s", done if committed else pending, exc, after)
     steps: list[tuple[Callable[[Path, bool], None], Path]] = [(_recover_file, config_path)]
     if catalog is not None:
         steps.append((_recover_file, catalog))
     steps += [(_recover_folder, state_dir / folder) for folder in _FOLDERS]
-    faults = 0
     for step, target in steps:
         try:
             step(target, committed)
         except OSError as exc:
             faults += 1
-            logger.error("Storage fault: a restore cut short at %s is left to retry at the next start: %s", target, exc)
+            logger.error("Storage fault putting right a restore cut short at %s: %s. %s", target, exc, after)
     if faults:
         return
     for journal in (done, pending):
@@ -635,14 +656,18 @@ def _install(source: Path, target: Path) -> None:
     A folder in place is moved aside first, beside the others its next run removes.
     """
     if target.is_dir() and not target.is_symlink():
-        os.replace(target, target.with_name(f".{target.name}.recovered{_REPLACED}"))
+        os.replace(target, target.with_name(f".{target.name}.{secrets.token_hex(4)}{_REPLACED}"))
     os.replace(source, target)
     _sync(target.parent)
     logger.warning("Put %s in place from %s, left by a restore cut short", target, source.name)
 
 
 def _remove(path: Path) -> None:
-    if path.is_dir() and not path.is_symlink():
-        shutil.rmtree(path, ignore_errors=True)
-    else:
-        path.unlink(missing_ok=True)
+    """Remove a leftover; one that stays is logged, and never blocks an install, whose asides are unique."""
+    try:
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.error("Could not remove %s, left by a restore: %s", path, exc)

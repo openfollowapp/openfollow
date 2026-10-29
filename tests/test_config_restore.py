@@ -1093,7 +1093,8 @@ def test_a_folder_in_place_that_a_committed_copy_cannot_replace_is_finished_next
     assert (station / config_restore.JOURNAL).exists()
     assert _tree(station / "templates" / ".user.bbbb2222.restore") == {"backup.oftemplate": b"restored"}
     # Nothing is deleted before its replacement is in place.
-    assert _tree(station / "templates" / ".user.recovered.old") == {"grid.oftemplate": b"grid"}
+    (aside,) = (station / "templates").glob(".user.*.old")
+    assert _tree(aside) == {"grid.oftemplate": b"grid"}
 
     config_restore.recover_interrupted_restore(station / "config.toml")
 
@@ -1115,3 +1116,67 @@ def test_a_journal_that_cannot_be_removed_is_logged(
     monkeypatch.setattr(Path, "unlink", stuck)
     config_restore.recover_interrupted_restore(station / "config.toml")
     assert "Storage fault" in caplog.text
+
+
+def test_a_stuck_old_aside_does_not_block_the_install(
+    station: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    stuck = station / "templates" / ".user.recovered.old"
+    (stuck / "locked").mkdir(parents=True)
+    (stuck / "locked" / "old.oftemplate").write_text("old", encoding="utf-8")
+    _leftover(station / "templates", ".user.bbbb2222.restore", {"backup.oftemplate": "restored"})
+    _journal(station, config_restore.JOURNAL)
+    (stuck / "locked").chmod(0o500)
+    try:
+        config_restore.recover_interrupted_restore(station / "config.toml")
+    finally:
+        (stuck / "locked").chmod(0o700)
+    assert _tree(station / "templates" / "user") == {"backup.oftemplate": b"restored"}
+    assert "Could not remove" in caplog.text
+    assert not (station / config_restore.JOURNAL).exists()
+
+
+def test_a_committed_journal_that_cannot_be_read_is_kept(station: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (station / ".markers.toml.aaaa1111.restore").write_text("[[marker]]\nid = 7\n", encoding="utf-8")
+    _journal(station, config_restore.JOURNAL)
+    real = Path.read_bytes
+
+    def unreadable(self: Path) -> bytes:
+        if self.name == config_restore.JOURNAL:
+            raise OSError(5, "Input/output error")
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", unreadable)
+    config_restore.recover_interrupted_restore(station / "config.toml")
+    monkeypatch.undo()
+    assert (station / config_restore.JOURNAL).exists()
+
+    config_restore.recover_interrupted_restore(station / "config.toml")
+    assert (station / "markers.toml").read_text(encoding="utf-8") == "[[marker]]\nid = 7\n"
+    assert list(station.rglob(".*")) == []
+
+
+def test_a_folder_that_cannot_be_listed_is_a_fault_not_nothing(
+    station: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    _leftover(station / "templates", ".user.bbbb2222.restore", {"backup.oftemplate": "restored"})
+    _journal(station, config_restore.JOURNAL)
+    (station / "templates").chmod(0o300)  # entries reachable, the folder itself not listable
+    try:
+        config_restore.recover_interrupted_restore(station / "config.toml")
+    finally:
+        (station / "templates").chmod(0o700)
+    assert (station / config_restore.JOURNAL).exists()
+    assert "finished at the next start" in caplog.text
+
+    config_restore.recover_interrupted_restore(station / "config.toml")
+    assert _tree(station / "templates" / "user") == {"backup.oftemplate": b"restored"}
+
+
+@pytest.mark.parametrize("journal", [b"not json", b"[1]", b'{"catalog": 5}'])
+def test_a_garbled_journal_still_finishes_what_it_can_find(station: Path, journal: bytes) -> None:
+    (station / ".config.toml.aaaa1111.restore").write_text('psn_system_name = "Restored"\n', encoding="utf-8")
+    (station / config_restore.JOURNAL).write_bytes(journal)
+    config_restore.recover_interrupted_restore(station / "config.toml")
+    assert (station / "config.toml").read_text(encoding="utf-8") == 'psn_system_name = "Restored"\n'
+    assert not (station / config_restore.JOURNAL).exists()

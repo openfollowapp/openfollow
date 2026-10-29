@@ -822,3 +822,42 @@ def test_a_restore_whose_clean_up_fails_after_the_config_still_restarts(
     assert body["restarting"] is True
     assert server.check_restart_requested() is True
     assert load_config(str(state / "config.toml"), strict=True).grid.width == 42.0
+
+
+def test_a_restore_while_an_earlier_one_waits_to_be_finished_is_refused(station) -> None:
+    server, base, state = station
+    name = _update_backup(state)
+    before = (state / "config.toml").read_bytes()
+    staged = state / ".config.toml.aaaa1111.restore"
+    staged.write_text('psn_system_name = "Earlier"\n', encoding="utf-8")
+    (state / config_restore.JOURNAL).write_text(json.dumps({"catalog": str(state / "markers.toml")}), encoding="utf-8")
+
+    status, body = _restore(base, name)
+
+    assert (status, body) == (
+        409,
+        {
+            "error": "An earlier restore is not finished.",
+            "action": "Restart OpenFollow to finish it, then restore again.",
+        },
+    )
+    assert (state / "config.toml").read_bytes() == before
+    assert staged.exists() and (state / config_restore.JOURNAL).exists()
+    assert server.check_restart_requested() is False
+
+
+def test_a_restore_discards_what_an_uncommitted_one_left(station) -> None:
+    server, base, state = station
+    _the_old_show(state)
+    name = _update_backup(state)
+    _the_show_now(state)
+    (state / ".config.toml.aaaa1111.restore").write_text('psn_system_name = "Never"\n', encoding="utf-8")
+    (state / config_restore.PENDING_JOURNAL).write_text(
+        json.dumps({"catalog": str(state / "show" / "markers.toml")}), encoding="utf-8"
+    )
+
+    assert _restore(base, name)[0] == 200
+
+    assert load_config(str(state / "config.toml"), strict=True).grid.width == 42.0
+    assert list(state.rglob(".*.restore")) + list(state.glob(".restore-commit*")) == []
+    assert server.check_restart_requested() is True

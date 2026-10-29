@@ -1,0 +1,31 @@
+# Mouse Input
+
+Click-and-drag control for steering markers directly on the live video. Off by default – turn it on with **Steer markers with the mouse**.
+
+**One mouse per station.** All mice plugged into a station share a single system cursor, so only one mouse steers one marker at a time – a second mouse just moves the same pointer. To control several markers at once, use one gamepad per operator instead.
+
+## Taking and releasing control
+
+**Left-click a marker's ground circle** to take control of that marker, then move the mouse to steer it. Clicking the circle grabs the marker where it stands – it does not jump to the cursor. A click on empty stage does nothing, so a stray click can't fling a marker. Left-click a different marker's circle to switch control to it. **Right-click** releases control (movement stops until the next grab). If the ground circle is turned off in Marker settings, the small area around the marker's base stays clickable.
+
+**Double right-click** – when on, **double right-clicking** snaps the controlled marker back to the default position (the same as the reset key) and lets go of it, so it parks there until you grab it again. It sits on the right button because that's already the release button. Turn it off if you find yourself resetting markers by accident.
+
+The mouse never moves a marker along a path *(experimental)*: grabbing a marker locked onto a path takes it off the path where it stands, and you steer it freely from there. A marker locked onto a path while you hold it is let go, and the scroll wheel leaves a locked marker's height to its path.
+
+## Steering refinements
+
+**Hysteresis (px)** – a deadband on the cursor, in screen pixels, so small hand-tremor doesn't make the marker wiggle. The marker only moves once the cursor travels past this many pixels from where it last settled. `0` applies every movement (direct control). Start around `3`–`6` if a resting hand makes the marker drift.
+
+**Smoothing** – how heavily the marker glides toward the cursor. `0` is direct 1:1 control (instant); higher values (e.g. `0.8`) ease the marker toward the cursor for a smoother, laggier feel. Range `0`–`1`.
+
+**Maximum Y+ (m)** – the farthest **upstage** (away from the audience, the +Y direction) a mouse target may go. Near the top of the picture the floor stretches toward the horizon, where a tiny cursor move maps to an enormous upstage distance; this caps that so the marker (and its light) can't shoot off into the far field. A move past the limit is ignored and the marker holds its last position. `0` means no upstage limit.
+
+## Scroll wheel (height)
+
+**Scroll wheel** – when on, the scroll wheel raises and lowers the controlled marker's height. Turn it off to disable wheel-height entirely.
+
+**Wheel direction** – whether scrolling up raises or lowers the marker. Default: **Scroll up raises the marker**.
+
+**Step per tick (m)** – how far each wheel click moves the marker's height, however fast the wheel turns. Default `0.1` m. Height follows at most ten clicks a second, so a free-spinning wheel moves the marker a limited distance and stops when the wheel stops. A trackpad or Magic Mouse sends many scroll events for one swipe, each counted as a click, so it moves the height much further than a wheel.
+
+**Save** – store the current settings. Changes apply immediately but are lost on restart unless you save.

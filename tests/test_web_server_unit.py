@@ -11,6 +11,9 @@ network.  Integration-style tests (against a live server) live in
 
 from __future__ import annotations
 
+import errno
+import logging
+import socket
 import threading
 import time
 
@@ -19,6 +22,7 @@ import pytest
 import openfollow
 import openfollow.web.discovery as discovery_module
 from openfollow.web.server import ConfigWebServer
+from tests._port_sharing import STATION_ADDRESS, SharingKernel, share_ports
 
 pytestmark = pytest.mark.unit
 
@@ -910,29 +914,40 @@ def test_configwebserver_on_peer_discovered_logs(tmp_path, monkeypatch, caplog) 
 # ---------------------------------------------------------------------------
 
 
-def test_threading_wsgi_server_returns_503_when_semaphore_full(monkeypatch) -> None:
+def _half_closed_pair() -> tuple[socket.socket, socket.socket]:
+    """A rejected connection whose client sent its request and half-closed: the station's end, the client's end."""
+    ours, theirs = socket.socketpair()
+    theirs.shutdown(socket.SHUT_WR)
+    theirs.settimeout(5)
+    return ours, theirs
+
+
+@pytest.fixture()
+def rejected_client():
+    ours, theirs = _half_closed_pair()
+    yield ours, theirs
+    ours.close()
+    theirs.close()
+
+
+def test_threading_wsgi_server_returns_503_when_semaphore_full(monkeypatch, rejected_client) -> None:
     from openfollow.web import server as server_mod
 
     # Swap in a pre-exhausted semaphore so the first acquire attempt fails.
     exhausted = threading.BoundedSemaphore(1)
     exhausted.acquire()  # leaves zero permits
     monkeypatch.setattr(server_mod, "_request_semaphore", exhausted)
+    ours, theirs = rejected_client
 
-    sent: list[bytes] = []
     shutdowns: list[object] = []
-
-    class _FakeRequest:
-        def sendall(self, data: bytes) -> None:
-            sent.append(data)
-
     srv = server_mod._ThreadingWSGIServer.__new__(server_mod._ThreadingWSGIServer)
     srv.shutdown_request = lambda req: shutdowns.append(req)  # type: ignore[assignment]
 
-    srv.process_request_thread(_FakeRequest(), ("127.0.0.1", 40000))
+    srv.process_request_thread(ours, ("127.0.0.1", 40000))
 
-    assert len(sent) == 1
-    assert sent[0].startswith(b"HTTP/1.1 503")
-    assert len(shutdowns) == 1
+    assert theirs.recv(65536) == server_mod._REQUEST_BUSY_RESPONSE
+    assert theirs.recv(65536) == b""
+    assert shutdowns == [ours]
 
 
 def test_threading_wsgi_server_swallows_sendall_oserror(monkeypatch) -> None:
@@ -942,9 +957,14 @@ def test_threading_wsgi_server_swallows_sendall_oserror(monkeypatch) -> None:
     exhausted.acquire()
     monkeypatch.setattr(server_mod, "_request_semaphore", exhausted)
 
+    half_closed: list[int] = []
+
     class _FlakyRequest:
         def sendall(self, data: bytes) -> None:
             raise OSError("broken pipe")
+
+        def shutdown(self, how: int) -> None:
+            half_closed.append(how)
 
     shutdowns: list[object] = []
     srv = server_mod._ThreadingWSGIServer.__new__(server_mod._ThreadingWSGIServer)
@@ -954,18 +974,15 @@ def test_threading_wsgi_server_swallows_sendall_oserror(monkeypatch) -> None:
     srv.process_request_thread(_FlakyRequest(), ("127.0.0.1", 40001))
 
     assert len(shutdowns) == 1
+    assert half_closed == []  # no answer went out, so there is nothing to wait for
 
 
-def test_threading_wsgi_server_swallows_shutdown_exception(monkeypatch) -> None:
+def test_threading_wsgi_server_swallows_shutdown_exception(monkeypatch, rejected_client) -> None:
     from openfollow.web import server as server_mod
 
     exhausted = threading.BoundedSemaphore(1)
     exhausted.acquire()
     monkeypatch.setattr(server_mod, "_request_semaphore", exhausted)
-
-    class _FakeRequest:
-        def sendall(self, data: bytes) -> None:
-            pass
 
     srv = server_mod._ThreadingWSGIServer.__new__(server_mod._ThreadingWSGIServer)
 
@@ -975,7 +992,7 @@ def test_threading_wsgi_server_swallows_shutdown_exception(monkeypatch) -> None:
     srv.shutdown_request = _boom  # type: ignore[assignment]
 
     # Must not raise – exception is swallowed at lines 80-81.
-    srv.process_request_thread(_FakeRequest(), ("127.0.0.1", 40002))
+    srv.process_request_thread(rejected_client[0], ("127.0.0.1", 40002))
 
 
 def test_threading_wsgi_server_counts_rejection(monkeypatch) -> None:
@@ -989,20 +1006,126 @@ def test_threading_wsgi_server_counts_rejection(monkeypatch) -> None:
     # Reset the cumulative counter so the assertion is order-independent.
     monkeypatch.setattr(server_mod, "_request_semaphore_rejections", 0)
 
-    class _FakeRequest:
-        def sendall(self, data: bytes) -> None:
-            pass
-
     srv = server_mod._ThreadingWSGIServer.__new__(server_mod._ThreadingWSGIServer)
     srv.shutdown_request = lambda req: None  # type: ignore[assignment]
 
-    srv.process_request_thread(_FakeRequest(), ("127.0.0.1", 40010))
-    srv.process_request_thread(_FakeRequest(), ("127.0.0.1", 40011))
+    pairs = [_half_closed_pair(), _half_closed_pair()]
+    try:
+        srv.process_request_thread(pairs[0][0], ("127.0.0.1", 40010))
+        srv.process_request_thread(pairs[1][0], ("127.0.0.1", 40011))
+    finally:
+        for sock in (s for pair in pairs for s in pair):
+            sock.close()
 
     assert server_mod._request_semaphore_rejections == 2
 
 
-def test_configwebserver_rejection_count_surfaces_via_property(tmp_path, monkeypatch) -> None:
+def test_threading_wsgi_server_closes_a_refused_connection_whatever_the_drain_raises(
+    monkeypatch, rejected_client
+) -> None:
+    from openfollow.web import server as server_mod
+
+    exhausted = threading.BoundedSemaphore(1)
+    exhausted.acquire()
+    monkeypatch.setattr(server_mod, "_request_semaphore", exhausted)
+
+    def _boom(_request: object) -> None:
+        raise RuntimeError("drain failed")
+
+    monkeypatch.setattr(server_mod, "_discard_busy_request", _boom)
+    shutdowns: list[object] = []
+    srv = server_mod._ThreadingWSGIServer.__new__(server_mod._ThreadingWSGIServer)
+    srv.shutdown_request = lambda req: shutdowns.append(req)  # type: ignore[assignment]
+
+    with pytest.raises(RuntimeError):
+        srv.process_request_thread(rejected_client[0], ("127.0.0.1", 40013))
+    assert shutdowns == [rejected_client[0]]
+
+
+class _FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _busy_lines(caplog) -> list[tuple[int, str]]:
+    return [(r.levelno, r.getMessage()) for r in caplog.records if r.name == "openfollow.web.server"]
+
+
+@pytest.fixture()
+def busy_log(caplog):
+    from openfollow.web import server as server_mod
+
+    caplog.set_level("INFO", logger="openfollow.web.server")
+    clock = _FakeClock()
+    return server_mod._BusyLog(clock=clock), clock
+
+
+def test_a_burst_of_refusals_logs_one_line(busy_log, caplog) -> None:
+    log, clock = busy_log
+    for i in range(50):
+        clock.now = i
+        log.refused("192.0.2.7")
+    lines = _busy_lines(caplog)
+    assert len(lines) == 1
+    assert lines[0][0] == logging.WARNING
+    assert "192.0.2.7" in lines[0][1]
+
+
+def test_a_reminder_comes_after_the_interval_and_carries_the_count(busy_log, caplog) -> None:
+    from openfollow.web import server as server_mod
+
+    log, clock = busy_log
+    log.refused("192.0.2.7")
+    for _ in range(49):
+        clock.now = server_mod._BUSY_LOG_INTERVAL_S - 0.1
+        log.refused("192.0.2.7")
+    assert len(_busy_lines(caplog)) == 1
+    clock.now = server_mod._BUSY_LOG_INTERVAL_S
+    log.refused("192.0.2.7")
+    clock.now = server_mod._BUSY_LOG_INTERVAL_S + 1
+    log.refused("192.0.2.7")
+    lines = _busy_lines(caplog)
+    assert [level for level, _ in lines] == [logging.WARNING, logging.WARNING]
+    assert "refused 50 more requests" in lines[1][1]
+
+
+def test_an_accept_during_a_busy_streak_does_not_end_it(busy_log, caplog) -> None:
+    from openfollow.web import server as server_mod
+
+    log, clock = busy_log
+    log.refused("192.0.2.7")
+    clock.now = server_mod._BUSY_LOG_INTERVAL_S - 1
+    log.refused("192.0.2.7")
+    clock.now = server_mod._BUSY_LOG_INTERVAL_S + 1
+    log.accepted()
+    log.refused("192.0.2.7")
+    lines = _busy_lines(caplog)
+    assert [level for level, _ in lines] == [logging.WARNING, logging.WARNING]
+    assert "refused 2 more requests" in lines[1][1]
+
+
+def test_an_accept_after_a_quiet_interval_ends_the_streak(busy_log, caplog) -> None:
+    from openfollow.web import server as server_mod
+
+    log, clock = busy_log
+    log.accepted()
+    log.refused("192.0.2.7")
+    clock.now = 1
+    log.refused("192.0.2.7")
+    clock.now = 1 + server_mod._BUSY_LOG_INTERVAL_S
+    log.accepted()
+    log.accepted()
+    log.refused("192.0.2.8")
+    lines = _busy_lines(caplog)
+    assert [level for level, _ in lines] == [logging.WARNING, logging.INFO, logging.WARNING]
+    assert "accepts requests again; 1 refused" in lines[1][1]
+    assert "192.0.2.8" in lines[2][1]
+
+
+def test_configwebserver_rejection_count_surfaces_via_property(tmp_path, monkeypatch, rejected_client) -> None:
     """The ``request_semaphore_rejections`` property must report the live
     counter, not a placeholder zero, so diagnostics reflect rejections."""
     from openfollow.web import server as server_mod
@@ -1015,13 +1138,9 @@ def test_configwebserver_rejection_count_surfaces_via_property(tmp_path, monkeyp
     exhausted.acquire()
     monkeypatch.setattr(server_mod, "_request_semaphore", exhausted)
 
-    class _FakeRequest:
-        def sendall(self, data: bytes) -> None:
-            pass
-
     wsgi = server_mod._ThreadingWSGIServer.__new__(server_mod._ThreadingWSGIServer)
     wsgi.shutdown_request = lambda req: None  # type: ignore[assignment]
-    wsgi.process_request_thread(_FakeRequest(), ("127.0.0.1", 40012))
+    wsgi.process_request_thread(rejected_client[0], ("127.0.0.1", 40012))
 
     assert srv.request_semaphore_rejections == 1
 
@@ -1760,3 +1879,173 @@ def test_suspend_beacons_stops_both(tmp_path, monkeypatch) -> None:
 
     assert srv._beacon_sender.iface_ip is None
     assert srv._beacon_receiver.iface_ip is None
+
+
+# ---------------------------------------------------------------------------
+# The port the station serves is the port it advertises
+# ---------------------------------------------------------------------------
+
+
+def _advertised_port(srv: ConfigWebServer) -> int:
+    packet = discovery_module.BeaconPacket.from_bytes(srv._beacon_sender._packet.to_bytes())
+    assert packet is not None
+    return packet.web_port
+
+
+def _start_where_free(srv: ConfigWebServer, monkeypatch, free: set[int]) -> None:
+    monkeypatch.setattr(srv, "_can_bind", lambda _host, port: port in free)
+    monkeypatch.setattr(threading.Thread, "start", lambda self: None)
+    srv.start()
+
+
+@pytest.mark.parametrize(
+    ("free", "served"),
+    [({80, 8080}, 80), ({8080}, 8080), ({2010}, 2010)],
+    ids=["primary", "first-fallback", "second-fallback"],
+)
+def test_the_beacon_advertises_the_port_the_station_serves(tmp_path, monkeypatch, free, served) -> None:
+    srv = _make_quiet_server(tmp_path, monkeypatch, port=80)
+    _start_where_free(srv, monkeypatch, free)
+    assert _advertised_port(srv) == served
+
+
+def test_the_station_skips_only_its_own_beacon_on_the_fallback_port(tmp_path, monkeypatch) -> None:
+    """Its own beacon carries the fallback port; another station on the same
+    host serving the configured port is a peer, not this station."""
+    monkeypatch.setattr(discovery_module, "get_local_ipv4_addresses", lambda: {"192.0.2.10"})
+    srv = _make_quiet_server(tmp_path, monkeypatch, port=80)
+    _start_where_free(srv, monkeypatch, {8080})
+
+    srv._beacon_receiver._handle_packet(srv._beacon_sender._packet.to_bytes(), "192.0.2.10")
+    other = discovery_module.BeaconPacket(name="Other", web_port=80).to_bytes()
+    srv._beacon_receiver._handle_packet(other, "192.0.2.10")
+
+    assert [peer.address for peer in srv.get_peers()] == ["192.0.2.10:80"]
+
+
+def _fail_bind(monkeypatch) -> None:
+    import wsgiref.simple_server as wsgi_mod
+
+    def _taken(*_a, **_kw):
+        raise OSError(errno.EADDRINUSE, "Address already in use")
+
+    monkeypatch.setattr(wsgi_mod, "make_server", _taken)
+
+
+def test_a_primary_that_stops_hands_the_beacon_to_the_fallback(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(discovery_module, "get_local_ipv4_addresses", lambda: {"192.0.2.10"})
+    srv = _make_quiet_server(tmp_path, monkeypatch, port=80)
+    _start_where_free(srv, monkeypatch, {80, 8080})
+
+    _fail_bind(monkeypatch)
+    srv._run(srv._host, 80, "primary")
+
+    assert _advertised_port(srv) == 8080
+    srv._beacon_receiver._handle_packet(srv._beacon_sender._packet.to_bytes(), "192.0.2.10")
+    assert srv.get_peers() == []
+
+
+def test_a_primary_that_stops_with_no_fallback_keeps_its_port(tmp_path, monkeypatch) -> None:
+    srv = _make_quiet_server(tmp_path, monkeypatch, port=2010)
+    _start_where_free(srv, monkeypatch, {2010})
+
+    _fail_bind(monkeypatch)
+    srv._run(srv._host, 2010, "primary")
+
+    assert _advertised_port(srv) == 2010
+
+
+def test_the_station_row_names_the_port_it_serves(tmp_path, monkeypatch) -> None:
+    srv = _make_quiet_server(tmp_path, monkeypatch, port=80)
+    srv._fallback_http_server = object()
+    srv._fallback_port = 8080
+    assert srv.get_local_peer_info().web_port == 8080
+
+
+# ---------------------------------------------------------------------------
+# macOS: a port shared with another socket is not the station's
+# ---------------------------------------------------------------------------
+
+
+def _start_on(kernel: SharingKernel, srv: ConfigWebServer, monkeypatch) -> list[tuple[str, int, str]]:
+    """Start ``srv`` on ``kernel``; each listener thread binds as it starts."""
+    started: list[tuple[str, int, str]] = []
+
+    def _start(thread: threading.Thread) -> None:
+        host, port, slot = thread._args  # type: ignore[attr-defined]
+        kernel.listen_on(host, port)
+        started.append((host, port, slot))
+
+    monkeypatch.setattr(threading.Thread, "start", _start)
+    srv.start()
+    return started
+
+
+@pytest.mark.parametrize("holder", ["127.0.0.1", STATION_ADDRESS])
+def test_macos_never_serves_a_port_another_socket_holds_on_an_address_of_this_host(
+    tmp_path, monkeypatch, caplog, holder: str
+) -> None:
+    kernel = SharingKernel(held={(holder, 8080)})
+    share_ports(monkeypatch, kernel)
+    srv = _make_quiet_server(tmp_path, monkeypatch, port=8080, host="0.0.0.0")
+
+    with caplog.at_level("INFO", logger="openfollow.web.server"):
+        started = _start_on(kernel, srv, monkeypatch)
+
+    assert [port for _host, port, slot in started if slot != "loopback"] == [2010]
+    assert _advertised_port(srv) == 2010
+    assert f"Web UI port 8080 is in use on {holder}" in caplog.text
+
+
+def test_macos_pinned_station_never_serves_a_port_another_socket_holds_on_the_wildcard(tmp_path, monkeypatch) -> None:
+    kernel = SharingKernel(held={("", 8080)})
+    share_ports(monkeypatch, kernel)
+    srv = _make_quiet_server(tmp_path, monkeypatch, port=8080, host=STATION_ADDRESS)
+
+    started = _start_on(kernel, srv, monkeypatch)
+
+    assert (STATION_ADDRESS, 2010, "fallback") in started
+    assert all(port != 8080 for _host, port, _slot in started)
+
+
+def test_macos_falls_back_past_a_fallback_another_socket_holds(tmp_path, monkeypatch) -> None:
+    kernel = SharingKernel(held={("127.0.0.1", 80), ("127.0.0.1", 8080)})
+    share_ports(monkeypatch, kernel)
+    srv = _make_quiet_server(tmp_path, monkeypatch, port=80, host="0.0.0.0")
+
+    started = _start_on(kernel, srv, monkeypatch)
+
+    assert ("0.0.0.0", 2010, "fallback") in started
+    assert _advertised_port(srv) == 2010
+
+
+def test_macos_holds_loopback_beside_the_wildcard(tmp_path, monkeypatch) -> None:
+    """Open Web UI opens 127.0.0.1: the station binds it too, so no process
+    started later can take it - even though its own wildcard is up first."""
+    kernel = SharingKernel()
+    share_ports(monkeypatch, kernel)
+    srv = _make_quiet_server(tmp_path, monkeypatch, port=8080, host="0.0.0.0")
+
+    started = _start_on(kernel, srv, monkeypatch)
+
+    assert ("0.0.0.0", 8080, "primary") in started
+    assert ("127.0.0.1", 8080, "loopback") in started
+
+
+@pytest.mark.parametrize(
+    ("host", "expected"),
+    [("0.0.0.0", True), ("", True), ("127.0.0.1", False), ("::1", False), (STATION_ADDRESS, True)],
+)
+def test_macos_needs_a_loopback_listener_unless_it_serves_loopback(tmp_path, monkeypatch, host, expected) -> None:
+    share_ports(monkeypatch, SharingKernel())
+    assert _make_quiet_server(tmp_path, monkeypatch, host=host)._needs_loopback_listener() is expected
+
+
+def test_linux_wildcard_serves_loopback_itself(tmp_path, monkeypatch) -> None:
+    kernel = SharingKernel()
+    monkeypatch.setattr("openfollow.net_utils.socket.socket", kernel.socket)
+    srv = _make_quiet_server(tmp_path, monkeypatch, port=8080, host="0.0.0.0")
+
+    started = _start_on(kernel, srv, monkeypatch)
+
+    assert [slot for _host, _port, slot in started] == ["primary", "fallback"]

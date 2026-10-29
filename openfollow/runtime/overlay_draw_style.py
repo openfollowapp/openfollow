@@ -27,6 +27,9 @@ COLOR_ACCENT_SOFT = (1.0, 0.737, 0.0, 0.12)  # soft accent background (RGBA)
 # Borders and UI
 COLOR_BORDER_SOFT = (1.0, 1.0, 1.0, 0.08)  # soft border (RGBA)
 COLOR_BORDER = (1.0, 1.0, 1.0, 0.12)  # standard border (RGBA)
+# A key or button named in the help, as the web UI draws <kbd>.
+COLOR_KEYCAP_FILL = (1.0, 1.0, 1.0, 0.08)  # (RGBA)
+COLOR_KEYCAP_BORDER = (1.0, 1.0, 1.0, 0.18)  # (RGBA)
 # Dashed edge of the Support OpenFollow request, the website's own: #ffbc00 at 60%.
 COLOR_SUPPORT_BORDER = (*COLOR_ACCENT, 0.6)  # (RGBA)
 SUPPORT_DASH = (5.0, 4.0)
@@ -70,6 +73,7 @@ FONT_UI_FAMILY = "Inter"
 MODAL_RADIUS = 14.0
 PANEL_RADIUS = 6.0
 ROW_RADIUS = 4.0
+KEYCAP_RADIUS = 3.0
 
 
 def draw_rounded_rect(cr: Any, x: float, y: float, w: float, h: float, radius: float) -> None:

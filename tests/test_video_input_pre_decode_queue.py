@@ -9,36 +9,30 @@ from typing import Any
 import pytest
 
 from openfollow.video.inputs._base import PRE_DECODE_QUEUE_BYTES, PRE_DECODE_QUEUE_NS, configure_pre_decode_queue
+from tests._real_gst import real_gst
 
 pytestmark = pytest.mark.unit
 
 
 def _stalled_pre_decode_queue() -> tuple[Any, Any, Any]:
     """A configured queue whose consumer, a paused sink, holds the first buffer: the rest stay queued."""
-    try:
-        import gi
-
-        gi.require_version("Gst", "1.0")
-        from gi.repository import Gst
-    except (ImportError, ValueError):
-        pytest.skip("PyGObject / GStreamer is not importable")
-    Gst.init(None)
-    pipeline = Gst.Pipeline.new("pre-decode")
-    queue = Gst.ElementFactory.make("queue", "pre_queue")
-    sink = Gst.ElementFactory.make("fakesink", "sink")
+    gst = real_gst()
+    pipeline = gst.Pipeline.new("pre-decode")
+    queue = gst.ElementFactory.make("queue", "pre_queue")
+    sink = gst.ElementFactory.make("fakesink", "sink")
     pipeline.add(queue)
     pipeline.add(sink)
     queue.link(sink)
     configure_pre_decode_queue(queue)
     # A full queue that does not leak blocks the chain calls of the test for good.
     assert queue.get_property("leaky") == 2
-    pipeline.set_state(Gst.State.PAUSED)
+    pipeline.set_state(gst.State.PAUSED)
     pad = queue.get_static_pad("sink")
-    pad.send_event(Gst.Event.new_stream_start("pre-decode"))
-    segment = Gst.Segment()
-    segment.init(Gst.Format.TIME)
-    pad.send_event(Gst.Event.new_segment(segment))
-    return Gst, pipeline, queue
+    pad.send_event(gst.Event.new_stream_start("pre-decode"))
+    segment = gst.Segment()
+    segment.init(gst.Format.TIME)
+    pad.send_event(gst.Event.new_segment(segment))
+    return gst, pipeline, queue
 
 
 @pytest.mark.parametrize(

@@ -103,7 +103,22 @@ def test_runtime_services_exit_when_gstreamer_is_unavailable(monkeypatch) -> Non
         services_module.AppRuntimeServices(_DummyApp())
 
 
-def test_init_canvas_enters_fullscreen_on_raspberry_pi(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("is_pi", "kiosk", "fullscreen"),
+    [
+        (True, None, True),
+        (False, "1", True),
+        (False, None, False),
+        (False, "0", False),
+        (False, "", False),
+    ],
+    ids=["pi", "kiosk-session", "desktop", "kiosk-off", "kiosk-empty"],
+)
+def test_init_canvas_goes_fullscreen_on_a_pi_or_under_the_kiosk_session(
+    monkeypatch, is_pi: bool, kiosk: str | None, fullscreen: bool
+) -> None:
+    """Under the kiosk session the window is fullscreen on any host, so it has
+    no title bar and no close button that would end the session."""
     monkeypatch.setattr(services_module, "gst_runtime_available", lambda: True)
     monkeypatch.setattr(services_module, "GtkNativeSinkWindow", _FakeWindow)
     monkeypatch.setattr(
@@ -114,37 +129,19 @@ def test_init_canvas_enters_fullscreen_on_raspberry_pi(monkeypatch) -> None:
     monkeypatch.setattr(
         services_module.AppRuntimeServices,
         "_is_raspberry_pi",
-        staticmethod(lambda: True),
+        staticmethod(lambda: is_pi),
     )
+    if kiosk is None:
+        monkeypatch.delenv(services_module.KIOSK_ENV, raising=False)
+    else:
+        monkeypatch.setenv(services_module.KIOSK_ENV, kiosk)
 
     app = _DummyApp()
     services = services_module.AppRuntimeServices(app)
     services.init_canvas()
 
     assert isinstance(app._canvas, _FakeWindow)
-    assert app._canvas.fullscreen_called is True
-
-
-def test_init_canvas_stays_windowed_off_raspberry_pi(monkeypatch) -> None:
-    monkeypatch.setattr(services_module, "gst_runtime_available", lambda: True)
-    monkeypatch.setattr(services_module, "GtkNativeSinkWindow", _FakeWindow)
-    monkeypatch.setattr(
-        services_module.AppRuntimeServices,
-        "_setup_gc_tuning",
-        staticmethod(lambda: None),
-    )
-    monkeypatch.setattr(
-        services_module.AppRuntimeServices,
-        "_is_raspberry_pi",
-        staticmethod(lambda: False),
-    )
-
-    app = _DummyApp()
-    services = services_module.AppRuntimeServices(app)
-    services.init_canvas()
-
-    assert isinstance(app._canvas, _FakeWindow)
-    assert app._canvas.fullscreen_called is False
+    assert app._canvas.fullscreen_called is fullscreen
 
 
 def _init_canvas_with_mouse(monkeypatch, *, mouse_enabled: bool) -> _FakeWindow:

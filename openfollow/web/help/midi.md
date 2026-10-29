@@ -1,54 +1,43 @@
 # MIDI
 
-USB MIDI device aliases and virtual fader sources for this station. Once configured, patches and fader values feed OSC Transmitters rows via MIDI message triggers and fader placeholders.
+MIDI device patches and virtual faders. Patches and fader values feed OSC Transmitters rows through MIDI message triggers and fader placeholders.
 
 ## MIDI Patches
 
-A patch is a stable, numbered slot you assign a connected MIDI device to – the same idea as a QLab MIDI patch. The patch ID, not the port name or alias, is the key everything else references (OSC Transmitters triggers, virtual fader sources). IDs are assigned sequentially and stay fixed across reboots and device swaps.
+A patch is a numbered slot you assign a connected MIDI device to. The patch ID, not the port name or alias, is what everything else references. IDs stay fixed across reboots and device swaps. Click **Add new MIDI Patch**, then fill in the row:
 
-Click **Add new MIDI Patch** to create a slot, then fill in its row:
+- **ID** – read-only permanent number. `0` is reserved to mean "any patch".
+- **Alias** – optional name (up to 64 characters), such as `FOH`.
+- **Device** – the MIDI input port bound to this patch. An unplugged device shows as `(not connected)`; the binding is kept for when it reconnects. On Linux, a device with a USB serial number shows it after the port name, and the patch follows that unit, so two controllers of the same model each keep their own patch.
 
-- **ID** – read-only permanent integer key. Referenced by virtual fader sources and OSC Transmitters trigger forms.
-- **Alias** – optional friendly name (up to 64 characters), such as `FOH` or `X-Touch`. Shown alongside the ID in patch dropdowns.
-- **Device** – the MIDI input port bound to this patch. The dropdown lists currently connected ports; an unplugged device shows as `(not connected)`, and saving preserves the binding for when it reconnects. On Linux, a device that reports a USB serial number shows it after the port name, and the patch follows that unit: two controllers of the same model each keep their own patch, in whichever order they are plugged in. When a patch's own unit is absent, the patch shows as `(not connected)` and counts as missing, unless a device with the same port name that no other patch uses is connected: the patch then uses that device, and saving the patch's row moves the patch to it. Once one patch of a device is saved, each other patch on that device shows as `(not connected)` until its row is saved once too.
-
-Each row has its own **Save** and **Delete** buttons.
-
-> The patch ID `0` is reserved as a wildcard meaning "any patch" – real patches always start at 1.
+Each row has its own **Save** and **Delete**.
 
 ## Virtual Faders
 
-Eight normalised faders (0.00 – 1.00), addressed by position on the bus (1 through 8). Each fader's value shows in its strip and feeds OSC Transmitters rows via fader placeholders. The bus is fixed at eight; you cannot add or remove entries.
+Eight faders (0.00 – 1.00), numbered 1 to 8. Each value feeds OSC Transmitters rows via fader placeholders. The bus is fixed at eight.
 
-The strips show the values as they were when the page opened. **Show live** follows them twice a second for 10 seconds, then stops by itself, and **Stop live** ends it sooner. The same button above the Marker Faders runs both rows. Every update is a request the station answers, so the strips are not kept live while nobody is looking.
+The strips show the values as they were when the page opened. **Show live** follows them for 10 seconds, then stops by itself; **Stop live** ends it sooner.
 
-A strip marked **not picked up** is a MIDI fader whose physical control has not yet met the fader's value. Moving the physical fader changes nothing until it crosses that value; from then on it drives the fader.
+A strip marked **not picked up** is a MIDI fader whose physical control has not yet met the fader's value. Moving the physical fader changes nothing until it crosses that value.
 
-Click a strip to open its settings in the detail panel below.
+Click a strip to edit it in the panel below.
 
-### Identity
-
-- **Display name** – label shown on the Operator Screen (when enabled) and in trigger forms referencing this fader. Up to 32 characters; defaults to `Fader 1`, `Fader 2`, etc.
-- **Default value** – the fader's value at startup (0.00 to 1.00).
-- **Colour** – swatch that tints the fader strip in the web interface.
-- **Operator Screen** – when checked, this fader appears on the Operator Screen.
-
-### Source
-
+- **Display name** – label on the Operator Screen (when enabled) and in trigger forms. Up to 32 characters.
+- **Default value** – the value at startup.
+- **Colour** – tints the strip in the web interface.
+- **Operator Screen** – show this fader on the Operator Screen.
 - **Source Type** – `No source` holds the fader at its default value; `MIDI` drives it from an incoming MIDI message.
 
-When **Source Type** is `MIDI`, these additional fields appear:
+With `MIDI`:
 
-- **Patch** – which MIDI patch to listen on. `(any patch)` accepts messages from all patches.
-- **Message Type** – the MIDI message that moves this fader: Control Change, Key Pressure, or Channel Pressure.
-- **Channel** – MIDI channel to match. `0` matches any channel; `1`–`16` targets one specific channel.
-- **CC / Note number** – the controller or note number to listen to (0 – 127). Not used for Channel Pressure.
-- **Learn** – click, then move the physical fader or turn the knob within 10 seconds. The next incoming message fills in Patch, Message Type, Channel, and CC / Note number automatically.
+- **Patch** – which patch to listen on; `(any patch)` accepts all.
+- **Message Type** – Control Change, Key Pressure or Channel Pressure.
+- **Channel** – `0` matches any channel; `1`–`16` one channel.
+- **CC / Note number** – the controller or note number (0 – 127). Not used for Channel Pressure.
+- **Learn** – click, then move the physical fader or knob within 10 seconds. The next message fills in Patch, Message Type, Channel and CC / Note number.
 
-Click **Save fader** to apply changes to the selected fader.
+**Save fader** applies changes to the selected fader.
 
 ## Marker Faders
 
-Read-only. One strip per controlled marker, driven by whichever gamepad currently controls it. Provisioned automatically from the Controlled Markers list – nothing to configure here.
-
-A marker fader's live value feeds OSC Transmitters rows via the `[markerfader]` placeholder. Which gamepad axis feeds the marker faders, and how fast they travel, is set on the Gamepad page.
+Read-only. One strip per controlled marker, driven by the gamepad that controls it and fed to OSC Transmitters via the `[markerfader]` placeholder. The gamepad axis and travel speed are set on the Gamepad page.

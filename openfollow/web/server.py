@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 from bottle import TEMPLATE_PATH, Bottle, HTTPError
 
 import openfollow
+from openfollow import net_utils
 from openfollow.net_utils import get_local_ipv4_addresses, get_primary_local_ipv4
 from openfollow.services import WebCommandQueue
 from openfollow.web.discovery import BeaconReceiver, BeaconSender, PeerInfo
@@ -94,6 +95,13 @@ _UNREAD_BODY_MAX_BYTES = 16 * 1024 * 1024
 _UNREAD_BODY_TIMEOUT_S = 5.0
 _UNREAD_BODY_CHUNK = 64 * 1024
 
+# A busy answer is followed by a discard too, briefly and for a few connections at once;
+# past that bound the connection closes at once.
+_BUSY_DRAIN_TIMEOUT_S = 2.0
+_BUSY_DRAIN_MAX_BYTES = 4 * 1024 * 1024
+_BUSY_DRAIN_MAX_CONCURRENT = 8
+_busy_drain_semaphore = threading.BoundedSemaphore(_BUSY_DRAIN_MAX_CONCURRENT)
+
 
 class _RequestStream(socket.SocketIO):
     """The connection's reads, each bounded by a deadline when one is set, else by ``read_timeout``."""
@@ -120,6 +128,19 @@ class _RequestStream(socket.SocketIO):
         finally:
             # Writes stay unbounded: a socket timeout would cap a whole sendall.
             self._connection.settimeout(None)
+
+    def discard(self, read: Callable[[int], bytes | None], left: int, timeout: float) -> None:
+        """Half-close, then drop up to ``left`` bytes from ``read`` until the client closes or ``timeout`` passes."""
+        self.deadline = time.monotonic() + timeout
+        try:
+            self._connection.shutdown(socket.SHUT_WR)
+            while left > 0:
+                data = read(min(left, _UNREAD_BODY_CHUNK))
+                if not data:
+                    return
+                left -= len(data)
+        except OSError:
+            pass
 
 
 class _CountingReader:
@@ -200,16 +221,74 @@ class _QuietHandler(WSGIRequestHandler):
             left = declared - (self._counted.count - self._body_start)
             if left <= 0 or left > _UNREAD_BODY_MAX_BYTES:
                 return
-        self._stream.deadline = time.monotonic() + _UNREAD_BODY_TIMEOUT_S
+        self._stream.discard(self._counted.read1, left, _UNREAD_BODY_TIMEOUT_S)
+
+
+def _discard_busy_request(request: socket.socket) -> None:
+    """Let the busy answer arrive: discard what the client still sends, unless every drain place is taken."""
+    drains = _busy_drain_semaphore
+    if not drains.acquire(blocking=False):
+        return
+    try:
+        stream = _RequestStream(request)
         try:
-            self.connection.shutdown(socket.SHUT_WR)
-            while left > 0:
-                data = self._counted.read1(min(left, _UNREAD_BODY_CHUNK))
-                if not data:
+            stream.discard(stream.read, _BUSY_DRAIN_MAX_BYTES, _BUSY_DRAIN_TIMEOUT_S)
+        finally:
+            stream.close()
+    finally:
+        drains.release()
+
+
+# Refusals at the handler cap log a streak's start, then at most one reminder per interval;
+# a streak ends once a request is accepted after an interval without refusals.
+_BUSY_LOG_INTERVAL_S = 60.0
+
+
+class _BusyLog:
+    """The log lines for refusals at the handler cap, so a reload storm stays a few lines."""
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._logged_at: float | None = None  # None: no streak
+        self._refused_at = 0.0
+        self._unlogged = 0
+
+    def refused(self, client: str) -> None:
+        now = self._clock()
+        with self._lock:
+            logged_at = self._logged_at
+            self._refused_at = now
+            if logged_at is not None:
+                self._unlogged += 1
+                if now - logged_at < _BUSY_LOG_INTERVAL_S:
                     return
-                left -= len(data)
-        except OSError:
-            pass
+            self._logged_at = now
+            count, self._unlogged = self._unlogged, 0
+        if logged_at is None:
+            logger.warning(
+                "Config web UI is refusing requests: concurrent handler cap %d reached (first from %s).",
+                _REQUEST_MAX_CONCURRENT,
+                client,
+            )
+        else:
+            logger.warning(
+                "Config web UI refused %d more requests at its concurrent handler cap %d since its last warning.",
+                count,
+                _REQUEST_MAX_CONCURRENT,
+            )
+
+    def accepted(self) -> None:
+        now = self._clock()
+        with self._lock:
+            if self._logged_at is None or now - self._refused_at < _BUSY_LOG_INTERVAL_S:
+                return
+            self._logged_at = None
+            count, self._unlogged = self._unlogged, 0
+        logger.info("Config web UI accepts requests again; %d refused since its last warning.", count)
+
+
+_busy_log = _BusyLog()
 
 
 class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
@@ -222,9 +301,9 @@ class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
         # ThreadingMixIn has already spawned this worker thread. Gate
         # actual request handling on a global bounded semaphore so a
         # flood of concurrent slow requests cannot pile up real work.
-        # Rejected threads send a short 503 and terminate within a few
-        # ms; the total number of threads doing WSGI work at once is
-        # capped at ``_REQUEST_MAX_CONCURRENT``.
+        # Rejected threads send a short 503 and end within
+        # ``_BUSY_DRAIN_TIMEOUT_S``; the total number of threads doing WSGI
+        # work at once is capped at ``_REQUEST_MAX_CONCURRENT``.
         #
         # Capture the semaphore reference once so acquire and release
         # always target the same object – tests monkeypatch the module
@@ -236,21 +315,22 @@ class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
             global _request_semaphore_rejections
             with _request_rejections_lock:
                 _request_semaphore_rejections += 1
+            _busy_log.refused(str(client_address[0]))
             try:
-                request.sendall(_REQUEST_BUSY_RESPONSE)
-            except OSError:
-                pass
-            try:
-                self.shutdown_request(request)
-            except Exception:
-                pass
-            logger.warning(
-                "Config web UI rejected a request from %s: concurrent handler cap %d reached.",
-                client_address,
-                _REQUEST_MAX_CONCURRENT,
-            )
+                try:
+                    request.sendall(_REQUEST_BUSY_RESPONSE)
+                except OSError:
+                    pass
+                else:
+                    _discard_busy_request(request)
+            finally:
+                try:
+                    self.shutdown_request(request)
+                except Exception:
+                    pass
             return
         try:
+            _busy_log.accepted()
             super().process_request_thread(request, client_address)
         finally:
             sem.release()
@@ -932,7 +1012,7 @@ class ConfigWebServer:
         return PeerInfo(
             name=self._system_name,
             ip=self._local_ip,
-            web_port=self._port,
+            web_port=self.display_port,
             version=openfollow.__version__,
             last_seen=time.time(),
         )
@@ -1276,7 +1356,7 @@ class ConfigWebServer:
 
     @staticmethod
     def _can_bind(host: str, port: int) -> bool:
-        """Return True if an IPv4 TCP socket can bind to host:port."""
+        """Return True if an IPv4 TCP socket can bind to host:port and no other socket shares the port there."""
         bind_host = "" if host in {"", "0.0.0.0"} else host
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -1284,7 +1364,10 @@ class ConfigWebServer:
                 sock.bind((bind_host, port))
             except OSError:
                 return False
-        return True
+        shared = net_utils.tcp_port_shared(bind_host, port)
+        if shared:
+            logger.info("Web UI port %d is in use on %s.", port, ", ".join(shared))
+        return not shared
 
     def start(self) -> None:
         """Start web server and beacon threads.
@@ -1336,6 +1419,12 @@ class ConfigWebServer:
             )
             return
 
+        serving = fallback_port if not primary_ok and fallback_port is not None else self._port
+        # Probed before any listener binds: on macOS the station's own wildcard would read as sharing 127.0.0.1.
+        loopback_ok = self._needs_loopback_listener() and self._can_bind("127.0.0.1", serving)
+        self._fallback_port = fallback_port
+        self._advertise_port(serving)
+
         # Start beacon discovery (only once at least one HTTP socket will bind).
         self._beacon_sender.start()
         self._beacon_receiver.start()
@@ -1361,7 +1450,6 @@ class ConfigWebServer:
             )
 
         if fallback_port is not None:
-            self._fallback_port = fallback_port
             self._fallback_thread = threading.Thread(
                 target=self._run,
                 args=(self._host, fallback_port, "fallback"),
@@ -1382,27 +1470,32 @@ class ConfigWebServer:
                     fallback_port,
                 )
 
-        # When the external listener is pinned to a specific (non-loopback)
-        # IP, also serve 127.0.0.1 so the on-screen embedded browser (always
-        # loopback) still reaches the UI. Serves the live display port; a
-        # loopback-bind failure must not take down the pinned listener.
-        loopback_port = self._port if primary_ok else fallback_port
-        if self._needs_loopback_listener() and loopback_port is not None and self._can_bind("127.0.0.1", loopback_port):
+        # The on-screen embedded browser always targets 127.0.0.1, so serve it
+        # there on the live display port; a loopback-bind failure must not
+        # take down the external listener.
+        if loopback_ok:
             self._loopback_thread = threading.Thread(
                 target=self._run,
-                args=("127.0.0.1", loopback_port, "loopback"),
+                args=("127.0.0.1", serving, "loopback"),
                 daemon=True,
                 name="ConfigWebServerLoopback",
             )
             self._loopback_thread.start()
-            logger.info("Config web UI also reachable at http://127.0.0.1:%d (loopback)", loopback_port)
+            logger.info("Config web UI also reachable at http://127.0.0.1:%d (loopback)", serving)
 
     def _needs_loopback_listener(self) -> bool:
-        """True when the external bind pins a specific non-loopback IP, so a
-        separate 127.0.0.1 listener is needed for the on-screen browser.
-        ``0.0.0.0`` and any 127.x / ::1 address already cover loopback."""
+        """True when the external listener does not hold 127.0.0.1 itself: a
+        specific non-loopback IP, or on macOS the wildcard, beside which
+        another process could still bind 127.0.0.1 on the same port."""
         host = self._host
-        return bool(host) and host != "0.0.0.0" and not host.startswith("127.") and host != "::1"
+        if not host or host == "0.0.0.0":
+            return net_utils.BINDS_SHARE_PORTS
+        return not host.startswith("127.") and host != "::1"
+
+    def _advertise_port(self, port: int) -> None:
+        """Point the beacon, and its filter for this station's own, at the port served."""
+        self._beacon_sender.update_web_port(port)
+        self._beacon_receiver.set_local_port(port)
 
     @property
     def bind_host(self) -> str:
@@ -1530,6 +1623,9 @@ class ConfigWebServer:
             else:
                 self._http_server = None
                 self._thread = None
+                fallback = self._fallback_port
+                if fallback is not None:
+                    self._advertise_port(fallback)
 
     def stop(self) -> None:
         """Stop the web server and beacons."""

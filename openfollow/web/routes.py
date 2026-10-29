@@ -3831,6 +3831,24 @@ def _json_point(value: Any, name: str) -> list[float]:
     return [_json_number(value[0], name), _json_number(value[1], name)]
 
 
+def _parse_lens_opencv_body(data: Any) -> tuple[str, float, float, tuple[int, int] | None]:
+    """Validate a ``/api/wizard/lens/opencv`` body; raises for the endpoint's 400."""
+    from openfollow.scene.opencv_lens import MAX_SIDE
+
+    if not isinstance(data, dict):
+        raise TypeError("body must be an object")
+    text = data["xml"]
+    if not isinstance(text, str):
+        raise TypeError("xml must be text")
+    img_w, img_h = _json_canvas(data)
+    if "calibration_width" not in data and "calibration_height" not in data:
+        return text, img_w, img_h, None
+    sides = [_json_int(data[key], key) for key in ("calibration_width", "calibration_height")]
+    if not all(0 < side <= MAX_SIDE for side in sides):
+        raise ValueError(f"The calibrated picture size must be two whole numbers from 1 to {MAX_SIDE}.")
+    return text, img_w, img_h, (sides[0], sides[1])
+
+
 def _json_canvas(data: dict[str, Any]) -> tuple[float, float]:
     img_w = _json_number(data["image_width"], "image_width")
     img_h = _json_number(data["image_height"], "image_height")
@@ -4416,12 +4434,13 @@ def _is_private_peer_ip(ip: str) -> bool:
 
 
 # Outbound peer connections may only target a plausible OpenFollow web port.
-# A homogeneous fleet serves on the same configured ``web_port``; the two
-# conventional HTTP ports cover mixed defaults. The beacon-advertised port is
+# A homogeneous fleet serves on the same configured ``web_port``; port 80 and
+# the fallback ports a station serves when its own is taken (``server.
+# _FALLBACK_PORTS``) cover mixed defaults. The beacon-advertised port is
 # otherwise attacker-controlled (any 1..65535) – a port-only SSRF that would
 # steer the probe/broadcast helpers (and any signed config body) at an
 # arbitrary service on the beaconing private host.
-_DEFAULT_PEER_PORTS: frozenset[int] = frozenset({80, 8080})
+_DEFAULT_PEER_PORTS: frozenset[int] = frozenset({80, 8080, 2010})
 
 
 def _is_allowed_peer_port(port: int, expected_port: int) -> bool:
@@ -10150,7 +10169,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             {
                 "name": server.system_name,
                 "ip": server.local_ip,
-                "port": server.port,
+                "port": server.display_port,
                 "version": openfollow.__version__,
                 "instance": server.instance_id,
             }
@@ -11189,6 +11208,36 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             response.status = 400
             return json.dumps({"error": str(exc)})
         return json.dumps(fit_result_to_dict(result))
+
+    @app.post("/api/wizard/lens/opencv")
+    def api_wizard_lens_opencv() -> Any:
+        """Convert an OpenCV calibration file's lens for the snapshot; 422 says why the file gives none."""
+        response.content_type = "application/json"
+        data = _load_json_body()
+        if data is None:
+            return json.dumps({"error": "Invalid JSON"})
+        try:
+            text, img_w, img_h, size = _parse_lens_opencv_body(data)
+        except (KeyError, TypeError, ValueError) as exc:
+            response.status = 400
+            return json.dumps({"error": str(exc)})
+
+        from openfollow.scene.opencv_lens import (
+            OpenCvLensError,
+            OpenCvSizeUnknown,
+            fit_opencv_lens,
+            parse_opencv_calibration,
+        )
+
+        try:
+            cal = parse_opencv_calibration(text)
+            fit = fit_opencv_lens(cal, img_w, img_h, size)
+        except OpenCvSizeUnknown as exc:
+            response.status = 422
+            return json.dumps({"error": str(exc), "needs_size": True})
+        except OpenCvLensError as exc:
+            return _json_error(422, str(exc))
+        return json.dumps({**asdict(fit), "fisheye": cal.fisheye})
 
     # -- Marker catalog (shared id/name/color + per-station selection) ----
 

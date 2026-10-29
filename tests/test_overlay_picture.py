@@ -96,6 +96,7 @@ def test_kept_panels_look_like_panels_drawn_directly(scale: float, changes: dict
         {"show_hud_help": False},
         {"keyboard_connected": False},
         {"mouse_enabled": True},
+        {"keyboard_labels": {"toggle_help": "j"}},
     ],
     ids=lambda changes: next(iter(changes)),
 )

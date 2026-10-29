@@ -8591,7 +8591,7 @@ class TestUiConfig:
         save_config(loaded, str(temp_config_path))
         assert "show_experimental_features" not in temp_config_path.read_text()
 
-    @pytest.mark.parametrize("features_on", [["zones", "detection", "paths"], ["detection", "paths", "ground_grid"]])
+    @pytest.mark.parametrize("features_on", [["zones", "detection", "paths"], ["detection", "paths", "touch_remote"]])
     def test_feature_on_reads_the_list(self, features_on) -> None:  # noqa: ANN001
         from openfollow.configuration import AppConfig, UiConfig, feature_on
 
@@ -9173,135 +9173,6 @@ class TestPathsHotReload:
         changed.grid.width = 12.0
         apply_runtime_config_changes(app, changed)
         assert app._paths.is_locked(1)
-
-
-# ---------------------------------------------------------------------------
-# GroundGridConfig
-# ---------------------------------------------------------------------------
-
-
-def test_ground_grid_defaults_are_inactive() -> None:
-    from openfollow.configuration import GroundGridConfig
-
-    gg = GroundGridConfig()
-    assert (gg.enabled, gg.visible, gg.z_offset, gg.vertices) == (False, True, 0.0, [])
-    assert gg.active is False
-
-
-@pytest.mark.parametrize("bad", [None, "abc", 3, [1, 2]])
-def test_ground_grid_flags_reject_wrong_type(bad: object) -> None:
-    from openfollow.configuration import GroundGridConfig
-
-    gg = GroundGridConfig(enabled=bad, visible=bad)
-    assert (gg.enabled, gg.visible) == (False, True)
-
-
-@pytest.mark.parametrize(("value", "expected"), [("true", True), ("false", False), (True, True)])
-def test_ground_grid_flags_accept_bool_forms(value: object, expected: bool) -> None:
-    from openfollow.configuration import GroundGridConfig
-
-    assert GroundGridConfig(enabled=value).enabled is expected
-
-
-@pytest.mark.parametrize(("value", "expected"), [(-1.5, -1.5), ("0.6", 0.6), (2, 2.0)])
-def test_ground_grid_z_offset_keeps_finite_numbers(value: object, expected: float) -> None:
-    from openfollow.configuration import GroundGridConfig
-
-    assert GroundGridConfig(z_offset=value).z_offset == pytest.approx(expected)
-
-
-@pytest.mark.parametrize("bad", [None, "abc", True, float("nan"), float("inf"), [1.0]])
-def test_ground_grid_z_offset_rejects_wrong_type_to_default(bad: object) -> None:
-    from openfollow.configuration import GroundGridConfig
-
-    assert GroundGridConfig(z_offset=bad).z_offset == 0.0
-
-
-@pytest.mark.parametrize("bad", [None, "abc", True, 5, {"x": 1}])
-def test_ground_grid_vertices_reject_non_list(bad: object) -> None:
-    from openfollow.configuration import GroundGridConfig
-
-    assert GroundGridConfig(vertices=bad).vertices == []
-
-
-def test_ground_grid_vertices_keep_only_finite_pairs() -> None:
-    from openfollow.configuration import GroundGridConfig
-
-    gg = GroundGridConfig(
-        vertices=[
-            [0, 0],
-            ["1", "2.5"],
-            ["bad", 1],
-            [3],
-            "xy",
-            [True, 1],
-            [float("nan"), 1],
-            [4, float("inf")],
-            (5, 6, 7),
-        ]
-    )
-    assert gg.vertices == [[0.0, 0.0], [1.0, 2.5], [5.0, 6.0]]
-
-
-def test_ground_grid_vertices_are_capped() -> None:
-    from openfollow.configuration import GROUND_GRID_MAX_VERTICES, GroundGridConfig
-
-    gg = GroundGridConfig(vertices=[[float(i), 0.0] for i in range(GROUND_GRID_MAX_VERTICES + 10)])
-    assert len(gg.vertices) == GROUND_GRID_MAX_VERTICES
-    assert gg.vertices[-1] == [float(GROUND_GRID_MAX_VERTICES - 1), 0.0]
-
-
-@pytest.mark.parametrize(
-    ("enabled", "vertices", "active"),
-    [
-        (True, [[0, 0], [1, 0], [1, 1]], True),
-        (True, [[0, 0], [1, 0]], False),
-        (False, [[0, 0], [1, 0], [1, 1]], False),
-        (True, [[0, 0], [1, 0], ["x", 1]], False),
-    ],
-)
-def test_ground_grid_active_needs_enabled_and_three_corners(enabled: bool, vertices: list, active: bool) -> None:
-    from openfollow.configuration import GroundGridConfig
-
-    assert GroundGridConfig(enabled=enabled, vertices=vertices).active is active
-
-
-def test_ground_grid_round_trips_through_toml(tmp_path) -> None:
-    from openfollow.configuration import load_config, save_config
-
-    cfg = AppConfig()
-    cfg.ground_grid.enabled = True
-    cfg.ground_grid.visible = False
-    cfg.ground_grid.z_offset = -1.2
-    cfg.ground_grid.vertices = [[0.0, 0.0], [2.0, 0.0], [2.0, 1.5]]
-    path = tmp_path / "config.toml"
-    save_config(cfg, str(path))
-
-    loaded = load_config(str(path))
-    assert loaded.ground_grid == cfg.ground_grid
-
-
-def test_ground_grid_hand_edited_toml_is_normalised(tmp_path) -> None:
-    from openfollow.configuration import load_config
-
-    path = tmp_path / "config.toml"
-    path.write_text('[ground_grid]\nenabled = "yes"\nz_offset = "low"\nvertices = [[0, 0], ["a", 1], [1, 0], [1, 1]]\n')
-    gg = load_config(str(path)).ground_grid
-    assert gg.enabled is True
-    assert gg.z_offset == 0.0
-    assert gg.vertices == [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]
-
-
-def test_apply_runtime_ground_grid_swaps_live() -> None:
-    app = _DummyApp(AppConfig())
-    new_config = AppConfig()
-    new_config.ground_grid.enabled = True
-    new_config.ground_grid.vertices = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]
-
-    apply_runtime_config_changes(app, new_config)
-
-    assert app._config.ground_grid == new_config.ground_grid
-    assert app._web_commands.restart_requested is False
 
 
 @pytest.mark.parametrize("bad", [None, 7, True])

@@ -1312,53 +1312,6 @@ class TestLockedOnAPath:
         assert app._server.get_marker(1).pos == _DEFAULT_POS
 
 
-class TestGrabOnTheGroundGrid:
-    """Inside a ground grid that drops markers, the ring is drawn on its floor, and grabbed there."""
-
-    @staticmethod
-    def _pit(app: _DummyApp, *, experimental: bool = True) -> None:
-        from openfollow.configuration import GroundGridConfig
-
-        app._config.ui.shown_features = ["ground_grid"] if experimental else []
-        app._config.ground_grid = GroundGridConfig(
-            enabled=True, z_offset=-1.5, vertices=[[-2.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]]
-        )
-        app._config.marker.ground_circle = True
-
-    @staticmethod
-    def _seen(app: _DummyApp, z: float) -> tuple[float, float]:
-        w, h = _canvas_size(app)
-        scr = project_points(_cam_buffer(app), np.array([[0.0, 0.0, z]], dtype=np.float64), float(w), float(h))
-        return float(scr[0, 0]), float(scr[0, 1])
-
-    def test_the_ring_drawn_on_the_pit_floor_grabs(self) -> None:
-        app = _DummyApp()
-        self._pit(app)
-        assert MouseHandler(app).on_pointer_down(*self._seen(app, -1.5), 1) is True
-
-    def test_the_stage_level_spot_above_it_does_not(self) -> None:
-        app = _DummyApp()
-        self._pit(app)
-        assert MouseHandler(app).on_pointer_down(*self._seen(app, 0.0), 1) is False
-
-    def test_a_marker_grabbed_on_the_pit_floor_does_not_jump_when_the_mouse_moves(self) -> None:
-        app = _DummyApp()
-        self._pit(app)
-        handler = MouseHandler(app)
-        x, y = self._seen(app, -1.5)
-        assert handler.on_pointer_down(x, y, 1) is True
-        # A move of one pixel from where it was grabbed leaves the marker where it is.
-        handler.on_pointer_move(x + 1.0, y)
-        handler.update()
-        mx, my, _ = app._server.get_marker(1).pos
-        assert (mx, my) == (pytest.approx(0.0, abs=0.05), pytest.approx(0.0, abs=0.05))
-
-    def test_without_experimental_features_the_ring_stays_on_the_main_grid(self) -> None:
-        app = _DummyApp()
-        self._pit(app, experimental=False)
-        assert MouseHandler(app).on_pointer_down(*self._seen(app, 0.0), 1) is True
-
-
 def test_an_unreadable_operator_screen_size_ignores_the_click_instead_of_raising() -> None:
     """The frame loop must survive a GTK size read that raises; the click just does nothing."""
 

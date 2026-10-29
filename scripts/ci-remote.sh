@@ -41,7 +41,7 @@ log() { printf '\033[1;36m[ci-remote]\033[0m %s\n' "$*" >&2; }
 # A change (uncommitted part included) to these paths is timed against the merge-base
 # after a green `make ci`. The bench runs bare: make turns its exit 1 (slower) into 2.
 PERF_AB="poetry run python scripts/hw_validation/hud_bench.py --compare"
-HUD_PATHS='^(openfollow/(video/(overlay|hud_render)\.py|runtime/overlay_[a-z_]+\.py|scene/(solver|ground_grid|camera)\.py|zones/geometry\.py|window\.py)|tests/_hud_scenes\.py|scripts/hw_validation/hud_bench\.py)$'
+HUD_PATHS='^(openfollow/(video/(overlay|hud_render)\.py|runtime/overlay_[a-z_]+\.py|scene/(solver|camera)\.py|zones/geometry\.py|window\.py)|tests/_hud_scenes\.py|scripts/hw_validation/hud_bench\.py)$'
 perf_base=""
 perf_dir=""
 

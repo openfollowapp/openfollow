@@ -335,7 +335,7 @@ Read the guide before changing code in its paths.
 |---|---|
 | `configuration.py`, `config_restore.py`, `restore_hold.py`, config import / export / reset / push / restore, hot reload | [config](docs/architecture/config.md) |
 | `video/` (not detection), `video/inputs/`, `privilege/camera_config.py` | [video](docs/architecture/video.md) |
-| `video/overlay.py`, `video/hud_render.py`, `video/gl_*.py`, `runtime/overlay_*`, `window.py`, on-screen menus, `scene/ground_grid.py` | [hud](docs/architecture/hud.md) |
+| `video/overlay.py`, `video/hud_render.py`, `video/gl_*.py`, `runtime/overlay_*`, `window.py`, on-screen menus | [hud](docs/architecture/hud.md) |
 | `psn/`, `otp/`, `rttrpm/`, the OSC transmitter, `packet_chunking.py`, the stall watchdog | [outputs](docs/architecture/outputs.md) |
 | `net_utils.py`, `net_adapters.py`, `network/`, `station_fqdn.py`, `runtime/network_observer.py`, `web/discovery.py`, any `*_iface` field | [network](docs/architecture/network.md) |
 | `input/`, `binding_conflicts.py`, the OSC listener | [input](docs/architecture/input.md) |

@@ -32,5 +32,4 @@ The table at the end of **Advanced Settings** lists what this station uses: one 
 - **Lens line suggestions** – the dashed suggested lines in the Setup Wizard's Lens step. Off, the Lens step suggests no lines, and lines are drawn by hand.
 - **Person detection** – the Person Detection tab. Off, detection does not run.
 - **RTTrPM output** – the RTTrPM Output section and its Interface Assignment row. Off, nothing is sent.
-- **Ground grid** – the Ground Grid section. Off, it is neither drawn nor drops markers onto its height.
 - **Touch remote** – the Touch Remote section and its launcher. Off, every remote lets go of its marker.

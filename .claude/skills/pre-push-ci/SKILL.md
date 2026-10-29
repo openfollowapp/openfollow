@@ -46,7 +46,7 @@ the Pi, or locally as the fallback.
 
 When the change (uncommitted files included) touches the Operator Screen
 drawing paths (`video/overlay.py`, `video/hud_render.py`, `runtime/overlay_*.py`,
-`scene/solver.py` / `ground_grid.py` / `camera.py`, `zones/geometry.py`,
+`scene/solver.py` / `camera.py`, `zones/geometry.py`,
 `window.py`, the bench scenes or the bench itself), `ci-remote` follows a green
 `make ci` with a comparison of its own (`make perf-ab PERF_BASE=<dir>` is the
 same step by hand): the bench scenes drawn with this tree's renderer and with

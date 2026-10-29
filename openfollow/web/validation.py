@@ -428,11 +428,6 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
             _as_float, lo=-C_BOUND, hi=C_BOUND, human_error=f"Must be a number from {-C_BOUND:g} to {C_BOUND:g}."
         ),
     },
-    "ground_grid": {
-        "enabled": FieldRule(_as_bool),
-        "visible": FieldRule(_as_bool),
-        "z_offset": FieldRule(_as_float, human_error="Must be a number."),
-    },
     "grid": {
         "visible": FieldRule(_as_bool),
         "width": FieldRule(_as_float, lo=0.1, human_error="Width must be at least 0.1 m."),

@@ -154,10 +154,6 @@ _SCRIPT_POLLS: dict[tuple[str, str], tuple[str, str] | None] = {
     ("detect-input.js", "poll"): ("poll", "if (document.hidden) {"),
     ("video_source.tpl", "refresh"): ("refresh", "pollShown(cb)"),
     ("zone_editor.tpl", ""): ("isZoneEditorVisible", "pollShown(section)"),
-    ("ground_grid.tpl", ""): (
-        "visible",
-        "!document.hidden && document.body.contains(canvas) && canvas.getClientRects()",
-    ),
     ("path_editor.tpl", ""): ("onScreen", "!document.hidden && q('list').getClientRects()"),
     # The remote's heartbeat and card state, only while the card is open on a visible page.
     ("touch-remote.js", "driveTick"): ("driveTick", "|| document.hidden) return;"),

@@ -168,6 +168,7 @@ def test_the_list_names_each_backup_newest_first(station) -> None:
                 "version": "0.6.0",
                 "created": "2026-10-28T20:41:00+00:00",
                 "newer": True,
+                "parts": [],
             },
             {
                 "name": update,
@@ -177,6 +178,7 @@ def test_the_list_names_each_backup_newest_first(station) -> None:
                 "version": "0.4.3",
                 "created": "2026-10-28T20:40:00+00:00",
                 "newer": False,
+                "parts": [],
             },
         ]
     }

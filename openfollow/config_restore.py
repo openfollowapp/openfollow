@@ -128,6 +128,7 @@ class Backup:
     version: str
     created: str
     newer: bool
+    parts: tuple[str, ...]
 
     def as_json(self) -> dict[str, Any]:
         """The row for the web UI; never the path or anything the archive holds but its manifest."""
@@ -139,6 +140,7 @@ class Backup:
             "version": shown_version(self.version),
             "created": self.created,
             "newer": self.newer,
+            "parts": list(self.parts),
         }
 
 
@@ -303,6 +305,22 @@ def _created(manifest: dict[str, Any]) -> str:
     return moment.astimezone(UTC).isoformat(timespec="seconds")
 
 
+# What a restore brings back besides the configuration, as the confirmation names it.
+_PART_WORDS = (
+    ("markers.toml", "the marker catalog"),
+    ("templates/user", "saved templates"),
+    ("lens-calibrations", "lens calibrations"),
+)
+
+
+def _parts(manifest: dict[str, Any]) -> tuple[str, ...]:
+    """The parts the manifest says the archive holds; every part when it does not say."""
+    sources = manifest.get("sources")
+    if not isinstance(sources, dict):
+        return tuple(words for _member, words in _PART_WORDS)
+    return tuple(words for member, words in _PART_WORDS if member in sources)
+
+
 def _before(kind: str, to: str) -> tuple[str, str]:
     """The row's label for what the backup was made before, and the same in running text."""
     if kind == UPDATE_KIND:
@@ -333,6 +351,7 @@ def _describe(path: Path, match: re.Match[str], moment: datetime, *, web: bool, 
         version=version,
         created=_created(manifest) or moment.isoformat(timespec="seconds"),
         newer=is_newer(version, running),
+        parts=_parts(manifest),
     )
 
 

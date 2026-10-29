@@ -364,6 +364,7 @@ _BACKUPS = [
         "version": "0.6.0",
         "created": "2026-10-29T07:12:00+00:00",
         "newer": True,
+        "parts": ["the marker catalog", "saved templates", "lens calibrations"],
     },
     {
         "name": "Stage-v0.5.0rc2-20261028T204000Z.ofbackup",
@@ -373,6 +374,7 @@ _BACKUPS = [
         "version": "0.5.0rc2",
         "created": "2026-10-28T20:40:00+00:00",
         "newer": False,
+        "parts": ["the marker catalog", "saved templates", "lens calibrations"],
     },
 ]
 _ROWS = """
@@ -485,6 +487,31 @@ def test_the_question_names_the_backup_and_only_its_final_button_is_red() -> Non
         "urls": ["GET /api/config/backups"],
         "modal": None,
     }
+
+
+@pytest.mark.parametrize(
+    ("parts", "named"),
+    [
+        (
+            ["the marker catalog", "saved templates"],
+            "together with the marker catalog and saved templates of that time, ",
+        ),
+        (["lens calibrations"], "together with lens calibrations of that time, "),
+        ([], ""),
+    ],
+    ids=["two", "one", "config only"],
+)
+def test_the_question_names_only_the_parts_the_backup_holds(parts: list, named: str) -> None:
+    listing = [dict(_BACKUPS[0]), {**_BACKUPS[1], "parts": parts}]
+    out = _backups(
+        "answer = false;" + _press_restore() + "out.asked = asked;",
+        listing=f"{{ body: {{ backups: {json.dumps(listing)} }} }}",
+    )
+    assert out["asked"][0]["message"] == (
+        "The settings from 28 Oct 2026, 20:40 (made before the update to 0.5.0rc3, version 0.5.0rc2) replace the "
+        f"current ones, {named}and the station restarts. This station's name, network access and local file paths "
+        "stay as they are. A backup of the current settings is saved on the station first."
+    )
 
 
 def test_a_restore_names_its_backup_and_waits_for_a_new_openfollow() -> None:

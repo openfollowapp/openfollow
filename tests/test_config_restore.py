@@ -7,6 +7,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 import sys
 import tarfile
 from collections.abc import Callable
@@ -196,6 +197,7 @@ def test_a_row_carries_the_version_that_wrote_it_and_when(station: Path) -> None
             "version": "0.5.0rc2",
             "created": "2026-10-28T20:41:00+00:00",
             "newer": False,
+            "parts": ["the marker catalog", "saved templates", "lens calibrations"],
         },
         {
             "name": rows[1].name,
@@ -205,6 +207,7 @@ def test_a_row_carries_the_version_that_wrote_it_and_when(station: Path) -> None
             "version": "0.4.3",
             "created": "2026-10-28T20:40:00+00:00",
             "newer": False,
+            "parts": ["the marker catalog", "saved templates", "lens calibrations"],
         },
     ]
 
@@ -219,7 +222,36 @@ def test_a_backup_from_a_newer_version_is_marked(station: Path) -> None:
 def test_a_row_never_carries_the_archive_or_its_path(station: Path) -> None:
     _web(station, "import", 0)
     (row,) = list_backups(_config(station), "0.5.0rc3")
-    assert set(row.as_json()) == {"name", "kind", "before", "made_before", "version", "created", "newer"}
+    assert set(row.as_json()) == {"name", "kind", "before", "made_before", "version", "created", "newer", "parts"}
+
+
+def test_a_row_names_only_the_parts_its_backup_holds(station: Path) -> None:
+    shutil.rmtree(station / "lens-calibrations")
+    shutil.rmtree(station / "templates")
+    _update(station, 0)
+    (row,) = list_backups(_config(station), "0.5.0rc3")
+    assert row.parts == ("the marker catalog",)
+
+
+@pytest.mark.parametrize(
+    ("manifest", "parts"),
+    [
+        (b'{"kind": "import", "version": "0.5.0rc3", "sources": {"config.toml": "x"}}', ()),
+        (b'{"kind": "import", "version": "0.5.0rc3"}', ("the marker catalog", "saved templates", "lens calibrations")),
+        (
+            b'{"kind": "import", "version": "0.5.0rc3", "sources": ["markers.toml"]}',
+            ("the marker catalog", "saved templates", "lens calibrations"),
+        ),
+    ],
+    ids=["config only", "no sources", "sources not a table"],
+)
+def test_a_manifest_that_does_not_name_its_parts_offers_every_part(
+    station: Path, manifest: bytes, parts: tuple
+) -> None:
+    archive = settings_backup.web_backup_dir(station / "config.toml") / _web(station, "import", 0)
+    _rewritten_manifest(archive, manifest)
+    (row,) = list_backups(_config(station), "0.5.0rc3")
+    assert row.parts == parts
 
 
 def _rewritten_manifest(archive: Path, manifest: bytes | None) -> None:

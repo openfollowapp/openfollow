@@ -290,14 +290,20 @@ function _backupFailed(info) {
     _transferFailed(info, 'Not restored.', 'backups-list');
 }
 
+/* The parts besides the configuration the backup holds, as running text; nothing when it holds none. */
+function _backupParts(parts) {
+    if (!parts || !parts.length) return '';
+    var named = parts.length > 1 ? parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1] : parts[0];
+    return 'together with ' + named + ' of that time, ';
+}
+
 async function restoreBackup(backup) {
     window.OpenFollow.saveError.clear(document.getElementById('config-transfer-section'));
     var ok = await modalConfirm({
         title: 'Restore this backup?',
         message: 'The settings from ' + _backupTime(backup.created) + ' (made before ' + backup.made_before
-            + ', version ' + backup.version + ') replace the current ones, together with the marker '
-            + 'catalog, saved templates and lens calibrations of that time, and the station restarts. '
-            + 'This station\'s name, network access and local file paths stay as they are. A backup '
+            + ', version ' + backup.version + ') replace the current ones, ' + _backupParts(backup.parts)
+            + 'and the station restarts. This station\'s name, network access and local file paths stay as they are. A backup '
             + 'of the current settings is saved on the station first.',
         confirmLabel: 'Restore and Restart',
         danger: true,

@@ -485,24 +485,29 @@ def test_a_person_away_from_any_edge_is_pinned_where_they_are(
     assert sent[-1][1] == pytest.approx(1.7 + floor)
 
 
-def _walk(mode: str, depth: float, steps: list[tuple[float, float, bool]]) -> list[tuple[float, float, float]]:
-    """A person walking over a ``depth`` m deep 0.5 m riser; the pinned X, Y and the sent Z of each step."""
+def _walk(
+    mode: str, depth: float, steps: list[tuple[float, float, bool]], stage: float = 0.0
+) -> list[tuple[float, float, float]]:
+    """A person walking over a ``depth`` m deep 0.5 m riser on a stage at ``stage``; the pinned X, Y and the
+    sent Z above the stage of each step."""
     marker = _StubMarker(1)
-    marker.set_pos(steps[0][0], steps[0][1], 1.7)
+    marker.set_pos(steps[0][0], steps[0][1], stage + 1.7)
     cfg = _replace_cfg(pin_point="top") if mode == "replace" else _assist_cfg(pin_point="top", assist_radius_m=3.0)
     app = _riser_app(cfg, 0.0, marker)
+    app._config.grid.z_offset = stage
     app._config.trigger_zones.zones[0].vertices = [[-5, 0], [5, 0], [5, depth], [-5, depth]]
     pinned = []
     for x, y, on in steps:
         if mode == "assist":
-            _seed_anchor(app, x, y, 1.7)
-        floor = 0.5 if on else 0.0
+            _seed_anchor(app, x, y, stage + 1.7)
+        floor = stage + (0.5 if on else 0.0)
         box = _person_box(app, x, y, floor, floor + 1.7)
         sent = _frames(app, marker, box, _StubDetector(box) if mode == "replace" else _AssistDetector([box]), n=3)
-        pinned.append((marker.pos[0], marker.pos[1], sent[-1][1]))
+        pinned.append((marker.pos[0], marker.pos[1], sent[-1][1] - stage))
     return pinned
 
 
+@pytest.mark.parametrize("stage", [0.0, 1.0], ids=["stage at 0", "stage at 1 m"])
 @pytest.mark.parametrize("mode", ["replace", "assist"])
 @pytest.mark.parametrize(
     ("depth", "steps"),
@@ -513,11 +518,48 @@ def _walk(mode: str, depth: float, steps: list[tuple[float, float, bool]]) -> li
     ids=["a shallow riser from downstage", "a deep riser from the side"],
 )
 def test_a_person_stepping_onto_a_riser_is_lifted_where_they_stand(
-    mode: str, depth: float, steps: list[tuple[float, float, bool]]
+    mode: str, depth: float, steps: list[tuple[float, float, bool]], stage: float
 ) -> None:
-    for (x, y, on), (px, py, sent_z) in zip(steps, _walk(mode, depth, steps), strict=True):
+    for (x, y, on), (px, py, sent_z) in zip(steps, _walk(mode, depth, steps, stage), strict=True):
         assert (px, py) == (pytest.approx(x, abs=1e-6), pytest.approx(y, abs=1e-6))
         assert sent_z == pytest.approx(2.2 if on else 1.7)
+
+
+def test_a_person_just_in_front_of_a_pit_stays_on_the_stage() -> None:
+    """The stage plane is tried before a pit's lower one, which would land the same feet inside the pit."""
+    marker = _StubMarker(1)
+    marker.set_pos(0.0, -0.3, 1.7)
+    app = _riser_app(_replace_cfg(pin_point="top"), 0.0, marker)
+    app._config.trigger_zones.zones[0].z_offset = -0.5
+    box = _person_box(app, 0.0, -0.3, 0.0, 1.7)
+    sent = _frames(app, marker, box, _StubDetector(box), n=3)
+    assert marker.pos[1] == pytest.approx(-0.3, abs=1e-6)
+    assert sent[-1][1] == pytest.approx(1.7)
+
+
+# Feet 5 cm inside the riser's downstage edge, seen 3 px lower: no zone height fits them.
+_IN_THE_BAND = 3 / 1080
+
+
+def _band_box(app: SimpleNamespace, track_id: int) -> _StubDetection:
+    still = _person_box(app, 0.0, 0.05, 0.5, 2.2)
+    return _StubDetection(still.x1, still.y1 + _IN_THE_BAND, still.x2, still.y2 + _IN_THE_BAND, track_id=track_id)
+
+
+def _band_y_after(app: SimpleNamespace, marker: object, first: list, mode: str, track_id: int) -> float:
+    """Pin ``first`` frame by frame, then a box in the band; the Y the band box is pinned at."""
+    for detections in first:
+        _run(
+            app,
+            (
+                _StubDetector(detections[0] if detections else None)
+                if mode == "replace"
+                else _AssistDetector(detections)
+            ),
+        )
+    box = _band_box(app, track_id)
+    _run(app, _StubDetector(box) if mode == "replace" else _AssistDetector([box]))
+    return marker.pos[1]
 
 
 @pytest.mark.parametrize("mode", ["replace", "assist"])
@@ -543,6 +585,69 @@ def test_feet_jittering_across_a_risers_edge_keep_their_height(mode: str) -> Non
         sent.append((y, z + marker.lift))
     ys = [y for y, _ in sent[20:]]
     assert max(ys) - min(ys) < 0.5, "the pinned Y jumps between two planes"
+
+
+# Unprojected on the stage plane, the head in the band lands a metre upstage; on the riser's, by its feet.
+_ON_THE_STAGE_PLANE = 1.0
+
+
+def test_an_untracked_box_borrows_no_height_from_another_one() -> None:
+    marker = _StubMarker(1)
+    marker.set_pos(0.0, 0.05, 1.7)
+    app = _riser_app(_replace_cfg(pin_point="top"), 0.0, marker)
+    on_riser = _person_box(app, 0.0, 0.05, 0.5, 2.2, track_id=-1)
+    assert _band_y_after(app, marker, [[on_riser]], "replace", track_id=-1) > _ON_THE_STAGE_PLANE
+
+
+@pytest.mark.parametrize("mode", ["replace", "assist"])
+def test_a_track_keeps_its_height_in_the_band(mode: str) -> None:
+    marker = _StubMarker(1)
+    marker.set_pos(0.0, 0.05, 1.7)
+    cfg = _replace_cfg(pin_point="top") if mode == "replace" else _assist_cfg(pin_point="top")
+    app = _riser_app(cfg, 0.0, marker)
+    if mode == "assist":
+        _seed_anchor(app, 0.0, 0.05, 1.7)
+    on_riser = _person_box(app, 0.0, 0.05, 0.5, 2.2)
+    assert _band_y_after(app, marker, [[on_riser]], mode, track_id=1) < _ON_THE_STAGE_PLANE
+
+
+def test_a_track_lost_and_found_again_keeps_no_height() -> None:
+    marker = _StubMarker(1)
+    marker.set_pos(0.0, 0.05, 1.7)
+    app = _riser_app(_replace_cfg(pin_point="top"), 0.0, marker)
+    on_riser = _person_box(app, 0.0, 0.05, 0.5, 2.2)
+    assert _band_y_after(app, marker, [[on_riser], []], "replace", track_id=1) > _ON_THE_STAGE_PLANE
+
+
+def test_an_assist_marker_let_go_of_its_person_keeps_no_height() -> None:
+    marker = _StubMarker(1)
+    marker.set_pos(0.0, 0.05, 1.7)
+    app = _riser_app(_assist_cfg(pin_point="top", assist_radius_m=1.0), 0.0, marker)
+    on_riser = _person_box(app, 0.0, 0.05, 0.5, 2.2)
+    _seed_anchor(app, 0.0, 0.05, 1.7)
+    _run(app, _AssistDetector([on_riser]))
+    _seed_anchor(app, 0.0, -5.0, 1.7)  # the operator steers away: nobody in range, the lock is let go
+    _run(app, _AssistDetector([on_riser]))
+    _seed_anchor(app, 0.0, 0.5, 1.7)
+    assert _band_y_after(app, marker, [], "assist", track_id=1) > _ON_THE_STAGE_PLANE
+
+
+def test_a_marker_that_joins_later_reads_the_band_on_its_own(monkeypatch) -> None:
+    """Markers remember heights apart, so a newcomer's detections are not those another marker cached."""
+    from openfollow.psn import Marker
+
+    m1, m2 = Marker(1, ""), Marker(2, "")
+    m1.set_pos(0.0, 0.05, 1.7)
+    m2.set_pos(0.0, 0.05, 1.7)
+    app = _riser_app(_assist_cfg(pin_point="top"), 0.0, _StubMarker(1))
+    app._server = _MultiMarkerServer({1: m1, 2: m2})
+    app._controlled_ids = [1]
+    _seed_anchor(app, 0.0, 0.05, 1.7, mid=1)
+    _run(app, _AssistDetector([_person_box(app, 0.0, 0.05, 0.5, 2.2)]))
+    app._controlled_ids = [1, 2]
+    _seed_anchor(app, 0.0, 0.05, 1.7, mid=2)
+    _run(app, _AssistDetector([_band_box(app, 1)]))
+    assert m1.pos[1] < _ON_THE_STAGE_PLANE < m2.pos[1]
 
 
 def test_assist_reads_another_persons_height_from_their_own_feet() -> None:

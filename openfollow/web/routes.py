@@ -5336,6 +5336,14 @@ def _camera_view(cfg: AppConfig) -> tuple[Any, tuple[float, float, float, float]
     return camera_params(cfg.camera), effective_lens(cfg)
 
 
+def _camera_for_client(cfg: AppConfig) -> dict[str, float]:
+    """The saved camera and its lens for a page that projects in the browser (``static/js/camera-model.js``)."""
+    c = cfg.camera
+    k1, k2, cx, cy = effective_lens(cfg)
+    pose = {"pos_x": c.pos_x, "pos_y": c.pos_y, "pos_z": c.pos_z, "pitch": c.pitch, "yaw": c.yaw, "roll": c.roll}
+    return {**pose, "fov": c.fov, "k1": k1, "k2": k2, "cx": cx, "cy": cy}
+
+
 # Chords per straight world segment when the lens bows it, as on the Operator Screen.
 _PICTURE_SUBDIVISIONS = 24
 # Upper bound on the world points one picture request projects once subdivided: 1666 points a request.
@@ -10860,6 +10868,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     "y_offset": cfg.grid.y_offset,
                     "z_offset": cfg.grid.z_offset,
                 },
+                "camera": _camera_for_client(cfg),
                 "zones": zones_out,
                 "markers": [{"id": marker_id, "x": x, "y": y} for marker_id, x, y in server.get_marker_positions()],
                 # Shared destinations travel with the poll so the editor's

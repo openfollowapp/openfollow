@@ -57,7 +57,7 @@ openfollow/              # Single unified package
     ├── discovery.py
     ├── peer_auth.py     # HMAC-signed peer request auth (no PIN on the wire)
     ├── lens_calibrations.py # Lens calibrations saved on this station, one JSON file each
-    ├── static/js/       # polygon-plan.js (top-down plan), picture-view.js (camera picture), ...
+    ├── static/js/       # polygon-plan.js (top-down plan), picture-view.js (camera picture), camera-model.js (projection), picture-polygon.js (corners on the picture), ...
     └── templates/
 ```
 

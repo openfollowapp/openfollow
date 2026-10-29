@@ -40,18 +40,23 @@ The interactive mockup, built on the Media Gallery's Concert picture and its cal
 - The zone overlay draws each zone at the stage plane plus its Z offset. The Z offset is part of the `ZoneCache` key, with a redraw test case.
 - Feature off: no lift (target 0, so a lift already under way eases out), zones drawn at the stage plane, fields hidden.
 
+## Not in this change / known limits
+
+- A corner save given up after 10 s without an answer may still reach the station later and land after a newer one; preventing that needs revisions on the server.
+- The station addresses zones by index, so while edits keep the poll held, a zone deleted from another browser, or a delete that failed or timed out but still landed, can leave the page's list stale, and a later queued write can reach another zone; closing it needs stable zone ids on the station.
+
 ## Work items
 
 **Camera editor (#569)**
-- [ ] Camera and lens in `GET /api/zones`; the client projection module, with a test against the Python.
-- [ ] Corners as named 44 px handles, the chosen zone drawn thicker, unseen corners skipped.
-- [ ] Drag with the loupe and the stage-position readout; the outline moves with the corner; click without move chooses.
-- [ ] Tab, arrows, Shift, Delete and Esc.
-- [ ] Edge drag adds a corner; the hover dot for a mouse.
-- [ ] **Delete corner** (at least three), **Delete zone** renamed.
-- [ ] Full screen with its bar.
-- [ ] Polling holds during a drag.
-- [ ] JS tests for each interaction; help drawer `zone_editor.md`; `docs/architecture/zones.md`.
+- [x] Camera and lens in `GET /api/zones`; the client projection module, with a test against the Python.
+- [x] Corners as named 44 px handles, the chosen zone drawn thicker, unseen corners skipped.
+- [x] Drag with the loupe and the stage-position readout; the outline moves with the corner; click without move chooses.
+- [x] Tab, arrows, Shift, Delete and Esc.
+- [x] Edge drag adds a corner; the hover dot for a mouse.
+- [x] **Delete corner** (at least three), **Delete zone** renamed.
+- [x] Full screen with its bar.
+- [x] Polling holds during a drag.
+- [x] JS tests for each interaction; help drawer `zone_editor.md`; `docs/architecture/zones.md`.
 - [ ] Review to cosmetic, gate, station check on pi66.
 
 **Zone heights (#570)**

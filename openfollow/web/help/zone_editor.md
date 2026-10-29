@@ -1,19 +1,29 @@
 # Zone Editor
 
-Draw zone polygons that fire OSC messages when tracked markers (or detected people) enter or leave. Coordinates are in **metres** on the stage plane, relative to the Reference Point. The canvas is a top-down view; upstage is at the top.
+Draw zone polygons that fire OSC messages when tracked markers (or detected people) enter or leave. Coordinates are in **metres** on the stage plane, relative to the Reference Point. The top-down view has upstage at the top; the camera view shows the zones on the camera picture.
 
 ## Canvas
 
 - **Click a zone** to select it; drag its labelled handles (V1, V2, …) to reshape it.
 - Occupied zones brighten and show the occupant count.
-- **Top-down / Camera** switches to the camera picture with the zones drawn on the stage floor. Dragging a corner there saves straight away. **Refresh Image** takes a new snapshot. New zones are drawn in the top-down view. Zones follow the saved camera position, so save camera changes first.
+- **Top-down / Camera** switches to the camera picture, the zones on the stage floor as the saved camera sees them. **Refresh Image** takes a new snapshot.
+
+### Camera view
+
+Corners move on the picture.
+
+- **Drag a corner** (V1, V2, …) – the loupe follows; saved when let go. A press without a move only chooses it.
+- **Drag from an edge** – adds a corner there.
+- **Delete corner** – a zone keeps three.
+- A corner off the picture has no handle; it moves in the top-down view.
+- **Keys** – Tab: next corner; arrows: 1 px, 10 with Shift; Delete: remove; Esc: let go, then leave full screen.
 
 ## Drawing
 
 - **+ New Zone** – each click drops a vertex.
 - **Finish Polygon** – closes the zone at three or more vertices. Clicking the first vertex or double-clicking also closes it.
 - **Cancel Drawing** – discards the polygon in progress.
-- **Delete Selected** – permanently removes the selected zone, after confirmation.
+- **Delete zone** – permanently removes the chosen zone, after confirmation.
 
 ## Zone details
 

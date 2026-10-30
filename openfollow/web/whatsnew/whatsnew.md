@@ -1,50 +1,40 @@
 v0.5.0
-## Simple and Advanced network mode
+## Highlights
 
-**General → Network Interface Settings** opens with a **Network mode** switch. **Simple** runs everything over one interface, the one shown below it, as before. **Advanced** gives each function its own interface under **Network Interface Assignment**, and adds VLANs. Adapters can be labelled in both modes. A station whose config already pins a function to an interface starts in Advanced; every other station starts in Simple.
+**A Setup Wizard in four steps.** Video Source, Lens, Camera Calibration and Review. The lens is measured from lines that are straight on stage, or loaded from an OpenCV calibration file, and the camera is calculated from marks pinned on the picture: **Simple** uses the four corners of a measured rectangle, **Advanced** known and triangulated points.
 
-In Advanced, check the pins: USB Ethernet adapters are now named after their MAC (`enx…`), so a pin to one may have moved.
+**Simple and Advanced network mode.** **General → Network Interface Settings** runs everything over one interface in **Simple**, or gives each function its own interface in **Advanced**, with VLANs and adapter labels.
 
-## Controller Slots are now stable on restart
+**Controllers keep their slot.** Gamepads and 3D Mice take their slot from the USB socket they are plugged into. **Input → Controller Slots** shows which drives which marker, with **Identify** and **Forget**, and **Button Names** shows Xbox, PlayStation or Nintendo names.
 
-Controllers now keep their slot by the USB socket they are plugged into, so one may drive a different marker than before. Check **Input → Controller Slots**.
+**Status & Diagnostics.** The Overview tab is one section: the stations on the network, then the video, this station and its network discovery, with power and controller warnings. The diagnostics bundle saves to a USB storage device.
 
-## Controlled markers are always shown
+**Settings backups.** The station backs up its settings before every update, import, restore and push. **General → Configuration Backup & Import** lists the backups, and **Restore…** brings one back.
 
-A marker this station controls now always appears on the Operator Screen and counts in the trigger zones, even if it was hidden before.
+**Zones on the camera picture.** The **Zone Editor**'s Camera view moves a zone's corners on the picture, as the Setup Wizard does. With the experimental **Zone heights** feature, a zone can sit above the stage and raise the markers inside it.
 
-## The Operator Screen follows the keyboard layout
+**And more:** cone markers, parking a marker so controllers skip it, the camera's latency measured from **Video Source**, and a **Features** table under **General → Station Settings → Advanced Settings**.
 
-The Operator Screen now uses the keyboard layout set in the station's system, where it used to assume a US keyboard. Choose another under **Input → Keyboard Input**.
+## Before the next show
 
-## Features replace Show experimental features
+**Network pins.** A station whose config pins a function to an interface starts in **Advanced**. Check the pins: USB Ethernet adapters are now named after their MAC (`enx…`), so a pin to one may have moved.
 
-The **Show experimental features** switch is now a **Features** table under **General → Station Settings → Advanced Settings**, and a change there applies on **Save**. A feature that is off is hidden and no longer runs. On any other station, check **RTTrPM output** before the next show: it starts off, so it no longer sends, even where **Send marker positions over RTTrPM** is ticked.
+**Controller order.** Controllers take their slot by USB socket, so one may drive a different marker than before. Check **Input → Controller Slots**.
 
-## Control frame replaces Invert control direction
+**Controlled markers are always shown.** A marker this station controls appears on the Operator Screen and counts in the trigger zones, even if it was hidden before.
 
-Under **Markers & Zones → Marker Movement**, **Invert control direction** is now **Control frame**. A station with it ticked keeps its inverted controls as **Fixed heading** 180°; every other station steers in **Stage axes**, as before.
+**Keyboard layout.** The Operator Screen uses the keyboard layout set in the station's system instead of assuming a US keyboard. Choose another under **Input → Keyboard Input**.
 
-## The Setup Wizard has four steps
+**RTTrPM may start off.** The **Show experimental features** switch is now the **Features** table. On a station that did not show experimental features, **RTTrPM output** starts off there, even where **Send marker positions over RTTrPM** is ticked: turn it on if this station sends RTTrPM.
 
-The **Setup Wizard** now runs Video Source, Lens, **Camera Calibration** and Review, and calculates the camera from marks pinned on the picture: **Simple** uses the four corners of a measured rectangle, **Advanced** known points and triangulated points. In Simple, **Save and finish** also saves the rectangle as the grid, with the point of origin you choose: centred between DSL and DSR, or **Custom**. Check that it matches the console's origin before saving. For a camera that looks almost straight down, the Setup Wizard asks for the exact height of the camera's lens.
+**Control frame.** **Invert control direction** is now **Control frame** under **Markers & Zones → Marker Movement**. A station that had it ticked keeps its inverted controls as **Fixed heading** 180°.
 
-## The camera is set in the Setup Wizard only
+**The camera is set in the Setup Wizard only.** The Camera & Grid tab shows the camera and lens read-only, and Ctrl/Cmd+S on the Operator Screen no longer saves the camera. Run the **Setup Wizard** to change them; in Simple, check the grid's point of origin against the console's before saving.
 
-The **Camera & Lens Calibration** section of the Camera & Grid tab now shows position, orientation, field of view and lens read-only: to change them, run the **Setup Wizard** again. **Apply to all stations** copies the camera with its calibration. Ctrl/Cmd+S on the Operator Screen no longer saves the camera. Its **Calibration** column shows when the calibration was saved, from which video source, the lens rating and how closely the pinned points fit the saved camera.
+**Pictures keep their shape.** A Media Gallery picture or USB Camera that is not 16:9 now plays with black bars instead of stretched. A station calibrated on such a picture needs the **Setup Wizard** again.
 
-## Pictures keep their shape
+**The Arena picture is gone.** The Media Gallery no longer offers **Arena**; a station that played it plays **Stage**. Choose a picture under **Video Source** and run the **Setup Wizard** for it.
 
-An image or clip in the **Media Gallery** that is not 16:9 now plays in its own shape, with black bars at the sides or at the top and bottom, where it used to be stretched to fill the screen. So does a **USB Camera** whose picture has a different shape from its **Render resolution**, such as a 4:3 camera at `1080p`. A station calibrated on such a picture needs the **Setup Wizard** again.
+**Video over Full HD or 30 fps shows an error.** A source sending more is reported on the Operator Screen and in the web UI, and keeps playing, with lag possible. Set the camera or encoder to 1920×1080 at 30 fps or less.
 
-## Restore a settings backup
-
-**General → Configuration Backup & Import** lists the settings backups the station saved before each update, import, restore to defaults and settings push. **Restore…** brings one back and restarts the station; its name, network access and local file paths stay as they are.
-
-## Zone heights (experimental)
-
-With **Zone heights** on under **Features**, a zone in the **Zone Editor** can sit at a **Z offset** above the stage, and **Marker height** adds that offset to the Z of a marker inside it.
-
-## Zones on the Operator Screen
-
-Zones on the Operator Screen are drawn without their names. **Markers & Zones → Trigger Zones → Occupied zones** chooses whether a zone lights up while a marker or person is inside it; it is on, as before.
+**Zones without names.** Zones on the Operator Screen are drawn without their names. **Markers & Zones → Trigger Zones → Occupied zones** chooses whether a zone lights up while a marker or person is inside it; it is on, as before.

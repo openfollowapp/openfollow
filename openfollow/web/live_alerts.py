@@ -62,7 +62,7 @@ class DiagnosticsAlerts:
         return hashlib.sha256("\x00".join(self.spoken()).encode("utf-8")).hexdigest()[:12]
 
 
-def diagnostics_alerts(stats: Mapping[str, Any], *, detection_shown: bool) -> DiagnosticsAlerts:
+def diagnostics_alerts(stats: Mapping[str, Any]) -> DiagnosticsAlerts:
     video = stats.get("video") or {}
     failure = str(video.get("failure") or "none")
     # "unknown" contributes no sentence: it would contradict the element's own wording.
@@ -90,10 +90,8 @@ def diagnostics_alerts(stats: Mapping[str, Any], *, detection_shown: bool) -> Di
 
     tracking = stats.get("tracking") or {}
     missing = tracking.get("missing_deps") or []
-    # Person Detection has no box while its feature is off, so nothing speaks for one either.
-    detection = None
-    if missing and tracking.get("enabled") and detection_shown:
-        detection = f"Missing packages: {', '.join(missing)}."
+    # ``enabled`` is already off while the Person Detection feature is, so nothing speaks for its box.
+    detection = f"Missing packages: {', '.join(missing)}." if missing and tracking.get("enabled") else None
     power = (stats.get("system") or {}).get("power") or {}
     return DiagnosticsAlerts(
         video=video_alert,

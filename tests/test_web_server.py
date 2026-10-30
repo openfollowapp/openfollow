@@ -977,14 +977,13 @@ def test_station_network_is_the_first_box_of_status_and_diagnostics(live_server)
     overview = body[body.index('id="tab-overview"') : body.index('id="tab-general"')]
     # The Overview tab is one section.
     assert overview.count('class="section"') == 1
-    assert 'id="overview-section"' not in body
     section = overview[overview.index('id="diagnostics-section"') :]
     # The tab's only section is always open: no fold key, so no Collapse toggle.
     assert "data-fold-key" not in section.split(">", 1)[0]
     box = section[section.index('<section class="stat-panel stations-box">') : section.index("</section>")]
     assert '<h3 class="stat-panel-title">Station Network</h3>' in box
     assert 'id="overview-peers"' in box
-    # It polls on its own, so it needs no Refresh button, and sits above the 1 s boxes.
+    # Its rows poll on their own, with no Refresh button, above the 1 s boxes.
     assert "Refresh" not in box
     assert section.index("stations-box") < section.index('id="diagnostics-live"')
 

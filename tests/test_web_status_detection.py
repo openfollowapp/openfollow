@@ -47,17 +47,17 @@ def test_switched_off_detection_raises_no_missing_packages_box() -> None:
 
 
 def test_with_the_feature_off_there_is_no_box_and_no_alert() -> None:
-    body = render_boxes({"tracking": {"enabled": True, "missing_deps": ["onnxruntime"]}}, detection_shown=False)
+    # The runtime stats report detection as not enabled while its feature is off.
+    stats = {"tracking": {"enabled": False, "missing_deps": ["onnxruntime"]}}
+    body = render_boxes(stats, detection_shown=False)
     assert "Person Detection" not in body
     assert "Missing packages" not in body
     assert '<div class="stats-columns diag-bento">' in body
-    assert "Missing packages" not in render_alerts(
-        {"tracking": {"enabled": True, "missing_deps": ["onnxruntime"]}}, detection_shown=False
-    )
+    assert "Missing packages" not in render_alerts(stats)
 
 
 def test_with_the_feature_on_it_is_the_fourth_box() -> None:
-    body = render_boxes({}, detection_shown=True)
+    body = render_boxes({})
     assert '<div class="stats-columns diag-bento with-detection">' in body
     assert re.findall(r'<h3 class="stat-panel-title">([^<]+)</h3>', body) == [
         "Video",

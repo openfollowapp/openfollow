@@ -4329,7 +4329,6 @@ def _build_diagnostics_cards(
     peers = server.get_peers()
 
     cards: dict[str, Any] = {
-        "web_port_configured": cfg.web_port,
         "web_port_display": server.display_port,
         "web_port_match": cfg.web_port == server.display_port,
         "uptime_human": _format_uptime(server.process_uptime_s),
@@ -7341,12 +7340,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.get("/section/diagnostics/alerts")
     def get_diagnostics_alerts() -> Any:
         """The Status & Diagnostics announcer; 204 while its text is unchanged."""
-        cfg = _request_scoped_config()
         stats = server.get_runtime_stats()
-        detection_shown = cfg.ui.feature_on("detection")
-        if request.query.get("key") == diagnostics_alerts(stats, detection_shown=detection_shown).key():
+        if request.query.get("key") == diagnostics_alerts(stats).key():
             return HTTPResponse(status=204)
-        return template("partials/diagnostics_alerts", stats=stats, detection_shown=detection_shown)
+        return template("partials/diagnostics_alerts", stats=stats)
 
     @app.get("/api/diagnostics/bundle")
     def api_diagnostics_bundle() -> Any:

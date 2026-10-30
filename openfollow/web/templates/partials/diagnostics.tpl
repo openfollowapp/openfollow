@@ -13,7 +13,7 @@
 % # bundle/probe tools stay put across the 1 s tick.
 % #
 % # Threaded from the route handler: ``stats`` (the runtime snapshot),
-% # ``cards`` (configured/display port, uptime, beacon health, peer count),
+% # ``cards`` (served port and whether it is the configured one, uptime, beacon health, peer count),
 % # and ``local`` / ``peers`` / ``station_down`` for the Station Network box.
 % detection_shown = config.ui.feature_on("detection")
 
@@ -45,7 +45,7 @@
          hx-swap="innerHTML">
         % include('partials/diagnostics_cards.tpl', stats=stats, cards=cards, detection_shown=detection_shown)
     </div>
-    % include('partials/diagnostics_alerts.tpl', stats=stats, detection_shown=detection_shown)
+    % include('partials/diagnostics_alerts.tpl', stats=stats)
 
     <div class="group" style="margin-top: 1.5rem;">
         <h3 class="group-title">Bundle &amp; tools</h3>

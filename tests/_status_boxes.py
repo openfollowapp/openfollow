@@ -10,7 +10,6 @@ from bottle import template
 
 # A healthy station on its configured port: what ``_build_diagnostics_cards`` returns.
 CARDS: dict[str, Any] = {
-    "web_port_configured": 80,
     "web_port_display": 80,
     "web_port_match": True,
     "uptime_human": "1h 53m",
@@ -31,5 +30,5 @@ def render_boxes(stats: dict[str, Any], *, detection_shown: bool = True, **cards
     )
 
 
-def render_alerts(stats: dict[str, Any], *, detection_shown: bool = True) -> str:
-    return template("partials/diagnostics_alerts", stats=stats, detection_shown=detection_shown)
+def render_alerts(stats: dict[str, Any]) -> str:
+    return template("partials/diagnostics_alerts", stats=stats)

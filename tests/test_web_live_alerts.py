@@ -46,7 +46,7 @@ def _all_three() -> dict[str, Any]:
 
 
 def test_everything_the_boxes_say_is_spoken_in_page_order() -> None:
-    assert diagnostics_alerts(_all_three(), detection_shown=True).spoken() == [
+    assert diagnostics_alerts(_all_three()).spoken() == [
         "Nothing answered at the camera's address. Check the address and port.",
         "C2 missing · marker 5 · Xbox Wireless Controller (USB 2, port 2)",
         "Missing packages: onnxruntime. Install them from the Person Detection section, then restart.",
@@ -64,35 +64,28 @@ def test_everything_the_boxes_say_is_spoken_in_page_order() -> None:
     ids=["connected", "no-reason", "unknown-shows-raw", "none-shows-raw"],
 )
 def test_the_video_alert_matches_the_box(video: dict[str, Any], expected: tuple[str, str] | None) -> None:
-    assert diagnostics_alerts(_stats(video=video), detection_shown=True).video == expected
+    assert diagnostics_alerts(_stats(video=video)).video == expected
 
 
 def test_a_controller_line_leaves_out_what_it_does_not_know() -> None:
-    alerts = diagnostics_alerts(
-        _stats(controllers={"items": [{"controller_index": 2, "state": "missing"}]}), detection_shown=True
-    )
+    alerts = diagnostics_alerts(_stats(controllers={"items": [{"controller_index": 2, "state": "missing"}]}))
     assert alerts.controllers == ("C3 missing",)
 
 
 def test_switched_off_detection_raises_no_alert() -> None:
-    assert (
-        diagnostics_alerts(
-            _stats(tracking={"enabled": False, "missing_deps": ["onnxruntime"]}), detection_shown=True
-        ).detection
-        is None
-    )
+    assert diagnostics_alerts(_stats(tracking={"enabled": False, "missing_deps": ["onnxruntime"]})).detection is None
 
 
 def test_the_key_changes_only_with_what_is_said() -> None:
-    first = diagnostics_alerts(_all_three(), detection_shown=True).key()
-    assert diagnostics_alerts(_all_three(), detection_shown=True).key() == first
+    first = diagnostics_alerts(_all_three()).key()
+    assert diagnostics_alerts(_all_three()).key() == first
     changed = _all_three()
     changed["tracking"]["missing_deps"] = ["onnxruntime", "opencv-python"]
-    assert diagnostics_alerts(changed, detection_shown=True).key() != first
+    assert diagnostics_alerts(changed).key() != first
     # A metric the boxes don't show moving on is not a change.
     moved = _all_three()
     moved["system"] = {"cpu_percent": 91.0}
-    assert diagnostics_alerts(moved, detection_shown=True).key() == first
+    assert diagnostics_alerts(moved).key() == first
 
 
 def test_the_panel_boxes_carry_no_role() -> None:
@@ -105,7 +98,7 @@ def test_the_panel_boxes_carry_no_role() -> None:
 def test_the_announcer_speaks_them_and_polls_with_its_key() -> None:
     stats = _all_three()
     html = render_alerts(stats)
-    alerts = diagnostics_alerts(stats, detection_shown=True)
+    alerts = diagnostics_alerts(stats)
     assert html.startswith(
         '<div id="diagnostics-alerts" class="visually-hidden" role="alert" aria-live="assertive" aria-atomic="true"'
     )
@@ -182,7 +175,7 @@ _HOT_PAST = ("caution", "CPU throttling reported since the station last started.
 def test_a_power_alert_is_an_error_while_active_and_a_caution_after(
     flags: dict[str, bool], expected: list[tuple[str, str, str]]
 ) -> None:
-    alerts = diagnostics_alerts(_power(**flags), detection_shown=True).power
+    alerts = diagnostics_alerts(_power(**flags)).power
     assert [(a.level, a.text, a.step) for a in alerts] == expected
 
 
@@ -203,7 +196,7 @@ def test_a_power_alert_is_an_error_while_active_and_a_caution_after(
     ids=["no-system", "no-power", "power-null", "not-available"],
 )
 def test_a_host_that_cannot_tell_shows_no_power_alert(stats: dict[str, Any]) -> None:
-    assert diagnostics_alerts(stats, detection_shown=True).power == ()
+    assert diagnostics_alerts(stats).power == ()
     html = render_boxes(stats)
     assert "notice warning" not in html
     assert "under voltage" not in html
@@ -227,7 +220,7 @@ def test_the_power_boxes_take_their_level_component() -> None:
 def test_the_announcer_speaks_the_power_alerts_after_the_controllers() -> None:
     stats = _power(under_voltage=True, throttled_since_boot=True)
     stats["controllers"] = {"items": [_MISSING_PAD]}
-    assert diagnostics_alerts(stats, detection_shown=True).spoken() == [
+    assert diagnostics_alerts(stats).spoken() == [
         "C2 missing · marker 5 · Xbox Wireless Controller (USB 2, port 2)",
         "Power supply under voltage now. Use a 5 V 5 A supply or unplug bus-powered USB devices.",
         "CPU throttling reported since the station last started.",
@@ -237,8 +230,8 @@ def test_the_announcer_speaks_the_power_alerts_after_the_controllers() -> None:
 
 
 def test_the_key_changes_when_a_power_alert_ends() -> None:
-    live = diagnostics_alerts(_power(under_voltage=True, under_voltage_since_boot=True), detection_shown=True).key()
-    assert diagnostics_alerts(_power(under_voltage_since_boot=True), detection_shown=True).key() != live
+    live = diagnostics_alerts(_power(under_voltage=True, under_voltage_since_boot=True)).key()
+    assert diagnostics_alerts(_power(under_voltage_since_boot=True)).key() != live
 
 
 _OVER = limits_snapshot(SourceReading(3840, 2160, 60.0, (OverLimit.RESOLUTION, OverLimit.FRAME_RATE)))
@@ -265,7 +258,7 @@ def test_a_source_over_the_limits_is_a_box_beside_the_video_panel() -> None:
 )
 def test_a_source_within_the_limits_raises_no_box(limits: dict[str, Any] | None) -> None:
     stats = _stats(video={"connected": True, "limits": limits})
-    assert diagnostics_alerts(stats, detection_shown=True).video_limits is None
+    assert diagnostics_alerts(stats).video_limits is None
     assert 'class="notice error"' not in render_boxes(stats)
 
 
@@ -276,7 +269,7 @@ def test_the_announcer_speaks_the_limits_after_the_video_failure() -> None:
         failure_text="Video stopped arriving.",
         failure_action="Check the camera.",
     )
-    assert diagnostics_alerts(stats, detection_shown=True).spoken()[:2] == [
+    assert diagnostics_alerts(stats).spoken()[:2] == [
         "Video stopped arriving. Check the camera.",
         "Video arrives at 3840×2160 and 60 fps, over Full HD (1920×1080) and 30 fps. "
         "Set the camera or encoder to 1920×1080 at 30 fps or less.",
@@ -284,10 +277,5 @@ def test_the_announcer_speaks_the_limits_after_the_video_failure() -> None:
 
 
 def test_the_key_changes_when_the_source_comes_within_the_limits() -> None:
-    over = diagnostics_alerts(_over_limits(), detection_shown=True).key()
-    assert (
-        diagnostics_alerts(
-            _stats(video={"connected": True, "limits": limits_snapshot(None)}), detection_shown=True
-        ).key()
-        != over
-    )
+    over = diagnostics_alerts(_over_limits()).key()
+    assert diagnostics_alerts(_stats(video={"connected": True, "limits": limits_snapshot(None)})).key() != over

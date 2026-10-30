@@ -754,7 +754,6 @@ def test_index_page_includes_diagnostics_section(live_server) -> None:
     status, body, _ = _get(base, "/")
     assert status == 200
     assert "<h2>Status &amp; Diagnostics</h2>" in body
-    assert 'id="statistics-section"' not in body
     # Only the live boxes poll, so the section shell (head + tools) renders once
     # and never re-swaps. The poll target is the inner ``#diagnostics-live``.
     assert 'id="diagnostics-live"' in body

@@ -116,7 +116,7 @@ def test_every_render_of_the_section_carries_the_status(status_server, path: str
 
 def test_the_status_announcer_answers_204_while_unchanged(status_server) -> None:
     base, stats, _ = status_server
-    key = diagnostics_alerts(stats, detection_shown=False).key()
+    key = diagnostics_alerts(stats).key()
     assert _request(base, f"/section/diagnostics/alerts?key={key}") == (204, "")
     stats["controllers"]["items"].append({"controller_index": 1, "state": "missing", "name": "8BitDo"})
     status, body = _request(base, f"/section/diagnostics/alerts?key={key}")
@@ -134,7 +134,8 @@ def _show_detection(config_path, shown: bool) -> None:
 def test_missing_detection_packages_are_spoken_only_with_the_feature(status_server, shown: bool, spoken: bool) -> None:
     base, stats, config_path = status_server
     _show_detection(config_path, shown)
-    stats["tracking"] = {"enabled": True, "missing_deps": ["onnxruntime"]}
+    # The runtime stats report detection as enabled only while its feature is on.
+    stats["tracking"] = {"enabled": shown, "missing_deps": ["onnxruntime"]}
     _, body = _request(base, "/section/diagnostics/alerts")
     assert ("Missing packages: onnxruntime." in body) is spoken
     _, boxes = _request(base, "/section/diagnostics")

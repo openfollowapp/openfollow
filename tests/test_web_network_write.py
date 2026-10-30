@@ -1364,7 +1364,7 @@ def test_every_network_banner_kind_is_drawn_as_a_box() -> None:
     assert kinds == {"error", "ok", "info"}
     css = (web / "templates" / "base.tpl").read_text(encoding="utf-8")
     rules = re.findall(r"([^{}]+)\{([^{}]*)\}", css)
-    box = next(sel for sel, body in rules if "background: var(--info-fill)" in body and "border-radius: 6px" in body)
+    box = next(sel for sel, body in rules if "background: var(--info-fill)" in body and ".notice," in sel)
     for kind in kinds:
         assert f".network-banner.network-banner-{kind}" in box
 

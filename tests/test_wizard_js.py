@@ -4954,7 +4954,8 @@ def test_the_focus_ring_is_drawn_inside_the_pictures_rounded_frame() -> None:
     assert "outline: 2px solid var(--accent)" in rule and "outline-offset: -2px" in rule
     assert "border-radius: inherit" in rule
     container = re.search(r"\n  \.wizard-preview-container \{([^}]*)\}", src).group(1)
-    assert "border-radius: 0.75rem" in container and "overflow: hidden" in container
+    radius = re.search(r"border-radius: ([\d.]+)(rem|px);", container)
+    assert radius and float(radius.group(1)) > 0 and "overflow: hidden" in container
 
 
 def test_the_pin_menu_scrolls_inside_the_picture_it_cannot_outgrow() -> None:

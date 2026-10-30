@@ -1,17 +1,4 @@
-% rebase('base.tpl')
-
-%# Restart button moved into the Diagnostics section (Overview tab) –
-%# it's a rare-use action and doesn't earn a permanent slot in the
-%# top chrome. The station name pill moved into the hero-panel's
-%# top-right corner (see base.tpl). Logout (when a PIN is set) is
-%# the only persistent top-right action that remains.
-% if config.web_pin:
-<div class="top-bar-actions">
-    <form method="POST" action="/logout" style="margin:0;">
-        <button type="submit" class="secondary small">Logout</button>
-    </form>
-</div>
-% end
+% rebase('base.tpl', header_logout=bool(config.web_pin))
 
 <div class="tab-bar">
     <button type="button" class="tab-btn" data-tab="overview">Overview</button>

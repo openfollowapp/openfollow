@@ -34,10 +34,10 @@
     #path-editor-section .pe-add { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-top: 0.6rem; }
     #path-editor-section .pe-add select, #path-editor-section .pe-points select { width: auto; min-width: 10em; }
     #path-editor-section .pe-radius { display: inline-flex; align-items: center; gap: 0.4rem; white-space: nowrap; }
-    #path-editor-section .pe-stage { position: relative; width: 100%; line-height: 0; border-radius: 8px; overflow: hidden; background: var(--bg-base); margin-top: 1rem; }
+    #path-editor-section .pe-stage { position: relative; width: 100%; line-height: 0; border-radius: 4px; overflow: hidden; background: var(--bg-base); margin-top: 1rem; }
     #path-editor-section .pe-stage img { display: block; width: 100%; height: auto; }
     #path-editor-section .pe-stage svg { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
-    #path-editor-section .pe-no-feed { padding: 24px 12px; border: 1px dashed var(--border); border-radius: 8px; text-align: center; margin-top: 1rem; }
+    #path-editor-section .pe-no-feed { padding: 24px 12px; border: 1px dashed var(--border); border-radius: 4px; text-align: center; margin-top: 1rem; }
     #path-editor-section .pe-line-inactive { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 6 5; fill: none; }
     #path-editor-section .pe-line-active { stroke: var(--text); stroke-width: 2; fill: none; }
     #path-editor-section .pe-line-selected { stroke: var(--accent); stroke-width: 3; fill: none; }

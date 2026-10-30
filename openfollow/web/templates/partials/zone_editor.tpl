@@ -23,7 +23,7 @@
             <button type="button" class="pv-fs-btn" id="zone-fs-btn" aria-label="Full screen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
         </div>
         <div class="pv-nofeed" id="zone-picture-nofeed" hidden>No video picture.</div>
-        <div id="zone-canvas-wrap" style="position:relative;border:1px solid var(--border,#444);border-radius:6px;background:#111;overflow:hidden;width:100%;">
+        <div id="zone-canvas-wrap" style="position:relative;border:1px solid var(--border,#444);border-radius:3px;background:#111;overflow:hidden;width:100%;">
             <canvas id="zone-canvas" width="1280" height="720" style="display:block;width:100%;height:auto;background:#111;cursor:crosshair;"></canvas>
         </div>
         <div style="display:flex;gap:0.5rem;margin-top:0.5rem;flex-wrap:wrap;">

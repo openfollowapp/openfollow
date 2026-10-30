@@ -787,7 +787,7 @@
 .marker-catalog-table .park-toggle {
     display: inline-flex; align-items: center; justify-content: center; vertical-align: middle;
     width: 1.6rem; height: 1.6rem; margin-left: 0.4rem; padding: 0;
-    border: 1px solid var(--border-soft); border-radius: 0.4rem;
+    border: 1px solid var(--border-soft); border-radius: 0.2rem;
     background: rgba(0, 0, 0, 0.22); color: var(--muted);
     font-size: inherit; font-weight: 700;
 }

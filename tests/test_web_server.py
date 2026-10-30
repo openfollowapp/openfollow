@@ -6486,6 +6486,14 @@ def test_the_occupied_highlight_saves_from_the_trigger_zones_form(live_server, f
     assert ("checked" in box) is highlight
 
 
+@pytest.mark.parametrize("raw", ["abc", "", "2"])
+def test_a_crafted_occupied_highlight_saves_as_a_bool(live_server, raw: str) -> None:
+    server, base = live_server
+    status, _ = _post_form(base, "/section/trigger_zones", {"highlight_occupied": raw})
+    assert status == 200
+    assert isinstance(load_config(server.config_path).trigger_zones.highlight_occupied, bool)
+
+
 def test_osc_destinations_crud_round_trip(live_server) -> None:
     """Add → save → duplicate → delete a destination through the web routes."""
     server, base = live_server

@@ -5,7 +5,7 @@
 ``draw_zones`` paints trigger-zone polygons onto the video overlay.
 These tests drive every branch of the dispatcher – gated flags,
 degenerate inputs, projection NaN fallback, occupied vs. unoccupied
-styling, and that no text is drawn – through the public
+styling, outline and fill – through the public
 signature without touching the GStreamer / Cairo integration layer.
 """
 

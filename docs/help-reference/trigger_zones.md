@@ -7,7 +7,7 @@ Polygon regions on the stage plane that fire OSC messages whenever a marker or d
 These settings govern the zone engine as a whole and apply to every zone.
 
 - **Trigger zones** – master on/off for the entire zone engine. Off by default; turn it on before configuring individual zones in the Zone Editor.
-- **Overlay** – draw the zones on the Operator Screen, as outlines and fills without their names. Has no effect on OSC output.
+- **Overlay** – draw the zones on the Operator Screen as filled outlines. Has no effect on OSC output.
 - **Occupied zones** – on the Operator Screen, a zone is drawn stronger (fill, outline) while a marker or detection is inside it. On by default. Switched off, every zone looks the same whatever is inside, which keeps the picture calm where performers stand in zones all show long. Occupancy is only known while **Trigger zones** is on.
 - **Eval Rate (FPS)** – how many times per second the engine checks each marker against every zone. Lower values reduce CPU load; higher values give more responsive detection. Options: 1, 5, 10, 15, 30, 60 FPS. Default `10`.
 - **Debounce (ms)** – suppresses rapid in/out flicker at a boundary; an event fires only after the marker has stayed on the new side for at least this long. Range 0–60 000 ms; default `200`.

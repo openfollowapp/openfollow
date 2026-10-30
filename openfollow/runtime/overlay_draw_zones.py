@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""Cairo draw pass for trigger-zone polygons on the video overlay: outline and fill, no label."""
+"""Cairo draw pass for trigger-zone polygons on the video overlay: outline and fill."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from openfollow.runtime.overlay_draw_scene import (
     project,
 )
 from openfollow.runtime.overlay_draw_style import parse_hex
-from openfollow.runtime.overlay_picture import ink_picture, paste, target_font_options
+from openfollow.runtime.overlay_picture import ink_picture, paste
 from openfollow.runtime.overlay_state import OverlayState
 from openfollow.zones.geometry import hidden_by_zone
 
@@ -202,16 +202,14 @@ class ZoneCache:
             scale,
         )
         if self._entry is None or self._entry[0] != key:
-            # No text, so the font options do not change the picture.
-            options = target_font_options(cr)
-            self._entry = (key, *self._render(_zone_outlines(state, w, h), w, h, scale, options))
+            self._entry = (key, *self._render(_zone_outlines(state, w, h), w, h, scale))
         _, picture, x0, y0 = self._entry
         paste(cr, picture, x0, y0)
 
     @staticmethod
     def _render(
-        zones: list[_Zone], w: int, h: int, scale: tuple[float, float], options: cairo.FontOptions
+        zones: list[_Zone], w: int, h: int, scale: tuple[float, float]
     ) -> tuple[cairo.ImageSurface | None, int, int]:
         if not zones:
             return None, 0, 0
-        return ink_picture(lambda ctx: _paint_zones(ctx, zones), w, h, scale, options)
+        return ink_picture(lambda ctx: _paint_zones(ctx, zones), w, h, scale, cairo.FontOptions())

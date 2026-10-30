@@ -225,7 +225,8 @@ def test_the_web_port_row_flags_a_fallback(live_server, on_configured_port: bool
         (True, True, 0, '<span class="stat-chip ok">Running</span>'),
         (True, True, 3, '<span class="stat-chip warn">Send errors</span>'),
         (True, False, 3, '<span class="stat-chip off">Receiver stopped</span>'),
-        (False, True, 0, '<span class="stat-chip off">Sender stopped</span>'),
+        # Stopped outranks its error count: nothing is retrying.
+        (False, True, 5, '<span class="stat-chip off">Sender stopped</span>'),
         (False, False, 0, '<span class="stat-chip off">Stopped</span>'),
     ],
     ids=["running", "send-errors", "receiver-stopped", "sender-stopped", "both-stopped"],

@@ -1,8 +1,22 @@
 # Status & Diagnostics
 
-How this station is doing right now, and the information needed for a support report. The section is on the Overview tab, and its boxes refresh every second while it is open and in view. Each box shows only what applies: Person Detection appears only while its feature is on.
+How this station is doing right now, and the information needed for a support report. It is the Overview tab's one section: the Station Network list at the top refreshes every 5 seconds, the boxes below it every second, while the section is open and in view. Each box shows only what applies: Person Detection appears only while its feature is on.
 
-On a wide screen the boxes keep their own height: This Station fills the right column and the others stack beside it. With Person Detection shown, Station network discovery runs full width beneath, its rows in three columns. On a phone they stack in one column.
+On a wide screen Station Network runs full width, and the boxes below it keep their own height: This Station fills the right column and the others stack beside it. With Person Detection shown, Station network discovery runs full width beneath, its rows in three columns. On a phone they stack in one column.
+
+## Station Network
+
+A live view of every OpenFollow station discovered on your LAN. Confirm all stations are online and reachable before a show.
+
+Each row is one station – this one or another discovered by multicast.
+
+- **Status indicator** – a green dot = online and responding; a red ring = seen previously but not currently reachable. The row takes the same colour, and this station's row is blue.
+- **Station name** – the name set under General → Station Settings. This station's row is labelled *(this station)*.
+- **Address** – the IP address and web port the station serves on (e.g. `192.0.2.42:80`). Every other station's row opens its web interface in a new window, an offline one at its last known address; the mark after the name says so.
+
+> If no other stations appear, check that the other OpenFollow instances are running and on the same network segment. Multicast discovery does not cross router hops or VLAN boundaries.
+
+The list refreshes on its own every 5 seconds, so a station brought online appears within a few seconds.
 
 ## Video
 

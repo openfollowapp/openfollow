@@ -12,14 +12,29 @@
 % # ``partials/diagnostics_cards`` fragment); the section shell, fold state,
 % # and the bundle/probe tools stay put across the 1 s tick.
 % #
-% # Threaded from the route handler: ``stats`` (the runtime snapshot) and
-% # ``cards`` (configured/display port, uptime, beacon health, peer count).
+% # Threaded from the route handler: ``stats`` (the runtime snapshot),
+% # ``cards`` (configured/display port, uptime, beacon health, peer count),
+% # and ``local`` / ``peers`` / ``station_down`` for the Station Network box.
 % detection_shown = config.ui.feature_on("detection")
 
 <div class="section" id="diagnostics-section" data-fold-key="diagnostics" data-help="diagnostics">
     <div class="section-head">
         <h2>Status &amp; Diagnostics</h2>
     </div>
+
+    %# Read-only peer discovery. Only its rows poll, every 5 s, apart from the boxes'
+    %# 1 s swap: each swap rebuilds the station links and drops keyboard focus.
+    <section class="stat-panel stations-box">
+        <div class="stat-panel-head">
+            <h3 class="stat-panel-title">Station Network</h3>
+        </div>
+        <div class="peers-list" id="overview-peers"
+             hx-get="/section/overview"
+             hx-trigger="every 5s [pollShown(this)], poll-shown[pollShown(this)] from:body"
+             hx-swap="innerHTML">
+            % include('partials/overview_peers.tpl', local=local, peers=peers, station_down=station_down)
+        </div>
+    </section>
 
     %# The poll target sits inside the section, so the head and the tools
     %# below are never rebuilt and the section does not flicker.

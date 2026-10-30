@@ -963,13 +963,28 @@ def test_overview_says_station_default_is_down_rather_than_showing_its_address(l
 
 def test_index_overview_section_polls_only_peer_rows(live_server) -> None:
     # The polling element is the inner peer list (#overview-peers), gated on its
-    # section being shown – not the whole #overview-section via outerHTML,
-    # which is what flickered.
+    # section being shown – not the whole section via outerHTML, which flickered.
     _, base = live_server
     status, body = _get(base, "/")
     assert status == 200
     peers = body[body.index('id="overview-peers"') :].split(">", 1)[0]
     assert 'hx-trigger="every 5s [pollShown(this)], poll-shown[pollShown(this)] from:body"' in peers
+
+
+def test_station_network_is_the_first_box_of_status_and_diagnostics(live_server) -> None:
+    _, base = live_server
+    _, body = _get(base, "/")
+    overview = body[body.index('id="tab-overview"') : body.index('id="tab-general"')]
+    # The Overview tab is one section.
+    assert overview.count('class="section"') == 1
+    assert 'id="overview-section"' not in body
+    section = overview[overview.index('id="diagnostics-section"') :]
+    box = section[section.index('<section class="stat-panel stations-box">') : section.index("</section>")]
+    assert '<h3 class="stat-panel-title">Station Network</h3>' in box
+    assert 'id="overview-peers"' in box
+    # It polls on its own, so it needs no Refresh button, and sits above the 1 s boxes.
+    assert "Refresh" not in box
+    assert section.index("stations-box") < section.index('id="diagnostics-live"')
 
 
 def test_video_source_failure_fragment_is_empty_while_healthy(live_server) -> None:

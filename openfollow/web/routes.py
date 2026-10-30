@@ -6360,16 +6360,14 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.get("/section/overview")
     def get_overview() -> Any:
-        """Get the station network overview partial.
-
-        Overview is strictly read-only peer discovery; the network-interface
+        """The Station Network rows: read-only peer discovery; the network-interface
         block lives on the General tab.
         """
         peers = server.get_peers()
         local = server.get_local_peer_info()
-        # Poll returns only the peer rows – the section shell is rendered once
-        # at page load (partials/overview) and never re-swapped, so it can't
-        # flicker. See partials/overview.tpl / overview_peers.tpl.
+        # Poll returns only the peer rows – the box around them is rendered once
+        # at page load (partials/diagnostics) and never re-swapped, so it can't
+        # flicker.
         return template(
             "partials/overview_peers",
             peers=peers,

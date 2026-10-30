@@ -1,6 +1,16 @@
 # Status & Diagnostics
 
-How this station is doing right now, and the file for a support report. The boxes refresh every second while in view. Person Detection shows only while its feature is on.
+How this station is doing right now, and the file for a support report. The boxes refresh every second while in view, the station list every 5 seconds. Person Detection shows only while its feature is on.
+
+### Station Network
+
+Every OpenFollow station discovered on your LAN, this one and the others.
+
+- **Status indicator** – a green dot is online; a red ring was seen before but is not reachable now. This station's row is blue and labelled *(this station)*.
+- **Station name** – the name set under General → Station Settings.
+- **Address** – the IP address and web port. Other stations' rows open their web interface in a new window; an offline one opens at its last known address.
+
+Discovery does not cross router hops or VLAN boundaries.
 
 ### Video
 

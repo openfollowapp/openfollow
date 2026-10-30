@@ -509,6 +509,10 @@
  gap: 0.78rem;
  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
  }
+ /* The station list is a box like the others, full width above them; the box is its frame. */
+ .stations-box { margin-bottom: 0.78rem; }
+ .stations-box .peers-list { background: none; border: 0; padding: 0; }
+ .stations-box .peer-item:last-child { margin-bottom: 0; }
  /* Bento: This Station, the tallest box, takes the right column; with Person
  Detection, Station network discovery runs full width with its rows in three columns. */
  .diag-bento {
@@ -4143,7 +4147,7 @@
  initializeInlineAdvanced(document);
  initNetworkMethodFields(document);
  });
- // Periodic pollers (Status & Diagnostics 1s, Server overview 5s)
+ // Periodic pollers (Status & Diagnostics 1s, Station Network 5s)
  // replace whole DOM subtrees. That destroys Firefox's scroll-anchor node,
  // so the viewport snaps toward the top on every poll tick. Re-pin the
  // scroll position for swaps NOT triggered by a user gesture (polls +

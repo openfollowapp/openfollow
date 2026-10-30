@@ -95,7 +95,7 @@ def _zone_outlines(state: OverlayState, w: int, h: int) -> list[_Zone]:
                 tuple((float(x), float(y)) for x, y in vertices_xy),
                 float(state.zone_z_offset),
                 float(z),
-                tuple(float(v) for v in cam),
+                tuple(np.asarray(cam, dtype=np.float64).tolist()),
                 tuple(state.lens),
                 w,
                 h,

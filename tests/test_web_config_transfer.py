@@ -173,7 +173,7 @@ class TestBackupsGroup:
         assert "danger: true," in question
 
     def test_a_newer_backup_reads_muted_with_its_reason_in_caution_text(self) -> None:
-        base = (Path(_server_module.__file__).parent / "templates" / "base.tpl").read_text(encoding="utf-8")
+        base = _BASE_TPL.read_text(encoding="utf-8")
         assert ".backups-table tr.backup-newer td:not(.row-actions) { color: var(--muted); }" in base
         assert ".backup-note { display: block; color: var(--caution-text);" in base
 
@@ -216,7 +216,8 @@ class TestLayout:
         css = _BASE_TPL.read_text(encoding="utf-8")
         # The grid side by side where three fit, fewer per row where they do not (a phone, the help drawer open).
         grid = re.search(r"\n \.stats-columns \{([^}]*)\}", css)
-        assert grid and "grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));" in grid.group(1)
+        # Never wider than the space a phone leaves, or the tab scrolls sideways.
+        assert grid and "grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));" in grid.group(1)
         assert re.search(r"\n \.cfg-columns \{ align-items: start;", css)
 
     def test_a_long_file_name_wraps_inside_its_box(self) -> None:

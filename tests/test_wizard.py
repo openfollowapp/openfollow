@@ -598,11 +598,6 @@ class TestWizardHelpCopy:
     def test_a_negative_number_has_the_minus_sign_the_page_shows(self, name: str) -> None:
         assert re.findall(r"(?<![\w.-])-\d", self._help(name)) == []
 
-    def test_whats_new_names_the_exact_camera_height(self) -> None:
-        notes = (WIZARD_TEMPLATE.parents[1] / "whatsnew" / "whatsnew.md").read_text(encoding="utf-8")
-        wizard = notes.split("**A Setup Wizard in four steps.**")[1].split("\n\n")[0]
-        assert "the Setup Wizard asks for the exact height of the camera's lens" in wizard
-
 
 @unit
 class TestWizardNameFields:

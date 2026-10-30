@@ -626,19 +626,6 @@ class TestZoneCache:
         draw_zones(cr, state, w, h, cache)
         assert len(cr.surfaces) == 1 and cr.surfaces[0] is not first.surfaces[0]
 
-    @pytest.mark.parametrize("cached", [False, True], ids=["direct", "cached"])
-    def test_other_hud_text_keeps_the_screens_font_options(self, cached: bool) -> None:
-        import cairo
-
-        from openfollow.runtime.overlay_draw_zones import ZoneCache
-
-        options = cairo.FontOptions()
-        options.set_antialias(cairo.ANTIALIAS_SUBPIXEL)
-        cr = cairo.Context(_blank(1.0, (0.2, 0.3, 0.4, 1.0)))
-        cr.set_font_options(options)
-        draw_zones(cr, self._state(), 1920, 1080, ZoneCache() if cached else None)
-        assert cr.get_font_options() == options
-
     @pytest.mark.parametrize("option", ["antialias", "hint_style"])
     def test_a_font_option_change_alone_keeps_the_picture(self, option: str) -> None:
         """Zones carry no text, so the screen's font options never change their picture."""

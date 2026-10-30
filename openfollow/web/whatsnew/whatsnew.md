@@ -44,3 +44,7 @@ An image or clip in the **Media Gallery** that is not 16:9 now plays in its own 
 ## Zone heights (experimental)
 
 With **Zone heights** on under **Features**, a zone in the **Zone Editor** can sit at a **Z offset** above the stage, and **Marker height** adds that offset to the Z of a marker inside it.
+
+## Zones on the Operator Screen
+
+Zones on the Operator Screen are drawn without their names. **Markers & Zones → Trigger Zones → Occupied zones** chooses whether a zone lights up while a marker or person is inside it; it is on, as before.

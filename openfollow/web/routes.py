@@ -10777,6 +10777,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 "globals": {
                     "enabled": tz.enabled,
                     "show_overlay": tz.show_overlay,
+                    "highlight_occupied": tz.highlight_occupied,
                     "eval_fps": tz.eval_fps,
                     "debounce_ms": tz.debounce_ms,
                     "hysteresis": tz.hysteresis,

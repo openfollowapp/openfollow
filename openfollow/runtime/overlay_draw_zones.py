@@ -212,4 +212,4 @@ class ZoneCache:
     ) -> tuple[cairo.ImageSurface | None, int, int]:
         if not zones:
             return None, 0, 0
-        return ink_picture(lambda ctx: _paint_zones(ctx, zones), w, h, scale, cairo.FontOptions())
+        return ink_picture(lambda ctx: _paint_zones(ctx, zones), w, h, scale, None)

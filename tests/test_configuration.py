@@ -4945,7 +4945,7 @@ def test_trigger_zones_config_keeps_a_valid_highlight_occupied(raw: object, expe
     assert TriggerZonesConfig(highlight_occupied=raw).highlight_occupied is expected  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize("raw", [None, "abc", 3, 1.5, [True]])
+@pytest.mark.parametrize("raw", [None, "abc", 0, "", [], 1.5])
 def test_trigger_zones_config_falls_back_on_a_wrong_type_highlight_occupied(raw: object) -> None:
     assert TriggerZonesConfig(highlight_occupied=raw).highlight_occupied is True  # type: ignore[arg-type]
 

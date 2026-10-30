@@ -4090,7 +4090,7 @@
         { label: 'Leave without saving', kind: 'danger', onClick: function() {
           closeModal();
           try { sessionStorage.removeItem(STORAGE_KEY); } catch (e) {}
-          window.location.href = '{{_settings_url}}';
+          window.location.href = {{!json.dumps(_settings_url)}};
         } }
       ],
     });

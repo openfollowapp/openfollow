@@ -42,7 +42,8 @@ def _run(steps: str, *, storage: str = "true") -> object:
             " setItem: function (k, v) { if (!storageWorks) throw new Error('blocked'); store[k] = String(v); }};",
             "var session = {}; var sessionStorage = {removeItem: function (k) { delete session[k]; }};",
             "var replaced;",
-            "var history = {replaceState: function (s, t, url) { location.search = ''; replaced = url; } };",
+            "var history = {replaceState: function (s, t, url) {"
+            " var q = url.split('#')[0].split('?')[1]; location.search = q ? '?' + q : ''; replaced = url; } };",
             "function closeHelp() {} function announcePollsShown() {}",
             "var location = {pathname: '/wizard', search: '', hash: ''}; var window = {location: {href: '/wizard'}};",
             base_functions("readStorage", "writeStorage", "switchTab", "initTabs"),
@@ -72,7 +73,7 @@ _LEAVE = (
     # The confirm's red button, as discardAndLeave hands it to the dialog.
     wizard_var("STORAGE_KEY") + "session[STORAGE_KEY] = '{}'; var dialog;"
     "function openModal(opts) { dialog = opts; } function closeModal() {}"
-    + wizard_window_function("discardAndLeave").replace("{{_settings_url}}", _SETTINGS_URL)
+    + wizard_window_function("discardAndLeave").replace("{{!json.dumps(_settings_url)}}", json.dumps(_SETTINGS_URL))
     + "window.discardAndLeave();"
     "dialog.footerButtons.filter(function (b) { return b.kind === 'danger'; })[0].onClick();"
     "out.push(window.location.href, STORAGE_KEY in session);"

@@ -45,7 +45,7 @@ How OpenFollow stations on the network find each other: each one sends a beacon 
 
 The chip shows the worse of the two: **Running**; orange **Send errors**; red **Sender stopped** (other stations do not see this one), **Receiver stopped** (this station does not see the others) or **Stopped** (both).
 
-- **Stations seen** – OpenFollow stations currently known on the local network.
+- **Stations seen** – the other OpenFollow stations currently known on the local network.
 - **Last sent** / **Last received** – the most recent beacon out and in.
 - **Send errors** – beacons in a row that could not be sent; back to 0 once one goes out.
 - **Beacons sent** / **Beacons received** – since the process started.

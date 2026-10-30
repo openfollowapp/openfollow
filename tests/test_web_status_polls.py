@@ -64,7 +64,7 @@ def status_server(tmp_path, monkeypatch):
             runtime_stats_provider=lambda: stats,
         )
     ) as (server, base):
-        yield base, stats, tmp_path / "config.toml"
+        yield base, stats
 
 
 def _request(base: str, path: str, data: dict | None = None) -> tuple[int, str]:
@@ -78,13 +78,13 @@ def _request(base: str, path: str, data: dict | None = None) -> tuple[int, str]:
 
 
 def test_the_3d_mouse_poll_answers_204_while_unchanged(status_server) -> None:
-    base, stats, _ = status_server
+    base, stats = status_server
     key = status_key(stats["mouse3d"])
     assert _request(base, f"/section/mouse3d/status?key={key}") == (204, "")
 
 
 def test_the_3d_mouse_poll_swaps_in_a_change(status_server) -> None:
-    base, stats, _ = status_server
+    base, stats = status_server
     old_key = status_key(stats["mouse3d"])
     stats["mouse3d"] = _mouse3d_block(DeviceState.NOT_PERMITTED)
     status, body = _request(base, f"/section/mouse3d/status?key={old_key}")
@@ -94,7 +94,7 @@ def test_the_3d_mouse_poll_swaps_in_a_change(status_server) -> None:
 
 
 def test_a_first_poll_without_a_key_gets_the_block(status_server) -> None:
-    base, _, _ = status_server
+    base, _ = status_server
     status, body = _request(base, "/section/mouse3d/status")
     assert status == 200
     assert _NOT_SUPPORTED in body
@@ -106,7 +106,7 @@ def test_a_first_poll_without_a_key_gets_the_block(status_server) -> None:
     ids=["page", "section", "save"],
 )
 def test_every_render_of_the_section_carries_the_status(status_server, path: str, form: dict | None) -> None:
-    base, _, _ = status_server
+    base, _ = status_server
     status, body = _request(base, path, form)
     assert status == 200
     assert 'id="mouse3d-status"' in body
@@ -114,7 +114,7 @@ def test_every_render_of_the_section_carries_the_status(status_server, path: str
 
 
 def test_the_status_announcer_answers_204_while_unchanged(status_server) -> None:
-    base, stats, _ = status_server
+    base, stats = status_server
     key = diagnostics_alerts(stats).key()
     assert _request(base, f"/section/diagnostics/alerts?key={key}") == (204, "")
     stats["controllers"]["items"].append({"controller_index": 1, "state": "missing", "name": "8BitDo"})
@@ -125,7 +125,7 @@ def test_the_status_announcer_answers_204_while_unchanged(status_server) -> None
 
 @pytest.mark.parametrize("enabled", [True, False], ids=["feature-on", "feature-off"])
 def test_missing_detection_packages_are_spoken_only_while_detection_is_enabled(status_server, enabled: bool) -> None:
-    base, stats, _ = status_server
+    base, stats = status_server
     # The runtime stats report detection as enabled only while its feature is on.
     stats["tracking"] = {"enabled": enabled, "missing_deps": ["onnxruntime"]}
     _, body = _request(base, "/section/diagnostics/alerts")
@@ -159,7 +159,7 @@ class _Ancestors(HTMLParser):
 
 
 def test_the_announcer_sits_outside_the_boxes_it_speaks_for(status_server) -> None:
-    base, _, _ = status_server
+    base, _ = status_server
     _, page = _request(base, "/")
     parser = _Ancestors("diagnostics-alerts")
     parser.feed(page)
@@ -172,7 +172,7 @@ def test_the_announcer_sits_outside_the_boxes_it_speaks_for(status_server) -> No
 
 
 def test_the_announcer_swaps_only_itself(status_server) -> None:
-    base, _, _ = status_server
+    base, _ = status_server
     _, page = _request(base, "/")
     start = page.index('<div id="diagnostics-alerts"')
     tag = page[start : page.index(">", start)]

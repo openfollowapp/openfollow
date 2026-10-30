@@ -81,7 +81,7 @@ The header chip shows the worse of the two:
 | Red – **Receiver stopped** | This station does not see the others. |
 | Red – **Stopped** | Neither runs. |
 
-- **Stations seen** – number of OpenFollow stations currently known on the local network.
+- **Stations seen** – number of other OpenFollow stations currently known on the local network; this station is not counted.
 - **Last sent** – age of the most recent outgoing beacon.
 - **Last received** – age of the most recent received beacon.
 - **Send errors** – beacons in a row that could not be sent; back to 0 once one goes out.

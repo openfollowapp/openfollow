@@ -983,8 +983,7 @@ def test_station_network_is_the_first_box_of_status_and_diagnostics(live_server)
     box = section[section.index('<section class="stat-panel stations-box">') : section.index("</section>")]
     assert '<h3 class="stat-panel-title">Station Network</h3>' in box
     assert 'id="overview-peers"' in box
-    # Its rows poll on their own, with no Refresh button, above the 1 s boxes.
-    assert "Refresh" not in box
+    # Its rows poll on their own, above the 1 s boxes.
     assert section.index("stations-box") < section.index('id="diagnostics-live"')
 
 

@@ -4317,10 +4317,7 @@ def _config_to_toml(cfg: AppConfig) -> str:
     return tomli_w.dumps(config_to_toml_dict(cfg))
 
 
-def _build_diagnostics_cards(
-    server: ConfigWebServer,
-    cfg: AppConfig,
-) -> dict[str, Any]:
+def _build_diagnostics_cards(server: ConfigWebServer) -> dict[str, Any]:
     """The web port, uptime and discovery figures for the live boxes. Separate from the
     bundle collector because the boxes poll every second and don't need the
     heavyweight sections (USB enumeration, full TOML render)."""
@@ -6294,7 +6291,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         extras = _get_detection_extras_status()
         # The live boxes' figures for the initial render (what the poll returns),
         # so the section reads filled-in values immediately.
-        diag_cards = _build_diagnostics_cards(server, config)
+        diag_cards = _build_diagnostics_cards(server)
         osc_user_templates, osc_system_templates = _osc_dropdown_templates()
         return template(
             "index",
@@ -7331,11 +7328,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     @app.get("/section/diagnostics")
     def get_diagnostics() -> Any:
         """The live boxes only: the section shell and its tools render once (partials/diagnostics)."""
-        cfg = _request_scoped_config()
         return template(
             "partials/diagnostics_cards",
             stats=server.get_runtime_stats(),
-            cards=_build_diagnostics_cards(server, cfg),
+            cards=_build_diagnostics_cards(server),
         )
 
     @app.get("/section/diagnostics/alerts")

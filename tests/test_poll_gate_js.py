@@ -110,13 +110,7 @@ _TAB_MARKUP = (
     '<div class="tab-content" id="tab-input"><div class="section" data-fold-key="slots" data-fold-default="collapsed">'
     '<div class="section-head"><h2>Slots</h2></div><div id="slots"></div></div></div>'
 )
-_PAGE_FUNCTIONS = (
-    "switchTab",
-    "goToSection",
-    "initTabs",
-    "setSectionCollapsed",
-    "initializeSectionFolding",
-)
+_PAGE_FUNCTIONS = ("switchTab", "goToSection", "initTabs", "setSectionCollapsed", "initializeSectionFolding")
 
 
 def _page_script() -> str:

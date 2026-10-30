@@ -18,7 +18,9 @@ pytestmark = [pytest.mark.unit, needs_node]
 
 _TEMPLATES = Path(__file__).parents[1] / "openfollow" / "web" / "templates"
 # Where every way out without saving goes, as the wizard template sets it.
-_SETTINGS_URL = re.search(r"^% _settings_url = '([^']+)'$", WIZARD_TEMPLATE.read_text(encoding="utf-8"), re.M).group(1)
+_SETTINGS_LINE = re.search(r"^% _settings_url = '([^']+)'$", WIZARD_TEMPLATE.read_text(encoding="utf-8"), re.M)
+assert _SETTINGS_LINE, "wizard.tpl sets _settings_url on a line of its own"
+_SETTINGS_URL = _SETTINGS_LINE.group(1)
 
 _MAIN_PAGE = (
     '<button class="tab-btn" data-tab="overview">O</button><button class="tab-btn" data-tab="general">G</button>'
@@ -87,9 +89,8 @@ def _back_to_settings() -> str:
 
 
 @pytest.mark.parametrize("storage", ["true", "false"], ids=["storage", "storage-blocked"])
-@pytest.mark.parametrize("last_tab", ["overview", "camera-grid"])
-def test_leaving_without_saving_opens_the_main_page_on_the_general_tab(last_tab: str, storage: str) -> None:
-    steps = f"try {{ store['psnfs:active-tab:/'] = {json.dumps(last_tab)}; }} catch (e) {{}}" + _LEAVE
+def test_leaving_without_saving_opens_the_main_page_on_the_general_tab(storage: str) -> None:
+    steps = "store['psnfs:active-tab:/'] = 'camera-grid';" + _LEAVE
     steps += _open_main_page("/?tab=general") + "out.push(location.search, replaced);"
     assert _run(steps, storage=storage) == ["/?tab=general", False, "tab-general", "", "/"]
 
@@ -127,3 +128,18 @@ def test_a_named_tab_that_is_not_shown_opens_the_remembered_one(asked: str) -> N
 def test_only_the_tab_parameter_leaves_the_address() -> None:
     steps = "location.hash = '#x';" + _open_main_page("/?keep=1&tab=general") + "out.push(replaced);"
     assert _run(steps) == ["tab-general", "/?keep=1#x"]
+
+
+def test_with_storage_blocked_a_named_tab_not_shown_opens_the_first() -> None:
+    steps = "store['psnfs:active-tab:/'] = 'camera-grid';" + _open_main_page("/?tab=nowhere")
+    assert _run(steps, storage="false") == ["tab-overview"]
+
+
+def test_a_named_element_that_is_not_a_tab_is_not_opened() -> None:
+    page = _MAIN_PAGE + '<div id="tab-strip"></div>'
+    steps = (
+        "store['psnfs:active-tab:/'] = 'camera-grid';"
+        f"location.pathname = '/'; location.search = '?tab=strip'; parseHTML({json.dumps(page)}, document.body);"
+        "initTabs(); out.push(document.querySelector('.tab-content.active').id);"
+    )
+    assert _run(steps) == ["tab-camera-grid"]

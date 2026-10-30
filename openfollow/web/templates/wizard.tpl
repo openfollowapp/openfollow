@@ -376,7 +376,7 @@
   @media (max-width: 640px) { .fs-title, .fs-status { display: none; } }
 </style>
 
-% # Every way out without saving lands on the main page's General tab.
+% # Leave without saving and Back to Settings land on the main page's General tab.
 % _settings_url = '/?tab=general'
 <div class="wizard-header">
   <a href="{{_settings_url}}">&larr; Back to Settings</a>

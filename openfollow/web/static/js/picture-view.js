@@ -4,7 +4,8 @@
 // The camera picture with an SVG drawn over it, in picture pixels: the latest
 // snapshot, what the saved camera sees of world points (/api/scene/project) and
 // the stage point under a picture point (/api/scene/unproject). Handles drag in
-// the picture and land on a horizontal plane the caller names.
+// the picture and land on a horizontal plane the caller names. Named pins and the
+// Setup Wizard's loupe serve editors that move points in the browser (picture-polygon.js).
 (function () {
     'use strict';
 
@@ -44,6 +45,11 @@
         this._url = null;
         this._drag = null;      // {drop, dot} while a handle is held
         this._dragEnded = false; // the click that ends a drag is not a click on the picture
+        // In place from the start, so a screen reader reads the first announcement too.
+        this._live = document.createElement('div');
+        this._live.className = 'visually-hidden';
+        this._live.setAttribute('aria-live', 'polite');
+        this.stage.appendChild(this._live);
         this._bind();
     }
 
@@ -124,6 +130,80 @@
         return dot;
     };
 
+    // Picture pixels per CSS pixel, so a handle sized in CSS pixels is one size on a phone and on a 4K screen.
+    P.cssScale = function () {
+        var box = this.svg.getBoundingClientRect();
+        return box && box.width > 0 && box.height > 0 ? Math.max(this.w / box.width, this.h / box.height) : 1;
+    };
+
+    P.inPicture = function (pt) {
+        return !!pt && pt[0] >= 0 && pt[0] <= this.w && pt[1] >= 0 && pt[1] <= this.h;
+    };
+
+    // A named point in the Setup Wizard's pin style around a 44 CSS px target; ``ring`` marks the keyboard's point.
+    P.pin = function (pt, label, active, ring) {
+        var k = this.cssScale(), flip = pt[0] > this.w - 70 * k;
+        var g = this.el('g', { 'class': 'pv-pin' + (active ? ' active' : ''), transform: 'translate(' + pt[0] + ',' + pt[1] + ')',
+            role: 'img', 'aria-label': label });
+        g.appendChild(this.el('rect', { x: -22 * k, y: -22 * k, width: 44 * k, height: 44 * k, fill: 'transparent' }));
+        if (ring) g.appendChild(this.el('circle', { r: 15 * k, 'class': 'pv-pin-ring' }));
+        g.appendChild(this.el('circle', { r: 9 * k, 'class': 'pv-pin-dot' }));
+        g.appendChild(this.el('path', { d: 'M' + (-5 * k) + ' 0H' + 5 * k + 'M0 ' + (-5 * k) + 'V' + 5 * k, 'class': 'pv-pin-cross' }));
+        var text = this.el('text', { x: (flip ? -14 : 14) * k, y: -12 * k, 'class': 'pv-pin-label', 'font-size': 13 * k,
+            'stroke-width': 3 * k, 'text-anchor': flip ? 'end' : 'start' });
+        text.textContent = label;
+        g.appendChild(text);
+        return g;
+    };
+
+    var LOUPE = 120, ZOOM = 4;
+
+    // The loupe's top left, its edge ``gap`` from the point (x, y): up-right first, then the other corners, inside the box.
+    function loupeSpot(x, y, gap, width, height) {
+        var rad = LOUPE / 2, k = (rad + gap) / Math.SQRT2;
+        var spots = [[1, -1], [-1, -1], [-1, 1], [1, 1]].map(function (d) { return [x + d[0] * k - rad, y + d[1] * k - rad]; });
+        var at = spots.filter(function (q) { return q[0] >= 0 && q[1] >= 0 && q[0] + LOUPE <= width && q[1] + LOUPE <= height; })[0] || spots[0];
+        return [Math.max(0, Math.min(at[0], width - LOUPE)), Math.max(0, Math.min(at[1], height - LOUPE))];
+    }
+
+    // The wizard's loupe beside picture point ``pt`` (close to a mouse, a finger's width from a touch), ``text`` under it.
+    P.showLoupe = function (pt, pointerType, text) {
+        if (!this._loupe) {
+            this._loupe = document.createElement('div');
+            this._loupe.className = 'pv-loupe';
+            this._loupe.setAttribute('aria-hidden', 'true');
+            this._loupe.innerHTML = '<div class="pv-loupe-img"></div><svg viewBox="0 0 120 120">'
+                + '<path class="pv-loupe-shade" d="M60 40V80M40 60H80"/><path class="pv-loupe-cross" d="M60 40V80M40 60H80"/></svg>';
+            this._readout = document.createElement('div');
+            this._readout.className = 'pv-readout';
+            this.stage.appendChild(this._loupe);
+            this.stage.appendChild(this._readout);
+        }
+        var box = this.svg.getBoundingClientRect(), k = this.cssScale(), x = pt[0] / k, y = pt[1] / k;
+        var at = loupeSpot(x, y, pointerType === 'mouse' ? 12 : 30, box.width, box.height);
+        this._loupe.hidden = false;
+        this._loupe.style.left = at[0] + 'px';
+        this._loupe.style.top = at[1] + 'px';
+        var img = this._loupe.firstChild;
+        if (this._url) img.style.backgroundImage = 'url(' + this._url + ')';
+        img.style.backgroundSize = (this.w / k) * ZOOM + 'px ' + (this.h / k) * ZOOM + 'px';
+        img.style.backgroundPosition = (LOUPE / 2 - x * ZOOM) + 'px ' + (LOUPE / 2 - y * ZOOM) + 'px';
+        this._readout.hidden = false;
+        this._readout.textContent = text;
+        this._readout.style.left = at[0] + 'px';
+        // Under the loupe, or over it where the picture ends.
+        this._readout.style.top = (at[1] + LOUPE + 30 > box.height ? at[1] - 30 : at[1] + LOUPE + 6) + 'px';
+    };
+
+    // Reads ``text`` out once to a screen reader, where the moving readout would chatter.
+    P.announce = function (text) { this._live.textContent = text; };
+
+    P.hideLoupe = function () {
+        if (!this._loupe) return;
+        this._loupe.hidden = true;
+        this._readout.hidden = true;
+    };
+
     // True for the click that ends a drag.
     P.dragJustEnded = function () { return this._dragEnded; };
 
@@ -168,6 +248,8 @@
     }
 
     window.OpenFollow = window.OpenFollow || {};
+    // CSS pixels a press may move and still be a click: a finger or a pen wanders more than a mouse.
+    PictureView.tapSlop = function (pointerType) { return pointerType === 'mouse' ? 3 : 8; };
     window.OpenFollow.PictureView = PictureView;
     window.OpenFollow.viewSwitch = viewSwitch;
     window.OpenFollow.pictureRuns = runs;

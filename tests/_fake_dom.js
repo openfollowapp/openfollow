@@ -423,7 +423,16 @@ globalThis.fetch = function (url, opts) {
     // The station answers when asked; a held answer only arrives later.
     var out = station(req);
     return new Promise(function (resolve, reject) {
+        // An aborted request rejects at once and its answer, when it comes, is dropped.
+        var aborted = false;
+        if (opts.signal) {
+            opts.signal.addEventListener('abort', function () {
+                aborted = true;
+                reject(new DOMException('The operation was aborted.', 'AbortError'));
+            });
+        }
         var answer = function () {
+            if (aborted) return;
             if (out === 'unreachable') reject(new TypeError('Failed to fetch'));
             else {
                 var res = respond(out.status || 200, out.body, out.headers);

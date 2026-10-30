@@ -32,6 +32,8 @@
  <script src="/assets/js/binding-steal.js?v={{_asset_v}}"></script>
  <script src="/assets/js/polygon-plan.js?v={{_asset_v}}"></script>
  <script src="/assets/js/picture-view.js?v={{_asset_v}}"></script>
+ <script src="/assets/js/camera-model.js?v={{_asset_v}}"></script>
+ <script src="/assets/js/picture-polygon.js?v={{_asset_v}}"></script>
  <script src="/assets/js/poll-gate.js?v={{_asset_v}}"></script>
  <style>
  :root {
@@ -451,13 +453,45 @@
  .plan-view-switch { margin-bottom: 0.6rem; }
  .pv-stage { position: relative; width: 100%; line-height: 0; border-radius: 6px; overflow: hidden; background: var(--bg-base); }
  .pv-stage img { display: block; width: 100%; height: auto; }
- .pv-stage svg { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
+ .pv-stage > svg { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
+ .pv-stage > svg:focus { outline: none; }
+ .pv-stage > svg:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
  .pv-nofeed { padding: 24px 12px; border: 1px dashed var(--border); border-radius: 6px; text-align: center; }
  .pv-zone { stroke-width: 2; fill-opacity: 0.18; cursor: pointer; }
  .pv-zone-selected { stroke-width: 3; }
  .pv-grid-line { stroke: var(--muted); stroke-width: 1; fill: none; }
  .pv-outline { stroke: var(--accent); stroke-width: 2.5; fill: none; }
  .pv-handle { fill: var(--text); stroke: var(--accent); stroke-width: 2; }
+ /* Named points in the Setup Wizard's pin style, the band an edge is dragged from and the loupe. */
+ .pv-pin { cursor: grab; }
+ .pv-pin:active { cursor: grabbing; }
+ .pv-pin-dot { fill: var(--accent); fill-opacity: 0.25; stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; }
+ .pv-pin.active .pv-pin-dot { stroke-width: 3.5; fill-opacity: 0.5; }
+ .pv-pin-ring { fill: none; stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; }
+ .pv-pin-cross { stroke: var(--text); stroke-width: 1.5; vector-effect: non-scaling-stroke; pointer-events: none; }
+ .pv-pin-label { fill: var(--text); stroke: var(--bg-deep); font-weight: 700; paint-order: stroke; pointer-events: none; }
+ .pv-edge { fill: none; stroke: transparent; pointer-events: stroke; cursor: copy; stroke-linecap: round; stroke-linejoin: round; }
+ .pv-ghost { fill: none; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; pointer-events: none; }
+ .pv-loupe { position: absolute; z-index: 3; width: 120px; height: 120px; border-radius: 50%; overflow: hidden; border: 2px solid var(--accent); background: var(--bg-deep); pointer-events: none; }
+ .pv-loupe-img { position: absolute; inset: 0; background-repeat: no-repeat; }
+ .pv-loupe svg { position: absolute; inset: 0; width: 100%; height: 100%; fill: none; }
+ .pv-loupe-shade { stroke: var(--bg-deep); stroke-width: 4; }
+ .pv-loupe-cross { stroke: var(--accent); stroke-width: 1.5; }
+ .pv-readout { position: absolute; z-index: 3; padding: 0.15rem 0.5rem; border-radius: 999px; background: color-mix(in srgb, var(--bg-deep) 85%, transparent); border: 1px solid var(--border); color: var(--text); font-size: 0.78rem; font-weight: 600; line-height: 1.4; white-space: nowrap; font-variant-numeric: tabular-nums; pointer-events: none; }
+ .pv-loupe[hidden], .pv-readout[hidden] { display: none; }
+ /* The picture full screen, with its one-line bar, as in the Setup Wizard. */
+ .pv-fs-btn { position: absolute; top: 8px; right: 8px; z-index: 4; width: 2.2rem; height: 2.2rem; padding: 0; display: flex; align-items: center; justify-content: center; border-radius: 0.5rem; background: color-mix(in srgb, var(--bg-deep) 72%, transparent); border: 1px solid var(--border); color: var(--text); }
+ .pv-fs-btn:hover, .pv-fs-btn:focus-visible { background: var(--bg-soft); border-color: var(--accent); transform: none; }
+ .pv-fs-btn svg { width: 1.15rem; height: 1.15rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+ .pv-fs-shell { position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column; background: var(--bg-deep); }
+ .pv-fs-shell[hidden], .pv-fs-btn[hidden] { display: none; }
+ .pv-fs-bar { display: flex; align-items: center; gap: 0.75rem; min-height: 2.6rem; padding: 0.35rem 0.6rem 0.35rem 0.9rem; background: var(--bg-soft); border-bottom: 1px solid var(--border); font-size: 0.86rem; line-height: 1.3; }
+ .pv-fs-title { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+ .pv-fs-status { flex: 1; min-width: 0; color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+ .pv-fs-actions { display: flex; gap: 0.4rem; }
+ .pv-fs-stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+ .pv-fs-stage .pv-stage { border-radius: 0; flex: none; }
+ @media (max-width: 640px) { .pv-fs-title { display: none; } }
  /* An option is a <label>: it reads in normal case, not the form label's caps. */
  .seg-toggle .seg-option { margin: 0; display: flex; cursor: pointer; text-transform: none; letter-spacing: normal; }
  .seg-toggle .seg-option input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
@@ -2950,7 +2984,8 @@
  if (event.target.closest('[data-help-close]')) closeHelp();
  });
  document.addEventListener('keydown', (event) => {
- if (event.key !== 'Escape') return;
+ // An Esc a control already used (a picture letting go of its point) is not the drawer's.
+ if (event.key !== 'Escape' || event.defaultPrevented) return;
  if (!document.body.classList.contains('help-open')) return;
  // A modal sits above the drawer and owns ESC while open (its handler
  // returns early when ``#modal-root`` is hidden); defer to it so one

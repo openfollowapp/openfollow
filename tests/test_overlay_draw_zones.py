@@ -17,6 +17,7 @@ from typing import Any
 import numpy as np
 import pytest
 
+from openfollow.runtime.overlay_draw_scene import project
 from openfollow.runtime.overlay_draw_zones import draw_zones
 from openfollow.runtime.overlay_state import OverlayState
 from tests._fake_cairo import FakeCairo, FakeRenderer
@@ -57,6 +58,13 @@ def _state_with_zone(
     state.zone_z_offset = z_offset
     state.zone_polygons = [(vertices, color, name, is_occupied, count, height)]
     return state
+
+
+def _outline_start(cr: FakeCairo) -> tuple[float, float]:
+    """The first corner of the filled outline: the move_to that opens the path ``close_path`` ends."""
+    end = next(i for i, c in enumerate(cr.calls) if c[0] == "close_path")
+    start = max(i for i, c in enumerate(cr.calls[:end]) if c[0] == "move_to")
+    return cr.calls[start][1], cr.calls[start][2]
 
 
 # --------------------------------------------------------------------------- #
@@ -303,7 +311,7 @@ class TestRendering:
         for state in (raised, at_two, on_the_stage):
             cr = FakeCairo()
             draw_zones(FakeRenderer(), cr, state, 1920, 1080)
-            drawn.append(cr.move_tos[0])
+            drawn.append(_outline_start(cr))
         assert drawn[0] == pytest.approx(drawn[1])
         assert drawn[0] != pytest.approx(drawn[2])
 
@@ -363,6 +371,93 @@ class TestLensDistortion:
         # A closed outline can't be partially drawn -> whole zone skipped.
         assert cr.closes == 0
         assert cr.fill_preserves == 0
+
+
+def _strokes(cr: FakeCairo) -> list[dict[str, Any]]:
+    """Each stroke: its alpha, dash, whether its path was closed, and the points it ran through."""
+    out: list[dict[str, Any]] = []
+    alpha, dash, closed, points = 1.0, (), False, []
+    for call in cr.calls:
+        if call[0] == "rgba":
+            alpha = call[4] if len(call) == 5 else 1.0
+        elif call[0] == "dash":
+            dash = call[1]
+        elif call[0] in ("move_to", "line_to"):
+            points.append((call[1], call[2]))
+        elif call[0] == "close_path":
+            closed = True
+        elif call[0] == "stroke":
+            out.append({"alpha": alpha, "dash": dash, "closed": closed, "points": points})
+            closed, points = False, []
+        elif call[0] == "fill":
+            closed, points = False, []
+    return out
+
+
+class TestRaisedZoneFloor:
+    """A zone raised above the stage plane also shows its floor outline and a dotted line up each corner."""
+
+    @staticmethod
+    def _drawn(height: float) -> list[dict[str, Any]]:
+        cr = FakeCairo()
+        draw_zones(FakeRenderer(), cr, _state_with_zone(vertices=_square(), name="", height=height), 1920, 1080)
+        return _strokes(cr)
+
+    def test_a_raised_zone_draws_its_floor_outline_solid_and_its_corner_lines_dotted(self) -> None:
+        open_strokes = [s for s in self._drawn(0.5) if not s["closed"]]
+        assert {s["dash"] for s in open_strokes} == {(), (2.0, 4.0)}
+
+    @pytest.mark.parametrize("height", [0.0, -0.5], ids=["on the stage", "below it"])
+    def test_a_zone_not_above_the_stage_draws_only_its_outline(self, height: float) -> None:
+        drawn = self._drawn(height)
+        assert len(drawn) == 1 and drawn[0]["closed"] is True
+
+    @pytest.mark.parametrize(
+        ("world", "alpha", "dash"),
+        [
+            ((0.0, -1.0, 0.0), 0.7, ()),
+            ((0.0, 1.0, 0.0), 0.18, ()),
+            ((1.0, -1.0, 0.25), 0.7, (2.0, 4.0)),
+            ((1.0, 1.0, 0.25), 0.18, (2.0, 4.0)),
+        ],
+        ids=["near floor edge", "far floor edge", "near corner line", "far corner line"],
+    )
+    def test_lines_behind_the_raised_zone_are_drawn_fainter(
+        self, world: tuple[float, float, float], alpha: float, dash: tuple[float, ...]
+    ) -> None:
+        """The camera stands downstage of the zone and above it: its upstage lines run behind the zone."""
+        spot = project(_camera_params(), [world], 1920, 1080)[0]
+        holding = [
+            s
+            for s in self._drawn(0.5)
+            if not s["closed"] and any(abs(x - spot[0]) < 1e-6 and abs(y - spot[1]) < 1e-6 for x, y in s["points"])
+        ]
+        assert [(s["alpha"], s["dash"]) for s in holding] == [(pytest.approx(alpha), dash)]
+
+    @pytest.mark.parametrize(("x", "alpha"), [(-0.5, 0.7), (0.5, 0.18)], ids=["in view", "behind the arm"])
+    def test_a_line_is_cut_where_the_zone_starts_to_hide_it(self, x: float, alpha: float) -> None:
+        """A U open towards a camera downstage right: the right arm hides the right half of the notch's back edge."""
+        notched = [
+            (-2.0, -1.0),
+            (-1.0, -1.0),
+            (-1.0, 0.0),
+            (1.0, 0.0),
+            (1.0, -1.0),
+            (2.0, -1.0),
+            (2.0, 1.0),
+            (-2.0, 1.0),
+        ]
+        state = _state_with_zone(vertices=notched, name="", height=0.5)
+        state.camera_params = np.array([6.0, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0])
+        cr = FakeCairo()
+        draw_zones(FakeRenderer(), cr, state, 1920, 1080)
+        spot = project(state.camera_params, [(x, 0.0, 0.0)], 1920, 1080)[0]
+        holding = [
+            s["alpha"]
+            for s in _strokes(cr)
+            if not s["closed"] and any(abs(px - spot[0]) < 1e-6 and abs(py - spot[1]) < 1e-6 for px, py in s["points"])
+        ]
+        assert holding == [pytest.approx(alpha)]
 
 
 # --------------------------------------------------------------------------- #

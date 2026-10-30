@@ -11073,7 +11073,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
         import numpy as np
 
-        from openfollow.scene.calibration_points import Mark, SolveSuperseded, plausibility, solve_marks
+        from openfollow.scene.calibration_points import (
+            Mark,
+            SolveSuperseded,
+            plausibility,
+            solve_marks,
+            suggested_floor,
+        )
         from openfollow.scene.solver import apply_overlay_distortion, invert_overlay_distortion
 
         need = []
@@ -11135,6 +11141,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             response.status = 422
             return json.dumps({"error": solved.error, "marks": answers})
         cam = solved.camera
+        floor = suggested_floor(solve_input) if mode == "advanced" else None
         return json.dumps(
             {
                 "camera": {
@@ -11150,6 +11157,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 "count": len(errors),
                 "largest_error": max(errors.values(), default=0.0),
                 "steep": solved.steep,
+                "floor": None if floor is None else {"z": floor[0], "ids": list(floor[1])},
                 "reasons": plausibility(
                     cam, solved.marks, errors, hint, mode == "advanced", floor_off=solved.floor_off
                 ),

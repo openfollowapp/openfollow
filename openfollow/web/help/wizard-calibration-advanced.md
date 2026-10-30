@@ -16,7 +16,7 @@ A click on a pin opens its menu. The arrow keys move the pin by one pixel, **Ent
 
 ## Calculation
 
-The Setup Wizard needs the camera position, two known points and four pinned points. Advanced never changes the grid.
+The Setup Wizard needs the camera position, two known points and four pinned points. Of the grid, Advanced changes only its height: **Floor height** on Review.
 
 ## Camera height
 

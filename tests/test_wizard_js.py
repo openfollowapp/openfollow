@@ -1511,6 +1511,8 @@ function wizReadLensCoeff() { return 0; } function wizLens() { return [0, 0, 0, 
 function wizLensCentreText() { return ''; } function fmt() { return ''; } function reviewLensCoverage() { return ''; }
 function pairsFor() { return []; } function distTable() { return ''; } function lenText() { return ''; }
 function renderFsBar() {} function stationLensOnly() { return false; } function cautionHtml() { return 'caution'; }
+var floorStub = null;
+function reviewFloor() { return S.mode === 'advanced' ? floorStub : null; } function floorMoved() { return false; }
 """
 _REVIEW_FUNCTIONS = (
     "esc",
@@ -1530,7 +1532,7 @@ _COMPLETE = [
 ]
 
 
-def _review(marks: list, *, pending: bool = False) -> dict:
+def _review(marks: list, *, pending: bool = False, mode: str = "advanced", floor: float | None = 0.0) -> dict:
     solve = {"cam": {"fov": 60}, "worst": 0.4, "reasons": [], "positions": {}, "marks": marks}
     return run_wizard_js(
         "(function() { renderReview(); return { apply: $('btn-apply-finish').disabled,"
@@ -1539,14 +1541,20 @@ def _review(marks: list, *, pending: bool = False) -> dict:
         functions=_REVIEW_FUNCTIONS,
         variables=("APPLY_MAX_PX",),
         prelude=_DOM + _REVIEW_STUBS,
-        S={"mode": "advanced", "cam": None, "solve": solve},
+        S={"mode": mode, "cam": None, "solve": solve},
         solvePending=pending,
+        floorStub=floor,
     )
 
 
 def test_review_turns_apply_on_for_a_finished_solve_of_complete_points() -> None:
     out = _review(_COMPLETE)
     assert (out["apply"], out["hidden"]) == (False, True)
+
+
+@pytest.mark.parametrize(("mode", "off"), [("advanced", True), ("simple", False)])
+def test_review_keeps_apply_off_while_advanced_has_no_usable_floor_height(mode: str, off: bool) -> None:
+    assert _review(_COMPLETE, mode=mode, floor=None)["apply"] is off
 
 
 def test_review_keeps_apply_off_while_a_solve_is_still_running() -> None:
@@ -4373,6 +4381,63 @@ def test_a_unit_switch_keeps_the_height_it_converts() -> None:
     assert out[1:] == ["9.8", pytest.approx(9.8)]
 
 
+@pytest.mark.parametrize("touched", [True, False])
+def test_a_unit_switch_converts_the_floor_height(touched: bool) -> None:
+    out = run_wizard_js(
+        "(function() { setUnitSystem('imperial'); var shown = [S.floor, $('floor_h').value]; setUnitSystem('metric');"
+        " return [shown, S.floor, $('floor_h').value, S.floorTouched]; })()",
+        functions=("len", "lenField", "camFields", "camUnusable", "readCam", "readHeight", "setUnitSystem"),
+        variables=("exactLen", "DISTANCE_SIGMA"),
+        prelude=length_page("metric", {})
+        + _DOM
+        + "var S = { rect: {}, points: [], height: null, floor: '1.2', floorTouched: "
+        + json.dumps(touched)
+        + " }; function applyUnitMarkup() {} function refreshEchoes() {} function renderCalibPanels() {}"
+        " function solveSoon() {} function saveToSession() {}",
+    )
+    feet = format_length(1.2, "imperial")
+    assert out == [[feet, feet], "1.2", "1.2", touched]
+
+
+@pytest.mark.parametrize(
+    ("saved", "units", "kept"),
+    [
+        ({"floor": "2.5", "floorFrom": 1.2}, "metric", ["2.5", 1.2, True]),
+        ({"floor": "2.5", "floorFrom": 1.2}, "imperial", ["", None, False]),
+        ({"floor": None, "floorFrom": 1.2}, "metric", ["", None, False]),
+        ({"floor": "2.5"}, "metric", ["", None, False]),
+    ],
+    ids=["typed", "other-units", "untyped", "no-suggestion-kept"],
+)
+def test_the_session_keeps_a_typed_floor_height_with_the_suggestion_it_was_typed_against(
+    saved: dict, units: str, kept: list
+) -> None:
+    raw = {"units": units, "mode": "advanced", "stepKey": "review", "rect": {}, **saved}
+    out = run_wizard_js(
+        "(function() { restoreFromSession(); return [$('floor_h').value, S.floorFrom, S.floorTouched]; })()",
+        functions=("pairOk", "fracPinOk", "restoreFromSession"),
+        variables=("CORNERS",),
+        prelude=length_page("metric", {}) + _DOM + _SESSION_PAGE + f"var raw = {json.dumps(json.dumps(raw))};"
+        " var S = { mode: 'simple', rect: { origin: '' }, cornerPins: {}, cornerMoved: {}, points: [], nextId: 1,"
+        " floor: '', floorTouched: false, floorFrom: null };",
+    )
+    assert out == kept
+
+
+@pytest.mark.parametrize(("touched", "stored"), [(True, "2.5"), (False, None)])
+def test_the_session_stores_only_a_typed_floor_height(touched: bool, stored: str | None) -> None:
+    out = run_wizard_js(
+        "(function() { saveToSession(); return [stored.floor, stored.floorFrom]; })()",
+        functions=("saveToSession",),
+        variables=("CORNERS",),
+        prelude=length_page("metric", {}) + _DOM + _SESSION_PAGE + "var raw = null;"
+        " var S = { mode: 'advanced', simpleLoc: '', rect: {}, pinSize: null, nextId: 1, points: [],"
+        " cornerPins: {}, cornerMoved: {}, lensTouched: false, lensLoaded: null,"
+        " floor: '2.5', floorTouched: " + json.dumps(touched) + ", floorFrom: 1.2 };",
+    )
+    assert out == [stored, 1.2]
+
+
 @pytest.mark.parametrize(("units", "kept"), [("metric", "9.8"), ("imperial", "")], ids=["same units", "other units"])
 def test_the_session_keeps_the_typed_height_in_its_units(units: str, kept: str) -> None:
     raw = {"units": units, "mode": "simple", "stepKey": "calib", "rect": {}, "height": "9.8"}
@@ -5678,7 +5743,9 @@ var els = { cam_height: height };
 function $(id) {
   return els[id] || (els[id] = { hidden: false, textContent: '', setAttribute: function() {} });
 }
-var document = { querySelectorAll: function(sel) { return sel === '#wizard-step-calib [data-echo]' ? [echo] : []; } };
+var document = { querySelectorAll: function(sel) {
+  return sel.split(', ').indexOf('#wizard-step-calib [data-echo]') >= 0 ? [echo] : [];
+} };
 var S = { height: null };
 """
 

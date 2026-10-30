@@ -929,3 +929,52 @@ def test_unpinned_marks_and_marks_behind_the_camera_have_no_error() -> None:
         {"id": 2, "kind": "known", "x": behind[0], "y": behind[1], "z": behind[2], "pin": [0.5, 0.5]},
     ]
     assert pin_errors(_saved_camera(marks), W, H) == {}
+
+
+def _at(*heights: float) -> list[Mark]:
+    return [Mark(n, "known", z, (float(n), 0.0)) for n, z in enumerate(heights, start=1)]
+
+
+@pytest.mark.parametrize(
+    ("heights", "floor"),
+    [
+        ((1.2, 1.2, 1.2, 1.8), (1.2, (1, 2, 3))),
+        ((0.0, 0.6, 0.0, 0.6, 0.0), (0.0, (1, 3, 5))),
+        ((1.18, 1.22, 1.23, 3.0), (1.21, (1, 2, 3))),
+        ((1.2, 1.25), (1.225, (1, 2))),
+        ((-1.5, -1.5, 0.0), (-1.5, (1, 2))),
+        ((1.0, 1.03, 1.03, 1.06), (1.02, (1, 2, 3))),
+        ((0.0, 0.04, 0.08), (0.02, (1, 2))),
+        ((0.0, 0.04, 0.05, 0.06), (0.05, (2, 3, 4))),
+    ],
+    ids=[
+        "raised-deck",
+        "floor-and-risers",
+        "within-5-cm",
+        "exactly-5-cm",
+        "a-pit",
+        "one-loose-deck",
+        "a-chain",
+        "tightest",
+    ],
+)
+def test_the_floor_is_the_mean_of_the_largest_group_within_5_cm(heights, floor) -> None:
+    assert cp.suggested_floor(_at(*heights)) == floor
+
+
+@pytest.mark.parametrize(
+    "heights",
+    [(), (1.2,), (0.0, 0.051), (0.0, 0.0, 0.6, 0.6), (0.0, 0.03, 0.6, 0.63), (0.0, 0.5, 1.0, 1.5)],
+    ids=["none", "one", "just-over-5-cm", "two-groups-tie", "two-loose-groups-tie", "all-apart"],
+)
+def test_no_floor_without_one_largest_group_of_two(heights) -> None:
+    assert cp.suggested_floor(_at(*heights)) is None
+
+
+def test_a_triangulated_point_counts_by_its_typed_height() -> None:
+    marks = [
+        Mark(1, "known", 1.2, (6.0, 0.0)),
+        Mark(2, "triangulated", 1.2, from_a=1, from_b=3),
+        Mark(3, "known", 0.0, (0.0, 0.0)),
+    ]
+    assert cp.suggested_floor(marks) == (1.2, (1, 2))

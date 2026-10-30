@@ -115,7 +115,14 @@
  padding: 20px 0;
  font: 400 14px/1.6 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
  color: var(--text);
- background: var(--bg-base);
+ /* Fade is keyed to the viewport (100vh), not page height, so it looks
+ identical on every section regardless of length. It sits at the top of
+ the page and scrolls away; the matching base colour fills below it. */
+ background-color: #06140d;
+ background-image: linear-gradient(180deg, var(--bg-deep) 0%, var(--bg-base) 65%, #06140d 100%);
+ background-repeat: no-repeat;
+ background-position: top center;
+ background-size: 100% 100vh;
  }
  h1 {
  margin: 0;

@@ -391,7 +391,7 @@ function listed() { return document.getElementById('backups-list').textContent; 
 
 
 def _backups(steps: str, listing: str = f"{{ body: {{ backups: {json.dumps(_BACKUPS)} }} }}", tz: str = "UTC") -> Any:
-    """The Configuration card with its list as the station answers *listing*, then *steps*."""
+    """The Configuration Backup & Import section with its list as the station answers *listing*, then *steps*."""
     return _run(
         f"process.env.TZ = {json.dumps(tz)}; answers['GET /api/config/backups'] = {listing};"
         "requests.length = 0; await loadBackups();" + steps,

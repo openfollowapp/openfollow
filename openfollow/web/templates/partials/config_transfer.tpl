@@ -4,7 +4,7 @@
         <span class="section-note">Export, import and restore device settings</span>
     </div>
 
-    <div class="cfg-columns">
+    <div class="stats-columns cfg-columns">
         <section class="stat-panel">
             <div class="stat-panel-head">
                 <h3 class="stat-panel-title">Export</h3>

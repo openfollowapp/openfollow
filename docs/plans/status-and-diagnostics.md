@@ -6,7 +6,7 @@ Station Network, Live Statistics and Diagnostics on the Overview tab show the sa
 
 | Topic | Decision |
 |---|---|
-| Section | One section, **Status & Diagnostics**, in place of both. It keeps the `diagnostics` id, fold key, help drawer and `/section/diagnostics` route; the `statistics` ones go. |
+| Section | One section, **Status & Diagnostics**, in place of all three. It keeps the `diagnostics` id, fold key, help drawer and `/section/diagnostics` route; the `statistics` ones go. |
 | Station Network | The station list becomes the first box, full width above the others, headed like them. Its rows keep their own 5 s poll (each swap rebuilds the station links and drops keyboard focus), so the Refresh button goes. Its help joins the section's drawer. |
 | Refresh | The boxes refresh every second while in view (the discovery figures used to refresh every 5 s). The announcer stays outside the swap. |
 | Video | Unchanged. |

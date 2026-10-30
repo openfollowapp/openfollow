@@ -2794,7 +2794,7 @@
  function activeTabKey(path) {
  return 'psnfs:active-tab:' + path;
  }
- // Makes the page at ``path`` open on ``tabId`` next time, from another page.
+ // Makes the page at ``path`` open on ``tabId`` next time; another page may set it too.
  function rememberTab(path, tabId) {
  writeStorage(activeTabKey(path), tabId);
  }

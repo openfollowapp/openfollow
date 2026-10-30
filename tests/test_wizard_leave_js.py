@@ -11,12 +11,11 @@ from pathlib import Path
 
 import pytest
 
-from tests._template_source import function_body
-from tests._wizard_js import wizard_window_function
+from tests._template_source import base_functions
+from tests._wizard_js import WIZARD_TEMPLATE, wizard_window_function
 
 pytestmark = [pytest.mark.unit, pytest.mark.skipif(shutil.which("node") is None, reason="needs node")]
 
-_BASE = Path(__file__).parents[1] / "openfollow" / "web" / "templates" / "base.tpl"
 _MAIN_PAGE = (
     '<button class="tab-btn" data-tab="overview">O</button><button class="tab-btn" data-tab="general">G</button>'
     '<button class="tab-btn" data-tab="camera-grid">C</button>'
@@ -24,15 +23,6 @@ _MAIN_PAGE = (
     '<div class="tab-content" id="tab-camera-grid"></div>'
 )
 _BASE_FUNCTIONS = ("readStorage", "writeStorage", "activeTabKey", "rememberTab", "switchTab", "initTabs")
-
-
-def _base_script() -> str:
-    text = _BASE.read_text(encoding="utf-8")
-    parts = []
-    for name in _BASE_FUNCTIONS:
-        start = text.index(f"function {name}(")
-        parts.append(text[start : text.index("{", start)] + "{" + function_body(text, name) + "}")
-    return "\n".join(parts)
 
 
 def _run(steps: str) -> object:
@@ -45,7 +35,7 @@ def _run(steps: str) -> object:
             "var session = {}; var sessionStorage = {removeItem: function (k) { delete session[k]; }};",
             "function closeHelp() {} function announcePollsShown() {}",
             "var location = {pathname: '/wizard'}; var window = {location: {href: '/wizard'}};",
-            _base_script(),
+            base_functions(*_BASE_FUNCTIONS),
             "var out = [];",
             steps,
             "process.stdout.write(JSON.stringify(out));",
@@ -53,7 +43,8 @@ def _run(steps: str) -> object:
     )
     node = shutil.which("node")
     assert node is not None
-    done = subprocess.run([node, "-e", source], capture_output=True, text=True, timeout=20)  # nosec B603
+    # On stdin: Linux caps one argument at 128 KiB.
+    done = subprocess.run([node, "-"], input=source, capture_output=True, text=True, timeout=20)  # nosec B603
     assert done.returncode == 0, done.stderr
     return json.loads(done.stdout)
 
@@ -90,3 +81,18 @@ def test_a_tab_chosen_on_the_main_page_is_still_the_one_it_opens_on() -> None:
         "out.push(document.querySelector('.tab-content.active').id);"
     )
     assert _run(steps) == ["tab-camera-grid"]
+
+
+def test_back_to_settings_opens_the_general_tab_too() -> None:
+    header = (
+        WIZARD_TEMPLATE.read_text(encoding="utf-8").split('<div class="wizard-header">', 1)[1].split("</div>", 1)[0]
+    )
+    link = header[header.index("<a ") : header.index(">", header.index("<a ")) + 1]
+    assert 'href="/"' in link
+    steps = (
+        "store[activeTabKey('/')] = 'camera-grid';"
+        f"eval({json.dumps(link.split('onclick="', 1)[1].split('"', 1)[0])});"
+        f"location.pathname = '/'; parseHTML({json.dumps(_MAIN_PAGE)}, document.body); initTabs();"
+        "out.push(document.querySelector('.tab-content.active').id);"
+    )
+    assert _run(steps) == ["tab-general"]

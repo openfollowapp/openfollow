@@ -377,7 +377,7 @@
 </style>
 
 <div class="wizard-header">
-  <a href="/">&larr; Back to Settings</a>
+  <a href="/" onclick="rememberTab('/', 'general')">&larr; Back to Settings</a>
   <h2>Setup Wizard</h2>
 </div>
 

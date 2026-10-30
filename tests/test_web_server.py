@@ -3225,6 +3225,13 @@ def test_page_background_is_the_plain_fade(live_server) -> None:
     assert "radial-gradient" not in body
 
 
+def test_license_footer_has_no_rule_above_it(live_server) -> None:
+    _, base = live_server
+    _, body = _get(base, "/")
+    rule = re.search(r"\.license-footer \{([^}]*)\}", body)
+    assert rule and "border" not in rule.group(1)
+
+
 def _hero(body: str) -> str:
     start = body.index('<header class="hero-panel">')
     return body[start : body.index("</header>", start)]

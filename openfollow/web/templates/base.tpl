@@ -1298,7 +1298,6 @@
  .license-footer {
  margin-top: 18px;
  padding: 12px 4px 4px;
- border-top: 1px solid var(--border-soft);
  color: var(--muted);
  font-size: 0.78rem;
  line-height: 1.5;

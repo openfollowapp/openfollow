@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""The camera-picture routes the plan editors share, and the ground grid's view."""
+"""The camera-picture routes the plan editors share."""
 
 from __future__ import annotations
 
@@ -15,14 +15,12 @@ import pytest
 import openfollow.web.discovery as discovery_module
 from openfollow.configuration import load_config, save_config
 from openfollow.runtime.overlay_draw_scene import project
-from openfollow.scene.ground_grid import grid_segments_in_polygon, main_grid_steps
 from openfollow.web.server import ConfigWebServer
 from tests._ports import live_on_free_port
 
 pytestmark = pytest.mark.integration
 
 _W, _H = 1920, 1080
-_SQUARE = [[0.0, 2.0], [2.0, 2.0], [2.0, 4.0], [0.0, 4.0]]
 
 
 @pytest.fixture()
@@ -172,55 +170,6 @@ class TestUnproject:
     def test_a_body_that_is_not_an_object_is_refused(self, live) -> None:  # noqa: ANN001
         base, _ = live
         assert _call(base, "/api/scene/unproject", raw=b"[]")[0] == 400
-
-
-class TestGroundGridView:
-    def test_lines_are_the_operator_screen_s_clipped_lines(self, live) -> None:  # noqa: ANN001
-        base, config_path = live
-        cam = _camera(config_path)
-        g = load_config(config_path).grid
-        status, data = _call(base, "/api/ground_grid/view", {"w": _W, "h": _H, "vertices": _SQUARE, "z": -0.8})
-        assert status == 200
-        step_x, step_y = main_grid_steps(g.width, g.depth, g.spacing, 200)
-        segs = grid_segments_in_polygon(
-            _SQUARE, g.x_offset - g.width / 2, g.y_offset - g.depth / 2, step_x, step_y, -0.8, 200
-        )
-        assert len(data["lines"]) == len(segs)
-        assert data["lines"][0] == [[pytest.approx(v) for v in p] for p in project(cam, segs[0], _W, _H).tolist()]
-        corners = project(cam, [[*v, -0.8] for v in _SQUARE], _W, _H).tolist()
-        assert data["corners"] == [[pytest.approx(v) for v in p] for p in corners]
-        assert len(data["outline"]) == 5 and data["outline"][-1] == data["outline"][0]
-
-    def test_fewer_than_three_corners_draw_no_outline(self, live) -> None:  # noqa: ANN001
-        base, _ = live
-        data = _call(base, "/api/ground_grid/view", {"w": _W, "h": _H, "vertices": _SQUARE[:2], "z": 0})[1]
-        assert data["outline"] == [] and data["lines"] == []
-        assert len(data["corners"]) == 2
-
-    @pytest.mark.parametrize(
-        "body",
-        [
-            {"w": _W, "h": _H, "vertices": _SQUARE, "z": True},
-            {"w": _W, "h": _H, "vertices": _SQUARE, "z": None},
-            {"w": _W, "h": _H, "vertices": _SQUARE, "z": "low"},
-            {"w": _W, "h": _H, "vertices": _SQUARE, "z": "nan"},
-            {"w": _W, "h": _H, "vertices": _SQUARE},
-            {"w": _W, "h": _H, "vertices": "abc", "z": 0},
-            {"w": _W, "h": _H, "vertices": [[0, 0, 0]], "z": 0},
-            {"w": _W, "h": _H, "vertices": [[0, "y"]], "z": 0},
-            {"w": _W, "h": _H, "vertices": [[None, 0]], "z": 0},
-            {"w": _W, "h": _H, "vertices": [[10**400, 0]], "z": 0},
-            {"w": _W, "h": _H, "vertices": _SQUARE, "z": 10**400},
-        ],
-    )
-    def test_malformed_input_is_refused(self, live, body: dict) -> None:  # noqa: ANN001
-        base, _ = live
-        assert _call(base, "/api/ground_grid/view", raw=json.dumps(body).encode())[0] == 400
-
-
-def test_the_ground_grid_view_refuses_a_body_that_is_not_an_object(live) -> None:  # noqa: ANN001
-    base, _ = live
-    assert _call(base, "/api/ground_grid/view", raw=b"[]")[0] == 400
 
 
 def test_the_zone_editor_learns_the_floor_height(live) -> None:  # noqa: ANN001

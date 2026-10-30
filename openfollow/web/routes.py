@@ -59,7 +59,6 @@ from openfollow.configuration import (
     CALIBRATION_MODES,
     CONTROLLER_BINDING_FIELDS,
     DEFAULT_UPDATE_SERVICE_NAME,
-    GROUND_GRID_MAX_VERTICES,
     MARK_KINDS,
     MARK_REACH_M,
     MARKER_TOKEN_ALL,
@@ -266,7 +265,6 @@ VALID_SECTIONS = {
     "video_source",
     "camera",
     "grid",
-    "ground_grid",
     "movement",
     "marker",
     "controller",
@@ -385,7 +383,6 @@ _SECTION_CONFIG_ATTRS = {
     "camera": "camera",
     "paths": "paths",
     "grid": "grid",
-    "ground_grid": "ground_grid",
     "movement": "marker",
     "marker": "marker",
     "controller": "controller",
@@ -1909,8 +1906,6 @@ def _apply_section(cfg: AppConfig, section: str, data: Mapping[str, Any]) -> boo
         cfg.mouse3d.__post_init__()
     elif section == "grid":
         cfg.grid.__post_init__()
-    elif section == "ground_grid":
-        cfg.ground_grid.__post_init__()
     elif section == "camera":
         cfg.camera.__post_init__()
     elif section in ("marker", "movement"):
@@ -2021,7 +2016,6 @@ _SECTION_LENGTH_FIELDS: dict[str, frozenset[str]] = {
             "max_height",
         }
     ),
-    "ground_grid": frozenset({"z_offset"}),
     "marker": frozenset(
         {"ball_size", "crosshair_size", "ground_circle_size", "cone_base_diameter", "cone_top_diameter"}
     ),
@@ -2254,16 +2248,6 @@ def _as_ip_list(value: Any, default: list[str]) -> list[str]:
 _FieldParser = Callable[[Any, Any], Any]
 
 
-def _as_vertices(value: Any, current: list[list[float]]) -> list[list[float]]:
-    """A corner list as a list or as its JSON text (a form field); else *current*."""
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except ValueError:
-            return current
-    return _parse_vertices(value, current)
-
-
 _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
     "camera": {
         "pos_x": _as_float,
@@ -2301,12 +2285,6 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "origin_visible": _as_bool,
         "origin_length": _as_float,
         "origin_thickness": _as_int,
-    },
-    "ground_grid": {
-        "enabled": _as_bool,
-        "visible": _as_bool,
-        "z_offset": _as_float,
-        "vertices": _as_vertices,
     },
     "movement": {
         "min_speed": _as_float,
@@ -3581,7 +3559,6 @@ def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any], *, pushed: 
     for section in (
         "grid",
         "camera",
-        "ground_grid",
         "controller",
         "osc",
         "otp_output",
@@ -5386,8 +5363,8 @@ def _picture_size(data: Mapping[str, Any]) -> tuple[float, float]:
     return w, h
 
 
-def _world_polylines(raw: Any, dims: int) -> list[list[list[float]]]:
-    """A list of polylines of finite ``dims``-number points; ValueError otherwise."""
+def _world_polylines(raw: Any) -> list[list[list[float]]]:
+    """A list of polylines of finite ``[x, y, z]`` points; ValueError otherwise."""
     if not isinstance(raw, list):
         raise ValueError("polylines must be a list")
     out: list[list[list[float]]] = []
@@ -5397,12 +5374,12 @@ def _world_polylines(raw: Any, dims: int) -> list[list[list[float]]]:
             raise ValueError("each polyline must be a list of points")
         pts: list[list[float]] = []
         for pt in line:
-            if not isinstance(pt, list) or len(pt) != dims or any(isinstance(v, bool) for v in pt):
-                raise ValueError(f"each point must be {dims} numbers")
+            if not isinstance(pt, list) or len(pt) != 3 or any(isinstance(v, bool) for v in pt):
+                raise ValueError("each point must be 3 numbers")
             try:
                 vals = [float(v) for v in pt]
             except (TypeError, ValueError, OverflowError) as exc:
-                raise ValueError(f"each point must be {dims} numbers") from exc
+                raise ValueError("each point must be 3 numbers") from exc
             if not all(math.isfinite(v) for v in vals):
                 raise ValueError("points must be finite")
             pts.append(vals)
@@ -5417,8 +5394,6 @@ def _register_scene_routes(app: Bottle, server: ConfigWebServer) -> None:
     """Register the camera-picture routes the plan editors share: world to picture and back."""
     import numpy as np
 
-    from openfollow.runtime.overlay_draw_scene import _MAX_GRID_LINES_PER_AXIS
-    from openfollow.scene.ground_grid import grid_segments_in_polygon, main_grid_steps
     from openfollow.scene.solver import invert_overlay_distortion, unproject_to_plane
 
     def _body() -> dict[str, Any] | str:
@@ -5437,8 +5412,8 @@ def _register_scene_routes(app: Bottle, server: ConfigWebServer) -> None:
             return data
         try:
             w, h = _picture_size(data)
-            lines = _world_polylines(data.get("polylines", []), 3)
-            (points,) = _world_polylines([data.get("points", [])], 3)
+            lines = _world_polylines(data.get("polylines", []))
+            (points,) = _world_polylines([data.get("points", [])])
         except ValueError as exc:
             return _json_error(400, str(exc))
         cfg = _last_whole_config(server)
@@ -5472,40 +5447,6 @@ def _register_scene_routes(app: Bottle, server: ConfigWebServer) -> None:
         if not (np.isfinite(world[0]) and np.isfinite(world[1])):
             return _json_error(422, "That point of the picture does not reach the stage.")
         return json.dumps({"x": float(world[0]), "y": float(world[1]), "z": z})
-
-    @app.post("/api/ground_grid/view")
-    def ground_grid_view() -> Any:
-        """A ground-grid polygon at height ``z`` as the camera sees it: outline, corners and the clipped grid lines."""
-        response.content_type = "application/json"
-        data = _body()
-        if isinstance(data, str):
-            return data
-        try:
-            w, h = _picture_size(data)
-            (verts,) = _world_polylines([data.get("vertices")], 2)
-            if isinstance(data.get("z"), bool):
-                raise ValueError("z must be a number")
-            z = float(data["z"])
-            if not math.isfinite(z):
-                raise ValueError("z must be finite")
-        except (KeyError, TypeError, ValueError, OverflowError):
-            return _json_error(400, "vertices, z, w and h must be numbers")
-        cfg = _last_whole_config(server)
-        g = cfg.grid
-        verts = verts[:GROUND_GRID_MAX_VERTICES]
-        corners = [[*v, z] for v in verts]
-        step_x, step_y = main_grid_steps(g.width, g.depth, g.spacing, _MAX_GRID_LINES_PER_AXIS)
-        lines = grid_segments_in_polygon(
-            verts, g.x_offset - g.width / 2.0, g.y_offset - g.depth / 2.0, step_x, step_y, z, _MAX_GRID_LINES_PER_AXIS
-        )
-        outline = corners + corners[:1] if len(corners) >= 3 else []
-        return json.dumps(
-            {
-                "outline": _picture_polylines(cfg, w, h, [outline])[0],
-                "lines": _picture_polylines(cfg, w, h, [seg.tolist() for seg in lines]),
-                "corners": _picture_points(*_camera_view(cfg), w, h, corners),
-            }
-        )
 
 
 _REMOTE_API = "/api/remote"
@@ -7902,12 +7843,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         cfg = _save_section_from_form("grid", bool_fields=("visible", "origin_visible"))
         return template("partials/grid", config=cfg, saved=True)
 
-    @app.post("/section/ground_grid")
-    def update_ground_grid() -> Any:
-        """Update the experimental ground grid, its polygon included."""
-        cfg = _save_section_from_form("ground_grid", bool_fields=("enabled", "visible"))
-        return template("partials/ground_grid", config=cfg, saved=True)
-
     @app.post("/section/movement")
     def update_movement() -> Any:
         """Update movement speed settings."""
@@ -9675,7 +9610,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 payload = {
                     "camera": asdict(cfg.camera),
                     "grid": asdict(cfg.grid),
-                    "ground_grid": asdict(cfg.ground_grid),
                 }
         elif template_type == "paths":
             with _config_write_lock:
@@ -9790,15 +9724,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # The schema requires BOTH halves, so this apply path needs no
             # conditional checks – a partial template is rejected by the
             # loader and would have returned 404 / 400 above.
-            from openfollow.configuration import CameraConfig, GridConfig, GroundGridConfig, without_former_camera_keys
+            from openfollow.configuration import CameraConfig, GridConfig, without_former_camera_keys
 
             with _config_write_lock:
                 cfg = _config_for_save(server)
                 cfg.camera = CameraConfig(**without_former_camera_keys(tpl.payload["camera"]))
                 cfg.grid = GridConfig(**tpl.payload["grid"])
                 reconcile_simple_corners(cfg)
-                if "ground_grid" in tpl.payload:
-                    cfg.ground_grid = GroundGridConfig(**tpl.payload["ground_grid"])
                 save_config(cfg, server.config_path)
             return json.dumps({"ok": True})
         if tpl.type == "paths":

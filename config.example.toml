@@ -291,6 +291,7 @@ source_iface = ""  # interface to send from; empty follows psn_source_iface
 [trigger_zones]
 enabled = true
 show_overlay = true
+highlight_occupied = true
 eval_fps = 10
 debounce_ms = 200
 hysteresis = 0.05

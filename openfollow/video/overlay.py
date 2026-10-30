@@ -448,7 +448,7 @@ class CairoOverlayRenderer:
     # ------------------------------------------------------------------
 
     def _draw_zones(self, cr: Any, state: OverlayState, w: int, h: int) -> None:
-        draw_zones_pass(self, cr, state, w, h, self._zone_cache)
+        draw_zones_pass(cr, state, w, h, self._zone_cache)
 
     # ------------------------------------------------------------------
     # Person detection bounding boxes

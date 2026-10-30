@@ -426,15 +426,14 @@ def _populate_zone_overlay(state: OverlayState, cfg: Any, app: Any) -> None:
         state.zone_polygons = []
         return
 
-    occupancy_by_index: dict[int, tuple[bool, int]] = {}
-    if tz.enabled:
+    occupied: set[int] = set()
+    if tz.enabled and tz.highlight_occupied:
         zone_engine = getattr(app._runtime_services, "_zone_engine", None)
         if zone_engine is not None:
-            for idx, is_occupied, count in zone_engine.get_zone_states():
-                occupancy_by_index[idx] = (is_occupied, count)
+            occupied = {idx for idx, is_occupied, _count in zone_engine.get_zone_states() if is_occupied}
 
     heights = feature_on(cfg, "zone_heights")
-    polygons: list[tuple[list[tuple[float, float]], str, str, bool, int, float]] = []
+    polygons: list[tuple[list[tuple[float, float]], str, bool, float]] = []
     for idx, zone in enumerate(tz.zones):
         if not zone.enabled or len(zone.vertices) < 3:
             continue
@@ -442,9 +441,8 @@ def _populate_zone_overlay(state: OverlayState, cfg: Any, app: Any) -> None:
         # PSN-absolute frame – no translation needed on any side of the
         # zone-membership comparison.
         verts_world = [(float(v[0]), float(v[1])) for v in zone.vertices]
-        is_occupied, count = occupancy_by_index.get(idx, (False, 0))
         height = float(zone.z_offset) if heights else 0.0
-        polygons.append((verts_world, zone.color, zone.name, is_occupied, count, height))
+        polygons.append((verts_world, zone.color, idx in occupied, height))
     state.zone_polygons = polygons
 
 

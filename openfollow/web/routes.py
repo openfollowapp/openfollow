@@ -8568,7 +8568,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Update global trigger-zone settings (zones CRUD handled separately)."""
         cfg = _save_section_from_form(
             "trigger_zones",
-            bool_fields=("enabled", "show_overlay"),
+            bool_fields=("enabled", "show_overlay", "highlight_occupied"),
         )
         return template("partials/trigger_zones", config=cfg, saved=True)
 

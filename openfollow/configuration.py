@@ -1130,6 +1130,8 @@ class TriggerZonesConfig:
 
     enabled: bool = False
     show_overlay: bool = True
+    # Draw a zone stronger on the Operator Screen while a marker or detection is inside.
+    highlight_occupied: bool = True
     eval_fps: int = 10
     debounce_ms: int = 200
     hysteresis: float = 0.05  # metres – inward polygon offset for exit threshold
@@ -1149,6 +1151,7 @@ class TriggerZonesConfig:
         # survive. Upper bounds mirror ``openfollow/web/validation.py``.
         self.debounce_ms = _coerce_int(self.debounce_ms, 200, lo=0, hi=60000)
         self.hysteresis = _coerce_float(self.hysteresis, 0.05, lo=0.0, hi=10.0)
+        self.highlight_occupied = _coerce_bool(self.highlight_occupied, True)
         # Drop non-object zone entries instead of keeping them verbatim: a
         # hand-edited inline TOML array (``zones = ["evil"]``) or a crafted
         # payload would otherwise persist a bare str/int that the zone engine

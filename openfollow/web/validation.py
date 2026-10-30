@@ -705,6 +705,7 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
     "trigger_zones": {
         "enabled": FieldRule(_as_bool),
         "show_overlay": FieldRule(_as_bool),
+        "highlight_occupied": FieldRule(_as_bool),
         "eval_fps": FieldRule(
             _as_int,
             choices=tuple(str(v) for v in VALID_ZONE_EVAL_FPS),

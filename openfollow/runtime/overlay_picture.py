@@ -23,12 +23,12 @@ def target_font_options(cr: Any) -> cairo.FontOptions:
 
 
 def ink_picture(
-    paint: Paint, w: int, h: int, scale: tuple[float, float], options: cairo.FontOptions
+    paint: Paint, w: int, h: int, scale: tuple[float, float], options: cairo.FontOptions | None
 ) -> tuple[cairo.ImageSurface | None, int, int]:
     """``paint`` drawn into a picture cropped to its ink within the ``w`` x ``h`` canvas, and where it goes.
 
     Pasted at the returned origin, the picture is pixel for pixel what ``paint`` draws on the canvas.
-    ``None`` when ``paint`` leaves no ink there.
+    ``None`` when ``paint`` leaves no ink there. ``options`` as for ``box_picture``.
     """
     sx, sy = scale
     # Ink extents cover a miter tip or a glyph past its box; scale and font
@@ -36,7 +36,8 @@ def ink_picture(
     recording = cairo.RecordingSurface(cairo.CONTENT_COLOR_ALPHA, None)
     recording.set_device_scale(sx, sy)
     measure = cairo.Context(recording)
-    measure.set_font_options(options)
+    if options is not None:
+        measure.set_font_options(options)
     paint(measure)
     ix, iy, iw, ih = recording.ink_extents()
     if iw == 0 or ih == 0:

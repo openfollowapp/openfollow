@@ -2449,6 +2449,7 @@ _SECTION_FIELD_PARSERS["mouse3d"] = _mouse3d_parsers
 _TRIGGER_ZONES_FIELD_PARSERS: dict[str, _FieldParser] = {
     "enabled": _as_bool,
     "show_overlay": _as_bool,
+    "highlight_occupied": _as_bool,
     "eval_fps": _as_int,
     "debounce_ms": _as_int,
     "hysteresis": _as_float,
@@ -8568,7 +8569,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Update global trigger-zone settings (zones CRUD handled separately)."""
         cfg = _save_section_from_form(
             "trigger_zones",
-            bool_fields=("enabled", "show_overlay"),
+            bool_fields=("enabled", "show_overlay", "highlight_occupied"),
         )
         return template("partials/trigger_zones", config=cfg, saved=True)
 
@@ -10776,6 +10777,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 "globals": {
                     "enabled": tz.enabled,
                     "show_overlay": tz.show_overlay,
+                    "highlight_occupied": tz.highlight_occupied,
                     "eval_fps": tz.eval_fps,
                     "debounce_ms": tz.debounce_ms,
                     "hysteresis": tz.hysteresis,

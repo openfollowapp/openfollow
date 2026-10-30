@@ -508,12 +508,14 @@ def _make_cfg(
     enabled: bool,
     show_overlay: bool,
     zones: list[SimpleNamespace] | None = None,
+    highlight_occupied: bool = True,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         grid=_make_grid_config(),
         trigger_zones=SimpleNamespace(
             enabled=enabled,
             show_overlay=show_overlay,
+            highlight_occupied=highlight_occupied,
             zones=zones or [],
         ),
     )
@@ -539,10 +541,9 @@ class TestPopulateZoneOverlay:
 
         assert state.show_zones is True
         assert len(state.zone_polygons) == 1
-        # Occupancy defaults to (False, 0) when the engine is not consulted.
-        _, _, _, is_occupied, count, _height = state.zone_polygons[0]
+        # Unoccupied when the engine is not consulted.
+        _, _, is_occupied, _height = state.zone_polygons[0]
         assert is_occupied is False
-        assert count == 0
 
     def test_zones_are_not_drawn_while_their_feature_is_off(self) -> None:
         from openfollow.configuration import UiConfig
@@ -573,7 +574,7 @@ class TestPopulateZoneOverlay:
 
         _populate_zone_overlay(state, cfg, SimpleNamespace(_runtime_services=SimpleNamespace(_zone_engine=None)))
 
-        assert state.zone_polygons[0][5] == height
+        assert state.zone_polygons[0][3] == height
         assert state.zone_z_offset == cfg.grid.z_offset
 
     def test_hides_overlay_only_when_show_overlay_is_false(self) -> None:
@@ -597,9 +598,20 @@ class TestPopulateZoneOverlay:
         _populate_zone_overlay(state, cfg, app)
 
         assert state.show_zones is True
-        _, _, _, is_occupied, count, _height = state.zone_polygons[0]
+        _, _, is_occupied, _height = state.zone_polygons[0]
         assert is_occupied is True
-        assert count == 3
+
+    def test_occupancy_is_not_shown_while_the_highlight_is_off(self) -> None:
+        square = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+        cfg = _make_cfg(enabled=True, show_overlay=True, zones=[_make_zone(square)], highlight_occupied=False)
+        engine = _StubZoneEngine([(0, True, 3)])
+        state = OverlayState()
+
+        _populate_zone_overlay(state, cfg, SimpleNamespace(_runtime_services=SimpleNamespace(_zone_engine=engine)))
+
+        assert state.show_zones is True
+        _, _, is_occupied, _height = state.zone_polygons[0]
+        assert is_occupied is False
 
     def test_engine_occupancy_is_ignored_when_disabled(self) -> None:
         """When triggers are off, occupancy must not be read from the engine."""
@@ -611,9 +623,8 @@ class TestPopulateZoneOverlay:
 
         _populate_zone_overlay(state, cfg, app)
 
-        _, _, _, is_occupied, count, _height = state.zone_polygons[0]
+        _, _, is_occupied, _height = state.zone_polygons[0]
         assert is_occupied is False
-        assert count == 0
 
     def test_enabled_but_engine_is_none_skips_occupancy_lookup(self) -> None:
         square = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
@@ -625,9 +636,8 @@ class TestPopulateZoneOverlay:
 
         assert state.show_zones is True
         assert len(state.zone_polygons) == 1
-        _, _, _, is_occupied, count, _height = state.zone_polygons[0]
+        _, _, is_occupied, _height = state.zone_polygons[0]
         assert is_occupied is False
-        assert count == 0
 
     def test_disabled_and_degenerate_zones_are_skipped(self) -> None:
         """Cover the ``continue`` at ``services_marker_visuals.py:167``.
@@ -656,7 +666,7 @@ class TestPopulateZoneOverlay:
 
         # Only the one live zone survives the filter.
         assert len(state.zone_polygons) == 1
-        verts, _color, _name, _is_occupied, _count, _height = state.zone_polygons[0]
+        verts, _color, _is_occupied, _height = state.zone_polygons[0]
         assert verts == [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
 
 

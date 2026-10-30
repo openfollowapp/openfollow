@@ -6474,6 +6474,27 @@ def test_update_trigger_zones_post_renders_partial(live_server) -> None:
     assert saved.trigger_zones.debounce_ms == 150
 
 
+@pytest.mark.parametrize(
+    ("form", "highlight"), [({"highlight_occupied": "on"}, True), ({}, False)], ids=["ticked", "cleared"]
+)
+def test_the_occupied_highlight_saves_from_the_trigger_zones_form(live_server, form: dict, highlight: bool) -> None:
+    server, base = live_server
+    status, body = _post_form(base, "/section/trigger_zones", form)
+    assert status == 200
+    assert load_config(server.config_path).trigger_zones.highlight_occupied is highlight
+    box = body[body.index('id="trigger-zones-highlight-occupied"') :].split(">", 1)[0]
+    assert ("checked" in box) is highlight
+
+
+@pytest.mark.parametrize("raw", ["abc", "", "2"])
+def test_a_crafted_occupied_highlight_saves_as_ticked(live_server, raw: str) -> None:
+    # A checkbox sent at all is ticked, whatever its value.
+    server, base = live_server
+    status, _ = _post_form(base, "/section/trigger_zones", {"highlight_occupied": raw})
+    assert status == 200
+    assert load_config(server.config_path).trigger_zones.highlight_occupied is True
+
+
 def test_osc_destinations_crud_round_trip(live_server) -> None:
     """Add → save → duplicate → delete a destination through the web routes."""
     server, base = live_server

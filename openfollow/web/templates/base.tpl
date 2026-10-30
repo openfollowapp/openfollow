@@ -177,7 +177,11 @@
  body, .container, .help-drawer, .help-more > summary::after { transition: none; }
  }
  .hero-panel {
- position: relative;
+ display: flex;
+ flex-wrap: wrap;
+ justify-content: space-between;
+ align-items: flex-start;
+ gap: 0.5rem 1rem;
  margin-bottom: 1rem;
  padding: 1.4rem 1.5rem 1.5rem;
  }
@@ -709,13 +713,6 @@
  cursor: pointer;
  }
  .gallery-del { color: var(--error-text); }
- .top-bar-actions {
- display: flex;
- justify-content: flex-end;
- gap: 0.5rem;
- margin-bottom: 0.5rem;
- }
- .top-bar-actions form { margin: 0; }
  .station-name-pill {
  display: inline-block;
  padding: 0.18rem 0.6rem;
@@ -727,13 +724,13 @@
  letter-spacing: 0.02em;
  margin-bottom: 0.5rem;
  }
- /* Pinned in the hero-panel's top-right corner. */
- .hero-station-pill {
- position: absolute;
- top: 0.9rem;
- right: 1.1rem;
- margin-bottom: 0;
+ .hero-actions {
+ display: flex;
+ align-items: center;
+ gap: 0.5rem;
  }
+ .hero-actions form { margin: 0; }
+ .hero-station-pill { margin-bottom: 0; }
  .wizard-launch {
  display: flex;
  align-items: center;
@@ -2469,11 +2466,18 @@
  <a class="hero-logo-link" href="/" aria-label="OpenFollow – back to overview">
  <img class="hero-logo" src="/assets/openfollow.svg?v={{_asset_v}}" alt="OpenFollow logo">
  </a>
+ <div class="hero-actions">
  % if defined('config') and config:
  <div class="station-name-pill hero-station-pill" title="Station name (psn_system_name) – set on the General tab">
  {{config.psn_system_name}}
  </div>
  % end
+ % if get('header_logout', False):
+ <form method="POST" action="/logout">
+ <button type="submit" class="secondary small">Logout</button>
+ </form>
+ % end
+ </div>
  </header>
  % if defined('host_refusal') and host_refusal:
  <div class="notice error" role="alert">

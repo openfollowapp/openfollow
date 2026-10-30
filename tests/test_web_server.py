@@ -3214,6 +3214,35 @@ def test_hero_panel_sits_on_the_page_background(live_server) -> None:
     assert "radial-gradient(circle" not in body
 
 
+def _hero(body: str) -> str:
+    start = body.index('<header class="hero-panel">')
+    return body[start : body.index("</header>", start)]
+
+
+def test_logout_sits_in_the_header_right_of_the_station_name(pin_protected_server) -> None:
+    _, base, pin = pin_protected_server
+    req = urllib.request.Request(f"{base}/", headers={"Cookie": _login_cookie(base, pin)})
+    with urllib.request.urlopen(req, timeout=5) as r:
+        body = r.read().decode()
+    hero = _hero(body)
+    assert hero.index("hero-station-pill") < hero.index('<form method="POST" action="/logout">')
+    assert '<button type="submit" class="secondary small">Logout</button>' in hero
+    assert body.count('action="/logout"') == 1
+
+
+def test_no_logout_in_the_header_without_a_pin(live_server) -> None:
+    _, base = live_server
+    _, body = _get(base, "/")
+    assert "hero-station-pill" in _hero(body)
+    assert 'action="/logout"' not in body
+
+
+def test_login_page_header_has_no_logout(pin_protected_server) -> None:
+    _, base, _ = pin_protected_server
+    _, body = _get(base, "/login")
+    assert 'action="/logout"' not in _hero(body)
+
+
 def test_about_page_has_back_to_overview_link(live_server) -> None:
     """/about offers an explicit way back to the overview – both the textual
     back link and the clickable hero logo from base.tpl."""

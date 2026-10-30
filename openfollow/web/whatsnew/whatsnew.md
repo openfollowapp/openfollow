@@ -1,7 +1,7 @@
 v0.5.0
 ## Highlights
 
-**A Setup Wizard in four steps.** Video Source, Lens, Camera Calibration and Review. The lens is measured from lines that are straight on stage, or loaded from an OpenCV calibration file, and the camera is calculated from marks pinned on the picture: **Simple** uses the four corners of a measured rectangle, **Advanced** known and triangulated points.
+**A Setup Wizard in four steps.** Video Source, Lens, Camera Calibration and Review. The lens is measured from lines that are straight on stage, or loaded from an OpenCV calibration file, and the camera is calculated from marks pinned on the picture: **Simple** uses the four corners of a measured rectangle, **Advanced** known and triangulated points. For a camera that looks almost straight down, the Setup Wizard asks for the exact height of the camera's lens.
 
 **Simple and Advanced network mode.** **General → Network Interface Settings** runs everything over one interface in **Simple**, or gives each function its own interface in **Advanced**, with VLANs and adapter labels.
 

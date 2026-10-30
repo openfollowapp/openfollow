@@ -600,7 +600,7 @@ class TestWizardHelpCopy:
 
     def test_whats_new_names_the_exact_camera_height(self) -> None:
         notes = (WIZARD_TEMPLATE.parents[1] / "whatsnew" / "whatsnew.md").read_text(encoding="utf-8")
-        wizard = notes.split("## The Setup Wizard has four steps")[1].split("\n## ")[0]
+        wizard = notes.split("**A Setup Wizard in four steps.**")[1].split("\n\n")[0]
         assert "the Setup Wizard asks for the exact height of the camera's lens" in wizard
 
 

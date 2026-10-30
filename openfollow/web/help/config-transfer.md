@@ -4,7 +4,7 @@ Move a station's settings in and out as a `.ofsettings` file, put them back to t
 
 **Export Configuration** – downloads every saved setting as a `.ofsettings` file.
 
-**Import Configuration…** – applies a `.ofsettings` file from any OpenFollow station, after a confirmation and a backup of the current settings. Show settings change at once; the update check, clock sync and network backend from the next start. What connects this box stays: the web login, port and interface, the station's identity, interface pins and labels, local file paths and the marker move speeds.
+**Import Configuration…** – applies a `.ofsettings` file from any OpenFollow station, after a confirmation and a backup of the current settings. Show settings change at once; the update check, clock sync and network backend from the next start. What connects this station stays: the web login, port and interface, the station's identity, interface pins and labels, local file paths and the marker move speeds.
 
 **Restore Defaults** – returns every setting to a fresh install's value, after a confirmation and a backup, then restarts the station. Network access, the station's identity and local file paths stay; the shared marker catalog and uploaded media are untouched.
 

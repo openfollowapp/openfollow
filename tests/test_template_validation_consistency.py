@@ -40,7 +40,7 @@ pytestmark = pytest.mark.unit
 _PARTIALS_DIR = Path(__file__).resolve().parents[1] / "openfollow" / "web" / "templates" / "partials"
 
 # Read-only display partials. They contain no editable fields.
-_SKIP_PARTIALS = {"overview.tpl", "statistics.tpl"}
+_SKIP_PARTIALS = {"overview.tpl", "diagnostics_cards.tpl"}
 
 # Inputs whose ``type`` makes blur validation meaningless.
 _SKIP_INPUT_TYPES = {"hidden", "checkbox", "radio", "file", "submit", "button", "reset"}

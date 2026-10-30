@@ -162,26 +162,85 @@ def _post(base: str, path: str, data: dict | None = None) -> tuple[int, str]:
 
 
 # ---------------------------------------------------------------------------
-# /section/diagnostics – inline summary cards
+# /section/diagnostics – the live Status & Diagnostics boxes
 # ---------------------------------------------------------------------------
 
 
-def test_section_diagnostics_renders_card_grid(live_server) -> None:
+def _titles(body: str) -> list[str]:
+    return re.findall(r'<h3 class="stat-panel-title">([^<]+)</h3>', body)
+
+
+def test_section_diagnostics_renders_the_status_boxes(live_server) -> None:
     _, base, _ = live_server
     status, body, _ = _get(base, "/section/diagnostics")
     assert status == 200
-    # Each card title appears in the polled fragment.
-    for title in ("Web server", "Beacon sender", "Beacon receiver"):
-        assert title in body
+    # Person Detection is an experimental feature, off by default.
+    assert _titles(body) == ["Video", "This Station", "Station network discovery"]
+    assert '<div class="stats-columns diag-bento">' in body
     # Where the logs come from is the bundle's business, not the page's.
     assert "Logs" not in body
-    assert 'class="notice warning"' not in body
-    # Flicker fix: the 5s poll returns ONLY the live cards – not the static
-    # section shell (head + bundle / probe tools). Rebuilding those
-    # every tick is what caused the visible flash. The tools are asserted on
-    # the full-page render in ``test_index_page_includes_diagnostics_section``.
+    # The poll returns ONLY the live boxes, not the section shell (head + bundle /
+    # probe tools): rebuilding those every tick is what flashed. The tools are
+    # asserted on the full page in ``test_index_page_includes_diagnostics_section``.
     assert "Bundle" not in body
     assert "/api/diagnostics/bundle" not in body
+
+
+def test_the_detection_feature_adds_its_box_and_the_four_box_layout(live_server) -> None:
+    _, base, cfg_path = live_server
+    cfg = load_config(cfg_path)
+    cfg.ui.shown_features = [*cfg.ui.shown_features, "detection"]
+    save_config(cfg, cfg_path)
+    _, body, _ = _get(base, "/section/diagnostics")
+    assert _titles(body) == ["Video", "This Station", "Station network discovery", "Person Detection"]
+    assert '<div class="stats-columns diag-bento with-detection">' in body
+    # Switched on but not running: the box stays, with its Off chip.
+    detection = body[body.index("Person Detection</h3>") :]
+    assert '<span class="stat-chip">Off</span>' in detection
+
+
+def _row(body: str, label: str) -> str:
+    start = body.index(f'<dt class="metric-label">{label}</dt>')
+    value = body[start : body.index("</dd>", start)]
+    return " ".join(re.sub(r"<dt.*?</dt>|<dd[^>]*>", "", value, flags=re.S).split())
+
+
+@pytest.mark.parametrize("on_configured_port", [True, False], ids=["configured", "fallback"])
+def test_the_web_port_row_flags_a_fallback(live_server, on_configured_port: bool) -> None:
+    server, base, cfg_path = live_server
+    cfg = load_config(cfg_path)
+    cfg.web_port = server.display_port if on_configured_port else (server.display_port % 65535) + 1
+    save_config(cfg, cfg_path)
+    _, body, _ = _get(base, "/section/diagnostics")
+    row = _row(body, "Web port")
+    if on_configured_port:
+        assert row == str(server.display_port)
+    else:
+        assert row == f'<span class="stat-chip warn">Fallback</span> {server.display_port}'
+
+
+@pytest.mark.parametrize(
+    ("sender_alive", "receiver_alive", "errors", "chip"),
+    [
+        (True, True, 0, '<span class="stat-chip ok">Running</span>'),
+        (True, True, 3, '<span class="stat-chip warn">Send errors</span>'),
+        (True, False, 3, '<span class="stat-chip off">Receiver stopped</span>'),
+        (False, True, 0, '<span class="stat-chip off">Sender stopped</span>'),
+        (False, False, 0, '<span class="stat-chip off">Stopped</span>'),
+    ],
+    ids=["running", "send-errors", "receiver-stopped", "sender-stopped", "both-stopped"],
+)
+def test_station_network_discovery_shows_the_worse_beacon_state(
+    live_server, monkeypatch, sender_alive: bool, receiver_alive: bool, errors: int, chip: str
+) -> None:
+    _, base, _ = live_server
+    monkeypatch.setattr(discovery_module.BeaconSender, "is_alive", property(lambda self: sender_alive))
+    monkeypatch.setattr(discovery_module.BeaconSender, "consecutive_errors", property(lambda self: errors))
+    monkeypatch.setattr(discovery_module.BeaconReceiver, "is_alive", property(lambda self: receiver_alive))
+    _, body, _ = _get(base, "/section/diagnostics")
+    box = body[body.index("Station network discovery</h3>") :]
+    assert box.split("</div>", 1)[0].strip().endswith(chip)
+    assert _row(body, "Send errors") == str(errors)
 
 
 # ---------------------------------------------------------------------------
@@ -693,10 +752,10 @@ def test_index_page_includes_diagnostics_section(live_server) -> None:
     _, base, _ = live_server
     status, body, _ = _get(base, "/")
     assert status == 200
-    assert "Diagnostics" in body
-    # Flicker fix: only the live cards region polls, so the section shell (head
-    # + tools) renders once and never re-swaps. The poll target is the inner
-    # ``#diagnostics-live``, not the whole section.
+    assert "<h2>Status &amp; Diagnostics</h2>" in body
+    assert 'id="statistics-section"' not in body
+    # Only the live boxes poll, so the section shell (head + tools) renders once
+    # and never re-swaps. The poll target is the inner ``#diagnostics-live``.
     assert 'id="diagnostics-live"' in body
     assert 'hx-get="/section/diagnostics"' in body
     assert 'id="diagnostics-section-wrap"' not in body
@@ -708,7 +767,7 @@ def test_index_page_includes_diagnostics_section(live_server) -> None:
     assert 'id="diagnostics-log-tail"' not in body
     assert ">Logs</h3>" not in body
     live = body[body.index('id="diagnostics-live"') :].split(">", 1)[0]
-    assert 'hx-trigger="every 5s [pollShown(this)], poll-shown[pollShown(this)] from:body"' in live
+    assert 'hx-trigger="every 1s [pollShown(this)], poll-shown[pollShown(this)] from:body"' in live
 
 
 # ---------------------------------------------------------------------------
@@ -727,6 +786,7 @@ def test_diagnostics_routes_require_pin_when_set(
     try:
         for path in (
             "/section/diagnostics",
+            "/section/diagnostics/alerts",
             "/api/diagnostics/bundle",
             "/api/diagnostics/drives",
             "/api/diagnostics/export",

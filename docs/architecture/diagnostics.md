@@ -47,5 +47,5 @@ A Raspberry Pi on a weak supply freezes and drops USB devices; one that runs hot
 
 Two surfaces show it, and neither shows anything without a reading:
 
-- **Live Statistics** (`web/live_alerts.py`): in the Device panel, an error box while under voltage or throttled now, a caution box once only the since-boot flag is left. While under voltage, throttling is not named: an under voltage caps the CPU too.
+- **Status & Diagnostics** (`web/live_alerts.py`): in the This Station box, an error box while under voltage or throttled now, a caution box once only the since-boot flag is left. While under voltage, throttling is not named: an under voltage caps the CPU too.
 - **Operator Screen:** live only, a top-right error row (`_status_flags["power"]`), "Power supply under voltage" or "CPU throttled (too hot)", held `WARNING_HOLD_S` (10 s) after the last active reading by `PowerWarningHold`, on the collector's injectable clock.

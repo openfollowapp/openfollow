@@ -306,7 +306,7 @@ def test_redact_uri_keeps_the_host_when_the_at_is_inside_a_query_value(uri: str,
     """A passphrase holding an ``@`` is ordinary - operators pick show names
     like ``Sh@w2026``. Treating that ``@`` as possible userinfo collapsed the
     whole URI to ``srt://***``, so the HUD label, ``/api/stats``, the
-    Statistics panel and the bundle all lost the address, while the query
+    Status & Diagnostics and the bundle all lost the address, while the query
     masking that already handles it correctly never ran."""
     assert redact_uri(uri) == expected
 

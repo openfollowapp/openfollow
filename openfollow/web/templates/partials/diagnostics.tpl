@@ -1,6 +1,6 @@
-% # Diagnostics page. Two layers: (1) live summary cards (polled every 5s on
+% # Status & Diagnostics. Two layers: (1) the live boxes (polled every second on
 % # their own, see ``#diagnostics-live`` below) show live state without
-% # leaving Overview tab; (2) action buttons
+% # leaving the Overview tab; (2) action buttons
 % # (Download bundle / Test peers) trigger one-shot endpoints.
 % # Avoids JS on debug surface (network/discovery broken → htmx broken too);
 % # Download button is plain <a> that works without JS; output in <pre>
@@ -8,28 +8,28 @@
 % # (confirm dialog + reload poll) through the shared ``openfollowRestart()``
 % # in ``base.tpl``.
 % #
-% # Only the live cards poll/swap (see ``#diagnostics-live`` below + the
+% # Only the live boxes poll/swap (see ``#diagnostics-live`` below + the
 % # ``partials/diagnostics_cards`` fragment); the section shell, fold state,
-% # and the bundle/probe tools stay put across the 5s tick.
+% # and the bundle/probe tools stay put across the 1 s tick.
 % #
-% # Provider data threaded from the route handler:
-% # - ``cards``: dict of card values (configured/display port, beacon
-% #   sender + receiver health, peer count)
+% # Threaded from the route handler: ``stats`` (the runtime snapshot) and
+% # ``cards`` (configured/display port, uptime, beacon health, peer count).
+% detection_shown = config.ui.feature_on("detection")
 
 <div class="section" id="diagnostics-section" data-fold-key="diagnostics" data-help="diagnostics">
     <div class="section-head">
-        <h2>Diagnostics</h2>
+        <h2>Status &amp; Diagnostics</h2>
     </div>
 
-    %# Live cards refresh on their own every 5s. Keeping the poll target inside
-    %# the section (rather than wrapping the whole section) means the head +
-    %# tools below never get rebuilt, so the section no longer flickers.
+    %# The poll target sits inside the section, so the head and the tools
+    %# below are never rebuilt and the section does not flicker.
     <div id="diagnostics-live"
          hx-get="/section/diagnostics"
-         hx-trigger="every 5s [pollShown(this)], poll-shown[pollShown(this)] from:body"
+         hx-trigger="every 1s [pollShown(this)], poll-shown[pollShown(this)] from:body"
          hx-swap="innerHTML">
-        % include('partials/diagnostics_cards.tpl', cards=cards)
+        % include('partials/diagnostics_cards.tpl', stats=stats, cards=cards, detection_shown=detection_shown)
     </div>
+    % include('partials/diagnostics_alerts.tpl', stats=stats, detection_shown=detection_shown)
 
     <div class="group" style="margin-top: 1.5rem;">
         <h3 class="group-title">Bundle &amp; tools</h3>
@@ -54,7 +54,7 @@
                 Restart application
             </button>
         </div>
-        %# Operator-loaded peer probe results. The 5s poll only swaps
+        %# Operator-loaded peer probe results. The 1 s poll only swaps
         %# ``#diagnostics-live`` above, so this slot keeps whatever the
         %# operator loaded without needing ``hx-preserve``.
         <div id="diagnostics-probe-results" class="row" style="margin-top: 0.6rem;"></div>

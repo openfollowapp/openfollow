@@ -175,7 +175,7 @@ from openfollow.web.config_cache import ParsedConfigCache
 from openfollow.web.discovery import clean_peer_name
 from openfollow.web.keyboard_layout_view import build_keyboard_layout_view, station_catalog, variant_options
 from openfollow.web.latency_view import latency_dialog_view, latency_row_view, latency_unavailable
-from openfollow.web.live_alerts import statistics_alerts
+from openfollow.web.live_alerts import diagnostics_alerts
 from openfollow.web.login_throttle import LoginThrottle
 from openfollow.web.whats_new import load_backup_note, load_whats_new
 
@@ -4321,8 +4321,8 @@ def _build_diagnostics_cards(
     server: ConfigWebServer,
     cfg: AppConfig,
 ) -> dict[str, Any]:
-    """Build the inline summary cards. Separate from the bundle collector
-    because the cards are HTMX-polled every 5 s and don't need the
+    """The web port, uptime and discovery figures for the live boxes. Separate from the
+    bundle collector because the boxes poll every second and don't need the
     heavyweight sections (USB enumeration, full TOML render)."""
     sender = server.beacon_sender
     receiver = server.beacon_receiver
@@ -4333,13 +4333,10 @@ def _build_diagnostics_cards(
         "web_port_display": server.display_port,
         "web_port_match": cfg.web_port == server.display_port,
         "uptime_human": _format_uptime(server.process_uptime_s),
-        "sender_status": "running" if sender.is_alive else "stopped",
-        "sender_chip": _alive_chip(sender.is_alive, sender.consecutive_errors),
+        "network_chip": _network_chip(sender.is_alive, receiver.is_alive, sender.consecutive_errors),
         "sender_last_send": _monotonic_age(sender.last_send_ts),
         "sender_errors": sender.consecutive_errors,
         "sender_send_count": sender.send_count,
-        "receiver_status": "running" if receiver.is_alive else "stopped",
-        "receiver_chip": _alive_chip(receiver.is_alive, 0),
         "receiver_last_recv": _monotonic_age(receiver.last_recv_ts),
         "receiver_packet_count": receiver.packets_received,
         "peer_count": len(peers),
@@ -4347,12 +4344,15 @@ def _build_diagnostics_cards(
     return cards
 
 
-def _alive_chip(is_alive: bool, errors: int) -> str:
-    """Map a thread's alive flag + error counter to a chip class.
-    Stopped → off; alive with errors → warn; alive + clean → ok."""
-    if not is_alive:
-        return "off"
-    return "warn" if errors > 0 else "ok"
+def _network_chip(sender_alive: bool, receiver_alive: bool, send_errors: int) -> tuple[str, str]:
+    """Station network discovery's chip class and word: the worse of the beacon sender and receiver."""
+    if not sender_alive and not receiver_alive:
+        return "off", "Stopped"
+    if not sender_alive:
+        return "off", "Sender stopped"
+    if not receiver_alive:
+        return "off", "Receiver stopped"
+    return ("warn", "Send errors") if send_errors > 0 else ("ok", "Running")
 
 
 def _format_uptime(seconds: float) -> str:
@@ -6291,8 +6291,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # ``/section/detection`` or the dropdowns collapse to "(unavailable)"
         # fallbacks even when extras are installed.
         extras = _get_detection_extras_status()
-        # Diagnostics card data for the initial render (same shape the 5 s
-        # poll returns), so the section reads filled-in values immediately.
+        # The live boxes' figures for the initial render (what the poll returns),
+        # so the section reads filled-in values immediately.
         diag_cards = _build_diagnostics_cards(server, config)
         osc_user_templates, osc_system_templates = _osc_dropdown_templates()
         return template(
@@ -6376,19 +6376,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             local=local,
             station_down=server.station_interface_down,
         )
-
-    @app.get("/section/statistics")
-    def get_statistics() -> Any:
-        """Get the live runtime statistics partial."""
-        return template("partials/statistics", stats=server.get_runtime_stats())
-
-    @app.get("/section/statistics/alerts")
-    def get_statistics_alerts() -> Any:
-        """The Live Statistics announcer; 204 while its text is unchanged."""
-        stats = server.get_runtime_stats()
-        if request.query.get("key") == statistics_alerts(stats).key():
-            return HTTPResponse(status=204)
-        return template("partials/statistics_alerts", stats=stats)
 
     @app.get("/section/controller_slots")
     def get_controller_slots() -> Any:
@@ -7333,10 +7320,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         return template("partials/network", net=_build_network_form_context())
 
     # ----------------------------------------------------------------------
-    # Diagnostics routes. Three endpoints, all PIN-gated through
-    # ``_check_auth``. ``/section/diagnostics`` is the inline summary cards;
-    # the two ``/api/diagnostics/...`` endpoints serve the on-demand
-    # bundle / peer probe. Provider wiring lives in
+    # Status & Diagnostics routes, all PIN-gated through ``_check_auth``.
+    # ``/section/diagnostics`` is the live boxes and ``/section/diagnostics/alerts``
+    # their announcer; the ``/api/diagnostics/...`` endpoints serve the
+    # on-demand bundle / peer probe. Provider wiring lives in
     # ``_build_diagnostics_providers`` so the closure captures the
     # request-scoped config without coupling the server class to the
     # diagnostics import surface.
@@ -7344,15 +7331,24 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.get("/section/diagnostics")
     def get_diagnostics() -> Any:
+        """The live boxes only: the section shell and its tools render once (partials/diagnostics)."""
         cfg = _request_scoped_config()
-        cards = _build_diagnostics_cards(server, cfg)
-        # Poll returns only the live cards – the section shell + tools are
-        # rendered once at page load (partials/diagnostics) and never
-        # re-swapped, so they can't flicker. See partials/diagnostics_cards.tpl.
         return template(
             "partials/diagnostics_cards",
-            cards=cards,
+            stats=server.get_runtime_stats(),
+            cards=_build_diagnostics_cards(server, cfg),
+            detection_shown=cfg.ui.feature_on("detection"),
         )
+
+    @app.get("/section/diagnostics/alerts")
+    def get_diagnostics_alerts() -> Any:
+        """The Status & Diagnostics announcer; 204 while its text is unchanged."""
+        cfg = _request_scoped_config()
+        stats = server.get_runtime_stats()
+        detection_shown = cfg.ui.feature_on("detection")
+        if request.query.get("key") == diagnostics_alerts(stats, detection_shown=detection_shown).key():
+            return HTTPResponse(status=204)
+        return template("partials/diagnostics_alerts", stats=stats, detection_shown=detection_shown)
 
     @app.get("/api/diagnostics/bundle")
     def api_diagnostics_bundle() -> Any:
@@ -7480,7 +7476,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             rows.append(
                 "<tr><td colspan='3'>"
                 "<span class='field-note'>No peers known yet – "
-                "wait for discovery or check beacon health above.</span>"
+                "wait for discovery or check Station network discovery above.</span>"
                 "</td></tr>"
             )
         rows.append("</tbody></table>")

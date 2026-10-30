@@ -1,19 +1,23 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""The Statistics panel names each state at its level: error, caution, info, success or neutral."""
+"""Status & Diagnostics names each state at its level: error, caution, info, success or neutral."""
 
 from __future__ import annotations
 
+import re
+
 import pytest
-from bottle import template
 
 from openfollow.web import server as _server_module  # noqa: F401 - registers tpl path
+from tests._status_boxes import render_alerts, render_boxes
 
 pytestmark = pytest.mark.unit
 
 
 def _render(tracking: dict[str, object]) -> str:
-    return template("partials/statistics", stats={"tracking": tracking})
+    """The Person Detection box: other boxes carry chips of their own."""
+    body = render_boxes({"tracking": tracking})
+    return body[body.index('<h3 class="stat-panel-title">Person Detection</h3>') :]
 
 
 @pytest.mark.parametrize(
@@ -40,3 +44,24 @@ def test_missing_packages_is_the_error_box_with_the_next_step_below() -> None:
 
 def test_switched_off_detection_raises_no_missing_packages_box() -> None:
     assert "Missing packages" not in _render({"enabled": False, "missing_deps": ["onnxruntime"]})
+
+
+def test_with_the_feature_off_there_is_no_box_and_no_alert() -> None:
+    body = render_boxes({"tracking": {"enabled": True, "missing_deps": ["onnxruntime"]}}, detection_shown=False)
+    assert "Person Detection" not in body
+    assert "Missing packages" not in body
+    assert '<div class="stats-columns diag-bento">' in body
+    assert "Missing packages" not in render_alerts(
+        {"tracking": {"enabled": True, "missing_deps": ["onnxruntime"]}}, detection_shown=False
+    )
+
+
+def test_with_the_feature_on_it_is_the_fourth_box() -> None:
+    body = render_boxes({}, detection_shown=True)
+    assert '<div class="stats-columns diag-bento with-detection">' in body
+    assert re.findall(r'<h3 class="stat-panel-title">([^<]+)</h3>', body) == [
+        "Video",
+        "This Station",
+        "Station network discovery",
+        "Person Detection",
+    ]

@@ -205,7 +205,7 @@ class TestOperatorText:
                 assert instruction not in sentence
 
     def test_chips_stay_short_enough_for_a_chip(self) -> None:
-        """They sit in a fixed-width status chip on the Statistics panel."""
+        """They sit in a fixed-width status chip in Status & Diagnostics."""
         for failure in VideoFailure:
             assert len(failure_chip(failure)) <= 16
 

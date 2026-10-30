@@ -509,6 +509,25 @@
  gap: 0.78rem;
  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
  }
+ /* Bento: This Station, the tallest box, takes the right column; with Person
+ Detection, Station network discovery runs full width with its rows in three columns. */
+ .diag-bento {
+ grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+ grid-template-areas: "video station" "network station";
+ }
+ .diag-bento.with-detection { grid-template-areas: "video station" "detection station" "network network"; }
+ .diag-video { grid-area: video; }
+ .diag-station { grid-area: station; }
+ .diag-network { grid-area: network; }
+ .diag-detection { grid-area: detection; }
+ @media (min-width: 681px) {
+ .diag-bento.with-detection .diag-network .metric-list {
+ display: grid;
+ grid-template-columns: repeat(3, minmax(0, 1fr));
+ column-gap: 1.5rem;
+ }
+ .diag-bento.with-detection .diag-network .metric-row:nth-last-child(-n+3) { border-bottom: 0; padding-bottom: 0; }
+ }
  .stat-panel {
  border: 1px solid rgba(255, 255, 255, 0.1);
  border-radius: 0.475rem;
@@ -2011,6 +2030,7 @@
  % end
  @media (max-width: 680px) {
  body { padding: 12px 0; }
+ .diag-bento, .diag-bento.with-detection { grid-template-columns: minmax(0, 1fr); grid-template-areas: "video" "station" "network" "detection"; }
  .hero-panel { padding: 1rem; margin-bottom: 0.8rem; }
  .section { padding: 1rem; }
  .field, .field.wide, .checkbox-field { min-width: 100%; }
@@ -4123,7 +4143,7 @@
  initializeInlineAdvanced(document);
  initNetworkMethodFields(document);
  });
- // Periodic pollers (Live Statistics 1s, Diagnostics / Server overview 5s)
+ // Periodic pollers (Status & Diagnostics 1s, Server overview 5s)
  // replace whole DOM subtrees. That destroys Firefox's scroll-anchor node,
  // so the viewport snaps toward the top on every poll tick. Re-pin the
  // scroll position for swaps NOT triggered by a user gesture (polls +

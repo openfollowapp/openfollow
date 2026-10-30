@@ -153,7 +153,7 @@ def test_simple_pins_on_a_curved_lens_give_the_camera_and_the_seen_places_on_the
     status, data = _solve(base, _body(lens=LENS))
     assert status == 200
     np.testing.assert_allclose(_camera_vector(data["camera"]), TRUE, atol=1e-3)
-    assert set(data) == {"camera", "marks", "count", "largest_error", "steep", "reasons"}
+    assert set(data) == {"camera", "marks", "count", "largest_error", "steep", "floor", "reasons"}
     assert (data["count"], data["reasons"]) == (4, [])
     assert data["largest_error"] == pytest.approx(0.0, abs=1e-3)
     pins = [m["pin"] for m in _simple_marks(LENS)]
@@ -216,6 +216,38 @@ def test_advanced_gives_the_camera_and_each_triangulated_place(base: str) -> Non
     assert by_id[6]["distance_error"] == pytest.approx(0.0, abs=1e-3)
     assert by_id[1]["distance_error"] is None
     assert data["count"] == 4
+
+
+def _lifted(lift: float) -> list[dict[str, Any]]:
+    """Advanced's marks with every height raised by ``lift``."""
+    c0, c1, p5, p6 = ((x, y, z + lift) for x, y, z in (CORNERS[0], CORNERS[1], P5, P6))
+    return [
+        _known(1, c0),
+        _known(2, c1),
+        _triangulated(5, p5, (1, c0), (2, c1)),
+        _triangulated(6, p6, (5, p5), (1, c0)),
+    ]
+
+
+@pytest.mark.parametrize("lift", [0.0, 1.2, -0.8])
+def test_advanced_suggests_the_floor_the_most_points_share(base: str, lift: float) -> None:
+    status, data = _solve(base, _body("advanced", _lifted(lift), hint=HINT))
+    assert status == 200
+    assert data["floor"] == {"z": pytest.approx(lift), "ids": [1, 2, 5]}
+
+
+def test_simple_suggests_no_floor(base: str) -> None:
+    status, data = _solve(base, _body("simple"))
+    assert (status, data["floor"]) == (200, None)
+
+
+def test_advanced_with_no_two_points_at_one_height_suggests_no_floor(base: str) -> None:
+    marks = _lifted(0.0)
+    marks[1] = _known(2, (CORNERS[1][0], CORNERS[1][1], 0.3))
+    marks[2] = _triangulated(5, (2.0, 4.0, 0.7), (1, CORNERS[0]), (2, (CORNERS[1][0], CORNERS[1][1], 0.3)))
+    marks[3] = _triangulated(6, (-3.0, 5.0, 1.2), (5, (2.0, 4.0, 0.7)), (1, CORNERS[0]))
+    status, data = _solve(base, _body("advanced", marks, hint=HINT))
+    assert (status, data["floor"]) == (200, None)
 
 
 # 12 m up, 2° off straight down; each corner pinned about half a pixel off.

@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Tests for config dataclass validation, TOML round-trip, and runtime hot-reload."""
 
 from __future__ import annotations
@@ -2098,6 +2100,23 @@ class TestFeatureGatesHotReload:
         )
         assert [cfg.enabled for cfg in engine.reloads] == [False, True]
         assert app._config.trigger_zones.enabled is True
+
+    def test_a_zone_height_edit_reaches_the_lift_live(self) -> None:
+        from openfollow.configuration import TriggerZoneConfig
+        from openfollow.zones.heights import raising_zones
+
+        def _zones(z: float) -> TriggerZonesConfig:
+            square = [[0, 0], [1, 0], [1, 1]]
+            return TriggerZonesConfig(zones=[TriggerZoneConfig(vertices=square, z_offset=z, raise_markers=True)])
+
+        app = _DummyApp(_with_features(AppConfig(trigger_zones=_zones(0.5)), "zones", "zone_heights"))
+        apply_runtime_config_changes(
+            app, _with_features(AppConfig(trigger_zones=_zones(1.25)), "zones", "zone_heights")
+        )
+        assert [zone.z_offset for zone in raising_zones(app._config)] == [1.25]
+        apply_runtime_config_changes(app, _with_features(AppConfig(trigger_zones=_zones(1.25)), "zones"))
+        assert raising_zones(app._config) == []
+        assert app._config.trigger_zones.zones[0].z_offset == 1.25
 
     def test_midi_entry_off_closes_every_patch_and_keeps_them(self) -> None:
         patch = MidiPatch(id=1, alias="Fader box")
@@ -5084,6 +5103,20 @@ def test_trigger_zone_triggered_by_drops_invalid_entries() -> None:
     assert zone.triggered_by == [0, 1, 2]
 
 
+@pytest.mark.parametrize(("raw", "expected"), [(True, True), (False, False), ("false", False), ("true", True)])
+def test_trigger_zones_config_keeps_a_valid_highlight_occupied(raw: object, expected: bool) -> None:
+    assert TriggerZonesConfig(highlight_occupied=raw).highlight_occupied is expected  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("raw", [None, "abc", 0, "", [], 1.5])
+def test_trigger_zones_config_falls_back_on_a_wrong_type_highlight_occupied(raw: object) -> None:
+    assert TriggerZonesConfig(highlight_occupied=raw).highlight_occupied is True  # type: ignore[arg-type]
+
+
+def test_trigger_zones_highlight_occupied_defaults_on() -> None:
+    assert TriggerZonesConfig().highlight_occupied is True
+
+
 def test_trigger_zones_config_snaps_eval_fps_to_valid_choice(caplog) -> None:
     from openfollow.configuration import TriggerZonesConfig
 
@@ -5151,6 +5184,118 @@ def test_trigger_zones_config_preserves_already_built_instances() -> None:
     zone = TriggerZoneConfig(name="pre-built")
     zones = TriggerZonesConfig(zones=[zone])
     assert zones.zones[0] is zone
+
+
+# ---------------------------------------------------------------------------
+# TriggerZoneConfig zone heights: z_offset, raise_markers, height_transition_s
+# ---------------------------------------------------------------------------
+
+
+def test_zone_heights_default_to_a_floor_zone_that_raises_nothing() -> None:
+    from openfollow.configuration import TriggerZoneConfig
+
+    zone = TriggerZoneConfig()
+    assert (zone.z_offset, zone.raise_markers, zone.height_transition_s) == (0.0, False, 0.3)
+
+
+@pytest.mark.parametrize(("raw", "want"), [(0.4, 0.4), ("1.25", 1.25), (-2, -2.0), (20, 20.0), (-10, -10.0)])
+def test_zone_z_offset_accepts_heights_in_range(raw: object, want: float) -> None:
+    from openfollow.configuration import TriggerZoneConfig
+
+    assert TriggerZoneConfig(z_offset=raw).z_offset == want
+
+
+@pytest.mark.parametrize(("raw", "want"), [(20.5, 20.0), (1e9, 20.0), (-10.5, -10.0), (-1e9, -10.0)])
+def test_zone_z_offset_clamps_out_of_range(raw: float, want: float) -> None:
+    from openfollow.configuration import TriggerZoneConfig
+
+    assert TriggerZoneConfig(z_offset=raw).z_offset == want
+
+
+@pytest.mark.parametrize("bad", [None, "abc", True, False, [1.0], float("nan"), float("inf"), "inf"])
+def test_zone_z_offset_wrong_type_falls_back_to_the_floor(bad: object) -> None:
+    from openfollow.configuration import TriggerZoneConfig
+
+    assert TriggerZoneConfig(z_offset=bad).z_offset == 0.0
+
+
+@pytest.mark.parametrize(("raw", "want"), [(True, True), (False, False), ("true", True), ("off", False)])
+def test_zone_raise_markers_accepts_bool_forms(raw: object, want: bool) -> None:
+    from openfollow.configuration import TriggerZoneConfig
+
+    assert TriggerZoneConfig(raise_markers=raw).raise_markers is want
+
+
+@pytest.mark.parametrize("bad", [None, 1, "abc", 0.5, [True]])
+def test_zone_raise_markers_wrong_type_stays_off(bad: object) -> None:
+    from openfollow.configuration import TriggerZoneConfig
+
+    assert TriggerZoneConfig(raise_markers=bad).raise_markers is False
+
+
+@pytest.mark.parametrize(("raw", "want"), [(0, 0.0), ("1.5", 1.5), (10, 10.0), (0.05, 0.05)])
+def test_zone_height_transition_accepts_seconds_in_range(raw: object, want: float) -> None:
+    from openfollow.configuration import TriggerZoneConfig
+
+    assert TriggerZoneConfig(height_transition_s=raw).height_transition_s == want
+
+
+@pytest.mark.parametrize(("raw", "want"), [(-0.1, 0.0), (-5, 0.0), (10.5, 10.0), (1e9, 10.0)])
+def test_zone_height_transition_clamps_out_of_range(raw: float, want: float) -> None:
+    from openfollow.configuration import TriggerZoneConfig
+
+    assert TriggerZoneConfig(height_transition_s=raw).height_transition_s == want
+
+
+@pytest.mark.parametrize("bad", [None, "abc", True, False, {}, float("nan"), "-inf"])
+def test_zone_height_transition_wrong_type_falls_back_to_the_default(bad: object) -> None:
+    from openfollow.configuration import TriggerZoneConfig
+
+    assert TriggerZoneConfig(height_transition_s=bad).height_transition_s == 0.3
+
+
+def test_zone_heights_survive_a_hand_edited_config(temp_config_path) -> None:
+    temp_config_path.write_text(
+        "[[trigger_zones.zones]]\n"
+        'name = "Riser"\n'
+        "z_offset = 99\n"
+        'raise_markers = "yes"\n'
+        'height_transition_s = "abc"\n'
+        "[[trigger_zones.zones]]\n"
+        'name = "Pit"\n'
+        "z_offset = -1.5\n"
+        "height_transition_s = 2\n",
+        encoding="utf-8",
+    )
+    riser, pit = load_config(str(temp_config_path)).trigger_zones.zones
+    assert (riser.z_offset, riser.raise_markers, riser.height_transition_s) == (20.0, True, 0.3)
+    assert (pit.z_offset, pit.raise_markers, pit.height_transition_s) == (-1.5, False, 2.0)
+
+
+def test_zone_heights_round_trip_through_the_config_file(temp_config_path) -> None:
+    from openfollow.configuration import TriggerZoneConfig
+
+    cfg = AppConfig()
+    cfg.trigger_zones.zones = [
+        TriggerZoneConfig(name="Riser", z_offset=0.6, raise_markers=True, height_transition_s=1.2)
+    ]
+    save_config(cfg, str(temp_config_path))
+    zone = load_config(str(temp_config_path)).trigger_zones.zones[0]
+    assert (zone.z_offset, zone.raise_markers, zone.height_transition_s) == (0.6, True, 1.2)
+
+
+def test_a_config_from_before_zone_heights_loads_floor_zones(temp_config_path) -> None:
+    temp_config_path.write_text('[[trigger_zones.zones]]\nname = "Old"\n', encoding="utf-8")
+    zone = load_config(str(temp_config_path)).trigger_zones.zones[0]
+    assert (zone.z_offset, zone.raise_markers, zone.height_transition_s) == (0.0, False, 0.3)
+
+
+def test_zone_heights_is_an_experimental_feature_off_on_a_new_station() -> None:
+    from openfollow.configuration import DEFAULT_SHOWN_FEATURES, EXPERIMENTAL_FEATURES, OFFERED_FEATURES
+
+    assert "zone_heights" in EXPERIMENTAL_FEATURES
+    assert "zone_heights" in OFFERED_FEATURES
+    assert "zone_heights" not in DEFAULT_SHOWN_FEATURES
 
 
 # ---------------------------------------------------------------------------
@@ -8767,7 +8912,7 @@ class TestUiConfig:
         save_config(loaded, str(temp_config_path))
         assert "show_experimental_features" not in temp_config_path.read_text()
 
-    @pytest.mark.parametrize("features_on", [["zones", "detection", "paths"], ["detection", "paths", "ground_grid"]])
+    @pytest.mark.parametrize("features_on", [["zones", "detection", "paths"], ["detection", "paths", "touch_remote"]])
     def test_feature_on_reads_the_list(self, features_on) -> None:  # noqa: ANN001
         from openfollow.configuration import AppConfig, UiConfig, feature_on
 
@@ -9349,135 +9494,6 @@ class TestPathsHotReload:
         changed.grid.width = 12.0
         apply_runtime_config_changes(app, changed)
         assert app._paths.is_locked(1)
-
-
-# ---------------------------------------------------------------------------
-# GroundGridConfig
-# ---------------------------------------------------------------------------
-
-
-def test_ground_grid_defaults_are_inactive() -> None:
-    from openfollow.configuration import GroundGridConfig
-
-    gg = GroundGridConfig()
-    assert (gg.enabled, gg.visible, gg.z_offset, gg.vertices) == (False, True, 0.0, [])
-    assert gg.active is False
-
-
-@pytest.mark.parametrize("bad", [None, "abc", 3, [1, 2]])
-def test_ground_grid_flags_reject_wrong_type(bad: object) -> None:
-    from openfollow.configuration import GroundGridConfig
-
-    gg = GroundGridConfig(enabled=bad, visible=bad)
-    assert (gg.enabled, gg.visible) == (False, True)
-
-
-@pytest.mark.parametrize(("value", "expected"), [("true", True), ("false", False), (True, True)])
-def test_ground_grid_flags_accept_bool_forms(value: object, expected: bool) -> None:
-    from openfollow.configuration import GroundGridConfig
-
-    assert GroundGridConfig(enabled=value).enabled is expected
-
-
-@pytest.mark.parametrize(("value", "expected"), [(-1.5, -1.5), ("0.6", 0.6), (2, 2.0)])
-def test_ground_grid_z_offset_keeps_finite_numbers(value: object, expected: float) -> None:
-    from openfollow.configuration import GroundGridConfig
-
-    assert GroundGridConfig(z_offset=value).z_offset == pytest.approx(expected)
-
-
-@pytest.mark.parametrize("bad", [None, "abc", True, float("nan"), float("inf"), [1.0]])
-def test_ground_grid_z_offset_rejects_wrong_type_to_default(bad: object) -> None:
-    from openfollow.configuration import GroundGridConfig
-
-    assert GroundGridConfig(z_offset=bad).z_offset == 0.0
-
-
-@pytest.mark.parametrize("bad", [None, "abc", True, 5, {"x": 1}])
-def test_ground_grid_vertices_reject_non_list(bad: object) -> None:
-    from openfollow.configuration import GroundGridConfig
-
-    assert GroundGridConfig(vertices=bad).vertices == []
-
-
-def test_ground_grid_vertices_keep_only_finite_pairs() -> None:
-    from openfollow.configuration import GroundGridConfig
-
-    gg = GroundGridConfig(
-        vertices=[
-            [0, 0],
-            ["1", "2.5"],
-            ["bad", 1],
-            [3],
-            "xy",
-            [True, 1],
-            [float("nan"), 1],
-            [4, float("inf")],
-            (5, 6, 7),
-        ]
-    )
-    assert gg.vertices == [[0.0, 0.0], [1.0, 2.5], [5.0, 6.0]]
-
-
-def test_ground_grid_vertices_are_capped() -> None:
-    from openfollow.configuration import GROUND_GRID_MAX_VERTICES, GroundGridConfig
-
-    gg = GroundGridConfig(vertices=[[float(i), 0.0] for i in range(GROUND_GRID_MAX_VERTICES + 10)])
-    assert len(gg.vertices) == GROUND_GRID_MAX_VERTICES
-    assert gg.vertices[-1] == [float(GROUND_GRID_MAX_VERTICES - 1), 0.0]
-
-
-@pytest.mark.parametrize(
-    ("enabled", "vertices", "active"),
-    [
-        (True, [[0, 0], [1, 0], [1, 1]], True),
-        (True, [[0, 0], [1, 0]], False),
-        (False, [[0, 0], [1, 0], [1, 1]], False),
-        (True, [[0, 0], [1, 0], ["x", 1]], False),
-    ],
-)
-def test_ground_grid_active_needs_enabled_and_three_corners(enabled: bool, vertices: list, active: bool) -> None:
-    from openfollow.configuration import GroundGridConfig
-
-    assert GroundGridConfig(enabled=enabled, vertices=vertices).active is active
-
-
-def test_ground_grid_round_trips_through_toml(tmp_path) -> None:
-    from openfollow.configuration import load_config, save_config
-
-    cfg = AppConfig()
-    cfg.ground_grid.enabled = True
-    cfg.ground_grid.visible = False
-    cfg.ground_grid.z_offset = -1.2
-    cfg.ground_grid.vertices = [[0.0, 0.0], [2.0, 0.0], [2.0, 1.5]]
-    path = tmp_path / "config.toml"
-    save_config(cfg, str(path))
-
-    loaded = load_config(str(path))
-    assert loaded.ground_grid == cfg.ground_grid
-
-
-def test_ground_grid_hand_edited_toml_is_normalised(tmp_path) -> None:
-    from openfollow.configuration import load_config
-
-    path = tmp_path / "config.toml"
-    path.write_text('[ground_grid]\nenabled = "yes"\nz_offset = "low"\nvertices = [[0, 0], ["a", 1], [1, 0], [1, 1]]\n')
-    gg = load_config(str(path)).ground_grid
-    assert gg.enabled is True
-    assert gg.z_offset == 0.0
-    assert gg.vertices == [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]
-
-
-def test_apply_runtime_ground_grid_swaps_live() -> None:
-    app = _DummyApp(AppConfig())
-    new_config = AppConfig()
-    new_config.ground_grid.enabled = True
-    new_config.ground_grid.vertices = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]
-
-    apply_runtime_config_changes(app, new_config)
-
-    assert app._config.ground_grid == new_config.ground_grid
-    assert app._web_commands.restart_requested is False
 
 
 @pytest.mark.parametrize("bad", [None, 7, True])

@@ -1,6 +1,8 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 # OpenFollow Wayland kiosk session launcher – runs as the openfollow user.
 #
 # Resolves XDG_RUNTIME_DIR from the *current* uid rather than a systemd %U

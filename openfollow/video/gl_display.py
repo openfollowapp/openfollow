@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Video and HUD on one ``Gtk.GLArea``: decoded frames and HUD pictures go up as textures, composited each refresh.
 
 Run where ``gl_display_blocker`` and ``probe_gl_context`` allow it: the receiver ends in this display's

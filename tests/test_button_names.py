@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Tests for :mod:`openfollow.button_names`: every button's name in each pad
 family the station can be set to, which buttons a family draws as a symbol,
 and the HUD's stand-in characters for those symbols."""

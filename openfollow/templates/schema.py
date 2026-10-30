@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Template envelope and per-type payload validation."""
 
 from __future__ import annotations
@@ -250,7 +252,6 @@ def validate_payload(template_type: str, payload: Mapping[str, Any]) -> None:
     from openfollow.configuration import (
         CameraConfig,
         GridConfig,
-        GroundGridConfig,
         PathsConfig,
         TriggerZonesConfig,
         without_former_camera_keys,
@@ -354,19 +355,6 @@ def validate_payload(template_type: str, payload: Mapping[str, Any]) -> None:
             raise TemplateValidationError(
                 f"camera_grid payload 'grid' invalid: {exc}",
             ) from exc
-        # The ground grid is optional: a template saved before it existed has none.
-        if "ground_grid" in payload:
-            ground_dict = payload["ground_grid"]
-            if not isinstance(ground_dict, dict):
-                raise TemplateValidationError(
-                    f"camera_grid payload 'ground_grid' must be object, got {type(ground_dict).__name__}",
-                )
-            try:
-                GroundGridConfig(**ground_dict)
-            except TypeError as exc:
-                raise TemplateValidationError(
-                    f"camera_grid payload 'ground_grid' invalid: {exc}",
-                ) from exc
         return
 
     if template_type == "zones":

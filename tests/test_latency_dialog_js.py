@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """The Measure Camera Latency dialog's script in node on the fake DOM: closing it takes the warnings'
 renewal with it, and warnings that arrive after it closed never renew the Operator Screen's card."""
 

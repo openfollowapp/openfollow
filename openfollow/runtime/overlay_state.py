@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Overlay state containers shared across runtime and Cairo rendering."""
 
 from __future__ import annotations
@@ -92,6 +94,8 @@ class MarkerOverlayData:
     # crosshair + ground ring (no filled ball, no card) so it reads as secondary
     # to the solid marker the operator steers (the manual anchor).
     is_assist_ghost: bool = False
+    # A zone's lift, already in ``z``; the floor elements are drawn this much higher.
+    lift: float = 0.0
 
 
 @dataclass
@@ -146,12 +150,6 @@ class OverlayState:
     grid_color: str = _GRID_COLOR_DEFAULT
     grid_thickness: int = _GRID_THICKNESS_DEFAULT
     grid_transparency: float = _GRID_TRANSPARENCY_DEFAULT
-    # Ground grid: a polygon floor at its own Z. ``ground_grid_active`` redirects
-    # the floor elements of markers inside it; ``ground_grid_visible`` draws it, on its own.
-    ground_grid_active: bool = False
-    ground_grid_visible: bool = False
-    ground_grid_z: float = 0.0
-    ground_grid_vertices: list[tuple[float, float]] = field(default_factory=list)
     # Marker visual config
     marker_style: str = "crosshair"
     cone_base_diameter: float = 0.6
@@ -318,8 +316,8 @@ class OverlayState:
     operator_message_scale: float = 1.0
     # Trigger zones
     show_zones: bool = False
-    # Each entry: (vertices_world_xy, color_hex, name, is_occupied, count)
-    zone_polygons: list[tuple[list[tuple[float, float]], str, str, bool, int]] = field(default_factory=list)
+    # Each entry: (vertices_world_xy, color_hex, is_occupied, height above the stage plane)
+    zone_polygons: list[tuple[list[tuple[float, float]], str, bool, float]] = field(default_factory=list)
     zone_z_offset: float = 0.0
     # Paths: (curve, ends, locked) each, world X/Y/Z; an end is (at, a point just inside the path, releases).
     show_paths: bool = False

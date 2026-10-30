@@ -14,7 +14,7 @@ Over the picture, the loupe follows the pointer. A click on the picture opens **
 
 ## Calculation
 
-To calculate the camera, the Setup Wizard needs the camera position, two known points and four pinned points. More points give a better result. The blue hint shows the next thing to do. It is placed above the part of the page it is about: Camera Position or the picture. Advanced never changes the grid.
+To calculate the camera, the Setup Wizard needs the camera position, two known points and four pinned points. More points give a better result. The blue hint shows the next thing to do. It is placed above the part of the page it is about: Camera Position or the picture. Of the grid, Advanced changes only its height: **Floor height** on Review.
 
 ## Camera height
 

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Lens calibrations saved on this station by the Setup Wizard, one small JSON file each.
 
 They live beside ``config.toml``, not in it, so an export, an import or a push never carries them. Each

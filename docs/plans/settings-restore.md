@@ -11,7 +11,7 @@ to the web UI, each with a Restore button.
 | Topic | Decision |
 |---|---|
 | Entry point | A list of **this station's own** backups. No upload, and Import keeps taking `.ofsettings` only: an archive holds secrets and never leaves the station. |
-| Placement | The Configuration card (`partials/config_transfer.tpl`), as a **Backups on this station** group under Export, Import and Restore Defaults. |
+| Placement | The Configuration Backup & Import section (`partials/config_transfer.tpl`), as a **Backups on this station** group under Export, Import and Restore Defaults. |
 | Rows | Newest first, the update and web folders together. Columns **Made** (the browser's local time, "28 Oct 2026, 21:40"), **Before** (**Update to 0.5.0**, **Import**, **Restore Defaults**, **Settings push**, **Restore**; **Settings change** for a kind this version does not know) and **Version** (the version that wrote it). Running text says it in a sentence: "made before the update to 0.5.0", "an import", "Restore Defaults", "a settings push", "a restore". Each row's button is named for screen readers by its time and kind. |
 | Scope | Everything the archive holds: `config.toml`, the marker catalog, `templates/user/` and `lens-calibrations/`. A part the archive does not hold stays as it is. Gallery media is not in an archive and stays as it is. |
 | Kept on restore | `_DEVICE_IDENTITY_FIELDS` and the station name (`psn_system_name`), as the confirm dialog says. `enforce_network_mode` runs for the kept mode: a Simple station takes no pin back, an Advanced one gets the backup's own plane pins. The catalog goes to this station's `markers_catalog_path`. |

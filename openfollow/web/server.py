@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Threaded web server for the configuration UI with peer discovery."""
 
 from __future__ import annotations
@@ -1195,7 +1197,7 @@ class ConfigWebServer:
         return self._marker_positions_provider()
 
     def get_marker_position(self, marker_id: int) -> tuple[float, float, float] | None:
-        """Where ``marker_id`` is on the wire now, X/Y/Z; ``None`` when it is not here or offline."""
+        """Where ``marker_id`` is now, X/Y/Z without a zone's lift; ``None`` when it is not here or offline."""
         if self._marker_position_provider is None:
             return None
         return self._marker_position_provider(marker_id)

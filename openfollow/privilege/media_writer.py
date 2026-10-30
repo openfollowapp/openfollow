@@ -1,6 +1,7 @@
 #!/usr/bin/python3 -I
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Write one file to the top level of a removable drive.
 
 Shared by the app, which lists drives and writes to a drive that is already

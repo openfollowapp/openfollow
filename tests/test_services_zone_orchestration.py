@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Tests for ``AppRuntimeServices`` zone orchestration.
 
 Covers:
@@ -39,6 +41,10 @@ pytestmark = pytest.mark.unit
 class _FakeMarker:
     def __init__(self, x: float = 1.0, y: float = 2.0, z: float = 0.0) -> None:
         self.pos = (x, y, z)
+        self.lift = 0.0
+
+    def set_lift(self, lift: float) -> None:
+        self.lift = lift
 
 
 class _FakePsnServer:
@@ -254,13 +260,13 @@ class TestInitZoneEngine:
 class TestUpdateZoneTriggers:
     def test_no_engine_is_no_op(self, services: AppRuntimeServices) -> None:
         services._zone_engine = None
-        services.update_zone_triggers()  # must not raise
+        services.update_zone_triggers(1 / 60)  # must not raise
 
     def test_disabled_in_config_is_no_op(self, services: AppRuntimeServices) -> None:
         services._app = _make_app(zones_enabled=False)
         services.init_zone_engine()
         fake = services._zone_engine
-        services.update_zone_triggers()
+        services.update_zone_triggers(1 / 60)
         assert isinstance(fake, _FakeZoneEngine)
         assert fake.updates == []
 
@@ -271,9 +277,9 @@ class TestUpdateZoneTriggers:
 
         times = iter([100.0, 100.05, 100.2])
         monkeypatch.setattr(services_module.time, "monotonic", lambda: next(times))
-        services.update_zone_triggers()  # t=100.0 → first eval
-        services.update_zone_triggers()  # t=100.05 → throttled
-        services.update_zone_triggers()  # t=100.2  → eval again
+        services.update_zone_triggers(1 / 60)  # t=100.0 → first eval
+        services.update_zone_triggers(1 / 60)  # t=100.05 → throttled
+        services.update_zone_triggers(1 / 60)  # t=100.2  → eval again
         assert len(fake.updates) == 2
 
     def test_forwards_markers_and_detections(
@@ -287,11 +293,106 @@ class TestUpdateZoneTriggers:
         services.init_zone_engine()
         fake = services._zone_engine
         monkeypatch.setattr(services_module.time, "monotonic", lambda: 100.0)
-        services.update_zone_triggers()
+        services.update_zone_triggers(1 / 60)
 
         markers, detections = fake.updates[0]
         assert markers == [(("marker", 1), 3.0, 4.0)]
         assert detections == []
+
+
+# --------------------------------------------------------------------------- #
+# Zone heights: the lift each frame
+# --------------------------------------------------------------------------- #
+
+
+def _raised_app(
+    *,
+    features: tuple[str, ...] = ("zones", "zone_heights"),
+    zones_enabled: bool = True,
+    transition: float = 0.0,
+    **markers: Any,
+) -> SimpleNamespace:
+    from openfollow.configuration import TriggerZoneConfig
+    from openfollow.psn.marker import Marker
+
+    own = Marker(1, "Own")
+    own.set_pos(1.0, 1.0, 1.5)
+    remote = Marker(2, "Remote", remote=True)
+    remote.apply_remote((1.0, 1.0, 1.5), timestamp=1, status=1.0)
+    app = _make_app(controlled=[1], viewer=[1, 2], psn_markers={1: own}, recv_markers={2: remote}, **markers)
+    app._config.ui.shown_features = list(features)
+    app._config.trigger_zones = TriggerZonesConfig(
+        enabled=zones_enabled,
+        zones=[
+            TriggerZoneConfig(
+                vertices=[[0, 0], [2, 0], [2, 2], [0, 2]],
+                z_offset=0.5,
+                raise_markers=True,
+                height_transition_s=transition,
+            )
+        ],
+    )
+    return app
+
+
+class TestZoneHeights:
+    def test_a_controlled_marker_inside_is_sent_lifted(self, services: AppRuntimeServices) -> None:
+        services._app = _raised_app()
+        services.update_zone_triggers(1 / 60)
+        own = services._app._server.get_marker(1)
+        assert own.sent_pos == (1.0, 1.0, 2.0)
+        assert own.pos == (1.0, 1.0, 1.5)
+
+    def test_a_received_marker_is_never_lifted(self, services: AppRuntimeServices) -> None:
+        services._app = _raised_app()
+        services.update_zone_triggers(1 / 60)
+        assert services._app._psn_receiver.get_marker(2).sent_pos == (1.0, 1.0, 1.5)
+
+    def test_the_lift_runs_while_zone_osc_is_off(self, services: AppRuntimeServices) -> None:
+        services._app = _raised_app(zones_enabled=False)
+        services.update_zone_triggers(1 / 60)
+        assert services._app._server.get_marker(1).lift == 0.5
+
+    def test_the_lift_runs_without_a_zone_engine(self, services: AppRuntimeServices) -> None:
+        services._app = _raised_app()
+        services._zone_engine = None
+        services.update_zone_triggers(1 / 60)
+        assert services._app._server.get_marker(1).lift == 0.5
+
+    def test_the_ramp_advances_by_the_frames_step(self, services: AppRuntimeServices) -> None:
+        services._app = _raised_app(transition=0.4)
+        services.update_zone_triggers(0.1)
+        assert services._app._server.get_marker(1).lift == pytest.approx(0.125)
+
+    def test_switching_the_feature_off_eases_the_lift_out(self, services: AppRuntimeServices) -> None:
+        services._app = _raised_app(transition=0.4)
+        services.update_zone_triggers(0.4)
+        services._app._config.ui.shown_features = ["zones"]
+        services.update_zone_triggers(0.2)
+        assert services._app._server.get_marker(1).lift == pytest.approx(0.25)
+        services.update_zone_triggers(0.2)
+        assert services._app._server.get_marker(1).lift == 0.0
+
+    def test_the_operators_z_moves_under_the_lift(self, services: AppRuntimeServices) -> None:
+        services._app = _raised_app(transition=0.4)
+        services.update_zone_triggers(0.2)
+        own = services._app._server.get_marker(1)
+        own.set_pos(1.0, 1.0, 3.0)
+        services.update_zone_triggers(0.1)
+        assert own.pos == (1.0, 1.0, 3.0)
+        assert own.sent_pos == (1.0, 1.0, pytest.approx(3.375))
+
+    def test_the_lift_does_not_stamp(self, services: AppRuntimeServices) -> None:
+        services._app = _raised_app()
+        own = services._app._server.get_marker(1)
+        stamped = own.timestamp
+        services.update_zone_triggers(1 / 60)
+        assert own.timestamp == stamped
+
+    def test_no_server_lifts_nothing(self, services: AppRuntimeServices) -> None:
+        services._app = _raised_app()
+        services._app._server = None
+        services.update_zone_triggers(1 / 60)  # must not raise
 
 
 # --------------------------------------------------------------------------- #

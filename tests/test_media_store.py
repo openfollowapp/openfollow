@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Unit tests for the Media Gallery store.
 
 The GStreamer seams (``_render_jpeg``, ``_probe_video``) are monkeypatched, so

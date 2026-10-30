@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Markers locked onto the active paths, and where each movement source may put them.
 
 Runs on the frame loop. Every movement source asks the engine before it writes a

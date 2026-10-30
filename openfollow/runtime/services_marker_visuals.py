@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Marker and overlay state helpers for runtime services."""
 
 from __future__ import annotations
@@ -298,23 +300,6 @@ def sync_grid_config(state: OverlayState, cfg: Any) -> None:
     state.origin_thickness = _soft_int(g.origin_thickness, d.origin_thickness, lo=1)
 
 
-def sync_ground_grid_config(state: OverlayState, cfg: Any) -> None:
-    """Copy the ground grid into the overlay state: ``enabled`` drops markers inside it onto its height
-    and ``visible`` draws it, each on its own; neither without the Ground grid feature or three corners."""
-    # getattr: a shim config without the section draws no ground grid.
-    gg = getattr(cfg, "ground_grid", None)
-    if gg is None:
-        state.ground_grid_vertices = []
-        state.ground_grid_z = 0.0
-        state.ground_grid_active = state.ground_grid_visible = False
-        return
-    state.ground_grid_vertices = [(float(v[0]), float(v[1])) for v in gg.vertices]
-    state.ground_grid_z = _soft_float(gg.z_offset, 0.0)
-    usable = feature_on(cfg, "ground_grid") and len(state.ground_grid_vertices) >= 3
-    state.ground_grid_active = usable and _soft_bool(gg.enabled, False)
-    state.ground_grid_visible = usable and _soft_bool(gg.visible, True)
-
-
 def sync_ui_config(state: OverlayState, cfg: Any) -> None:
     """Copy the UI display unit system into the overlay state.
 
@@ -443,14 +428,14 @@ def _populate_zone_overlay(state: OverlayState, cfg: Any, app: Any) -> None:
         state.zone_polygons = []
         return
 
-    occupancy_by_index: dict[int, tuple[bool, int]] = {}
-    if tz.enabled:
+    occupied: set[int] = set()
+    if tz.enabled and tz.highlight_occupied:
         zone_engine = getattr(app._runtime_services, "_zone_engine", None)
         if zone_engine is not None:
-            for idx, is_occupied, count in zone_engine.get_zone_states():
-                occupancy_by_index[idx] = (is_occupied, count)
+            occupied = {idx for idx, is_occupied, _count in zone_engine.get_zone_states() if is_occupied}
 
-    polygons: list[tuple[list[tuple[float, float]], str, str, bool, int]] = []
+    heights = feature_on(cfg, "zone_heights")
+    polygons: list[tuple[list[tuple[float, float]], str, bool, float]] = []
     for idx, zone in enumerate(tz.zones):
         if not zone.enabled or len(zone.vertices) < 3:
             continue
@@ -458,8 +443,8 @@ def _populate_zone_overlay(state: OverlayState, cfg: Any, app: Any) -> None:
         # PSN-absolute frame – no translation needed on any side of the
         # zone-membership comparison.
         verts_world = [(float(v[0]), float(v[1])) for v in zone.vertices]
-        is_occupied, count = occupancy_by_index.get(idx, (False, 0))
-        polygons.append((verts_world, zone.color, zone.name, is_occupied, count))
+        height = float(zone.z_offset) if heights else 0.0
+        polygons.append((verts_world, zone.color, idx in occupied, height))
     state.zone_polygons = polygons
 
 
@@ -467,7 +452,6 @@ def build_initial_overlay_state(cfg: Any) -> OverlayState:
     """Create the initial disconnected overlay state from config."""
     state = OverlayState()
     sync_grid_config(state, cfg)
-    sync_ground_grid_config(state, cfg)
     sync_marker_config(state, cfg)
     sync_ui_config(state, cfg)
 
@@ -524,7 +508,8 @@ def build_marker_visual_state(
         if marker is None:
             continue
         vstate: MarkerVelocityState = get_or_create(velocity_states, marker_id, MarkerVelocityState)
-        marker.set_speed(*estimate_marker_velocity(vstate, marker.pos, dt))
+        # The velocity of what is sent: a zone's lift easing in moves the sent Z.
+        marker.set_speed(*estimate_marker_velocity(vstate, marker.sent_pos, dt))
 
     # Fetch controller info once and build a reverse map so the per-marker
     # loop can stamp each marker card with its bound controller without an
@@ -719,6 +704,8 @@ def build_marker_visual_state(
         # snapshot. The receiver thread can call ``apply_remote`` between separate
         # ``marker.pos`` accesses, which would tear X/Y/Z across two packets.
         px, py, pz = marker.pos
+        # A zone's lift: the floor and Z are drawn where they are sent.
+        lift = marker.lift
 
         # Each assist-controlled marker's card sits at its operator-steered
         # anchor, not the broadcast position. Capture the registered (AI-
@@ -730,7 +717,8 @@ def build_marker_visual_state(
                     marker_id=marker_id,
                     x=px,
                     y=py,
-                    z=pz,
+                    z=pz + lift,
+                    lift=lift,
                     color=color,
                     radius=cfg.marker.ball_size,
                     speed=None,
@@ -749,7 +737,8 @@ def build_marker_visual_state(
                 marker_id=marker_id,
                 x=px,
                 y=py,
-                z=pz,
+                z=pz + lift,
+                lift=lift,
                 color=color,
                 radius=cfg.marker.ball_size,
                 speed=speed,
@@ -787,7 +776,6 @@ def build_marker_visual_state(
 
     sync_marker_config(state, cfg)
     sync_grid_config(state, cfg)
-    sync_ground_grid_config(state, cfg)
     sync_ui_config(state, cfg)
 
     if person_detector is not None:

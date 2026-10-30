@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Which physical adapter an interface name is, and the operator's label for it.
 
 The fake sysfs trees follow a Pi 5 with a USB adapter and a VLAN: two xHCI host

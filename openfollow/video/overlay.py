@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Lightweight Cairo-based overlay renderer for GStreamer native sink mode."""
 
 from __future__ import annotations
@@ -448,7 +450,7 @@ class CairoOverlayRenderer:
     # ------------------------------------------------------------------
 
     def _draw_zones(self, cr: Any, state: OverlayState, w: int, h: int) -> None:
-        draw_zones_pass(self, cr, state, w, h, self._zone_cache)
+        draw_zones_pass(cr, state, w, h, self._zone_cache)
 
     # ------------------------------------------------------------------
     # Person detection bounding boxes

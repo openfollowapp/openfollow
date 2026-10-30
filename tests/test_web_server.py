@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """System tests for ConfigWebServer – real HTTP requests against a live server.
 
 Spins up a Bottle server on a free localhost port.  Multicast beacon I/O is
@@ -720,19 +722,19 @@ def test_the_input_tab_opens_with_the_controller_slots(slots_server) -> None:
     ) in tab
 
 
-def test_statistics_name_each_missing_controller(slots_server) -> None:
+def test_status_names_each_missing_controller(slots_server) -> None:
     _, base, _ = slots_server
-    _, body = _get(base, "/section/statistics")
+    _, body = _get(base, "/section/diagnostics")
     assert "1 connected · 1 missing" in body
     # No role: the panel is swapped every second, and the announcer speaks the box.
     box = body[body.index('<div class="notice error">') :]
     assert box.index("<div>C1 missing · marker 10 · GameSir (USB 2, port 1)</div>") < box.index("</div>\n")
 
 
-def test_statistics_without_missing_controllers_raise_no_warning(slots_server) -> None:
+def test_status_without_missing_controllers_raises_no_warning(slots_server) -> None:
     _, base, stats = slots_server
     stats["controllers"] = {"connected_count": 1, "missing_count": 0, "items": [_SLOT_ITEMS[1]]}
-    _, body = _get(base, "/section/statistics")
+    _, body = _get(base, "/section/diagnostics")
     assert "1 connected<" in body
     assert re.search(r"C\d+ missing", body) is None
 
@@ -958,8 +960,8 @@ def test_body_background_fade_is_viewport_sized(live_server) -> None:
 
 
 def test_index_page_preserves_scroll_across_poll_swaps(live_server) -> None:
-    # Regression guard: the Overview tab's 1s statistics poll (and the 5s
-    # diagnostics / server-overview swaps) replace whole DOM subtrees, which
+    # Regression guard: the Overview tab's 1s Status & Diagnostics poll (and the
+    # 5s server-overview swap) replace whole DOM subtrees, which
     # destroys Firefox's scroll-anchor node and snaps the viewport to the top
     # on every tick. The fix re-pins the scroll position after automatic
     # (poll / ``load``) swaps. Pin the wiring so a future base.tpl edit can't
@@ -1150,8 +1152,7 @@ def test_overview_says_station_default_is_down_rather_than_showing_its_address(l
 
 def test_index_overview_section_polls_only_peer_rows(live_server) -> None:
     # The polling element is the inner peer list (#overview-peers), gated on its
-    # section being shown – not the whole #overview-section via outerHTML,
-    # which is what flickered.
+    # section being shown – not the whole section via outerHTML, which flickered.
     _, base = live_server
     status, body = _get(base, "/")
     assert status == 200
@@ -1159,10 +1160,20 @@ def test_index_overview_section_polls_only_peer_rows(live_server) -> None:
     assert 'hx-trigger="every 5s [pollShown(this)], poll-shown[pollShown(this)] from:body"' in peers
 
 
-def test_statistics_partial_renders(live_server) -> None:
+def test_station_network_is_the_first_box_of_status_and_diagnostics(live_server) -> None:
     _, base = live_server
-    status, body = _get(base, "/section/statistics")
-    assert status == 200
+    _, body = _get(base, "/")
+    overview = body[body.index('id="tab-overview"') : body.index('id="tab-general"')]
+    # The Overview tab is one section.
+    assert overview.count('class="section"') == 1
+    section = overview[overview.index('id="diagnostics-section"') :]
+    # The tab's only section is always open: no fold key, so no Collapse toggle.
+    assert "data-fold-key" not in section.split(">", 1)[0]
+    box = section[section.index('<section class="stat-panel stations-box">') : section.index("</section>")]
+    assert '<h3 class="stat-panel-title">Station Network</h3>' in box
+    assert 'id="overview-peers"' in box
+    # Its rows poll on their own, above the 1 s boxes.
+    assert section.index("stations-box") < section.index('id="diagnostics-live"')
 
 
 def test_video_source_failure_fragment_is_empty_while_healthy(live_server) -> None:
@@ -1195,7 +1206,7 @@ def test_video_source_failure_fragment_carries_the_box(live_server, monkeypatch)
     assert status == 200
     assert "Nothing answered at 192.0.2.10:554." in body
     assert "Check the camera is powered." in body
-    # Its own id namespace, or the Statistics poll steals the node.
+    # Its own id namespace, or the Status & Diagnostics poll steals the node.
     assert 'id="video-error-source-' in body
     # The same polite live region as the section's own render of the box.
     assert 'role="status" aria-live="polite" aria-atomic="true"' in body
@@ -3196,9 +3207,9 @@ def test_the_login_page_shows_no_station_state(pin_protected_server, pin: str | 
     _, base, _ = pin_protected_server
     status, body = _get(base, "/login") if pin is None else _post_form(base, "/login", {"pin": pin})
     assert status == 200
-    assert 'id="statistics-section"' not in body
-    assert "/section/statistics" not in body
-    assert 'class="stat-panel"' not in body
+    assert 'id="diagnostics-section"' not in body
+    assert "/section/diagnostics" not in body
+    assert 'class="stat-panel' not in body
 
 
 def test_privilege_modal_poll_unauth_returns_empty_no_redirect(pin_protected_server) -> None:
@@ -3386,6 +3397,66 @@ def test_hero_logo_links_to_overview(live_server) -> None:
     assert status == 200
     assert 'class="hero-logo-link" href="/"' in body
     assert '<img class="hero-logo"' in body
+
+
+def test_hero_panel_sits_on_the_page_background(live_server) -> None:
+    """The page header draws no box: no background, border or pattern, the logo sits on the page."""
+    _, base = live_server
+    _, body = _get(base, "/")
+    assert '<header class="hero-panel">' in body
+    rule = re.search(r"\.hero-panel \{([^}]*)\}", body)
+    assert rule and "padding:" in rule.group(1)
+    assert "background" not in rule.group(1)
+    assert "border" not in rule.group(1)
+    assert not re.search(r"\.hero-panel::?(before|after)", body)
+    assert "radial-gradient(circle" not in body
+
+
+def test_page_background_is_the_plain_fade(live_server) -> None:
+    """The page background is one top-to-bottom fade with no coloured glow over it."""
+    _, base = live_server
+    _, body = _get(base, "/")
+    rule = re.search(r"\n body \{([^}]*)\}", body)
+    assert rule
+    images = re.search(r"background-image:([^;]*);", rule.group(1))
+    assert images and images.group(1).strip().startswith("linear-gradient(180deg")
+    assert "radial-gradient" not in body
+
+
+def test_license_footer_has_no_rule_above_it(live_server) -> None:
+    _, base = live_server
+    _, body = _get(base, "/")
+    rule = re.search(r"\.license-footer \{([^}]*)\}", body)
+    assert rule and "border" not in rule.group(1)
+
+
+def _hero(body: str) -> str:
+    start = body.index('<header class="hero-panel">')
+    return body[start : body.index("</header>", start)]
+
+
+def test_logout_sits_in_the_header_right_of_the_station_name(pin_protected_server) -> None:
+    _, base, pin = pin_protected_server
+    req = urllib.request.Request(f"{base}/", headers={"Cookie": _login_cookie(base, pin)})
+    with urllib.request.urlopen(req, timeout=5) as r:
+        body = r.read().decode()
+    hero = _hero(body)
+    assert hero.index("hero-station-pill") < hero.index('<form method="POST" action="/logout">')
+    assert '<button type="submit" class="secondary small">Logout</button>' in hero
+    assert body.count('action="/logout"') == 1
+
+
+def test_no_logout_in_the_header_without_a_pin(live_server) -> None:
+    _, base = live_server
+    _, body = _get(base, "/")
+    assert "hero-station-pill" in _hero(body)
+    assert 'action="/logout"' not in body
+
+
+def test_login_page_header_has_no_logout(pin_protected_server) -> None:
+    _, base, _ = pin_protected_server
+    _, body = _get(base, "/login")
+    assert 'action="/logout"' not in _hero(body)
 
 
 def test_about_page_has_back_to_overview_link(live_server) -> None:
@@ -5299,8 +5370,8 @@ def test_auth_assets_path_bypasses_auth(pin_protected_server) -> None:
     assert status not in (401, 302, 303)
 
 
-@pytest.mark.parametrize("path", ["/section/statistics", "/section/statistics/alerts"])
-def test_auth_statistics_needs_the_pin(pin_protected_server, path: str) -> None:
+@pytest.mark.parametrize("path", ["/section/diagnostics", "/section/diagnostics/alerts"])
+def test_auth_status_needs_the_pin(pin_protected_server, path: str) -> None:
     """Station state (video source, errors, controller names) is not shown before login."""
     _, base, _ = pin_protected_server
     req = urllib.request.Request(f"{base}{path}", headers={"HX-Request": "true"}, method="GET")
@@ -6592,6 +6663,27 @@ def test_update_trigger_zones_post_renders_partial(live_server) -> None:
     assert saved.trigger_zones.debounce_ms == 150
 
 
+@pytest.mark.parametrize(
+    ("form", "highlight"), [({"highlight_occupied": "on"}, True), ({}, False)], ids=["ticked", "cleared"]
+)
+def test_the_occupied_highlight_saves_from_the_trigger_zones_form(live_server, form: dict, highlight: bool) -> None:
+    server, base = live_server
+    status, body = _post_form(base, "/section/trigger_zones", form)
+    assert status == 200
+    assert load_config(server.config_path).trigger_zones.highlight_occupied is highlight
+    box = body[body.index('id="trigger-zones-highlight-occupied"') :].split(">", 1)[0]
+    assert ("checked" in box) is highlight
+
+
+@pytest.mark.parametrize("raw", ["abc", "", "2"])
+def test_a_crafted_occupied_highlight_saves_as_ticked(live_server, raw: str) -> None:
+    # A checkbox sent at all is ticked, whatever its value.
+    server, base = live_server
+    status, _ = _post_form(base, "/section/trigger_zones", {"highlight_occupied": raw})
+    assert status == 200
+    assert load_config(server.config_path).trigger_zones.highlight_occupied is True
+
+
 def test_osc_destinations_crud_round_trip(live_server) -> None:
     """Add → save → duplicate → delete a destination through the web routes."""
     server, base = live_server
@@ -7136,6 +7228,80 @@ def test_api_zone_duplicate_clones_in_place(live_server) -> None:
     assert saved.trigger_zones.zones[new_idx].name == "Original (copy)"
     assert saved.trigger_zones.zones[new_idx].triggered_by == [1, 2]
     assert saved.trigger_zones.zones[new_idx].osc_address_first_entry == "/orig/enter"
+
+
+# -- zone heights through the zone routes ----------------------------------------
+
+
+def test_api_zone_heights_round_trip(live_server) -> None:
+    server, base = live_server
+    _, c = _post_json(base, "/api/zones", {"name": "Riser", "z_offset": 0.6, "raise_markers": True})
+    idx = c["index"]
+    _put_json(base, f"/api/zones/{idx}", {"height_transition_s": "1.5"})
+    zone = load_config(server.config_path).trigger_zones.zones[idx]
+    assert (zone.z_offset, zone.raise_markers, zone.height_transition_s) == (0.6, True, 1.5)
+    _, payload = _get_json(base, "/api/zones")
+    listed = next(z for z in payload["zones"] if z["index"] == idx)
+    assert (listed["z_offset"], listed["raise_markers"], listed["height_transition_s"]) == (0.6, True, 1.5)
+
+
+@pytest.mark.parametrize(
+    ("field", "sent", "kept"),
+    [
+        ("z_offset", 99, 20.0),
+        ("z_offset", -99, -10.0),
+        ("height_transition_s", 60, 10.0),
+        ("height_transition_s", -1, 0.0),
+    ],
+)
+def test_api_zone_heights_out_of_range_clamp(live_server, field: str, sent: float, kept: float) -> None:
+    server, base = live_server
+    _, c = _post_json(base, "/api/zones", {"name": "Z"})
+    _put_json(base, f"/api/zones/{c['index']}", {field: sent})
+    assert getattr(load_config(server.config_path).trigger_zones.zones[c["index"]], field) == kept
+
+
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [
+        ("z_offset", None),
+        ("z_offset", "abc"),
+        ("z_offset", True),
+        ("raise_markers", None),
+        ("raise_markers", "abc"),
+        ("raise_markers", 1),
+        ("height_transition_s", None),
+        ("height_transition_s", "abc"),
+        ("height_transition_s", False),
+    ],
+)
+def test_api_zone_heights_wrong_type_keeps_the_saved_value(live_server, field: str, bad: object) -> None:
+    server, base = live_server
+    _, c = _post_json(
+        base, "/api/zones", {"name": "Z", "z_offset": 0.4, "raise_markers": True, "height_transition_s": 2}
+    )
+    before = getattr(load_config(server.config_path).trigger_zones.zones[c["index"]], field)
+    status, _ = _put_json(base, f"/api/zones/{c['index']}", {field: bad})
+    assert status == 200
+    assert getattr(load_config(server.config_path).trigger_zones.zones[c["index"]], field) == before
+
+
+def test_api_zone_duplicate_copies_the_zone_heights(live_server) -> None:
+    server, base = live_server
+    _, c = _post_json(
+        base, "/api/zones", {"name": "Riser", "z_offset": 0.4, "raise_markers": True, "height_transition_s": 0.8}
+    )
+    req = urllib.request.Request(f"{base}/api/zones/{c['index']}/duplicate", method="POST")
+    with urllib.request.urlopen(req, timeout=5) as r:
+        new_idx = json.loads(r.read().decode())["index"]
+    zones = load_config(server.config_path).trigger_zones.zones
+    clone = zones[new_idx]
+    assert (clone.name, clone.z_offset, clone.raise_markers, clone.height_transition_s) == (
+        "Riser (copy)",
+        0.4,
+        True,
+        0.8,
+    )
 
 
 def test_api_zone_duplicate_404_for_unknown_index(live_server) -> None:
@@ -8650,6 +8816,39 @@ def test_validate_zone_osc_field_unclosed_quote_returns_error(
     assert "Unclosed quote" in body
 
 
+@pytest.mark.parametrize(
+    ("field", "raw", "valid"),
+    [
+        ("z_offset", "0.4", True),
+        ("z_offset", "-10", True),
+        ("z_offset", "20.5", False),
+        ("z_offset", "abc", False),
+        ("height_transition_s", "0", True),
+        ("height_transition_s", "10", True),
+        ("height_transition_s", "-0.1", False),
+        ("height_transition_s", "11", False),
+        ("height_transition_s", "abc", False),
+    ],
+)
+def test_validate_zone_height_fields(live_server, field: str, raw: str, valid: bool) -> None:
+    _, base = live_server
+    status, body = _get(base, f"/api/validate/zone/{field}?{field}={raw}")
+    assert status == 200
+    assert (body == "") is valid
+    assert ('class="field-error-msg"' in body) is not valid
+
+
+def test_validate_zone_z_offset_reads_an_imperial_length(live_server) -> None:
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.ui.unit_system = "imperial"
+    save_config(cfg, server.config_path)
+    ok = _get(base, "/api/validate/zone/z_offset?z_offset=" + urllib.parse.quote("1 ft 6 in"))
+    too_high = _get(base, "/api/validate/zone/z_offset?z_offset=" + urllib.parse.quote("70 ft"))
+    assert ok == (200, "")
+    assert 'class="field-error-msg"' in too_high[1]
+
+
 def test_validate_zone_unknown_field_returns_404(live_server) -> None:
     """A field not in ``FIELD_RULES["zone"]`` (e.g. ``name``) returns
     404. The JS hookup only attaches blur handlers to the four registered
@@ -10065,113 +10264,6 @@ def test_api_config_paths_reads_and_takes_paths_keeping_station_state(live_serve
     out = load_config(server.config_path).paths
     assert (out.show_paths, out.slide_time) == (False, 0.8)
     assert [(p.name, p.active, p.closed) for p in out.paths] == [("cross", True, True)]
-
-
-# ---------------------------------------------------------------------------
-# Ground grid section: form -> config, broadcast, import / export
-# ---------------------------------------------------------------------------
-
-_GG_SQUARE = [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]]
-
-
-def test_ground_grid_post_persists_every_field_and_renders_partial(live_server) -> None:
-    server, base = live_server
-    status, body = _post_form(
-        base,
-        "/section/ground_grid",
-        {"enabled": "on", "visible": "on", "z_offset": "-0.75", "vertices": json.dumps(_GG_SQUARE)},
-    )
-    assert status == 200
-    assert 'id="ground-grid-section"' in body
-    gg = load_config(server.config_path).ground_grid
-    assert (gg.enabled, gg.visible, gg.z_offset, gg.vertices) == (True, True, -0.75, _GG_SQUARE)
-
-
-def test_ground_grid_post_unticked_boxes_turn_off(live_server) -> None:
-    server, base = live_server
-    _post_form(base, "/section/ground_grid", {"enabled": "on", "visible": "on"})
-    status, _ = _post_form(base, "/section/ground_grid", {"z_offset": "0"})
-    assert status == 200
-    gg = load_config(server.config_path).ground_grid
-    assert (gg.enabled, gg.visible) == (False, False)
-
-
-@pytest.mark.parametrize("bad", ["not json", "null", "5", '"text"', '{"x": 1}'])
-def test_ground_grid_post_malformed_vertices_keep_the_polygon(live_server, bad: str) -> None:
-    server, base = live_server
-    _post_form(base, "/section/ground_grid", {"vertices": json.dumps(_GG_SQUARE)})
-    status, _ = _post_form(base, "/section/ground_grid", {"vertices": bad})
-    assert status == 200
-    assert load_config(server.config_path).ground_grid.vertices == _GG_SQUARE
-
-
-def test_ground_grid_post_drops_bad_corners_and_caps_the_count(live_server) -> None:
-    from openfollow.configuration import GROUND_GRID_MAX_VERTICES
-
-    server, base = live_server
-    corners = [[0, 0], ["x", 1], [1, "NaN"], [1, 0], [1, 1]] + [[i, 5] for i in range(GROUND_GRID_MAX_VERTICES)]
-    status, _ = _post_form(base, "/section/ground_grid", {"vertices": json.dumps(corners)})
-    assert status == 200
-    saved = load_config(server.config_path).ground_grid.vertices
-    assert saved[:3] == [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]
-    assert len(saved) == GROUND_GRID_MAX_VERTICES
-
-
-@pytest.mark.parametrize(("bad", "expected"), [("abc", -0.5), ("", -0.5), ("inf", 0.0), ("nan", 0.0)])
-def test_ground_grid_post_bad_height_never_stores_a_non_number(live_server, bad: str, expected: float) -> None:
-    server, base = live_server
-    _post_form(base, "/section/ground_grid", {"z_offset": "-0.5"})
-    status, _ = _post_form(base, "/section/ground_grid", {"z_offset": bad})
-    assert status == 200
-    assert load_config(server.config_path).ground_grid.z_offset == expected
-
-
-@pytest.mark.parametrize(("raw", "invalid"), [("-0.4", False), ("abc", True)])
-def test_ground_grid_height_blur_validation(live_server, raw: str, invalid: bool) -> None:
-    _, base = live_server
-    status, body = _get(base, f"/api/validate/ground_grid/z_offset?z_offset={urllib.parse.quote(raw)}")
-    assert status == 200
-    assert ("field-error-msg" in body) is invalid
-
-
-def test_ground_grid_broadcast_saves_the_polygon_locally(live_server) -> None:
-    server, base = live_server
-    status, body = _post_json(
-        base,
-        "/api/config/ground_grid/broadcast",
-        {"enabled": True, "visible": False, "z_offset": -1, "vertices": json.dumps(_GG_SQUARE)},
-    )
-    assert status == 200
-    assert body["local_updated"] is True
-    gg = load_config(server.config_path).ground_grid
-    assert (gg.enabled, gg.visible, gg.z_offset, gg.vertices) == (True, False, -1.0, _GG_SQUARE)
-
-
-def test_ground_grid_travels_through_export_and_import(live_server) -> None:
-    server, base = live_server
-    cfg = load_config(server.config_path)
-    cfg.ui.shown_features = ["ground_grid"]
-    save_config(cfg, server.config_path)
-    _post_form(base, "/section/ground_grid", {"enabled": "on", "z_offset": "-0.6", "vertices": json.dumps(_GG_SQUARE)})
-    with urllib.request.urlopen(f"{base}/api/config/export", timeout=5) as resp:
-        exported = json.loads(resp.read())
-    assert exported["ground_grid"]["vertices"] == _GG_SQUARE
-
-    _post_form(base, "/section/ground_grid", {"vertices": "[]", "z_offset": "0"})
-    status, _ = _post_raw_json(base, "/api/config/import", exported)
-    assert status == 200
-    gg = load_config(server.config_path).ground_grid
-    assert (gg.enabled, gg.z_offset, gg.vertices) == (True, -0.6, _GG_SQUARE)
-
-
-def test_ground_grid_section_belongs_to_its_feature_on_the_settings_page(live_server) -> None:
-    _, base = live_server
-    status, body = _get(base, "/")
-    assert status == 200
-    form_tag = re.search(r'<form id="ground-grid-section"[^>]*>', body)
-    assert form_tag is not None
-    assert 'data-feature="ground_grid"' in form_tag.group(0)
-    assert 'name="vertices"' in body
 
 
 # ---------------------------------------------------------------------------

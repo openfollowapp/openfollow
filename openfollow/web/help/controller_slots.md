@@ -12,7 +12,7 @@ Slots follow the **USB socket** each controller is plugged into, so the same cab
   - **Can't identify** – the controller cannot vibrate and has no light to drive; Identify only flashes its marker card.
 - **Connection** – the kind (`Gamepad` or `3D Mouse`), the slot's state and the socket (such as `on USB 2, port 1`, `on Bluetooth`, or `no stable port`), or **Pinned to …** for a pinned slot.
   - **Connected** – plugged in and driving the slot's marker.
-  - **Missing** – unplugged, dropped out, or its kind was switched off. Slot and marker stay put, so nobody else changes marker. The marker card turns red on the Operator Screen, and the status corner and Statistics panel name it.
+  - **Missing** – unplugged, dropped out, or its kind was switched off. Slot and marker stay put, so nobody else changes marker. The marker card turns red on the Operator Screen, and the status corner and Status & Diagnostics name it.
   - **Reserved** – a missing slot that was forgotten. It keeps its place in the numbering but drives no marker and raises no warning.
   - **Empty** – a free slot below a pinned one; the next controller plugged in takes it.
 - **Marker** – the marker this slot drives, by name and ID, with a dot in its colour. A blue **P** means the marker is parked: the controller stays connected but moves and resets nothing until the marker is unparked (Marker Control & Visibility). On a connected or missing slot it is a picker of the controlled markers; a lone controller shows **All markers**.

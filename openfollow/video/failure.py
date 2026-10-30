@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """How far a video connection got, and what stopped it.
 
 One module owns the enum and both text maps, so the five surfaces that render
-them - HUD, Statistics panel, Video Source section, ``/api/stats``, diagnostics
+them - HUD, Status & Diagnostics, Video Source section, ``/api/stats``, diagnostics
 bundle - cannot describe the same failure differently.
 """
 

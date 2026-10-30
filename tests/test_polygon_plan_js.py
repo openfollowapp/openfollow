@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """The shared top-down polygon plan (static/js/polygon-plan.js), run in node on a fake canvas."""
 
 from __future__ import annotations
@@ -191,3 +192,32 @@ class TestDragging:
             _plan(self._SQUARE, None) + "var h = plan.toScreen(2, 2); fire('mousedown', h[0], h[1]); out.d = plan.drag;"
         )
         assert out["d"] is None
+
+
+_SQUARE = [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)]
+_L_SHAPE = [(0.0, 0.0), (4.0, 0.0), (4.0, 2.0), (2.0, 2.0), (2.0, 4.0), (0.0, 4.0)]
+_SIGHT_LINES = [
+    ((2.0, 0.0, 0.0), (2.0, -10.0, 8.0), _SQUARE),
+    ((2.0, 4.0, 0.0), (2.0, -10.0, 8.0), _SQUARE),
+    ((4.0, 4.0, 0.5), (2.0, -10.0, 8.0), _SQUARE),
+    ((4.0, 4.0, 1.0), (2.0, -10.0, 8.0), _SQUARE),
+    ((2.0, 5.0, 0.0), (2.0, -10.0, 8.0), _SQUARE),
+    ((2.0, 9.0, 0.0), (2.0, -10.0, 8.0), _SQUARE),
+    ((2.0, 6.0, 0.5), (2.0, -10.0, 0.5), _SQUARE),
+    ((2.0, 6.0, 3.0), (2.0, -10.0, 3.0), _SQUARE),
+    ((2.0, 2.2, 0.0), (10.0, -2.0, 2.0), _L_SHAPE),
+    ((2.0, 3.5, 0.0), (10.0, 6.0, 2.0), _L_SHAPE),
+    ((2.0, 2.0, 0.5), (2.0, 2.0, 0.6), _SQUARE),
+]
+
+
+def test_a_zone_hides_the_same_points_from_the_camera_as_on_the_operator_screen() -> None:
+    from openfollow.zones.geometry import hidden_by_zone
+
+    out = _run(
+        f"var cases = {json.dumps(_SIGHT_LINES)};"
+        "out.hidden = cases.map(function (c) { return window.OpenFollow.hiddenByZone(c[0], c[1], c[2], 0, 1); });"
+    )
+    want = [hidden_by_zone(point, eye, verts, 0.0, 1.0) for point, eye, verts in _SIGHT_LINES]
+    assert out["hidden"] == want
+    assert True in want and False in want

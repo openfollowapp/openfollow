@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """On-device mode/overlay state machine: input routing, Settings menu, source
 selection, interface picker, source-type switcher, URL editor, field-choice
 picker, embedded browser, button-detection wizard, and startup video banner.

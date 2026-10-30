@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Tests for :mod:`openfollow.runtime.overlay_button_symbols`: HUD text with
 pad button symbols in it is measured and drawn with each symbol one em wide,
 on the baseline, in the colour the caller set."""

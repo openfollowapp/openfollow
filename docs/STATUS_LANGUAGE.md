@@ -87,7 +87,7 @@ opaque. Do not replace it with an alpha tint.
 
 One class per level: `.notice.error`, `.notice.warning` (caution), `.notice`
 (info), `.notice.success`. Fill, 1px border and icon from the level's tokens;
-radius 6px. The icon sits at the left: an off-white warning triangle for
+radius 3px. The icon sits at the left: an off-white warning triangle for
 error, an off-white circle with an "i" for caution and info, an off-white
 circle with a check for success.
 
@@ -102,15 +102,15 @@ sentence.
 
 The dialog and diagnostics errors, the Media Gallery error, the network
 result, the Detection progress and result, the camera latency progress and
-result, the Statistics warning and the NDI box are all one of these four.
+result, the Status & Diagnostics warnings and the NDI box are all one of these four.
 Do not add an inline-styled box.
 
 A box that a poll re-renders must not carry `role="alert"`: every swap inserts
 it again, and a screen reader announces it again. `hx-preserve` does not help,
 because htmx moves the preserved node out of the page and back in. Either the
 poll answers 204 while what it shows is unchanged (the 3D Mouse section), or
-the box has no role and an announcer outside the swap speaks it (Live
-Statistics, `web/live_alerts.py`).
+the box has no role and an announcer outside the swap speaks it (Status &
+Diagnostics, `web/live_alerts.py`).
 
 ### Status chips
 
@@ -129,7 +129,7 @@ chip, it never restyles one.
 ### Small row pills
 
 Free text inside a row, like the OSC binding fault pill's list of reasons:
-chip colours, radius 0.4rem, 0.7rem mixed-case text. A state word is a chip,
+chip colours, radius 0.2rem, 0.7rem mixed-case text. A state word is a chip,
 never a row pill. The footer's "Update available: v0.4.4" is one too, in the
 info chip colours.
 
@@ -153,7 +153,7 @@ everywhere it appears. It is square, not a pill: one letter, centred by the box.
 | Element | Look |
 |---|---|
 | The P toggle in Marker Control & Visibility (`.park-toggle`, a `<button aria-pressed>`) | Off: the neutral grey of the This Station toggle beside it. On: `--info-line` fill and border, off-white `--text`. Dimmed and inert unless the row is View & Control |
-| The P after a parked slot's marker in Controller Slots (`.park-badge`) | The info chip: `--info-chip` fill, 1px `--info-line` border, off-white text, radius 0.4rem |
+| The P after a parked slot's marker in Controller Slots (`.park-badge`) | The info chip: `--info-chip` fill, 1px `--info-line` border, off-white text, radius 0.2rem |
 | The P on a parked marker's card on the Operator Screen | `COLOR_INFO_FILL` and `COLOR_INFO_BORDER`, off-white text, `ROW_RADIUS`, right of the `C1` badge |
 
 ### OSC placeholder pills
@@ -293,7 +293,7 @@ red already means "stop or lose something", so they take the error red rather th
 a second, paler one. Only the control that makes the change is red: a dialog's
 confirm, or a control that acts at once. One that only opens the question is not
 destructive and keeps its normal style (**Import Configuration…**, **Restore
-Defaults** in the Configuration section).
+Defaults** in the Configuration Backup & Import section).
 
 | Control | Look |
 |---|---|
@@ -430,7 +430,7 @@ Support OpenFollow edge, so it is the same object on both:
 
 | Token / constant | Value | Use |
 |---|---|---|
-| `--support-border` / `COLOR_SUPPORT_BORDER` | `#ffbc00` at 60% | 1.5px dashed edge, 6px radius |
+| `--support-border` / `COLOR_SUPPORT_BORDER` | `#ffbc00` at 60% | 1.5px dashed edge; radius 3px on the web, `PANEL_RADIUS` on the Operator Screen |
 | `--surface` | | Card fill |
 | `--accent` / `COLOR_ACCENT` | | The heart and the "Support OpenFollow" label only |
 | `--qr-light` / `--qr-dark` | `#ffffff` / `#000000` | The QR field and modules |
@@ -457,8 +457,8 @@ chip or in a level's colour.
 
 ## Corner radius
 
-- **Web boxes:** 6px, every level and every box.
-- **Chips and pills:** fully rounded. Small row pills: 0.4rem.
+- **Web boxes:** 3px, every level and every box.
+- **Chips and pills:** fully rounded. Small row pills: 0.2rem.
 - **HUD:** named per nesting level in `overlay_draw_style.py`:
   - `MODAL_RADIUS` (14) for the frame around full-screen menus such as Settings.
   - `PANEL_RADIUS` (6) for panels, cards, message cards and badge rows.
@@ -472,26 +472,21 @@ An inner corner is never rounder than its container.
 Text passes WCAG AA (4.5 : 1) against the background it actually sits on,
 within the known limits at the end of this list. Measure the rendered pixel,
 not the token: a translucent fill changes with whatever is under it. On the web
-UI, measure where an element can sit highest: a `.section` starts just under
-the header, where the page's gold glow is strongest, and the glow grows with
-the viewport's height. The figures are for viewports 768 to 2160 px tall and
-for a dialog (`--bg-soft`). The numbers that set the tokens:
+UI the figures are for a `.section` anywhere over the page's fade and for a
+dialog (`--bg-soft`). The numbers that set the tokens:
 
-- Red text passes only near full saturation. In a section on a viewport up to
-  1080 px tall, pure `#ff0000` reaches only 4.2 to 4.4 : 1, so the error text
-  is `#f44848` (4.7 to 4.9 : 1), not the dot's `#e04848` (4.1 to 4.3 : 1).
+- Red text passes only near full saturation. In a section, pure `#ff0000`
+  reaches only 4.3 to 4.5 : 1, so the error text is `#f44848` (4.8 to 5.0 : 1),
+  not the dot's `#e04848` (4.3 to 4.4 : 1).
 - Text on a red fill is off-white (15 : 1), not red (4.7 : 1).
-- Caution text `#ff6600` reads 5.4 to 6.0 : 1. Off-white reads at least
-  7.9 : 1 on the caution box and 7.5 : 1 on the caution chip. The caution box's
-  muted second line (`.notice-sub`) reads 4.8 : 1 at 1080 px tall, 4.6 : 1 at
-  2160 px and 4.9 : 1 in a dialog.
+- Caution text `#ff6600` reads 5.7 to 6.1 : 1. Off-white reads at least
+  8.5 : 1 on the caution box and 7.7 : 1 on the caution chip. The caution box's
+  muted second line (`.notice-sub`) reads 5.0 : 1 in a section and 4.9 : 1 in a
+  dialog.
 - Text on a solid caution fill is the dark `--bg-deep` (6.6 : 1); off-white
   reaches only 2.7 : 1 there.
-- Up to 1080 px tall, the tightest web pairing is error text at the top of a
-  section or in a dialog, 4.7 : 1; info text reads 4.9 : 1 there.
-- Known limit: on a viewport taller than about 1600 px, error text at the top
-  of the first section falls under AA, to 4.4 : 1 at 2160 px. Info text holds
-  there at 4.6 : 1.
+- The tightest web pairing is error text in a dialog, 4.7 : 1; info text reads
+  4.9 : 1 there.
 - On the HUD, a status row's 80% chip lets the video through. Off-white on the
   caution chip reads 8.2 : 1 over black and 5.8 : 1 over mid grey, but only
   4.0 : 1 over pure white video (success 4.3 : 1); error and info hold AA over

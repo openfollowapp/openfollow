@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """The web UI's status colours come from one token set, documented in docs/STATUS_LANGUAGE.md."""
 
 from __future__ import annotations
@@ -149,6 +150,14 @@ def test_the_status_rule_scan_finds_the_components() -> None:
         assert component in selectors
 
 
+def test_the_web_boxes_take_the_documented_radius() -> None:
+    radius = re.search(r"\*\*Web boxes:\*\* (\S+),", _DOC.read_text(encoding="utf-8"))
+    assert radius
+    boxes = [body for _, selector, body in _status_rules() if selector.startswith(".notice, .update-notice")]
+    assert len(boxes) == 1
+    assert f"border-radius: {radius.group(1)};" in boxes[0]
+
+
 def test_status_rules_take_their_colours_from_tokens() -> None:
     literal = []
     for name, selector, body in _status_rules():
@@ -185,7 +194,7 @@ def test_an_unpicked_midi_fader_is_a_caution_row_pill() -> None:
         "background: var(--caution-chip);",
         "border: 1px solid var(--caution-line);",
         "color: var(--text);",
-        "border-radius: 0.4rem;",
+        "border-radius: 0.2rem;",
         "font-size: 0.7rem;",
     ):
         assert declaration in body

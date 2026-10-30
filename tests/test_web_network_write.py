@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Web write path for Pi network settings.
 
 Drives the editable network form + apply/renew endpoints end-to-end against
@@ -1364,7 +1366,7 @@ def test_every_network_banner_kind_is_drawn_as_a_box() -> None:
     assert kinds == {"error", "ok", "info"}
     css = (web / "templates" / "base.tpl").read_text(encoding="utf-8")
     rules = re.findall(r"([^{}]+)\{([^{}]*)\}", css)
-    box = next(sel for sel, body in rules if "background: var(--info-fill)" in body and "border-radius: 6px" in body)
+    box = next(sel for sel, body in rules if "background: var(--info-fill)" in body and ".notice," in sel)
     for kind in kinds:
         assert f".network-banner.network-banner-{kind}" in box
 

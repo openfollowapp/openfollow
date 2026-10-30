@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Which slot each controller occupies, held for the whole session.
 
 Slots are seeded in port order once the controllers attached at startup have

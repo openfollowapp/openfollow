@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Waiting for the button press that names the controller to pin to a slot.
 
 Pure logic over what the handlers report each frame: pads as the raw buttons

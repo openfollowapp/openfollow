@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """``packaging/debian/apply-update.sh`` run for real against stub ``apt-get`` /
 ``systemctl`` commands, so what it asks apt to do is checked, not just how it
 is launched."""

@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Unit-level coverage for pure helpers in :mod:`openfollow.web.routes`.
 
 Complements :mod:`tests.test_web_helpers` (the large happy-path
@@ -514,7 +516,6 @@ class TestApplyImportData:
         from openfollow.configuration import (
             FEATURE_KEYS,
             DetectionConfig,
-            GroundGridConfig,
             PathConfig,
             PathsConfig,
             UiConfig,
@@ -523,7 +524,6 @@ class TestApplyImportData:
         return AppConfig(
             ui=UiConfig(shown_features=list(FEATURE_KEYS)),
             detection=DetectionConfig(enabled=True),
-            ground_grid=GroundGridConfig(enabled=True),
             paths=PathsConfig(paths=[PathConfig(name="cross", active=True), PathConfig(name="loop", active=True)]),
         )
 
@@ -539,7 +539,6 @@ class TestApplyImportData:
         out = _apply_import_data(self._experimental_station(), data)
         assert [p.active for p in out.paths.paths] == [True, True]
         assert out.detection.enabled is True
-        assert out.ground_grid.enabled is True
 
     def test_an_import_without_paths_keeps_this_station_s(self) -> None:
         from openfollow.configuration import PathConfig, PathsConfig

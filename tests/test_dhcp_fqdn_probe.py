@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Checks for scripts/hw_validation/dhcp_fqdn_probe.py: the frame parsing and the verdict
 the station FQDN's wire check rests on."""
 

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """The active paths as one network: where they cross, and how a locked marker moves through it.
 
 Two paths cross where they meet in plan at the same height, and a path whose

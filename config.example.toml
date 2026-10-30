@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 # Example OpenFollow config with default values for every setting.
 video_source_type = "testpattern"
 ndi_source_name = ""
@@ -64,14 +66,6 @@ z_offset = 0.0
 origin_visible = false
 origin_length = 1.0
 origin_thickness = 3
-
-# Experimental: a second floor, one polygon at its own absolute Z. A marker
-# inside it draws its Z line, ground circle and cone base at z_offset.
-[ground_grid]
-enabled = false
-visible = true
-z_offset = 0.0
-vertices = []
 
 [marker]
 min_speed = 0.1
@@ -299,6 +293,7 @@ source_iface = ""  # interface to send from; empty follows psn_source_iface
 [trigger_zones]
 enabled = true
 show_overlay = true
+highlight_occupied = true
 eval_fps = 10
 debounce_ms = 200
 hysteresis = 0.05
@@ -312,6 +307,6 @@ unit_system = "metric"
 
 # Features this station uses (General tab, Features). One that is left out is
 # hidden in the web UI and does not run; its settings are kept. Also:
-# "lens_suggestions", "detection", "rttrpm", "paths", "ground_grid",
-# "touch_remote" (experimental).
+# "lens_suggestions", "detection", "rttrpm", "paths", "touch_remote",
+# "zone_heights" (experimental).
 shown_features = ["zones", "midi", "psn_input"]

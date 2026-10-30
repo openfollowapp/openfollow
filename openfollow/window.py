@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """GTK 3 window abstraction for GStreamer native-sink mode.
 
 ``GtkNativeSinkWindow`` wraps a GTK overlay hosting the gtksink video

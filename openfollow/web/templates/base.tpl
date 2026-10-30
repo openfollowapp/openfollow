@@ -32,6 +32,8 @@
  <script src="/assets/js/binding-steal.js?v={{_asset_v}}"></script>
  <script src="/assets/js/polygon-plan.js?v={{_asset_v}}"></script>
  <script src="/assets/js/picture-view.js?v={{_asset_v}}"></script>
+ <script src="/assets/js/camera-model.js?v={{_asset_v}}"></script>
+ <script src="/assets/js/picture-polygon.js?v={{_asset_v}}"></script>
  <script src="/assets/js/poll-gate.js?v={{_asset_v}}"></script>
  <style>
  :root {
@@ -117,9 +119,7 @@
  identical on every section regardless of length. It sits at the top of
  the page and scrolls away; the matching base colour fills below it. */
  background-color: #06140d;
- background-image:
- radial-gradient(ellipse 90% 50% at 50% -5%, rgba(255, 188, 0, 0.12), transparent 65%),
- linear-gradient(180deg, var(--bg-deep) 0%, var(--bg-base) 65%, #06140d 100%);
+ background-image: linear-gradient(180deg, var(--bg-deep) 0%, var(--bg-base) 65%, #06140d 100%);
  background-repeat: no-repeat;
  background-position: top center;
  background-size: 100% 100vh;
@@ -139,7 +139,7 @@
  }
  .hero-logo-link {
  display: inline-block;
- border-radius: 0.6rem;
+ border-radius: 0.3rem;
  transition: opacity 0.15s ease;
  }
  .hero-logo-link:hover { opacity: 0.85; }
@@ -175,28 +175,18 @@
  body, .container, .help-drawer, .help-more > summary::after { transition: none; }
  }
  .hero-panel {
- position: relative;
+ display: flex;
+ flex-wrap: wrap;
+ justify-content: space-between;
+ align-items: flex-start;
+ gap: 0.5rem 1rem;
  margin-bottom: 1rem;
  padding: 1.4rem 1.5rem 1.5rem;
- border-radius: 1.2rem;
- border: 1px solid var(--border-soft);
- background: linear-gradient(180deg, rgba(255, 255, 255, 0.045) 0%, rgba(255, 255, 255, 0.02) 100%);
- overflow: hidden;
- }
- .hero-panel::before {
- content: "";
- position: absolute;
- inset: 0;
- pointer-events: none;
- background-image: radial-gradient(circle, rgba(255, 188, 0, 0.08) 1px, transparent 1px);
- background-size: 32px 32px;
- mask-image: radial-gradient(ellipse 90% 85% at 50% 18%, black 25%, transparent 78%);
- -webkit-mask-image: radial-gradient(ellipse 90% 85% at 50% 18%, black 25%, transparent 78%);
  }
  .section {
  margin-bottom: 1rem;
  padding: 1.2rem;
- border-radius: 1.1rem;
+ border-radius: 0.55rem;
  border: 1px solid var(--border-soft);
  background: var(--surface);
  backdrop-filter: blur(2px);
@@ -353,7 +343,7 @@
  .help-drawer-body code {
  background: rgba(255, 255, 255, 0.08);
  padding: 0.1em 0.35em;
- border-radius: 4px;
+ border-radius: 2px;
  font-size: 0.85em;
  }
  .help-drawer-body a { color: var(--accent); }
@@ -445,34 +435,69 @@
  /* Assisted-tracking sub-section: divider above it, hidden in Fully Automatic mode. */
  .detection-cards .group--assist { margin-top: 0.9rem; padding-top: 0.95rem; border-top: 1px solid rgba(255, 255, 255, 0.06); }
  /* Segmented two-option toggle (Tracking Mode): equal-width cells. */
- .seg-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; max-width: 30rem; padding: 4px; border: 1px solid var(--border-soft); border-radius: 0.7rem; background: rgba(0, 0, 0, 0.22); }
+ .seg-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; max-width: 30rem; padding: 4px; border: 1px solid var(--border-soft); border-radius: 0.35rem; background: rgba(0, 0, 0, 0.22); }
  .seg-toggle--3 { grid-template-columns: repeat(3, 1fr); max-width: 36rem; }
  /* A plan editor's camera view: the snapshot with an SVG in picture pixels over it. */
  .plan-view-switch { margin-bottom: 0.6rem; }
- .pv-stage { position: relative; width: 100%; line-height: 0; border-radius: 6px; overflow: hidden; background: var(--bg-base); }
+ .pv-stage { position: relative; width: 100%; line-height: 0; border-radius: 3px; overflow: hidden; background: var(--bg-base); }
  .pv-stage img { display: block; width: 100%; height: auto; }
- .pv-stage svg { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
- .pv-nofeed { padding: 24px 12px; border: 1px dashed var(--border); border-radius: 6px; text-align: center; }
+ .pv-stage > svg { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
+ .pv-stage > svg:focus { outline: none; }
+ .pv-stage > svg:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+ .pv-nofeed { padding: 24px 12px; border: 1px dashed var(--border); border-radius: 3px; text-align: center; }
  .pv-zone { stroke-width: 2; fill-opacity: 0.18; cursor: pointer; }
  .pv-zone-selected { stroke-width: 3; }
+ .pv-zone-floor { fill: none; stroke-width: 1.5; stroke-opacity: 0.7; pointer-events: none; }
+ .pv-zone-post { stroke-width: 2; stroke-dasharray: 2 4; stroke-linecap: round; }
+ .pv-zone-floor.pv-behind { stroke-opacity: 0.18; }
  .pv-grid-line { stroke: var(--muted); stroke-width: 1; fill: none; }
  .pv-outline { stroke: var(--accent); stroke-width: 2.5; fill: none; }
  .pv-handle { fill: var(--text); stroke: var(--accent); stroke-width: 2; }
+ /* Named points in the Setup Wizard's pin style, the band an edge is dragged from and the loupe. */
+ .pv-pin { cursor: grab; }
+ .pv-pin:active { cursor: grabbing; }
+ .pv-pin-dot { fill: var(--accent); fill-opacity: 0.25; stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; }
+ .pv-pin.active .pv-pin-dot { stroke-width: 3.5; fill-opacity: 0.5; }
+ .pv-pin-ring { fill: none; stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; }
+ .pv-pin-cross { stroke: var(--text); stroke-width: 1.5; vector-effect: non-scaling-stroke; pointer-events: none; }
+ .pv-pin-label { fill: var(--text); stroke: var(--bg-deep); font-weight: 700; paint-order: stroke; pointer-events: none; }
+ .pv-edge { fill: none; stroke: transparent; pointer-events: stroke; cursor: copy; stroke-linecap: round; stroke-linejoin: round; }
+ .pv-ghost { fill: none; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; pointer-events: none; }
+ .pv-loupe { position: absolute; z-index: 3; width: 120px; height: 120px; border-radius: 50%; overflow: hidden; border: 2px solid var(--accent); background: var(--bg-deep); pointer-events: none; }
+ .pv-loupe-img { position: absolute; inset: 0; background-repeat: no-repeat; }
+ .pv-loupe svg { position: absolute; inset: 0; width: 100%; height: 100%; fill: none; }
+ .pv-loupe-shade { stroke: var(--bg-deep); stroke-width: 4; }
+ .pv-loupe-cross { stroke: var(--accent); stroke-width: 1.5; }
+ .pv-readout { position: absolute; z-index: 3; padding: 0.15rem 0.5rem; border-radius: 999px; background: color-mix(in srgb, var(--bg-deep) 85%, transparent); border: 1px solid var(--border); color: var(--text); font-size: 0.78rem; font-weight: 600; line-height: 1.4; white-space: nowrap; font-variant-numeric: tabular-nums; pointer-events: none; }
+ .pv-loupe[hidden], .pv-readout[hidden] { display: none; }
+ /* The picture full screen, with its one-line bar, as in the Setup Wizard. */
+ .pv-fs-btn { position: absolute; top: 8px; right: 8px; z-index: 4; width: 2.2rem; height: 2.2rem; padding: 0; display: flex; align-items: center; justify-content: center; border-radius: 0.25rem; background: color-mix(in srgb, var(--bg-deep) 72%, transparent); border: 1px solid var(--border); color: var(--text); }
+ .pv-fs-btn:hover, .pv-fs-btn:focus-visible { background: var(--bg-soft); border-color: var(--accent); transform: none; }
+ .pv-fs-btn svg { width: 1.15rem; height: 1.15rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+ .pv-fs-shell { position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column; background: var(--bg-deep); }
+ .pv-fs-shell[hidden], .pv-fs-btn[hidden] { display: none; }
+ .pv-fs-bar { display: flex; align-items: center; gap: 0.75rem; min-height: 2.6rem; padding: 0.35rem 0.6rem 0.35rem 0.9rem; background: var(--bg-soft); border-bottom: 1px solid var(--border); font-size: 0.86rem; line-height: 1.3; }
+ .pv-fs-title { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+ .pv-fs-status { flex: 1; min-width: 0; color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+ .pv-fs-actions { display: flex; gap: 0.4rem; }
+ .pv-fs-stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+ .pv-fs-stage .pv-stage { border-radius: 0; flex: none; }
+ @media (max-width: 640px) { .pv-fs-title { display: none; } }
  /* An option is a <label>: it reads in normal case, not the form label's caps. */
  .seg-toggle .seg-option { margin: 0; display: flex; cursor: pointer; text-transform: none; letter-spacing: normal; }
  .seg-toggle .seg-option input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
- .seg-toggle .seg-option > span { flex: 1; display: flex; flex-direction: column; gap: 1px; padding: 0.4rem 0.95rem; border-radius: 0.5rem; color: var(--muted); text-align: center; transition: background 0.12s, color 0.12s; }
+ .seg-toggle .seg-option > span { flex: 1; display: flex; flex-direction: column; gap: 1px; padding: 0.4rem 0.95rem; border-radius: 0.25rem; color: var(--muted); text-align: center; transition: background 0.12s, color 0.12s; }
  .seg-toggle .seg-option > span strong { font-size: 0.9rem; font-weight: 700; }
  .seg-toggle .seg-option > span small { font-size: 0.72rem; font-weight: 400; opacity: 0.8; }
  .seg-toggle .seg-option input:checked + span { background: var(--accent); color: #1a1205; }
  .seg-toggle .seg-option input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
  /* Row-sized: one line, no sub-label, as wide as its labels. */
- .seg-toggle--compact { display: inline-grid; grid-template-columns: repeat(3, auto); gap: 2px; max-width: none; padding: 2px; border-radius: 0.55rem; }
- .seg-toggle--compact .seg-option > span { padding: 0.22rem 0.6rem; border-radius: 0.4rem; font-size: var(--btn-font-sm); font-weight: 700; white-space: nowrap; }
+ .seg-toggle--compact { display: inline-grid; grid-template-columns: repeat(3, auto); gap: 2px; max-width: none; padding: 2px; border-radius: 0.275rem; }
+ .seg-toggle--compact .seg-option > span { padding: 0.22rem 0.6rem; border-radius: 0.2rem; font-size: var(--btn-font-sm); font-weight: 700; white-space: nowrap; }
  .tier-list { display: flex; flex-direction: column; gap: 6px; max-width: 32rem; }
  .tier-option { margin: 0; display: flex; cursor: pointer; }
  .tier-option input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
- .tier-option > span { flex: 1; display: flex; flex-direction: column; gap: 1px; padding: 0.5rem 0.85rem; border: 1px solid var(--border-soft); border-radius: 0.55rem; background: rgba(0, 0, 0, 0.18); color: var(--muted); transition: background 0.12s, color 0.12s, border-color 0.12s; }
+ .tier-option > span { flex: 1; display: flex; flex-direction: column; gap: 1px; padding: 0.5rem 0.85rem; border: 1px solid var(--border-soft); border-radius: 0.275rem; background: rgba(0, 0, 0, 0.18); color: var(--muted); transition: background 0.12s, color 0.12s, border-color 0.12s; }
  .tier-option > span strong { font-size: 0.9rem; font-weight: 700; }
  .tier-option > span small { font-size: 0.74rem; font-weight: 400; opacity: 0.82; }
  .tier-option input:checked + span { background: var(--accent); color: #1a1205; border-color: var(--accent); }
@@ -482,11 +507,39 @@
  .stats-columns {
  display: grid;
  gap: 0.78rem;
- grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+ grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
+ }
+ /* Export, Import and Restore Defaults in the box grid: side by side where they fit, each its own height. */
+ .cfg-columns { align-items: start; margin-bottom: 1rem; }
+ .cfg-columns .actions { margin: 0; }
+ /* "Importing <file name>" wraps inside its box. */
+ .cfg-columns .actions button { max-width: 100%; overflow-wrap: anywhere; }
+ /* The station list is a box like the others, full width above them; the box is its frame. */
+ .stations-box { margin-bottom: 0.78rem; }
+ .stations-box .peers-list { background: none; border: 0; padding: 0; }
+ .stations-box .peer-item:last-child { margin-bottom: 0; }
+ /* Bento: This Station, the tallest box, takes the right column; with the Person
+ Detection feature on, Station network discovery runs full width with its rows in three columns. */
+ .diag-bento {
+ grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+ grid-template-areas: "video station" "network station";
+ }
+ body.feature-detection .diag-bento { grid-template-areas: "video station" "detection station" "network network"; }
+ .diag-video { grid-area: video; }
+ .diag-station { grid-area: station; }
+ .diag-network { grid-area: network; }
+ .diag-detection { grid-area: detection; }
+ @media (min-width: 681px) {
+ body.feature-detection .diag-bento .diag-network .metric-list {
+ display: grid;
+ grid-template-columns: repeat(3, minmax(0, 1fr));
+ column-gap: 1.5rem;
+ }
+ body.feature-detection .diag-bento .diag-network .metric-row:nth-last-child(-n+3) { border-bottom: 0; padding-bottom: 0; }
  }
  .stat-panel {
  border: 1px solid rgba(255, 255, 255, 0.1);
- border-radius: 0.95rem;
+ border-radius: 0.475rem;
  background: rgba(255, 255, 255, 0.02);
  padding: 0.84rem 0.9rem;
  }
@@ -614,7 +667,7 @@
  .video-preview {
  width: 100%;
  max-width: 640px;
- border-radius: 0.75rem;
+ border-radius: 0.375rem;
  border: 1px solid var(--border);
  background: var(--bg-deep);
  display: none;
@@ -638,7 +691,7 @@
  .gallery-tile {
  position: relative;
  border: 2px solid transparent;
- border-radius: 0.5rem;
+ border-radius: 0.25rem;
  overflow: hidden;
  }
  .gallery-tile.selected { border-color: var(--accent); }
@@ -686,13 +739,6 @@
  cursor: pointer;
  }
  .gallery-del { color: var(--error-text); }
- .top-bar-actions {
- display: flex;
- justify-content: flex-end;
- gap: 0.5rem;
- margin-bottom: 0.5rem;
- }
- .top-bar-actions form { margin: 0; }
  .station-name-pill {
  display: inline-block;
  padding: 0.18rem 0.6rem;
@@ -704,16 +750,13 @@
  letter-spacing: 0.02em;
  margin-bottom: 0.5rem;
  }
- /* When pinned in the hero-panel's top-right corner: absolute pos,
- drop the trailing margin, and bump the z-index so the panel's
- ::before dot-grid doesn't sit on top of the text. */
- .hero-station-pill {
- position: absolute;
- top: 0.9rem;
- right: 1.1rem;
- margin-bottom: 0;
- z-index: 1;
+ .hero-actions {
+ display: flex;
+ align-items: center;
+ gap: 0.5rem;
  }
+ .hero-actions form { margin: 0; }
+ .hero-station-pill { margin-bottom: 0; }
  .wizard-launch {
  display: flex;
  align-items: center;
@@ -757,7 +800,7 @@
  }
  input, select {
  width: 100%;
- border-radius: 0.75rem;
+ border-radius: 0.375rem;
  border: 1px solid var(--border);
  background: rgba(255, 255, 255, 0.03);
  color: var(--text);
@@ -901,7 +944,7 @@
  gap: 0.2rem;
  padding: 0.5rem 0.7rem;
  border: 1px dashed var(--border);
- border-radius: 10px;
+ border-radius: 5px;
  background: var(--surface);
  }
  .ia-pointer-value { font-size: 0.86rem; }
@@ -922,7 +965,7 @@
     Same shape as an OSC transmitter row - the summary reads as a status
     line, the body is the form. */
  .net-iface-list { margin-bottom: 0.6rem; }
- .net-iface-row { margin-bottom: 0.6rem; border: 1px solid var(--border-soft); border-radius: 0.6rem; padding: 0.5rem 0.8rem; background: var(--surface); }
+ .net-iface-row { margin-bottom: 0.6rem; border: 1px solid var(--border-soft); border-radius: 0.3rem; padding: 0.5rem 0.8rem; background: var(--surface); }
  .net-iface-summary { display: flex; gap: 0.6rem; align-items: center; cursor: pointer; padding-bottom: 0.2rem; }
  .net-iface-row[open] { padding-bottom: 0.9rem; }
  .net-iface-row[open] > .net-iface-form { margin-top: 0.9rem; }
@@ -944,7 +987,7 @@
  .net-iface-addr { color: var(--muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; margin-left: auto; white-space: nowrap; }
  /* How the address was come by: a neutral row pill, in the Controller Slots state's grey. */
  .net-iface-method-badge {
- flex: none; border-radius: 0.4rem; --pill-pad-y: 0.1rem; padding-inline: 0.45rem;
+ flex: none; border-radius: 0.2rem; --pill-pad-y: 0.1rem; padding-inline: 0.45rem;
  font-size: 0.7rem; font-weight: 500; white-space: nowrap;
  color: rgba(247, 245, 233, 0.88); background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.18);
  }
@@ -1058,7 +1101,7 @@
  padding: 1rem 0.5rem;
  background: rgba(0, 0, 0, 0.18);
  border: 1px solid rgba(255, 255, 255, 0.08);
- border-radius: 10px;
+ border-radius: 5px;
  margin-bottom: 1rem;
  }
  .midi-fader-strip {
@@ -1072,7 +1115,7 @@
  rules having higher specificity for focus feedback. */
  background: var(--fader-tint, transparent);
  border: 1px solid transparent;
- border-radius: 8px;
+ border-radius: 4px;
  color: var(--text);
  cursor: pointer;
  font: inherit;
@@ -1116,7 +1159,7 @@
  left: -8px;
  background: var(--text, #f7f5e9);
  border: 1px solid var(--accent, #ffbc00);
- border-radius: 2px;
+ border-radius: 1px;
  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
  transform: translateY(50%);
  transition: bottom 0.08s linear;
@@ -1141,7 +1184,7 @@
  .midi-fader-strip-not-picked-up {
  display: block; width: fit-content; max-width: 100%; margin: 2px auto 0;
  /* 0.35rem, not 0.45rem: at 0.45rem "picked" breaks mid-word in the 50.8 px strip in Inter and Noto. */
- border-radius: 0.4rem; --pill-pad-y: 0.1rem; padding-inline: 0.35rem; font-size: 0.7rem; font-weight: 500;
+ border-radius: 0.2rem; --pill-pad-y: 0.1rem; padding-inline: 0.35rem; font-size: 0.7rem; font-weight: 500;
  line-height: 1.2; overflow-wrap: anywhere;
  color: var(--text); background: var(--caution-chip); border: 1px solid var(--caution-line);
  }
@@ -1253,7 +1296,7 @@
  .on-device-footer {
  margin-top: 18px;
  padding: 10px 14px;
- border-radius: 0.8rem;
+ border-radius: 0.4rem;
  border: 1px solid rgba(255, 255, 255, 0.08);
  background: rgba(255, 255, 255, 0.04);
  color: var(--muted);
@@ -1265,7 +1308,7 @@
  .on-device-footer kbd {
  display: inline-block;
  padding: 1px 8px;
- border-radius: 0.4rem;
+ border-radius: 0.2rem;
  border: 1px solid rgba(255, 255, 255, 0.18);
  background: rgba(255, 255, 255, 0.08);
  color: var(--text);
@@ -1283,7 +1326,6 @@
  .license-footer {
  margin-top: 18px;
  padding: 12px 4px 4px;
- border-top: 1px solid var(--border-soft);
  color: var(--muted);
  font-size: 0.78rem;
  line-height: 1.5;
@@ -1303,7 +1345,7 @@
  }
  .license-footer .whats-new-link:hover { transform: none; filter: none; text-decoration: underline; }
  .license-footer .update-flag {
- display: inline-block; margin-left: 0.4rem; vertical-align: 1px; border-radius: 0.4rem;
+ display: inline-block; margin-left: 0.4rem; vertical-align: 1px; border-radius: 0.2rem;
  --pill-pad-y: 0.1rem; padding-inline: 0.45rem; font-size: 0.7rem; font-weight: 500;
  color: var(--text); background: var(--info-chip); border: 1px solid var(--info-line);
  }
@@ -1322,7 +1364,7 @@
  .peers-list {
  background: rgba(255, 255, 255, 0.03);
  border: 1px solid rgba(255, 255, 255, 0.06);
- border-radius: 0.8rem;
+ border-radius: 0.4rem;
  padding: 9px;
  }
  .peer-item {
@@ -1330,7 +1372,7 @@
  align-items: center;
  gap: 8px;
  padding: 8px 10px;
- border-radius: 0.65rem;
+ border-radius: 0.325rem;
  margin-bottom: 5px;
  background: rgba(255, 255, 255, 0.02);
  }
@@ -1371,7 +1413,7 @@
  .slot-row.slot-missing { background: var(--error-row); }
  /* Grey while the slot needs nothing, red when its controller is missing. */
  .slot-state {
- display: inline-block; margin-left: 0.4rem; border-radius: 0.4rem; --pill-pad-y: 0.1rem; padding-inline: 0.45rem;
+ display: inline-block; margin-left: 0.4rem; border-radius: 0.2rem; --pill-pad-y: 0.1rem; padding-inline: 0.45rem;
  font-size: 0.7rem; font-weight: 500; white-space: nowrap;
  color: rgba(247, 245, 233, 0.88); background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.18);
  }
@@ -1380,7 +1422,7 @@
  /* What the controller can't do: caution where it affects control, a plain fact otherwise. */
  .slot-notes { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 3px; }
  .slot-note {
- border-radius: 0.4rem; --pill-pad-y: 0.1rem; padding-inline: 0.45rem; font-size: 0.7rem; font-weight: 500; white-space: nowrap;
+ border-radius: 0.2rem; --pill-pad-y: 0.1rem; padding-inline: 0.45rem; font-size: 0.7rem; font-weight: 500; white-space: nowrap;
  color: var(--text); background: var(--caution-chip); border: 1px solid var(--caution-line);
  }
  .slot-note-fact { color: var(--muted); white-space: nowrap; }
@@ -1403,7 +1445,7 @@
  /* A parked marker: the info chip, square, as the P on its HUD card. */
  .park-badge {
  display: inline-flex; align-items: center; justify-content: center; flex: none; width: 1.1rem; height: 1.1rem;
- border-radius: 0.4rem; font-size: 0.7rem; font-weight: 700;
+ border-radius: 0.2rem; font-size: 0.7rem; font-weight: 700;
  color: var(--text); background: var(--info-chip); border: 1px solid var(--info-line);
  }
  .peer-item.offline .peer-status {
@@ -1425,7 +1467,7 @@
  .no-peers { color: var(--muted); padding: 14px; text-align: center; font-style: italic; }
  .ndi-row { align-items: flex-end; }
  /* A setting shown, not edited here: sized like an input beside it. */
- .value-box { display: block; border-radius: 0.75rem; border: 1px solid var(--border); background: var(--surface); padding: 0.62rem 0.72rem; font-size: 0.93rem; line-height: 1.25; }
+ .value-box { display: block; border-radius: 0.375rem; border: 1px solid var(--border); background: var(--surface); padding: 0.62rem 0.72rem; font-size: 0.93rem; line-height: 1.25; }
  /* Camera Latency: the last result beside the button that opens the Measure dialog. */
  .latency-row { align-items: flex-end; }
  .latency-row .notice { margin: 0; }
@@ -1434,7 +1476,7 @@
  .latency-hazard { letter-spacing: 0.02em; }
  .modal-body ol { margin: 0 0 0.7rem; padding-left: 1.3rem; line-height: 1.45; }
  .modal-body .modal-note { color: var(--muted); font-size: 0.82rem; }
- .inset-panel { padding: 0.9rem; border-radius: 0.9rem; border: 1px solid var(--border); background: var(--surface); }
+ .inset-panel { padding: 0.9rem; border-radius: 0.45rem; border: 1px solid var(--border); background: var(--surface); }
  /* A block loaded between a fragment's rows: its parts and the row after it keep the row gap. */
  .camera-block { display: flex; flex-direction: column; gap: 0.72rem; margin-bottom: 0.72rem; }
  .camera-block > *, .camera-block > .notice { margin: 0; }
@@ -1471,7 +1513,7 @@
  .color-picker-popover {
  z-index: 1000;
  padding: 10px;
- border-radius: 10px;
+ border-radius: 5px;
  background: var(--bg-base);
  border: 1px solid var(--border);
  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
@@ -1535,7 +1577,7 @@
  background: var(--surface);
  color: var(--text);
  border: 1px solid var(--border);
- border-radius: 4px;
+ border-radius: 2px;
  font-family: ui-monospace, monospace;
  text-transform: uppercase;
  }
@@ -1575,7 +1617,7 @@
  gap: 0.25rem;
  margin-bottom: 1rem;
  padding: 0.35rem;
- border-radius: 1rem;
+ border-radius: 0.5rem;
  background: var(--surface);
  border: 1px solid var(--border-soft);
  overflow-x: auto;
@@ -1587,7 +1629,7 @@
  flex: 1;
  min-width: fit-content;
  padding: 0.55rem 1rem;
- border-radius: 0.75rem;
+ border-radius: 0.375rem;
  border: 1px solid transparent;
  background: transparent;
  color: var(--muted);
@@ -1616,7 +1658,7 @@
  display: flex;
  gap: 0.25rem;
  padding: 0.25rem;
- border-radius: 0.6rem;
+ border-radius: 0.3rem;
  background: rgba(255, 255, 255, 0.03);
  border: 1px solid var(--border-soft);
  margin-bottom: 0.6rem;
@@ -1624,7 +1666,7 @@
  .row-tab-btn {
  flex: 1;
  padding: 0.4rem 0.7rem;
- border-radius: 0.45rem;
+ border-radius: 0.225rem;
  border: 1px solid transparent;
  background: transparent;
  color: var(--muted);
@@ -1639,7 +1681,7 @@
  }
  .row-tab-panel { display: none; }
  .row-tab-panel.active { display: block; }
- .osc-binding-row, .osc-destination-row { margin-bottom: 0.6rem; border: 1px solid var(--border-soft); border-radius: 0.6rem; padding: 0.5rem 0.8rem; background: var(--surface); }
+ .osc-binding-row, .osc-destination-row { margin-bottom: 0.6rem; border: 1px solid var(--border-soft); border-radius: 0.3rem; padding: 0.5rem 0.8rem; background: var(--surface); }
  .osc-binding-summary, .osc-destination-summary { display: flex; gap: 0.6rem; align-items: center; cursor: pointer; padding-bottom: 0.2rem; }
  /* Breathing room between the summary and the editor body when the
  row is expanded (``<details open>``). When collapsed the
@@ -1673,13 +1715,13 @@
  .osc-binding-enabled-dot.on { width: 10px; height: 10px; border: 2px solid var(--success-mark-muted); background-color: var(--success-mark); }
  .osc-binding-enabled-dot.invalid { width: 8px; height: 8px; border: 3px solid var(--error-mark); background-color: var(--error-mark-muted); }
  .osc-binding-row.has-fault { border-color: var(--error-line); }
- .osc-binding-kind-badge, .osc-destination-proto-badge { font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 0.4rem; background: rgba(255,255,255,0.05); color: var(--muted); }
- .osc-binding-marker-badge { font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 0.4rem; background: rgba(255,255,255,0.05); color: var(--muted); }
+ .osc-binding-kind-badge, .osc-destination-proto-badge { font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 0.2rem; background: rgba(255,255,255,0.05); color: var(--muted); }
+ .osc-binding-marker-badge { font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 0.2rem; background: rgba(255,255,255,0.05); color: var(--muted); }
  /* Why a row can never fire, on its collapsed summary. Capped at three
     entries by the renderer; the full list rides in a sibling
     visually-hidden span so assistive tech never gets the truncation. */
  .osc-binding-fault {
- font-size: 0.7rem; --pill-pad-y: 0.1rem; padding-inline: 0.45rem; border-radius: 0.4rem;
+ font-size: 0.7rem; --pill-pad-y: 0.1rem; padding-inline: 0.45rem; border-radius: 0.2rem;
  background: var(--error-fill); color: var(--text);
  border: 1px solid var(--error-border);
  font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -1687,7 +1729,7 @@
  .osc-binding-fault-more { color: var(--muted); font-size: 0.7rem; flex: none; white-space: nowrap; }
  /* The trigger's input also drives a gamepad or keyboard action. */
  .osc-binding-caution {
- font-size: 0.7rem; --pill-pad-y: 0.1rem; padding-inline: 0.45rem; border-radius: 0.4rem;
+ font-size: 0.7rem; --pill-pad-y: 0.1rem; padding-inline: 0.45rem; border-radius: 0.2rem;
  background: var(--caution-chip); color: var(--text);
  border: 1px solid var(--caution-line);
  font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -1700,7 +1742,7 @@
     clear gap before the next transmitter so they don't touch. */
  /* Indented by the drag handle and one summary gap, so the dots and names line up with the row above. */
  .osc-binding-nested { display: flex; flex-direction: column; gap: 0.4rem; margin: -0.2rem 0 0.7rem 1.6rem; }
- .osc-binding-nested-row { display: flex; align-items: center; gap: 0.6rem; font-size: 0.85rem; color: var(--muted); padding: 0.45rem 0.8rem; border: 1px solid var(--border-soft); border-radius: 0.5rem; background: rgba(255,255,255,0.02); }
+ .osc-binding-nested-row { display: flex; align-items: center; gap: 0.6rem; font-size: 0.85rem; color: var(--muted); padding: 0.45rem 0.8rem; border: 1px solid var(--border-soft); border-radius: 0.25rem; background: rgba(255,255,255,0.02); }
  /* The red dot alone marks an uncontrolled marker – no red border. */
  .osc-binding-nested-row.is-invalid { color: var(--error-text); }
  /* Destination collapsed summary: host:port sits right after the name; the
@@ -1755,7 +1797,7 @@
  font: inherit;
  font-size: 0.78rem;
  padding: 0.26rem 0.65rem;
- border-radius: 0.4rem;
+ border-radius: 0.2rem;
  cursor: pointer;
  white-space: nowrap;
  }
@@ -1808,7 +1850,7 @@
  font-family: ui-monospace, monospace;
  font-size: 0.78rem;
  padding: 0.1rem 0.45rem;
- border-radius: 0.35rem;
+ border-radius: 0.175rem;
  background: rgba(255, 255, 255, 0.05);
  border: 1px solid var(--border-soft);
  }
@@ -1821,7 +1863,7 @@
  background: rgba(0, 0, 0, 0.22);
  border: 1px solid var(--border-soft);
  padding: 0.45rem 0.55rem;
- border-radius: 0.4rem;
+ border-radius: 0.2rem;
  font-family: ui-monospace, monospace;
  font-size: 0.74rem;
  line-height: 1.35;
@@ -1866,7 +1908,7 @@
  font-family: ui-monospace, monospace;
  font-size: 0.78rem;
  padding: 0.25rem 0.45rem;
- border-radius: 0.35rem;
+ border-radius: 0.175rem;
  background: rgba(0, 0, 0, 0.18);
  }
  .diag-event-status {
@@ -1903,7 +1945,7 @@
  width: 100%;
  min-height: 2.4rem;
  padding: 0.45rem 0.6rem;
- border-radius: 0.45rem;
+ border-radius: 0.225rem;
  border: 1px solid var(--border-soft);
  background: var(--surface);
  color: var(--text);
@@ -1929,7 +1971,7 @@
  --pill-pad-y: 0.05rem;
  padding-inline: 0.4rem;
  margin: 0 0.1rem;
- border-radius: 0.35rem;
+ border-radius: 0.175rem;
  background: var(--success-fill);
  color: var(--success-text);
  border: 1px solid var(--success-border);
@@ -1972,7 +2014,7 @@
  font-family: ui-monospace, monospace;
  font-size: 0.78rem;
  padding: 0.18rem 0.45rem;
- border-radius: 0.35rem;
+ border-radius: 0.175rem;
  border: 1px solid var(--border-soft);
  background: rgba(255, 255, 255, 0.04);
  color: var(--accent);
@@ -2003,6 +2045,8 @@
  % end
  @media (max-width: 680px) {
  body { padding: 12px 0; }
+ .diag-bento { grid-template-columns: minmax(0, 1fr); grid-template-areas: "video" "station" "network"; }
+ body.feature-detection .diag-bento { grid-template-areas: "video" "station" "network" "detection"; }
  .hero-panel { padding: 1rem; margin-bottom: 0.8rem; }
  .section { padding: 1rem; }
  .field, .field.wide, .checkbox-field { min-width: 100%; }
@@ -2111,7 +2155,7 @@
  flex-direction: column;
  background: var(--bg-soft);
  border: 1px solid var(--border);
- border-radius: 1rem;
+ border-radius: 0.5rem;
  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
  overflow: hidden;
  }
@@ -2159,7 +2203,7 @@
  .modal-body input[type="text"] {
  width: 100%;
  padding: 0.55rem 0.7rem;
- border-radius: 0.6rem;
+ border-radius: 0.3rem;
  border: 1px solid var(--border);
  background: var(--bg-deep);
  color: var(--text);
@@ -2186,7 +2230,7 @@
  gap: 1rem;
  padding: 1rem;
  border: 1.5px dashed var(--support-border);
- border-radius: 6px;
+ border-radius: 3px;
  background: var(--surface);
  }
  .support-card .qr { flex: none; width: 123px; height: 123px; }
@@ -2258,7 +2302,7 @@
  align-items: center;
  gap: 0.6rem;
  padding: 0.6rem 0.75rem;
- border-radius: 0.55rem;
+ border-radius: 0.275rem;
  border: 1px solid var(--border-soft);
  background: rgba(255, 255, 255, 0.03);
  }
@@ -2298,7 +2342,7 @@
  font: inherit;
  font-size: 0.82rem;
  padding: 0.25rem 0.55rem;
- border-radius: 0.4rem;
+ border-radius: 0.2rem;
  cursor: pointer;
  }
  .modal-list-item-apply:hover { background: rgba(255, 188, 0, 0.16); }
@@ -2321,7 +2365,7 @@
  margin: 0 0 12px;
  padding: 10px 12px 10px 38px;
  border: 1px solid var(--info-border);
- border-radius: 6px;
+ border-radius: 3px;
  background: var(--info-fill);
  color: var(--text);
  font-size: 0.9rem;
@@ -2358,7 +2402,7 @@
  /* Destructive controls: the error text, and the fault-row tint under the pointer. */
  .btn-danger:hover:not(:disabled), button.danger:hover:not(:disabled), .modal-list-item-delete:hover,
  .gallery-del:hover { background: var(--error-row); }
- .notice pre { margin: 6px 0 0; padding: 6px 8px; background: rgba(0, 0, 0, 0.25); border-radius: 4px; font-size: 0.75rem;
+ .notice pre { margin: 6px 0 0; padding: 6px 8px; background: rgba(0, 0, 0, 0.25); border-radius: 2px; font-size: 0.75rem;
  font-weight: 400; max-height: 8em; overflow: auto; white-space: pre-wrap; color: #cfd6df; }
  /* Pills set --pill-pad-y and their own inline padding. Trimming the line box to cap
  height and baseline centres the label whatever the fallback font's ascent. */
@@ -2385,7 +2429,7 @@
  .remote-card {
  position: fixed; right: 1rem; bottom: calc(env(safe-area-inset-bottom, 0px) + 5.25rem); z-index: 61;
  width: min(340px, calc(100vw - 2rem)); box-sizing: border-box; max-height: calc(100vh - 7rem); overflow-y: auto;
- padding: 0.75rem; border-radius: 1.25rem; border: 1px solid var(--border); background: var(--bg-soft);
+ padding: 0.75rem; border-radius: 0.625rem; border: 1px solid var(--border); background: var(--bg-soft);
  display: flex; flex-direction: column; gap: 0.6rem; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
  touch-action: pan-y; -webkit-user-select: none; user-select: none;
  }
@@ -2428,14 +2472,14 @@
  .remote-z.off { opacity: 0.35; }
  .remote-z-cap { font-size: 0.68rem; font-weight: 700; color: var(--muted); white-space: nowrap; }
  .remote-drum {
- position: relative; flex: 1; width: 100%; min-height: 150px; border-radius: 26px; overflow: hidden;
+ position: relative; flex: 1; width: 100%; min-height: 150px; border-radius: 13px; overflow: hidden;
  border: 2px solid var(--border); background: var(--bg-deep); touch-action: none;
  }
  .remote-drum-ticks {
  position: absolute; left: 0; right: 0; top: -40px; bottom: -40px; pointer-events: none;
  background: linear-gradient(180deg, var(--border) 0 2px, transparent 2px) 0 0 / 100% 20px repeat-y;
  }
- .remote-drum-mid { position: absolute; left: 6px; right: 6px; top: 50%; height: 3px; margin-top: -1.5px; border-radius: 2px; background: var(--accent); pointer-events: none; }
+ .remote-drum-mid { position: absolute; left: 6px; right: 6px; top: 50%; height: 3px; margin-top: -1.5px; border-radius: 1px; background: var(--accent); pointer-events: none; }
  .remote-drum.notched .remote-drum-mid { background: var(--text); }
  .remote-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: 0.5rem; }
  .remote-act { height: 2.9rem; padding: 0 0.4rem; }
@@ -2455,11 +2499,18 @@
  <a class="hero-logo-link" href="/" aria-label="OpenFollow – back to overview">
  <img class="hero-logo" src="/assets/openfollow.svg?v={{_asset_v}}" alt="OpenFollow logo">
  </a>
+ <div class="hero-actions">
  % if defined('config') and config:
  <div class="station-name-pill hero-station-pill" title="Station name (psn_system_name) – set on the General tab">
  {{config.psn_system_name}}
  </div>
  % end
+ % if get('header_logout', False):
+ <form method="POST" action="/logout">
+ <button type="submit" class="secondary small">Logout</button>
+ </form>
+ % end
+ </div>
  </header>
  % if defined('host_refusal') and host_refusal:
  <div class="notice error" role="alert">
@@ -2760,16 +2811,17 @@
  }
  function initializeSectionFolding(root) {
  const scope = root || document;
+ // A section without a fold key (the only one on its tab) gets its help but no toggle.
+ const selector = '.section[data-fold-key], .section[data-help]';
  const sections = [];
- if (scope.matches && scope.matches('.section[data-fold-key]')) {
+ if (scope.matches && scope.matches(selector)) {
  sections.push(scope);
  }
- scope.querySelectorAll('.section[data-fold-key]').forEach((section) => sections.push(section));
+ scope.querySelectorAll(selector).forEach((section) => sections.push(section));
  sections.forEach((section) => {
  const head = section.querySelector('.section-head');
  if (!head) return;
  const key = section.dataset.foldKey;
- if (!key) return;
 
  // cluster the help "?" and the collapse toggle in a
  // right-aligned actions wrapper. Both buttons are injected (not in
@@ -2792,6 +2844,7 @@
  help.textContent = '?';
  actions.appendChild(help); // help first → it sits left of Collapse
  }
+ if (!key) return;
  let toggle = actions.querySelector('.section-toggle');
  // Already initialised (this runs on every htmx:afterSwap, which
  // sub-second pollers fire constantly) – leave the existing toggle
@@ -2956,7 +3009,8 @@
  if (event.target.closest('[data-help-close]')) closeHelp();
  });
  document.addEventListener('keydown', (event) => {
- if (event.key !== 'Escape') return;
+ // An Esc a control already used (a picture letting go of its point) is not the drawer's.
+ if (event.key !== 'Escape' || event.defaultPrevented) return;
  if (!document.body.classList.contains('help-open')) return;
  // A modal sits above the drawer and owns ESC while open (its handler
  // returns early when ``#modal-root`` is hidden); defer to it so one
@@ -4107,7 +4161,7 @@
  initializeInlineAdvanced(document);
  initNetworkMethodFields(document);
  });
- // Periodic pollers (Live Statistics 1s, Diagnostics / Server overview 5s)
+ // Periodic pollers (Status & Diagnostics 1s, Station Network 5s)
  // replace whole DOM subtrees. That destroys Firefox's scroll-anchor node,
  // so the viewport snaps toward the top on every poll tick. Re-pin the
  // scroll position for swaps NOT triggered by a user gesture (polls +
@@ -4462,18 +4516,23 @@
    });
  }
  function initTabs() {
- var stored = readStorage('psnfs:active-tab:' + location.pathname);
+ // A link that names the tab (``?tab=general``) wins over the one this browser last left open.
+ // Only that parameter is dropped, so a reload is an ordinary load of the tab now open.
+ var params = new URLSearchParams(location.search);
+ var asked = params.get('tab');
+ if (asked !== null) {
+ params.delete('tab');
+ var rest = params.toString();
+ history.replaceState(null, '', location.pathname + (rest ? '?' + rest : '') + location.hash);
+ }
  var first = document.querySelector('.tab-btn');
  var defaultTab = first ? first.dataset.tab : 'overview';
- var tabId = stored || defaultTab;
- // Fall back to the default tab if the stored tab is missing or its
- // feature is off.
- var el = document.getElementById('tab-' + tabId);
- if (!el
- || (el.dataset.feature
- && !document.body.classList.contains('feature-' + el.dataset.feature))) {
- tabId = defaultTab;
- }
+ // The first that exists and whose feature is on: the named tab, the remembered one, the first.
+ var shown = function(id) {
+ var el = id && document.getElementById('tab-' + id);
+ return !!el && el.classList.contains('tab-content') && !(el.dataset.feature && !document.body.classList.contains('feature-' + el.dataset.feature));
+ };
+ var tabId = [asked, readStorage('psnfs:active-tab:' + location.pathname)].find(shown) || defaultTab;
  document.querySelectorAll('.tab-btn').forEach(btn => {
  btn.addEventListener('click', () => {
  switchTab(btn.dataset.tab);

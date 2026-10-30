@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Provisioning contract for the no-DHCP link-local fallback.
 
 A station on a show LAN with no DHCP server must still self-assign an address,

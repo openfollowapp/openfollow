@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 #
 # Run the CI gate (`make ci`) on a testing Pi over the LAN when one is
 # reachable, falling back to running it locally otherwise.
@@ -41,7 +43,7 @@ log() { printf '\033[1;36m[ci-remote]\033[0m %s\n' "$*" >&2; }
 # A change (uncommitted part included) to these paths is timed against the merge-base
 # after a green `make ci`. The bench runs bare: make turns its exit 1 (slower) into 2.
 PERF_AB="poetry run python scripts/hw_validation/hud_bench.py --compare"
-HUD_PATHS='^(openfollow/(video/(overlay|hud_render)\.py|runtime/overlay_[a-z_]+\.py|scene/(solver|ground_grid|camera)\.py|zones/geometry\.py|window\.py)|tests/_hud_scenes\.py|scripts/hw_validation/hud_bench\.py)$'
+HUD_PATHS='^(openfollow/(video/(overlay|hud_render)\.py|runtime/overlay_[a-z_]+\.py|scene/(solver|camera)\.py|zones/geometry\.py|window\.py)|tests/_hud_scenes\.py|scripts/hw_validation/hud_bench\.py)$'
 perf_base=""
 perf_dir=""
 
@@ -56,6 +58,13 @@ perf_wanted() {
   # grep reads all of its input: an early exit would fail the pipe under pipefail.
   { git -C "$REPO_ROOT" diff --name-only "$perf_base"; git -C "$REPO_ROOT" ls-files --others --exclude-standard; } \
     | grep -E "$HUD_PATHS" >/dev/null
+}
+
+# The merge-base's package, and its scenes when it has them: each side draws scenes its renderer reads.
+perf_archive() {
+  local paths=(openfollow)
+  git -C "$REPO_ROOT" cat-file -e "${perf_base}:tests/_hud_scenes.py" 2>/dev/null && paths+=(tests/_hud_scenes.py)
+  git -C "$REPO_ROOT" archive "$perf_base" "${paths[@]}"
 }
 
 perf_verdict() {
@@ -78,7 +87,7 @@ run_local() {
   make -C "$REPO_ROOT" ci
   perf_dir="$(mktemp -d)"
   trap 'rm -rf "$perf_dir"' EXIT
-  git -C "$REPO_ROOT" archive "$perf_base" openfollow | tar -x -C "$perf_dir"
+  perf_archive | tar -x -C "$perf_dir"
   log "Timing the Operator Screen drawing against ${perf_base:0:9}"
   local status=0
   (cd "$REPO_ROOT" && $PERF_AB "$perf_dir") || status=$?
@@ -212,8 +221,8 @@ trap 'restore || exit 3' EXIT
 
 if [ "$PERF" = 1 ]; then
   perf_dir="$(remote mktemp -d)"
-  log "Copying the merge-base's package (${perf_base:0:9}) -> ${HOST}:${perf_dir}"
-  git -C "$REPO_ROOT" archive "$perf_base" openfollow | remote "tar -x -C '$perf_dir'"
+  log "Copying the merge-base's package and scenes (${perf_base:0:9}) -> ${HOST}:${perf_dir}"
+  perf_archive | remote "tar -x -C '$perf_dir'"
 fi
 
 log "Running 'make ci' on ${HOST} (real aarch64 / py3.13 target)"

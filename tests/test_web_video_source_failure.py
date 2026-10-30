@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """The Video Source section reports why the last attempt failed.
 
-The reason lived only on the Statistics panel and the HUD, so the page where
+The reason lived only on the Statistics box and the HUD, so the page where
 the fix gets typed was the one page that did not say what was wrong.
 """
 
@@ -120,7 +121,7 @@ class TestTheSaveResponseDoesNotNameTheOldSource:
         assert _NOTICE not in _render(saved=True, video_failure="none", video_failure_text="")
 
 
-class TestItIsTheSameBoxAsLiveStatistics:
+class TestItIsTheSameBoxAsStatusAndDiagnostics:
     """An operator opens Camera & Grid first when the picture is missing. A
     reduced banner there means the fuller one on another tab is the real
     answer, which is exactly the hunt this PR set out to remove.
@@ -137,9 +138,9 @@ class TestItIsTheSameBoxAsLiveStatistics:
         assert "Check the camera is powered and on this network." in body
         assert "Could not open resource" not in body
 
-    def test_its_element_id_does_not_collide_with_the_statistics_box(self) -> None:
+    def test_its_element_id_does_not_collide_with_the_status_box(self) -> None:
         """Both boxes render on the same page. A repeated id makes
-        ``hx-preserve`` resolve to whichever came first, so the Statistics poll
+        ``hx-preserve`` resolve to whichever came first, so the Status & Diagnostics poll
         moved this box's node out from under it once a second."""
         body = _render(
             video_failure="unreachable",

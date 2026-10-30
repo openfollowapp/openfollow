@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tests._template_source import function_body
+from tests._template_source import base_functions
 
 pytestmark = [pytest.mark.unit, pytest.mark.skipif(shutil.which("node") is None, reason="needs node")]
 
@@ -103,7 +103,6 @@ def test_an_announce_before_htmx_loads_is_a_no_op() -> None:
 # base.tpl: a tab switch and an unfold bring their polls up to date at once
 # ---------------------------------------------------------------------------
 
-_BASE = Path(__file__).parents[1] / "openfollow" / "web" / "templates" / "base.tpl"
 _TAB_MARKUP = (
     '<button class="tab-btn" data-tab="overview">O</button><button class="tab-btn" data-tab="input">I</button>'
     '<div class="tab-content" id="tab-overview"><div class="section" data-help="status">'
@@ -115,12 +114,7 @@ _PAGE_FUNCTIONS = ("switchTab", "goToSection", "initTabs", "setSectionCollapsed"
 
 
 def _page_script() -> str:
-    text = _BASE.read_text(encoding="utf-8")
-    parts = []
-    for name in _PAGE_FUNCTIONS:
-        start = text.index(f"function {name}(")
-        parts.append(text[start : text.index("{", start)] + "{" + function_body(text, name) + "}")
-    return "\n".join(parts)
+    return base_functions(*_PAGE_FUNCTIONS)
 
 
 def _run_page(steps: str) -> object:
@@ -131,7 +125,7 @@ def _run_page(steps: str) -> object:
             "var announced = 0; function announcePollsShown() { announced++; }",
             "function closeHelp() {} function readStorage() { return null; } function writeStorage() {}",
             "function getSectionFoldStorageKey(key) { return key; } function requestAnimationFrame() {}",
-            "var location = {pathname: '/'};",
+            "var location = {pathname: '/', search: '', hash: ''};",
             _page_script(),
             "initTabs(); initializeSectionFolding(document);",
             "var toggle = document.querySelector('.section-toggle');",

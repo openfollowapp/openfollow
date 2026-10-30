@@ -182,7 +182,7 @@
  padding: 1.4rem 1.5rem 1.5rem;
  border-radius: 1.2rem;
  border: 1px solid var(--border-soft);
- background: linear-gradient(180deg, rgba(255, 255, 255, 0.045) 0%, rgba(255, 255, 255, 0.02) 100%);
+ background: var(--surface);
  overflow: hidden;
  }
  .section {

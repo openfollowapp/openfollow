@@ -84,11 +84,11 @@ def test_paths_are_drawn_once_while_they_do_not_change() -> None:
 
 def test_zones_are_drawn_again_only_when_a_zone_s_occupancy_changes() -> None:
     occupancy = [
-        tuple((occupied, count) for _verts, _color, _name, occupied, count, _height in state.zone_polygons)
+        tuple(occupied for _verts, _color, occupied, _height in state.zone_polygons)
         for _w, _h, state in frames("full", FRAMES)
     ]
     changes = sum(a != b for a, b in zip(occupancy, occupancy[1:], strict=False))
-    # The scene has to move markers across zones for the count to mean anything.
+    # The scene has to move markers across zone edges for the count to mean anything.
     assert 0 < changes < FRAMES - 1
     with count_calls(ZoneCache, "_render") as drawn:
         _draw("full")

@@ -2449,6 +2449,7 @@ _SECTION_FIELD_PARSERS["mouse3d"] = _mouse3d_parsers
 _TRIGGER_ZONES_FIELD_PARSERS: dict[str, _FieldParser] = {
     "enabled": _as_bool,
     "show_overlay": _as_bool,
+    "highlight_occupied": _as_bool,
     "eval_fps": _as_int,
     "debounce_ms": _as_int,
     "hysteresis": _as_float,

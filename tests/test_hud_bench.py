@@ -540,7 +540,7 @@ def test_run_passes_main_s_own_answer_through(monkeypatch: pytest.MonkeyPatch, c
 
 
 def _older_checkout(root: Path) -> Path:
-    """This checkout's Python as a base whose zones carry five values, not six (no zone height)."""
+    """This checkout's Python as a base whose zones carry three values, not four (no zone height)."""
     import shutil
 
     repo = bench.REPO
@@ -553,15 +553,15 @@ def _older_checkout(root: Path) -> Path:
     text = zones.read_text(encoding="utf-8")
     for new, old in [
         (
-            "for vertices_xy, color_hex, name, is_occupied, count, height in state.zone_polygons:",
-            "for vertices_xy, color_hex, name, is_occupied, count in state.zone_polygons:",
+            "for vertices_xy, color_hex, is_occupied, height in state.zone_polygons:",
+            "for vertices_xy, color_hex, is_occupied in state.zone_polygons:",
         ),
         ("        z = state.zone_z_offset + height\n", "        height = 0.0\n        z = state.zone_z_offset\n"),
         (
-            "(tuple(tuple(v) for v in vertices), color, name, is_occupied, count, height)\n"
-            "                for vertices, color, name, is_occupied, count, height in state.zone_polygons",
-            "(tuple(tuple(v) for v in vertices), color, name, is_occupied, count)\n"
-            "                for vertices, color, name, is_occupied, count in state.zone_polygons",
+            "(tuple(tuple(v) for v in vertices), color, is_occupied, height)\n"
+            "                for vertices, color, is_occupied, height in state.zone_polygons",
+            "(tuple(tuple(v) for v in vertices), color, is_occupied)\n"
+            "                for vertices, color, is_occupied in state.zone_polygons",
         ),
     ]:
         assert new in text
@@ -569,10 +569,10 @@ def _older_checkout(root: Path) -> Path:
     zones.write_text(text, encoding="utf-8")
     (root / "tests").mkdir()
     scenes = (repo / "tests" / "_hud_scenes.py").read_text(encoding="utf-8")
-    six = "polygons.append((verts, color, name, count > 0, count, 0.0))"
-    assert six in scenes
+    four = "polygons.append((verts, color, occupied, 0.0))"
+    assert four in scenes
     (root / "tests" / "_hud_scenes.py").write_text(
-        scenes.replace(six, "polygons.append((verts, color, name, count > 0, count))"), encoding="utf-8"
+        scenes.replace(four, "polygons.append((verts, color, occupied))"), encoding="utf-8"
     )
     return root
 

@@ -118,9 +118,9 @@ def _path_lines() -> list[Any]:
 def _base(t: float, *, markers: int, controlled: int, zones: int, **extra: Any) -> OverlayState:
     marker_list = _markers(markers, controlled, t)
     polygons = []
-    for name, verts, color in ZONES[:zones]:
-        count = sum(point_in_polygon(m.x, m.y, verts) for m in marker_list)
-        polygons.append((verts, color, name, count > 0, count, 0.0))
+    for _name, verts, color in ZONES[:zones]:
+        occupied = any(point_in_polygon(m.x, m.y, verts) for m in marker_list)
+        polygons.append((verts, color, occupied, 0.0))
     values: dict[str, Any] = {
         "markers": marker_list,
         "selected_id": 1,

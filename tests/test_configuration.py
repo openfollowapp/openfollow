@@ -4940,6 +4940,18 @@ def test_trigger_zone_triggered_by_drops_invalid_entries() -> None:
     assert zone.triggered_by == [0, 1, 2]
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(True, True), (False, False), ("false", False), ("true", True), (None, True), ("abc", True), (3, True)],
+)
+def test_trigger_zones_config_coerces_highlight_occupied(raw: object, expected: bool) -> None:
+    assert TriggerZonesConfig(highlight_occupied=raw).highlight_occupied is expected  # type: ignore[arg-type]
+
+
+def test_trigger_zones_highlight_occupied_defaults_on() -> None:
+    assert TriggerZonesConfig().highlight_occupied is True
+
+
 def test_trigger_zones_config_snaps_eval_fps_to_valid_choice(caplog) -> None:
     from openfollow.configuration import TriggerZonesConfig
 

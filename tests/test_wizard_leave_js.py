@@ -5,22 +5,17 @@
 from __future__ import annotations
 
 import json
-import re
 import subprocess  # nosec B404 - runs the local node binary on a fixed script
 from pathlib import Path
 
 import pytest
 
 from tests._template_source import base_functions
-from tests._wizard_js import NODE, WIZARD_TEMPLATE, needs_node, wizard_var, wizard_window_function
+from tests._wizard_js import NODE, SETTINGS_URL, WIZARD_TEMPLATE, needs_node, wizard_var, wizard_window_function
 
 pytestmark = [pytest.mark.unit, needs_node]
 
 _TEMPLATES = Path(__file__).parents[1] / "openfollow" / "web" / "templates"
-# Where every way out without saving goes, as the wizard template sets it.
-_SETTINGS_LINE = re.search(r"^% _settings_url = '([^']+)'$", WIZARD_TEMPLATE.read_text(encoding="utf-8"), re.M)
-assert _SETTINGS_LINE, "wizard.tpl sets _settings_url on a line of its own"
-_SETTINGS_URL = _SETTINGS_LINE.group(1)
 
 _MAIN_PAGE = (
     '<button class="tab-btn" data-tab="overview">O</button><button class="tab-btn" data-tab="general">G</button>'
@@ -73,7 +68,7 @@ _LEAVE = (
     # The confirm's red button, as discardAndLeave hands it to the dialog.
     wizard_var("STORAGE_KEY") + "session[STORAGE_KEY] = '{}'; var dialog;"
     "function openModal(opts) { dialog = opts; } function closeModal() {}"
-    + wizard_window_function("discardAndLeave").replace("{{!json.dumps(_settings_url)}}", json.dumps(_SETTINGS_URL))
+    + wizard_window_function("discardAndLeave")
     + "window.discardAndLeave();"
     "dialog.footerButtons.filter(function (b) { return b.kind === 'danger'; })[0].onClick();"
     "out.push(window.location.href, STORAGE_KEY in session);"
@@ -86,7 +81,7 @@ def _back_to_settings() -> str:
     )
     link = header[header.index("<a ") : header.index(">", header.index("<a ")) + 1]
     assert "onclick" not in link
-    return link.split('href="', 1)[1].split('"', 1)[0].replace("{{_settings_url}}", _SETTINGS_URL)
+    return link.split('href="', 1)[1].split('"', 1)[0].replace("{{_settings_url}}", SETTINGS_URL)
 
 
 @pytest.mark.parametrize("storage", ["true", "false"], ids=["storage", "storage-blocked"])
@@ -108,7 +103,7 @@ def test_without_a_named_tab_the_main_page_opens_where_it_was_left() -> None:
 
 
 def test_the_main_page_has_the_tab_the_wizard_names() -> None:
-    tab = _SETTINGS_URL.split("?tab=", 1)[1]
+    tab = SETTINGS_URL.split("?tab=", 1)[1]
     index = (_TEMPLATES / "index.tpl").read_text(encoding="utf-8")
     assert f'data-tab="{tab}"' in index
     assert f'<div class="tab-content" id="tab-{tab}">' in index
@@ -144,3 +139,9 @@ def test_a_named_element_that_is_not_a_tab_is_not_opened() -> None:
         "initTabs(); out.push(document.querySelector('.tab-content.active').id);"
     )
     assert _run(steps) == ["tab-camera-grid"]
+
+
+def test_the_landing_url_opens_the_general_tab_over_a_remembered_one() -> None:
+    # Save and finish (test_wizard.TestWizardApply), Leave without saving and Back to Settings go here.
+    assert SETTINGS_URL == "/?tab=general"
+    assert _run("store['psnfs:active-tab:/'] = 'camera-grid';" + _open_main_page(SETTINGS_URL)) == ["tab-general"]

@@ -376,7 +376,7 @@
   @media (max-width: 640px) { .fs-title, .fs-status { display: none; } }
 </style>
 
-% # Leave without saving and Back to Settings land on the main page's General tab.
+% # Save and finish, Leave without saving and Back to Settings land on the main page's General tab.
 % _settings_url = '/?tab=general'
 <div class="wizard-header">
   <a href="{{_settings_url}}">&larr; Back to Settings</a>
@@ -4078,7 +4078,7 @@
         if (!floorWrite.ok) { saveError.show(reviewBox, await saveError.fromResponse(floorWrite), 'The floor height was not saved.'); return; }
       }
       try { sessionStorage.removeItem(STORAGE_KEY); } catch (e) {}
-      window.location.href = '/';
+      window.location.href = {{!json.dumps(_settings_url)}};
     }).catch(function() { saveError.show(reviewBox, saveError.UNREACHABLE, 'Not saved.'); });
   };
   window.discardAndLeave = function() {

@@ -377,7 +377,7 @@
 </style>
 
 <div class="wizard-header">
-  <a href="/" onclick="rememberTab('/', 'general')">&larr; Back to Settings</a>
+  <a href="/?tab=general">&larr; Back to Settings</a>
   <h2>Setup Wizard</h2>
 </div>
 
@@ -4088,8 +4088,7 @@
         { label: 'Leave without saving', kind: 'danger', onClick: function() {
           closeModal();
           try { sessionStorage.removeItem(STORAGE_KEY); } catch (e) {}
-          rememberTab('/', 'general');
-          window.location.href = '/';
+          window.location.href = '/?tab=general';
         } }
       ],
     });

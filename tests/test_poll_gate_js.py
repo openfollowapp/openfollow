@@ -111,8 +111,6 @@ _TAB_MARKUP = (
     '<div class="section-head"><h2>Slots</h2></div><div id="slots"></div></div></div>'
 )
 _PAGE_FUNCTIONS = (
-    "activeTabKey",
-    "rememberTab",
     "switchTab",
     "goToSection",
     "initTabs",
@@ -133,7 +131,7 @@ def _run_page(steps: str) -> object:
             "var announced = 0; function announcePollsShown() { announced++; }",
             "function closeHelp() {} function readStorage() { return null; } function writeStorage() {}",
             "function getSectionFoldStorageKey(key) { return key; } function requestAnimationFrame() {}",
-            "var location = {pathname: '/'};",
+            "var location = {pathname: '/', search: '', hash: ''};",
             _page_script(),
             "initTabs(); initializeSectionFolding(document);",
             "var toggle = document.querySelector('.section-toggle');",

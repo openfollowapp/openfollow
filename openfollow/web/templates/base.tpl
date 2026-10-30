@@ -2790,14 +2790,6 @@
  // Ignore storage errors and keep UI functional.
  }
  }
- // The tab a page at ``path`` opens on, as this browser last left it.
- function activeTabKey(path) {
- return 'psnfs:active-tab:' + path;
- }
- // Makes the page at ``path`` open on ``tabId`` next time; another page may set it too.
- function rememberTab(path, tabId) {
- writeStorage(activeTabKey(path), tabId);
- }
  function setSectionCollapsed(section, button, collapsed) {
  section.classList.toggle('is-collapsed', collapsed);
  button.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
@@ -4503,7 +4495,7 @@
  document.querySelectorAll('.tab-content').forEach(el => {
  el.classList.toggle('active', el.id === 'tab-' + tabId);
  });
- rememberTab(location.pathname, tabId);
+ writeStorage('psnfs:active-tab:' + location.pathname, tabId);
  }
  // Cross-tab pointer links. A bare href="#id" does nothing when the target
  // sits in an inactive tab, because .tab-content is display:none - so switch
@@ -4518,10 +4510,14 @@
    });
  }
  function initTabs() {
- var stored = readStorage(activeTabKey(location.pathname));
+ // A link that names the tab (``?tab=general``) wins over the one this browser last left open,
+ // then drops the parameter so a reload keeps the operator's own choice.
+ var asked = new URLSearchParams(location.search).get('tab');
+ if (asked) history.replaceState(null, '', location.pathname + location.hash);
+ var stored = readStorage('psnfs:active-tab:' + location.pathname);
  var first = document.querySelector('.tab-btn');
  var defaultTab = first ? first.dataset.tab : 'overview';
- var tabId = stored || defaultTab;
+ var tabId = asked || stored || defaultTab;
  // Fall back to the default tab if the stored tab is missing or its
  // feature is off.
  var el = document.getElementById('tab-' + tabId);

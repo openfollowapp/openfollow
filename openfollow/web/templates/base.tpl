@@ -4511,21 +4511,22 @@
  }
  function initTabs() {
  // A link that names the tab (``?tab=general``) wins over the one this browser last left open,
- // then drops the parameter so a reload keeps the operator's own choice.
- var asked = new URLSearchParams(location.search).get('tab');
- if (asked) history.replaceState(null, '', location.pathname + location.hash);
- var stored = readStorage('psnfs:active-tab:' + location.pathname);
+ // then only that parameter is dropped, so a reload keeps the operator's own choice.
+ var params = new URLSearchParams(location.search);
+ var asked = params.get('tab');
+ if (asked !== null) {
+ params.delete('tab');
+ var rest = params.toString();
+ history.replaceState(null, '', location.pathname + (rest ? '?' + rest : '') + location.hash);
+ }
  var first = document.querySelector('.tab-btn');
  var defaultTab = first ? first.dataset.tab : 'overview';
- var tabId = asked || stored || defaultTab;
- // Fall back to the default tab if the stored tab is missing or its
- // feature is off.
- var el = document.getElementById('tab-' + tabId);
- if (!el
- || (el.dataset.feature
- && !document.body.classList.contains('feature-' + el.dataset.feature))) {
- tabId = defaultTab;
- }
+ // The first that exists and whose feature is on: the named tab, the remembered one, the first.
+ var shown = function(id) {
+ var el = id && document.getElementById('tab-' + id);
+ return !!el && !(el.dataset.feature && !document.body.classList.contains('feature-' + el.dataset.feature));
+ };
+ var tabId = [asked, readStorage('psnfs:active-tab:' + location.pathname)].find(shown) || defaultTab;
  document.querySelectorAll('.tab-btn').forEach(btn => {
  btn.addEventListener('click', () => {
  switchTab(btn.dataset.tab);

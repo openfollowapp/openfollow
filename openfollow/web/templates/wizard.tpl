@@ -376,8 +376,10 @@
   @media (max-width: 640px) { .fs-title, .fs-status { display: none; } }
 </style>
 
+% # Every way out without saving lands on the main page's General tab.
+% _settings_url = '/?tab=general'
 <div class="wizard-header">
-  <a href="/?tab=general">&larr; Back to Settings</a>
+  <a href="{{_settings_url}}">&larr; Back to Settings</a>
   <h2>Setup Wizard</h2>
 </div>
 
@@ -4088,7 +4090,7 @@
         { label: 'Leave without saving', kind: 'danger', onClick: function() {
           closeModal();
           try { sessionStorage.removeItem(STORAGE_KEY); } catch (e) {}
-          window.location.href = '/?tab=general';
+          window.location.href = '{{_settings_url}}';
         } }
       ],
     });

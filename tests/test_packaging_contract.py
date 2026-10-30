@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Packaging contract for the 3D Mouse input.
 
 The feature must work on an offline show Pi installed from the ``.deb`` with no

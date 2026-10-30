@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """The Zone Editor's canvas on the shared polygon plan, run in node on the fake DOM."""
 
 from __future__ import annotations

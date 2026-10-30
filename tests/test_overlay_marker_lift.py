@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """A zone's lift on the Operator Screen: the marker at its sent Z, its floor elements on the raised floor."""
 
 from __future__ import annotations

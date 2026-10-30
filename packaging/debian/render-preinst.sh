@@ -1,6 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 # Render the preinst: inline the settings-backup program into preinst.in.
 # Usage: render-preinst.sh <preinst.in> <settings_backup.py> <out>
 set -eu

@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Extended dispatch tests for ``openfollow.runtime.app_modes``.
 
 ``test_app_modes.py`` covers speed adjustment, normalize_key, Settings menu

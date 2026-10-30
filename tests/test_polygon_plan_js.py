@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """The shared top-down polygon plan (static/js/polygon-plan.js), run in node on a fake canvas."""
 
 from __future__ import annotations

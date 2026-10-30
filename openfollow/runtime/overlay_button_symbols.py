@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Pad button symbols painted inline in HUD text.
 
 ``button_names.hud_label`` puts a private-use character where a symbol goes

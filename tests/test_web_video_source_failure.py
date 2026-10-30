@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """The Video Source section reports why the last attempt failed.
 
 The reason lived only on the Statistics box and the HUD, so the page where

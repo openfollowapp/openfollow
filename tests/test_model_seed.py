@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Unit tests for the bundled-model seeder (openfollow/model_seed.py).
 
 The seeder copies pre-shipped YOLO ``.onnx`` tiers into the per-device storage

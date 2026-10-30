@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Gamepad button names for the web UI: the word, or its symbol as inline SVG.
 
 The SVG is hidden from assistive tech and followed by the word in a

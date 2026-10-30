@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """When video frames meet the display refresh, and what that did to them.
 
 Unlocked, each refresh shows the newest frame that arrived. Locked, a frame is

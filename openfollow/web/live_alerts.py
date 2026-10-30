@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """The alert boxes Status & Diagnostics shows, for the section and its announcer.
 
 The boxes are swapped every second, so a ``role="alert"`` inside it would be

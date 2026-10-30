@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Process-wide logging configuration with bounded in-memory ring buffer fallback.
 
 The ring buffer is used when ``journalctl`` is unavailable (non-systemd hosts or

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Applying a Pi camera: config first, live where the kernel allows, and the grants that allow it."""
 
 from __future__ import annotations

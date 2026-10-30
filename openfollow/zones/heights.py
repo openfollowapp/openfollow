@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Zone heights: the Z a zone adds to a marker inside it, eased across the zone's edge."""
 
 from __future__ import annotations

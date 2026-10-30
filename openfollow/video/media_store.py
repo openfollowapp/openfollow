@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Device-local media store for the Media Gallery video source.
 
 Holds operator-uploaded still images and short looping clips, plus the

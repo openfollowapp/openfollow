@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """One input, one action: settle bindings that share an input within a group.
 
 Stdlib-only so :mod:`openfollow.configuration` can import it at load time.

@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """NDI video input plugin with runtime source discovery.
 
 Builds an ``ndisrc``/``ndisrcdemux`` receive pipeline and discovers NDI sources

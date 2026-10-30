@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """The web UI on a station whose ``config.toml`` is empty or does not read.
 
 Every write reads the file whole first, so it is refused with a reason the

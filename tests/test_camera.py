@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
 """Tests for ``openfollow.scene.camera``: PSN-to-pygfx coordinate
 conversion helpers and the Camera class (construction, FOV clamping,
 move/rotate, and config round-trip)."""

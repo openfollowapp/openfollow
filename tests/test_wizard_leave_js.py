@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Leaving the Setup Wizard, run in node: out of it and onto the main page's General tab."""
 
 from __future__ import annotations

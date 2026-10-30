@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Adapters that are not plugged in but have saved settings, on the Network Interface card.
 
 Each keeps a Not connected row, labelled or not, with the settings it comes up

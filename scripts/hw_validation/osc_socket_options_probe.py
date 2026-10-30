@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
 """OSC broadcast/multicast socket-options probe – DUT-local, no companion.
 
 pythonosc's ``SimpleUDPClient`` defaults to ``allow_broadcast=False``, so a send

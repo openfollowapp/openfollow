@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """The Setup Wizard's script maths, run in node and held against the Python it mirrors."""
 
 from __future__ import annotations

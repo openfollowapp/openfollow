@@ -141,7 +141,7 @@ def test_a_named_element_that_is_not_a_tab_is_not_opened() -> None:
     assert _run(steps) == ["tab-camera-grid"]
 
 
-def test_every_way_out_names_the_general_tab() -> None:
-    # Save and finish, Leave without saving and Back to Settings all go here (test_wizard.TestWizardApply).
+def test_the_landing_url_opens_the_general_tab_over_a_remembered_one() -> None:
+    # Save and finish (test_wizard.TestWizardApply), Leave without saving and Back to Settings go here.
     assert SETTINGS_URL == "/?tab=general"
     assert _run("store['psnfs:active-tab:/'] = 'camera-grid';" + _open_main_page(SETTINGS_URL)) == ["tab-general"]

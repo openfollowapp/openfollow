@@ -16,7 +16,6 @@ from html.parser import HTMLParser
 import pytest
 
 import openfollow.web.discovery as discovery_module
-from openfollow.configuration import AppConfig, save_config
 from openfollow.input.mouse3d_status import DeviceState, Mouse3DDeviceStatus, Mouse3DStatus, status_key
 from openfollow.web.live_alerts import diagnostics_alerts
 from openfollow.web.server import ConfigWebServer
@@ -124,23 +123,15 @@ def test_the_status_announcer_answers_204_while_unchanged(status_server) -> None
     assert "C2 missing · 8BitDo" in body
 
 
-def _show_detection(config_path, shown: bool) -> None:
-    cfg = AppConfig()
-    cfg.ui.shown_features = [*cfg.ui.shown_features, "detection"] if shown else cfg.ui.shown_features
-    save_config(cfg, str(config_path))
-
-
-@pytest.mark.parametrize(("shown", "spoken"), [(True, True), (False, False)], ids=["feature-on", "feature-off"])
-def test_missing_detection_packages_are_spoken_only_with_the_feature(status_server, shown: bool, spoken: bool) -> None:
-    base, stats, config_path = status_server
-    _show_detection(config_path, shown)
+@pytest.mark.parametrize("enabled", [True, False], ids=["feature-on", "feature-off"])
+def test_missing_detection_packages_are_spoken_only_while_detection_is_enabled(status_server, enabled: bool) -> None:
+    base, stats, _ = status_server
     # The runtime stats report detection as enabled only while its feature is on.
-    stats["tracking"] = {"enabled": shown, "missing_deps": ["onnxruntime"]}
+    stats["tracking"] = {"enabled": enabled, "missing_deps": ["onnxruntime"]}
     _, body = _request(base, "/section/diagnostics/alerts")
-    assert ("Missing packages: onnxruntime." in body) is spoken
+    assert ("Missing packages: onnxruntime." in body) is enabled
     _, boxes = _request(base, "/section/diagnostics")
-    assert ('<h3 class="stat-panel-title">Person Detection</h3>' in boxes) is shown
-    assert ("Missing packages: onnxruntime." in boxes) is spoken
+    assert ("Missing packages: onnxruntime." in boxes) is enabled
 
 
 class _Ancestors(HTMLParser):

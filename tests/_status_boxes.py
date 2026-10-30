@@ -21,12 +21,11 @@ CARDS: dict[str, Any] = {
     "receiver_last_recv": "0.8s",
     "receiver_packet_count": 6812,
     "peer_count": 1,
-    "detection_shown": True,
 }
 
 
 def render_boxes(stats: dict[str, Any], **cards: Any) -> str:
-    """The boxes for ``stats``, with ``cards`` overriding the healthy figures (Person Detection on)."""
+    """The boxes for ``stats``, with ``cards`` overriding the healthy figures."""
     return template("partials/diagnostics_cards", stats=stats, cards={**CARDS, **cards})
 
 

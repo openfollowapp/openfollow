@@ -4340,7 +4340,6 @@ def _build_diagnostics_cards(
         "receiver_last_recv": _monotonic_age(receiver.last_recv_ts),
         "receiver_packet_count": receiver.packets_received,
         "peer_count": len(peers),
-        "detection_shown": cfg.ui.feature_on("detection"),
     }
     return cards
 

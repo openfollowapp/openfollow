@@ -1,6 +1,6 @@
 # Status & Diagnostics
 
-How this station is doing right now, and the information needed for a support report. It is the Overview tab's one section: the Station Network list at the top refreshes every 5 seconds, the boxes below it every second, while the section is open and in view. Each box shows only what applies: Person Detection appears only while its feature is on.
+How this station is doing right now, and the information needed for a support report. It is the Overview tab's one section: the Station Network list at the top refreshes every 5 seconds, the boxes below it every second, while the section is in view. Each box shows only what applies: Person Detection appears only while its feature is on.
 
 On a wide screen Station Network runs full width, and the boxes below it keep their own height: This Station fills the right column and the others stack beside it. With Person Detection shown, Station network discovery runs full width beneath, its rows in three columns. On a phone they stack in one column.
 

@@ -513,24 +513,24 @@
  .stations-box { margin-bottom: 0.78rem; }
  .stations-box .peers-list { background: none; border: 0; padding: 0; }
  .stations-box .peer-item:last-child { margin-bottom: 0; }
- /* Bento: This Station, the tallest box, takes the right column; with Person
- Detection, Station network discovery runs full width with its rows in three columns. */
+ /* Bento: This Station, the tallest box, takes the right column; with the Person
+ Detection feature on, Station network discovery runs full width with its rows in three columns. */
  .diag-bento {
  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
  grid-template-areas: "video station" "network station";
  }
- .diag-bento.with-detection { grid-template-areas: "video station" "detection station" "network network"; }
+ body.feature-detection .diag-bento { grid-template-areas: "video station" "detection station" "network network"; }
  .diag-video { grid-area: video; }
  .diag-station { grid-area: station; }
  .diag-network { grid-area: network; }
  .diag-detection { grid-area: detection; }
  @media (min-width: 681px) {
- .diag-bento.with-detection .diag-network .metric-list {
+ body.feature-detection .diag-bento .diag-network .metric-list {
  display: grid;
  grid-template-columns: repeat(3, minmax(0, 1fr));
  column-gap: 1.5rem;
  }
- .diag-bento.with-detection .diag-network .metric-row:nth-last-child(-n+3) { border-bottom: 0; padding-bottom: 0; }
+ body.feature-detection .diag-bento .diag-network .metric-row:nth-last-child(-n+3) { border-bottom: 0; padding-bottom: 0; }
  }
  .stat-panel {
  border: 1px solid rgba(255, 255, 255, 0.1);
@@ -2035,7 +2035,7 @@
  @media (max-width: 680px) {
  body { padding: 12px 0; }
  .diag-bento { grid-template-columns: minmax(0, 1fr); grid-template-areas: "video" "station" "network"; }
- .diag-bento.with-detection { grid-template-areas: "video" "station" "network" "detection"; }
+ body.feature-detection .diag-bento { grid-template-areas: "video" "station" "network" "detection"; }
  .hero-panel { padding: 1rem; margin-bottom: 0.8rem; }
  .section { padding: 1rem; }
  .field, .field.wide, .checkbox-field { min-width: 100%; }

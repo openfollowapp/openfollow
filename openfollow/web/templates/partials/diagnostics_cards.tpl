@@ -1,6 +1,6 @@
 % # Status & Diagnostics' live boxes, polled every second (see partials/diagnostics.tpl).
-% # ``stats`` is the runtime snapshot, ``cards`` the web and discovery figures and
-% # whether the Person Detection feature is on (``_build_diagnostics_cards``).
+% # ``stats`` is the runtime snapshot, ``cards`` the web and discovery figures
+% # (``_build_diagnostics_cards``). Person Detection shows through ``data-feature``.
 % from openfollow.web.labels import pretty_label, video_error_token, video_signal_label
 % from openfollow.web.live_alerts import DETECTION_MISSING_STEP, diagnostics_alerts
 % system = stats.get("system", {})
@@ -29,7 +29,6 @@
 % # Both are credential-free - the status marker redacts on the way in.
 % alerts = diagnostics_alerts(stats)
 % network_chip, network_status = cards['network_chip']
-% detection_shown = cards['detection_shown']
 % output_resolution = system.get("output_resolution")
 % output_text = ("%dx%d" % (output_resolution["width"], output_resolution["height"])) if output_resolution else "N/A (no display)"
 % tracking_state = "Off"
@@ -67,7 +66,7 @@
 % end
 % frame_clock_chip = "off" if frame_stalled else ("ok" if frame_age is not None else "info")
 
-<div class="stats-columns diag-bento{{' with-detection' if detection_shown else ''}}">
+<div class="stats-columns diag-bento">
     <section class="stat-panel diag-video">
         <div class="stat-panel-head">
             <h3 class="stat-panel-title">Video</h3>
@@ -208,8 +207,7 @@
         </dl>
     </section>
 
-% if detection_shown:
-    <section class="stat-panel diag-detection">
+    <section class="stat-panel diag-detection" data-feature="detection">
         <div class="stat-panel-head">
             <h3 class="stat-panel-title">Person Detection</h3>
             <span class="stat-chip{{(" " + tracking_chip_class) if tracking_chip_class else ""}}">{{tracking_state}}</span>
@@ -239,5 +237,4 @@
             </div>
         </dl>
     </section>
-% end
 </div>

@@ -484,11 +484,11 @@ class TestBentoLayout:
 
     def test_with_person_detection_discovery_runs_full_width_beneath(self) -> None:
         assert 'grid-template-areas: "video station" "detection station" "network network";' in self._rule(
-            ".diag-bento.with-detection"
+            "body.feature-detection .diag-bento"
         )
         wide = self._CSS[self._CSS.index("@media (min-width: 681px)") :]
         assert "grid-template-columns: repeat(3, minmax(0, 1fr));" in self._rule(
-            ".diag-bento.with-detection .diag-network .metric-list", wide
+            "body.feature-detection .diag-bento .diag-network .metric-list", wide
         )
 
     @pytest.mark.parametrize("box", ["video", "station", "network", "detection"])
@@ -500,6 +500,6 @@ class TestBentoLayout:
         rule = self._rule(".diag-bento", phone)
         # Without Person Detection there is no empty fourth row to add a gap.
         assert rule == 'grid-template-columns: minmax(0, 1fr); grid-template-areas: "video" "station" "network";'
-        assert self._rule(".diag-bento.with-detection", phone) == (
+        assert self._rule("body.feature-detection .diag-bento", phone) == (
             'grid-template-areas: "video" "station" "network" "detection";'
         )

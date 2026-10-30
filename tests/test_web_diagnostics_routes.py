@@ -174,8 +174,7 @@ def test_section_diagnostics_renders_the_status_boxes(live_server) -> None:
     _, base, _ = live_server
     status, body, _ = _get(base, "/section/diagnostics")
     assert status == 200
-    # Person Detection is an experimental feature, off by default.
-    assert _titles(body) == ["Video", "This Station", "Station network discovery"]
+    assert _titles(body) == ["Video", "This Station", "Station network discovery", "Person Detection"]
     assert '<div class="stats-columns diag-bento">' in body
     # Where the logs come from is the bundle's business, not the page's.
     assert "Logs" not in body
@@ -186,17 +185,20 @@ def test_section_diagnostics_renders_the_status_boxes(live_server) -> None:
     assert "/api/diagnostics/bundle" not in body
 
 
-def test_the_detection_feature_adds_its_box_and_the_four_box_layout(live_server) -> None:
+@pytest.mark.parametrize("shown", [True, False], ids=["feature-on", "feature-off"])
+def test_the_detection_box_follows_the_page_feature_switch(live_server, shown: bool) -> None:
     _, base, cfg_path = live_server
     cfg = load_config(cfg_path)
-    cfg.ui.shown_features = [*cfg.ui.shown_features, "detection"]
+    if shown:
+        cfg.ui.shown_features = [*cfg.ui.shown_features, "detection"]
     save_config(cfg, cfg_path)
-    _, body, _ = _get(base, "/section/diagnostics")
-    assert _titles(body) == ["Video", "This Station", "Station network discovery", "Person Detection"]
-    assert '<div class="stats-columns diag-bento with-detection">' in body
+    _, page, _ = _get(base, "/")
+    features = re.search(r'<body class="([^"]*)"', page).group(1).split()
+    assert ("feature-detection" in features) is shown
+    assert 'body:not(.feature-detection) [data-feature="detection"] { display: none !important; }' in page
+    box = page[page.index('<section class="stat-panel diag-detection" data-feature="detection">') :]
     # Switched on but not running: the box stays, with its Off chip.
-    detection = body[body.index("Person Detection</h3>") :]
-    assert '<span class="stat-chip">Off</span>' in detection
+    assert '<span class="stat-chip">Off</span>' in box.split("</section>", 1)[0]
 
 
 def _row(body: str, label: str) -> str:

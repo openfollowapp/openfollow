@@ -12,7 +12,7 @@ Station Network, Live Statistics and Diagnostics on the Overview tab show the sa
 | Video | Unchanged. |
 | This Station | The Device box plus the Web server box's **Web port** and **Uptime**. The port row shows the port served on, with a caution **Fallback** chip when it is not the configured one. |
 | Station network discovery | The two beacon boxes in one: Stations seen, Last sent, Last received, Send errors, Beacons sent, Beacons received. Its chip is the worse of the two: **Stopped** (both), **Sender stopped** / **Receiver stopped** (error), **Send errors** (caution), else **Running**. |
-| Person Detection | Shown only while the `detection` feature is on, with its **Off** chip when the feature is on but detection is not running. With the feature off its missing-packages alert is not spoken either: the runtime stats already report detection as not enabled. |
+| Person Detection | Shown only while the `detection` feature is on (`data-feature`, so it follows a Features switch at once), with its **Off** chip when the feature is on but detection is not running. With the feature off its missing-packages alert is not spoken either: the runtime stats already report detection as not enabled. |
 | Layout | Bento: each box keeps its own height. This Station takes the right column; Video and Station network discovery stack beside it. With Person Detection, it stacks under Video and Station network discovery runs full width with its rows in three columns. One column on a phone. |
 | Screenless stations | Output resolution and Overlay redraw rate stay as they are. |
 | Tools | Bundle & tools unchanged, below the boxes. |

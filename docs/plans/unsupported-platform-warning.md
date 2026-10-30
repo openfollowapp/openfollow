@@ -39,28 +39,31 @@ and will not until someone acts". Here the station runs, but it is on its own
 with no support, and the warning is meant to be loud. Developer mode hides
 every surface but the bundle (see Decisions).
 
+Wording, on every surface: the observed fact, then the consequence.
+
+- Main line: "Unsupported platform: <name>" (e.g. "Raspberry Pi 4", "macOS",
+  "Windows", "Fedora Linux 42").
+- Step line: "OpenFollow is not developed to work on this platform and errors are expected. No support is provided. Never use this setup in a show!"
+
 1. **Operator Screen corner:** a permanent top-right error status row, the
-   same component as the under-voltage row:
-   "Unsupported platform: macOS. No support is provided."
-   It cannot be dismissed. It sits last in the row stack, so live faults
-   (video, power) stay on top.
+   same component as the under-voltage row. The row holds two lines, so it
+   carries the short form: "Unsupported platform: macOS. Errors are expected.
+   Never use this setup in a show!" It cannot be dismissed. It sits last in the
+   row stack, so live faults (video, power) stay on top.
 2. **Operator Screen Settings menu:** an ERROR box below the station card,
-   with the observed fact on the main line ("Unsupported platform: macOS.") and
-   the step under it ("Supported: Raspberry Pi 5, CM5, Pi 500. No support is
-   provided."). If the video-failure ERROR box also shows, both stack, and the
-   video failure comes first.
+   main line and step line in full. If the video-failure ERROR box also shows,
+   both stack, and the video failure comes first.
 3. **Web UI, every page:** an error box (`.notice.error`) between the
    navigation (header and tab bar) and the panels, on every page (main UI,
-   Setup Wizard, About, login). Main line: "Unsupported platform: Raspberry Pi
-   4." Step line: "OpenFollow supports Raspberry Pi 5, CM5 and Pi 500 only. No
-   support is provided for this station." Not dismissible, no role (static,
-   rendered once per page), so it isn't re-announced. On pages without a tab
-   bar (login, About, Setup Wizard) it sits under the header.
+   Setup Wizard, About, login), main line and step line in full. Not
+   dismissible, no role (static, rendered once per page), so it isn't
+   re-announced. On pages without a tab bar (login, About, Setup Wizard) it
+   sits under the header.
 4. **Status & Diagnostics page:** the same error in the alert boxes
    (`web/live_alerts.py`), spoken once by the existing announcer.
 5. **Diagnostics bundle:** a `Platform support:` line at the top of Section E
    (environment), with the verdict and the model string or OS as read, and the
-   sentence "No support is provided for this platform." in the bundle's header,
+   step line in the bundle's header,
    so whoever receives a bundle sees it first.
 6. **Help drawer:** `diagnostics.md` and `general-station.md` explain the
    supported hardware and why the warning shows. No inline help.

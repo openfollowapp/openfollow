@@ -3214,6 +3214,17 @@ def test_hero_panel_sits_on_the_page_background(live_server) -> None:
     assert "radial-gradient(circle" not in body
 
 
+def test_page_background_is_the_plain_fade(live_server) -> None:
+    """The page background is one top-to-bottom fade with no coloured glow over it."""
+    _, base = live_server
+    _, body = _get(base, "/")
+    rule = re.search(r"\n body \{([^}]*)\}", body)
+    assert rule
+    images = re.search(r"background-image:([^;]*);", rule.group(1))
+    assert images and images.group(1).strip().startswith("linear-gradient(180deg")
+    assert "radial-gradient" not in body
+
+
 def _hero(body: str) -> str:
     start = body.index('<header class="hero-panel">')
     return body[start : body.index("</header>", start)]

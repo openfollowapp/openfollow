@@ -119,9 +119,7 @@
  identical on every section regardless of length. It sits at the top of
  the page and scrolls away; the matching base colour fills below it. */
  background-color: #06140d;
- background-image:
- radial-gradient(ellipse 90% 50% at 50% -5%, rgba(255, 188, 0, 0.12), transparent 65%),
- linear-gradient(180deg, var(--bg-deep) 0%, var(--bg-base) 65%, #06140d 100%);
+ background-image: linear-gradient(180deg, var(--bg-deep) 0%, var(--bg-base) 65%, #06140d 100%);
  background-repeat: no-repeat;
  background-position: top center;
  background-size: 100% 100vh;

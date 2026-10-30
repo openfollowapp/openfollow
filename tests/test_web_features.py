@@ -119,8 +119,6 @@ class TestSave:
         cfg.ui.shown_features = list(FEATURE_KEYS)
         cfg.detection.enabled = True
         cfg.rttrpm_output.enabled = True
-        cfg.ground_grid.enabled = True
-        cfg.ground_grid.vertices = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]
         cfg.touch_remote.enabled = True
         cfg.paths.paths = [PathConfig(name="cross", active=True)]
         save_config(cfg, server.config_path)
@@ -129,7 +127,7 @@ class TestSave:
 
         out = load_config(server.config_path)
         assert out.ui.shown_features == ["paths"]
-        assert (out.detection.enabled, out.rttrpm_output.enabled, out.ground_grid.enabled) == (True, True, True)
+        assert (out.detection.enabled, out.rttrpm_output.enabled) == (True, True)
         assert out.touch_remote.enabled is True
         assert [(p.name, p.active) for p in out.paths.paths] == [("cross", True)]
 
@@ -210,7 +208,7 @@ class TestPage:
         form = form[: form.index("</table>")]
         assert re.search(r'name="detection"[^>]*\s+checked', form)
         assert not re.search(r'name="zones"[^>]*\s+checked', form)
-        assert form.count('class="badge-experimental"') == len(EXPERIMENTAL_FEATURES & set(OFFERED_FEATURES)) == 6
+        assert form.count('class="badge-experimental"') == len(EXPERIMENTAL_FEATURES & set(OFFERED_FEATURES)) == 5
 
     def test_the_table_has_one_row_per_feature_with_its_title_and_description(self, live_server) -> None:
         _, base = live_server

@@ -74,7 +74,6 @@ _WRITES: dict[tuple[str, str], tuple[str, str, Any]] = {
     ("POST", "/section/gamepad"): ("/section/gamepad", "form", {}),
     ("POST", "/section/general"): ("/section/general", "form", {"psn_system_name": "Changed"}),
     ("POST", "/section/grid"): ("/section/grid", "form", {"width": "12"}),
-    ("POST", "/section/ground_grid"): ("/section/ground_grid", "form", {}),
     ("POST", "/section/interface_assignment"): ("/section/interface_assignment", "form", {}),
     ("POST", "/section/keyboard"): ("/section/keyboard", "form", {}),
     ("POST", "/section/marker"): ("/section/marker", "form", {}),

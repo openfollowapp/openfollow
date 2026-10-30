@@ -308,9 +308,9 @@ rather than passing vacuously.
 
 ## Operator Screen drawing cost
 
-`hud_bench.py` draws each bench scene (light, full scene with grid, ground grid,
-zones, paths and lens, eight markers, cones, a menu screen) frame by frame into
-a 1920x1080 picture and reports the CPU time per picture, the median over
+`hud_bench.py` draws each bench scene (light, full scene with grid, zones,
+paths and lens, eight markers, cones, a menu screen) frame by frame into a
+1920x1080 picture and reports the CPU time per picture, the median over
 rounds. Run it on a Pi 5 for numbers that mean something for a station; a
 desktop is faster by a large factor.
 

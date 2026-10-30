@@ -556,7 +556,7 @@ def _older_checkout(root: Path) -> Path:
             "for vertices_xy, color_hex, name, is_occupied, count, height in state.zone_polygons:",
             "for vertices_xy, color_hex, name, is_occupied, count in state.zone_polygons:",
         ),
-        ("        z = state.zone_z_offset + height\n", "        z = state.zone_z_offset\n"),
+        ("        z = state.zone_z_offset + height\n", "        height = 0.0\n        z = state.zone_z_offset\n"),
         (
             "(tuple(tuple(v) for v in vertices), color, name, is_occupied, count, height)\n"
             "                for vertices, color, name, is_occupied, count, height in state.zone_polygons",

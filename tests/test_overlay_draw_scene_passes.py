@@ -1274,13 +1274,6 @@ class TestConeCache:
             {"state": {"lens_cx": 0.03}},
             {"state": {"lens_cy": -0.02}},
             {"state": {"grid_config": (10.0, 6.0, 1.0, 0.0, 0.0, 0.3)}},
-            {
-                "state": {
-                    "ground_grid_active": True,
-                    "ground_grid_vertices": [(0.0, 0.0), (2.0, 0.0), (2.0, 1.0), (0.0, 1.0)],
-                    "ground_grid_z": -0.5,
-                }
-            },
             {"state": {"cone_base_diameter": 0.8}},
             {"state": {"cone_top_diameter": 0.1}},
             {"state": {"cone_thickness": 4}},
@@ -1363,19 +1356,14 @@ class TestConeCache:
 
 
 # --------------------------------------------------------------------------- #
-# GridCache – both grids as one picture, drawn again only on a change
+# GridCache – the grid as one picture, drawn again only on a change
 # --------------------------------------------------------------------------- #
-
-_GROUND = [(-2.0, 1.0), (2.0, 1.0), (2.5, 3.0), (-2.5, 3.0)]
 
 
 class TestGridCache:
     @staticmethod
     def _state(**overrides: object) -> OverlayState:
-        base: dict[str, object] = {"ground_grid_visible": True, "ground_grid_vertices": list(_GROUND)}
-        base["ground_grid_z"] = -0.4
-        base.update(overrides)
-        return _scene_state(**base)
+        return _scene_state(**overrides)
 
     @staticmethod
     def _pixels(surface: Any) -> np.ndarray:
@@ -1397,17 +1385,15 @@ class TestGridCache:
         "grids",
         [
             {},
-            {"grid_visible": False},
-            {"ground_grid_visible": False},
             {"lens_k1": -0.15, "lens_k2": 0.03},
             {"grid_thickness": 3, "grid_transparency": 0.35, "grid_color": "#33aaff"},
         ],
-        ids=["both", "ground-only", "main-only", "lens", "style"],
+        ids=["grid", "lens", "style"],
     )
     def test_a_cached_grid_looks_like_one_drawn_directly(self, scale: float, grids: dict) -> None:
         import cairo
 
-        from openfollow.runtime.overlay_draw_scene import GridCache, draw_ground_grid
+        from openfollow.runtime.overlay_draw_scene import GridCache
 
         state, (w, h) = self._state(**grids), (320, 180)
         pictures = []
@@ -1420,7 +1406,6 @@ class TestGridCache:
                 GridCache().draw(FakeRenderer(), cr, state, w, h)
             else:
                 draw_grid(FakeRenderer(), cr, state, w, h)
-                draw_ground_grid(cr, state, w, h)
             pictures.append(self._pixels(surface))
         direct, cached_picture = pictures
         assert direct[..., 3].any()
@@ -1438,11 +1423,7 @@ class TestGridCache:
     @pytest.mark.parametrize(
         "change",
         [
-            {"state": {"grid_visible": False}},
-            {"state": {"ground_grid_visible": False}},
             {"state": {"grid_config": (10.0, 6.0, 0.5, 0.0, 0.0, 0.0)}},
-            {"state": {"ground_grid_vertices": [(-2.0, 1.0), (2.0, 1.0), (2.0, 3.0), (-2.0, 3.0)]}},
-            {"state": {"ground_grid_z": 0.2}},
             {"state": {"grid_color": "#33aaff"}},
             {"state": {"grid_transparency": 0.9}},
             {"state": {"grid_thickness": 4}},
@@ -1456,11 +1437,7 @@ class TestGridCache:
             {"scale": 2.0},
         ],
         ids=[
-            "main-grid-shown",
-            "ground-grid-shown",
             "grid-config",
-            "vertices",
-            "ground-z",
             "color",
             "transparency",
             "thickness",
@@ -1474,7 +1451,7 @@ class TestGridCache:
             "scale",
         ],
     )
-    def test_anything_a_grid_is_drawn_from_draws_it_again(self, change: dict) -> None:
+    def test_anything_the_grid_is_drawn_from_draws_it_again(self, change: dict) -> None:
         from openfollow.runtime.overlay_draw_scene import GridCache
 
         cache = GridCache()
@@ -1534,8 +1511,8 @@ class TestGridCache:
 
     @pytest.mark.parametrize(
         "hidden",
-        [{"grid_visible": False, "ground_grid_visible": False}, {"grid_config": None}, {"camera_params": None}],
-        ids=["both-hidden", "no-grid", "no-camera"],
+        [{"grid_visible": False}, {"grid_config": None}, {"camera_params": None}],
+        ids=["hidden", "no-grid", "no-camera"],
     )
     def test_the_picture_is_let_go_while_no_grid_is_drawn(self, hidden: dict) -> None:
         from openfollow.runtime.overlay_draw_scene import GridCache
@@ -1567,7 +1544,7 @@ class TestGridCache:
             raise RuntimeError("draw failed")
 
         with monkeypatch.context() as patched:
-            patched.setattr(scene, "draw_ground_grid", fail)
+            patched.setattr(scene, "draw_grid", fail)
             with pytest.raises(RuntimeError):
                 self._draw(cache, moved)
         assert np.array_equal(self._pixels(self._draw(cache, state).surfaces[0]), fresh)

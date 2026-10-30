@@ -52,11 +52,6 @@ FEATURE_LABELS: dict[str, FeatureLabel] = {
         "Locks a marker to a drawn path, so a stick moves it along the path.",
         "every marker on a path is let go.",
     ),
-    "ground_grid": FeatureLabel(
-        "Ground grid",
-        "Lets markers follow raised floor areas such as risers and stairs.",
-        "markers no longer follow raised floor areas.",
-    ),
     "touch_remote": FeatureLabel(
         "Touch remote",
         "Drives a marker from a tablet or phone in the web UI.",

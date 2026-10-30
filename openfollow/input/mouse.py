@@ -38,7 +38,6 @@ from openfollow.runtime.services_detection_pin import (
     get_or_create_manual_marker,
     is_assist_controlled,
 )
-from openfollow.scene.ground_grid import floor_height
 from openfollow.scene.solver import (
     CONE_RING_SEGMENTS,
     GROUND_RING_SEGMENTS,
@@ -305,10 +304,8 @@ class MouseHandler:
             select(self._app, marker_id)
         self._active = True
         grabbed = self._app._server.get_marker(marker_id) if self._app._server is not None else None
-        # On its ring's plane: the floor raised by a zone's lift, as drawn.
-        self._drag_floor_z = (
-            floor_height(self._app._config, *grabbed.pos[:2]) + grabbed.lift if grabbed is not None else None
-        )
+        # On its ring's plane: the stage plane raised by a zone's lift, as drawn.
+        self._drag_floor_z = self._app._config.grid.z_offset + grabbed.lift if grabbed is not None else None
         self._anchor_screen = (x, y)
         # No target until the first move, so the grab itself never yanks the
         # marker to the click. ``update`` seeds the glide from the marker's
@@ -459,7 +456,7 @@ class MouseHandler:
             if marker is None:
                 continue
             mx, my, _ = marker.pos
-            z_off = floor_height(cfg, mx, my) + marker.lift
+            z_off = cfg.grid.z_offset + marker.lift
             center = apply_overlay_distortion(
                 project_points(buf, np.array([[mx, my, z_off]], dtype=np.float64), float(w), float(h)),
                 float(w),

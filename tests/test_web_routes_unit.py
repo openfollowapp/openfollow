@@ -514,7 +514,6 @@ class TestApplyImportData:
         from openfollow.configuration import (
             FEATURE_KEYS,
             DetectionConfig,
-            GroundGridConfig,
             PathConfig,
             PathsConfig,
             UiConfig,
@@ -523,7 +522,6 @@ class TestApplyImportData:
         return AppConfig(
             ui=UiConfig(shown_features=list(FEATURE_KEYS)),
             detection=DetectionConfig(enabled=True),
-            ground_grid=GroundGridConfig(enabled=True),
             paths=PathsConfig(paths=[PathConfig(name="cross", active=True), PathConfig(name="loop", active=True)]),
         )
 
@@ -539,7 +537,6 @@ class TestApplyImportData:
         out = _apply_import_data(self._experimental_station(), data)
         assert [p.active for p in out.paths.paths] == [True, True]
         assert out.detection.enabled is True
-        assert out.ground_grid.enabled is True
 
     def test_an_import_without_paths_keeps_this_station_s(self) -> None:
         from openfollow.configuration import PathConfig, PathsConfig

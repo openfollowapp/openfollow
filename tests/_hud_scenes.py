@@ -37,7 +37,6 @@ ZONES = [
     ("Zone 5", [(2.0, 2.5), (4.0, 3.0), (3.5, 4.2), (2.2, 4.0)], "#9B59B6"),
     ("Zone 6", [(-4.0, -0.8), (-2.0, -0.8), (-2.2, 0.4), (-3.8, 0.5), (-4.2, 0.0)], "#00CED1"),
 ]
-GROUND_GRID = [(-2.5, 2.0), (2.5, 2.0), (3.0, 3.5), (0.0, 4.5), (-3.0, 3.5)]
 PATHS = [
     ([(-4.0, -0.5), (-1.5, 0.0), (1.5, 0.0), (4.0, -0.5)], False),
     ([(-1.5, 1.5), (1.5, 1.5), (2.0, 3.0), (-2.0, 3.0)], True),
@@ -164,10 +163,6 @@ def full(t: float) -> OverlayState:
         controlled=2,
         zones=6,
         grid_visible=True,
-        ground_grid_active=True,
-        ground_grid_visible=True,
-        ground_grid_z=0.6,
-        ground_grid_vertices=list(GROUND_GRID),
         show_paths=True,
         path_lines=_path_lines(),
     )

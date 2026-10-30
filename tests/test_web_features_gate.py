@@ -43,7 +43,6 @@ _GATED_ROOTS = [
     ("partials/zone_editor.tpl", 'id="zone-editor-section"', "zones"),
     ("partials/paths.tpl", 'id="paths-section"', "paths"),
     ("partials/path_editor.tpl", 'id="path-editor-section"', "paths"),
-    ("partials/ground_grid.tpl", 'id="ground-grid-section"', "ground_grid"),
     ("partials/touch_remote.tpl", 'id="touch-remote-section"', "touch_remote"),
     ("partials/midi_fader_detail.tpl", "mf-source-row", "midi"),
 ]

@@ -1941,6 +1941,11 @@ def _as_float(value: Any, default: float) -> float:
         return default
 
 
+def _as_number(value: Any, default: float) -> float:
+    """``_as_float`` refusing a bool: ``true`` in a JSON body is no length or time."""
+    return default if isinstance(value, bool) else _as_float(value, default)
+
+
 def _coerce_timer(value: Any, default: float) -> float:
     """Coerce a recovery-timer field to a finite, non-negative float.
 
@@ -2021,6 +2026,7 @@ _SECTION_LENGTH_FIELDS: dict[str, frozenset[str]] = {
     ),
     "movement": frozenset({"default_pos_x", "default_pos_y", "default_pos_z"}),
     "trigger_zones": frozenset({"hysteresis"}),
+    "zone": frozenset({"z_offset"}),
 }
 _SECTION_SPEED_FIELDS: dict[str, frozenset[str]] = {
     "movement": frozenset({"min_speed", "max_speed", "move_speed"}),
@@ -2465,6 +2471,9 @@ _ZONE_FIELD_PARSERS: dict[str, _FieldParser] = {
     "osc_address_final_exit": _as_str,
     "destination_id": _as_str,
     "enabled": _as_bool,
+    "z_offset": _as_number,
+    "raise_markers": _as_bool,
+    "height_transition_s": _as_number,
 }
 
 
@@ -5731,7 +5740,7 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.get(_PATHS_API + "/marker/<marker_id:int>")
     def paths_marker_position(marker_id: int) -> Any:
-        """Where a marker is on the wire, for "Point from marker"."""
+        """Where a marker is, without a zone's lift, for "Point from marker"."""
         response.content_type = "application/json"
         position = server.get_marker_position(marker_id)
         if position is None:
@@ -10766,6 +10775,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     "osc_address_final_exit": z.osc_address_final_exit,
                     "destination_id": z.destination_id,
                     "enabled": z.enabled,
+                    "z_offset": z.z_offset,
+                    "raise_markers": z.raise_markers,
+                    "height_transition_s": z.height_transition_s,
                     "is_occupied": occ,
                     "occupant_count": count,
                     "diagnostics": diag,
@@ -10847,19 +10859,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 response.status = 404
                 return json.dumps({"error": "Zone index out of range"})
             src = zones[index]
-            clone = TriggerZoneConfig(
-                name=(src.name + " (copy)") if src.name else "(copy)",
-                vertices=[list(v) for v in src.vertices],
-                color=src.color,
-                trigger_source=src.trigger_source,
-                triggered_by=list(src.triggered_by),
-                osc_address_first_entry=src.osc_address_first_entry,
-                osc_address_additional_entry=src.osc_address_additional_entry,
-                osc_address_partial_exit=src.osc_address_partial_exit,
-                osc_address_final_exit=src.osc_address_final_exit,
-                destination_id=src.destination_id,
-                enabled=src.enabled,
-            )
+            clone = copy.deepcopy(src)
+            clone.name = (src.name + " (copy)") if src.name else "(copy)"
             zones.append(clone)
             save_config(cfg, server.config_path)
         return json.dumps({"success": True, "index": len(zones) - 1})

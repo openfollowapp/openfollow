@@ -493,12 +493,13 @@ class TestBuildInitialOverlayState:
         assert state.crosshair_color == "#ff0000"
 
 
-def _make_zone(vertices: list[tuple[float, float]], *, enabled: bool = True) -> SimpleNamespace:
+def _make_zone(vertices: list[tuple[float, float]], *, enabled: bool = True, z_offset: float = 0.0) -> SimpleNamespace:
     return SimpleNamespace(
         vertices=vertices,
         color="#ffcc00",
         name="Z",
         enabled=enabled,
+        z_offset=z_offset,
     )
 
 
@@ -539,7 +540,7 @@ class TestPopulateZoneOverlay:
         assert state.show_zones is True
         assert len(state.zone_polygons) == 1
         # Occupancy defaults to (False, 0) when the engine is not consulted.
-        _, _, _, is_occupied, count = state.zone_polygons[0]
+        _, _, _, is_occupied, count, _height = state.zone_polygons[0]
         assert is_occupied is False
         assert count == 0
 
@@ -556,6 +557,24 @@ class TestPopulateZoneOverlay:
 
         assert state.show_zones is False
         assert state.zone_polygons == []
+
+    @pytest.mark.parametrize(
+        ("features", "height"),
+        [(["zones", "zone_heights"], 0.75), (["zones"], 0.0)],
+        ids=["zone heights on", "zone heights off"],
+    )
+    def test_each_zone_carries_its_height_while_zone_heights_is_on(self, features: list[str], height: float) -> None:
+        from openfollow.configuration import UiConfig
+
+        square = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+        cfg = _make_cfg(enabled=False, show_overlay=True, zones=[_make_zone(square, z_offset=0.75)])
+        cfg.ui = UiConfig(shown_features=features)
+        state = OverlayState()
+
+        _populate_zone_overlay(state, cfg, SimpleNamespace(_runtime_services=SimpleNamespace(_zone_engine=None)))
+
+        assert state.zone_polygons[0][5] == height
+        assert state.zone_z_offset == cfg.grid.z_offset
 
     def test_hides_overlay_only_when_show_overlay_is_false(self) -> None:
         square = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
@@ -578,7 +597,7 @@ class TestPopulateZoneOverlay:
         _populate_zone_overlay(state, cfg, app)
 
         assert state.show_zones is True
-        _, _, _, is_occupied, count = state.zone_polygons[0]
+        _, _, _, is_occupied, count, _height = state.zone_polygons[0]
         assert is_occupied is True
         assert count == 3
 
@@ -592,7 +611,7 @@ class TestPopulateZoneOverlay:
 
         _populate_zone_overlay(state, cfg, app)
 
-        _, _, _, is_occupied, count = state.zone_polygons[0]
+        _, _, _, is_occupied, count, _height = state.zone_polygons[0]
         assert is_occupied is False
         assert count == 0
 
@@ -606,7 +625,7 @@ class TestPopulateZoneOverlay:
 
         assert state.show_zones is True
         assert len(state.zone_polygons) == 1
-        _, _, _, is_occupied, count = state.zone_polygons[0]
+        _, _, _, is_occupied, count, _height = state.zone_polygons[0]
         assert is_occupied is False
         assert count == 0
 
@@ -637,7 +656,7 @@ class TestPopulateZoneOverlay:
 
         # Only the one live zone survives the filter.
         assert len(state.zone_polygons) == 1
-        verts, _color, _name, _is_occupied, _count = state.zone_polygons[0]
+        verts, _color, _name, _is_occupied, _count, _height = state.zone_polygons[0]
         assert verts == [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
 
 
@@ -889,6 +908,8 @@ class _TornMarker:
     @property
     def speed(self) -> tuple[float, float, float]:
         return (0.0, 0.0, 0.0)
+
+    lift = 0.0
 
 
 def _make_full_marker_config() -> SimpleNamespace:

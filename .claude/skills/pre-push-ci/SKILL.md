@@ -50,7 +50,8 @@ drawing paths (`video/overlay.py`, `video/hud_render.py`, `runtime/overlay_*.py`
 `window.py`, the bench scenes or the bench itself), `ci-remote` follows a green
 `make ci` with a comparison of its own (`make perf-ab PERF_BASE=<dir>` is the
 same step by hand): the bench scenes drawn with this tree's renderer and with
-the merge-base's (against `origin/main`), rounds alternating, about a
+the merge-base's (against `origin/main`), each with its own tree's scenes (the
+merge-base's package and `tests/_hud_scenes.py` are archived together), rounds alternating, about a
 minute on a Pi 5. It fails the gate when a scene is more than 15 % slower
 ("Operator Screen drawing is more than 15 % slower") or when the comparison
 cannot run. `OPENFOLLOW_CI_PERF=0` / `=1` turns it off / on whatever changed;

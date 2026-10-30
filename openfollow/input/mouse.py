@@ -105,6 +105,8 @@ class MouseHandler:
         # EMA target (world x, y) and the current smoothed world position.
         self._target_world: tuple[float, float] | None = None
         self._smooth_world: tuple[float, float] | None = None
+        # The floor the grabbed marker stood on: the cursor is read on it for the whole drag.
+        self._drag_floor_z: float | None = None
         # A parked marker the mouse grabbed: it steers that one and leaves the selection alone.
         self._parked_grab: int | None = None
         # Last right-click for double-click (reset) detection:
@@ -301,6 +303,9 @@ class MouseHandler:
             self._parked_grab = None
             select(self._app, marker_id)
         self._active = True
+        grabbed = self._app._server.get_marker(marker_id) if self._app._server is not None else None
+        # On its ring's plane: the stage plane raised by a zone's lift, as drawn.
+        self._drag_floor_z = self._app._config.grid.z_offset + grabbed.lift if grabbed is not None else None
         self._anchor_screen = (x, y)
         # No target until the first move, so the grab itself never yanks the
         # marker to the click. ``update`` seeds the glide from the marker's
@@ -408,7 +413,8 @@ class MouseHandler:
         # is configured. The lens lives on the config (the Camera object is pinhole).
         lens = effective_lens(self._app._config)
         screen = invert_overlay_distortion(self._screen_buffer, float(w), float(h), *lens)
-        world = unproject_to_plane(buf, screen, float(w), float(h), self._app._config.grid.z_offset)
+        plane_z = self._app._config.grid.z_offset if self._drag_floor_z is None else self._drag_floor_z
+        world = unproject_to_plane(buf, screen, float(w), float(h), plane_z)
         if not np.all(np.isfinite(world[0])):
             return None
         return float(world[0, 0]), float(world[0, 1])
@@ -450,7 +456,7 @@ class MouseHandler:
             if marker is None:
                 continue
             mx, my, _ = marker.pos
-            z_off = cfg.grid.z_offset
+            z_off = cfg.grid.z_offset + marker.lift
             center = apply_overlay_distortion(
                 project_points(buf, np.array([[mx, my, z_off]], dtype=np.float64), float(w), float(h)),
                 float(w),

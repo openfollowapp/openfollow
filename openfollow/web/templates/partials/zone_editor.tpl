@@ -167,6 +167,25 @@
         zone.vertices.forEach(function(_, i) { out = out.concat(edgePoints(cam, zone, i).slice(i ? 1 : 0)); });
         return out;
     }
+    // A raised zone's floor outline and corner lines, cut into runs in front of and behind the zone.
+    function floorRuns(cam, zone) {
+        var v = zone.vertices, n = v.length, bottom = floorZ(), top = zonePlane(zone), out = [];
+        var eye = [cam.pos[0], -cam.pos[2], cam.pos[1]];
+        var lines = v.map(function(a, i) { return [[a[0], a[1], bottom], [v[(i + 1) % n][0], v[(i + 1) % n][1], bottom], false]; })
+            .concat(v.map(function(a) { return [[a[0], a[1], bottom], [a[0], a[1], top], true]; }));
+        lines.forEach(function(line) {
+            var a = line[0], b = line[1], pts = cam.segment(a, b, 24), run = [pts[0]], behind = null;
+            for (var k = 0; k < 24; k++) {
+                var t = (k + 0.5) / 24;
+                var h = window.OpenFollow.hiddenByZone([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t], eye, v, bottom, top);
+                if (behind !== null && h !== behind) { out.push({ points: run, behind: behind, post: line[2] }); run = [pts[k]]; }
+                behind = h;
+                run.push(pts[k + 1]);
+            }
+            out.push({ points: run, behind: behind, post: line[2] });
+        });
+        return out;
+    }
     function chosenZone() {
         var zone = state.zones[state.selectedIndex];
         return zone && zone.vertices ? zone : null;
@@ -234,6 +253,18 @@
         pictureKey = key;
         pv.clear();
         if (!cam) { pv.hideLoupe(); return; }
+        // Under the zones: each raised zone's outline on the floor, and its corners joined up to it.
+        state.zones.forEach(function(zone) {
+            if (!zone || !zone.vertices || zone.vertices.length < 3 || zonePlane(zone) <= floorZ()) return;
+            floorRuns(cam, zone).forEach(function(run) {
+                pv.polylines(run.points).forEach(function(points) {
+                    pv.svg.appendChild(pv.el('polyline', {
+                        points: points, stroke: zone.color || '#ff8000', 'vector-effect': 'non-scaling-stroke',
+                        'class': 'pv-zone-floor' + (run.post ? ' pv-zone-post' : '') + (run.behind ? ' pv-behind' : ''),
+                    }));
+                });
+            });
+        });
         state.zones.forEach(function(zone, i) {
             if (!zone || !zone.vertices || zone.vertices.length < 3) return;
             var col = zone.color || '#ff8000';
@@ -354,8 +385,17 @@
                 var activeEl = document.activeElement;
                 var editingSelected = activeEl && detailsEl.contains(activeEl) && state.selectedIndex >= 0;
                 var incomingZones = data.zones || [];
+                // The station's copy of the selected zone, before an edit in progress is put back over it.
+                var stored = incomingZones[state.selectedIndex];
                 if (editingSelected && state.zones[state.selectedIndex]) {
                     var preserved = state.zones[state.selectedIndex];
+                    // Keep the page's object (the write queue finds zones by identity) and its corners, but take
+                    // the station's other fields, which the picture reads; the inputs being typed in are untouched.
+                    if (stored) {
+                        Object.keys(stored).forEach(function(k) {
+                            if (k !== 'vertices') preserved[k] = stored[k];
+                        });
+                    }
                     state.zones = incomingZones;
                     if (state.selectedIndex < state.zones.length) {
                         state.zones[state.selectedIndex] = preserved;
@@ -388,8 +428,10 @@
                     // Refresh Diagnostics tab in place (don't rebuild whole
                     // panel). Rendering fresh occupants/last_event_* into
                     // existing #zone-diag-* spans leaves focus untouched.
-                    var current = data.zones[state.selectedIndex];
-                    if (current) renderZoneDiagnostics(current);
+                    if (stored) {
+                        syncHeightsShown(stored);
+                        renderZoneDiagnostics(stored);
+                    }
                 }
             })
             .catch(function() {});
@@ -445,13 +487,10 @@
         cancelBtn.disabled = !drawing;
         deleteBtn.disabled = (state.selectedIndex < 0);
         addBtn.disabled = drawing || mode === 'camera';
-        if (drawing) {
-            statusEl.textContent = 'Drawing: ' + plan.draft.vertices.length + ' point(s). Click first vertex or double-click to close.';
-        } else if (state.selectedIndex >= 0) {
-            statusEl.textContent = 'Editing zone ' + (state.selectedIndex + 1);
-        } else {
-            statusEl.textContent = '';
-        }
+        // The chosen zone is named by its details heading, so the line only speaks while drawing.
+        statusEl.textContent = drawing
+            ? 'Drawing: ' + plan.draft.vertices.length + ' point(s). Click first vertex or double-click to close.'
+            : '';
         // Drawing-in-progress is a form of unsaved state: vertices
         // are on the canvas but not yet on disk. Mark the section
         // dirty so "Save as template" disables until the operator
@@ -545,6 +584,17 @@
               + ' aria-describedby="zone-triggered-by-error">';
         html += '        <span class="field-error" id="zone-triggered-by-error" data-zone-field-error="triggered_by" aria-live="polite"></span>';
         html += '      </div>';
+        html += '    </div>';
+        // Zone heights: shown only while that feature is on.
+        html += '    <div class="row" data-feature="zone_heights">';
+        html += blurField('Z offset (' + vertexUnitLabel() + ')', 'z_offset',
+            heightShown('z_offset', z), IS_IMPERIAL ? 'text' : 'number', '0.01');
+        html += '      <div class="field checkbox-field"><label for="zone-detail-raise-markers">Marker height</label>' +
+            '<div class="checkbox-wrap checkbox-field inline">' +
+            '<input type="checkbox" id="zone-detail-raise-markers" data-zone-field="raise_markers" ' + (z.raise_markers ? 'checked' : '') + '>' +
+            '<label for="zone-detail-raise-markers">Add the Z offset inside this zone</label></div></div>';
+        html += blurField('Height transition time (s)', 'height_transition_s',
+            heightShown('height_transition_s', z), 'number', '0.1');
         html += '    </div>';
         html += '  </div>';
 
@@ -844,8 +894,39 @@
             + '</div>';
     }
 
+    // A zone height field's text for the value the station holds.
+    function heightShown(name, z) {
+        if (name !== 'z_offset') return String(z[name]);
+        var metres = Number(z.z_offset) || 0;
+        return IS_IMPERIAL ? formatLength(metres) : metres.toFixed(3);
+    }
+
+    // What the station holds now: an untouched field is left out of a save, so it must not compare
+    // against a value an earlier save already replaced.
+    function syncHeightsShown(z) {
+        detailsEl.querySelectorAll('[data-zone-blur-field]').forEach(function(inp) {
+            inp.setAttribute('data-shown', heightShown(inp.getAttribute('data-zone-blur-field'), z));
+        });
+    }
+
+    // A number field validated on blur like the OSC addresses; ``data-shown``
+    // keeps what it showed, so an untouched one is not saved back rounded.
+    function blurField(label, name, value, type, step) {
+        var id = 'zone-detail-' + name.replace(/_/g, '-');
+        return '      <div class="field">'
+            + '<label for="' + id + '">' + label + '</label>'
+            + '<input type="' + type + '"' + (type === 'number' ? ' step="' + step + '"' : '')
+            + ' id="' + id + '" data-zone-field="' + name + '"'
+            + ' data-zone-blur-field="' + name + '"'
+            + ' value="' + escapeAttr(value) + '" data-shown="' + escapeAttr(value) + '"'
+            + ' aria-describedby="' + id + '-error">'
+            + '<span class="field-error" id="' + id + '-error"'
+            + ' data-zone-field-error="' + name + '" aria-live="polite"></span>'
+            + '</div>';
+    }
+
     function bindOscFieldValidators() {
-        var inputs = detailsEl.querySelectorAll('[data-zone-osc-field]');
+        var inputs = detailsEl.querySelectorAll('[data-zone-osc-field], [data-zone-blur-field]');
         inputs.forEach(function(inp) {
             inp.addEventListener('blur', onOscFieldBlur);
         });
@@ -853,7 +934,7 @@
 
     function onOscFieldBlur(evt) {
         var inp = evt.target;
-        var field = inp.getAttribute('data-zone-osc-field');
+        var field = inp.getAttribute('data-zone-osc-field') || inp.getAttribute('data-zone-blur-field');
         if (!field) return;
         var errSpan = detailsEl.querySelector(
             '[data-zone-field-error="' + field + '"]'
@@ -943,8 +1024,13 @@
         nodes.forEach(function(n) {
             var name = n.getAttribute('data-zone-field');
             if (n.type === 'checkbox') out[name] = n.checked;
-            else out[name] = n.value;
+            else if (n.value !== n.getAttribute('data-shown')) out[name] = n.value;
         });
+        // Metres on the wire; a length the parser refuses keeps the saved one.
+        if (IS_IMPERIAL && typeof out.z_offset === 'string') {
+            var zMetres = parseLength(out.z_offset);
+            if (isFinite(zMetres)) out.z_offset = zMetres;
+        }
         // triggered_by is comma-separated text input
         // in the form, but the JSON CRUD API expects ``list[int]``.
         // Parse here so the route layer's ``_parse_triggered_by`` sees

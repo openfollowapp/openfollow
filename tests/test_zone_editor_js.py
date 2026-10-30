@@ -48,7 +48,8 @@ function modalConfirm() { return Promise.resolve(true); }
 var model = {
     camera: { pos_x: 0, pos_y: 3, pos_z: 6.4, pitch: -90, yaw: 0, roll: 0, fov: 90, k1: 0, k2: 0, cx: 0, cy: 0 },
     zones: [{ name: 'Square', color: '#ff8000', vertices: [[0, 2], [2, 2], [2, 4], [0, 4]], enabled: true,
-              trigger_source: 'markers', triggered_by: [], is_occupied: false, occupant_count: 0 }],
+              trigger_source: 'markers', triggered_by: [], is_occupied: false, occupant_count: 0,
+              z_offset: 0, raise_markers: false, height_transition_s: 0.3 }],
 };
 station = function (req) {
     var m;
@@ -181,6 +182,18 @@ def test_pressing_inside_a_zone_selects_it_and_dragging_a_corner_saves_it() -> N
     moved = out["puts"][0]
     assert moved[:2] == [[0, 2], [2, 2]] and moved[3] == [0, 4]
     assert moved[2] == [pytest.approx(3.0), pytest.approx(4.0)]
+
+
+def test_a_chosen_zone_is_named_by_its_details_heading_not_the_status_line() -> None:
+    out = _editor(
+        """
+        at('mousedown', 725, 360); at('mouseup', 725, 360);
+        await settle();
+        out.status = document.getElementById('zone-editor-status').textContent;
+        out.heading = document.querySelector('#zone-details').textContent.indexOf('Zone 1 Details') >= 0;
+        """
+    )
+    assert out == {"status": "", "heading": True}
 
 
 # -- the camera view ---------------------------------------------------------------
@@ -1916,6 +1929,210 @@ def test_a_test_send_for_a_zone_deleted_meanwhile_says_so() -> None:
     assert out["error"] is not None and "The zone was deleted before the test was sent." in out["error"]
 
 
+# -- zone heights in the details panel ---------------------------------------------
+
+_CHOOSE_THE_ZONE = """
+at('mousedown', 725, 360); at('mouseup', 725, 360);
+await settle();
+function field(name) { return document.querySelector('#zone-details [data-zone-field="' + name + '"]'); }
+"""
+
+
+def test_the_zone_height_fields_sit_in_a_row_gated_on_their_feature() -> None:
+    out = _editor(
+        _CHOOSE_THE_ZONE
+        + """
+        var row = document.querySelector('#zone-details [data-feature="zone_heights"]');
+        out.labels = Array.prototype.map.call(row.querySelectorAll('label'), function (l) { return l.textContent; });
+        out.inRow = ['z_offset', 'raise_markers', 'height_transition_s']
+            .every(function (n) { return row.contains(field(n)); });
+        out.values = [field('z_offset').value, field('height_transition_s').value,
+                      field('raise_markers').hasAttribute('checked')];
+        """
+    )
+    assert out["labels"] == [
+        "Z offset (m)",
+        "Marker height",
+        "Add the Z offset inside this zone",
+        "Height transition time (s)",
+    ]
+    assert out["inRow"] is True
+    assert out["values"] == ["0.000", "0.3", False]
+
+
+def test_saving_a_zone_sends_its_heights() -> None:
+    out = _editor(
+        _CHOOSE_THE_ZONE
+        + """
+        field('z_offset').value = '0.45';
+        field('height_transition_s').value = '1.2';
+        field('raise_markers').click();
+        button('zone-save-btn');
+        await settle();
+        var body = puts()[puts().length - 1].body;
+        out.sent = [body.z_offset, body.raise_markers, body.height_transition_s];
+        """,
+        setup="model.zones[0].z_offset = 0.2;",
+    )
+    assert out["sent"] == ["0.45", True, "1.2"]
+
+
+def test_a_zone_height_is_checked_when_it_loses_focus() -> None:
+    out = _editor(
+        _CHOOSE_THE_ZONE
+        + """
+        field('z_offset').value = '99';
+        field('z_offset').dispatchEvent(makeEvent('blur'));
+        field('height_transition_s').value = '-1';
+        field('height_transition_s').dispatchEvent(makeEvent('blur'));
+        await settle();
+        out.asked = requests.filter(function (r) { return r.url.indexOf('/api/validate/zone/') === 0; })
+            .map(function (r) { return r.url; });
+        """
+    )
+    assert out["asked"] == [
+        "/api/validate/zone/z_offset?z_offset=99",
+        "/api/validate/zone/height_transition_s?height_transition_s=-1",
+    ]
+
+
+def test_an_imperial_station_types_the_z_offset_in_feet_and_sends_metres() -> None:
+    out = _editor(
+        _CHOOSE_THE_ZONE
+        + """
+        out.label = field('z_offset').parentNode.querySelector('label').textContent;
+        out.shown = field('z_offset').value;
+        field('z_offset').value = '2 ft';
+        button('zone-save-btn');
+        await settle();
+        out.sent = puts()[puts().length - 1].body.z_offset;
+        """,
+        setup="window.OpenFollow.units.setSystem('imperial'); model.zones[0].z_offset = 0.3048;",
+    )
+    assert out["label"] == "Z offset (ft / in)"
+    assert out["shown"] == "1 ft 0.00 in"
+    assert out["sent"] == pytest.approx(0.6096)
+
+
+def test_an_imperial_length_the_parser_refuses_is_sent_as_typed() -> None:
+    out = _editor(
+        _CHOOSE_THE_ZONE
+        + """
+        field('z_offset').value = 'high';
+        button('zone-save-btn');
+        await settle();
+        out.sent = puts()[puts().length - 1].body.z_offset;
+        """,
+        setup="window.OpenFollow.units.setSystem('imperial');",
+    )
+    assert out["sent"] == "high"
+
+
+@pytest.mark.parametrize("imperial", [False, True], ids=["metric", "imperial"])
+def test_an_unrelated_edit_leaves_the_zone_heights_as_stored(imperial: bool) -> None:
+    out = _editor(
+        _CHOOSE_THE_ZONE
+        + """
+        field('name').value = 'Riser';
+        button('zone-save-btn');
+        await settle();
+        var body = puts()[puts().length - 1].body;
+        out.sentHeights = 'z_offset' in body || 'height_transition_s' in body;
+        out.stored = [model.zones[0].z_offset, model.zones[0].height_transition_s, model.zones[0].name];
+        """,
+        setup=("window.OpenFollow.units.setSystem('imperial');" if imperial else "")
+        + "model.zones[0].z_offset = 0.123456789; model.zones[0].height_transition_s = 0.25;",
+    )
+    assert out["sentHeights"] is False
+    assert out["stored"] == [0.123456789, 0.25, "Riser"]
+
+
+@pytest.mark.parametrize(
+    ("imperial", "typed", "back"),
+    [(False, "1", "0.300"), (True, "3 ft", "11.81 in")],
+    ids=["metric", "imperial"],
+)
+def test_a_height_saved_then_typed_back_is_saved_again(imperial: bool, typed: str, back: str) -> None:
+    out = _editor(
+        _CHOOSE_THE_ZONE
+        + f"""
+        field('z_offset').value = '{typed}';
+        button('zone-save-btn');
+        await settle();
+        field('z_offset').value = '{back}';
+        button('zone-save-btn');
+        await settle();
+        out.sent = puts().map(function (r) {{ return r.body.z_offset; }});
+        """,
+        setup=("window.OpenFollow.units.setSystem('imperial');" if imperial else "") + "model.zones[0].z_offset = 0.3;",
+    )
+    assert len(out["sent"]) == 2
+    assert out["sent"][1] == (pytest.approx(0.3, abs=1e-3) if imperial else back)
+
+
+def test_a_z_offset_saved_with_the_focus_kept_in_the_panel_moves_the_zone_in_the_camera_view() -> None:
+    """Browsers leave the focus on Save: the station's new height reaches the picture, and a corner dragged
+    then is stored where the plane at that height puts it."""
+    out = _camera(
+        _HEIGHTS
+        + """
+        await pick();
+        function field(name) { return document.querySelector('#zone-details [data-zone-field="' + name + '"]'); }
+        field('z_offset').value = '1.6';
+        document.getElementById('zone-save-btn').focus();
+        button('zone-save-btn');
+        await settle();
+        tickIntervals(); await settle(); tickIntervals(); await settle();
+        out.focused = document.activeElement.id;
+        out.after = spot(3);
+        pointer(pin(3), 'pointerdown', spot(3)[0], spot(3)[1]);
+        pointer(svg(), 'pointermove', spot(3)[0] + 100, spot(3)[1]);
+        out.readout = readout();
+        pointer(svg(), 'pointerup', spot(3)[0] + 100, spot(3)[1]);
+        await settle();
+        out.saved = stored().pop();
+        """
+    )
+    assert out["focused"] == "zone-save-btn"
+    assert out["after"] == [906.67, 226.67]
+    assert out["readout"].endswith("Z 1.600 m")
+    assert out["saved"][2] == [2.75, 4]
+
+
+def test_an_edit_in_progress_keeps_its_text_while_the_stations_height_reaches_the_picture() -> None:
+    out = _camera(
+        _HEIGHTS
+        + """
+        await pick();
+        function field(name) { return document.querySelector('#zone-details [data-zone-field="' + name + '"]'); }
+        field('name').focus();
+        field('name').value = 'Riser being renamed';
+        model.zones[0].z_offset = 0.5;
+        model.zones[0].name = 'Renamed elsewhere';
+        tickIntervals(); await settle(); tickIntervals(); await settle();
+        out.typed = field('name').value;
+        out.after = spot(3);
+        """
+    )
+    assert out["typed"] == "Riser being renamed"
+    assert out["after"] != [840, 260]
+
+
+def test_a_corner_being_typed_in_keeps_its_place_when_the_station_answers() -> None:
+    out = _camera(
+        """
+        await pick();
+        var x = document.querySelector('#zone-details [data-vertex-field="x"][data-vertex-index="2"]');
+        typeInto(x, '3');
+        out.typed = spot(3);
+        tickIntervals(); await settle(); tickIntervals(); await settle();
+        out.after = spot(3);
+        """
+    )
+    assert out["typed"] != [840, 260]
+    assert out["after"] == out["typed"]
+
+
 # -- the loupe stays open on the chosen corner -------------------------------------------
 
 _LOUPE = """
@@ -2122,3 +2339,60 @@ def test_the_loupe_closes_when_the_camera_goes() -> None:
         """
     )
     assert out == {"before": True, "after": None}
+
+
+_FLOOR_LINES = """
+out.lines = svg().querySelectorAll('polyline.pv-zone-floor').map(function (l) {
+    var pts = l.getAttribute('points').split(' ').map(function (p) {
+        return p.split(',').map(function (v) { return Math.round(+v); });
+    });
+    return [l.getAttribute('class'), pts[0], pts[pts.length - 1]];
+});
+"""
+
+
+def test_a_raised_zone_shows_its_floor_outline_and_corner_lines_fainter_behind_it() -> None:
+    """Straight down from 3 m stage right of the square, its stage-right side and corners are in view."""
+    out = _camera(_HEIGHTS + "model.camera.pos_x = -3; model.zones[0].z_offset = 1.6; await pick();" + _FLOOR_LINES)
+    assert out["lines"] == [
+        ["pv-zone-floor pv-behind", [940, 460], [1140, 460]],
+        ["pv-zone-floor pv-behind", [1140, 460], [1140, 260]],
+        ["pv-zone-floor pv-behind", [1140, 260], [940, 260]],
+        ["pv-zone-floor", [940, 260], [940, 460]],
+        ["pv-zone-floor pv-zone-post", [940, 460], [1040, 493]],
+        ["pv-zone-floor pv-zone-post pv-behind", [1140, 460], [1307, 493]],
+        ["pv-zone-floor pv-zone-post pv-behind", [1140, 260], [1307, 227]],
+        ["pv-zone-floor pv-zone-post", [940, 260], [1040, 227]],
+    ]
+
+
+@pytest.mark.parametrize(
+    "setup",
+    [
+        "model.zones[0].z_offset = 1.6;",
+        _HEIGHTS + "model.zones[0].z_offset = 0;",
+        _HEIGHTS + "model.zones[0].z_offset = -0.5;",
+    ],
+    ids=["zone heights off", "on the stage", "below it"],
+)
+def test_a_zone_not_raised_on_the_picture_shows_no_floor_outline(setup: str) -> None:
+    out = _camera(setup + "await pick();" + _FLOOR_LINES)
+    assert out["lines"] == []
+
+
+def test_a_floor_line_is_cut_where_the_zone_starts_to_hide_it() -> None:
+    """A U open towards a camera downstage right: the right arm hides the right half of the notch's back edge."""
+    out = _camera(
+        _HEIGHTS
+        + """
+        model.camera = { pos_x: 6, pos_y: -6, pos_z: 2.5, pitch: -15, yaw: 0, roll: 0, fov: 60,
+                         k1: 0, k2: 0, cx: 0, cy: 0 };
+        model.zones[0].vertices = [[-2, -1], [-1, -1], [-1, 0], [1, 0], [1, -1], [2, -1], [2, 1], [-2, 1]];
+        model.zones[0].z_offset = 0.5;
+        tickIntervals(); await settle(); choose('camera'); await showPicture();
+        """
+        + _FLOOR_LINES
+    )
+    edges = [cls for cls, _, _ in out["lines"] if "post" not in cls]
+    assert len(edges) == 9
+    assert edges[2:4] == ["pv-zone-floor", "pv-zone-floor pv-behind"]

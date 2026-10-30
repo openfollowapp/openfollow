@@ -376,7 +376,7 @@ def encode_otp_transform_packet(
         now_us = markers[0].clock_now_us if markers else 0
     point_pdu_parts: list[bytes] = []
     for marker in markers:
-        x, y, z = marker.pos
+        x, y, z = marker.sent_pos
         x_um = _metres_to_um_i32(x)
         y_um = _metres_to_um_i32(y)
         z_um = _metres_to_um_i32(z)

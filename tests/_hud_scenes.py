@@ -120,7 +120,7 @@ def _base(t: float, *, markers: int, controlled: int, zones: int, **extra: Any) 
     polygons = []
     for name, verts, color in ZONES[:zones]:
         count = sum(point_in_polygon(m.x, m.y, verts) for m in marker_list)
-        polygons.append((verts, color, name, count > 0, count))
+        polygons.append((verts, color, name, count > 0, count, 0.0))
     values: dict[str, Any] = {
         "markers": marker_list,
         "selected_id": 1,

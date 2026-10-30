@@ -58,6 +58,13 @@ perf_wanted() {
     | grep -E "$HUD_PATHS" >/dev/null
 }
 
+# The merge-base's package, and its scenes when it has them: each side draws scenes its renderer reads.
+perf_archive() {
+  local paths=(openfollow)
+  git -C "$REPO_ROOT" cat-file -e "${perf_base}:tests/_hud_scenes.py" 2>/dev/null && paths+=(tests/_hud_scenes.py)
+  git -C "$REPO_ROOT" archive "$perf_base" "${paths[@]}"
+}
+
 perf_verdict() {
   case "$1" in
     0) return 0 ;;
@@ -78,7 +85,7 @@ run_local() {
   make -C "$REPO_ROOT" ci
   perf_dir="$(mktemp -d)"
   trap 'rm -rf "$perf_dir"' EXIT
-  git -C "$REPO_ROOT" archive "$perf_base" openfollow | tar -x -C "$perf_dir"
+  perf_archive | tar -x -C "$perf_dir"
   log "Timing the Operator Screen drawing against ${perf_base:0:9}"
   local status=0
   (cd "$REPO_ROOT" && $PERF_AB "$perf_dir") || status=$?
@@ -212,8 +219,8 @@ trap 'restore || exit 3' EXIT
 
 if [ "$PERF" = 1 ]; then
   perf_dir="$(remote mktemp -d)"
-  log "Copying the merge-base's package (${perf_base:0:9}) -> ${HOST}:${perf_dir}"
-  git -C "$REPO_ROOT" archive "$perf_base" openfollow | remote "tar -x -C '$perf_dir'"
+  log "Copying the merge-base's package and scenes (${perf_base:0:9}) -> ${HOST}:${perf_dir}"
+  perf_archive | remote "tar -x -C '$perf_dir'"
 fi
 
 log "Running 'make ci' on ${HOST} (real aarch64 / py3.13 target)"

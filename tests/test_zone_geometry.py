@@ -8,7 +8,7 @@ import math
 
 import pytest
 
-from openfollow.zones.geometry import point_in_polygon, shrink_polygon
+from openfollow.zones.geometry import hidden_by_zone, point_in_polygon, shrink_polygon
 
 pytestmark = pytest.mark.unit
 
@@ -164,3 +164,64 @@ class TestShrinkPolygon:
         # threshold while keeping the winding sign. Guard returns the original.
         equilateral = [(0.0, 0.0), (1.0, 0.0), (0.5, math.sqrt(3) / 2)]
         assert shrink_polygon(equilateral, 10.0) == equilateral
+
+
+# A camera upstage-down of SQUARE, looking at it from above a 1 m high zone.
+_EYE = (2.0, -10.0, 8.0)
+
+
+@pytest.mark.parametrize(
+    ("point", "hidden"),
+    [
+        ((2.0, 0.0, 0.0), False),
+        ((2.0, 4.0, 0.0), True),
+        ((4.0, 4.0, 0.0), True),
+        ((0.0, 0.0, 0.5), False),
+        ((4.0, 4.0, 0.5), True),
+        ((4.0, 4.0, 1.0), False),
+        ((2.0, 2.0, 1.0), False),
+        ((2.0, 5.0, 0.0), True),
+        ((2.0, 9.0, 0.0), False),
+    ],
+    ids=[
+        "near floor edge",
+        "far floor edge",
+        "far floor corner",
+        "near corner post",
+        "far corner post",
+        "far top corner",
+        "on the top",
+        "floor in its shadow",
+        "floor beyond its shadow",
+    ],
+)
+def test_a_solid_zone_hides_what_lies_behind_it_from_the_camera(
+    point: tuple[float, float, float], hidden: bool
+) -> None:
+    assert hidden_by_zone(point, _EYE, SQUARE, 0.0, 1.0) is hidden
+
+
+@pytest.mark.parametrize(
+    ("point", "eye", "hidden"),
+    [
+        ((2.0, 2.2, 0.0), (10.0, -2.0, 2.0), True),
+        ((2.0, 3.5, 0.0), (10.0, 6.0, 2.0), False),
+    ],
+    ids=["behind the other arm", "seen through the notch"],
+)
+def test_a_side_facing_the_camera_can_still_be_hidden_by_the_zones_other_arm(
+    point: tuple[float, float, float], eye: tuple[float, float, float], hidden: bool
+) -> None:
+    """The inner side of the L faces the camera in both cases; only the first sight line crosses the other arm."""
+    assert hidden_by_zone(point, eye, L_SHAPE, 0.0, 1.0) is hidden
+
+
+@pytest.mark.parametrize(
+    ("eye", "hidden"),
+    [((2.0, -10.0, 0.5), True), ((2.0, -10.0, 3.0), False)],
+    ids=["level with the zone", "level above it"],
+)
+def test_a_sight_line_level_with_the_ground_is_hidden_only_inside_the_zones_height(
+    eye: tuple[float, float, float], hidden: bool
+) -> None:
+    assert hidden_by_zone((2.0, 6.0, eye[2]), eye, SQUARE, 0.0, 1.0) is hidden

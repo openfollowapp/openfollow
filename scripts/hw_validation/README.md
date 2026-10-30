@@ -19,7 +19,7 @@ to grow into a fuller two-Pi validation suite (see the tracking issue).
 | `output_datagram_size_probe.py` | DUT | Drives the deployed PSN / OTP / RTTrPM send paths at 4-100 markers and asserts no stream emits a datagram past the 1472 B MTU budget - the size at which IP fragments and a loaded show network starts dropping frames. Exits `0` (PASS) / `1` (FAIL). |
 | `lens_edge_benchmark.py` | DUT | Times the Lens step's edge suggestions (`find_edge_candidates`, as `/api/wizard/lens/edges` runs it) on synthetic stages and on snapshot JPEGs passed with `--image`, and reports the longest gap a 60 Hz ticker thread sees meanwhile, the stall the frame loop would take. Exits `0` (PASS) / `1` (a scene over `--budget`, default 1 s). |
 | `hud_probe.py` | DUT | Measures the Operator Screen on a running station: CPU of the OpenFollow process, its main and HUD render threads and the compositor from `/proc`, and the `hud` section of `/api/stats` (CPU per picture and per repaint or GL render, how many refreshes each picture and video frame stayed on screen), one JSON line per run. Exits `0` (measured) / `2` (no process, or no display drawing). |
-| `hud_bench.py` | DUT / anywhere | Times the Operator Screen drawing (`CairoOverlayRenderer.draw`) on the bench scenes in `tests/_hud_scenes.py`, per picture and with `--split` per drawing pass. `--compare <dir>` draws the same scenes with another checkout's renderer, rounds alternating, and exits `1` when a scene is more than `--max-slowdown` (default 15 %) slower; `0` otherwise, `2` when a side cannot run or its renderer fails to draw a frame. |
+| `hud_bench.py` | DUT / anywhere | Times the Operator Screen drawing (`CairoOverlayRenderer.draw`) on the bench scenes in `tests/_hud_scenes.py`, per picture and with `--split` per drawing pass. `--compare <dir>` draws the scenes with another checkout's renderer, each checkout with its own `tests/_hud_scenes.py` (this one's when it has none), rounds alternating, and exits `1` when a scene is more than `--max-slowdown` (default 15 %) slower; `0` otherwise, `2` when a side cannot run or its renderer fails to draw a frame. |
 | `osc_socket_options_probe.py` | DUT | Builds clients via the deployed `OscService._make_client` and asserts the broadcast/multicast socket options (#482). |
 | `eos_console_probe.py` | workstation | Drives the deployed `OscTransmitterManager` at an Eos console / ETCnomad. `verify` reads Eos's own parameter values back and asserts the bundled ETC Eos templates' X/Y/Z mapping, exiting `0` (mapping correct) / `1` (mismatch or setup fault). `test` / `sweep` / `stream` drive the console for an operator to watch; their exit code reports only whether the sends reached the socket. |
 | `marker_catalog_two_station.py` | workstation | Reproduces the clock-skew marker-rename revert across two stations: steps station B's clock ahead, renames on A, asserts the rename holds on both. Exits `0` (PASS) / `1` (FAIL). |
@@ -317,14 +317,18 @@ desktop is faster by a large factor.
 ```sh
 poetry run python scripts/hw_validation/hud_bench.py
 poetry run python scripts/hw_validation/hud_bench.py --scenes full --split
-# against the merge-base: unpack its package next to the checkout
-rm -rf /tmp/of-base && mkdir -p /tmp/of-base && git archive "$(git merge-base origin/main HEAD)" openfollow | tar x -C /tmp/of-base
+# against the merge-base: unpack its package and scenes next to the checkout
+rm -rf /tmp/of-base && mkdir -p /tmp/of-base && git archive "$(git merge-base origin/main HEAD)" openfollow tests/_hud_scenes.py | tar x -C /tmp/of-base
 poetry run python scripts/hw_validation/hud_bench.py --compare /tmp/of-base
 ```
 
-With `--compare`, a scene field the other checkout's `OverlayState` lacks is
-left out of its frames, so it draws less; the report names those fields under
-the scene.
+With `--compare`, each side draws the scenes of its own checkout, so a change
+to the scenes' data (a zone tuple growing a value, say) never hands a renderer
+data it cannot read. The scenes change only on purpose, and the report ends
+with a line when the two checkouts' scenes differ. A scene only this checkout
+has is timed here alone ("base has no such scene"). A checkout without
+`tests/_hud_scenes.py` draws this one's, less any scene field its
+`OverlayState` lacks; the report names those fields under the scene.
 
 `make ci-remote` runs the comparison against the merge-base by itself after a
 green `make ci` when a change touches the drawing paths (`make perf-ab

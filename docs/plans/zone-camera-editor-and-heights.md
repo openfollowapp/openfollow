@@ -24,7 +24,8 @@ The interactive mockup, built on the Media Gallery's Concert picture and its cal
 | Feature | `zone_heights` in `FEATURE_KEYS` and `EXPERIMENTAL_FEATURES`. Features row: **Zone heights** / "Draws a zone at a height above the stage, and can raise a marker's Z while it is inside." / switched off: "zones are drawn on the stage floor again and markers keep their own height." Off: the fields are hidden and nothing below applies; the settings are kept. |
 | Z offset | Per zone, metres above the stage plane (the main grid's `z_offset`). The zone is drawn at that height in the Camera view and in the Operator Screen's zone overlay, and its corners are picked on that plane. The trigger stays in X and Y. |
 | Marker height | Per zone, a checkbox: label **Marker height**, inline **Add the Z offset inside this zone**. While a marker is inside such a zone (its X/Y in the zone's polygon), its Z is raised by the zone's Z offset in everything the station sends (PSN, OTP, RTTrPM, OSC) and on the Operator Screen. The marker's own Z, as the operator sets it, is not changed. Where several such zones overlap, the highest Z offset counts. |
-| Height transition | Per zone, **Height transition (s)**, default 0.3. Crossing a zone's edge eases the added height over this time instead of stepping it: the time of the zone entered, or else of the zone left. |
+| Height transition time | Per zone, **Height transition time (s)**, default 0.3. Crossing a zone's edge eases the added height over this time instead of stepping it: the time of the zone entered, or else of the zone left. |
+| Raised outline | A zone above the stage plane also shows its X/Y area: its outline on the stage plane (no fill) and a dotted line up each corner, in the Camera view and on the Operator Screen. Lines the solid zone hides from the camera are much fainter. A zone at or below the stage plane looks as before. |
 
 ## Design
 
@@ -60,9 +61,10 @@ The interactive mockup, built on the Media Gallery's Concert picture and its cal
 - [ ] Review to cosmetic, gate, station check on pi66.
 
 **Zone heights (#570)**
-- [ ] `zone_heights` feature: its key, its Features row, and the off behaviour.
-- [ ] The three zone fields: config, validation, form (shown with the feature on), tests.
-- [ ] Camera view and HUD overlay at the zone's height; the cache key and its redraw test.
-- [ ] The per-marker lift with its ramp, applied to every sender and the Operator Screen; tests for the overlap rule, the transition times, feature off, and a marker whose own Z the operator changes meanwhile.
-- [ ] Help drawers, `docs/architecture/zones.md` and `outputs.md`, What's new (experimental, so a short line).
+- [x] `zone_heights` feature: its key, its Features row, and the off behaviour.
+- [x] The three zone fields: config, validation, form (shown with the feature on), tests.
+- [x] HUD overlay at the zone's height; the cache key and its redraw test.
+- [ ] Camera view at the zone's height (drawn and picked on that plane, with the camera editor).
+- [x] The per-marker lift with its ramp, applied to every sender and the Operator Screen; tests for the overlap rule, the transition times, feature off, and a marker whose own Z the operator changes meanwhile.
+- [x] Help drawers, `docs/architecture/zones.md` and `outputs.md`, What's new (experimental, so a short line).
 - [ ] Review to cosmetic, gate, station check on pi66: a marker walked onto a raised zone, watched in the PSN output and on the Operator Screen.

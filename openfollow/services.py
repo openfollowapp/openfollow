@@ -52,6 +52,9 @@ from openfollow.runtime.latency_probe import MEDIA_GALLERY, FailureReason, Laten
 from openfollow.runtime.latency_warning import LatencyWarning
 from openfollow.runtime.network_observer import DOWN_POLLS_BEFORE_SUSPEND, NetworkPlaneObserver, Plane
 from openfollow.runtime.services_detection_pin import (
+    UnprojectCache,
+)
+from openfollow.runtime.services_detection_pin import (
     apply_detection_pin as apply_detection_pin_helper,
 )
 from openfollow.runtime.services_frame import (
@@ -805,6 +808,8 @@ class AppRuntimeServices:
         self._cam_params_buffer = np.zeros(7, dtype=np.float64)
         self._unproject_cam_buffer = np.zeros(7, dtype=np.float64)
         self._screen_point_buffer = np.zeros((1, 2), dtype=np.float64)
+        # Detection pin points and feet heights between detector steps.
+        self._pin_unproject_cache = UnprojectCache()
 
         # Unified OSC service: one shared client cache and listener for
         # zone OSC output, marker OSC input, and the transmitter system.
@@ -814,6 +819,7 @@ class AppRuntimeServices:
         from openfollow.osc.service import OscService
         from openfollow.osc.transmitter import OscTransmitterManager
         from openfollow.zones.engine import ZoneEngine
+        from openfollow.zones.heights import ZoneHeights
 
         self._osc_service: OscService = OscService()
         # Where each OSC destination's pinned interface sends from.
@@ -824,6 +830,7 @@ class AppRuntimeServices:
         self._osc_transmitter_manager: OscTransmitterManager | None = None
         self._zone_engine: ZoneEngine | None = None
         self._last_zone_eval: float = 0.0
+        self._zone_heights = ZoneHeights()
         # Reused buffers for detection-to-world unprojection during zone eval
         self._zone_cam_buffer = np.zeros(7, dtype=np.float64)
         self._zone_screen_buffer = np.zeros((1, 2), dtype=np.float64)
@@ -3892,6 +3899,7 @@ class AppRuntimeServices:
             unproject_cam_buffer=self._unproject_cam_buffer,
             screen_point_buffer=self._screen_point_buffer,
             dt=dt,
+            unproject_cache=self._pin_unproject_cache,
         )
 
     def init_zone_engine(self) -> None:
@@ -3907,8 +3915,13 @@ class AppRuntimeServices:
             egress_provider=self._osc_egress.for_destination,
         )
 
-    def update_zone_triggers(self) -> None:
-        """Evaluate zone membership and emit OSC, throttled by ``eval_fps``."""
+    def update_zone_triggers(self, dt: float) -> None:
+        """Lift each controlled marker inside a raising zone, every frame; then evaluate zone
+        membership and emit OSC, throttled by ``eval_fps``.
+
+        ``dt`` is the frame's motion step, the time the lift's ramp advances by.
+        """
+        self._update_zone_heights(dt)
         if self._zone_engine is None:
             return
         cfg = self.zones_config()
@@ -3924,6 +3937,22 @@ class AppRuntimeServices:
         marker_positions = self._collect_marker_positions()
         detection_positions = self._collect_detection_positions()
         self._zone_engine.update(marker_positions, detection_positions)
+
+    def _update_zone_heights(self, dt: float) -> None:
+        """Set each controlled marker's lift; it rides on what is sent, never on ``marker.pos``."""
+        from openfollow.zones.heights import raising_zones
+
+        app = self._app
+        server = app._server
+        markers = {
+            marker_id: marker
+            for marker_id in app._controlled_ids
+            if server is not None and (marker := server.get_marker(marker_id)) is not None
+        }
+        positions = {marker_id: marker.pos[:2] for marker_id, marker in markers.items()}
+        lifts = self._zone_heights.step(positions, raising_zones(app._config), dt)
+        for marker_id, marker in markers.items():
+            marker.set_lift(lifts[marker_id])
 
     def _collect_marker_positions(self) -> list[tuple[tuple[str, int], float, float]]:
         """PSN-absolute XY positions of all viewable markers (controlled + remote).
@@ -4107,7 +4136,7 @@ class AppRuntimeServices:
         return [(marker_id, x, y) for (_kind, marker_id), x, y in positions]
 
     def _marker_position(self, marker_id: int) -> tuple[float, float, float] | None:
-        """A marker's broadcast X/Y/Z: a controlled one's own, or an online remote one's."""
+        """A marker's own X/Y/Z, without a zone's lift: a controlled one's, or an online remote one's."""
         app = self._app
         if marker_id in app._controlled_ids:
             marker = app._server.get_marker(marker_id) if app._server is not None else None

@@ -102,3 +102,47 @@ def shrink_polygon(vertices: Polygon, amount: float) -> list[Vertex]:
     if not same_sign or abs(new_area) < 0.05 * abs(orig_area):
         return [(float(x), float(y)) for x, y in vertices]
     return result
+
+
+def hidden_by_zone(
+    point: tuple[float, float, float],
+    eye: tuple[float, float, float],
+    vertices: Polygon,
+    bottom: float,
+    top: float,
+) -> bool:
+    """Whether the solid zone standing from ``bottom`` to ``top`` over ``vertices`` hides ``point`` from ``eye``.
+
+    A point on the zone's own surface is hidden only when the sight line runs through the zone to reach it.
+    """
+    ex, ey, ez = eye
+    dx, dy, dz = point[0] - ex, point[1] - ey, point[2] - ez
+    if abs(dz) < 1e-12:
+        if not bottom <= ez <= top:
+            return False
+        t0, t1 = 0.0, 1.0
+    else:
+        ta, tb = (bottom - ez) / dz, (top - ez) / dz
+        t0, t1 = max(0.0, min(ta, tb)), min(1.0, max(ta, tb))
+        if t1 - t0 < 1e-12:
+            return False
+    # The stretch of the sight line within the zone's height, in plan: hidden when any part of it is inside.
+    ax, ay = ex + t0 * dx, ey + t0 * dy
+    sx, sy = (t1 - t0) * dx, (t1 - t0) * dy
+    cuts = [0.0, 1.0]
+    n = len(vertices)
+    for i in range(n):
+        (cx, cy), (fx, fy) = vertices[i], vertices[(i + 1) % n]
+        ux, uy = fx - cx, fy - cy
+        den = sx * uy - sy * ux
+        if abs(den) < 1e-12:
+            continue
+        s = ((cx - ax) * uy - (cy - ay) * ux) / den
+        u = ((cx - ax) * sy - (cy - ay) * sx) / den
+        if 0.0 < s < 1.0 and 0.0 <= u <= 1.0:
+            cuts.append(s)
+    cuts.sort()
+    return any(
+        b - a > 1e-9 and point_in_polygon(ax + sx * (a + b) / 2, ay + sy * (a + b) / 2, vertices)
+        for a, b in zip(cuts, cuts[1:], strict=False)
+    )

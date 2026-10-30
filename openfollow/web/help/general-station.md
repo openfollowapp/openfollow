@@ -27,3 +27,4 @@ The table at the end of **Advanced Settings** has one row per feature. A change 
 - **Person detection** – the Person Detection tab. Off, detection does not run.
 - **RTTrPM output** – the RTTrPM Output section. Off, nothing is sent.
 - **Touch remote** – the Touch Remote section. Off, every remote lets go of its marker.
+- **Zone heights** – the height fields of each zone in the Zone Editor. Off, zones are drawn on the stage floor and markers keep their own height.

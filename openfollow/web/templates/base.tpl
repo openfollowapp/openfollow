@@ -459,6 +459,9 @@
  .pv-nofeed { padding: 24px 12px; border: 1px dashed var(--border); border-radius: 6px; text-align: center; }
  .pv-zone { stroke-width: 2; fill-opacity: 0.18; cursor: pointer; }
  .pv-zone-selected { stroke-width: 3; }
+ .pv-zone-floor { fill: none; stroke-width: 1.5; stroke-opacity: 0.7; pointer-events: none; }
+ .pv-zone-post { stroke-width: 2; stroke-dasharray: 2 4; stroke-linecap: round; }
+ .pv-zone-floor.pv-behind { stroke-opacity: 0.18; }
  .pv-grid-line { stroke: var(--muted); stroke-width: 1; fill: none; }
  .pv-outline { stroke: var(--accent); stroke-width: 2.5; fill: none; }
  .pv-handle { fill: var(--text); stroke: var(--accent); stroke-width: 2; }

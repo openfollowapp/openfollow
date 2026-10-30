@@ -4,7 +4,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -16,9 +17,14 @@ from openfollow.input.touch_remote import holds
 from openfollow.runtime.frame_timing import NOMINAL_FRAME_DT, dt_steps, ema_factor
 from openfollow.runtime.state_maps import get_or_create, prune_to_keep
 from openfollow.scene.solver import invert_overlay_distortion, unproject_to_plane
+from openfollow.zones.heights import height_at, raising_zones, zone_outlines
 
 if TYPE_CHECKING:
     from openfollow.psn.marker import Marker
+
+
+# A detection unprojected for assist: track id, world X and Y.
+_DetWorld = tuple[int, float, float]
 
 
 @dataclass
@@ -49,6 +55,8 @@ class DetectionPinState:
     # Replace mode: the PSN tracker status last written to the driven marker, so
     # /api/stats can show the pin's own view beside the wire. None once released.
     status: float | None = None
+    # The zone height each track's feet stood at last frame (``_feet_heights``).
+    feet_heights: dict[int, float] = field(default_factory=dict)
 
     def reset(self) -> None:
         """Clear smoothing/velocity so the next acquisition re-seeds fresh.
@@ -63,6 +71,7 @@ class DetectionPinState:
         self.prev_target_x = None
         self.prev_target_y = None
         self.locked_track_id = None
+        self.feet_heights = {}
         self.ai_smooth_x = None
         self.ai_smooth_y = None
         self.attached_track_id = None
@@ -83,6 +92,7 @@ class DetectionPinState:
         self.prev_target_x = None
         self.prev_target_y = None
         self.locked_track_id = None
+        self.feet_heights = {}
 
 
 def assist_active(app: Any) -> bool:
@@ -203,6 +213,99 @@ def _release_status(app: Any, marker_id: int, state: DetectionPinState) -> None:
         marker.set_status(1.0)
 
 
+class UnprojectCache:
+    """Pin points and feet heights by everything they are worked out from, kept while a frame still asks for them.
+
+    The detector steps slower than the frame loop, so most frames ask what the previous one did. Whatever no
+    frame asked for in the last two is let go.
+    """
+
+    def __init__(self) -> None:
+        self._now: dict[tuple[Any, ...], Any] = {}
+        self._last: dict[tuple[Any, ...], Any] = {}
+
+    def next_frame(self) -> None:
+        self._last, self._now = self._now, {}
+
+    def get(self, key: tuple[Any, ...], compute: Callable[[], Any]) -> Any:
+        if key not in self._now:
+            self._now[key] = self._last[key] if key in self._last else compute()
+        return self._now[key]
+
+
+@dataclass(frozen=True)
+class _View:
+    """What an unprojection of a screen point reads besides the point and the plane, and its cache keys."""
+
+    params: npt.NDArray[Any]
+    w: float
+    h: float
+    lens: tuple[float, float, float, float]
+    stage_z: float
+    raising: list[tuple[Any, float]]
+    cache: UnprojectCache
+    buffer: npt.NDArray[Any]
+    key: tuple[Any, ...]
+    zones_key: tuple[Any, ...]
+
+
+def _view(
+    app: Any, cfg: Any, w: int, h: int, cache: UnprojectCache, cam_buffer: npt.NDArray[Any], buffer: npt.NDArray[Any]
+) -> _View:
+    params = _load_camera_params(app, cam_buffer)
+    lens = effective_lens(cfg)
+    raising = zone_outlines(raising_zones(cfg))
+    key = (tuple(float(v) for v in params), float(w), float(h), lens)
+    zones_key = (cfg.grid.z_offset, tuple(raising))
+    return _View(params, float(w), float(h), lens, cfg.grid.z_offset, raising, cache, buffer, key, zones_key)
+
+
+def _unproject_point(view: _View, x: float, y: float, plane_z: float) -> tuple[float, float] | None:
+    """Screen ``(x, y)`` on the (lens-distorted) video, unprojected on ``plane_z``; None where it has no point."""
+
+    def compute() -> tuple[float, float] | None:
+        view.buffer[0, 0] = x
+        view.buffer[0, 1] = y
+        # Detections come from the distorted video: undistort back to the pinhole frame first.
+        undistorted = invert_overlay_distortion(view.buffer, view.w, view.h, *view.lens)
+        world = unproject_to_plane(view.params, undistorted, view.w, view.h, plane_z)
+        return (float(world[0, 0]), float(world[0, 1])) if np.all(np.isfinite(world[0])) else None
+
+    result: tuple[float, float] | None = view.cache.get(("point", view.key, x, y, plane_z), compute)
+    return result
+
+
+def _feet_height(view: _View, x: float, y: float) -> float | None:
+    """The zone height a person stands at, read from their feet at screen ``(x, y)``; None when no height fits.
+
+    The feet lie on the surface the person stands on, so the height is the highest of 0 and the raising zones'
+    ``z_offset`` whose zones lift the feet, unprojected on the stage plane plus that height, by exactly that
+    height. Never the marker's lift, which the pinned position itself moves. No zones: 0.
+    """
+    if not view.raising:
+        return 0.0
+
+    def compute() -> float | None:
+        for height in sorted({0.0, *(z for _, z in view.raising)}, reverse=True):
+            feet = _unproject_point(view, x, y, view.stage_z + height)
+            if feet is not None and height_at(view.raising, *feet) == height:
+                return float(height)
+        return None
+
+    result: float | None = view.cache.get(("feet", view.key, view.zones_key, x, y), compute)
+    return result
+
+
+def _feet_heights(state: DetectionPinState, found: list[tuple[int, float | None]]) -> list[float]:
+    """Each track's height: as found, else (feet in the band at a zone's edge where none fits) its last one.
+
+    Remembered per track, so one person's height never passes to another; untracked boxes keep none.
+    """
+    heights = [height if height is not None else state.feet_heights.get(track_id, 0.0) for track_id, height in found]
+    state.feet_heights = {track_id: h for (track_id, _), h in zip(found, heights, strict=True) if track_id >= 0}
+    return heights
+
+
 def _load_camera_params(app: Any, buffer: npt.NDArray[Any]) -> npt.NDArray[Any]:
     """Fill ``buffer`` (len 7) with the live camera params for unprojection."""
     cam_cfg = app._camera.to_config()
@@ -276,6 +379,7 @@ def apply_detection_pin(
     unproject_cam_buffer: npt.NDArray[Any],
     screen_point_buffer: npt.NDArray[Any],
     dt: float = NOMINAL_FRAME_DT,
+    unproject_cache: UnprojectCache | None = None,
 ) -> None:
     """Drive controlled marker(s) from detection with EMA smoothing.
 
@@ -283,8 +387,12 @@ def apply_detection_pin(
     marker is refined; in ``replace`` mode the single resolved marker is auto-
     pinned. ``dt`` is the seconds elapsed since the previous animate frame; it
     makes the smoothing / prediction frame-rate-independent (see
-    :func:`_advance_smoothing`).
+    :func:`_advance_smoothing`). ``unproject_cache`` keeps unprojections from frame
+    to frame; without one, each call works everything out afresh.
     """
+    if unproject_cache is None:
+        unproject_cache = UnprojectCache()
+    unproject_cache.next_frame()
     cfg = app._config
     det = cfg.detection
     if not det.enabled:
@@ -309,6 +417,7 @@ def apply_detection_pin(
             person_detector=person_detector,
             unproject_cam_buffer=unproject_cam_buffer,
             screen_point_buffer=screen_point_buffer,
+            unproject_cache=unproject_cache,
             dt=dt,
         )
         return
@@ -357,25 +466,16 @@ def apply_detection_pin(
     screen_x = (best.x1 + best.x2) / 2.0 * w
     screen_y = (best.y2 if use_bottom else best.y1) * h
 
-    params = _load_camera_params(app, unproject_cam_buffer)
-    screen_pt = screen_point_buffer
-    screen_pt[0, 0] = screen_x
-    screen_pt[0, 1] = screen_y
-
-    # Detections come from the (lens-distorted) video frame, so undistort the pin
-    # point back to the pinhole frame before unprojecting. Identity when no lens
-    # distortion is configured.
-    screen_pt = invert_overlay_distortion(screen_pt, float(w), float(h), *effective_lens(cfg))
-
-    plane_z = cfg.grid.z_offset if use_bottom else marker.pos[2]
-    world = unproject_to_plane(params, screen_pt, float(w), float(h), plane_z)
-
-    if not np.all(np.isfinite(world[0])):
+    view = _view(app, cfg, w, h, unproject_cache, unproject_cam_buffer, screen_point_buffer)
+    # The head on the marker's Z, the feet on the stage, each raised by the zone the feet stand in.
+    (height,) = _feet_heights(pin_state, [(best.track_id, _feet_height(view, screen_x, best.y2 * h))])
+    point = _unproject_point(view, screen_x, screen_y, (cfg.grid.z_offset if use_bottom else marker.pos[2]) + height)
+    if point is None:
         _write_status(marker, pin_state, 0.0)
         return
 
-    # unproject_to_plane returns PSN-absolute world coords (canonical marker.pos frame).
-    smooth_x, smooth_y = _advance_smoothing(pin_state, float(world[0, 0]), float(world[0, 1]), cfg, dt)
+    # PSN-absolute world coords (canonical marker.pos frame).
+    smooth_x, smooth_y = _advance_smoothing(pin_state, point[0], point[1], cfg, dt)
     # Threshold and window come from the detector, which drains config on its own cadence.
     status = detection_status(
         best.confidence,
@@ -398,6 +498,7 @@ def _apply_assist_all(
     person_detector: Any,
     unproject_cam_buffer: npt.NDArray[Any],
     screen_point_buffer: npt.NDArray[Any],
+    unproject_cache: UnprojectCache,
     dt: float = NOMINAL_FRAME_DT,
 ) -> None:
     """Assist every controlled marker toward the person nearest its own anchor.
@@ -433,36 +534,23 @@ def _apply_assist_all(
 
     steps = dt_steps(dt)  # shared by the inner smoothing and the outer glide
     use_bottom = cfg.detection.pin_point == "bottom"
-    params = _load_camera_params(app, unproject_cam_buffer)
-    screen_pt = screen_point_buffer
+    view = _view(app, cfg, w, h, unproject_cache, unproject_cam_buffer, screen_point_buffer)
 
     # No live detector (deps missing) → no detections, so each output simply
     # glides to its manual anchor; the operator keeps control.
     detections = person_detector.detections if person_detector is not None else []
+    # Each detection's zone height is read from its feet; its pin point is unprojected on
+    # the marker's plane (the anchor's Z for the head, the stage for the feet) raised by it.
+    # ``unproject_cache`` makes both once per question, across markers and frames alike.
+    found = [(box.track_id, _feet_height(view, (box.x1 + box.x2) / 2.0 * w, box.y2 * h)) for box in detections]
 
-    # Unproject each detection's pin point ONCE per plane and memoise by plane Z,
-    # so N markers don't re-unproject M detections N times. ``pin_point ==
-    # "bottom"`` shares the stage-floor plane across every marker (one pass);
-    # ``"top"`` uses each anchor's Z, so markers at the same height still share a
-    # single pass and only genuinely-different heights cost extra.
-    det_world_cache: dict[float, list[tuple[int, float, float]]] = {}
-
-    def _det_worlds_for(plane_z: float) -> list[tuple[int, float, float]]:
-        cached = det_world_cache.get(plane_z)
-        if cached is not None:
-            return cached
-        worlds: list[tuple[int, float, float]] = []
-        for box in detections:
-            screen_pt[0, 0] = (box.x1 + box.x2) / 2.0 * w
-            screen_pt[0, 1] = (box.y2 if use_bottom else box.y1) * h
-            # Undistort the detection pin point (it sits on the distorted video)
-            # back to the pinhole frame; identity when no lens distortion is set.
-            undistorted = invert_overlay_distortion(screen_pt, float(w), float(h), *effective_lens(cfg))
-            world = unproject_to_plane(params, undistorted, float(w), float(h), plane_z)
-            if not np.all(np.isfinite(world[0])):
-                continue
-            worlds.append((box.track_id, float(world[0, 0]), float(world[0, 1])))
-        det_world_cache[plane_z] = worlds
+    def _det_worlds_for(base_z: float, heights: list[float]) -> list[_DetWorld]:
+        worlds: list[_DetWorld] = []
+        for box, height in zip(detections, heights, strict=True):
+            x, y = (box.x1 + box.x2) / 2.0 * w, (box.y2 if use_bottom else box.y1) * h
+            point = _unproject_point(view, x, y, base_z + height)
+            if point is not None:
+                worlds.append((box.track_id, *point))
         return worlds
 
     radius_sq = cfg.detection.assist_radius_m**2
@@ -474,7 +562,7 @@ def _apply_assist_all(
         anchor = get_or_create_manual_marker(app, mid)
         state = _get_pin_state(app, mid)
         manual_x, manual_y, manual_z = anchor.pos
-        plane_z = cfg.grid.z_offset if use_bottom else manual_z
+        det_worlds = _det_worlds_for(cfg.grid.z_offset if use_bottom else manual_z, _feet_heights(state, found))
         _assist_one(
             cfg,
             state,
@@ -483,7 +571,7 @@ def _apply_assist_all(
             manual_x,
             manual_y,
             manual_z,
-            _det_worlds_for(plane_z),
+            det_worlds,
             radius_sq,
             steps,
             paths,
@@ -498,7 +586,7 @@ def _assist_one(
     manual_x: float,
     manual_y: float,
     manual_z: float,
-    det_worlds: list[tuple[int, float, float]],
+    det_worlds: list[_DetWorld],
     radius_sq: float,
     steps: float,
     paths: Any = None,

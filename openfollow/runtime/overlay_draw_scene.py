@@ -199,6 +199,11 @@ def floor_z(state: OverlayState) -> float:
     return state.grid_config[5] if state.grid_config else 0.0
 
 
+def marker_floor_z(state: OverlayState, t: MarkerOverlayData) -> float:
+    """Where a marker's floor elements stand: the floor under it, raised by its zone lift."""
+    return floor_z(state) + t.lift
+
+
 class GridCache:
     """The main grid as one picture, drawn again only when the grid or the view changed.
 
@@ -439,7 +444,7 @@ def _cone_geometry(state: OverlayState, t: MarkerOverlayData, w: int, h: int) ->
     cone is not symmetric, so a marker under the stage reads as pointing down.
     """
     tx, ty, tz = t.x, t.y, t.z
-    z_off = floor_z(state)
+    z_off = marker_floor_z(state, t)
     r_base, r_top = state.cone_base_diameter / 2.0, state.cone_top_diameter / 2.0
     silhouette = cone_silhouette_angles(state.camera_params, (tx, ty), z_off, tz, r_base, r_top)
     angles, at = cone_ring_angles(silhouette)
@@ -610,7 +615,7 @@ def _draw_assist_ghost(
     cr.stroke()
 
     if state.grid_config:
-        z_off = floor_z(state)
+        z_off = marker_floor_z(state, t)
         gc_pts = ground_circle_world_ring(tx, ty, z_off, state.ground_circle_size)
         gc_scr = project(cam, gc_pts, w, h, *state.lens)
         if _path_ring(cr, gc_scr[np.all(np.isfinite(gc_scr), axis=1)]):
@@ -664,7 +669,7 @@ class ConeCache:
             None if cam is None else tuple(float(v) for v in cam),
             state.lens,
             tuple(state.grid_config),
-            floor_z(state),
+            marker_floor_z(state, t),
             state.cone_base_diameter,
             state.cone_top_diameter,
             rgb,
@@ -757,7 +762,7 @@ def draw_marker(
     # Every point the marker is drawn from goes through one projection.
     z_line = bool(state.show_z_line and state.grid_config)
     ground_circle = bool(state.show_ground_circle and state.grid_config)
-    floor = floor_z(state) if z_line or ground_circle else 0.0
+    floor = marker_floor_z(state, t) if z_line or ground_circle else 0.0
     lines = []
     if state.show_crosshair:
         cs = state.crosshair_size

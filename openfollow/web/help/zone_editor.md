@@ -35,7 +35,7 @@ Corners move on the picture.
 - **Triggered By** – comma-separated marker IDs (`1, 2, 5`). Blank means any marker. Ignored for Detection only.
 - **Z offset** – with *Zone heights* on, the zone's height above the stage floor; the Operator Screen and the Camera view draw it there, and its corners are dragged on that plane. Entry and exit still depend on X and Y only.
 - **Marker height** – with **Add the Z offset inside this zone** ticked, a marker this station controls is sent and drawn with the Z offset added to its Z while it is inside. Its own Z stays as set. Where such zones overlap, the highest counts.
-- **Height transition** – seconds the added height takes to change at the zone's edge: the zone entered sets it, otherwise the zone left. 0 changes it at once.
+- **Height transition time** – seconds the added height takes to change at the zone's edge: the zone entered sets it, otherwise the zone left. 0 changes it at once.
 
 ### Area
 

@@ -1954,7 +1954,7 @@ def test_the_zone_height_fields_sit_in_a_row_gated_on_their_feature() -> None:
         "Z offset (m)",
         "Marker height",
         "Add the Z offset inside this zone",
-        "Height transition (s)",
+        "Height transition time (s)",
     ]
     assert out["inRow"] is True
     assert out["values"] == ["0.000", "0.3", False]

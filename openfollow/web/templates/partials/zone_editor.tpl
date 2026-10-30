@@ -562,7 +562,7 @@
             '<div class="checkbox-wrap checkbox-field inline">' +
             '<input type="checkbox" id="zone-detail-raise-markers" data-zone-field="raise_markers" ' + (z.raise_markers ? 'checked' : '') + '>' +
             '<label for="zone-detail-raise-markers">Add the Z offset inside this zone</label></div></div>';
-        html += blurField('Height transition (s)', 'height_transition_s',
+        html += blurField('Height transition time (s)', 'height_transition_s',
             heightShown('height_transition_s', z), 'number', '0.1');
         html += '    </div>';
         html += '  </div>';

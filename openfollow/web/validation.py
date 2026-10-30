@@ -840,7 +840,7 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
             _as_number,
             lo=0.0,
             hi=ZONE_HEIGHT_TRANSITION_MAX_S,
-            human_error=f"Height transition must be between 0 and {ZONE_HEIGHT_TRANSITION_MAX_S:g} s.",
+            human_error=f"Height transition time must be between 0 and {ZONE_HEIGHT_TRANSITION_MAX_S:g} s.",
         ),
     },
     # Special sections handled inline in apply_section_data.

@@ -18,7 +18,7 @@ Before an update installs, the station saves its settings: the configuration, th
 
 The backup holds the web PIN and stream passwords, so only the OpenFollow service user can read it.
 
-If the backup can't be made, for example because the disk is full, the update still installs: the update is often the fix. On a full disk the oldest backups are deleted to make room first, but never the most recent one. To keep a copy of your own, use **Export Configuration** under **General → Configuration** before updating.
+If the backup can't be made, for example because the disk is full, the update still installs: the update is often the fix. On a full disk the oldest backups are deleted to make room first, but never the most recent one. To keep a copy of your own, use **Export Configuration** under **General → Configuration Backup & Import** before updating.
 
 To restore a backup, stop the service, then extract `config.toml` and `templates/user/` from the archive into `/var/lib/openfollow/` as the `openfollow` user, and copy `markers.toml` back to the path its `manifest.json` names. A backup is a gzip tar, so `tar xzf` opens it.
 

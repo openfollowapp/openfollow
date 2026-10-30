@@ -507,8 +507,13 @@
  .stats-columns {
  display: grid;
  gap: 0.78rem;
- grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+ grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
  }
+ /* Export, Import and Restore Defaults in the box grid: side by side where they fit, each its own height. */
+ .cfg-columns { align-items: start; margin-bottom: 1rem; }
+ .cfg-columns .actions { margin: 0; }
+ /* "Importing <file name>" wraps inside its box. */
+ .cfg-columns .actions button { max-width: 100%; overflow-wrap: anywhere; }
  /* The station list is a box like the others, full width above them; the box is its frame. */
  .stations-box { margin-bottom: 0.78rem; }
  .stations-box .peers-list { background: none; border: 0; padding: 0; }

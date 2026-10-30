@@ -1,4 +1,4 @@
-%# The one video-failure box. Rendered on Live Statistics, on Camera & Grid and
+%# The one video-failure box. Rendered on Status & Diagnostics, on Camera & Grid and
 %# in the Setup Wizard's Video Source step, which is where an operator looks
 %# first when the picture is missing, so all must say the same thing rather than
 %# one carrying a reduced version. A source over the station's limits takes the
@@ -13,7 +13,7 @@
 %#
 %# ``scope`` namespaces the element id. Both hosts render this box on the same
 %# page, and an id repeated in one document makes ``hx-preserve`` resolve to
-%# whichever came first - so the Statistics poll moved the Video Source box's
+%# whichever came first - so the Status & Diagnostics poll moved the Video Source box's
 %# node out from under it once a second.
 %#
 %# Everything sits INSIDE the preserved node, keyed on what the box says. Both
@@ -21,12 +21,12 @@
 %# reads as a flicker.
 %#
 %# The reconnect counter is deliberately absent: it changed on every attempt, so
-%# it both resized the box and defeated the preserve. Statistics already
+%# it both resized the box and defeated the preserve. Status & Diagnostics already
 %# distinguishes a source still retrying from one that has given up, in its
 %# Pipeline row, without anything that moves.
 %#
 %# ``live`` is the box's own live-region role: ``status`` or none. Live
-%# Statistics passes none, because its announcer speaks the box.
+%# Status & Diagnostics passes none, because its announcer speaks the box.
 %#
 %# Params: failure_text, error_message, action, token, scope, live.
 %

@@ -12,23 +12,7 @@
 
 <!-- Overview -->
 <div class="tab-content" id="tab-overview">
-    % include('partials/overview.tpl', local=local, peers=peers, station_down=station_down)
-    <div class="section" id="statistics-section" data-fold-key="statistics" data-help="statistics">
-        <div class="section-head">
-            <h2>Live Statistics</h2>
-        </div>
-        <div id="statistics-section-content"
-             hx-get="/section/statistics"
-             hx-trigger="every 1s [pollShown(this)], poll-shown[pollShown(this)] from:body"
-             hx-swap="innerHTML">
-            % include('partials/statistics.tpl', stats=stats)
-        </div>
-        % include('partials/statistics_alerts.tpl', stats=stats)
-    </div>
-    % # The section shell renders once; only its live cards poll every 5s
-    % # (see partials/diagnostics.tpl ``#diagnostics-live``), so the head /
-    % # fold state / bundle + probe tools stay put without flickering.
-    % include('partials/diagnostics.tpl', cards=diagnostics_cards)
+    % include('partials/diagnostics.tpl', stats=stats, cards=diagnostics_cards, local=local, peers=peers, station_down=station_down)
 </div>
 
 <!-- General -->

@@ -1,29 +1,31 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""Pin which Statistics panel each figure is rendered in.
+"""Pin which Status & Diagnostics box each figure is rendered in.
 
 An operator whose RTSP camera had never authenticated read `1920x1080` beside a
 display-rate frame counter and concluded video was flowing. Both numbers were
 the station's own: the resolution came from our "No Signal" picture and the rate
-from the overlay redraw loop. Keeping a device figure out of the Video panel is
+from the overlay redraw loop. Keeping a device figure out of the Video box is
 what stops the two being read as measurements of the feed, so the split is
 pinned here rather than left to the template's shape.
 """
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from typing import Any
 
 import pytest
-from bottle import template
 
 from openfollow.web import server as _server_module  # noqa: F401 – registers tpl path
+from tests._status_boxes import render_boxes
 
 pytestmark = pytest.mark.unit
 
 
 def _render(**stats: Any) -> str:
-    return template("partials/statistics", stats=stats)
+    return render_boxes(stats)
 
 
 def _panel(body: str, title: str) -> str:
@@ -115,26 +117,26 @@ class TestVideoPanel:
         assert "Output resolution" not in panel
 
 
-class TestDevicePanel:
+class TestThisStationBox:
     def test_carries_the_redraw_rate_and_the_live_canvas_size(self) -> None:
         panel = _panel(
             _render(
                 video=_connected(),
                 system={"hud_fps": 59.7, "output_resolution": {"width": 1920, "height": 1200}},
             ),
-            "Device",
+            "This Station",
         )
         assert _row(panel, "Overlay redraw rate") == "59.7 fps"
         assert _row(panel, "Output resolution") == "1920x1200"
 
     def test_headless_station_says_so_instead_of_fabricating_a_size(self) -> None:
-        panel = _panel(_render(system={"hud_fps": 0.0, "output_resolution": None}), "Device")
+        panel = _panel(_render(system={"hud_fps": 0.0, "output_resolution": None}), "This Station")
         assert _row(panel, "Output resolution") == "N/A (no display)"
         assert _row(panel, "Overlay redraw rate") == "0.0 fps"
 
     def test_a_snapshot_without_the_device_figures_still_renders(self) -> None:
         # A payload published before these fields existed (an older peer).
-        panel = _panel(_render(system={"ip": "10.0.0.7"}), "Device")
+        panel = _panel(_render(system={"ip": "10.0.0.7"}), "This Station")
         assert _row(panel, "Output resolution") == "N/A (no display)"
         assert _row(panel, "Overlay redraw rate") == "0.0 fps"
 
@@ -174,7 +176,7 @@ class TestVideoFailureBanner:
 
     def test_it_leaves_announcing_to_the_announcer(self) -> None:
         """The panel is swapped every second, so a role here would be announced
-        every second; the Live Statistics announcer speaks this box instead."""
+        every second; the Status & Diagnostics announcer speaks this box instead."""
         banner = self._banner()
         assert "role=" not in banner
         assert "aria-live" not in banner
@@ -461,3 +463,43 @@ class TestThePipelineWordingIsEvidenceNotTheMessage:
         """A local fault has no sentence, so the raw text is the whole message."""
         panel = self._panel_for(failure="unknown", error_message="v4l2src is Linux-only")
         assert "v4l2src is Linux-only" in panel
+
+
+class TestBentoLayout:
+    """Each box keeps its own height: This Station takes the right column and the others stack beside it."""
+
+    _CSS = (Path(__file__).resolve().parents[1] / "openfollow" / "web" / "templates" / "base.tpl").read_text(
+        encoding="utf-8"
+    )
+
+    def _rule(self, selector: str, css: str | None = None) -> str:
+        match = re.search(rf"\n {re.escape(selector)} \{{([^}}]*)\}}", css or self._CSS)
+        assert match, selector
+        return " ".join(match.group(1).split())
+
+    def test_three_boxes_put_this_station_beside_video_and_discovery(self) -> None:
+        rule = self._rule(".diag-bento")
+        assert "grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);" in rule
+        assert 'grid-template-areas: "video station" "network station";' in rule
+
+    def test_with_person_detection_discovery_runs_full_width_beneath(self) -> None:
+        assert 'grid-template-areas: "video station" "detection station" "network network";' in self._rule(
+            "body.feature-detection .diag-bento"
+        )
+        wide = self._CSS[self._CSS.index("@media (min-width: 681px)") :]
+        assert "grid-template-columns: repeat(3, minmax(0, 1fr));" in self._rule(
+            "body.feature-detection .diag-bento .diag-network .metric-list", wide
+        )
+
+    @pytest.mark.parametrize("box", ["video", "station", "network", "detection"])
+    def test_each_box_takes_its_area(self, box: str) -> None:
+        assert self._rule(f".diag-{box}") == f"grid-area: {box};"
+
+    def test_a_phone_stacks_them_in_one_column(self) -> None:
+        phone = self._CSS[self._CSS.index("@media (max-width: 680px)") :]
+        rule = self._rule(".diag-bento", phone)
+        # Without Person Detection there is no empty fourth row to add a gap.
+        assert rule == 'grid-template-columns: minmax(0, 1fr); grid-template-areas: "video" "station" "network";'
+        assert self._rule("body.feature-detection .diag-bento", phone) == (
+            'grid-template-areas: "video" "station" "network" "detection";'
+        )

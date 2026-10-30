@@ -533,19 +533,19 @@ def test_the_input_tab_opens_with_the_controller_slots(slots_server) -> None:
     assert 'hx-trigger="every 1s [pollShown(this)], poll-shown[pollShown(this)] from:body"' in tab
 
 
-def test_statistics_name_each_missing_controller(slots_server) -> None:
+def test_status_names_each_missing_controller(slots_server) -> None:
     _, base, _ = slots_server
-    _, body = _get(base, "/section/statistics")
+    _, body = _get(base, "/section/diagnostics")
     assert "1 connected · 1 missing" in body
     # No role: the panel is swapped every second, and the announcer speaks the box.
     box = body[body.index('<div class="notice error">') :]
     assert box.index("<div>C1 missing · marker 10 · GameSir (USB 2, port 1)</div>") < box.index("</div>\n")
 
 
-def test_statistics_without_missing_controllers_raise_no_warning(slots_server) -> None:
+def test_status_without_missing_controllers_raises_no_warning(slots_server) -> None:
     _, base, stats = slots_server
     stats["controllers"] = {"connected_count": 1, "missing_count": 0, "items": [_SLOT_ITEMS[1]]}
-    _, body = _get(base, "/section/statistics")
+    _, body = _get(base, "/section/diagnostics")
     assert "1 connected<" in body
     assert re.search(r"C\d+ missing", body) is None
 
@@ -771,8 +771,8 @@ def test_body_background_fade_is_viewport_sized(live_server) -> None:
 
 
 def test_index_page_preserves_scroll_across_poll_swaps(live_server) -> None:
-    # Regression guard: the Overview tab's 1s statistics poll (and the 5s
-    # diagnostics / server-overview swaps) replace whole DOM subtrees, which
+    # Regression guard: the Overview tab's 1s Status & Diagnostics poll (and the
+    # 5s server-overview swap) replace whole DOM subtrees, which
     # destroys Firefox's scroll-anchor node and snaps the viewport to the top
     # on every tick. The fix re-pins the scroll position after automatic
     # (poll / ``load``) swaps. Pin the wiring so a future base.tpl edit can't
@@ -963,8 +963,7 @@ def test_overview_says_station_default_is_down_rather_than_showing_its_address(l
 
 def test_index_overview_section_polls_only_peer_rows(live_server) -> None:
     # The polling element is the inner peer list (#overview-peers), gated on its
-    # section being shown – not the whole #overview-section via outerHTML,
-    # which is what flickered.
+    # section being shown – not the whole section via outerHTML, which flickered.
     _, base = live_server
     status, body = _get(base, "/")
     assert status == 200
@@ -972,10 +971,20 @@ def test_index_overview_section_polls_only_peer_rows(live_server) -> None:
     assert 'hx-trigger="every 5s [pollShown(this)], poll-shown[pollShown(this)] from:body"' in peers
 
 
-def test_statistics_partial_renders(live_server) -> None:
+def test_station_network_is_the_first_box_of_status_and_diagnostics(live_server) -> None:
     _, base = live_server
-    status, body = _get(base, "/section/statistics")
-    assert status == 200
+    _, body = _get(base, "/")
+    overview = body[body.index('id="tab-overview"') : body.index('id="tab-general"')]
+    # The Overview tab is one section.
+    assert overview.count('class="section"') == 1
+    section = overview[overview.index('id="diagnostics-section"') :]
+    # The tab's only section is always open: no fold key, so no Collapse toggle.
+    assert "data-fold-key" not in section.split(">", 1)[0]
+    box = section[section.index('<section class="stat-panel stations-box">') : section.index("</section>")]
+    assert '<h3 class="stat-panel-title">Station Network</h3>' in box
+    assert 'id="overview-peers"' in box
+    # Its rows poll on their own, above the 1 s boxes.
+    assert section.index("stations-box") < section.index('id="diagnostics-live"')
 
 
 def test_video_source_failure_fragment_is_empty_while_healthy(live_server) -> None:
@@ -1008,7 +1017,7 @@ def test_video_source_failure_fragment_carries_the_box(live_server, monkeypatch)
     assert status == 200
     assert "Nothing answered at 192.0.2.10:554." in body
     assert "Check the camera is powered." in body
-    # Its own id namespace, or the Statistics poll steals the node.
+    # Its own id namespace, or the Status & Diagnostics poll steals the node.
     assert 'id="video-error-source-' in body
     # The same polite live region as the section's own render of the box.
     assert 'role="status" aria-live="polite" aria-atomic="true"' in body
@@ -3009,9 +3018,9 @@ def test_the_login_page_shows_no_station_state(pin_protected_server, pin: str | 
     _, base, _ = pin_protected_server
     status, body = _get(base, "/login") if pin is None else _post_form(base, "/login", {"pin": pin})
     assert status == 200
-    assert 'id="statistics-section"' not in body
-    assert "/section/statistics" not in body
-    assert 'class="stat-panel"' not in body
+    assert 'id="diagnostics-section"' not in body
+    assert "/section/diagnostics" not in body
+    assert 'class="stat-panel' not in body
 
 
 def test_privilege_modal_poll_unauth_returns_empty_no_redirect(pin_protected_server) -> None:
@@ -5172,8 +5181,8 @@ def test_auth_assets_path_bypasses_auth(pin_protected_server) -> None:
     assert status not in (401, 302, 303)
 
 
-@pytest.mark.parametrize("path", ["/section/statistics", "/section/statistics/alerts"])
-def test_auth_statistics_needs_the_pin(pin_protected_server, path: str) -> None:
+@pytest.mark.parametrize("path", ["/section/diagnostics", "/section/diagnostics/alerts"])
+def test_auth_status_needs_the_pin(pin_protected_server, path: str) -> None:
     """Station state (video source, errors, controller names) is not shown before login."""
     _, base, _ = pin_protected_server
     req = urllib.request.Request(f"{base}{path}", headers={"HX-Request": "true"}, method="GET")

@@ -509,6 +509,29 @@
  gap: 0.78rem;
  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
  }
+ /* The station list is a box like the others, full width above them; the box is its frame. */
+ .stations-box { margin-bottom: 0.78rem; }
+ .stations-box .peers-list { background: none; border: 0; padding: 0; }
+ .stations-box .peer-item:last-child { margin-bottom: 0; }
+ /* Bento: This Station, the tallest box, takes the right column; with the Person
+ Detection feature on, Station network discovery runs full width with its rows in three columns. */
+ .diag-bento {
+ grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+ grid-template-areas: "video station" "network station";
+ }
+ body.feature-detection .diag-bento { grid-template-areas: "video station" "detection station" "network network"; }
+ .diag-video { grid-area: video; }
+ .diag-station { grid-area: station; }
+ .diag-network { grid-area: network; }
+ .diag-detection { grid-area: detection; }
+ @media (min-width: 681px) {
+ body.feature-detection .diag-bento .diag-network .metric-list {
+ display: grid;
+ grid-template-columns: repeat(3, minmax(0, 1fr));
+ column-gap: 1.5rem;
+ }
+ body.feature-detection .diag-bento .diag-network .metric-row:nth-last-child(-n+3) { border-bottom: 0; padding-bottom: 0; }
+ }
  .stat-panel {
  border: 1px solid rgba(255, 255, 255, 0.1);
  border-radius: 0.475rem;
@@ -2011,6 +2034,8 @@
  % end
  @media (max-width: 680px) {
  body { padding: 12px 0; }
+ .diag-bento { grid-template-columns: minmax(0, 1fr); grid-template-areas: "video" "station" "network"; }
+ body.feature-detection .diag-bento { grid-template-areas: "video" "station" "network" "detection"; }
  .hero-panel { padding: 1rem; margin-bottom: 0.8rem; }
  .section { padding: 1rem; }
  .field, .field.wide, .checkbox-field { min-width: 100%; }
@@ -2775,16 +2800,17 @@
  }
  function initializeSectionFolding(root) {
  const scope = root || document;
+ // A section without a fold key (the only one on its tab) gets its help but no toggle.
+ const selector = '.section[data-fold-key], .section[data-help]';
  const sections = [];
- if (scope.matches && scope.matches('.section[data-fold-key]')) {
+ if (scope.matches && scope.matches(selector)) {
  sections.push(scope);
  }
- scope.querySelectorAll('.section[data-fold-key]').forEach((section) => sections.push(section));
+ scope.querySelectorAll(selector).forEach((section) => sections.push(section));
  sections.forEach((section) => {
  const head = section.querySelector('.section-head');
  if (!head) return;
  const key = section.dataset.foldKey;
- if (!key) return;
 
  // cluster the help "?" and the collapse toggle in a
  // right-aligned actions wrapper. Both buttons are injected (not in
@@ -2807,6 +2833,7 @@
  help.textContent = '?';
  actions.appendChild(help); // help first → it sits left of Collapse
  }
+ if (!key) return;
  let toggle = actions.querySelector('.section-toggle');
  // Already initialised (this runs on every htmx:afterSwap, which
  // sub-second pollers fire constantly) – leave the existing toggle
@@ -4123,7 +4150,7 @@
  initializeInlineAdvanced(document);
  initNetworkMethodFields(document);
  });
- // Periodic pollers (Live Statistics 1s, Diagnostics / Server overview 5s)
+ // Periodic pollers (Status & Diagnostics 1s, Station Network 5s)
  // replace whole DOM subtrees. That destroys Firefox's scroll-anchor node,
  // so the viewport snaps toward the top on every poll tick. Re-pin the
  // scroll position for swaps NOT triggered by a user gesture (polls +

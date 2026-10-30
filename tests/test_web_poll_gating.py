@@ -101,11 +101,10 @@ def test_every_page_loads_the_gate_from_the_station(live_server: str) -> None:
 @pytest.mark.parametrize(
     ("marker", "trigger"),
     [
-        ('id="statistics-section-content"', f"every 1s {_SECTION}"),
-        ('id="statistics-alerts"', f"every 1s {_SECTION}"),
+        ('id="diagnostics-alerts"', f"every 1s {_SECTION}"),
         ('id="marker-catalog-root"', f"load, every 1500ms {_SECTION}"),
         ('id="overview-peers"', f"every 5s {_SECTION}"),
-        ('id="diagnostics-live"', f"every 5s {_SECTION}"),
+        ('id="diagnostics-live"', f"every 1s {_SECTION}"),
         ('id="controller-slots-content"', f"every 1s {_SECTION}"),
         ('id="mouse3d-status"', f"every 1s {_SECTION}"),
         # Page-wide: nobody can answer a prompt in a hidden tab, and it shows on return.

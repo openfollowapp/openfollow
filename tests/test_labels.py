@@ -81,7 +81,7 @@ class TestVideoSignalLabel:
     @pytest.mark.parametrize("failure", ["", "teleported_away", "UNREACHABLE"])
     def test_an_unrecognised_token_degrades_instead_of_raising(self, failure: str) -> None:
         """This renders a live provider's dict. A payload from a newer build
-        must not take the Statistics page down."""
+        must not take the Status & Diagnostics page down."""
         assert video_signal_label(False, failure) == "Disconnected"
 
 

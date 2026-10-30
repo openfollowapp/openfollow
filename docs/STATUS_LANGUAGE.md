@@ -102,15 +102,15 @@ sentence.
 
 The dialog and diagnostics errors, the Media Gallery error, the network
 result, the Detection progress and result, the camera latency progress and
-result, the Statistics warning and the NDI box are all one of these four.
+result, the Status & Diagnostics warnings and the NDI box are all one of these four.
 Do not add an inline-styled box.
 
 A box that a poll re-renders must not carry `role="alert"`: every swap inserts
 it again, and a screen reader announces it again. `hx-preserve` does not help,
 because htmx moves the preserved node out of the page and back in. Either the
 poll answers 204 while what it shows is unchanged (the 3D Mouse section), or
-the box has no role and an announcer outside the swap speaks it (Live
-Statistics, `web/live_alerts.py`).
+the box has no role and an announcer outside the swap speaks it (Status &
+Diagnostics, `web/live_alerts.py`).
 
 ### Status chips
 

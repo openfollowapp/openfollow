@@ -176,7 +176,7 @@ class DiagnosticsProviders:
     iface_ip: Callable[[], str] | None = None
 
     # Live runtime telemetry - the same snapshot ``/api/stats`` and the
-    # Statistics page read. The bundle carried host, config and logs but
+    # Status & Diagnostics read. The bundle carried host, config and logs but
     # nothing about whether the app was *working*, so triage needed a second
     # artefact nobody thinks to attach.
     runtime_stats: Callable[[], dict[str, Any]] | None = None

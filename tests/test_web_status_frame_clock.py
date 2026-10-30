@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""Pin the Statistics panel's frame-clock indicator.
+"""Pin the frame-clock indicator in Status & Diagnostics.
 
 A station whose frame loop has stopped keeps transmitting the last known marker
 position at full rate on PSN, OTP, RTTrPM, and OSC, so from a console it is
@@ -12,20 +12,22 @@ against a stalled loop would be worse than showing nothing at all.
 from __future__ import annotations
 
 import pytest
-from bottle import template
 
 from openfollow.web import server as _server_module  # noqa: F401 – registers tpl path
+from tests._status_boxes import render_boxes
 
 pytestmark = pytest.mark.unit
 
 
 def _render(playback: dict[str, object]) -> str:
-    return template("partials/statistics", stats={"playback": playback})
+    """The Frame clock row: other boxes carry chips of their own."""
+    body = render_boxes({"playback": playback})
+    start = body.index('<dt class="metric-label">Frame clock</dt>')
+    return body[start : body.index("</dd>", start)]
 
 
 def test_running_loop_renders_an_ok_chip() -> None:
     body = _render({"stalled": False, "seconds_since_last_frame": 0.017})
-    assert "Frame clock" in body
     assert '<span class="stat-chip ok">Running</span>' in body
 
 
@@ -78,7 +80,7 @@ def test_a_healthy_age_still_reads_running(age: float) -> None:
 
 def test_missing_playback_section_does_not_break_the_panel() -> None:
     # A snapshot published by an older peer, or read before the first publish.
-    body = template("partials/statistics", stats={})
+    body = render_boxes({})
     assert "Frame clock" in body
 
 

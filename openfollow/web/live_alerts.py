@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""The alert boxes Live Statistics shows, for the panel and its announcer.
+"""The alert boxes Status & Diagnostics shows, for the section and its announcer.
 
-The panel is swapped every second, so a ``role="alert"`` inside it would be
+The boxes are swapped every second, so a ``role="alert"`` inside it would be
 inserted, and announced, every second. The boxes carry no role; one announcer
 outside the swap speaks their text, and its poll answers 204 while that text
 is unchanged. Both read this module, so they cannot say different things.
@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-__all__ = ["PowerAlert", "StatisticsAlerts", "statistics_alerts"]
+__all__ = ["DiagnosticsAlerts", "PowerAlert", "diagnostics_alerts"]
 
 DETECTION_MISSING_STEP = "Install them from the Person Detection section, then restart."
 
@@ -37,7 +37,7 @@ THROTTLED_SINCE_BOOT = PowerAlert("caution", "CPU throttling reported since the 
 
 
 @dataclass(frozen=True)
-class StatisticsAlerts:
+class DiagnosticsAlerts:
     # The failure sentence (or the element's own wording) and its action.
     video: tuple[str, str] | None
     # One line per missing controller.
@@ -62,7 +62,7 @@ class StatisticsAlerts:
         return hashlib.sha256("\x00".join(self.spoken()).encode("utf-8")).hexdigest()[:12]
 
 
-def statistics_alerts(stats: Mapping[str, Any]) -> StatisticsAlerts:
+def diagnostics_alerts(stats: Mapping[str, Any]) -> DiagnosticsAlerts:
     video = stats.get("video") or {}
     failure = str(video.get("failure") or "none")
     # "unknown" contributes no sentence: it would contradict the element's own wording.
@@ -90,9 +90,10 @@ def statistics_alerts(stats: Mapping[str, Any]) -> StatisticsAlerts:
 
     tracking = stats.get("tracking") or {}
     missing = tracking.get("missing_deps") or []
+    # ``enabled`` is already off while the Person Detection feature is, so nothing speaks for its box.
     detection = f"Missing packages: {', '.join(missing)}." if missing and tracking.get("enabled") else None
     power = (stats.get("system") or {}).get("power") or {}
-    return StatisticsAlerts(
+    return DiagnosticsAlerts(
         video=video_alert,
         controllers=tuple(controllers),
         detection=detection,

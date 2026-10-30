@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""Tests for the Overview partial contract: renders peers list and
-privilege banner only. Network configuration block lives in the General
-tab's "Network" sub-section. The Network-block render contract is tested
-in :mod:`tests.test_web_general_network`.
+"""The Overview tab's section lists the stations and never renders the Network
+configuration block, which lives in the General tab's "Network" sub-section.
+The Network-block render contract is tested in :mod:`tests.test_web_general_network`.
 """
 
 from __future__ import annotations
@@ -13,13 +12,17 @@ from bottle import template
 
 from openfollow.web import server as _server_module  # noqa: F401 – registers tpl path
 from openfollow.web.discovery import PeerInfo
+from tests._status_boxes import CARDS
 
 pytestmark = pytest.mark.unit
 
 
 def _render_overview():
     return template(
-        "partials/overview",
+        "partials/diagnostics",
+        stats={},
+        cards=CARDS,
+        station_down=False,
         peers=[],
         local=PeerInfo(
             name="local",
@@ -34,8 +37,7 @@ def _render_overview():
 class TestOverviewNoLongerRendersNetworkBlock:
     def test_no_network_heading(self) -> None:
         body = _render_overview()
-        # The Pi network block is gone; only the Station Network heading remains.
-        assert "Station Network" in body
+        assert '<h3 class="stat-panel-title">Station Network</h3>' in body
         assert "<h2>Network</h2>" not in body
 
     def test_no_subnet_or_interface_fields_rendered(self) -> None:

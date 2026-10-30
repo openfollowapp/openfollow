@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Mutable state wrapper for a single PSN marker, and the shared freshness rule
 every output protocol maps onto its own idiom."""
 
@@ -70,6 +72,10 @@ class Marker:
     A marker built from received data (``remote=True``, written via
     ``apply_remote``) instead holds what its sender published, timed from that
     sender's start: never comparable to ours, never re-broadcast as ours.
+
+    ``lift`` is a Z a zone adds to everything sent (``sent_pos``), kept apart
+    from ``pos`` so the operator's own Z is never changed by it. Setting it is
+    not a data write: it neither stamps nor marks the marker valid.
     """
 
     __slots__ = (
@@ -82,6 +88,7 @@ class Marker:
         "_trgtpos",
         "_status",
         "_timestamp",
+        "_lift",
         "_remote",
         "_clock",
         "_lock",
@@ -111,6 +118,7 @@ class Marker:
         # explicit 0.0 must not read as "nothing written yet".
         self._status: float | None = None
         self._timestamp: int = 0
+        self._lift: float = 0.0
         self._remote: bool = bool(remote)
         self._clock = clock
         self._lock = threading.Lock()
@@ -119,6 +127,18 @@ class Marker:
     def pos(self) -> Vec3:
         with self._lock:
             return self._pos
+
+    @property
+    def lift(self) -> float:
+        with self._lock:
+            return self._lift
+
+    @property
+    def sent_pos(self) -> Vec3:
+        """The position every output sends: ``pos`` with ``lift`` added to Z, read under one lock."""
+        with self._lock:
+            x, y, z = self._pos
+            return (x, y, z + self._lift)
 
     @property
     def speed(self) -> Vec3:
@@ -172,6 +192,11 @@ class Marker:
             self._stamp_locked()
             if value is not None:
                 self._status = value
+
+    def set_lift(self, lift: float) -> None:
+        """Set the Z added to what is sent; no stamp, so it never makes a stale marker look fresh."""
+        with self._lock:
+            self._lift = float(lift)
 
     def set_name(self, name: str) -> None:
         """Update the marker name (used by live catalog rename)."""
@@ -237,10 +262,11 @@ class Marker:
         :func:`is_marker_stale`): computing it here would re-enter ``_lock``.
         """
         with self._lock:
+            x, y, z = self._pos
             # pypsn uses tracker_id (wire protocol); we translate at boundary.
             return pypsn.PsnTracker(
                 tracker_id=self.marker_id,
-                pos=pypsn.PsnVector3(*self._pos),
+                pos=pypsn.PsnVector3(x, y, z + self._lift),
                 speed=pypsn.PsnVector3(*self._speed),
                 ori=pypsn.PsnVector3(*self._ori),
                 accel=pypsn.PsnVector3(*self._accel),

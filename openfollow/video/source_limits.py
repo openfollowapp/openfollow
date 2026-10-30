@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """The largest video a station is sized for, and the meter that holds a live feed against it.
 
 One rule serves the Media Gallery's upload check and the live feed, so the two

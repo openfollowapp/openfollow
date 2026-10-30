@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Splits an output protocol's payload list across datagrams that fit the MTU.
 
 Every marker-carrying output (PSN, OTP, RTTrPM) grows its datagram with the

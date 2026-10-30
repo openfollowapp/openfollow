@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Tests for the overlay-state sync helpers in
 ``runtime/services_marker_visuals``: ``sync_marker_config`` /
 ``sync_grid_config`` / ``sync_ui_config`` / ``build_initial_overlay_state`` /
@@ -493,12 +495,13 @@ class TestBuildInitialOverlayState:
         assert state.crosshair_color == "#ff0000"
 
 
-def _make_zone(vertices: list[tuple[float, float]], *, enabled: bool = True) -> SimpleNamespace:
+def _make_zone(vertices: list[tuple[float, float]], *, enabled: bool = True, z_offset: float = 0.0) -> SimpleNamespace:
     return SimpleNamespace(
         vertices=vertices,
         color="#ffcc00",
         name="Z",
         enabled=enabled,
+        z_offset=z_offset,
     )
 
 
@@ -507,12 +510,14 @@ def _make_cfg(
     enabled: bool,
     show_overlay: bool,
     zones: list[SimpleNamespace] | None = None,
+    highlight_occupied: bool = True,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         grid=_make_grid_config(),
         trigger_zones=SimpleNamespace(
             enabled=enabled,
             show_overlay=show_overlay,
+            highlight_occupied=highlight_occupied,
             zones=zones or [],
         ),
     )
@@ -538,10 +543,9 @@ class TestPopulateZoneOverlay:
 
         assert state.show_zones is True
         assert len(state.zone_polygons) == 1
-        # Occupancy defaults to (False, 0) when the engine is not consulted.
-        _, _, _, is_occupied, count = state.zone_polygons[0]
+        # Unoccupied when the engine is not consulted.
+        _, _, is_occupied, _height = state.zone_polygons[0]
         assert is_occupied is False
-        assert count == 0
 
     def test_zones_are_not_drawn_while_their_feature_is_off(self) -> None:
         from openfollow.configuration import UiConfig
@@ -556,6 +560,24 @@ class TestPopulateZoneOverlay:
 
         assert state.show_zones is False
         assert state.zone_polygons == []
+
+    @pytest.mark.parametrize(
+        ("features", "height"),
+        [(["zones", "zone_heights"], 0.75), (["zones"], 0.0)],
+        ids=["zone heights on", "zone heights off"],
+    )
+    def test_each_zone_carries_its_height_while_zone_heights_is_on(self, features: list[str], height: float) -> None:
+        from openfollow.configuration import UiConfig
+
+        square = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+        cfg = _make_cfg(enabled=False, show_overlay=True, zones=[_make_zone(square, z_offset=0.75)])
+        cfg.ui = UiConfig(shown_features=features)
+        state = OverlayState()
+
+        _populate_zone_overlay(state, cfg, SimpleNamespace(_runtime_services=SimpleNamespace(_zone_engine=None)))
+
+        assert state.zone_polygons[0][3] == height
+        assert state.zone_z_offset == cfg.grid.z_offset
 
     def test_hides_overlay_only_when_show_overlay_is_false(self) -> None:
         square = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
@@ -578,9 +600,20 @@ class TestPopulateZoneOverlay:
         _populate_zone_overlay(state, cfg, app)
 
         assert state.show_zones is True
-        _, _, _, is_occupied, count = state.zone_polygons[0]
+        _, _, is_occupied, _height = state.zone_polygons[0]
         assert is_occupied is True
-        assert count == 3
+
+    def test_occupancy_is_not_shown_while_the_highlight_is_off(self) -> None:
+        square = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+        cfg = _make_cfg(enabled=True, show_overlay=True, zones=[_make_zone(square)], highlight_occupied=False)
+        engine = _StubZoneEngine([(0, True, 3)])
+        state = OverlayState()
+
+        _populate_zone_overlay(state, cfg, SimpleNamespace(_runtime_services=SimpleNamespace(_zone_engine=engine)))
+
+        assert state.show_zones is True
+        _, _, is_occupied, _height = state.zone_polygons[0]
+        assert is_occupied is False
 
     def test_engine_occupancy_is_ignored_when_disabled(self) -> None:
         """When triggers are off, occupancy must not be read from the engine."""
@@ -592,9 +625,8 @@ class TestPopulateZoneOverlay:
 
         _populate_zone_overlay(state, cfg, app)
 
-        _, _, _, is_occupied, count = state.zone_polygons[0]
+        _, _, is_occupied, _height = state.zone_polygons[0]
         assert is_occupied is False
-        assert count == 0
 
     def test_enabled_but_engine_is_none_skips_occupancy_lookup(self) -> None:
         square = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
@@ -606,9 +638,8 @@ class TestPopulateZoneOverlay:
 
         assert state.show_zones is True
         assert len(state.zone_polygons) == 1
-        _, _, _, is_occupied, count = state.zone_polygons[0]
+        _, _, is_occupied, _height = state.zone_polygons[0]
         assert is_occupied is False
-        assert count == 0
 
     def test_disabled_and_degenerate_zones_are_skipped(self) -> None:
         """Cover the ``continue`` at ``services_marker_visuals.py:167``.
@@ -637,7 +668,7 @@ class TestPopulateZoneOverlay:
 
         # Only the one live zone survives the filter.
         assert len(state.zone_polygons) == 1
-        verts, _color, _name, _is_occupied, _count = state.zone_polygons[0]
+        verts, _color, _is_occupied, _height = state.zone_polygons[0]
         assert verts == [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
 
 
@@ -889,6 +920,8 @@ class _TornMarker:
     @property
     def speed(self) -> tuple[float, float, float]:
         return (0.0, 0.0, 0.0)
+
+    lift = 0.0
 
 
 def _make_full_marker_config() -> SimpleNamespace:
@@ -1390,76 +1423,21 @@ class TestPathsOnTheOperatorScreen:
 
 
 # --------------------------------------------------------------------------- #
-# Ground grid: config -> overlay state -> floor height
+# Floor height: config -> overlay state
 # --------------------------------------------------------------------------- #
 
 
-class TestGroundGridSync:
-    @staticmethod
-    def _cfg(*, experimental: bool = True, **gg: object):
-        from openfollow.configuration import AppConfig, GroundGridConfig
+def test_a_marker_stands_on_the_main_grid_s_height() -> None:
+    from openfollow.configuration import AppConfig
+    from openfollow.runtime.overlay_draw_scene import floor_z
 
-        cfg = AppConfig()
-        cfg.ui.shown_features = ["ground_grid"] if experimental else []
-        cfg.ground_grid = GroundGridConfig(**gg)
-        return cfg
+    cfg = AppConfig()
+    cfg.grid.z_offset = -0.9
+    assert floor_z(build_initial_overlay_state(cfg)) == -0.9
 
-    _SQUARE = [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]]
 
-    def test_enabled_polygon_redirects_the_floor_of_a_marker_inside(self) -> None:
-        from openfollow.runtime.overlay_draw_scene import floor_z_at
+def test_without_a_grid_a_marker_stands_at_zero() -> None:
+    from openfollow.runtime.overlay_draw_scene import floor_z
+    from openfollow.runtime.overlay_state import OverlayState
 
-        state = build_initial_overlay_state(self._cfg(enabled=True, z_offset=-0.9, vertices=self._SQUARE))
-        assert state.ground_grid_active is True
-        assert state.ground_grid_visible is True
-        assert floor_z_at(state, 1.0, 1.0) == -0.9
-        assert floor_z_at(state, 3.0, 1.0) == 0.0
-
-    @pytest.mark.parametrize(
-        "gg",
-        [
-            {"enabled": True, "vertices": _SQUARE[:2]},
-            {"enabled": True, "vertices": _SQUARE, "experimental": False},
-        ],
-        ids=["two-corners", "experimental-off"],
-    )
-    def test_unusable_ground_grid_neither_redirects_nor_draws(self, gg: dict) -> None:
-        from openfollow.runtime.overlay_draw_scene import floor_z_at
-
-        state = build_initial_overlay_state(self._cfg(z_offset=-0.9, **gg))
-        assert state.ground_grid_active is False
-        assert state.ground_grid_visible is False
-        assert floor_z_at(state, 1.0, 1.0) == 0.0
-
-    def test_a_displayed_ground_grid_draws_without_dropping_markers(self) -> None:
-        from openfollow.runtime.overlay_draw_scene import floor_z_at
-
-        state = build_initial_overlay_state(self._cfg(enabled=False, z_offset=-0.9, vertices=self._SQUARE))
-        assert state.ground_grid_visible is True
-        assert state.ground_grid_active is False
-        assert floor_z_at(state, 1.0, 1.0) == 0.0
-
-    def test_turning_the_ground_grid_feature_off_hides_it_at_once(self) -> None:
-        from openfollow.runtime.services_marker_visuals import sync_ground_grid_config
-
-        cfg = self._cfg(enabled=True, vertices=self._SQUARE)
-        state = build_initial_overlay_state(cfg)
-        cfg.ui.shown_features = []
-        sync_ground_grid_config(state, cfg)
-        assert (state.ground_grid_active, state.ground_grid_visible) == (False, False)
-
-    def test_hidden_ground_grid_still_redirects(self) -> None:
-        state = build_initial_overlay_state(self._cfg(enabled=True, visible=False, vertices=self._SQUARE))
-        assert state.ground_grid_active is True
-        assert state.ground_grid_visible is False
-
-    def test_shim_config_without_the_section_has_no_ground_grid(self) -> None:
-        from types import SimpleNamespace
-
-        from openfollow.configuration import AppConfig
-        from openfollow.runtime.services_marker_visuals import sync_ground_grid_config
-
-        state = build_initial_overlay_state(self._cfg(enabled=True, vertices=self._SQUARE))
-        sync_ground_grid_config(state, SimpleNamespace(grid=AppConfig().grid))
-        assert state.ground_grid_active is False
-        assert state.ground_grid_vertices == []
+    assert floor_z(OverlayState(grid_config=None)) == 0.0

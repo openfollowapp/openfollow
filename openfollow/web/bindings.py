@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Binding clashes on the input forms, and OSC triggers that share an action's input.
 
 The validate route asks :func:`check_binding` what an edited field takes from

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Guards on declared system (apt) dependencies the Python import graph can't see.
 
 WebP decode/encode for the Media Gallery rides on ``gstreamer1.0-plugins-bad``

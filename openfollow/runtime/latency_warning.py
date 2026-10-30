@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """The Operator Screen's "latency test about to start" card, held up by Measure dialogs showing their warnings.
 
 Shaped like the web remote's sessions (``input/touch_remote.py``): a dialog's warnings renew a

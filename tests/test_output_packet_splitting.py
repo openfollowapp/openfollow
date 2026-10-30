@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Every output protocol keeps its datagrams inside the MTU as markers scale.
 
 A datagram past the UDP payload of a 1500-octet Ethernet MTU is fragmented by

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Guard tests for the supply-chain audit jobs' dependency closures.
 
 ``pip-audit`` reports on what is installed, so an optional extra no audit job

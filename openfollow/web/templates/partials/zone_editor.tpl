@@ -18,17 +18,20 @@
         </div>
         <div class="pv-stage" id="zone-picture" hidden>
             <img alt="Camera picture with the zones">
-            <svg viewBox="0 0 1280 720" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg"></svg>
+            <svg id="zone-picture-svg" viewBox="0 0 1280 720" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg"
+                 tabindex="0" role="group" aria-label="Zone corners on the camera picture"></svg>
+            <button type="button" class="pv-fs-btn" id="zone-fs-btn" aria-label="Full screen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
         </div>
         <div class="pv-nofeed" id="zone-picture-nofeed" hidden>No video picture.</div>
-        <div id="zone-canvas-wrap" style="position:relative;border:1px solid var(--border,#444);border-radius:6px;background:#111;overflow:hidden;width:100%;">
+        <div id="zone-canvas-wrap" style="position:relative;border:1px solid var(--border,#444);border-radius:3px;background:#111;overflow:hidden;width:100%;">
             <canvas id="zone-canvas" width="1280" height="720" style="display:block;width:100%;height:auto;background:#111;cursor:crosshair;"></canvas>
         </div>
         <div style="display:flex;gap:0.5rem;margin-top:0.5rem;flex-wrap:wrap;">
             <button type="button" id="zone-add-btn" class="save-btn">+ New Zone</button>
             <button type="button" id="zone-finish-btn" class="secondary" disabled>Finish Polygon</button>
             <button type="button" id="zone-cancel-btn" class="secondary" disabled>Cancel Drawing</button>
-            <button type="button" id="zone-delete-btn" class="danger" disabled>Delete Selected</button>
+            <button type="button" id="zone-corner-delete-btn" class="secondary" hidden disabled>Delete corner</button>
+            <button type="button" id="zone-delete-btn" class="danger" disabled>Delete zone</button>
             <button type="button" id="zone-refresh-btn" class="secondary" hidden>Refresh Image</button>
             <!-- Save / Load template buttons. Save captures entire
                  trigger_zones section (defaults + zones[]) as
@@ -43,6 +46,18 @@
             <span id="zone-editor-status" class="section-note"></span>
         </div>
         <div id="zone-details" class="section-note" style="margin-top:1rem;">Select a zone to edit its OSC addresses and trigger source.</div>
+    </div>
+    <div class="pv-fs-shell" id="zone-fs-shell" hidden role="dialog" aria-modal="true" aria-label="Zone Editor, full screen">
+        <div class="pv-fs-bar">
+            <span class="pv-fs-title">Zone Editor</span>
+            <span class="pv-fs-status" id="zone-fs-status"></span>
+            <span class="pv-fs-actions">
+                <button type="button" class="secondary small" id="zone-fs-refresh">Refresh Image</button>
+                <button type="button" class="secondary small" id="zone-fs-corner-delete" disabled>Delete corner</button>
+            </span>
+            <button type="button" class="secondary small" id="zone-fs-exit">Exit full screen</button>
+        </div>
+        <div class="pv-fs-stage" id="zone-fs-stage"></div>
     </div>
 </div>
 
@@ -107,99 +122,249 @@
         onDragMove: function(vertexIdx) { syncVertexInputs(state.selectedIndex, vertexIdx); },
         onDragEnd: function() { updateZoneVertices(state.selectedIndex); },
         onDraftClose: createZone,
-        onRender: function() { updateButtons(); projectZones(); },
+        onRender: function() { updateButtons(); updateCornerControls(); renderPicture(); },
     });
 
-    // -- camera view: the zones as the saved camera sees them, on the floor plane ----
+    // -- camera view: the zones as the saved camera sees them, projected in the browser ----
     var editorSection = document.getElementById('zone-editor-section');
     var pictureEl = document.getElementById('zone-picture');
     var canvasWrap = document.getElementById('zone-canvas-wrap');
     var refreshBtn = document.getElementById('zone-refresh-btn');
+    var cornerDeleteBtn = document.getElementById('zone-corner-delete-btn');
+    var fsShell = document.getElementById('zone-fs-shell');
     var pv = new window.OpenFollow.PictureView({
-        stage: pictureEl, img: pictureEl.querySelector('img'), svg: pictureEl.querySelector('svg'),
+        stage: pictureEl, img: pictureEl.querySelector('img'), svg: document.getElementById('zone-picture-svg'),
         nofeed: document.getElementById('zone-picture-nofeed'),
-        onSize: function() { projectedKey = ''; projectZones(); },
+        onSize: function() { pictureKey = ''; fsLayout(); render(); },
     });
     var mode = 'plan';
-    var projected = null, projectedKey = '', projectSeq = 0;
+    // The saved camera from the zones poll, its model for the picture's size, and what the picture last drew.
+    var camera = null, camModel = null, pictureKey = '';
+    // Local corner edits and saves under way: a poll answer asked for before either is stale.
+    var edits = 0, saving = 0;
 
     function floorZ() { return Number(plan.grid.z_offset) || 0; }
+    function heightsOn() { return document.body.classList.contains('feature-zone_heights'); }
+    // The plane a zone is drawn and picked on: the stage plane, raised by the zone's Z offset with zone heights on.
+    function zonePlane(zone) { return floorZ() + (heightsOn() ? Number(zone.z_offset) || 0 : 0); }
 
-    function projectZones() {
-        if (mode !== 'camera') return;
-        var z = floorZ();
-        var outlines = state.zones.map(function(zone) {
-            var v = (zone && zone.vertices) || [];
-            return v.length >= 3 ? v.concat([v[0]]).map(function(p) { return [p[0], p[1], z]; }) : [];
+    function cameraModel() {
+        if (!camera) return null;
+        if (!camModel || camModel.of !== camera || camModel.w !== pv.w || camModel.h !== pv.h) {
+            camModel = new window.OpenFollow.CameraModel(camera, pv.w, pv.h);
+            camModel.of = camera;
+        }
+        return camModel;
+    }
+    // Chords per straight stage edge when the lens bows it, as the Operator Screen draws it.
+    function chords(cam) { return cam.lens ? 24 : 1; }
+    function edgePoints(cam, zone, i) {
+        var v = zone.vertices, a = v[i], b = v[(i + 1) % v.length], z = zonePlane(zone);
+        return cam.segment([a[0], a[1], z], [b[0], b[1], z], chords(cam));
+    }
+    function outline(cam, zone) {
+        var out = [];
+        zone.vertices.forEach(function(_, i) { out = out.concat(edgePoints(cam, zone, i).slice(i ? 1 : 0)); });
+        return out;
+    }
+    // A raised zone's floor outline and corner lines, cut into runs in front of and behind the zone.
+    function floorRuns(cam, zone) {
+        var v = zone.vertices, n = v.length, bottom = floorZ(), top = zonePlane(zone), out = [];
+        var eye = [cam.pos[0], -cam.pos[2], cam.pos[1]];
+        var lines = v.map(function(a, i) { return [[a[0], a[1], bottom], [v[(i + 1) % n][0], v[(i + 1) % n][1], bottom], false]; })
+            .concat(v.map(function(a) { return [[a[0], a[1], bottom], [a[0], a[1], top], true]; }));
+        lines.forEach(function(line) {
+            var a = line[0], b = line[1], pts = cam.segment(a, b, 24), run = [pts[0]], behind = null;
+            for (var k = 0; k < 24; k++) {
+                var t = (k + 0.5) / 24;
+                var h = window.OpenFollow.hiddenByZone([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t], eye, v, bottom, top);
+                if (behind !== null && h !== behind) { out.push({ points: run, behind: behind, post: line[2] }); run = [pts[k]]; }
+                behind = h;
+                run.push(pts[k + 1]);
+            }
+            out.push({ points: run, behind: behind, post: line[2] });
         });
-        var sel = state.zones[state.selectedIndex];
-        var corners = sel && sel.vertices ? sel.vertices.map(function(p) { return [p[0], p[1], z]; }) : [];
-        var key = JSON.stringify([outlines, corners, state.selectedIndex, pv.w, pv.h]);
-        if (key === projectedKey) return;
-        projectedKey = key;
-        var asked = ++projectSeq;
-        pv.project(outlines, corners).then(function(json) {
-            if (asked !== projectSeq) return;
-            projected = json;
-            renderPicture();
-        }, function() { projectedKey = ''; });
+        return out;
+    }
+    function chosenZone() {
+        var zone = state.zones[state.selectedIndex];
+        return zone && zone.vertices ? zone : null;
     }
 
+    var corners = new window.OpenFollow.PicturePolygon(pv, {
+        min: 3,
+        corners: function() {
+            var zone = chosenZone(), cam = cameraModel();
+            if (!zone || !cam || mode !== 'camera') return null;
+            var z = zonePlane(zone);
+            return zone.vertices.map(function(p) { return cam.project([p[0], p[1], z]); });
+        },
+        edge: function(i) { return edgePoints(cameraModel(), chosenZone(), i); },
+        place: function(i, at) {
+            var zone = chosenZone(), w = cameraModel().unproject(at, zonePlane(zone));
+            if (!w) return false;
+            zone.vertices[i] = w;
+            edits++;
+            syncVertexInputs(state.selectedIndex, i);
+            return true;
+        },
+        insert: function(i, at) {
+            var zone = chosenZone(), w = cameraModel().unproject(at, zonePlane(zone));
+            if (!w) return false;
+            zone.vertices.splice(i + 1, 0, w);
+            edits++;
+            renderDetails();
+            return true;
+        },
+        remove: function(i) {
+            chosenZone().vertices.splice(i, 1);
+            edits++;
+            renderDetails();
+            return true;
+        },
+        snapshot: function() { return JSON.stringify(chosenZone().vertices); },
+        restore: function(snap) {
+            chosenZone().vertices = JSON.parse(snap);
+            edits++;
+            renderDetails();
+        },
+        readout: function(i) {
+            var zone = chosenZone(), v = zone.vertices[i];
+            return 'V' + (i + 1) + ' · X ' + formatLength(v[0]) + ' · Y ' + formatLength(v[1])
+                + (heightsOn() ? ' · Z ' + formatLength(zonePlane(zone)) : '');
+        },
+        changed: render,
+        save: function() { updateZoneVertices(state.selectedIndex); },
+        press: function(ev) {
+            var line = ev.target && ev.target.closest && ev.target.closest('[data-zone]');
+            if (!line || +line.dataset.zone === state.selectedIndex) return;
+            state.selectedIndex = +line.dataset.zone;
+            renderDetails();
+        },
+    });
+
     function renderPicture() {
+        if (mode !== 'camera') return;
+        var cam = cameraModel(), k = pv.cssScale();
+        var shapes = state.zones.map(function(z) { return [z.vertices, z.color, z.z_offset]; });
+        var key = JSON.stringify([shapes, state.selectedIndex, corners.chosen, corners.keyboard, camera, floorZ(), heightsOn(),
+            pv.w, pv.h, k]);
+        if (key === pictureKey) return;
+        pictureKey = key;
         pv.clear();
-        if (!projected) return;
-        projected.polylines.forEach(function(points, i) {
-            var zone = state.zones[i];
-            if (!zone) return;
+        if (!cam) { pv.hideLoupe(); return; }
+        // Under the zones: each raised zone's outline on the floor, and its corners joined up to it.
+        state.zones.forEach(function(zone) {
+            if (!zone || !zone.vertices || zone.vertices.length < 3 || zonePlane(zone) <= floorZ()) return;
+            floorRuns(cam, zone).forEach(function(run) {
+                pv.polylines(run.points).forEach(function(points) {
+                    pv.svg.appendChild(pv.el('polyline', {
+                        points: points, stroke: zone.color || '#ff8000', 'vector-effect': 'non-scaling-stroke',
+                        'class': 'pv-zone-floor' + (run.post ? ' pv-zone-post' : '') + (run.behind ? ' pv-behind' : ''),
+                    }));
+                });
+            });
+        });
+        state.zones.forEach(function(zone, i) {
+            if (!zone || !zone.vertices || zone.vertices.length < 3) return;
             var col = zone.color || '#ff8000';
-            pv.polylines(points).forEach(function(run) {
+            pv.polylines(outline(cam, zone)).forEach(function(run) {
                 var line = pv.el('polyline', {
                     points: run, stroke: col, fill: col, 'vector-effect': 'non-scaling-stroke',
                     'class': 'pv-zone' + (i === state.selectedIndex ? ' pv-zone-selected' : ''),
                 });
-                line.addEventListener('click', function() {
-                    if (state.selectedIndex === i) return;
-                    state.selectedIndex = i;
-                    renderDetails();
-                    render();
-                });
+                line.dataset.zone = i;
                 pv.svg.appendChild(line);
             });
         });
-        projected.points.forEach(function(pt, i) {
-            if (pt) pv.svg.appendChild(pv.handle(pt, 'pv-handle', function() { return grabCorner(i); }));
-        });
+        corners.draw();
     }
 
-    // A corner dropped in the picture lands on the floor plane under the pointer.
-    function grabCorner(vertexIdx) {
-        var idx = state.selectedIndex, z = floorZ();
-        var zone = state.zones[idx];
-        if (!zone || !zone.vertices || !zone.vertices[vertexIdx]) return null;
-        return function(at) {
-            pv.onStage(at, z).then(function(w) {
-                var current = state.zones[idx];
-                if (!current || !current.vertices[vertexIdx]) return;
-                current.vertices[vertexIdx] = [w.x, w.y];
-                syncVertexInputs(idx, vertexIdx);
-                render();
-                updateZoneVertices(idx);
-            }, function(info) {
-                window.OpenFollow.saveError.show(editorSection, info, 'Not moved.');
-            });
-        };
+    function updateCornerControls() {
+        var zone = chosenZone(), can = corners.canDelete();
+        cornerDeleteBtn.disabled = !can;
+        document.getElementById('zone-fs-corner-delete').disabled = !can;
+        var name = zone && (zone.name || 'Zone ' + (state.selectedIndex + 1));
+        document.getElementById('zone-fs-status').textContent = zone ? name + ' · ' + zone.vertices.length + ' corners' : 'No zone chosen';
     }
+
+    // Full screen: the picture moves into a shell over the page, which sits in <body> while open because a
+    // section's backdrop filter would hold a fixed child inside it.
+    var fsHolder = null;
+    function fsLayout() {
+        if (fsShell.hidden) return;
+        var box = document.getElementById('zone-fs-stage').getBoundingClientRect();
+        if (box.width > 0 && box.height > 0) pictureEl.style.width = Math.min(box.width, box.height * pv.w / pv.h) + 'px';
+        pictureKey = '';
+        render();
+    }
+    function openFull() {
+        if (!fsShell.hidden) return;
+        fsHolder = document.createElement('div');
+        fsHolder.style.height = pictureEl.getBoundingClientRect().height + 'px';
+        pictureEl.parentNode.insertBefore(fsHolder, pictureEl);
+        document.body.appendChild(fsShell);
+        document.getElementById('zone-fs-stage').appendChild(pictureEl);
+        fsShell.hidden = false;
+        document.getElementById('zone-fs-btn').hidden = true;
+        document.body.style.overflow = 'hidden';
+        fsLayout();
+        pv.svg.focus({ preventScroll: true });
+    }
+    function closeFull() {
+        if (fsShell.hidden) return;
+        corners.cancelDrag();
+        corners.choose(null);
+        fsHolder.parentNode.insertBefore(pictureEl, fsHolder);
+        fsHolder.remove();
+        fsHolder = null;
+        pictureEl.style.width = '';
+        fsShell.hidden = true;
+        document.getElementById('zone-fs-btn').hidden = false;
+        editorSection.appendChild(fsShell);
+        document.body.style.overflow = '';
+        pictureKey = '';
+        render();
+        document.getElementById('zone-fs-btn').focus({ preventScroll: true });
+    }
+    document.getElementById('zone-fs-btn').addEventListener('click', openFull);
+    document.getElementById('zone-fs-exit').addEventListener('click', closeFull);
+    document.getElementById('zone-fs-refresh').addEventListener('click', function() { pv.load(); });
+    cornerDeleteBtn.addEventListener('click', function() { corners.deleteChosen(); });
+    document.getElementById('zone-fs-corner-delete').addEventListener('click', function() { corners.deleteChosen(); });
+    // Esc from a bar button leaves; on the picture it lets go of the corner first.
+    fsShell.addEventListener('keydown', function(ev) {
+        if (ev.defaultPrevented) return;
+        if (ev.key === 'Escape') { closeFull(); ev.preventDefault(); return; }
+        if (ev.key !== 'Tab') return;
+        // Tab stays inside the full-screen view.
+        var all = Array.prototype.filter.call(fsShell.querySelectorAll('button, [tabindex="0"]'), function(el) {
+            return !el.disabled && el.offsetParent !== null;
+        });
+        var first = all[0], last = all[all.length - 1];
+        if (ev.shiftKey && document.activeElement === first) { ev.preventDefault(); last.focus(); }
+        else if (!ev.shiftKey && document.activeElement === last) { ev.preventDefault(); first.focus(); }
+    });
+    window.addEventListener('resize', function() {
+        if (!document.body.contains(pictureEl)) return;
+        fsLayout();
+        pictureKey = '';
+        render();
+    });
 
     function applyMode(next) {
         mode = next;
-        var camera = mode === 'camera';
-        canvasWrap.hidden = camera;
-        refreshBtn.hidden = !camera;
-        if (camera) {
+        var onCamera = mode === 'camera';
+        canvasWrap.hidden = onCamera;
+        refreshBtn.hidden = !onCamera;
+        cornerDeleteBtn.hidden = !onCamera;
+        if (onCamera) {
             if (plan.draft) plan.cancelDraft();
-            projectedKey = '';
+            pictureKey = '';
             pv.load();
         } else {
+            corners.cancelDrag();
+            corners.choose(null);
             pictureEl.hidden = true;
             document.getElementById('zone-picture-nofeed').hidden = true;
         }
@@ -208,18 +373,29 @@
     refreshBtn.addEventListener('click', function() { pv.load(); });
 
     function fetchZones() {
+        var asked = edits;
         fetch('/api/zones', {cache: 'no-store'})
             .then(function(r) { return r.ok ? r.json() : null; })
             .then(function(data) {
-                if (!data) return;
+                // A corner in hand, or edited or saved since this was asked, is newer than the answer.
+                if (!data || asked !== edits || saving || corners.busy()) return;
                 // Don't replace the selected zone's data while the user is
                 // typing into its detail inputs (would clobber in-progress
                 // edits – in particular per-vertex coordinate fields).
                 var activeEl = document.activeElement;
                 var editingSelected = activeEl && detailsEl.contains(activeEl) && state.selectedIndex >= 0;
                 var incomingZones = data.zones || [];
+                // The station's copy of the selected zone, before an edit in progress is put back over it.
+                var stored = incomingZones[state.selectedIndex];
                 if (editingSelected && state.zones[state.selectedIndex]) {
                     var preserved = state.zones[state.selectedIndex];
+                    // Keep the page's object (the write queue finds zones by identity) and its corners, but take
+                    // the station's other fields, which the picture reads; the inputs being typed in are untouched.
+                    if (stored) {
+                        Object.keys(stored).forEach(function(k) {
+                            if (k !== 'vertices') preserved[k] = stored[k];
+                        });
+                    }
                     state.zones = incomingZones;
                     if (state.selectedIndex < state.zones.length) {
                         state.zones[state.selectedIndex] = preserved;
@@ -229,6 +405,7 @@
                 }
                 plan.markers = data.markers || [];
                 if (data.grid) plan.grid = data.grid;
+                camera = data.camera || null;
                 // Refresh the shared destinations so the OSC Destination
                 // dropdown follows add/rename/delete live.
                 var newDests = data.destinations || [];
@@ -251,8 +428,10 @@
                     // Refresh Diagnostics tab in place (don't rebuild whole
                     // panel). Rendering fresh occupants/last_event_* into
                     // existing #zone-diag-* spans leaves focus untouched.
-                    var current = data.zones[state.selectedIndex];
-                    if (current) renderZoneDiagnostics(current);
+                    if (stored) {
+                        syncHeightsShown(stored);
+                        renderZoneDiagnostics(stored);
+                    }
                 }
             })
             .catch(function() {});
@@ -308,13 +487,10 @@
         cancelBtn.disabled = !drawing;
         deleteBtn.disabled = (state.selectedIndex < 0);
         addBtn.disabled = drawing || mode === 'camera';
-        if (drawing) {
-            statusEl.textContent = 'Drawing: ' + plan.draft.vertices.length + ' point(s). Click first vertex or double-click to close.';
-        } else if (state.selectedIndex >= 0) {
-            statusEl.textContent = 'Editing zone ' + (state.selectedIndex + 1);
-        } else {
-            statusEl.textContent = '';
-        }
+        // The chosen zone is named by its details heading, so the line only speaks while drawing.
+        statusEl.textContent = drawing
+            ? 'Drawing: ' + plan.draft.vertices.length + ' point(s). Click first vertex or double-click to close.'
+            : '';
         // Drawing-in-progress is a form of unsaved state: vertices
         // are on the canvas but not yet on disk. Mark the section
         // dirty so "Save as template" disables until the operator
@@ -408,6 +584,17 @@
               + ' aria-describedby="zone-triggered-by-error">';
         html += '        <span class="field-error" id="zone-triggered-by-error" data-zone-field-error="triggered_by" aria-live="polite"></span>';
         html += '      </div>';
+        html += '    </div>';
+        // Zone heights: shown only while that feature is on.
+        html += '    <div class="row" data-feature="zone_heights">';
+        html += blurField('Z offset (' + vertexUnitLabel() + ')', 'z_offset',
+            heightShown('z_offset', z), IS_IMPERIAL ? 'text' : 'number', '0.01');
+        html += '      <div class="field checkbox-field"><label for="zone-detail-raise-markers">Marker height</label>' +
+            '<div class="checkbox-wrap checkbox-field inline">' +
+            '<input type="checkbox" id="zone-detail-raise-markers" data-zone-field="raise_markers" ' + (z.raise_markers ? 'checked' : '') + '>' +
+            '<label for="zone-detail-raise-markers">Add the Z offset inside this zone</label></div></div>';
+        html += blurField('Height transition time (s)', 'height_transition_s',
+            heightShown('height_transition_s', z), 'number', '0.1');
         html += '    </div>';
         html += '  </div>';
 
@@ -582,8 +769,14 @@
         if (state.selectedIndex < 0) return;
         var which = evt.target.getAttribute('data-zone-test');
         if (!which) return;
-        var idx = state.selectedIndex;
+        var z = state.zones[state.selectedIndex];
         var pre = document.getElementById('zone-diag-test-result');
+        var near = detailsEl.querySelector('.actions'), saveError = window.OpenFollow.saveError;
+        // Under the zone's actions, or under the buttons once its details are gone.
+        var notSent = function(info) {
+            if (pre) pre.setAttribute('hidden', '');
+            saveError.show(editorSection, info, 'Not sent.', near && near.isConnected ? near : deleteBtn.parentNode);
+        };
         if (pre) {
             pre.textContent = 'Sending…';
             pre.removeAttribute('hidden');
@@ -594,13 +787,17 @@
         // saved. saveSelectedZone() returns a Promise.
         saveSelectedZone().then(function(saved) {
             if (!saved) return null;
-            var url = '/api/zones/' + idx + '/test_send'
-                + '?which=' + encodeURIComponent(which);
-            return fetch(url, {method: 'POST'});
-        }).then(function(r) {
-            if (!r) return null;
-            return r.text().then(function(body) { return {ok: r.ok, body: body}; });
+            return zoneJob(z, function(at) {
+                var url = '/api/zones/' + at + '/test_send' + '?which=' + encodeURIComponent(which);
+                return timedFetch(url, {method: 'POST'}).then(function(r) {
+                    return r.text().then(function(body) { return {ok: r.ok, body: body}; });
+                });
+            });
         }).then(function(res) {
+            if (!res && state.zones.indexOf(z) < 0) {
+                notSent({error: 'The zone was deleted before the test was sent.', action: '', href: ''});
+                return;
+            }
             if (!pre) return;
             if (!res) {
                 // Not sent: the line under the actions says why the save failed.
@@ -612,9 +809,7 @@
             } catch (_) {
                 pre.textContent = res.body;
             }
-        }).catch(function(err) {
-            if (pre) pre.textContent = 'Error: ' + (err && err.message ? err.message : err);
-        });
+        }).catch(function() { notSent(saveError.UNREACHABLE_ACTION); });
     }
 
     function renderZoneDiagnostics(z) {
@@ -664,13 +859,12 @@
 
     function duplicateSelectedZone() {
         if (state.selectedIndex < 0) return;
-        var idx = state.selectedIndex;
+        var z = state.zones[state.selectedIndex], near = detailsEl.querySelector('.actions');
         // Persist any pending edits before cloning so the copy matches
         // what the operator currently sees in the form.
         saveSelectedZone().then(function(saved) {
             if (!saved) return null;
-            return zoneWrite(fetch('/api/zones/' + idx + '/duplicate', {method: 'POST'}),
-                detailsEl.querySelector('.actions'));
+            return zoneJob(z, function(at) { return timedWrite('/api/zones/' + at + '/duplicate', {method: 'POST'}, near); });
         }).then(function(r) { return r ? r.json() : null; })
           .then(function(data) {
               if (!data) return;
@@ -700,8 +894,39 @@
             + '</div>';
     }
 
+    // A zone height field's text for the value the station holds.
+    function heightShown(name, z) {
+        if (name !== 'z_offset') return String(z[name]);
+        var metres = Number(z.z_offset) || 0;
+        return IS_IMPERIAL ? formatLength(metres) : metres.toFixed(3);
+    }
+
+    // What the station holds now: an untouched field is left out of a save, so it must not compare
+    // against a value an earlier save already replaced.
+    function syncHeightsShown(z) {
+        detailsEl.querySelectorAll('[data-zone-blur-field]').forEach(function(inp) {
+            inp.setAttribute('data-shown', heightShown(inp.getAttribute('data-zone-blur-field'), z));
+        });
+    }
+
+    // A number field validated on blur like the OSC addresses; ``data-shown``
+    // keeps what it showed, so an untouched one is not saved back rounded.
+    function blurField(label, name, value, type, step) {
+        var id = 'zone-detail-' + name.replace(/_/g, '-');
+        return '      <div class="field">'
+            + '<label for="' + id + '">' + label + '</label>'
+            + '<input type="' + type + '"' + (type === 'number' ? ' step="' + step + '"' : '')
+            + ' id="' + id + '" data-zone-field="' + name + '"'
+            + ' data-zone-blur-field="' + name + '"'
+            + ' value="' + escapeAttr(value) + '" data-shown="' + escapeAttr(value) + '"'
+            + ' aria-describedby="' + id + '-error">'
+            + '<span class="field-error" id="' + id + '-error"'
+            + ' data-zone-field-error="' + name + '" aria-live="polite"></span>'
+            + '</div>';
+    }
+
     function bindOscFieldValidators() {
-        var inputs = detailsEl.querySelectorAll('[data-zone-osc-field]');
+        var inputs = detailsEl.querySelectorAll('[data-zone-osc-field], [data-zone-blur-field]');
         inputs.forEach(function(inp) {
             inp.addEventListener('blur', onOscFieldBlur);
         });
@@ -709,7 +934,7 @@
 
     function onOscFieldBlur(evt) {
         var inp = evt.target;
-        var field = inp.getAttribute('data-zone-osc-field');
+        var field = inp.getAttribute('data-zone-osc-field') || inp.getAttribute('data-zone-blur-field');
         if (!field) return;
         var errSpan = detailsEl.querySelector(
             '[data-zone-field-error="' + field + '"]'
@@ -799,8 +1024,13 @@
         nodes.forEach(function(n) {
             var name = n.getAttribute('data-zone-field');
             if (n.type === 'checkbox') out[name] = n.checked;
-            else out[name] = n.value;
+            else if (n.value !== n.getAttribute('data-shown')) out[name] = n.value;
         });
+        // Metres on the wire; a length the parser refuses keeps the saved one.
+        if (IS_IMPERIAL && typeof out.z_offset === 'string') {
+            var zMetres = parseLength(out.z_offset);
+            if (isFinite(zMetres)) out.z_offset = zMetres;
+        }
         // triggered_by is comma-separated text input
         // in the form, but the JSON CRUD API expects ``list[int]``.
         // Parse here so the route layer's ``_parse_triggered_by`` sees
@@ -863,8 +1093,7 @@
     // on the form the operator sees, never an older saved state.
     function saveSelectedZone() {
         if (state.selectedIndex < 0) return Promise.resolve(null);
-        var idx = state.selectedIndex;
-        var z = state.zones[idx];
+        var z = state.zones[state.selectedIndex];
         if (!z) return Promise.resolve(null);
         var body = collectDetailFields();
         // Refuse to save when
@@ -889,12 +1118,15 @@
             }
             return Promise.resolve(null);
         }
-        body.vertices = z.vertices;
-        return zoneWrite(fetch('/api/zones/' + idx, {
-            method: 'PUT',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(body),
-        }), detailsEl.querySelector('.actions')).then(function(r) {
+        var near = detailsEl.querySelector('.actions');
+        return zoneJob(z, function(at) {
+            body.vertices = z.vertices;
+            return timedWrite('/api/zones/' + at, {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(body),
+            }, near);
+        }).then(function(r) {
             if (!r) return r;
             // Persisted: clear the section's dirty flag so the
             // "Save as template" button re-enables. The per-vertex
@@ -936,18 +1168,56 @@
           });
     }
 
+    // Corner saves and zone deletes go out one at a time, in the order asked, each finding its zone's index as
+    // it is sent: an older save cannot land last, and none lands on the zone that moved into a deleted one's
+    // place. A save asked while its zone's is still queued is that one, sent with the corners as they are then.
+    // A write with no answer is given up, so the poll does not wait forever.
+    var WRITE_TIMEOUT_MS = 10000;
+    var writes = Promise.resolve(), queuedSaves = [];
+    // Resolves (or rejects) with what ``job`` gave once the queue has counted it done.
+    function enqueue(job) {
+        saving++;
+        var mine = writes.then(job);
+        var after = mine.then(function() {}, function() {}).then(function() { saving--; edits++; });
+        writes = after;
+        return mine.then(function(r) { return after.then(function() { return r; }); },
+            function(err) { return after.then(function() { throw err; }); });
+    }
+    // The job for the zone object ``zone``, sent to its index at that moment; null when it is gone by then.
+    function zoneJob(zone, send) {
+        return enqueue(function() {
+            var at = state.zones.indexOf(zone);
+            return at < 0 ? null : send(at);
+        });
+    }
+    function timedFetch(url, opts) {
+        var ctl = new AbortController();
+        setTimeout(function() { ctl.abort(); }, WRITE_TIMEOUT_MS);
+        opts.signal = ctl.signal;
+        return fetch(url, opts);
+    }
+    function timedWrite(url, opts, near) { return zoneWrite(timedFetch(url, opts), near); }
     function updateZoneVertices(idx) {
-        var z = state.zones[idx];
-        if (!z) return;
-        zoneWrite(fetch('/api/zones/' + idx, {
-            method: 'PUT',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({vertices: z.vertices}),
-        }));
+        var zone = state.zones[idx];
+        if (!zone || queuedSaves.indexOf(zone) >= 0) return;
+        queuedSaves.push(zone);
+        enqueue(function() {
+            queuedSaves.splice(queuedSaves.indexOf(zone), 1);
+            var at = state.zones.indexOf(zone);
+            if (at < 0) return null;
+            return timedWrite('/api/zones/' + at, {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({vertices: zone.vertices}),
+            });
+        });
     }
 
+    // Behind every corner save asked before it; the zone leaves the page's list before any later save is sent.
     async function deleteSelected() {
         if (state.selectedIndex < 0) return;
+        corners.cancelDrag();
+        corners.flush();
         var idx = state.selectedIndex;
         var ok = await modalConfirm({
             title: 'Delete zone?',
@@ -956,13 +1226,22 @@
             danger: true,
         });
         if (!ok || state.selectedIndex !== idx) return;
-        zoneWrite(fetch('/api/zones/' + idx, {method: 'DELETE'}))
-            .then(function(r) {
-                if (r) {
-                    state.selectedIndex = -1;
-                    fetchZones();
-                }
+        zoneJob(state.zones[idx], function(at) {
+            // Said under the buttons: the zone's details may be gone by then.
+            return timedWrite('/api/zones/' + at, {method: 'DELETE'}, deleteBtn.parentNode).then(function(r) {
+                if (!r) return;
+                state.zones.splice(at, 1);
+                if (state.selectedIndex === at) state.selectedIndex = -1;
+                else if (state.selectedIndex > at) state.selectedIndex--;
+                // Another zone's details being typed into are kept, as the poll keeps them.
+                var a = document.activeElement, title = detailsEl.querySelector('.group-title');
+                if (state.selectedIndex >= 0 && a && detailsEl.contains(a)) {
+                    state.detailsRenderedIndex = state.selectedIndex;
+                    if (title) title.textContent = 'Zone ' + (state.selectedIndex + 1) + ' Details';
+                } else renderDetails();
+                render();
             });
+        }).then(fetchZones);
     }
 
     // Events

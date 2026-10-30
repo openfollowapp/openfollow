@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Provisioning contract for stable USB network adapter names.
 
 Kernel ``ethN`` names are handed out in probe order, not by device identity, so

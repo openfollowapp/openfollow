@@ -1,32 +1,40 @@
 <div id="config-transfer-section" class="section" data-fold-key="config-transfer" data-help="config-transfer">
     <div class="section-head">
-        <h2>Configuration</h2>
+        <h2>Configuration Backup &amp; Import</h2>
         <span class="section-note">Export, import and restore device settings</span>
     </div>
 
-    <div class="group">
-        <h3 class="group-title">Export</h3>
-        <div class="actions" id="export-actions">
-            <button type="button" class="save-btn" onclick="exportConfig()">Export Configuration</button>
-        </div>
-    </div>
+    <div class="stats-columns cfg-columns">
+        <section class="stat-panel">
+            <div class="stat-panel-head">
+                <h3 class="stat-panel-title">Export</h3>
+            </div>
+            <div class="actions" id="export-actions">
+                <button type="button" class="save-btn" onclick="exportConfig()">Export Configuration</button>
+            </div>
+        </section>
 
-    <div class="group">
-        <h3 class="group-title">Import</h3>
-        <input type="file" id="config-import-file" accept=".ofsettings,.openfollowsettings" style="display:none"
-               onchange="importConfig(this)">
-        <div class="actions" id="import-actions">
-            <button type="button" class="save-btn" id="import-btn"
-                    onclick="document.getElementById('config-import-file').click()">Import Configuration&hellip;</button>
-        </div>
-    </div>
+        <section class="stat-panel">
+            <div class="stat-panel-head">
+                <h3 class="stat-panel-title">Import</h3>
+            </div>
+            <input type="file" id="config-import-file" accept=".ofsettings,.openfollowsettings" style="display:none"
+                   onchange="importConfig(this)">
+            <div class="actions" id="import-actions">
+                <button type="button" class="save-btn" id="import-btn"
+                        onclick="document.getElementById('config-import-file').click()">Import Configuration&hellip;</button>
+            </div>
+        </section>
 
-    <div class="group">
-        <h3 class="group-title">Restore Defaults</h3>
-        <div class="actions" id="restore-actions">
-            <button type="button" class="btn-secondary" id="restore-defaults-btn"
-                    onclick="restoreDefaults()">Restore Defaults</button>
-        </div>
+        <section class="stat-panel">
+            <div class="stat-panel-head">
+                <h3 class="stat-panel-title">Restore Defaults</h3>
+            </div>
+            <div class="actions" id="restore-actions">
+                <button type="button" class="btn-secondary" id="restore-defaults-btn"
+                        onclick="restoreDefaults()">Restore Defaults</button>
+            </div>
+        </section>
     </div>
 
     <div class="group">

@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """PyInstaller spec for the self-contained macOS .app bundle.
 
 Invoked by ``packaging/macos/build-dmg.sh`` (which generates the icon + default

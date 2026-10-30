@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """``lsblk -J`` output captured on a Pi 5 bench station (util-linux 2.41.5).
 
 A Mac-formatted USB stick (GPT: a 200 MB EFI partition, then the volume) next to

@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """On-blur input validation registry and helpers for web forms."""
 
 from __future__ import annotations
@@ -37,6 +39,9 @@ from openfollow.configuration import (
     VALID_TRIGGER_EDGES,
     VALID_TRIGGER_KINDS,
     VALID_ZONE_EVAL_FPS,
+    ZONE_HEIGHT_TRANSITION_MAX_S,
+    ZONE_Z_OFFSET_MAX,
+    ZONE_Z_OFFSET_MIN,
     AppConfig,
     _canonical_marker_token,
 )
@@ -56,6 +61,7 @@ from openfollow.web.routes import (
     _as_int_list,
     _as_ip_list,
     _as_network_mode,
+    _as_number,
     _as_optional_int,
     _as_positive_int,
     _as_str,
@@ -428,11 +434,6 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
             _as_float, lo=-C_BOUND, hi=C_BOUND, human_error=f"Must be a number from {-C_BOUND:g} to {C_BOUND:g}."
         ),
     },
-    "ground_grid": {
-        "enabled": FieldRule(_as_bool),
-        "visible": FieldRule(_as_bool),
-        "z_offset": FieldRule(_as_float, human_error="Must be a number."),
-    },
     "grid": {
         "visible": FieldRule(_as_bool),
         "width": FieldRule(_as_float, lo=0.1, human_error="Width must be at least 0.1 m."),
@@ -706,6 +707,7 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
     "trigger_zones": {
         "enabled": FieldRule(_as_bool),
         "show_overlay": FieldRule(_as_bool),
+        "highlight_occupied": FieldRule(_as_bool),
         "eval_fps": FieldRule(
             _as_int,
             choices=tuple(str(v) for v in VALID_ZONE_EVAL_FPS),
@@ -824,6 +826,19 @@ FIELD_RULES: dict[str, dict[str, FieldRule]] = {
             max_len=2048,
             custom=_validate_osc_message,
             human_error=("OSC message must start with '/' and be ≤ 2048 characters."),
+        ),
+        "z_offset": FieldRule(
+            _as_number,
+            lo=ZONE_Z_OFFSET_MIN,
+            hi=ZONE_Z_OFFSET_MAX,
+            human_error=f"Z offset must be between {ZONE_Z_OFFSET_MIN:g} and {ZONE_Z_OFFSET_MAX:g} m.",
+        ),
+        "raise_markers": FieldRule(_as_bool),
+        "height_transition_s": FieldRule(
+            _as_number,
+            lo=0.0,
+            hi=ZONE_HEIGHT_TRANSITION_MAX_S,
+            human_error=f"Height transition time must be between 0 and {ZONE_HEIGHT_TRANSITION_MAX_S:g} s.",
         ),
     },
     # Special sections handled inline in apply_section_data.

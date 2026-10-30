@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Which physical adapter an interface name is, in words an operator recognises.
 
 A name says little about the hardware behind it: two USB adapters named after

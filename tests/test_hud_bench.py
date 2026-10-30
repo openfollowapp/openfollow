@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """scripts/hw_validation/hud_bench.py: timing, the A/B verdict and the worker protocol."""
 
 from __future__ import annotations
@@ -86,12 +87,15 @@ class _FakeWorker:
         self.fail = fail
         self.errors = ["Cairo overlay draw error: boom"] if errors else []
         self.dropped = dropped or []
+        self.missing = False
         self.closed = False
 
     def run(self, scene: str, frames: int, split: bool = False) -> dict[str, Any]:
         if self.fail:
             raise RuntimeError(f"the worker for {self.name} stopped")
         self.log.append((self.name, scene, split))
+        if self.missing:
+            return {"missing": True}
         return {
             "ms": self.ms.pop(0) if self.ms else 1.0,
             "split": {"markers": 0.5} if split else {},
@@ -377,8 +381,8 @@ def test_a_worker_names_only_the_fields_the_scene_itself_sets(monkeypatch: pytes
     older = overlay_state_without("show_paths")
     load = bench.load_scenes
 
-    def load_against_older() -> Any:
-        scenes = load()
+    def load_against_older(root: Path = bench.REPO) -> Any:
+        scenes = load(root)
         scenes.OverlayState = older
         return scenes
 
@@ -529,3 +533,112 @@ def test_an_unexpected_error_is_a_side_that_could_not_run_not_a_slower_scene(
 def test_run_passes_main_s_own_answer_through(monkeypatch: pytest.MonkeyPatch, code: int) -> None:
     monkeypatch.setattr(bench, "main", lambda argv=None: code)
     assert bench.run([]) == code
+
+
+# --------------------------------------------------------------------------- #
+# Each side draws the scenes of its own checkout
+# --------------------------------------------------------------------------- #
+
+
+def _older_checkout(root: Path) -> Path:
+    """This checkout's Python as a base whose zones carry three values, not four (no zone height)."""
+    import shutil
+
+    repo = bench.REPO
+    shutil.copytree(
+        repo / "openfollow",
+        root / "openfollow",
+        ignore=lambda _d, names: [n for n in names if not n.endswith(".py") and "." in n],
+    )
+    zones = root / "openfollow" / "runtime" / "overlay_draw_zones.py"
+    text = zones.read_text(encoding="utf-8")
+    for new, old in [
+        (
+            "for vertices_xy, color_hex, is_occupied, height in state.zone_polygons:",
+            "for vertices_xy, color_hex, is_occupied in state.zone_polygons:",
+        ),
+        ("        z = state.zone_z_offset + height\n", "        height = 0.0\n        z = state.zone_z_offset\n"),
+        (
+            "(tuple(tuple(v) for v in vertices), color, is_occupied, height)\n"
+            "                for vertices, color, is_occupied, height in state.zone_polygons",
+            "(tuple(tuple(v) for v in vertices), color, is_occupied)\n"
+            "                for vertices, color, is_occupied in state.zone_polygons",
+        ),
+    ]:
+        assert new in text
+        text = text.replace(new, old)
+    zones.write_text(text, encoding="utf-8")
+    (root / "tests").mkdir()
+    scenes = (repo / "tests" / "_hud_scenes.py").read_text(encoding="utf-8")
+    four = "polygons.append((verts, color, occupied, 0.0))"
+    assert four in scenes
+    (root / "tests" / "_hud_scenes.py").write_text(
+        scenes.replace(four, "polygons.append((verts, color, occupied))"), encoding="utf-8"
+    )
+    return root
+
+
+def test_a_base_whose_scene_data_differs_is_compared_with_its_own_scenes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    base = _older_checkout(tmp_path)
+    argv = ["--scenes", "light", "--frames", "1", "--rounds", "1", "--max-slowdown", "1000", "--compare", str(base)]
+    assert bench.main(argv) == 0, capsys.readouterr().err
+    out = capsys.readouterr().out
+    assert "base" in out.splitlines()[0]
+    assert "the base draws its own scenes" in out
+
+
+def test_a_base_without_scenes_draws_these(tmp_path: Path) -> None:
+    (tmp_path / "openfollow").mkdir()
+    assert bench.scenes_file(tmp_path) == bench.SCENES_FILE
+    assert bench.scenes_file(bench.REPO) == bench.SCENES_FILE
+
+
+def test_a_base_with_scenes_draws_its_own(tmp_path: Path) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "_hud_scenes.py").write_text("SCENES = {}\n", encoding="utf-8")
+    assert bench.scenes_file(tmp_path) == tmp_path / "tests" / "_hud_scenes.py"
+
+
+def test_a_scene_the_base_does_not_have_is_drawn_here_only(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    log: list[tuple[str, str, bool]] = []
+    head = _FakeWorker("head", [1.0, 1.0], log)
+    base = _FakeWorker("base", [], log)
+    base.missing = True
+    (result,) = bench.measure(["full"], 10, 1, head, base, split=False)
+    assert result.base is None and result.base_missing
+    assert [name for name, _, _ in log] == ["head", "base", "head"]
+    assert bench.report([result], 0.15)[0].endswith("base has no such scene")
+    assert bench.verdict([result], 0.15) == 0
+
+
+def test_a_worker_answers_a_scene_its_checkout_lacks_as_missing() -> None:
+    stdout = io.StringIO()
+    bench.worker(
+        bench.REPO,
+        stdin=io.StringIO(json.dumps({"scene": "no such scene", "frames": 1}) + "\n"),
+        stdout=stdout,
+        clock=_Clock(0.001),
+    )
+    assert json.loads(stdout.getvalue()) == {"missing": True}
+
+
+def test_a_missing_answer_passes_the_worker_check() -> None:
+    assert _worker_with(_Proc(io.StringIO(), '{"missing": true}\n')).run("light", 1) == {"missing": True}
+
+
+def test_the_report_says_whose_scenes_the_base_drew(tmp_path: Path) -> None:
+    assert bench.scenes_note(tmp_path) == "the base has no scenes of its own and draws this checkout's"
+    (tmp_path / "tests").mkdir()
+    own = tmp_path / "tests" / "_hud_scenes.py"
+    own.write_bytes(bench.SCENES_FILE.read_bytes())
+    assert bench.scenes_note(tmp_path) == ""
+    own.write_text("SCENES = {}\n", encoding="utf-8")
+    assert bench.scenes_note(tmp_path) == "the base draws its own scenes, which differ from this checkout's"
+
+
+def test_the_table_ends_with_whose_scenes_the_base_drew(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    (tmp_path / "openfollow").mkdir()
+    _main(["--scenes", "light", "--rounds", "1", "--compare", str(tmp_path)])
+    assert capsys.readouterr().out.splitlines()[-1] == "the base has no scenes of its own and draws this checkout's"

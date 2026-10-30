@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Tests for ``openfollow.runtime.app_modes``: speed adjustment, key
 normalization, the on-screen Settings menu, and the video source-type /
 URL / field-choice picker state machines, plus legacy-shortcut regression

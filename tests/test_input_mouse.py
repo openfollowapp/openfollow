@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Tests for the mouse input handler.
 
 Control is grabbed by left-clicking a marker's ground circle and released
@@ -1312,18 +1314,8 @@ class TestLockedOnAPath:
         assert app._server.get_marker(1).pos == _DEFAULT_POS
 
 
-class TestGrabOnTheGroundGrid:
-    """Inside a ground grid that drops markers, the ring is drawn on its floor, and grabbed there."""
-
-    @staticmethod
-    def _pit(app: _DummyApp, *, experimental: bool = True) -> None:
-        from openfollow.configuration import GroundGridConfig
-
-        app._config.ui.shown_features = ["ground_grid"] if experimental else []
-        app._config.ground_grid = GroundGridConfig(
-            enabled=True, z_offset=-1.5, vertices=[[-2.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]]
-        )
-        app._config.marker.ground_circle = True
+class TestGrabOnALiftedRing:
+    """A zone's lift raises the ring the Operator Screen draws; the mouse grabs and drags it there."""
 
     @staticmethod
     def _seen(app: _DummyApp, z: float) -> tuple[float, float]:
@@ -1331,32 +1323,32 @@ class TestGrabOnTheGroundGrid:
         scr = project_points(_cam_buffer(app), np.array([[0.0, 0.0, z]], dtype=np.float64), float(w), float(h))
         return float(scr[0, 0]), float(scr[0, 1])
 
-    def test_the_ring_drawn_on_the_pit_floor_grabs(self) -> None:
-        app = _DummyApp()
-        self._pit(app)
-        assert MouseHandler(app).on_pointer_down(*self._seen(app, -1.5), 1) is True
+    @staticmethod
+    def _lifted(app: _DummyApp) -> float:
+        app._config.marker.ground_circle = True
+        app._server.get_marker(1).set_lift(1.0)
+        return app._config.grid.z_offset + 1.0
 
-    def test_the_stage_level_spot_above_it_does_not(self) -> None:
+    def test_the_lifted_ring_grabs(self) -> None:
         app = _DummyApp()
-        self._pit(app)
-        assert MouseHandler(app).on_pointer_down(*self._seen(app, 0.0), 1) is False
+        floor = self._lifted(app)
+        assert MouseHandler(app).on_pointer_down(*TestGrabOnALiftedRing._seen(app, floor), 1) is True
 
-    def test_a_marker_grabbed_on_the_pit_floor_does_not_jump_when_the_mouse_moves(self) -> None:
+    def test_the_stage_level_spot_below_it_does_not(self) -> None:
         app = _DummyApp()
-        self._pit(app)
+        self._lifted(app)
+        seen = TestGrabOnALiftedRing._seen(app, app._config.grid.z_offset)
+        assert MouseHandler(app).on_pointer_down(*seen, 1) is False
+
+    def test_a_marker_grabbed_on_its_lifted_ring_does_not_jump_when_the_mouse_moves(self) -> None:
+        app = _DummyApp()
+        x, y = TestGrabOnALiftedRing._seen(app, self._lifted(app))
         handler = MouseHandler(app)
-        x, y = self._seen(app, -1.5)
         assert handler.on_pointer_down(x, y, 1) is True
-        # A move of one pixel from where it was grabbed leaves the marker where it is.
         handler.on_pointer_move(x + 1.0, y)
         handler.update()
         mx, my, _ = app._server.get_marker(1).pos
         assert (mx, my) == (pytest.approx(0.0, abs=0.05), pytest.approx(0.0, abs=0.05))
-
-    def test_without_experimental_features_the_ring_stays_on_the_main_grid(self) -> None:
-        app = _DummyApp()
-        self._pit(app, experimental=False)
-        assert MouseHandler(app).on_pointer_down(*self._seen(app, 0.0), 1) is True
 
 
 def test_an_unreadable_operator_screen_size_ignores_the_click_instead_of_raising() -> None:

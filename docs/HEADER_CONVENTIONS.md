@@ -19,14 +19,26 @@ cleanup tracked in the cleanup manifest.
 
 ## The header
 
-Two `#` lines, identical everywhere:
+The SPDX line, then the copyright lines for the file's history:
+
+| File | Copyright lines after the SPDX line |
+|---|---|
+| Unchanged since v0.3.0 | `OpenFollow Project`; `Paul Hermann, Michel Honold, and Vinzenz Schultz` |
+| Changed since v0.3.0 | `OpenFollow Project`; `Paul Hermann, Michel Honold, and Vinzenz Schultz`; `Paul Hermann and Michel Honold` |
+| New after v0.3.0, first committed by Paul Hermann | `OpenFollow Project`; `Paul Hermann and Michel Honold` |
+| New after v0.3.0, first committed by Michel Honold | `OpenFollow Project`; `Michel Honold and Paul Hermann` |
+| New after v0.3.0, first committed by another contributor | `OpenFollow Project & Contributors`; `Paul Hermann and Michel Honold` |
+
+Each line reads `# Copyright (C) 2026 <holder>`. A new file by Michel Honold:
 
 ```
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 ```
 
-The copyright holder is the generic project – never individual names.
+A file that moves from "unchanged" to "changed" gains the third line in the same change.
+The examples below show the two-line form; the copyright lines follow the table.
 
 ### Python
 

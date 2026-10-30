@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Main GTK loop, the display-independent frame clock, housekeeping timer, and
 config-file hot-reload polling for ``OpenFollowApp``."""
 
@@ -190,7 +192,7 @@ def animate(app: OpenFollowApp) -> None:
 
     svc.update_video()
     svc.apply_detection_pin(dt)
-    svc.update_zone_triggers()
+    svc.update_zone_triggers(dt)
     svc.update_marker_visuals(elapsed)
 
     frame_time = time.perf_counter() - frame_start

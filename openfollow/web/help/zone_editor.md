@@ -1,19 +1,29 @@
 # Zone Editor
 
-Draw zone polygons that fire OSC messages when tracked markers (or detected people) enter or leave. Coordinates are in **metres** on the stage plane, relative to the Reference Point. The canvas is a top-down view; upstage is at the top.
+Draw zone polygons that fire OSC messages when tracked markers (or detected people) enter or leave. Coordinates are in **metres** on the stage plane, relative to the Reference Point. The top-down view has upstage at the top; the camera view shows the zones on the camera picture.
 
 ## Canvas
 
 - **Click a zone** to select it; drag its labelled handles (V1, V2, …) to reshape it.
 - Occupied zones brighten and show the occupant count.
-- **Top-down / Camera** switches to the camera picture with the zones drawn on the stage floor. Dragging a corner there saves straight away. **Refresh Image** takes a new snapshot. New zones are drawn in the top-down view. Zones follow the saved camera position, so save camera changes first.
+- **Top-down / Camera** switches to the camera picture, the zones on the stage floor as the saved camera sees them. **Refresh Image** takes a new snapshot.
+
+### Camera view
+
+Corners move on the picture.
+
+- **Drag a corner** (V1, V2, …) – saved when let go. A press without a move only chooses it. The loupe and stage position stay on the chosen corner.
+- **Drag from an edge** – adds a corner there.
+- **Delete corner** – a zone keeps three.
+- A corner off the picture has no handle; it moves in the top-down view.
+- **Keys** – Tab: next corner; arrows: 1 px, 10 with Shift; Delete: remove; Esc: let go, then leave full screen.
 
 ## Drawing
 
 - **+ New Zone** – each click drops a vertex.
 - **Finish Polygon** – closes the zone at three or more vertices. Clicking the first vertex or double-clicking also closes it.
 - **Cancel Drawing** – discards the polygon in progress.
-- **Delete Selected** – permanently removes the selected zone, after confirmation.
+- **Delete zone** – permanently removes the chosen zone, after confirmation.
 
 ## Zone details
 
@@ -23,6 +33,9 @@ Draw zone polygons that fire OSC messages when tracked markers (or detected peop
 - **Zone** – untick **Use this zone** to disable it. A disabled zone fires nothing and is not drawn.
 - **Trigger Source** – `Markers (PSN)` (default), `Detection (AI)` (needs Person Detection enabled) or `Both`.
 - **Triggered By** – comma-separated marker IDs (`1, 2, 5`). Blank means any marker. Ignored for Detection only.
+- **Z offset** – with *Zone heights* on, the zone's height above the stage floor; the Operator Screen and the Camera view draw it there, and its corners are dragged on that plane. A zone above the floor also shows its outline on the floor and a dotted line up each corner, fainter where the zone hides them from the camera. Entry and exit still depend on X and Y only.
+- **Marker height** – with **Add the Z offset inside this zone** ticked, a marker this station controls is sent and drawn with the Z offset added to its Z while it is inside. Its own Z stays as set. Where such zones overlap, the highest counts.
+- **Height transition time** – seconds the added height takes to change at the zone's edge: the zone entered sets it, otherwise the zone left. 0 changes it at once.
 
 ### Area
 

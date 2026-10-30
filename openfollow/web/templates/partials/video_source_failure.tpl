@@ -1,6 +1,6 @@
 %# The video-failure box at the top of a Video Source form: the Camera & Grid tab
 %# and the Setup Wizard's Video Source step. Both are where the fix gets typed in,
-%# so they carry the same box Live Statistics does rather than a reduced version.
+%# so they carry the same box Status & Diagnostics does rather than a reduced version.
 %# Already credential-free - the status marker redacts on the way in.
 % video_failure_text = str(defined("video_failure_text") and video_failure_text or "")
 % video_error_message = str(defined("video_error_message") and video_error_message or "")

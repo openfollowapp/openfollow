@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Suggest the edges of a snapshot a Lens line could be traced along.
 
 The wizard sends the snapshot's luma scaled down by ``edge_map_scale``. Thin

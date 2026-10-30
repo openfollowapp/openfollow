@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Camera round-trip latency: flash the Operator Screen black and white, time each change in the decoded video.
 
 Three threads touch a run. ``feed`` is called from the display sink's streaming thread and only

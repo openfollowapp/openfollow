@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
 """MIDI → virtual-fader dispatch layer.
 
 Routes incoming :class:`~openfollow.input.midi.MidiEvent`s to every fader whose

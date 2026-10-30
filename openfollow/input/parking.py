@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Parked markers: controlled markers that keep transmitting while no relative input moves them.
 
 The keyboard, gamepads and 3D mice skip a parked marker; the 2D mouse and OSC still move it.

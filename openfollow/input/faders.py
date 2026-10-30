@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
 """Bus of eight normalized 0-1 faders, plus per-controlled-marker faders.
 
 Eight indexed faders (1..8) are driven by incoming MIDI. A parallel set of

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """The web UI on a station whose ``config.toml`` is empty or does not read.
 
 Every write reads the file whole first, so it is refused with a reason the
@@ -74,7 +75,6 @@ _WRITES: dict[tuple[str, str], tuple[str, str, Any]] = {
     ("POST", "/section/gamepad"): ("/section/gamepad", "form", {}),
     ("POST", "/section/general"): ("/section/general", "form", {"psn_system_name": "Changed"}),
     ("POST", "/section/grid"): ("/section/grid", "form", {"width": "12"}),
-    ("POST", "/section/ground_grid"): ("/section/ground_grid", "form", {}),
     ("POST", "/section/interface_assignment"): ("/section/interface_assignment", "form", {}),
     ("POST", "/section/keyboard"): ("/section/keyboard", "form", {}),
     ("POST", "/section/marker"): ("/section/marker", "form", {}),

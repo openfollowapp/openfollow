@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Read an OpenCV lens calibration and fit the lens model to it.
 
 An OpenCV ``FileStorage`` XML file carries a camera matrix and distortion

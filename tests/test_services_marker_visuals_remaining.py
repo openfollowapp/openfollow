@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Tests for ``build_marker_visual_state`` – the big per-frame overlay
 snapshot builder.
 
@@ -64,7 +66,13 @@ class _FakeMarker:
         self.marker_id = marker_id
         self.pos = pos
         self.speed = speed
+        self.lift = 0.0
         self.set_speed_calls: list[tuple[float, float, float]] = []
+
+    @property
+    def sent_pos(self) -> tuple[float, float, float]:
+        x, y, z = self.pos
+        return (x, y, z + self.lift)
 
     def set_pos(self, x: float, y: float, z: float) -> None:
         self.pos = (x, y, z)
@@ -1881,6 +1889,43 @@ class TestLatencyWarningCard:
 # --------------------------------------------------------------------------- #
 # Detection assist-mode AI-output ghost
 # --------------------------------------------------------------------------- #
+
+
+class TestZoneLiftOnTheScreen:
+    """A zone's lift is drawn where it is sent: the card's Z, the floor elements, the broadcast velocity."""
+
+    def test_a_lifted_marker_is_drawn_at_its_sent_z(self) -> None:
+        marker = _FakeMarker(1, pos=(1.0, 2.0, 1.25))
+        marker.lift = 0.5
+        state = _build(_build_app(controlled=[1], viewer=[1], server_markers={1: marker}))
+        drawn = state.markers[0]
+        assert (drawn.x, drawn.y, drawn.z, drawn.lift) == (1.0, 2.0, 1.75, 0.5)
+        assert marker.pos == (1.0, 2.0, 1.25)
+
+    def test_a_received_marker_is_drawn_unlifted(self) -> None:
+        received = _FakeMarker(2, pos=(1.0, 2.0, 1.25))
+        state = _build(_build_app(viewer=[2], receiver_markers={2: received}))
+        assert (state.markers[0].z, state.markers[0].lift) == (1.25, 0.0)
+
+    def test_the_assist_anchor_and_its_ghost_are_both_lifted(self) -> None:
+        marker = _FakeMarker(1, pos=(2.0, 3.0, 0.0))
+        marker.lift = 0.4
+        app = _build_app(controlled=[1], viewer=[1], server_markers={1: marker})
+        app._config.detection.enabled = True
+        app._config.detection.pin_mode = "assist"
+        get_or_create_manual_marker(app, 1).set_pos(7.0, 8.0, 1.0)
+        state = _build(app)
+        drawn = {m.is_assist_ghost: m for m in state.markers}
+        assert (drawn[False].z, drawn[False].lift) == (pytest.approx(1.4), 0.4)
+        assert (drawn[True].z, drawn[True].lift) == (pytest.approx(0.4), 0.4)
+
+    def test_a_lift_easing_in_moves_the_broadcast_velocity(self) -> None:
+        marker = _FakeMarker(1, pos=(1.0, 2.0, 1.0))
+        app = _build_app(controlled=[1], viewer=[1], server_markers={1: marker})
+        for _ in range(60):
+            marker.lift += 0.3 * _FRAME_DT
+            _build(app)
+        assert marker.set_speed_calls[-1] == pytest.approx((0.0, 0.0, 0.3), abs=1e-6)
 
 
 class TestAssistGhostOverlay:

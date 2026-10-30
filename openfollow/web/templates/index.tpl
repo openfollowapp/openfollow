@@ -1,17 +1,4 @@
-% rebase('base.tpl')
-
-%# Restart button moved into the Diagnostics section (Overview tab) –
-%# it's a rare-use action and doesn't earn a permanent slot in the
-%# top chrome. The station name pill moved into the hero-panel's
-%# top-right corner (see base.tpl). Logout (when a PIN is set) is
-%# the only persistent top-right action that remains.
-% if config.web_pin:
-<div class="top-bar-actions">
-    <form method="POST" action="/logout" style="margin:0;">
-        <button type="submit" class="secondary small">Logout</button>
-    </form>
-</div>
-% end
+% rebase('base.tpl', header_logout=bool(config.web_pin))
 
 <div class="tab-bar">
     <button type="button" class="tab-btn" data-tab="overview">Overview</button>
@@ -25,23 +12,7 @@
 
 <!-- Overview -->
 <div class="tab-content" id="tab-overview">
-    % include('partials/overview.tpl', local=local, peers=peers, station_down=station_down)
-    <div class="section" id="statistics-section" data-fold-key="statistics" data-help="statistics">
-        <div class="section-head">
-            <h2>Live Statistics</h2>
-        </div>
-        <div id="statistics-section-content"
-             hx-get="/section/statistics"
-             hx-trigger="every 1s [pollShown(this)], poll-shown[pollShown(this)] from:body"
-             hx-swap="innerHTML">
-            % include('partials/statistics.tpl', stats=stats)
-        </div>
-        % include('partials/statistics_alerts.tpl', stats=stats)
-    </div>
-    % # The section shell renders once; only its live cards poll every 5s
-    % # (see partials/diagnostics.tpl ``#diagnostics-live``), so the head /
-    % # fold state / bundle + probe tools stay put without flickering.
-    % include('partials/diagnostics.tpl', cards=diagnostics_cards)
+    % include('partials/diagnostics.tpl', stats=stats, cards=diagnostics_cards, local=local, peers=peers, station_down=station_down)
 </div>
 
 <!-- General -->
@@ -67,7 +38,6 @@
     % include('partials/video_source.tpl', config=config, saved=False, available_inputs=available_inputs, input_html_fragments=input_html_fragments, video_failure=video_failure, video_failure_text=video_failure_text, video_error_message=video_error_message, video_failure_action=video_failure_action, video_limits_text=video_limits_text, video_limits_action=video_limits_action)
     % include('partials/camera.tpl', config=config, saved=False, video_size=get('camera_video_size'))
     % include('partials/grid.tpl', config=config, saved=False)
-    % include('partials/ground_grid.tpl', config=config, saved=False)
 </div>
 
 <!-- Markers & Zones -->

@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Bottle routes for configuration web UI: HTML pages, JSON API, config helpers."""
 
 from __future__ import annotations
@@ -59,7 +61,6 @@ from openfollow.configuration import (
     CALIBRATION_MODES,
     CONTROLLER_BINDING_FIELDS,
     DEFAULT_UPDATE_SERVICE_NAME,
-    GROUND_GRID_MAX_VERTICES,
     MARK_KINDS,
     MARK_REACH_M,
     MARKER_TOKEN_ALL,
@@ -176,7 +177,7 @@ from openfollow.web.config_cache import ParsedConfigCache
 from openfollow.web.discovery import clean_peer_name
 from openfollow.web.keyboard_layout_view import build_keyboard_layout_view, station_catalog, variant_options
 from openfollow.web.latency_view import latency_dialog_view, latency_row_view, latency_unavailable
-from openfollow.web.live_alerts import statistics_alerts
+from openfollow.web.live_alerts import diagnostics_alerts
 from openfollow.web.login_throttle import LoginThrottle
 from openfollow.web.whats_new import load_backup_note, load_whats_new
 
@@ -266,7 +267,6 @@ VALID_SECTIONS = {
     "video_source",
     "camera",
     "grid",
-    "ground_grid",
     "movement",
     "marker",
     "controller",
@@ -385,7 +385,6 @@ _SECTION_CONFIG_ATTRS = {
     "camera": "camera",
     "paths": "paths",
     "grid": "grid",
-    "ground_grid": "ground_grid",
     "movement": "marker",
     "marker": "marker",
     "controller": "controller",
@@ -1909,8 +1908,6 @@ def _apply_section(cfg: AppConfig, section: str, data: Mapping[str, Any]) -> boo
         cfg.mouse3d.__post_init__()
     elif section == "grid":
         cfg.grid.__post_init__()
-    elif section == "ground_grid":
-        cfg.ground_grid.__post_init__()
     elif section == "camera":
         cfg.camera.__post_init__()
     elif section in ("marker", "movement"):
@@ -1944,6 +1941,11 @@ def _as_float(value: Any, default: float) -> float:
         return float(value)
     except (TypeError, ValueError, OverflowError):
         return default
+
+
+def _as_number(value: Any, default: float) -> float:
+    """``_as_float`` refusing a bool: ``true`` in a JSON body is no length or time."""
+    return default if isinstance(value, bool) else _as_float(value, default)
 
 
 def _coerce_timer(value: Any, default: float) -> float:
@@ -2021,12 +2023,12 @@ _SECTION_LENGTH_FIELDS: dict[str, frozenset[str]] = {
             "max_height",
         }
     ),
-    "ground_grid": frozenset({"z_offset"}),
     "marker": frozenset(
         {"ball_size", "crosshair_size", "ground_circle_size", "cone_base_diameter", "cone_top_diameter"}
     ),
     "movement": frozenset({"default_pos_x", "default_pos_y", "default_pos_z"}),
     "trigger_zones": frozenset({"hysteresis"}),
+    "zone": frozenset({"z_offset"}),
 }
 _SECTION_SPEED_FIELDS: dict[str, frozenset[str]] = {
     "movement": frozenset({"min_speed", "max_speed", "move_speed"}),
@@ -2254,16 +2256,6 @@ def _as_ip_list(value: Any, default: list[str]) -> list[str]:
 _FieldParser = Callable[[Any, Any], Any]
 
 
-def _as_vertices(value: Any, current: list[list[float]]) -> list[list[float]]:
-    """A corner list as a list or as its JSON text (a form field); else *current*."""
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except ValueError:
-            return current
-    return _parse_vertices(value, current)
-
-
 _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
     "camera": {
         "pos_x": _as_float,
@@ -2301,12 +2293,6 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "origin_visible": _as_bool,
         "origin_length": _as_float,
         "origin_thickness": _as_int,
-    },
-    "ground_grid": {
-        "enabled": _as_bool,
-        "visible": _as_bool,
-        "z_offset": _as_float,
-        "vertices": _as_vertices,
     },
     "movement": {
         "min_speed": _as_float,
@@ -2465,6 +2451,7 @@ _SECTION_FIELD_PARSERS["mouse3d"] = _mouse3d_parsers
 _TRIGGER_ZONES_FIELD_PARSERS: dict[str, _FieldParser] = {
     "enabled": _as_bool,
     "show_overlay": _as_bool,
+    "highlight_occupied": _as_bool,
     "eval_fps": _as_int,
     "debounce_ms": _as_int,
     "hysteresis": _as_float,
@@ -2487,6 +2474,9 @@ _ZONE_FIELD_PARSERS: dict[str, _FieldParser] = {
     "osc_address_final_exit": _as_str,
     "destination_id": _as_str,
     "enabled": _as_bool,
+    "z_offset": _as_number,
+    "raise_markers": _as_bool,
+    "height_transition_s": _as_number,
 }
 
 
@@ -3584,7 +3574,6 @@ def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any], *, pushed: 
     for section in (
         "grid",
         "camera",
-        "ground_grid",
         "controller",
         "osc",
         "otp_output",
@@ -4334,29 +4323,24 @@ def _config_to_toml(cfg: AppConfig) -> str:
     return tomli_w.dumps(config_to_toml_dict(cfg))
 
 
-def _build_diagnostics_cards(
-    server: ConfigWebServer,
-    cfg: AppConfig,
-) -> dict[str, Any]:
-    """Build the inline summary cards. Separate from the bundle collector
-    because the cards are HTMX-polled every 5 s and don't need the
+def _build_diagnostics_cards(server: ConfigWebServer) -> dict[str, Any]:
+    """The web port, uptime and discovery figures for the live boxes. Separate from the
+    bundle collector because the boxes poll every second and don't need the
     heavyweight sections (USB enumeration, full TOML render)."""
     sender = server.beacon_sender
     receiver = server.beacon_receiver
     peers = server.get_peers()
 
     cards: dict[str, Any] = {
-        "web_port_configured": cfg.web_port,
+        # Against the port this process tried first: a saved change waits for a restart, not a fallback.
+        "web_port_configured": server.port,
         "web_port_display": server.display_port,
-        "web_port_match": cfg.web_port == server.display_port,
+        "web_port_match": server.port == server.display_port,
         "uptime_human": _format_uptime(server.process_uptime_s),
-        "sender_status": "running" if sender.is_alive else "stopped",
-        "sender_chip": _alive_chip(sender.is_alive, sender.consecutive_errors),
+        "network_chip": _network_chip(sender.is_alive, receiver.is_alive, sender.consecutive_errors),
         "sender_last_send": _monotonic_age(sender.last_send_ts),
         "sender_errors": sender.consecutive_errors,
         "sender_send_count": sender.send_count,
-        "receiver_status": "running" if receiver.is_alive else "stopped",
-        "receiver_chip": _alive_chip(receiver.is_alive, 0),
         "receiver_last_recv": _monotonic_age(receiver.last_recv_ts),
         "receiver_packet_count": receiver.packets_received,
         "peer_count": len(peers),
@@ -4364,12 +4348,15 @@ def _build_diagnostics_cards(
     return cards
 
 
-def _alive_chip(is_alive: bool, errors: int) -> str:
-    """Map a thread's alive flag + error counter to a chip class.
-    Stopped → off; alive with errors → warn; alive + clean → ok."""
-    if not is_alive:
-        return "off"
-    return "warn" if errors > 0 else "ok"
+def _network_chip(sender_alive: bool, receiver_alive: bool, send_errors: int) -> tuple[str, str]:
+    """Station network discovery's chip class and word: the worse of the beacon sender and receiver."""
+    if not sender_alive and not receiver_alive:
+        return "off", "Stopped"
+    if not sender_alive:
+        return "off", "Sender stopped"
+    if not receiver_alive:
+        return "off", "Receiver stopped"
+    return ("warn", "Send errors") if send_errors > 0 else ("ok", "Running")
 
 
 def _format_uptime(seconds: float) -> str:
@@ -5330,6 +5317,14 @@ def _camera_view(cfg: AppConfig) -> tuple[Any, tuple[float, float, float, float]
     return camera_params(cfg.camera), effective_lens(cfg)
 
 
+def _camera_for_client(cfg: AppConfig) -> dict[str, float]:
+    """The saved camera and its lens for a page that projects in the browser (``static/js/camera-model.js``)."""
+    c = cfg.camera
+    k1, k2, cx, cy = effective_lens(cfg)
+    pose = {"pos_x": c.pos_x, "pos_y": c.pos_y, "pos_z": c.pos_z, "pitch": c.pitch, "yaw": c.yaw, "roll": c.roll}
+    return {**pose, "fov": c.fov, "k1": k1, "k2": k2, "cx": cx, "cy": cy}
+
+
 # Chords per straight world segment when the lens bows it, as on the Operator Screen.
 _PICTURE_SUBDIVISIONS = 24
 # Upper bound on the world points one picture request projects once subdivided: 1666 points a request.
@@ -5381,8 +5376,8 @@ def _picture_size(data: Mapping[str, Any]) -> tuple[float, float]:
     return w, h
 
 
-def _world_polylines(raw: Any, dims: int) -> list[list[list[float]]]:
-    """A list of polylines of finite ``dims``-number points; ValueError otherwise."""
+def _world_polylines(raw: Any) -> list[list[list[float]]]:
+    """A list of polylines of finite ``[x, y, z]`` points; ValueError otherwise."""
     if not isinstance(raw, list):
         raise ValueError("polylines must be a list")
     out: list[list[list[float]]] = []
@@ -5392,12 +5387,12 @@ def _world_polylines(raw: Any, dims: int) -> list[list[list[float]]]:
             raise ValueError("each polyline must be a list of points")
         pts: list[list[float]] = []
         for pt in line:
-            if not isinstance(pt, list) or len(pt) != dims or any(isinstance(v, bool) for v in pt):
-                raise ValueError(f"each point must be {dims} numbers")
+            if not isinstance(pt, list) or len(pt) != 3 or any(isinstance(v, bool) for v in pt):
+                raise ValueError("each point must be 3 numbers")
             try:
                 vals = [float(v) for v in pt]
             except (TypeError, ValueError, OverflowError) as exc:
-                raise ValueError(f"each point must be {dims} numbers") from exc
+                raise ValueError("each point must be 3 numbers") from exc
             if not all(math.isfinite(v) for v in vals):
                 raise ValueError("points must be finite")
             pts.append(vals)
@@ -5412,8 +5407,6 @@ def _register_scene_routes(app: Bottle, server: ConfigWebServer) -> None:
     """Register the camera-picture routes the plan editors share: world to picture and back."""
     import numpy as np
 
-    from openfollow.runtime.overlay_draw_scene import _MAX_GRID_LINES_PER_AXIS
-    from openfollow.scene.ground_grid import grid_segments_in_polygon, main_grid_steps
     from openfollow.scene.solver import invert_overlay_distortion, unproject_to_plane
 
     def _body() -> dict[str, Any] | str:
@@ -5432,8 +5425,8 @@ def _register_scene_routes(app: Bottle, server: ConfigWebServer) -> None:
             return data
         try:
             w, h = _picture_size(data)
-            lines = _world_polylines(data.get("polylines", []), 3)
-            (points,) = _world_polylines([data.get("points", [])], 3)
+            lines = _world_polylines(data.get("polylines", []))
+            (points,) = _world_polylines([data.get("points", [])])
         except ValueError as exc:
             return _json_error(400, str(exc))
         cfg = _last_whole_config(server)
@@ -5467,40 +5460,6 @@ def _register_scene_routes(app: Bottle, server: ConfigWebServer) -> None:
         if not (np.isfinite(world[0]) and np.isfinite(world[1])):
             return _json_error(422, "That point of the picture does not reach the stage.")
         return json.dumps({"x": float(world[0]), "y": float(world[1]), "z": z})
-
-    @app.post("/api/ground_grid/view")
-    def ground_grid_view() -> Any:
-        """A ground-grid polygon at height ``z`` as the camera sees it: outline, corners and the clipped grid lines."""
-        response.content_type = "application/json"
-        data = _body()
-        if isinstance(data, str):
-            return data
-        try:
-            w, h = _picture_size(data)
-            (verts,) = _world_polylines([data.get("vertices")], 2)
-            if isinstance(data.get("z"), bool):
-                raise ValueError("z must be a number")
-            z = float(data["z"])
-            if not math.isfinite(z):
-                raise ValueError("z must be finite")
-        except (KeyError, TypeError, ValueError, OverflowError):
-            return _json_error(400, "vertices, z, w and h must be numbers")
-        cfg = _last_whole_config(server)
-        g = cfg.grid
-        verts = verts[:GROUND_GRID_MAX_VERTICES]
-        corners = [[*v, z] for v in verts]
-        step_x, step_y = main_grid_steps(g.width, g.depth, g.spacing, _MAX_GRID_LINES_PER_AXIS)
-        lines = grid_segments_in_polygon(
-            verts, g.x_offset - g.width / 2.0, g.y_offset - g.depth / 2.0, step_x, step_y, z, _MAX_GRID_LINES_PER_AXIS
-        )
-        outline = corners + corners[:1] if len(corners) >= 3 else []
-        return json.dumps(
-            {
-                "outline": _picture_polylines(cfg, w, h, [outline])[0],
-                "lines": _picture_polylines(cfg, w, h, [seg.tolist() for seg in lines]),
-                "corners": _picture_points(*_camera_view(cfg), w, h, corners),
-            }
-        )
 
 
 _REMOTE_API = "/api/remote"
@@ -5785,7 +5744,7 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.get(_PATHS_API + "/marker/<marker_id:int>")
     def paths_marker_position(marker_id: int) -> Any:
-        """Where a marker is on the wire, for "Point from marker"."""
+        """Where a marker is, without a zone's lift, for "Point from marker"."""
         response.content_type = "application/json"
         position = server.get_marker_position(marker_id)
         if position is None:
@@ -6336,9 +6295,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # ``/section/detection`` or the dropdowns collapse to "(unavailable)"
         # fallbacks even when extras are installed.
         extras = _get_detection_extras_status()
-        # Diagnostics card data for the initial render (same shape the 5 s
-        # poll returns), so the section reads filled-in values immediately.
-        diag_cards = _build_diagnostics_cards(server, config)
+        # The live boxes' figures for the initial render (what the poll returns),
+        # so the section reads filled-in values immediately.
+        diag_cards = _build_diagnostics_cards(server)
         osc_user_templates, osc_system_templates = _osc_dropdown_templates()
         return template(
             "index",
@@ -6405,35 +6364,20 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.get("/section/overview")
     def get_overview() -> Any:
-        """Get the station network overview partial.
-
-        Overview is strictly read-only peer discovery; the network-interface
+        """The Station Network rows: read-only peer discovery; the network-interface
         block lives on the General tab.
         """
         peers = server.get_peers()
         local = server.get_local_peer_info()
-        # Poll returns only the peer rows – the section shell is rendered once
-        # at page load (partials/overview) and never re-swapped, so it can't
-        # flicker. See partials/overview.tpl / overview_peers.tpl.
+        # Poll returns only the peer rows – the box around them is rendered once
+        # at page load (partials/diagnostics) and never re-swapped, so it can't
+        # flicker.
         return template(
             "partials/overview_peers",
             peers=peers,
             local=local,
             station_down=server.station_interface_down,
         )
-
-    @app.get("/section/statistics")
-    def get_statistics() -> Any:
-        """Get the live runtime statistics partial."""
-        return template("partials/statistics", stats=server.get_runtime_stats())
-
-    @app.get("/section/statistics/alerts")
-    def get_statistics_alerts() -> Any:
-        """The Live Statistics announcer; 204 while its text is unchanged."""
-        stats = server.get_runtime_stats()
-        if request.query.get("key") == statistics_alerts(stats).key():
-            return HTTPResponse(status=204)
-        return template("partials/statistics_alerts", stats=stats)
 
     @app.get("/section/controller_slots")
     def get_controller_slots() -> Any:
@@ -7378,10 +7322,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         return template("partials/network", net=_build_network_form_context())
 
     # ----------------------------------------------------------------------
-    # Diagnostics routes. Three endpoints, all PIN-gated through
-    # ``_check_auth``. ``/section/diagnostics`` is the inline summary cards;
-    # the two ``/api/diagnostics/...`` endpoints serve the on-demand
-    # bundle / peer probe. Provider wiring lives in
+    # Status & Diagnostics routes, all PIN-gated through ``_check_auth``.
+    # ``/section/diagnostics`` is the live boxes and ``/section/diagnostics/alerts``
+    # their announcer; the ``/api/diagnostics/...`` endpoints serve the
+    # on-demand bundle / peer probe. Provider wiring lives in
     # ``_build_diagnostics_providers`` so the closure captures the
     # request-scoped config without coupling the server class to the
     # diagnostics import surface.
@@ -7389,15 +7333,20 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.get("/section/diagnostics")
     def get_diagnostics() -> Any:
-        cfg = _request_scoped_config()
-        cards = _build_diagnostics_cards(server, cfg)
-        # Poll returns only the live cards – the section shell + tools are
-        # rendered once at page load (partials/diagnostics) and never
-        # re-swapped, so they can't flicker. See partials/diagnostics_cards.tpl.
+        """The live boxes only: the section shell and its tools render once (partials/diagnostics)."""
         return template(
             "partials/diagnostics_cards",
-            cards=cards,
+            stats=server.get_runtime_stats(),
+            cards=_build_diagnostics_cards(server),
         )
+
+    @app.get("/section/diagnostics/alerts")
+    def get_diagnostics_alerts() -> Any:
+        """The Status & Diagnostics announcer; 204 while its text is unchanged."""
+        stats = server.get_runtime_stats()
+        if request.query.get("key") == diagnostics_alerts(stats).key():
+            return HTTPResponse(status=204)
+        return template("partials/diagnostics_alerts", stats=stats)
 
     @app.get("/api/diagnostics/bundle")
     def api_diagnostics_bundle() -> Any:
@@ -7525,7 +7474,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             rows.append(
                 "<tr><td colspan='3'>"
                 "<span class='field-note'>No peers known yet – "
-                "wait for discovery or check beacon health above.</span>"
+                "wait for discovery or check Station network discovery above.</span>"
                 "</td></tr>"
             )
         rows.append("</tbody></table>")
@@ -7896,12 +7845,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Update grid settings."""
         cfg = _save_section_from_form("grid", bool_fields=("visible", "origin_visible"))
         return template("partials/grid", config=cfg, saved=True)
-
-    @app.post("/section/ground_grid")
-    def update_ground_grid() -> Any:
-        """Update the experimental ground grid, its polygon included."""
-        cfg = _save_section_from_form("ground_grid", bool_fields=("enabled", "visible"))
-        return template("partials/ground_grid", config=cfg, saved=True)
 
     @app.post("/section/movement")
     def update_movement() -> Any:
@@ -8631,7 +8574,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Update global trigger-zone settings (zones CRUD handled separately)."""
         cfg = _save_section_from_form(
             "trigger_zones",
-            bool_fields=("enabled", "show_overlay"),
+            bool_fields=("enabled", "show_overlay", "highlight_occupied"),
         )
         return template("partials/trigger_zones", config=cfg, saved=True)
 
@@ -9670,7 +9613,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 payload = {
                     "camera": asdict(cfg.camera),
                     "grid": asdict(cfg.grid),
-                    "ground_grid": asdict(cfg.ground_grid),
                 }
         elif template_type == "paths":
             with _config_write_lock:
@@ -9785,15 +9727,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # The schema requires BOTH halves, so this apply path needs no
             # conditional checks – a partial template is rejected by the
             # loader and would have returned 404 / 400 above.
-            from openfollow.configuration import CameraConfig, GridConfig, GroundGridConfig, without_former_camera_keys
+            from openfollow.configuration import CameraConfig, GridConfig, without_former_camera_keys
 
             with _config_write_lock:
                 cfg = _config_for_save(server)
                 cfg.camera = CameraConfig(**without_former_camera_keys(tpl.payload["camera"]))
                 cfg.grid = GridConfig(**tpl.payload["grid"])
                 reconcile_simple_corners(cfg)
-                if "ground_grid" in tpl.payload:
-                    cfg.ground_grid = GroundGridConfig(**tpl.payload["ground_grid"])
                 save_config(cfg, server.config_path)
             return json.dumps({"ok": True})
         if tpl.type == "paths":
@@ -10829,6 +10769,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     "osc_address_final_exit": z.osc_address_final_exit,
                     "destination_id": z.destination_id,
                     "enabled": z.enabled,
+                    "z_offset": z.z_offset,
+                    "raise_markers": z.raise_markers,
+                    "height_transition_s": z.height_transition_s,
                     "is_occupied": occ,
                     "occupant_count": count,
                     "diagnostics": diag,
@@ -10839,6 +10782,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 "globals": {
                     "enabled": tz.enabled,
                     "show_overlay": tz.show_overlay,
+                    "highlight_occupied": tz.highlight_occupied,
                     "eval_fps": tz.eval_fps,
                     "debounce_ms": tz.debounce_ms,
                     "hysteresis": tz.hysteresis,
@@ -10851,6 +10795,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     "y_offset": cfg.grid.y_offset,
                     "z_offset": cfg.grid.z_offset,
                 },
+                "camera": _camera_for_client(cfg),
                 "zones": zones_out,
                 "markers": [{"id": marker_id, "x": x, "y": y} for marker_id, x, y in server.get_marker_positions()],
                 # Shared destinations travel with the poll so the editor's
@@ -10909,19 +10854,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 response.status = 404
                 return json.dumps({"error": "Zone index out of range"})
             src = zones[index]
-            clone = TriggerZoneConfig(
-                name=(src.name + " (copy)") if src.name else "(copy)",
-                vertices=[list(v) for v in src.vertices],
-                color=src.color,
-                trigger_source=src.trigger_source,
-                triggered_by=list(src.triggered_by),
-                osc_address_first_entry=src.osc_address_first_entry,
-                osc_address_additional_entry=src.osc_address_additional_entry,
-                osc_address_partial_exit=src.osc_address_partial_exit,
-                osc_address_final_exit=src.osc_address_final_exit,
-                destination_id=src.destination_id,
-                enabled=src.enabled,
-            )
+            clone = copy.deepcopy(src)
+            clone.name = (src.name + " (copy)") if src.name else "(copy)"
             zones.append(clone)
             save_config(cfg, server.config_path)
         return json.dumps({"success": True, "index": len(zones) - 1})
@@ -11135,7 +11069,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
         import numpy as np
 
-        from openfollow.scene.calibration_points import Mark, SolveSuperseded, plausibility, solve_marks
+        from openfollow.scene.calibration_points import (
+            Mark,
+            SolveSuperseded,
+            plausibility,
+            solve_marks,
+            suggested_floor,
+        )
         from openfollow.scene.solver import apply_overlay_distortion, invert_overlay_distortion
 
         need = []
@@ -11197,6 +11137,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             response.status = 422
             return json.dumps({"error": solved.error, "marks": answers})
         cam = solved.camera
+        floor = suggested_floor(solve_input) if mode == "advanced" else None
         return json.dumps(
             {
                 "camera": {
@@ -11212,6 +11153,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 "count": len(errors),
                 "largest_error": max(errors.values(), default=0.0),
                 "steep": solved.steep,
+                "floor": None if floor is None else {"z": floor[0], "ids": list(floor[1])},
                 "reasons": plausibility(
                     cam, solved.marks, errors, hint, mode == "advanced", floor_off=solved.floor_off
                 ),

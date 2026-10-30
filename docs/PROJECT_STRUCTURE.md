@@ -28,7 +28,6 @@ openfollow/              # Single unified package
 │   └── receiver.py      # PSN listener
 ├── scene/               # Camera model + calibration math
 │   ├── camera.py
-│   ├── ground_grid.py   # Grid lines clipped to the ground-grid polygon (HUD + web)
 │   ├── solver.py        # Projection, homography, DLT camera solve + the division-model overlay warp about the lens centre, both ways
 │   ├── calibration_points.py # The Setup Wizard's camera solve from known and triangulated marks
 │   ├── lens_fit.py      # k1 / k2 from traced straight lines (the Setup Wizard's Lens step)
@@ -57,7 +56,7 @@ openfollow/              # Single unified package
     ├── discovery.py
     ├── peer_auth.py     # HMAC-signed peer request auth (no PIN on the wire)
     ├── lens_calibrations.py # Lens calibrations saved on this station, one JSON file each
-    ├── static/js/       # polygon-plan.js (top-down plan), picture-view.js (camera picture), ...
+    ├── static/js/       # polygon-plan.js (top-down plan), picture-view.js (camera picture), camera-model.js (projection), picture-polygon.js (corners on the picture), ...
     └── templates/
 ```
 
@@ -79,7 +78,6 @@ from openfollow.services import AppRuntimeServices
 - Web API → `web/routes.py`
 - Camera/calibration → `scene/camera.py`, `scene/solver.py`, `scene/calibration_points.py` (calibration is the web `/wizard`)
 - Paths → `paths/`, `runtime/paths_runtime.py`, `osc/paths.py`, `runtime/overlay_draw_paths.py`
-- Ground grid → `scene/ground_grid.py`, `runtime/overlay_draw_scene.py` (`floor_z_at`, `draw_ground_grid`, `GridCache`)
 
 **Coordinates (PSN):** X=stage left, Y=upstage, Z=up
 

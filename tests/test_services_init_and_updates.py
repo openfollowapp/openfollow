@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Tests for ``AppRuntimeServices`` init/update/shutdown seams.
 
 This covers the thin delegators and constructor-wiring methods that sit
@@ -1106,7 +1108,7 @@ class TestFeatureGates:
         services._zone_engine = _Engine()
         services._app._config = replace(services._app._config, trigger_zones=TriggerZonesConfig(enabled=True))
         _with_features(services)
-        services.update_zone_triggers()
+        services.update_zone_triggers(1 / 60)
         assert _Engine.updates == 0
 
 
@@ -1531,6 +1533,10 @@ class TestUpdateDelegators:
         assert kwargs["unproject_cam_buffer"] is services._unproject_cam_buffer
         assert kwargs["screen_point_buffer"] is services._screen_point_buffer
         assert kwargs["dt"] == 0.5
+        # One cache for the life of the services, so a frame between detector steps unprojects nothing.
+        services.apply_detection_pin(dt=0.5)
+        assert kwargs["unproject_cache"] is not None
+        assert calls[1][1]["unproject_cache"] is kwargs["unproject_cache"]
 
     # Note: ``update_controller_status`` and ``services_controller_status``
     # were removed when the binding moved to the marker cards.

@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Diagnostics bundle data and collectors for system-state snapshots.
 
 ``collect_bundle`` runs every section collector and packs the result into a
@@ -176,7 +178,7 @@ class DiagnosticsProviders:
     iface_ip: Callable[[], str] | None = None
 
     # Live runtime telemetry - the same snapshot ``/api/stats`` and the
-    # Statistics page read. The bundle carried host, config and logs but
+    # Status & Diagnostics read. The bundle carried host, config and logs but
     # nothing about whether the app was *working*, so triage needed a second
     # artefact nobody thinks to attach.
     runtime_stats: Callable[[], dict[str, Any]] | None = None

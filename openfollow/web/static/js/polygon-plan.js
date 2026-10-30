@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 OpenFollow Project
+// Copyright (C) 2026 Michel Honold and Paul Hermann
 //
 // A top-down stage plan on a <canvas> for drawing and editing polygons in
 // PSN-absolute world metres (X stage left, Y upstage): the main grid, the live
@@ -22,6 +23,33 @@
             if (intersect) inside = !inside;
         }
         return inside;
+    }
+
+    // Whether the solid zone from bottom to top over its corners hides a stage point from the camera at eye.
+    function hiddenByZone(pt, eye, v, bottom, top) {
+        var dx = pt[0] - eye[0], dy = pt[1] - eye[1], dz = pt[2] - eye[2], t0, t1;
+        if (Math.abs(dz) < 1e-12) {
+            if (eye[2] < bottom || eye[2] > top) return false;
+            t0 = 0; t1 = 1;
+        } else {
+            var ta = (bottom - eye[2]) / dz, tb = (top - eye[2]) / dz;
+            t0 = Math.max(0, Math.min(ta, tb)); t1 = Math.min(1, Math.max(ta, tb));
+            if (t1 - t0 < 1e-12) return false;
+        }
+        // The sight line within the zone's height, in plan: hidden when any stretch of it is inside the corners.
+        var ax = eye[0] + t0 * dx, ay = eye[1] + t0 * dy, sx = (t1 - t0) * dx, sy = (t1 - t0) * dy, cuts = [0, 1];
+        v.forEach(function (c, i) {
+            var f = v[(i + 1) % v.length], ux = f[0] - c[0], uy = f[1] - c[1], den = sx * uy - sy * ux;
+            if (Math.abs(den) < 1e-12) return;
+            var s = ((c[0] - ax) * uy - (c[1] - ay) * ux) / den, u = ((c[0] - ax) * sy - (c[1] - ay) * sx) / den;
+            if (s > 0 && s < 1 && u >= 0 && u <= 1) cuts.push(s);
+        });
+        cuts.sort(function (a, b) { return a - b; });
+        for (var k = 0; k + 1 < cuts.length; k++) {
+            var m = (cuts[k] + cuts[k + 1]) / 2;
+            if (cuts[k + 1] - cuts[k] > 1e-9 && pointInPolygon(ax + sx * m, ay + sy * m, v)) return true;
+        }
+        return false;
     }
 
     // opts:
@@ -312,4 +340,5 @@
     window.OpenFollow = window.OpenFollow || {};
     window.OpenFollow.PolygonPlan = PolygonPlan;
     window.OpenFollow.pointInPolygon = pointInPolygon;
+    window.OpenFollow.hiddenByZone = hiddenByZone;
 })();

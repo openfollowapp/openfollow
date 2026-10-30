@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Keep HEVC off the Raspberry Pi hardware decoder.
 
 ``v4l2slh265dec`` over ``rpi_hevc_dec`` cannot yet lose a reference picture safely: after

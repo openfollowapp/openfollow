@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """The What's new step the updater ends in: this release's bundled notes.
 
 ``whatsnew/whatsnew.md`` opens with the version it describes (``v0.4.4``) and

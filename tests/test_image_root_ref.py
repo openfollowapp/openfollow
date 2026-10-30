@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Guard tests for the image root/boot UUID rewrite.
 
 The default rpi-image-gen layout references the root and boot filesystems by

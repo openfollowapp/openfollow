@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Configuration model, TOML I/O, and runtime hot-reload for OpenFollow."""
 
 from __future__ import annotations
@@ -750,7 +752,7 @@ class GridConfig:
         self.origin_thickness = _coerce_int(self.origin_thickness, 3, lo=1, hi=20)
 
 
-def _coerce_xy_vertices(value: Any, *, max_count: int | None = None) -> list[list[float]]:
+def _coerce_xy_vertices(value: Any) -> list[list[float]]:
     """Keep finite ``[x, y]`` pairs from *value*; anything else is dropped.
 
     Non-finite coordinates are dropped too: they make every point-in-polygon
@@ -768,35 +770,7 @@ def _coerce_xy_vertices(value: Any, *, max_count: int | None = None) -> list[lis
             continue
         if math.isfinite(x) and math.isfinite(y):
             cleaned.append([x, y])
-    return cleaned[:max_count] if max_count is not None else cleaned
-
-
-# Upper bound on ground-grid polygon corners.
-GROUND_GRID_MAX_VERTICES = 64
-
-
-@dataclass
-class GroundGridConfig:
-    """A second floor: one polygon at its own absolute Z (experimental).
-
-    Active only when ``enabled`` and the polygon has at least three corners; a
-    marker inside it in XY gets its floor elements drawn at ``z_offset``.
-    """
-
-    enabled: bool = False
-    visible: bool = True
-    z_offset: float = 0.0
-    vertices: list[list[float]] = field(default_factory=list)
-
-    def __post_init__(self) -> None:
-        self.enabled = _coerce_bool(self.enabled, False)
-        self.visible = _coerce_bool(self.visible, True)
-        self.z_offset = 0.0 if isinstance(self.z_offset, bool) else _coerce_float(self.z_offset, 0.0)
-        self.vertices = _coerce_xy_vertices(self.vertices, max_count=GROUND_GRID_MAX_VERTICES)
-
-    @property
-    def active(self) -> bool:
-        return self.enabled and len(self.vertices) >= 3
+    return cleaned
 
 
 # Operator Screen marker glyph; each style reads only its own fields.
@@ -1102,6 +1076,12 @@ VALID_TRIGGER_SOURCES = ("markers", "detection", "both")
 VALID_ZONE_EVAL_FPS = (1, 5, 10, 15, 30, 60)
 
 
+# Bounds of a zone's height above the stage plane, and of its height transition.
+ZONE_Z_OFFSET_MIN = -10.0
+ZONE_Z_OFFSET_MAX = 20.0
+ZONE_HEIGHT_TRANSITION_MAX_S = 10.0
+
+
 @dataclass
 class TriggerZoneConfig:
     """A single polygonal trigger zone in world coordinates."""
@@ -1122,8 +1102,23 @@ class TriggerZoneConfig:
     # selected → the zone emits nothing.
     destination_id: str = ""
     enabled: bool = True
+    # Zone heights: metres above the stage plane (the main grid's ``z_offset``).
+    z_offset: float = 0.0
+    raise_markers: bool = False
+    height_transition_s: float = 0.3
 
     def __post_init__(self) -> None:
+        self.z_offset = (
+            0.0
+            if isinstance(self.z_offset, bool)
+            else _coerce_float(self.z_offset, 0.0, lo=ZONE_Z_OFFSET_MIN, hi=ZONE_Z_OFFSET_MAX)
+        )
+        self.raise_markers = _coerce_bool(self.raise_markers, False)
+        self.height_transition_s = (
+            0.3
+            if isinstance(self.height_transition_s, bool)
+            else _coerce_float(self.height_transition_s, 0.3, lo=0.0, hi=ZONE_HEIGHT_TRANSITION_MAX_S)
+        )
         if self.trigger_source not in VALID_TRIGGER_SOURCES:
             logger.warning(
                 "Invalid zone trigger_source %r, falling back to 'markers'",
@@ -1154,6 +1149,8 @@ class TriggerZonesConfig:
 
     enabled: bool = False
     show_overlay: bool = True
+    # Draw a zone stronger on the Operator Screen while a marker or detection is inside.
+    highlight_occupied: bool = True
     eval_fps: int = 10
     debounce_ms: int = 200
     hysteresis: float = 0.05  # metres – inward polygon offset for exit threshold
@@ -1173,6 +1170,7 @@ class TriggerZonesConfig:
         # survive. Upper bounds mirror ``openfollow/web/validation.py``.
         self.debounce_ms = _coerce_int(self.debounce_ms, 200, lo=0, hi=60000)
         self.hysteresis = _coerce_float(self.hysteresis, 0.05, lo=0.0, hi=10.0)
+        self.highlight_occupied = _coerce_bool(self.highlight_occupied, True)
         # Drop non-object zone entries instead of keeping them verbatim: a
         # hand-edited inline TOML array (``zones = ["evil"]``) or a crafted
         # payload would otherwise persist a bare str/int that the zone engine
@@ -2816,11 +2814,11 @@ FEATURE_KEYS: tuple[str, ...] = (
     "detection",
     "rttrpm",
     "paths",
-    "ground_grid",
     "touch_remote",
+    "zone_heights",
 )
 EXPERIMENTAL_FEATURES: frozenset[str] = frozenset(
-    {"lens_suggestions", "detection", "rttrpm", "paths", "ground_grid", "touch_remote"}
+    {"lens_suggestions", "detection", "rttrpm", "paths", "touch_remote", "zone_heights"}
 )
 DEFAULT_SHOWN_FEATURES: tuple[str, ...] = tuple(key for key in FEATURE_KEYS if key not in EXPERIMENTAL_FEATURES)
 # Gated like any feature but not offered: no Features row, no web route turns one on.
@@ -3093,7 +3091,6 @@ class AppConfig:
     # Sub-configs
     camera: CameraConfig = field(default_factory=CameraConfig)
     grid: GridConfig = field(default_factory=GridConfig)
-    ground_grid: GroundGridConfig = field(default_factory=GroundGridConfig)
     marker: MarkerConfig = field(default_factory=MarkerConfig)
     controller: ControllerConfig = field(default_factory=ControllerConfig)
     mouse3d: Mouse3DConfig = field(default_factory=Mouse3DConfig)
@@ -3252,7 +3249,6 @@ def without_former_camera_keys(camera: dict[str, Any]) -> dict[str, Any]:
 _SUB_CONFIG_MAP: dict[str, type] = {
     "camera": CameraConfig,
     "grid": GridConfig,
-    "ground_grid": GroundGridConfig,
     "marker": MarkerConfig,
     "controller": ControllerConfig,
     "mouse3d": Mouse3DConfig,
@@ -4269,9 +4265,6 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
     # Grid and camera updates (no renderer needed - Cairo overlay reads from config)
     if new_config.grid != app._config.grid:
         app._config.grid = new_config.grid
-
-    if new_config.ground_grid != app._config.ground_grid:
-        app._config.ground_grid = new_config.ground_grid
 
     if new_config.camera != app._config.camera:
         app._camera = Camera.from_config(new_config.camera)

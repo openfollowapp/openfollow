@@ -18,7 +18,7 @@ A slot can also be **pinned** to a socket. Whatever is plugged into a pinned soc
   - **Can't identify** – nothing on the controller can be pulsed: it cannot vibrate and has no light the station can drive. Identify only flashes its marker card.
 - **Connection** – the kind (`Gamepad` or `3D Mouse`), the slot's state, and the socket below them.
   - **Connected** – the controller is plugged in and drives the slot's marker.
-  - **Missing** – the controller was unplugged or dropped out, or its kind (Gamepads or 3D Mouse) was switched off. Its slot and marker stay put, so nobody else changes marker. The marker card turns red on the Operator Screen, and the status corner and the Statistics panel name it.
+  - **Missing** – the controller was unplugged or dropped out, or its kind (Gamepads or 3D Mouse) was switched off. Its slot and marker stay put, so nobody else changes marker. The marker card turns red on the Operator Screen, and the status corner and Status & Diagnostics name it.
   - **Reserved** – a missing slot that was forgotten. It keeps its place in the numbering but drives no marker and raises no warning.
   - **Empty** – a slot below a pinned one that no controller fills. It drives no marker and raises no warning, and the next controller of any kind plugged in takes it.
   - **Pinned to …** in place of the socket – the slot belongs to that socket. While nothing is plugged into it, the slot is missing and shows the name of the controller that was pinned.

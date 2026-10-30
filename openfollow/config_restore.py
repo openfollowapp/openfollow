@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """The station's own settings backups: list them, and read one back for a restore.
 
 The archives are written by ``privilege/settings_backup.py``, which the ``.deb``

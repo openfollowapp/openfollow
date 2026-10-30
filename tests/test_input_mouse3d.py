@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Tests for the 3D Mouse (6DOF) input handler and its InputManager wiring.
 
 The device is mocked at the boundary – a fake reader returning scripted state

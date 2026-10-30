@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Tests for :class:`CairoOverlayRenderer` dispatch + helpers.
 
 ``CairoOverlayRenderer.draw()`` is the routing boundary between
@@ -851,7 +853,7 @@ def _zone_renderer() -> CairoOverlayRenderer:
     renderer = CairoOverlayRenderer()
     renderer.state.camera_params = np.array([0.0, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0])
     renderer.state.show_zones = True
-    renderer.state.zone_polygons = [([(-1.0, 1.0), (1.0, 1.0), (1.0, 3.0), (-1.0, 3.0)], "#ffaa00", "Pit", False, 0)]
+    renderer.state.zone_polygons = [([(-1.0, 1.0), (1.0, 1.0), (1.0, 3.0), (-1.0, 3.0)], "#ffaa00", False, 0.0)]
     return renderer
 
 
@@ -888,18 +890,15 @@ def test_the_renderer_lets_its_zone_picture_go_while_the_scene_is_not_drawn(fiel
     assert after.surfaces[0] is not before.surfaces[0]
 
 
-def _grid_renderer(ground_grid_visible: bool = True) -> CairoOverlayRenderer:
+def _grid_renderer(grid_visible: bool = True) -> CairoOverlayRenderer:
     renderer = CairoOverlayRenderer()
     renderer.state.camera_params = np.array([0.0, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0])
     renderer.state.grid_config = (10.0, 6.0, 1.0, 0.0, 3.0, 0.0)
-    renderer.state.grid_visible = False
-    renderer.state.ground_grid_visible = ground_grid_visible
-    renderer.state.ground_grid_vertices = [(-1.0, 1.0), (1.0, 1.0), (1.0, 3.0), (-1.0, 3.0)]
-    renderer.state.ground_grid_z = -0.5
+    renderer.state.grid_visible = grid_visible
     return renderer
 
 
-def test_the_renderer_draws_a_displayed_ground_grid() -> None:
+def test_the_renderer_draws_a_displayed_grid() -> None:
     import cairo
 
     def frame(visible: bool) -> np.ndarray:

@@ -185,16 +185,6 @@
  background: linear-gradient(180deg, rgba(255, 255, 255, 0.045) 0%, rgba(255, 255, 255, 0.02) 100%);
  overflow: hidden;
  }
- .hero-panel::before {
- content: "";
- position: absolute;
- inset: 0;
- pointer-events: none;
- background-image: radial-gradient(circle, rgba(255, 188, 0, 0.08) 1px, transparent 1px);
- background-size: 32px 32px;
- mask-image: radial-gradient(ellipse 90% 85% at 50% 18%, black 25%, transparent 78%);
- -webkit-mask-image: radial-gradient(ellipse 90% 85% at 50% 18%, black 25%, transparent 78%);
- }
  .section {
  margin-bottom: 1rem;
  padding: 1.2rem;
@@ -741,15 +731,12 @@
  letter-spacing: 0.02em;
  margin-bottom: 0.5rem;
  }
- /* When pinned in the hero-panel's top-right corner: absolute pos,
- drop the trailing margin, and bump the z-index so the panel's
- ::before dot-grid doesn't sit on top of the text. */
+ /* Pinned in the hero-panel's top-right corner. */
  .hero-station-pill {
  position: absolute;
  top: 0.9rem;
  right: 1.1rem;
  margin-bottom: 0;
- z-index: 1;
  }
  .wizard-launch {
  display: flex;

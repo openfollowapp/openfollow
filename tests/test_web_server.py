@@ -3201,6 +3201,15 @@ def test_hero_logo_links_to_overview(live_server) -> None:
     assert '<img class="hero-logo"' in body
 
 
+def test_hero_panel_has_no_dot_pattern(live_server) -> None:
+    """The page header is a plain panel: no pseudo-element draws a pattern over it."""
+    _, base = live_server
+    _, body = _get(base, "/")
+    assert '<header class="hero-panel">' in body
+    assert not re.search(r"\.hero-panel::?(before|after)", body)
+    assert "radial-gradient(circle" not in body
+
+
 def test_about_page_has_back_to_overview_link(live_server) -> None:
     """/about offers an explicit way back to the overview – both the textual
     back link and the clickable hero logo from base.tpl."""

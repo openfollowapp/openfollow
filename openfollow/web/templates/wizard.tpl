@@ -43,7 +43,7 @@
     display: flex;
     gap: 0.25rem;
     padding: 0.35rem;
-    border-radius: 1rem;
+    border-radius: 0.5rem;
     background: var(--surface);
     border: 1px solid var(--border-soft);
     overflow-x: auto;
@@ -56,7 +56,7 @@
     flex: 1;
     min-width: fit-content;
     padding: 0.45rem 0.7rem;
-    border-radius: 0.75rem;
+    border-radius: 0.375rem;
     border: 1px solid transparent;
     background: transparent;
     color: var(--muted);
@@ -112,7 +112,7 @@
     width: 100%;
     margin-bottom: 1rem;
     background: var(--bg-deep);
-    border-radius: 0.75rem;
+    border-radius: 0.375rem;
     border: 1px solid var(--border);
     overflow: hidden;
     transition: border-color 0.3s;
@@ -164,7 +164,7 @@
     gap: 0.5rem;
     margin-top: 0.72rem;
     padding: 0.84rem;
-    border-radius: 0.75rem;
+    border-radius: 0.375rem;
     background: var(--surface);
     border: 1px solid var(--border-soft);
   }
@@ -252,7 +252,7 @@
   .lens-dev { margin-top: 0.72rem; }
   /* Graded meter (docs/STATUS_LANGUAGE.md): five segments, filled in the level's line colour. */
   .wizard-meter { display: inline-flex; gap: 3px; vertical-align: middle; }
-  .wizard-meter-seg { width: 14px; height: 8px; border-radius: 2px; background: var(--border-soft); }
+  .wizard-meter-seg { width: 14px; height: 8px; border-radius: 1px; background: var(--border-soft); }
   .wizard-meter[data-level="caution"] .wizard-meter-seg.filled { background: var(--caution-line); }
   .wizard-meter[data-level="info"] .wizard-meter-seg.filled { background: var(--info-line); }
   .wizard-meter[data-level="success"] .wizard-meter-seg.filled { background: var(--success-line); }
@@ -323,13 +323,13 @@
   .step-locked { opacity: 0.4; filter: grayscale(0.6); transition: opacity 150ms; }
   @media (prefers-reduced-motion: reduce) { .step-locked { transition: none; } }
   /* The menu a click on the picture opens in Advanced. */
-  .pin-menu { position: absolute; z-index: 5; min-width: 13rem; max-width: 18rem; max-height: calc(100% - 16px); overflow-y: auto; overscroll-behavior: contain; padding: 0.35rem; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 0.6rem; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45); line-height: 1.3; }
+  .pin-menu { position: absolute; z-index: 5; min-width: 13rem; max-width: 18rem; max-height: calc(100% - 16px); overflow-y: auto; overscroll-behavior: contain; padding: 0.35rem; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 0.3rem; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45); line-height: 1.3; }
   .pin-menu:focus { outline: none; }
   .pin-menu-head { display: flex; align-items: center; justify-content: space-between; gap: 0.4rem; }
   .pin-menu-title { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); padding: 0.3rem 0.5rem; }
-  .pin-menu .pm-close { width: 1.7rem; height: 1.7rem; padding: 0; border-radius: 0.45rem; background: transparent; color: var(--muted); font-size: 1.1rem; line-height: 1; }
+  .pin-menu .pm-close { width: 1.7rem; height: 1.7rem; padding: 0; border-radius: 0.225rem; background: transparent; color: var(--muted); font-size: 1.1rem; line-height: 1; }
   .pin-menu .pm-close:hover, .pin-menu .pm-close:focus-visible { background: var(--surface-strong); color: var(--text); outline: none; transform: none; }
-  .pin-menu .pm-item { display: flex; width: 100%; justify-content: space-between; align-items: center; gap: 0.6rem; padding: 0.4rem 0.5rem; border-radius: 0.45rem; background: transparent; color: var(--text); font-weight: 600; font-size: 0.86rem; text-align: left; }
+  .pin-menu .pm-item { display: flex; width: 100%; justify-content: space-between; align-items: center; gap: 0.6rem; padding: 0.4rem 0.5rem; border-radius: 0.225rem; background: transparent; color: var(--text); font-weight: 600; font-size: 0.86rem; text-align: left; }
   .pin-menu .pm-item:hover, .pin-menu .pm-item:focus-visible { background: var(--surface-strong); outline: none; transform: none; }
   .pin-menu .pm-item.danger { color: var(--error-text); }
   .pin-menu .kind { font-size: 0.72rem; font-weight: 500; color: var(--muted); }
@@ -337,15 +337,15 @@
   .pin-menu.form { width: 18rem; max-width: calc(100% - 16px); }
   /* On a picture under 480 x 360 CSS px: a panel under the picture, in full screen a sheet at the shell's bottom. */
   .pin-menu.as-panel { position: static; width: auto; min-width: 0; max-width: none; max-height: none; overflow: visible; margin-top: 0.5rem; box-shadow: none; }
-  .pin-menu.as-sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 7; max-height: 50%; overflow-y: auto; margin: 0; border-width: 1px 0 0; border-radius: 0.8rem 0.8rem 0 0; padding-bottom: calc(0.35rem + env(safe-area-inset-bottom)); }
+  .pin-menu.as-sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 7; max-height: 50%; overflow-y: auto; margin: 0; border-width: 1px 0 0; border-radius: 0.4rem 0.4rem 0 0; padding-bottom: calc(0.35rem + env(safe-area-inset-bottom)); }
   .pm-form { padding: 0 0.5rem 0.4rem; }
   .pm-form .field { min-width: 0; margin-bottom: 0.5rem; }
   .pm-form label { font-size: 0.66rem; }
-  .pm-form input, .pm-form select { padding: 0.42rem 0.6rem; font-size: 0.88rem; border-radius: 0.55rem; }
+  .pm-form input, .pm-form select { padding: 0.42rem 0.6rem; font-size: 0.88rem; border-radius: 0.275rem; }
   .pm-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
   .pm-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.2rem; }
   /* The full-screen picture with its one-line toolbar. */
-  .fs-btn { position: absolute; top: 8px; right: 8px; z-index: 4; width: 2.2rem; height: 2.2rem; padding: 0; display: flex; align-items: center; justify-content: center; border-radius: 0.5rem; background: color-mix(in srgb, var(--bg-deep) 72%, transparent); border: 1px solid var(--border); color: var(--text); }
+  .fs-btn { position: absolute; top: 8px; right: 8px; z-index: 4; width: 2.2rem; height: 2.2rem; padding: 0; display: flex; align-items: center; justify-content: center; border-radius: 0.25rem; background: color-mix(in srgb, var(--bg-deep) 72%, transparent); border: 1px solid var(--border); color: var(--text); }
   .fs-btn:hover, .fs-btn:focus-visible { background: var(--bg-soft); border-color: var(--accent); transform: none; }
   .fs-btn svg { width: 1.15rem; height: 1.15rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
   .fs-shell { position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column; background: var(--bg-deep); }
@@ -359,7 +359,7 @@
   .fs-stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; }
   .fs-stage .wizard-preview-container { margin: 0; border: 0; border-radius: 0; flex: none; }
   .fs-stage .fs-btn { display: none; }
-  .fs-help { position: absolute; top: 3.2rem; right: 0.6rem; z-index: 6; width: min(24rem, calc(100% - 1.2rem)); max-height: calc(100% - 4rem); overflow-y: auto; padding: 0.4rem 0.9rem 0.8rem; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 0.6rem; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45); font-size: 0.86rem; line-height: 1.4; }
+  .fs-help { position: absolute; top: 3.2rem; right: 0.6rem; z-index: 6; width: min(24rem, calc(100% - 1.2rem)); max-height: calc(100% - 4rem); overflow-y: auto; padding: 0.4rem 0.9rem 0.8rem; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 0.3rem; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45); font-size: 0.86rem; line-height: 1.4; }
   .fs-help[hidden] { display: none; }
   .fs-help-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
   .fs-help-head h3 { margin: 0.35rem 0; font-size: 0.95rem; }
@@ -367,7 +367,7 @@
   .fs-help p strong { color: var(--text); }
   .fs-keys td { padding: 0.3rem 0; border-top: 1px solid var(--border-soft); border-bottom: 0; vertical-align: top; }
   .fs-keys td:first-child { white-space: nowrap; padding-right: 0.75rem; }
-  .fs-keys kbd { display: inline-block; min-width: 1.4rem; padding: 0 0.35rem; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 0.35rem; background: var(--bg-deep); font: inherit; font-size: 0.8rem; text-align: center; }
+  .fs-keys kbd { display: inline-block; min-width: 1.4rem; padding: 0 0.35rem; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 0.175rem; background: var(--bg-deep); font: inherit; font-size: 0.8rem; text-align: center; }
   /* A disclosure that is a group's whole content takes the group's own frame. */
   .group > .inline-advanced:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
   @media (max-width: 680px) {

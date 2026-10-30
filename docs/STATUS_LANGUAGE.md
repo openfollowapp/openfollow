@@ -288,7 +288,7 @@ red already means "stop or lose something", so they take the error red rather th
 a second, paler one. Only the control that makes the change is red: a dialog's
 confirm, or a control that acts at once. One that only opens the question is not
 destructive and keeps its normal style (**Import Configuration…**, **Restore
-Defaults** in the Configuration section).
+Defaults** in the Configuration Backup & Import section).
 
 | Control | Look |
 |---|---|

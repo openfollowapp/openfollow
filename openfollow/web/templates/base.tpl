@@ -229,6 +229,14 @@
  color: var(--muted);
  font-size: 0.84rem;
  }
+ /* Export, Import and Restore Defaults side by side; one column on a phone. */
+ .cfg-columns {
+ display: grid;
+ grid-template-columns: repeat(3, minmax(0, 1fr));
+ gap: 0.78rem;
+ margin-bottom: 1rem;
+ }
+ .cfg-columns .actions { margin: 0; }
  .section.is-collapsed .section-head {
  border-bottom: 0;
  padding-bottom: 0;
@@ -2036,6 +2044,7 @@
  body { padding: 12px 0; }
  .diag-bento { grid-template-columns: minmax(0, 1fr); grid-template-areas: "video" "station" "network"; }
  body.feature-detection .diag-bento { grid-template-areas: "video" "station" "network" "detection"; }
+ .cfg-columns { grid-template-columns: minmax(0, 1fr); }
  .hero-panel { padding: 1rem; margin-bottom: 0.8rem; }
  .section { padding: 1rem; }
  .field, .field.wide, .checkbox-field { min-width: 100%; }

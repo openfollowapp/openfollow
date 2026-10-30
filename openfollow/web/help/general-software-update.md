@@ -16,9 +16,9 @@ The device briefly goes away while the service restarts. An install that fails b
 
 Before an update installs, the station saves its configuration, marker catalog, your own templates and saved lens calibrations. The Media Gallery and the detection models are not included. Backups are kept in `/var/lib/openfollow/backups/`, one per install; the ten newest are kept. A backup holds the web PIN and stream passwords, so only the OpenFollow service user can read it.
 
-If the backup can't be made, the update still installs. To keep your own copy, use **Export Configuration** under **General → Configuration** first.
+If the backup can't be made, the update still installs. To keep your own copy, use **Export Configuration** under **General → Configuration Backup & Import** first.
 
-To restore one, use **Restore…** beside it under **General → Configuration → Backups on this station**.
+To restore one, use **Restore…** beside it under **General → Configuration Backup & Import → Backups on this station**.
 
 ## What's verified before install
 

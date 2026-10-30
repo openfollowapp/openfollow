@@ -1,4 +1,4 @@
-# Configuration
+# Configuration Backup & Import
 
 Move a station's settings in and out as a `.ofsettings` file, put them back to their defaults, or bring back a backup the station saved before a change.
 

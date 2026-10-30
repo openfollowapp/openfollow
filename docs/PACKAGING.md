@@ -177,7 +177,7 @@ The backup program is `openfollow/privilege/settings_backup.py`. Nothing from
 the package is on disk when the `preinst` runs, so `render-preinst.sh` inlines
 the program into `preinst.in` at build time; keep it standard-library only.
 
-The web UI restores one: **General → Configuration → Backups on this station**
+The web UI restores one: **General → Configuration Backup & Import → Backups on this station**
 lists both folders, and **Restore…** writes the archive back, keeping the
 station's name, network access and local file paths, and restarts (see the
 [config guide](architecture/config.md#config-transfer-export--import--restore-defaults--restore-a-backup)).

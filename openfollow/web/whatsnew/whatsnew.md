@@ -39,7 +39,7 @@ An image or clip in the **Media Gallery** that is not 16:9 now plays in its own 
 
 ## Restore a settings backup
 
-**General → Configuration** lists the settings backups the station saved before each update, import, restore to defaults and settings push. **Restore…** brings one back and restarts the station; its name, network access and local file paths stay as they are.
+**General → Configuration Backup & Import** lists the settings backups the station saved before each update, import, restore to defaults and settings push. **Restore…** brings one back and restarts the station; its name, network access and local file paths stay as they are.
 
 ## Zone heights (experimental)
 

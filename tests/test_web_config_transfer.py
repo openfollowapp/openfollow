@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""The Configuration section's import: one control, one question, and a
+"""The Configuration Backup & Import section's import: one control, one question, and a
 confirmation that outlives the reload it ends in."""
 
 from __future__ import annotations
@@ -22,8 +22,8 @@ def _page() -> str:
 
 
 def _group(page: str, title: str) -> str:
-    start = page.index(f'<h3 class="group-title">{title}</h3>')
-    return page[start : page.index('<div class="group">', start)]
+    start = page.index(f'<h3 class="stat-panel-title">{title}</h3>')
+    return page[start : page.index("</section>", start)]
 
 
 class TestImportControl:
@@ -176,3 +176,35 @@ class TestBackupsGroup:
         base = (Path(_server_module.__file__).parent / "templates" / "base.tpl").read_text(encoding="utf-8")
         assert ".backups-table tr.backup-newer td:not(.row-actions) { color: var(--muted); }" in base
         assert ".backup-note { display: block; color: var(--caution-text);" in base
+
+
+class TestLayout:
+    _BASE = Path(__file__).resolve().parents[1] / "openfollow" / "web" / "templates" / "base.tpl"
+
+    def test_the_heading_names_backup_and_import(self) -> None:
+        assert "<h2>Configuration Backup &amp; Import</h2>" in _page()
+
+    def test_export_import_and_restore_defaults_are_three_boxes_side_by_side(self) -> None:
+        page = _page()
+        columns = page[page.index('<div class="cfg-columns">') : page.index('id="backups-heading"')]
+        titles = re.findall(
+            r'<section class="stat-panel">\s*<div class="stat-panel-head">\s*<h3 class="stat-panel-title">([^<]+)</h3>',
+            columns,
+        )
+        assert titles == ["Export", "Import", "Restore Defaults"]
+        for actions in ("export-actions", "import-actions", "restore-actions"):
+            assert f'id="{actions}"' in columns
+
+    def test_the_backups_run_full_width_below_the_boxes(self) -> None:
+        page = _page()
+        start = page.index('<div class="cfg-columns">')
+        below = page.index('<div class="group">', start)
+        assert "backups" not in page[start:below]
+        assert page.index('id="backups-heading"') > below
+
+    def test_three_columns_on_a_wide_screen_one_on_a_phone(self) -> None:
+        css = self._BASE.read_text(encoding="utf-8")
+        wide = re.search(r"\n \.cfg-columns \{([^}]*)\}", css)
+        assert wide and "grid-template-columns: repeat(3, minmax(0, 1fr));" in wide.group(1)
+        phone = css[css.index("@media (max-width: 680px)") :]
+        assert " .cfg-columns { grid-template-columns: minmax(0, 1fr); }" in phone

@@ -434,6 +434,14 @@ class TestRaisedZoneFloor:
         ]
         assert [(s["alpha"], s["dash"]) for s in holding] == [(pytest.approx(alpha), dash)]
 
+    def test_a_camera_straight_above_the_zone_sees_its_floor_lines_only_through_it(self) -> None:
+        state = _state_with_zone(vertices=_square(), name="", height=0.5)
+        state.camera_params = np.array([0.0, 0.0, 6.0, -90.0, 0.0, 0.0, 60.0])
+        cr = FakeCairo()
+        draw_zones(FakeRenderer(), cr, state, 1920, 1080)
+        floor = [s for s in _strokes(cr) if not s["closed"]]
+        assert floor and all(s["alpha"] == pytest.approx(0.18) for s in floor)
+
     @pytest.mark.parametrize(("x", "alpha"), [(-0.5, 0.7), (0.5, 0.18)], ids=["in view", "behind the arm"])
     def test_a_line_is_cut_where_the_zone_starts_to_hide_it(self, x: float, alpha: float) -> None:
         """A U open towards a camera downstage right: the right arm hides the right half of the notch's back edge."""

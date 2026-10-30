@@ -13,7 +13,7 @@
 % # bundle/probe tools stay put across the 1 s tick.
 % #
 % # Threaded from the route handler: ``stats`` (the runtime snapshot),
-% # ``cards`` (web port, uptime, beacon health, peer count, the detection feature),
+% # ``cards`` (web port, uptime, beacon health, peer count),
 % # and ``local`` / ``peers`` / ``station_down`` for the Station Network box.
 
 %# The Overview tab's only section: always open, so it has no fold key.

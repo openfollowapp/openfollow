@@ -4329,9 +4329,10 @@ def _build_diagnostics_cards(
     peers = server.get_peers()
 
     cards: dict[str, Any] = {
-        "web_port_configured": cfg.web_port,
+        # Against the port this process tried first: a saved change waits for a restart, not a fallback.
+        "web_port_configured": server.port,
         "web_port_display": server.display_port,
-        "web_port_match": cfg.web_port == server.display_port,
+        "web_port_match": server.port == server.display_port,
         "uptime_human": _format_uptime(server.process_uptime_s),
         "network_chip": _network_chip(sender.is_alive, receiver.is_alive, sender.consecutive_errors),
         "sender_last_send": _monotonic_age(sender.last_send_ts),

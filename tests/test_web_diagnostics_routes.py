@@ -207,18 +207,26 @@ def _row(body: str, label: str) -> str:
     return " ".join(re.sub(r"<dt.*?</dt>|<dd[^>]*>", "", value, flags=re.S).split())
 
 
-@pytest.mark.parametrize("on_configured_port", [True, False], ids=["configured", "fallback"])
-def test_the_web_port_row_flags_a_fallback(live_server, on_configured_port: bool) -> None:
+def test_the_web_port_row_shows_the_served_port(live_server) -> None:
+    server, base, _ = live_server
+    _, body, _ = _get(base, "/section/diagnostics")
+    assert _row(body, "Web port") == str(server.display_port)
+
+
+def test_a_saved_port_waiting_for_its_restart_is_not_a_fallback(live_server) -> None:
     server, base, cfg_path = live_server
     cfg = load_config(cfg_path)
-    cfg.web_port = server.display_port if on_configured_port else (server.display_port % 65535) + 1
+    cfg.web_port = (server.port % 65535) + 1
     save_config(cfg, cfg_path)
     _, body, _ = _get(base, "/section/diagnostics")
-    row = _row(body, "Web port")
-    if on_configured_port:
-        assert row == str(server.display_port)
-    else:
-        assert row == f'<span class="stat-chip warn">Fallback</span> {server.display_port} (configured {cfg.web_port})'
+    assert _row(body, "Web port") == str(server.port)
+
+
+def test_the_web_port_row_flags_a_fallback(live_server, monkeypatch) -> None:
+    server, base, _ = live_server
+    monkeypatch.setattr(ConfigWebServer, "display_port", property(lambda self: 2010))
+    _, body, _ = _get(base, "/section/diagnostics")
+    assert _row(body, "Web port") == f'<span class="stat-chip warn">Fallback</span> 2010 (configured {server.port})'
 
 
 @pytest.mark.parametrize(

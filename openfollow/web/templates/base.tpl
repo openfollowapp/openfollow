@@ -180,10 +180,6 @@
  position: relative;
  margin-bottom: 1rem;
  padding: 1.4rem 1.5rem 1.5rem;
- border-radius: 1.2rem;
- border: 1px solid var(--border-soft);
- background: var(--surface);
- overflow: hidden;
  }
  .section {
  margin-bottom: 1rem;

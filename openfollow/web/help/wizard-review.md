@@ -2,7 +2,7 @@
 
 **Save and finish** saves the camera, the lens and the points. In Simple mode it also saves the rectangle as the grid. The green grid is the one the Operator Screen will draw.
 
-Both **Save and finish** and **Leave without saving**, which keeps the station's camera, lens and grid as they were, return to the General tab.
+**Leave without saving** keeps the station's camera, lens and grid as they were. Either way, the Setup Wizard returns to the General tab.
 
 Every point is saved, so **Save and finish** stays off while a point is not complete, such as a known point without a value or a triangulated point without a pin. Review names each of these points and what it needs. **Points** and **Pinned** count what **Save and finish** saves.
 

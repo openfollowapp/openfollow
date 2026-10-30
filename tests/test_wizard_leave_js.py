@@ -16,7 +16,6 @@ from tests._wizard_js import NODE, SETTINGS_URL, WIZARD_TEMPLATE, needs_node, wi
 pytestmark = [pytest.mark.unit, needs_node]
 
 _TEMPLATES = Path(__file__).parents[1] / "openfollow" / "web" / "templates"
-# Where every way out without saving goes, as the wizard template sets it.
 
 _MAIN_PAGE = (
     '<button class="tab-btn" data-tab="overview">O</button><button class="tab-btn" data-tab="general">G</button>'
@@ -140,3 +139,9 @@ def test_a_named_element_that_is_not_a_tab_is_not_opened() -> None:
         "initTabs(); out.push(document.querySelector('.tab-content.active').id);"
     )
     assert _run(steps) == ["tab-camera-grid"]
+
+
+def test_every_way_out_names_the_general_tab() -> None:
+    # Save and finish, Leave without saving and Back to Settings all go here (test_wizard.TestWizardApply).
+    assert SETTINGS_URL == "/?tab=general"
+    assert _run("store['psnfs:active-tab:/'] = 'camera-grid';" + _open_main_page(SETTINGS_URL)) == ["tab-general"]

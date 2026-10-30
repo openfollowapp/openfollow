@@ -18,8 +18,16 @@ UNITS_JS = Path(__file__).resolve().parent.parent / "openfollow" / "web" / "stat
 NODE = shutil.which("node")
 # Where the wizard sends the operator on leaving, as its template sets it.
 _SETTINGS_LINE = re.search(r"^% _settings_url = '([^']+)'$", WIZARD_TEMPLATE.read_text(encoding="utf-8"), re.M)
-assert _SETTINGS_LINE, "wizard.tpl sets _settings_url on a line of its own"
+if _SETTINGS_LINE is None:
+    raise RuntimeError("wizard.tpl must set _settings_url on a line of its own: % _settings_url = '...'")
 SETTINGS_URL = _SETTINGS_LINE.group(1)
+
+
+def _filled(source: str) -> str:
+    """``source`` with the landing URL the template writes into the script filled in, as the page has it."""
+    return source.replace("{{!json.dumps(_settings_url)}}", json.dumps(SETTINGS_URL))
+
+
 needs_node = pytest.mark.skipif(NODE is None, reason="node is not installed")
 
 
@@ -37,7 +45,7 @@ def wizard_function(name: str, *, prefix: str = "function ") -> str:
         elif src[i] == "}":
             depth -= 1
             if depth == 0:
-                return src[start : i + 1]
+                return _filled(src[start : i + 1])
     raise ValueError(f"unbalanced braces in {name}")
 
 
@@ -55,7 +63,7 @@ def wizard_window_function(name: str) -> str:
         elif src[i] == "}":
             depth -= 1
             if depth == 0:
-                return (src[start : i + 1] + ";").replace("{{!json.dumps(_settings_url)}}", json.dumps(SETTINGS_URL))
+                return _filled(src[start : i + 1] + ";")
     raise ValueError(f"unbalanced braces in {name}")
 
 

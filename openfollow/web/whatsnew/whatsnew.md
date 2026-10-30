@@ -1,50 +1,16 @@
 v0.5.0
-## Simple and Advanced network mode
+## Highlights
 
-**General → Network Interface Settings** opens with a **Network mode** switch. **Simple** runs everything over one interface, the one shown below it, as before. **Advanced** gives each function its own interface under **Network Interface Assignment**, and adds VLANs. Adapters can be labelled in both modes. A station whose config already pins a function to an interface starts in Advanced; every other station starts in Simple.
+**New Setup Wizard for camera calibration.** Calibrate for the distortion of your camera's lens for more precise tracking, and choose how you want to calibrate the camera position: **Simple** uses the four corners of a measured rectangle, as before, and **Advanced** uses known and triangulated points for more challenging stages. Measure less: you only need an estimate of the camera's position for a precise calibration.
 
-In Advanced, check the pins: USB Ethernet adapters are now named after their MAC (`enx…`), so a pin to one may have moved.
+**Simple and Advanced network mode.** **General → Network Interface Settings** runs everything over one interface in **Simple**, or gives each function its own interface in **Advanced**, with VLANs and adapter labels.
 
-## Controller Slots are now stable on restart
+**Controllers keep their slot.** Gamepads and 3D Mice take their slot from the USB socket they are plugged into.
 
-Controllers now keep their slot by the USB socket they are plugged into, so one may drive a different marker than before. Check **Input → Controller Slots**.
+**Zones on the camera picture.** The **Zone Editor**'s Camera view moves a zone's corners on the picture.
 
-## Controlled markers are always shown
+**And more:** cone markers, settings backups, parking a marker so controllers skip it, the camera's latency measured from **Video Source**, and a **Features** table under **General → Station Settings → Advanced Settings**.
 
-A marker this station controls now always appears on the Operator Screen and counts in the trigger zones, even if it was hidden before.
+## Before the next show
 
-## The Operator Screen follows the keyboard layout
-
-The Operator Screen now uses the keyboard layout set in the station's system, where it used to assume a US keyboard. Choose another under **Input → Keyboard Input**.
-
-## Features replace Show experimental features
-
-The **Show experimental features** switch is now a **Features** table under **General → Station Settings → Advanced Settings**, and a change there applies on **Save**. A feature that is off is hidden and no longer runs. On any other station, check **RTTrPM output** before the next show: it starts off, so it no longer sends, even where **Send marker positions over RTTrPM** is ticked.
-
-## Control frame replaces Invert control direction
-
-Under **Markers & Zones → Marker Movement**, **Invert control direction** is now **Control frame**. A station with it ticked keeps its inverted controls as **Fixed heading** 180°; every other station steers in **Stage axes**, as before.
-
-## The Setup Wizard has four steps
-
-The **Setup Wizard** now runs Video Source, Lens, **Camera Calibration** and Review, and calculates the camera from marks pinned on the picture: **Simple** uses the four corners of a measured rectangle, **Advanced** known points and triangulated points. In Simple, **Save and finish** also saves the rectangle as the grid, with the point of origin you choose: centred between DSL and DSR, or **Custom**. Check that it matches the console's origin before saving. For a camera that looks almost straight down, the Setup Wizard asks for the exact height of the camera's lens.
-
-## The camera is set in the Setup Wizard only
-
-The **Camera & Lens Calibration** section of the Camera & Grid tab now shows position, orientation, field of view and lens read-only: to change them, run the **Setup Wizard** again. **Apply to all stations** copies the camera with its calibration. Ctrl/Cmd+S on the Operator Screen no longer saves the camera. Its **Calibration** column shows when the calibration was saved, from which video source, the lens rating and how closely the pinned points fit the saved camera.
-
-## Pictures keep their shape
-
-An image or clip in the **Media Gallery** that is not 16:9 now plays in its own shape, with black bars at the sides or at the top and bottom, where it used to be stretched to fill the screen. So does a **USB Camera** whose picture has a different shape from its **Render resolution**, such as a 4:3 camera at `1080p`. A station calibrated on such a picture needs the **Setup Wizard** again.
-
-## Restore a settings backup
-
-**General → Configuration Backup & Import** lists the settings backups the station saved before each update, import, restore to defaults and settings push. **Restore…** brings one back and restarts the station; its name, network access and local file paths stay as they are.
-
-## Zone heights (experimental)
-
-With **Zone heights** on under **Features**, a zone in the **Zone Editor** can sit at a **Z offset** above the stage, and **Marker height** adds that offset to the Z of a marker inside it.
-
-## Zones on the Operator Screen
-
-Zones on the Operator Screen are drawn without their names. **Markers & Zones → Trigger Zones → Occupied zones** chooses whether a zone lights up while a marker or person is inside it; it is on, as before.
+This release changes how networking, camera calibration and many other features work. Run the **Setup Wizard** and check that everything you use still works as required.

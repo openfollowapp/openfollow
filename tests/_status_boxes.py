@@ -10,6 +10,7 @@ from bottle import template
 
 # A healthy station on its configured port: what ``_build_diagnostics_cards`` returns.
 CARDS: dict[str, Any] = {
+    "web_port_configured": 80,
     "web_port_display": 80,
     "web_port_match": True,
     "uptime_human": "1h 53m",
@@ -20,14 +21,13 @@ CARDS: dict[str, Any] = {
     "receiver_last_recv": "0.8s",
     "receiver_packet_count": 6812,
     "peer_count": 1,
+    "detection_shown": True,
 }
 
 
-def render_boxes(stats: dict[str, Any], *, detection_shown: bool = True, **cards: Any) -> str:
-    """The boxes for ``stats``, with ``cards`` overriding the healthy figures."""
-    return template(
-        "partials/diagnostics_cards", stats=stats, cards={**CARDS, **cards}, detection_shown=detection_shown
-    )
+def render_boxes(stats: dict[str, Any], **cards: Any) -> str:
+    """The boxes for ``stats``, with ``cards`` overriding the healthy figures (Person Detection on)."""
+    return template("partials/diagnostics_cards", stats=stats, cards={**CARDS, **cards})
 
 
 def render_alerts(stats: dict[str, Any]) -> str:

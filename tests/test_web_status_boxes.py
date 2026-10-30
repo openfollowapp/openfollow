@@ -497,8 +497,9 @@ class TestBentoLayout:
 
     def test_a_phone_stacks_them_in_one_column(self) -> None:
         phone = self._CSS[self._CSS.index("@media (max-width: 680px)") :]
-        rule = self._rule(".diag-bento, .diag-bento.with-detection", phone)
-        assert (
-            'grid-template-columns: minmax(0, 1fr); grid-template-areas: "video" "station" "network" "detection";'
-            in rule
+        rule = self._rule(".diag-bento", phone)
+        # Without Person Detection there is no empty fourth row to add a gap.
+        assert rule == 'grid-template-columns: minmax(0, 1fr); grid-template-areas: "video" "station" "network";'
+        assert self._rule(".diag-bento.with-detection", phone) == (
+            'grid-template-areas: "video" "station" "network" "detection";'
         )

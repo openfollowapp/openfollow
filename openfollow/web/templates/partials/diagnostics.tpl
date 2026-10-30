@@ -13,9 +13,8 @@
 % # bundle/probe tools stay put across the 1 s tick.
 % #
 % # Threaded from the route handler: ``stats`` (the runtime snapshot),
-% # ``cards`` (served port and whether it is the configured one, uptime, beacon health, peer count),
+% # ``cards`` (web port, uptime, beacon health, peer count, the detection feature),
 % # and ``local`` / ``peers`` / ``station_down`` for the Station Network box.
-% detection_shown = config.ui.feature_on("detection")
 
 %# The Overview tab's only section: always open, so it has no fold key.
 <div class="section" id="diagnostics-section" data-help="diagnostics">
@@ -43,7 +42,7 @@
          hx-get="/section/diagnostics"
          hx-trigger="every 1s [pollShown(this)], poll-shown[pollShown(this)] from:body"
          hx-swap="innerHTML">
-        % include('partials/diagnostics_cards.tpl', stats=stats, cards=cards, detection_shown=detection_shown)
+        % include('partials/diagnostics_cards.tpl', stats=stats, cards=cards)
     </div>
     % include('partials/diagnostics_alerts.tpl', stats=stats)
 

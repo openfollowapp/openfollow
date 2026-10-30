@@ -12,7 +12,7 @@
 
 <!-- Overview -->
 <div class="tab-content" id="tab-overview">
-    % include('partials/diagnostics.tpl', config=config, stats=stats, cards=diagnostics_cards, local=local, peers=peers, station_down=station_down)
+    % include('partials/diagnostics.tpl', stats=stats, cards=diagnostics_cards, local=local, peers=peers, station_down=station_down)
 </div>
 
 <!-- General -->

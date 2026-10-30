@@ -2034,7 +2034,8 @@
  % end
  @media (max-width: 680px) {
  body { padding: 12px 0; }
- .diag-bento, .diag-bento.with-detection { grid-template-columns: minmax(0, 1fr); grid-template-areas: "video" "station" "network" "detection"; }
+ .diag-bento { grid-template-columns: minmax(0, 1fr); grid-template-areas: "video" "station" "network"; }
+ .diag-bento.with-detection { grid-template-areas: "video" "station" "network" "detection"; }
  .hero-panel { padding: 1rem; margin-bottom: 0.8rem; }
  .section { padding: 1rem; }
  .field, .field.wide, .checkbox-field { min-width: 100%; }

@@ -4329,6 +4329,7 @@ def _build_diagnostics_cards(
     peers = server.get_peers()
 
     cards: dict[str, Any] = {
+        "web_port_configured": cfg.web_port,
         "web_port_display": server.display_port,
         "web_port_match": cfg.web_port == server.display_port,
         "uptime_human": _format_uptime(server.process_uptime_s),
@@ -4339,6 +4340,7 @@ def _build_diagnostics_cards(
         "receiver_last_recv": _monotonic_age(receiver.last_recv_ts),
         "receiver_packet_count": receiver.packets_received,
         "peer_count": len(peers),
+        "detection_shown": cfg.ui.feature_on("detection"),
     }
     return cards
 
@@ -7334,7 +7336,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             "partials/diagnostics_cards",
             stats=server.get_runtime_stats(),
             cards=_build_diagnostics_cards(server, cfg),
-            detection_shown=cfg.ui.feature_on("detection"),
         )
 
     @app.get("/section/diagnostics/alerts")

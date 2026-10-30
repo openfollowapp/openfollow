@@ -1,6 +1,6 @@
 % # Status & Diagnostics' live boxes, polled every second (see partials/diagnostics.tpl).
-% # ``stats`` is the runtime snapshot, ``cards`` the web and discovery figures
-% # (``_build_diagnostics_cards``), ``detection_shown`` the Person Detection feature.
+% # ``stats`` is the runtime snapshot, ``cards`` the web and discovery figures and
+% # whether the Person Detection feature is on (``_build_diagnostics_cards``).
 % from openfollow.web.labels import pretty_label, video_error_token, video_signal_label
 % from openfollow.web.live_alerts import DETECTION_MISSING_STEP, diagnostics_alerts
 % system = stats.get("system", {})
@@ -29,6 +29,7 @@
 % # Both are credential-free - the status marker redacts on the way in.
 % alerts = diagnostics_alerts(stats)
 % network_chip, network_status = cards['network_chip']
+% detection_shown = cards['detection_shown']
 % output_resolution = system.get("output_resolution")
 % output_text = ("%dx%d" % (output_resolution["width"], output_resolution["height"])) if output_resolution else "N/A (no display)"
 % tracking_state = "Off"
@@ -129,10 +130,12 @@
             <div class="metric-row">
                 <dt class="metric-label">Web port</dt>
                 <dd class="metric-value">
-% if not cards['web_port_match']:
-                    <span class="stat-chip warn">Fallback</span>
-% end
+% if cards['web_port_match']:
                     {{cards['web_port_display']}}
+% else:
+                    <span class="stat-chip warn">Fallback</span>
+                    {{cards['web_port_display']}} (configured {{cards['web_port_configured']}})
+% end
                 </dd>
             </div>
             <div class="metric-row">

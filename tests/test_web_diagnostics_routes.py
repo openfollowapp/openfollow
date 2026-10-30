@@ -216,7 +216,7 @@ def test_the_web_port_row_flags_a_fallback(live_server, on_configured_port: bool
     if on_configured_port:
         assert row == str(server.display_port)
     else:
-        assert row == f'<span class="stat-chip warn">Fallback</span> {server.display_port}'
+        assert row == f'<span class="stat-chip warn">Fallback</span> {server.display_port} (configured {cfg.web_port})'
 
 
 @pytest.mark.parametrize(

@@ -10,7 +10,6 @@ from __future__ import annotations
 import pytest
 from bottle import template
 
-from openfollow.configuration import AppConfig
 from openfollow.web import server as _server_module  # noqa: F401 – registers tpl path
 from openfollow.web.discovery import PeerInfo
 from tests._status_boxes import CARDS
@@ -21,7 +20,6 @@ pytestmark = pytest.mark.unit
 def _render_overview():
     return template(
         "partials/diagnostics",
-        config=AppConfig(),
         stats={},
         cards=CARDS,
         station_down=False,

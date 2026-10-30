@@ -26,6 +26,7 @@ from openfollow.scene.solver import apply_overlay_distortion, project_points
 from openfollow.web.server import ConfigWebServer
 from tests._ports import live_on_free_port
 from tests._wizard_js import (
+    SETTINGS_URL,
     WIZARD_TEMPLATE,
     assert_script_parses,
     length_page,
@@ -856,7 +857,7 @@ class TestWizardApply:
                 zip(("DSL", "DSR", "USR", "USL"), _RECT_CORNERS, _SIMPLE_PINS, strict=True)
             )
         ]
-        assert (out["shown"], out["removed"], out["href"]) == ([], ["openfollow:wizard"], "/")
+        assert (out["shown"], out["removed"], out["href"]) == ([], ["openfollow:wizard"], SETTINGS_URL)
 
     @pytest.mark.parametrize("state", [_SIMPLE_STATE, _ADVANCED_STATE], ids=["simple", "advanced"])
     def test_the_calibration_is_saved_with_its_lens_rating_and_this_browser_s_time(self, state: dict) -> None:
@@ -874,7 +875,7 @@ class TestWizardApply:
         out = _apply({**state, "height": height})
         camera = out["calls"][-1][1]
         assert "calibration_height" in camera and camera["calibration_height"] == height
-        assert out["href"] == "/"
+        assert out["href"] == SETTINGS_URL
 
     def test_advanced_saves_every_mark_then_its_floor_height_as_the_grid_s_z_offset_alone(self) -> None:
         out = _apply(_ADVANCED_STATE, floor=1.2)
@@ -887,11 +888,11 @@ class TestWizardApply:
             "id": 4, "name": "Spike", "kind": "triangulated", "pin": [0.5, 0.6], "from_a": 1, "from_b": 2,
             "distance_a": 7.0, "distance_b": 7.5, "z": 0.0, "position": [0.4, 5.1, 0.0],
         }  # fmt: skip
-        assert (out["calls"][0][1]["calibration_mode"], out["href"]) == ("advanced", "/")
+        assert (out["calls"][0][1]["calibration_mode"], out["href"]) == ("advanced", SETTINGS_URL)
 
     def test_advanced_leaves_a_grid_already_at_its_floor_height(self) -> None:
         out = _apply(_ADVANCED_STATE, floor=0.0)
-        assert ([url for url, _ in out["calls"]], out["href"]) == (["/api/config/camera"], "/")
+        assert ([url for url, _ in out["calls"]], out["href"]) == (["/api/config/camera"], SETTINGS_URL)
 
     def test_advanced_without_a_usable_floor_height_saves_nothing_and_says_so(self) -> None:
         out = _apply(_ADVANCED_STATE, floor=None)
@@ -968,7 +969,7 @@ class TestWizardApply:
     @pytest.mark.parametrize(("worst", "sent"), [(19.9, True), (20.1, False)])
     def test_a_solve_with_a_point_far_off_its_pin_is_not_applied(self, worst: float, sent: bool) -> None:
         out = _apply({**_SIMPLE_STATE, "solve": {**_SIMPLE_STATE["solve"], "worst": worst}})
-        assert bool(out["calls"]) is sent and (out["href"] == "/") is sent
+        assert bool(out["calls"]) is sent and (out["href"] == SETTINGS_URL) is sent
 
     def test_while_a_solve_is_still_running_nothing_is_sent(self) -> None:
         out = _apply(_SIMPLE_STATE, pending=True)

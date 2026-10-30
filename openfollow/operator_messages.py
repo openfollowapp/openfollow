@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
 """Thread-safe in-memory store for OSC operator messages.
 
 The OSC adapter writes to it; the per-frame overlay builder reads from it.

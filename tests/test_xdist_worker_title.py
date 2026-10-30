@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """pytest-xdist workers must not retitle themselves per test.
 
 A nested ``pytest -n 1`` runs with a stand-in ``setproctitle`` first on

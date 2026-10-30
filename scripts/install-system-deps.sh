@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 # Install OpenFollow system (apt) dependencies. Idempotent; safe to re-run.
 # Single source of truth for the package list, invoked by Ansible provisioning
 # and the in-app web updater. Requires root (run via sudo or the playbook).

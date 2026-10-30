@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """A hardware keyboard poller is gated while a text-entry screen owns input.
 
 evdev and Quartz read the kernel, so they see every key typed into the URL

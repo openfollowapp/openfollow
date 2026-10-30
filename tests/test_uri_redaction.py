@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Tests for ``openfollow.uri_redaction``.
 
 Every surface that displays, logs, or exports a stream URL goes through these

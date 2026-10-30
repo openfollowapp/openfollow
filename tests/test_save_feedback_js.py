@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """The failed-save line in node on the fake DOM: an action that saves nothing names its own lead,
 asks to try again rather than save again, and reports in the dialog it sits in."""
 

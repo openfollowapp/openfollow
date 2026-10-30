@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """A socket layer with macOS's bind semantics, for tests of the web UI's port choice.
 
 On macOS a socket bound with ``SO_REUSEADDR`` to one address shares a TCP port

@@ -1,6 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 # Run OpenFollow on the HDMI display via Cage with a crash-restart watchdog.
 # Usage: ./scripts/run-on-display.sh [--no-watchdog] [config.toml]
 #   --no-watchdog  Run once without the restart loop (for development)

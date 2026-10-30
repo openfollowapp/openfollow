@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """PSN (PosiStageNet) subsystem: marker state, multicast server, receiver."""
 
 from openfollow.psn.marker import MARKER_STALE_AFTER_S, Marker, is_marker_stale, marker_age_s

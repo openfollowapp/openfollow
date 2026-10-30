@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
 """Invariant: the image's kanshi config pins 1920x1080 on every active output.
 
 The on-screen UI (Cairo HUD) is drawn at fixed pixel sizes with no output-scale

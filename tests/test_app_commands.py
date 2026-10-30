@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
 """Unit tests for openfollow.runtime.app_commands.
 
 Covers ``restart_app`` (systemd-vs-dev re-exec choice) and the

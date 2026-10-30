@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Checks for scripts/hw_validation/osc_marker_paths.py: wire encoding that a
 real OSC receiver accepts, path geometry, and the marker spec parser."""
 

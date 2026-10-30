@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 #
 # Run the CI gate (`make ci`) on a testing Pi over the LAN when one is
 # reachable, falling back to running it locally otherwise.

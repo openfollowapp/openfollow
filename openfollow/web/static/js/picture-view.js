@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 OpenFollow Project
+// Copyright (C) 2026 Michel Honold and Paul Hermann
 //
 // The camera picture with an SVG drawn over it, in picture pixels: the latest
 // snapshot, what the saved camera sees of world points (/api/scene/project) and

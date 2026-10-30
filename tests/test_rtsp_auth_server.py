@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Checks for scripts/hw_validation/rtsp_auth_server.py.
 
 The bench tool that makes the RTSP credential path testable at all - no camera

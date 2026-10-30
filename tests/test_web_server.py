@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """System tests for ConfigWebServer – real HTTP requests against a live server.
 
 Spins up a Bottle server on a free localhost port.  Multicast beacon I/O is

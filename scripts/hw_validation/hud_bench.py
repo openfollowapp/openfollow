@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Time the Operator Screen's drawing on the bench scenes, or compare two checkouts.
 
 Each scene (``tests/_hud_scenes.py``) is a run of frames with moving markers,

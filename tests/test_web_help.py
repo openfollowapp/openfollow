@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Tests for the inline help system: ``render_help_markdown`` renderer with
 raw-HTML escaping, ``data-help`` section markup with a backing-doc packaging
 guard, and the ``/help/<id>.html`` route (slug allow-list, 404s, content type).

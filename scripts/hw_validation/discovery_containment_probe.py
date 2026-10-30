@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Assert the discovery beacon and marker-catalog sync leave only where pinned.
 
 Runs **on the device**, as root, with no dependencies - an OpenFollow station

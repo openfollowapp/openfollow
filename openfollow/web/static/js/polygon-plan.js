@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 OpenFollow Project
+// Copyright (C) 2026 Michel Honold and Paul Hermann
 //
 // A top-down stage plan on a <canvas> for drawing and editing polygons in
 // PSN-absolute world metres (X stage left, Y upstage): the main grid, the live

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
 """Coverage for :func:`openfollow._detect_version` and its sources.
 
 Prefers checkout ``pyproject.toml`` over install metadata to ensure the

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """``scripts/ci-remote.sh`` run for real against a stub ``ssh`` that executes
 the "remote" side on this host, so the Pi checkout is a local git repo and the
 sync, guard and restore are exercised with real ``rsync`` and ``git``."""

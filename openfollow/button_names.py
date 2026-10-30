@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Gamepad buttons named the way the station's chosen pad family prints them.
 
 Stored bindings keep SDL's names (``BACK``, ``START``, ...); this module only

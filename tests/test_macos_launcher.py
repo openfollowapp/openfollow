@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Unit tests for the macOS .app bundle launcher (packaging/macos/launcher.py).
 
 The launcher lives outside the importable ``openfollow`` package, so it is

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Real GStreamer for the tests that run elements and pipelines rather than the fakes."""
 
 from __future__ import annotations

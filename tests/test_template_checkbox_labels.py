@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Every checkbox in the web UI carries a noun label and an inline action label.
 
 The noun label sits in the field-label slot above the box and names the

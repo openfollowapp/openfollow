@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """HUD panels kept as pictures (:mod:`openfollow.runtime.overlay_picture`): how they look and when they change."""
 
 from __future__ import annotations

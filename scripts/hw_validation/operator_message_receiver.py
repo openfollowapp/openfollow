@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
 """Operator-message OSC receiver harness (runs on the device under test).
 
 Drives the DEPLOYED operator-message OSC stack – ``OscService`` + the OSC

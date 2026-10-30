@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
 """Smoke tests: import the core modules and verify the lazy package re-exports
 (``openfollow.OpenFollowApp`` / ``openfollow.web.ConfigWebServer``) resolve without
 pulling in the GObject/GStreamer chain at leaf-import time."""

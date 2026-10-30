@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Static parity guard for the Features list gate.
 
 Each section a feature owns carries ``data-feature="<key>"``; experimental

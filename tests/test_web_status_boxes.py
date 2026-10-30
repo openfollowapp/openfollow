@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Pin which Status & Diagnostics box each figure is rendered in.
 
 An operator whose RTSP camera had never authenticated read `1920x1080` beside a

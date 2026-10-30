@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """The Overview tab's section lists the stations and never renders the Network
 configuration block, which lives in the General tab's "Network" sub-section.
 The Network-block render contract is tested in :mod:`tests.test_web_general_network`.

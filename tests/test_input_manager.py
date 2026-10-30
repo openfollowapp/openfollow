@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Integration tests for InputManager: keyboard/gamepad routing, single- vs
 multi-gamepad marker resolution, button-signal forwarding, MIDI hotplug, and
 per-subsystem failure isolation."""

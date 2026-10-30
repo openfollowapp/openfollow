@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Multi-interface networking validation across two stations (issue #50).
 
 Runs from a WORKSTATION and drives a **device under test (DUT)** over HTTP +

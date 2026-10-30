@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Socket + thread-lifecycle coverage for :mod:`openfollow.psn.receiver`.
 
 Covers the gaps left open by the ``_on_packet`` parsing suite:

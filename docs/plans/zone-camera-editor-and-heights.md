@@ -25,6 +25,7 @@ The interactive mockup, built on the Media Gallery's Concert picture and its cal
 | Z offset | Per zone, metres above the stage plane (the main grid's `z_offset`). The zone is drawn at that height in the Camera view and in the Operator Screen's zone overlay, and its corners are picked on that plane. The trigger stays in X and Y. |
 | Marker height | Per zone, a checkbox: label **Marker height**, inline **Add the Z offset inside this zone**. While a marker is inside such a zone (its X/Y in the zone's polygon), its Z is raised by the zone's Z offset in everything the station sends (PSN, OTP, RTTrPM, OSC) and on the Operator Screen. The marker's own Z, as the operator sets it, is not changed. Where several such zones overlap, the highest Z offset counts. |
 | Height transition time | Per zone, **Height transition time (s)**, default 0.3. Crossing a zone's edge eases the added height over this time instead of stepping it: the time of the zone entered, or else of the zone left. |
+| Raised outline | A zone above the stage plane also shows its X/Y area: its outline on the stage plane (no fill) and a dotted line up each corner, in the Camera view and on the Operator Screen. Lines the solid zone hides from the camera are much fainter. A zone at or below the stage plane looks as before. |
 
 ## Design
 

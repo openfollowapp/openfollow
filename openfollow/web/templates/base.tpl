@@ -2799,16 +2799,17 @@
  }
  function initializeSectionFolding(root) {
  const scope = root || document;
+ // A section without a fold key (the only one on its tab) gets its help but no toggle.
+ const selector = '.section[data-fold-key], .section[data-help]';
  const sections = [];
- if (scope.matches && scope.matches('.section[data-fold-key]')) {
+ if (scope.matches && scope.matches(selector)) {
  sections.push(scope);
  }
- scope.querySelectorAll('.section[data-fold-key]').forEach((section) => sections.push(section));
+ scope.querySelectorAll(selector).forEach((section) => sections.push(section));
  sections.forEach((section) => {
  const head = section.querySelector('.section-head');
  if (!head) return;
  const key = section.dataset.foldKey;
- if (!key) return;
 
  // cluster the help "?" and the collapse toggle in a
  // right-aligned actions wrapper. Both buttons are injected (not in
@@ -2831,6 +2832,7 @@
  help.textContent = '?';
  actions.appendChild(help); // help first → it sits left of Collapse
  }
+ if (!key) return;
  let toggle = actions.querySelector('.section-toggle');
  // Already initialised (this runs on every htmx:afterSwap, which
  // sub-second pollers fire constantly) – leave the existing toggle

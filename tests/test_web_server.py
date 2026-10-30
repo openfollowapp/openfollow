@@ -979,6 +979,8 @@ def test_station_network_is_the_first_box_of_status_and_diagnostics(live_server)
     assert overview.count('class="section"') == 1
     assert 'id="overview-section"' not in body
     section = overview[overview.index('id="diagnostics-section"') :]
+    # The tab's only section is always open: no fold key, so no Collapse toggle.
+    assert "data-fold-key" not in section.split(">", 1)[0]
     box = section[section.index('<section class="stat-panel stations-box">') : section.index("</section>")]
     assert '<h3 class="stat-panel-title">Station Network</h3>' in box
     assert 'id="overview-peers"' in box

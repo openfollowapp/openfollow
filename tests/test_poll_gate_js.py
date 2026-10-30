@@ -106,7 +106,8 @@ def test_an_announce_before_htmx_loads_is_a_no_op() -> None:
 _BASE = Path(__file__).parents[1] / "openfollow" / "web" / "templates" / "base.tpl"
 _TAB_MARKUP = (
     '<button class="tab-btn" data-tab="overview">O</button><button class="tab-btn" data-tab="input">I</button>'
-    '<div class="tab-content" id="tab-overview"></div>'
+    '<div class="tab-content" id="tab-overview"><div class="section" data-help="status">'
+    '<div class="section-head"><h2>Status</h2></div></div></div>'
     '<div class="tab-content" id="tab-input"><div class="section" data-fold-key="slots" data-fold-default="collapsed">'
     '<div class="section-head"><h2>Slots</h2></div><div id="slots"></div></div></div>'
 )
@@ -161,3 +162,14 @@ def test_a_cross_tab_link_announces_once() -> None:
 
 def test_unfolding_a_section_announces_and_folding_it_does_not() -> None:
     assert _run_page("toggle.click(); out.push(announced); toggle.click(); out.push(announced);") == [1, 1]
+
+
+def test_a_section_without_a_fold_key_gets_its_help_and_no_toggle() -> None:
+    steps = (
+        "var only = document.querySelector('#tab-overview .section');"
+        "out.push(only.querySelectorAll('.section-help-btn').length, only.querySelectorAll('.section-toggle').length);"
+        "out.push(only.classList.contains('is-collapsed'));"
+        "initializeSectionFolding(document);"
+        "out.push(only.querySelectorAll('.section-help-btn').length);"
+    )
+    assert _run_page(steps) == [1, 0, False, 1]

@@ -167,6 +167,25 @@
         zone.vertices.forEach(function(_, i) { out = out.concat(edgePoints(cam, zone, i).slice(i ? 1 : 0)); });
         return out;
     }
+    // A raised zone's floor outline and corner lines, cut into runs in front of and behind the zone.
+    function floorRuns(cam, zone) {
+        var v = zone.vertices, n = v.length, bottom = floorZ(), top = zonePlane(zone), out = [];
+        var eye = [cam.pos[0], -cam.pos[2], cam.pos[1]];
+        var lines = v.map(function(a, i) { return [[a[0], a[1], bottom], [v[(i + 1) % n][0], v[(i + 1) % n][1], bottom], false]; })
+            .concat(v.map(function(a) { return [[a[0], a[1], bottom], [a[0], a[1], top], true]; }));
+        lines.forEach(function(line) {
+            var a = line[0], b = line[1], pts = cam.segment(a, b, 24), run = [pts[0]], behind = null;
+            for (var k = 0; k < 24; k++) {
+                var t = (k + 0.5) / 24;
+                var h = window.OpenFollow.hiddenByZone([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t], eye, v, bottom, top);
+                if (behind !== null && h !== behind) { out.push({ points: run, behind: behind, post: line[2] }); run = [pts[k]]; }
+                behind = h;
+                run.push(pts[k + 1]);
+            }
+            out.push({ points: run, behind: behind, post: line[2] });
+        });
+        return out;
+    }
     function chosenZone() {
         var zone = state.zones[state.selectedIndex];
         return zone && zone.vertices ? zone : null;
@@ -234,6 +253,18 @@
         pictureKey = key;
         pv.clear();
         if (!cam) { pv.hideLoupe(); return; }
+        // Under the zones: each raised zone's outline on the floor, and its corners joined up to it.
+        state.zones.forEach(function(zone) {
+            if (!zone || !zone.vertices || zone.vertices.length < 3 || zonePlane(zone) <= floorZ()) return;
+            floorRuns(cam, zone).forEach(function(run) {
+                pv.polylines(run.points).forEach(function(points) {
+                    pv.svg.appendChild(pv.el('polyline', {
+                        points: points, stroke: zone.color || '#ff8000', 'vector-effect': 'non-scaling-stroke',
+                        'class': 'pv-zone-floor' + (run.post ? ' pv-zone-post' : '') + (run.behind ? ' pv-behind' : ''),
+                    }));
+                });
+            });
+        });
         state.zones.forEach(function(zone, i) {
             if (!zone || !zone.vertices || zone.vertices.length < 3) return;
             var col = zone.color || '#ff8000';

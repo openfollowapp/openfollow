@@ -2339,3 +2339,60 @@ def test_the_loupe_closes_when_the_camera_goes() -> None:
         """
     )
     assert out == {"before": True, "after": None}
+
+
+_FLOOR_LINES = """
+out.lines = svg().querySelectorAll('polyline.pv-zone-floor').map(function (l) {
+    var pts = l.getAttribute('points').split(' ').map(function (p) {
+        return p.split(',').map(function (v) { return Math.round(+v); });
+    });
+    return [l.getAttribute('class'), pts[0], pts[pts.length - 1]];
+});
+"""
+
+
+def test_a_raised_zone_shows_its_floor_outline_and_corner_lines_fainter_behind_it() -> None:
+    """Straight down from 3 m stage right of the square, its stage-right side and corners are in view."""
+    out = _camera(_HEIGHTS + "model.camera.pos_x = -3; model.zones[0].z_offset = 1.6; await pick();" + _FLOOR_LINES)
+    assert out["lines"] == [
+        ["pv-zone-floor pv-behind", [940, 460], [1140, 460]],
+        ["pv-zone-floor pv-behind", [1140, 460], [1140, 260]],
+        ["pv-zone-floor pv-behind", [1140, 260], [940, 260]],
+        ["pv-zone-floor", [940, 260], [940, 460]],
+        ["pv-zone-floor pv-zone-post", [940, 460], [1040, 493]],
+        ["pv-zone-floor pv-zone-post pv-behind", [1140, 460], [1307, 493]],
+        ["pv-zone-floor pv-zone-post pv-behind", [1140, 260], [1307, 227]],
+        ["pv-zone-floor pv-zone-post", [940, 260], [1040, 227]],
+    ]
+
+
+@pytest.mark.parametrize(
+    "setup",
+    [
+        "model.zones[0].z_offset = 1.6;",
+        _HEIGHTS + "model.zones[0].z_offset = 0;",
+        _HEIGHTS + "model.zones[0].z_offset = -0.5;",
+    ],
+    ids=["zone heights off", "on the stage", "below it"],
+)
+def test_a_zone_not_raised_on_the_picture_shows_no_floor_outline(setup: str) -> None:
+    out = _camera(setup + "await pick();" + _FLOOR_LINES)
+    assert out["lines"] == []
+
+
+def test_a_floor_line_is_cut_where_the_zone_starts_to_hide_it() -> None:
+    """A U open towards a camera downstage right: the right arm hides the right half of the notch's back edge."""
+    out = _camera(
+        _HEIGHTS
+        + """
+        model.camera = { pos_x: 6, pos_y: -6, pos_z: 2.5, pitch: -15, yaw: 0, roll: 0, fov: 60,
+                         k1: 0, k2: 0, cx: 0, cy: 0 };
+        model.zones[0].vertices = [[-2, -1], [-1, -1], [-1, 0], [1, 0], [1, -1], [2, -1], [2, 1], [-2, 1]];
+        model.zones[0].z_offset = 0.5;
+        tickIntervals(); await settle(); choose('camera'); await showPicture();
+        """
+        + _FLOOR_LINES
+    )
+    edges = [cls for cls, _, _ in out["lines"] if "post" not in cls]
+    assert len(edges) == 9
+    assert edges[2:4] == ["pv-zone-floor", "pv-zone-floor pv-behind"]

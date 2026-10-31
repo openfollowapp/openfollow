@@ -489,7 +489,7 @@ def _repeats(
     if np.mean(near) < _DUPLICATE_FRACTION:
         return False
     within = np.count_nonzero(_distance_to_polyline(chain[near], other) <= distance)
-    return within / len(chain) >= _DUPLICATE_FRACTION
+    return bool(within / len(chain) >= _DUPLICATE_FRACTION)
 
 
 def _distance_to_polyline(

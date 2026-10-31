@@ -4308,20 +4308,17 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
                 # controlled ids / config; the next pass recomputes the same
                 # diff (and re-mirrors OTP/RTTrPM). Best-effort –
                 # ``_apply_with_fallback`` logs if this itself raises.
+                # The re-added markers are new objects; OTP and RTTrPM must send these, not the ones they held.
+                mirrors = [m for m in (app._otp_server, app._rttrpm_server) if m is not None]
                 for marker_id in to_add:
                     server.remove_marker(marker_id)
-                for marker_id in to_remove:
-                    server.add_marker(marker_id, marker_name_for_runtime(app, marker_id)).set_pos(*default_pos)
-                # The re-added markers are new objects; OTP and RTTrPM must send these, not the ones they held.
-                for mirror in (app._otp_server, app._rttrpm_server):
-                    if mirror is None:
-                        continue
-                    for marker_id in to_add:
+                    for mirror in mirrors:
                         mirror.unregister_marker(marker_id)
-                    for marker_id in to_remove:
-                        marker = server.get_marker(marker_id)
-                        if marker is not None:
-                            mirror.register_marker(marker)
+                for marker_id in to_remove:
+                    marker = server.add_marker(marker_id, marker_name_for_runtime(app, marker_id))
+                    marker.set_pos(*default_pos)
+                    for mirror in mirrors:
+                        mirror.register_marker(marker)
 
             _apply("controlled_marker_ids", _apply_controlled, on_failure=_restore_controlled)
         else:

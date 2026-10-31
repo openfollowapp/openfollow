@@ -795,6 +795,8 @@ class OtpServer:
 
     def _try_open_multicast_socket_once(self, attempt: int, stop_event: threading.Event | None = None) -> bool:
         """Attempt to create the multicast TX socket once. Returns True on success."""
+        from openfollow.net_utils import multicast_iface_info
+
         staging = contextlib.ExitStack()
         try:
             groups = self._multicast_groups()
@@ -803,14 +805,14 @@ class OtpServer:
                 sock = multicast_expert.McastTxSocket(
                     socket.AF_INET,
                     mcast_ips=groups,
-                    iface=self._source_iface,
+                    iface=multicast_iface_info(self._source_iface),
                     enable_external_loopback=True,
                 )
             elif self._source_ip:
                 sock = multicast_expert.McastTxSocket(
                     socket.AF_INET,
                     mcast_ips=groups,
-                    iface_ip=self._source_ip,
+                    iface=multicast_iface_info(iface_ip=self._source_ip),
                     enable_external_loopback=True,
                 )
             else:

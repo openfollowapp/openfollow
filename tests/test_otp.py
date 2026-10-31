@@ -54,6 +54,7 @@ from openfollow.otp.server import (
     transform_mcast_ip,
 )
 from openfollow.psn.marker import Marker
+from tests import _pinned_iface
 
 pytestmark = pytest.mark.unit
 
@@ -971,13 +972,17 @@ class TestOtpStopThreadTimeouts:
 
 
 class TestOtpTryOpenSocketWithSourceIp:
+    @pytest.fixture(autouse=True)
+    def _pinned(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _pinned_iface.install(monkeypatch)
+
     def test_source_ip_passed_to_mcast_tx_socket(self) -> None:
         with patch("openfollow.otp.server.multicast_expert.McastTxSocket") as mcls:
             mcls.return_value = MagicMock()
             srv = OtpServer(system_number=1, source_ip="192.0.2.5")
             assert srv._try_open_multicast_socket_once(attempt=1) is True
             kwargs = mcls.call_args.kwargs
-            assert kwargs.get("iface_ip") == "192.0.2.5"
+            assert kwargs["iface"].iface_ip == "192.0.2.5"
             # Both transform and advertisement groups should be subscribed.
             assert "239.159.1.1" in kwargs["mcast_ips"]
             assert "239.159.2.1" in kwargs["mcast_ips"]
@@ -987,7 +992,7 @@ class TestOtpTryOpenSocketWithSourceIp:
             mcls.return_value = MagicMock()
             srv = OtpServer(system_number=1, source_ip="169.254.7.7", source_iface="eth1")
             assert srv._try_open_multicast_socket_once(attempt=1) is True
-            assert mcls.call_args.kwargs["iface"] == "eth1"
+            assert mcls.call_args.kwargs["iface"].machine_name == "eth1"
             assert "iface_ip" not in mcls.call_args.kwargs
 
     def test_restart_takes_the_new_interface(self) -> None:
@@ -998,7 +1003,7 @@ class TestOtpTryOpenSocketWithSourceIp:
                 system_name="x", system_number=1, port=5568, source_ip="10.0.1.5", priority=100, source_iface="eth1"
             )
             try:
-                assert mcls.call_args.kwargs["iface"] == "eth1"
+                assert mcls.call_args.kwargs["iface"].machine_name == "eth1"
             finally:
                 srv.stop()
 

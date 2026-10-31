@@ -35,6 +35,7 @@ from openfollow.net_utils import (
     route_source,
     tcp_port_shared,
 )
+from tests import _driver_alias
 from tests._port_sharing import STATION_ADDRESS, SharingKernel, share_ports
 
 pytestmark = pytest.mark.unit
@@ -1693,3 +1694,39 @@ class TestAutoStationIface:
         monkeypatch.setattr(net_utils_module.psutil, "net_if_addrs", lambda: {})
         monkeypatch.setattr(net_utils_module, "get_primary_local_ipv4", lambda default="N/A": default)
         assert net_utils_module.auto_station_iface() == ""
+
+
+class TestMulticastIfaceInfo:
+    """The interface a multicast sender pins, described without the library's own scan."""
+
+    def test_only_addresses_with_a_netmask_are_listed(self, monkeypatch) -> None:
+        _driver_alias.install(monkeypatch)
+        info = net_utils_module.multicast_iface_info("lo0")
+        assert (info.machine_name, info.index) == ("lo0", 1)
+        assert list(info.ip4_addrs) == [ipaddress.IPv4Interface("127.0.0.1/8")]
+        assert info.link_layer_address is None
+
+    def test_an_address_finds_the_interface_holding_it(self, monkeypatch) -> None:
+        _driver_alias.install(monkeypatch)
+        info = net_utils_module.multicast_iface_info(iface_ip="192.0.2.10")
+        assert (info.machine_name, info.index, info.link_layer_address) == ("en0", 4, "02:00:00:00:00:01")
+        assert list(info.ip4_addrs) == [ipaddress.IPv4Interface("192.0.2.10/24")]
+
+    def test_a_socket_built_on_it_never_scans(self, monkeypatch) -> None:
+        import multicast_expert
+
+        _driver_alias.install(monkeypatch)
+        sock = multicast_expert.McastTxSocket(
+            socket.AF_INET, mcast_ips=["236.10.10.10"], iface=net_utils_module.multicast_iface_info("en0")
+        )
+        assert sock._iface_info.machine_name == "en0"
+
+    @pytest.mark.parametrize(
+        ("kwargs", "reason"),
+        [({"iface": "eth9"}, "eth9 is not present"), ({"iface_ip": "198.51.100.7"}, "no interface holds 198.51.100.7")],
+        ids=["absent-interface", "address-held-by-none"],
+    )
+    def test_an_interface_it_cannot_find_stops_the_plane(self, monkeypatch, kwargs, reason) -> None:
+        _driver_alias.install(monkeypatch)
+        with pytest.raises(net_utils_module.InterfaceUnavailable, match=reason):
+            net_utils_module.multicast_iface_info(**kwargs)

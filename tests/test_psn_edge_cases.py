@@ -21,6 +21,7 @@ from conftest import psn_packet_clock as _packet_clock
 import openfollow.psn.receiver as receiver_module
 from openfollow.psn.receiver import PsnReceiver
 from openfollow.psn.server import PsnServer
+from tests import _pinned_iface
 
 pytestmark = pytest.mark.unit
 
@@ -324,6 +325,7 @@ def test_server_rebind_swaps_socket_and_preserves_markers(monkeypatch) -> None:
         "McastTxSocket",
         _fake_mcast_socket,
     )
+    _pinned_iface.install(monkeypatch)
 
     server = PsnServer(mcast_ip="236.10.10.10", source_ip="10.0.0.1")
     server.add_marker(1, "T1")

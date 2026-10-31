@@ -255,7 +255,7 @@ class PsnServer:
         if not mcast_ip:  # pragma: no cover
             return False
         # Auto-detect primary outbound IPv4 to avoid default-route ambiguity.
-        from openfollow.net_utils import resolve_iface_ip
+        from openfollow.net_utils import multicast_iface_info, resolve_iface_ip
 
         iface_ip = resolve_iface_ip(self._source_ip)
         staging = contextlib.ExitStack()
@@ -266,14 +266,14 @@ class PsnServer:
                 sock = multicast_expert.McastTxSocket(
                     socket.AF_INET,
                     mcast_ips=[mcast_ip],
-                    iface=self._source_iface,
+                    iface=multicast_iface_info(self._source_iface),
                     enable_external_loopback=True,
                 )
             elif iface_ip:
                 sock = multicast_expert.McastTxSocket(
                     socket.AF_INET,
                     mcast_ips=[mcast_ip],
-                    iface_ip=iface_ip,
+                    iface=multicast_iface_info(iface_ip=iface_ip),
                     enable_external_loopback=True,
                 )
             else:

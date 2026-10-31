@@ -36,6 +36,7 @@ import pytest
 
 import openfollow.psn.server as server_module
 from openfollow.psn.server import _MAX_SOCKET_RETRIES, PsnServer
+from tests import _pinned_iface
 
 pytestmark = pytest.mark.unit
 
@@ -95,6 +96,7 @@ def _reset_fake_mcast() -> None:
 @pytest.fixture(autouse=True)
 def _patch_mcast(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(server_module.multicast_expert, "McastTxSocket", _FakeMcastSocket)
+    _pinned_iface.install(monkeypatch)
 
 
 # --------------------------------------------------------------------------- #
@@ -114,7 +116,7 @@ class TestTryOpenMulticastSocketOnce:
         ok = srv._try_open_multicast_socket_once(attempt=1)
         assert ok is True
         assert isinstance(srv._socket, _FakeMcastSocket)
-        assert srv._socket.kwargs["iface_ip"] == "10.0.0.5"
+        assert srv._socket.kwargs["iface"].iface_ip == "10.0.0.5"
         assert srv._socket.kwargs["mcast_ips"] == ["236.10.10.10"]
         assert srv._socket.kwargs["enable_external_loopback"] is True
 
@@ -127,16 +129,16 @@ class TestTryOpenMulticastSocketOnce:
         srv._exit_stack = contextlib.ExitStack()
         assert srv._try_open_multicast_socket_once(attempt=1) is True
         assert isinstance(srv._socket, _FakeMcastSocket)
-        assert srv._socket.kwargs["iface"] == "eth1"
+        assert srv._socket.kwargs["iface"].machine_name == "eth1"
         assert "iface_ip" not in srv._socket.kwargs
 
     def test_rebind_takes_the_new_interface_and_keeps_it_when_not_given(self) -> None:
         srv = PsnServer(source_ip="10.0.0.5", source_iface="eth0", mcast_ip="236.10.10.10")
         srv.rebind("10.0.1.5", source_iface="eth1")
         try:
-            assert _FakeMcastSocket.instances[-1].kwargs["iface"] == "eth1"
+            assert _FakeMcastSocket.instances[-1].kwargs["iface"].machine_name == "eth1"
             srv.rebind_mcast_ip("236.10.10.11")
-            assert _FakeMcastSocket.instances[-1].kwargs["iface"] == "eth1"
+            assert _FakeMcastSocket.instances[-1].kwargs["iface"].machine_name == "eth1"
         finally:
             srv.stop()
 
@@ -155,7 +157,7 @@ class TestTryOpenMulticastSocketOnce:
         srv = PsnServer(source_ip="")
         srv._exit_stack = contextlib.ExitStack()
         assert srv._try_open_multicast_socket_once(attempt=1) is True
-        assert srv._socket.kwargs["iface_ip"] == "10.0.0.7"  # type: ignore[union-attr]
+        assert srv._socket.kwargs["iface"].iface_ip == "10.0.0.7"  # type: ignore[union-attr]
 
     def test_empty_source_ip_omits_iface_when_no_primary_available(
         self,
@@ -170,6 +172,7 @@ class TestTryOpenMulticastSocketOnce:
         srv = PsnServer(source_ip="")
         srv._exit_stack = contextlib.ExitStack()
         assert srv._try_open_multicast_socket_once(attempt=1) is True
+        assert "iface" not in srv._socket.kwargs  # type: ignore[union-attr]
         assert "iface_ip" not in srv._socket.kwargs  # type: ignore[union-attr]
 
     def test_exception_logs_warning_and_returns_false(self, caplog: pytest.LogCaptureFixture) -> None:

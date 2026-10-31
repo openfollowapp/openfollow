@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, NamedTuple
 
+import multicast_expert
 import psutil
 
 # Status from resolve_source_ip / resolve_plane_source_ip: "iface" (pinned),
@@ -378,6 +379,31 @@ def iface_mreqn(group: str, iface: str, iface_ip: str) -> bytes:
             f"{iface} is not present ({exc}); staying silent until it returns rather than using another interface"
         ) from exc
     return struct.pack("@4s4si", socket.inet_aton(group), socket.inet_aton(iface_ip), index)
+
+
+def multicast_iface_info(iface: str = "", iface_ip: str = "") -> multicast_expert.IfaceInfo:
+    """*iface*, or the interface holding *iface_ip*, as ``McastTxSocket`` takes it without scanning.
+
+    The library's own scan raises on an IPv4 address with no netmask, such as the
+    peer alias a 3D Mouse driver adds to macOS's lo0, so only addresses with one are listed.
+    """
+    name = iface or get_iface_for_ip(iface_ip)
+    if not name:
+        raise InterfaceUnavailable(f"no interface holds {iface_ip}; staying silent until one does")
+    try:
+        index = socket.if_nametoindex(name)
+    except OSError as exc:
+        raise InterfaceUnavailable(f"{name} is not present ({exc}); staying silent until it returns") from exc
+    addrs = psutil.net_if_addrs().get(name, [])
+    return multicast_expert.IfaceInfo(
+        machine_name=name,
+        index=index,
+        link_layer_address=next((str(a.address) for a in addrs if a.family == psutil.AF_LINK), None),
+        ip4_addrs=tuple(
+            ipaddress.IPv4Interface((a.address, a.netmask)) for a in addrs if a.family == socket.AF_INET and a.netmask
+        ),
+        ip6_addrs=(),
+    )
 
 
 def bind_multicast_send_iface(sock: socket.socket, iface_ip: str | None, iface: str = "") -> None:

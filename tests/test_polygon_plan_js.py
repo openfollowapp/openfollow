@@ -72,7 +72,7 @@ var plan = new window.OpenFollow.PolygonPlan(canvas, {
     onPress: record('press'),
     onDragMove: record('move'),
     onDragEnd: record('end'),
-    onDraftClose: record('close'),
+    onInsert: record('insert'),
 });
 plan.grid = { width: 10, depth: 6, spacing: 1, x_offset: 0, y_offset: 3 };
 """
@@ -106,41 +106,70 @@ class TestView:
         assert out["r"] == [True, True, False, False]
 
 
-class TestDrawing:
-    def test_clicks_add_corners_and_clicking_the_first_closes(self) -> None:
+class TestEdges:
+    _SQUARE = [[[0, 0], [2, 0], [2, 2], [0, 2]]]
+
+    def test_a_press_on_an_edge_adds_a_corner_there_and_holds_it(self) -> None:
         out = _run(
-            _plan()
+            _plan(self._SQUARE, 0)
             + """
-            plan.startDraft();
-            [[100, 100], [300, 100], [300, 300], [104, 104]].forEach(function (p) { fire('click', p[0], p[1]); });
-            out.calls = calls; out.draft = plan.draft;
+            var e = plan.toScreen(1, 0);
+            fire('mousedown', e[0], e[1] + 4);
+            out.added = polys[0].slice();
+            var to = plan.toScreen(1, -1);
+            fire('mousemove', to[0], to[1]); fire('mouseup', to[0], to[1]);
+            out.corners = polys[0]; out.calls = calls;
             """
         )
-        assert out["draft"] is None
-        assert len(out["calls"]) == 1 and out["calls"][0][0] == "close"
-        assert len(out["calls"][0][1]) == 3
+        assert out["added"][1] == [pytest.approx(1), pytest.approx(0)]
+        assert len(out["corners"]) == 5
+        assert out["corners"][1] == [pytest.approx(1), pytest.approx(-1)]
+        assert out["calls"] == [["insert", 1], ["move", 1], ["end", 1]]
 
-    def test_double_click_closes_once_three_corners_are_down(self) -> None:
+    def test_a_click_on_an_edge_keeps_the_corner_and_saves_it(self) -> None:
         out = _run(
-            _plan()
+            _plan(self._SQUARE, 0)
+            + "var e = plan.toScreen(2, 1); fire('mousedown', e[0], e[1]); fire('mouseup', e[0], e[1]);"
+            + " out.corners = polys[0]; out.calls = calls;"
+        )
+        assert out["corners"][2] == [pytest.approx(2), pytest.approx(1)]
+        assert out["calls"] == [["insert", 2], ["end", 2]]
+
+    def test_a_press_on_a_corner_moves_it_rather_than_adding_one(self) -> None:
+        out = _run(
+            _plan(self._SQUARE, 0)
+            + "var h = plan.toScreen(2, 0); fire('mousedown', h[0], h[1]); out.n = polys[0].length;"
+        )
+        assert out["n"] == 4
+
+    def test_a_press_away_from_the_edges_adds_nothing(self) -> None:
+        out = _run(
+            _plan(self._SQUARE, 0)
+            + "var p = plan.toScreen(1, 1); fire('mousedown', p[0], p[1]); out.n = polys[0].length;"
+            + " out.calls = calls.map(function (c) { return c[0]; });"
+        )
+        assert out == {"n": 4, "calls": ["press"]}
+
+    def test_an_unchosen_zone_has_no_edges_to_add_to(self) -> None:
+        out = _run(
+            _plan(self._SQUARE, None)
+            + "var e = plan.toScreen(1, 0); fire('mousedown', e[0], e[1]); out.n = polys[0].length;"
+        )
+        assert out["n"] == 4
+
+    def test_hovering_an_edge_marks_where_the_corner_would_land(self) -> None:
+        out = _run(
+            _plan(self._SQUARE, 0)
             + """
-            plan.startDraft();
-            fire('click', 100, 100); fire('click', 300, 100); fire('dblclick', 300, 100);
-            out.early = calls.length;
-            fire('click', 300, 300); fire('dblclick', 300, 300);
-            out.calls = calls;
+            var e = plan.toScreen(0, 1);
+            fire('mousemove', e[0] + 3, e[1]); out.on = plan.hover;
+            var c = plan.toScreen(1, 1);
+            fire('mousemove', c[0], c[1]); out.off = plan.hover;
+            out.near = e;
             """
         )
-        assert out["early"] == 0
-        assert [c[0] for c in out["calls"]] == ["close"]
-
-    def test_cancel_drops_the_drawing(self) -> None:
-        out = _run(_plan() + "plan.startDraft(); fire('click', 1, 1); plan.cancelDraft(); out.d = plan.draft;")
-        assert out["d"] is None
-
-    def test_a_press_while_drawing_is_not_a_selection(self) -> None:
-        out = _run(_plan() + "plan.startDraft(); fire('mousedown', 10, 10); out.calls = calls;")
-        assert out["calls"] == []
+        assert out["on"] == [pytest.approx(out["near"][0]), pytest.approx(out["near"][1])]
+        assert out["off"] is None
 
 
 class TestDragging:

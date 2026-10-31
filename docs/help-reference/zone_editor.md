@@ -1,6 +1,6 @@
 # Zone Editor
 
-A canvas for drawing and editing zone polygons that drive OSC cue messages. Each zone watches for tracked markers (and optionally person-detection results) crossing its boundary, then fires OSC messages to your show-control software – e.g. triggering a QLab cue when a performer enters an area of stage.
+A canvas for editing zone polygons that drive OSC cue messages. Each zone watches for tracked markers (and optionally person-detection results) crossing its boundary, then fires OSC messages to your show-control software – e.g. triggering a QLab cue when a performer enters an area of stage.
 
 Zone coordinates use the same stage plane as the Grid: **metres**, relative to the **Reference Point** – the (0, 0, 0) of your show (see Core Concepts). The top-down view has upstage towards the top; the camera view shows the zones on the camera picture.
 
@@ -11,7 +11,7 @@ Interactive top-down stage view; the grid and any placed markers stay visible as
 - **Zones** are coloured polygons, names centred inside. When occupied, the fill brightens and the occupant count appears next to the name.
 - **Click a zone** to select it. Its vertices show as labelled handles (V1, V2, …) you can drag to reshape it.
 - **Drag a vertex** to move it. The Area tab's coordinate fields update live.
-- **Click an empty area** in drawing mode to place the next vertex.
+- **Click an edge** of the selected zone to add a vertex there; keep the button down to drag it.
 
 ## Camera view
 
@@ -20,20 +20,18 @@ Interactive top-down stage view; the grid and any placed markers stay visible as
 - **Click a zone** to choose it; its corners show as named handles (V1, V2, …), as in the top-down view.
 - **Drag a corner** to move it. The loupe magnifies the spot under it and shows the corner's stage position; it stays open on the chosen corner, however it was chosen, until you let go of it. The corner lands on the stage floor under the pointer and is saved when you let go. A press that does not move only chooses the corner.
 - **Drag from an edge** of the chosen zone to add a corner between the edge's two corners. With a mouse, a dashed dot on the edge shows where it starts. A press on an edge that does not move adds nothing.
-- **Delete corner** removes the chosen corner; a zone keeps at least three.
 - A corner outside the picture, or behind the camera, has no handle. Move it in the top-down view.
-- The **full screen** button at the top right of the picture opens it over the page, with the zone's name and corner count, **Refresh Image**, **Delete corner** and **Exit full screen**. **Esc** leaves it.
+- The **full screen** button at the top right of the picture opens it over the page, with the zone's name and corner count, **Refresh Image** and **Exit full screen**. **Esc** leaves it.
 - **Refresh Image** takes a new snapshot.
 
-With the picture focused (click it, or Tab to it): **Tab** and **Shift+Tab** go round the chosen zone's corners, skipping those the camera does not see; the **arrow keys** move the corner one picture pixel, ten with **Shift**; **Delete** or **Backspace** removes it; **Esc** lets go of it, and a second **Esc** leaves full screen. **Esc** during a drag puts the corner back where the drag started. A corner moved by keys is saved a moment after the last step.
+With the picture focused (click it, or Tab to it): **Tab** and **Shift+Tab** go round the chosen zone's corners, skipping those the camera does not see; the **arrow keys** move the corner one picture pixel, ten with **Shift**; **Delete** or **Backspace** removes it (a zone keeps at least three); **Esc** lets go of it, and a second **Esc** leaves full screen. **Esc** during a drag puts the corner back where the drag started. A corner moved by keys is saved a moment after the last step.
 
-New zones are drawn in the top-down view. Without a video picture the view says so. The zones follow the saved camera position: after changing the camera, save it before checking zones here.
+Without a video picture the view says so. The zones follow the saved camera position: after changing the camera, save it before checking zones here.
 
-## Drawing controls
+## Zone controls
 
-- **+ New Zone** – enter drawing mode (crosshair cursor); each click drops a vertex.
-- **Finish Polygon** – close and save once three or more vertices are placed. Drawing only. You can also close by clicking the first vertex (highlighted amber) or double-clicking.
-- **Cancel Drawing** – discard the in-progress polygon. Drawing only.
+- **+ New Zone** – add a triangle pointing upstage, a sixth of the grid across, and choose it. In the top-down view it sits in the middle of the grid; in the Camera view, in the middle of the picture (in the middle of the grid where the picture's middle is above the horizon).
+- In the top-down view, **click an edge** of the chosen zone to add a corner there; keep the button down to drag it on. With a mouse, a dashed ring on the edge shows where it lands.
 - **Delete zone** – permanently remove the chosen zone after confirmation. Selection only.
 
 ## Zone details

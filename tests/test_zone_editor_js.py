@@ -129,38 +129,18 @@ def test_the_canvas_draws_once_the_zones_arrive() -> None:
     assert out["drew"] is True
 
 
-def test_drawing_a_new_zone_posts_its_corners_in_world_metres() -> None:
+def test_new_zone_adds_a_triangle_in_the_middle_of_the_grid_and_chooses_it() -> None:
     out = _editor(
         """
         button('zone-add-btn');
-        // The canvas centre is the grid centre (0, 3).
-        at('click', 640, 360); at('click', 740, 360); at('click', 740, 260);
-        out.finishEnabled = !document.getElementById('zone-finish-btn').disabled;
-        button('zone-finish-btn');
         await settle();
         out.posts = posts().map(function (r) { return r.body.vertices; });
+        out.heading = document.querySelector('#zone-details').textContent.indexOf('Zone 2 Details') >= 0;
         """
     )
-    assert out["finishEnabled"] is True
-    assert len(out["posts"]) == 1
-    first, second, third = out["posts"][0]
-    assert first == [pytest.approx(0.0), pytest.approx(3.0)]
-    assert second[0] > 0 and second[1] == pytest.approx(3.0)
-    assert third[0] == pytest.approx(second[0]) and third[1] > 3.0
-
-
-def test_cancel_drawing_posts_nothing() -> None:
-    out = _editor(
-        """
-        button('zone-add-btn');
-        at('click', 640, 360); at('click', 740, 360);
-        button('zone-cancel-btn');
-        await settle();
-        out.posts = posts().length;
-        out.cancelDisabled = document.getElementById('zone-cancel-btn').disabled;
-        """
-    )
-    assert out == {"posts": 0, "cancelDisabled": True}
+    # A sixth of the 6 m grid depth across (1 m), pointing upstage, around the grid centre (0, 3).
+    assert out["posts"] == [[[0, 4], [-0.87, 2.5], [0.87, 2.5]]]
+    assert out["heading"] is True
 
 
 def test_pressing_inside_a_zone_selects_it_and_dragging_a_corner_saves_it() -> None:
@@ -185,16 +165,15 @@ def test_pressing_inside_a_zone_selects_it_and_dragging_a_corner_saves_it() -> N
     assert moved[2] == [pytest.approx(3.0), pytest.approx(4.0)]
 
 
-def test_a_chosen_zone_is_named_by_its_details_heading_not_the_status_line() -> None:
+def test_a_chosen_zone_is_named_by_its_details_heading() -> None:
     out = _editor(
         """
         at('mousedown', 725, 360); at('mouseup', 725, 360);
         await settle();
-        out.status = document.getElementById('zone-editor-status').textContent;
         out.heading = document.querySelector('#zone-details').textContent.indexOf('Zone 1 Details') >= 0;
         """
     )
-    assert out == {"status": "", "heading": True}
+    assert out == {"heading": True}
 
 
 # -- the camera view ---------------------------------------------------------------
@@ -272,13 +251,12 @@ def test_camera_view_draws_the_zones_in_the_browser_and_hides_the_plan() -> None
         out.pictureShown = !document.getElementById('zone-picture').hidden;
         out.lines = zoneLines().map(function (l) { return l.getAttribute('points'); });
         out.addDisabled = document.getElementById('zone-add-btn').disabled;
-        out.cornerButton = !document.getElementById('zone-corner-delete-btn').hidden;
         out.asked = requests.filter(function (r) { return r.url.indexOf('/api/scene/') === 0; }).length;
         out.pins = pins();
         """
     )
     assert out["planHidden"] is True and out["pictureShown"] is True
-    assert out["addDisabled"] is True and out["cornerButton"] is True
+    assert out["addDisabled"] is False
     # No round trip: the saved camera came with the zones.
     assert out["asked"] == 0
     assert out["pins"] == []
@@ -287,12 +265,21 @@ def test_camera_view_draws_the_zones_in_the_browser_and_hides_the_plan() -> None
     assert corners == [[pytest.approx(x, abs=1e-6), pytest.approx(y, abs=1e-6)] for x, y in want]
 
 
-def test_the_plan_view_has_no_delete_corner_button() -> None:
+def test_new_zone_in_the_camera_view_sits_in_the_middle_of_the_picture() -> None:
     out = _camera(
-        "choose('camera'); await showPicture(); choose('plan');"
-        "out.hidden = document.getElementById('zone-corner-delete-btn').hidden;"
+        "model.camera.pos_x = 2; tickIntervals(); await settle(); choose('camera'); await showPicture();"
+        " button('zone-add-btn'); await settle(); out.posts = posts().map(function (r) { return r.body.vertices; });"
     )
-    assert out == {"hidden": True}
+    # The camera now looks down on (2, 3), the picture's middle.
+    assert out["posts"] == [[[2, 4], [1.13, 2.5], [2.87, 2.5]]]
+
+
+def test_new_zone_falls_back_to_the_grid_where_the_picture_middle_is_no_stage_point() -> None:
+    out = _camera(
+        "model.camera.pitch = 10; tickIntervals(); await settle(); choose('camera'); await showPicture();"
+        " button('zone-add-btn'); await settle(); out.posts = posts().map(function (r) { return r.body.vertices; });"
+    )
+    assert out["posts"] == [[[0, 4], [-0.87, 2.5], [0.87, 2.5]]]
 
 
 def test_choosing_a_zone_names_its_corners_like_the_top_down_view() -> None:
@@ -536,33 +523,28 @@ def test_a_zone_keeps_three_corners() -> None:
         model.zones[0].vertices = [[0, 2], [2, 2], [2, 4]];
         await pick();
         pointer(pin(1), 'pointerdown', 640, 460); pointer(svg(), 'pointerup', 640, 460);
-        out.button = document.getElementById('zone-corner-delete-btn').disabled;
-        out.fsButton = document.getElementById('zone-fs-corner-delete').disabled;
-        key('Delete'); document.getElementById('zone-corner-delete-btn').click();
+        key('Delete');
         await settle();
         out.puts = puts().length; out.pins = pins().length;
         """
     )
-    assert out == {"button": True, "fsButton": True, "puts": 0, "pins": 3}
+    assert out == {"puts": 0, "pins": 3}
 
 
-def test_the_delete_corner_button_removes_the_chosen_corner() -> None:
+def test_the_delete_key_removes_the_chosen_corner() -> None:
     out = _camera(
         """
         await pick();
-        out.idle = document.getElementById('zone-corner-delete-btn').disabled;
         pointer(pin(4), 'pointerdown', 640, 260); pointer(svg(), 'pointerup', 640, 260);
-        out.ready = document.getElementById('zone-corner-delete-btn').disabled;
-        document.getElementById('zone-corner-delete-btn').click();
+        key('Delete');
         await settle();
         out.saved = stored(); out.chosen = chosen();
-        out.after = document.getElementById('zone-corner-delete-btn').disabled;
+        key('Delete'); await settle(); out.again = stored().length;
         """
     )
-    assert out["idle"] is True and out["ready"] is False
     assert out["saved"] == [[[0, 2], [2, 2], [2, 4]]]
     # The last corner gone, its neighbour before it is chosen; three left, no more deleting.
-    assert out["chosen"] == "V3" and out["after"] is True
+    assert out["chosen"] == "V3" and out["again"] == 1
 
 
 def test_deleting_a_corner_mid_key_edit_saves_once() -> None:
@@ -963,7 +945,7 @@ def test_escape_on_a_bar_button_leaves_full_screen() -> None:
     assert out == {"held": True, "open": False}
 
 
-def test_the_bar_refreshes_the_picture_and_deletes_the_chosen_corner() -> None:
+def test_the_bar_refreshes_the_picture_and_names_the_zone() -> None:
     out = _camera(
         _FULL
         + """
@@ -976,17 +958,13 @@ def test_the_bar_refreshes_the_picture_and_deletes_the_chosen_corner() -> None:
         document.getElementById('zone-fs-refresh').click();
         await settle();
         out.refreshed = snaps() - was;
-        out.idle = document.getElementById('zone-fs-corner-delete').disabled;
-        svg().focus(); key('Tab');
-        out.ready = document.getElementById('zone-fs-corner-delete').disabled;
-        document.getElementById('zone-fs-corner-delete').click();
+        svg().focus(); key('Tab'); key('Delete');
         await settle();
         out.saved = stored();
         out.status = document.getElementById('zone-fs-status').textContent;
         """
     )
     assert out["refreshed"] == 1
-    assert out["idle"] is True and out["ready"] is False
     assert out["saved"] == [[[2, 2], [2, 4], [0, 4]]]
     assert out["status"] == "Square · 3 corners"
 
@@ -1271,13 +1249,12 @@ def test_after_a_delete_with_no_seen_corner_left_nothing_is_chosen() -> None:
         model.zones[0].vertices = [[0, 2], [0, 10], [1, 10], [2, 10]];
         await pick();
         pointer(pin(1), 'pointerdown', 640, 460); pointer(svg(), 'pointerup', 640, 460);
-        document.getElementById('zone-corner-delete-btn').click();
+        key('Delete');
         await settle();
         out.chosen = chosen(); out.puts = puts().length;
-        out.button = document.getElementById('zone-corner-delete-btn').disabled;
         """
     )
-    assert out == {"chosen": None, "puts": 1, "button": True}
+    assert out == {"chosen": None, "puts": 1}
 
 
 # -- saves in order --------------------------------------------------------------------
@@ -1555,18 +1532,14 @@ def test_no_corner_is_deleted_during_a_drag() -> None:
         await pick();
         pointer(pin(3), 'pointerdown', 840, 260, 'touch');
         pointer(svg(), 'pointermove', 900, 260, 'touch');
-        out.buttons = [document.getElementById('zone-corner-delete-btn').disabled,
-                       document.getElementById('zone-fs-corner-delete').disabled];
-        document.getElementById('zone-corner-delete-btn').click();
-        document.getElementById('zone-fs-corner-delete').click();
+        key('Delete');
         out.pins = pins().length;
         pointer(svg(), 'pointerup', 900, 260, 'touch');
         await settle();
-        out.after = document.getElementById('zone-corner-delete-btn').disabled;
         out.saved = stored();
         """
     )
-    assert out == {"buttons": [True, True], "pins": 4, "after": False, "saved": [[[0, 2], [2, 2], [2.6, 4], [0, 4]]]}
+    assert out == {"pins": 4, "saved": [[[0, 2], [2, 2], [2.6, 4], [0, 4]]]}
 
 
 def test_switching_to_the_top_down_view_mid_drag_puts_the_corner_back() -> None:
@@ -2287,7 +2260,7 @@ def test_the_loupe_closes_when_a_delete_leaves_no_corner_chosen() -> None:
         + """
         pointer(pin(1), 'pointerdown', 640, 460); pointer(svg(), 'pointerup', 640, 460); await settle();
         out.before = !!loupeAt();
-        document.getElementById('zone-corner-delete-btn').click(); await settle();
+        key('Delete'); await settle();
         out.after = loupeAt();
         """
     )

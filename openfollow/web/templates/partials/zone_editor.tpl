@@ -24,13 +24,10 @@
         </div>
         <div class="pv-nofeed" id="zone-picture-nofeed" hidden>No video picture.</div>
         <div id="zone-canvas-wrap" style="position:relative;border:1px solid var(--border,#444);border-radius:3px;background:#111;overflow:hidden;width:100%;">
-            <canvas id="zone-canvas" width="1280" height="720" style="display:block;width:100%;height:auto;background:#111;cursor:crosshair;"></canvas>
+            <canvas id="zone-canvas" width="1280" height="720" style="display:block;width:100%;height:auto;background:#111;"></canvas>
         </div>
         <div style="display:flex;gap:0.5rem;margin-top:0.5rem;flex-wrap:wrap;">
             <button type="button" id="zone-add-btn" class="save-btn">+ New Zone</button>
-            <button type="button" id="zone-finish-btn" class="secondary" disabled>Finish Polygon</button>
-            <button type="button" id="zone-cancel-btn" class="secondary" disabled>Cancel Drawing</button>
-            <button type="button" id="zone-corner-delete-btn" class="secondary" hidden disabled>Delete corner</button>
             <button type="button" id="zone-delete-btn" class="danger" disabled>Delete zone</button>
             <button type="button" id="zone-refresh-btn" class="secondary" hidden>Refresh Image</button>
             <!-- Save / Load template buttons. Save captures entire
@@ -43,7 +40,6 @@
                     data-template-save
                     data-template-deps="#zone-editor-section, #trigger-zones-section">Save as template…</button>
             <button type="button" id="zone-template-load-btn" class="secondary">Load template…</button>
-            <span id="zone-editor-status" class="section-note"></span>
         </div>
         <div id="zone-details" class="section-note" style="margin-top:1rem;">Select a zone to edit its OSC addresses and trigger source.</div>
     </div>
@@ -53,7 +49,6 @@
             <span class="pv-fs-status" id="zone-fs-status"></span>
             <span class="pv-fs-actions">
                 <button type="button" class="secondary small" id="zone-fs-refresh">Refresh Image</button>
-                <button type="button" class="secondary small" id="zone-fs-corner-delete" disabled>Delete corner</button>
             </span>
             <button type="button" class="secondary small" id="zone-fs-exit">Exit full screen</button>
         </div>
@@ -79,11 +74,8 @@
     var canvas = document.getElementById('zone-canvas');
     if (!canvas) return;
     var ctx = canvas.getContext('2d');
-    var statusEl = document.getElementById('zone-editor-status');
     var detailsEl = document.getElementById('zone-details');
     var addBtn = document.getElementById('zone-add-btn');
-    var finishBtn = document.getElementById('zone-finish-btn');
-    var cancelBtn = document.getElementById('zone-cancel-btn');
     var deleteBtn = document.getElementById('zone-delete-btn');
 
     // #154: vertex display/edit goes through the shared unit helpers
@@ -121,8 +113,8 @@
         },
         onDragMove: function(vertexIdx) { syncVertexInputs(state.selectedIndex, vertexIdx); },
         onDragEnd: function() { updateZoneVertices(state.selectedIndex); },
-        onDraftClose: createZone,
-        onRender: function() { updateButtons(); updateCornerControls(); renderPicture(); },
+        onInsert: function() { renderDetails(); },
+        onRender: function() { updateButtons(); updateFullScreenStatus(); renderPicture(); },
     });
 
     // -- camera view: the zones as the saved camera sees them, projected in the browser ----
@@ -130,7 +122,6 @@
     var pictureEl = document.getElementById('zone-picture');
     var canvasWrap = document.getElementById('zone-canvas-wrap');
     var refreshBtn = document.getElementById('zone-refresh-btn');
-    var cornerDeleteBtn = document.getElementById('zone-corner-delete-btn');
     var fsShell = document.getElementById('zone-fs-shell');
     var pv = new window.OpenFollow.PictureView({
         stage: pictureEl, img: pictureEl.querySelector('img'), svg: document.getElementById('zone-picture-svg'),
@@ -280,10 +271,8 @@
         corners.draw();
     }
 
-    function updateCornerControls() {
-        var zone = chosenZone(), can = corners.canDelete();
-        cornerDeleteBtn.disabled = !can;
-        document.getElementById('zone-fs-corner-delete').disabled = !can;
+    function updateFullScreenStatus() {
+        var zone = chosenZone();
         var name = zone && (zone.name || 'Zone ' + (state.selectedIndex + 1));
         document.getElementById('zone-fs-status').textContent = zone ? name + ' · ' + zone.vertices.length + ' corners' : 'No zone chosen';
     }
@@ -330,8 +319,6 @@
     document.getElementById('zone-fs-btn').addEventListener('click', openFull);
     document.getElementById('zone-fs-exit').addEventListener('click', closeFull);
     document.getElementById('zone-fs-refresh').addEventListener('click', function() { pv.load(); });
-    cornerDeleteBtn.addEventListener('click', function() { corners.deleteChosen(); });
-    document.getElementById('zone-fs-corner-delete').addEventListener('click', function() { corners.deleteChosen(); });
     // Esc from a bar button leaves; on the picture it lets go of the corner first.
     fsShell.addEventListener('keydown', function(ev) {
         if (ev.defaultPrevented) return;
@@ -357,9 +344,7 @@
         var onCamera = mode === 'camera';
         canvasWrap.hidden = onCamera;
         refreshBtn.hidden = !onCamera;
-        cornerDeleteBtn.hidden = !onCamera;
         if (onCamera) {
-            if (plan.draft) plan.cancelDraft();
             pictureKey = '';
             pv.load();
         } else {
@@ -482,28 +467,7 @@
     }
 
     function updateButtons() {
-        var drawing = !!plan.draft;
-        finishBtn.disabled = !(drawing && plan.draft.vertices.length >= 3);
-        cancelBtn.disabled = !drawing;
         deleteBtn.disabled = (state.selectedIndex < 0);
-        addBtn.disabled = drawing || mode === 'camera';
-        // The chosen zone is named by its details heading, so the line only speaks while drawing.
-        statusEl.textContent = drawing
-            ? 'Drawing: ' + plan.draft.vertices.length + ' point(s). Click first vertex or double-click to close.'
-            : '';
-        // Drawing-in-progress is a form of unsaved state: vertices
-        // are on the canvas but not yet on disk. Mark the section
-        // dirty so "Save as template" disables until the operator
-        // either Finishes or Cancels – otherwise the template would
-        // capture the on-disk zones list and silently drop the
-        // in-flight polygon.
-        var section = document.getElementById('zone-editor-section');
-        if (section) {
-            if (drawing) window.markFormDirty && window.markFormDirty(section);
-            // Don't auto-clean on draw end – the per-zone edit form's
-            // own input listener may have set dirty; let the explicit
-            // ``Save Zone`` flow clean it.
-        }
     }
 
     function hexToRgba(hex, a) {
@@ -1149,6 +1113,18 @@
         );
     }
 
+    // A new zone: a triangle pointing upstage, a sixth of the grid across, in the middle of the camera picture or,
+    // in the top-down view or where the picture's middle is no stage point, of the grid.
+    function newZoneTriangle() {
+        var g = plan.grid, cx = Number(g.x_offset) || 0, cy = Number(g.y_offset) || 0;
+        var cam = mode === 'camera' && cameraModel(), mid = cam && cam.unproject([pv.w / 2, pv.h / 2], floorZ());
+        if (mid) { cx = mid[0]; cy = mid[1]; }
+        var r = Math.max(0.5, Math.min(Number(g.width) || 0, Number(g.depth) || 0) / 6);
+        return [[cx, cy + r], [cx - r * 0.866, cy - r / 2], [cx + r * 0.866, cy - r / 2]].map(function(v) {
+            return [Math.round(v[0] * 100) / 100, Math.round(v[1] * 100) / 100];
+        });
+    }
+
     function createZone(vertices) {
         var body = {
             name: 'Zone ' + (state.zones.length + 1),
@@ -1245,13 +1221,7 @@
     }
 
     // Events
-    addBtn.addEventListener('click', function() {
-        state.selectedIndex = -1;
-        plan.startDraft();
-        renderDetails();
-    });
-    finishBtn.addEventListener('click', function() { plan.finishDraft(); });
-    cancelBtn.addEventListener('click', function() { plan.cancelDraft(); });
+    addBtn.addEventListener('click', function() { createZone(newZoneTriangle()); });
     deleteBtn.addEventListener('click', deleteSelected);
 
     // Save / Load template buttons. Modal helpers

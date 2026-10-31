@@ -199,3 +199,131 @@ def test_the_poll_never_moves_the_this_station_choice_under_focus() -> None:
     )
     # The P follows the station (marker 3 no longer controlled) while the radios wait for focus to leave.
     assert out == {"control": True, "hide": False, "park": {"pressed": "false", "disabled": True}}
+
+
+_EDIT_PAGE = """
+window.OpenFollow.saveError = {
+    clear: function () {}, boxFor: function () { return null; }, show: function () {},
+    fromResponse: function () { return Promise.resolve({}); },
+};
+window.OpenFollow.attachColorPicker = function (el, opts) {
+    el._pick = function (hex) {
+        el.dataset.value = hex;
+        el.style.background = hex;
+        (opts.onChange || function () {})(hex);
+    };
+};
+station = function () { return {status: 200, body: {success: true}}; };
+var realNow = Date.now;
+function later(ms) { var base = realNow(); Date.now = function () { return base + ms; }; }
+function pollCatalog(lead, second) {
+    document.body.dispatchEvent(makeEvent('htmx:afterRequest', {detail: {elt: root, xhr: {responseText: JSON.stringify({
+        entries: [{id: 3, name: lead[0], color: lead[1]}, {id: 4, name: second[0], color: second[1]}],
+        peer_selections: [],
+        this_station: {station_id: 'me', station_name: 'FOH', controlled_ids: [3], viewer_ids: [3], parked_ids: []},
+        next_free_id: 5,
+    })}}}));
+}
+function row(id) { return root.querySelector('tr[data-marker-id="' + id + '"]'); }
+function nameOf(id) { return row(id).querySelector('[data-field="name"]'); }
+function swatchOf(id) { return row(id).querySelector('[data-field="color"]'); }
+function state(id) {
+    return {
+        name: nameOf(id).value,
+        color: swatchOf(id).dataset.value,
+        unsaved: !row(id).querySelector('.unsaved-chip').hidden,
+        outlined: ['name', 'color'].filter(function (f) {
+            return row(id).querySelector('[data-field="' + f + '"]').classList.contains('field-unsaved');
+        }),
+    };
+}
+function puts() {
+    return requests.filter(function (r) { return r.method === 'PUT'; }).map(function (r) { return r.body; });
+}
+var LEAD = ['Lead', '#ff0000'];
+var SECOND = ['Second', '#00ff00'];
+"""
+
+
+def _run_edit(steps: str) -> Any:
+    return _run_async(_EDIT_PAGE + steps)
+
+
+def test_a_rename_left_unsaved_survives_the_next_poll() -> None:
+    """Clicking away from an edited name used to let the next poll put the catalog's name back."""
+    out = _run_edit(
+        "pollCatalog(LEAD, SECOND); typeInto(nameOf(3), 'Lead Vocal'); nameOf(3).blur();"
+        " pollCatalog(LEAD, SECOND); out.lead = state(3); out.second = state(4);"
+    )
+    assert out["lead"] == {"name": "Lead Vocal", "color": "#ff0000", "unsaved": True, "outlined": ["name"]}
+    assert out["second"] == {"name": "Second", "color": "#00ff00", "unsaved": False, "outlined": []}
+
+
+def test_a_picked_colour_left_unsaved_survives_the_next_poll() -> None:
+    out = _run_edit(
+        "pollCatalog(LEAD, SECOND); swatchOf(3)._pick('#0000ff'); pollCatalog(LEAD, SECOND); out.lead = state(3);"
+    )
+    assert out["lead"] == {"name": "Lead", "color": "#0000ff", "unsaved": True, "outlined": ["color"]}
+
+
+def test_a_row_the_operator_has_not_edited_follows_another_stations_change() -> None:
+    out = _run_edit(
+        "pollCatalog(LEAD, SECOND); typeInto(nameOf(3), 'Lead Vocal'); nameOf(3).blur();"
+        " pollCatalog(['Lead', '#ff0000'], ['Spot', '#ffff00']); out.lead = state(3); out.second = state(4);"
+    )
+    assert out["lead"]["name"] == "Lead Vocal"
+    assert out["second"] == {"name": "Spot", "color": "#ffff00", "unsaved": False, "outlined": []}
+
+
+def test_a_held_colour_still_takes_another_stations_rename() -> None:
+    out = _run_edit(
+        "pollCatalog(LEAD, SECOND); swatchOf(3)._pick('#0000ff');"
+        " pollCatalog(['Lead Vocal', '#ff0000'], SECOND); out.lead = state(3);"
+    )
+    assert out["lead"] == {"name": "Lead Vocal", "color": "#0000ff", "unsaved": True, "outlined": ["color"]}
+
+
+def test_an_edit_typed_back_to_the_saved_value_is_clean_and_follows_the_catalog_again() -> None:
+    out = _run_edit(
+        "pollCatalog(LEAD, SECOND); typeInto(nameOf(3), 'Lead Vocal'); typeInto(nameOf(3), 'Lead');"
+        " nameOf(3).blur(); out.typedBack = state(3);"
+        " pollCatalog(['Spot', '#ff0000'], SECOND); out.renamed = state(3);"
+    )
+    assert out["typedBack"] == {"name": "Lead", "color": "#ff0000", "unsaved": False, "outlined": []}
+    assert out["renamed"]["name"] == "Spot"
+
+
+def test_another_station_saving_the_same_name_makes_the_edit_clean() -> None:
+    out = _run_edit(
+        "pollCatalog(LEAD, SECOND); typeInto(nameOf(3), 'Lead Vocal'); nameOf(3).blur();"
+        " pollCatalog(['Lead Vocal', '#ff0000'], SECOND); out.lead = state(3);"
+    )
+    assert out["lead"] == {"name": "Lead Vocal", "color": "#ff0000", "unsaved": False, "outlined": []}
+
+
+def test_a_save_sends_the_held_values_and_clears_the_unsaved_state() -> None:
+    """A poll begun before the save carries the old values; it must not undo what was just saved."""
+    out = _run_edit(
+        "pollCatalog(LEAD, SECOND); typeInto(nameOf(3), 'Lead Vocal'); swatchOf(3)._pick('#0000ff');"
+        " row(3).querySelector('[data-action=\"save\"]').click(); await settle();"
+        " out.saved = state(3); out.puts = puts();"
+        " pollCatalog(LEAD, SECOND); out.stalePoll = state(3);"
+        " later(5000); pollCatalog(['Lead Vocal', '#0000ff'], SECOND); out.synced = state(3);"
+        " pollCatalog(['Spot', '#0000ff'], SECOND); out.renamed = state(3).name;"
+    )
+    clean = {"name": "Lead Vocal", "color": "#0000ff", "unsaved": False, "outlined": []}
+    assert out["puts"] == [{"name": "Lead Vocal", "color": "#0000ff"}]
+    assert out["saved"] == clean
+    assert out["stalePoll"] == clean
+    assert out["synced"] == clean
+    assert out["renamed"] == "Spot"
+
+
+def test_a_failed_save_keeps_the_edit_unsaved_and_held() -> None:
+    out = _run_edit(
+        "station = function () { return {status: 500, body: {error: 'x'}}; };"
+        " pollCatalog(LEAD, SECOND); typeInto(nameOf(3), 'Lead Vocal');"
+        " row(3).querySelector('[data-action=\"save\"]').click(); await settle();"
+        " later(5000); pollCatalog(LEAD, SECOND); out.lead = state(3);"
+    )
+    assert out["lead"] == {"name": "Lead Vocal", "color": "#ff0000", "unsaved": True, "outlined": ["name"]}

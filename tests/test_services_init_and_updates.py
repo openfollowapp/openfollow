@@ -498,8 +498,9 @@ class TestInitMarkers:
         def _rename_then_add(marker_id, name):  # noqa: ANN001
             # The route's rename lands after init_markers read "Lead" but before the add:
             # it finds no marker, so the add must not take the stale name it was handed.
-            catalog.upsert(1, "Spot", "#ff0000")
-            server.rename_markers([1])
+            if marker_id == 1:
+                catalog.upsert(1, "Spot", "#ff0000")
+                server.rename_markers([1])
             return real_add(marker_id, name)
 
         server.add_marker = _rename_then_add  # type: ignore[method-assign]

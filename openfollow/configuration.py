@@ -32,6 +32,7 @@ from openfollow.keyboard_layout import LAYOUT_RE as XKB_LAYOUT_RE
 from openfollow.keyboard_layout import VARIANT_RE as XKB_VARIANT_RE
 from openfollow.lens_model import C_BOUND, pull_back_to_valid
 from openfollow.net_adapters import normalize_labels
+from openfollow.network.adapter import LOOPBACK_NAMES
 from openfollow.restore_hold import unless_held
 from openfollow.station_fqdn import normalize_fqdn
 from openfollow.text_hygiene import CONTROL_CHARS_RE
@@ -3071,6 +3072,9 @@ class AppConfig:
         if not isinstance(self.web_bind_iface, str):
             self.web_bind_iface = ""
         self.web_bind_iface = self.web_bind_iface.strip()
+        # Bound to loopback the web UI would serve this machine alone: no browser on the LAN could fix it.
+        if self.web_bind_iface in LOOPBACK_NAMES:
+            self.web_bind_iface = ""
         if not isinstance(self.video_input_iface, str):
             self.video_input_iface = ""
         self.video_input_iface = self.video_input_iface.strip()

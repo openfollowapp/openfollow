@@ -398,6 +398,11 @@ def test_the_web_ui_picker_never_offers_loopback(net_server, tmp_path, monkeypat
     monkeypatch.setattr(net_utils_module, "LOOPBACK_OFFERED", True)
     _ifaces(monkeypatch, {"eth0": "192.0.2.10", "lo0": "127.0.0.1"})
     _fake, base = net_server
-    _status, body = _get(base, "/network/interfaces/by_name?blank=all&current=")
+    _status, body = _get(base, "/network/interfaces/by_name?blank=all&loopback=0&current=")
     assert 'value="lo0"' not in body
     assert 'value="eth0"' in body
+    # A video input's wildcard listener shares the "all" wording but can take loopback.
+    _status, body = _get(base, "/network/interfaces/by_name?blank=all&current=")
+    assert 'value="lo0"' in body
+    _status, panel = _get(base, "/section/interface_assignment")
+    assert "blank=all&amp;loopback=0" in panel or "blank=all&loopback=0" in panel

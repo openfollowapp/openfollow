@@ -423,7 +423,7 @@ class TestRun:
         app = OpenFollowApp(config_path=patched_ctor.cfg_path)
         with caplog.at_level("INFO"):
             app.run()
-        assert any(r.levelname == "WARNING" and "loopback" in r.message for r in caplog.records)
+        assert any(r.levelname == "WARNING" and "usable network address" in r.message for r in caplog.records)
         assert not any("Network ready" in r.message for r in caplog.records)
 
     def test_a_station_on_loopback_starts_ready(

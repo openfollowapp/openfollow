@@ -1397,6 +1397,8 @@ class _PanelNames:
 
     labels: Mapping[str, str]
     present: frozenset[str]
+    # This machine's own addresses, for the loopback check.
+    station_addresses: frozenset[str] = frozenset()
 
 
 def _iface_who(name: str, labels: Mapping[str, str]) -> str:
@@ -1485,7 +1487,7 @@ def _egress_address(
     if host and is_loopback_host(host):
         return "Loopback"
     if iface := plane_source_iface(pin, station_iface):
-        if strands(iface, host) is not None:
+        if strands(iface, host, names.station_addresses) is not None:
             return LOOPBACK_ONLY
         return _plane_address(pin, station_iface, names)
     # Nothing pinned anywhere: show where the Pi sends it now, not that it chooses.
@@ -1592,7 +1594,7 @@ def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | 
     from openfollow.net_adapters import display_name
     from openfollow.net_utils import present_interfaces
 
-    names = _PanelNames(cfg.interface_labels, present_interfaces())
+    names = _PanelNames(cfg.interface_labels, present_interfaces(), frozenset(get_local_ipv4_addresses()))
     # Built once to start every lookup, then for real: each lookup waits from
     # when it started, so the render waits once for all of them.
     _interface_assignment_rows(cfg, web_bind, None, names)
@@ -1715,6 +1717,7 @@ def _interface_assignment_rows(
             "address": resolved[0] if cfg.web_bind else _web_bind_address(cfg, resolved),
             "editable": not cfg.web_bind,
             "blank": "all",
+            "no_loopback": True,
             "note": f"Fixed to {cfg.web_bind} by web_bind in config.toml" if cfg.web_bind else "",
         },
     ]
@@ -10141,11 +10144,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         current = request.query.current if "current" in request.query else cfg.psn_source_iface
         blank_label = _BLANK_IFACE_LABELS.get(request.query.blank, _BLANK_IFACE_LABELS["auto"])
         ifaces = list_iface_ipv4()
-        if request.query.blank == "all":
-            from openfollow.net_utils import offered_loopback
-
-            # The web UI's own pin: loopback would serve this machine alone (resolve_web_bind refuses it).
-            ifaces = [(name, ip) for name, ip in ifaces if not offered_loopback(name)]
+        if request.query.loopback == "0":
+            # The web UI's own pin, which never takes loopback (AppConfig drops it).
+            ifaces = [(name, ip) for name, ip in ifaces if name not in LOOPBACK_NAMES]
         options = [f'<option value="">{blank_label}</option>']
         names = {name for name, _ in ifaces}
         for name, ip in ifaces:

@@ -138,7 +138,9 @@ def test_multicast_and_this_macs_own_address_stay_on_this_mac(monkeypatch: pytes
     assert strands("lo0", host) is None
 
 
-def test_the_web_ui_is_never_bound_to_loopback(on_a_mac: None) -> None:
-    """It would serve this Mac alone; failing open keeps it reachable from the LAN."""
-    assert net_utils.resolve_web_bind("", "lo0") == (net_utils.WEB_BIND_ALL, "down")
-    assert net_utils.resolve_web_bind("", "en0") == ("192.0.2.10", "iface")
+@pytest.mark.parametrize(("pin", "kept"), [("lo0", ""), ("lo", ""), (" lo0 ", ""), ("en0", "en0")])
+def test_the_web_ui_is_never_pinned_to_loopback(pin: str, kept: str) -> None:
+    """Pinned there it would serve this machine alone, on any platform; a hand edit or POST reads as blank."""
+    from openfollow.configuration import AppConfig
+
+    assert AppConfig(network_mode="advanced", web_bind_iface=pin).web_bind_iface == kept

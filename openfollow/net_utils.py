@@ -343,8 +343,7 @@ def resolve_web_bind(web_bind: str, web_bind_iface: str) -> tuple[str, ResolveSt
         return web_bind, "iface"
     if not web_bind_iface:
         return WEB_BIND_ALL, "none"
-    # Loopback would leave the UI to this machine alone, locking out every browser on the LAN.
-    resolved = "" if offered_loopback(web_bind_iface) else get_iface_ipv4(web_bind_iface)
+    resolved = get_iface_ipv4(web_bind_iface)
     if resolved:
         return resolved, "iface"
     return WEB_BIND_ALL, "down"

@@ -466,10 +466,9 @@ class OpenFollowApp:
         if not resolved_ip:
             # Timed out; subsystems bind once (won't self-heal).
             logger.warning(
-                "Starting without a usable network address – "
-                "web server, peer discovery, and PSN binding will use loopback "
-                "and will not recover automatically; restart OpenFollow once "
-                "networking is available."
+                "Starting without a usable network address – the web server, peer "
+                "discovery and PSN bound with none and will not recover automatically; "
+                "restart OpenFollow once networking is available."
             )
         else:
             logger.info("Network ready for startup – local IP %s", resolved_ip)

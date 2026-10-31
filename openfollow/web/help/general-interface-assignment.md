@@ -23,9 +23,9 @@ Pins are left out of a config export.
 
 ### Loopback on a Mac
 
-On a Mac, every picker also offers **Loopback (lo0)**, for a desk or media server on the same Mac.
+On a Mac, every picker but **Web UI** also offers **Loopback (lo0)**, for a desk or media server on the same Mac.
 
-It reaches grandMA3 onPC with its PSN interface on `lo0 (127.0.0.1)`, for example, without a network. PSN, OTP and discovery stay on this Mac. An RTTrPM or OSC destination on another machine cannot be reached through loopback: it gets nothing, and the Address column reads **Loopback reaches only this Mac**. Loopback is not offered on a Raspberry Pi.
+It reaches grandMA3 onPC with its PSN interface on `lo0 (127.0.0.1)`, for example, without a network. PSN, OTP and discovery stay on this Mac. An RTTrPM or OSC destination on another machine cannot be reached through loopback: it gets nothing, and the Address column reads **Loopback reaches only this Mac**. The Web UI is never pinned to loopback: no browser on the network could reach it. Loopback is not offered on a Raspberry Pi.
 
 ## USB Ethernet adapters
 

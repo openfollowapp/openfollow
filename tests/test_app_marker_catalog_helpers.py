@@ -822,8 +822,8 @@ class TestApplyCatalogNames:
         fake._server = PsnServer(mcast_ip=None, name_of=lambda i: marker_name_for_runtime(fake, i))
         for marker_id in controlled:
             fake._server.add_marker(marker_id, "ignored")
-        for marker in fake._server._markers.values():
-            marker.set_name("Old")
+        for marker_id in controlled:
+            fake._server.get_marker(marker_id).set_name("Old")
         _bind(fake, "_apply_catalog_names")
         return fake
 

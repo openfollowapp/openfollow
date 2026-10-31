@@ -596,6 +596,25 @@ class TestInitPsn:
         assert factory.last_kwargs["source_ip"] == "10.0.0.1"
         assert factory.last_kwargs["source_iface"] == "eth0"
 
+    def test_names_markers_from_the_catalog(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without the lookup every add keeps its given name and every rename is dropped."""
+        from openfollow.marker_catalog import MarkerCatalog
+
+        services._app._config = replace(services._app._config, psn_source_iface="")
+        services._app._marker_catalog = catalog = MarkerCatalog()
+        catalog.upsert(1, "Lead", "#ff0000")
+        factory = _FakePsnServerFactory()
+        monkeypatch.setattr(services_module, "PsnServer", factory)
+        monkeypatch.setattr(services, "station_source_ip_or_none", lambda: "192.0.2.10")
+
+        services.init_psn()
+        name_of = factory.last_kwargs["name_of"]
+        assert (name_of(1), name_of(9)) == ("Lead", "Marker 9")
+        catalog.upsert(1, "Spot", "#ff0000")
+        assert name_of(1) == "Spot"
+
     def test_stale_iface_stops_psn_rather_than_moving_it(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
     ) -> None:

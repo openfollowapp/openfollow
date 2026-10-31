@@ -280,3 +280,38 @@ def test_the_announcer_speaks_the_limits_after_the_video_failure() -> None:
 def test_the_key_changes_when_the_source_comes_within_the_limits() -> None:
     over = diagnostics_alerts(_over_limits()).key()
     assert diagnostics_alerts(_stats(video={"connected": True, "limits": limits_snapshot(None)})).key() != over
+
+
+def _platform(warning: bool) -> dict[str, Any]:
+    return _stats(system={"platform": {"supported": False, "name": "Windows", "warning": warning}})
+
+
+def test_an_unsupported_platform_is_an_error_box_and_spoken_first() -> None:
+    stats = _platform(True)
+    stats["controllers"] = {"items": [_MISSING_PAD]}
+    alerts = diagnostics_alerts(stats)
+    assert alerts.platform == "Unsupported platform: Windows"
+    assert alerts.spoken()[0] == (
+        "Unsupported platform: Windows. OpenFollow is not developed to work on this platform and errors are "
+        "expected. No support is provided. Never use this setup in a show!"
+    )
+    html = render_boxes(stats)
+    assert (
+        "<div>Unsupported platform: Windows</div>\n"
+        '            <div class="notice-sub">OpenFollow is not developed to work on this platform and errors are '
+        "expected. No support is provided. Never use this setup in a show!</div>"
+    ) in html
+    assert html.index("Unsupported platform: Windows") < html.index("C2 missing")
+    assert "role=" not in html
+
+
+@pytest.mark.parametrize(
+    "stats", [_platform(False), _stats(), _stats(system={"platform": None})], ids=["hidden", "absent", "null"]
+)
+def test_no_platform_alert_while_the_warning_is_hidden(stats: dict[str, Any]) -> None:
+    assert diagnostics_alerts(stats).platform is None
+    assert "Unsupported platform" not in render_boxes(stats)
+
+
+def test_the_key_changes_when_the_warning_shows() -> None:
+    assert diagnostics_alerts(_platform(True)).key() != diagnostics_alerts(_platform(False)).key()

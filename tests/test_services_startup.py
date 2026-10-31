@@ -9,6 +9,7 @@ and state providers, privilege-broker wiring, and the network apply/renew handle
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from types import SimpleNamespace
@@ -3614,3 +3615,15 @@ def test_forget_refused_without_adapter(monkeypatch) -> None:
     services._network_adapter = None
     result = services._handle_network_forget("enx001122334455")
     assert result.ok is False and "No network adapter" in result.message
+
+
+@pytest.mark.parametrize("supported", [False, True], ids=["unsupported", "supported"])
+def test_startup_logs_an_unsupported_platform_once(monkeypatch, caplog, supported: bool) -> None:
+    from openfollow import platform_support
+
+    monkeypatch.setattr(platform_support, "current", lambda: platform_support.PlatformSupport(supported, "Windows"))
+    monkeypatch.setattr(services_module.AppRuntimeServices, "_is_raspberry_pi", staticmethod(lambda: False))
+    with caplog.at_level(logging.WARNING, logger=services_module.__name__):
+        services_module.AppRuntimeServices(_DummyApp())
+    warned = [r.getMessage() for r in caplog.records if "Unsupported platform" in r.getMessage()]
+    assert warned == ([] if supported else [f"Unsupported platform: Windows. {platform_support.STEP}"])

@@ -34,6 +34,23 @@ Section A5 of the bundle ([`web/diagnostics.py`](../../openfollow/web/diagnostic
 
 Section E8 lists every USB device and, in its OpenFollow column, what OpenFollow picks up on it. Exact evidence decides first: a gamepad by the USB ids in its SDL GUID, a 3D mouse by the USB ids its status reports, storage by the disks under it, a camera by the V4L2 devices under it (`/sys/class/video4linux/*` resolved up to the USB device, Linux only) when the USB Camera input lists that name. Only then does a name decide: MIDI ports, gamepads without USB ids, and cameras found under no USB device (every camera on macOS). A shared word is weak evidence, so a camera placed through sysfs is never offered to the name match, and another device sharing its vendor or model word stays unclaimed.
 
+## Platform support (`platform_support.py`)
+
+OpenFollow is developed for one platform, and a station on any other warns loudly on every surface. `detect` decides once per process (`current()` caches it): hardware and OS never change while the app runs.
+
+- **Supported:** a Raspberry Pi of generation 5 or later (Pi 5, CM5, Pi 500, by the number in `/proc/device-tree/model`; the keyboard models carry it in the hundreds), or, on hardware that is not a Pi, `/etc/os-release` naming `ID=debian` with `VERSION_ID` 13 or later (none: testing or unstable) or `debian` in `ID_LIKE` (any version of a derivative). An older Pi is unsupported whatever OS it runs.
+- **Unsupported:** an older Pi or a Zero, macOS, Windows, any other OS, a Linux that is neither, or one with no readable `os-release`. The name the warning shows is the model without its revision, `macOS`, `Windows`, or the OS's `PRETTY_NAME`.
+- **One wording:** `PlatformSupport.title` ("Unsupported platform: Windows") and `STEP`; the Operator Screen's corner row, two lines high, carries `SHORT_STEP` instead.
+- **Developer mode hides it:** `warning_shown(config)` is false while `ui.developer_mode` is on, read per frame and per request, so it applies without a restart. The bundle still says it.
+
+Surfaces, all from `warning_shown`:
+
+- **Web UI:** an error box (`partials/platform_warning.tpl`) on every page between its navigation and its panels: under the tab bar on the main page and About, under the step bar in the Setup Wizard, under the header on pages without navigation (`base.tpl`; a page that places it itself rebases with `platform_warning_inline=True`).
+- **Operator Screen:** a top-right error row (`platform`), appended after the live faults so a video, network or controller fault ranks above it, and an ERROR box in the Settings menu under the live fault's (`settings_platform_warning`). It never turns the bottom-left panel red: a condition that never clears would mask a live fault there.
+- **Status & Diagnostics:** an error box first in the This Station box, from `system.platform` in `/api/stats` (`supported`, `name`, `warning`), spoken by the announcer.
+- **Bundle:** a `support:` line in the header after `platform:`, with ` (warning hidden: developer mode)` when the stats say so.
+- **Log:** one warning at startup.
+
 ## Power supply and throttling (`power_health.py`)
 
 A Raspberry Pi on a weak supply freezes and drops USB devices; one that runs hot slows its CPU. Both are read by `PowerMonitor`, owned by the `SystemStatsCollector` and read with the other system stats once a second:

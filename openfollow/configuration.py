@@ -2822,7 +2822,7 @@ class UiConfig:
 
     # Features that are on; every subsystem gated by one asks ``feature_on``.
     shown_features: list[str] = field(default_factory=lambda: list(DEFAULT_SHOWN_FEATURES))
-    # Config-only: shows the developer's views in the web UI (the Lens step's edge view).
+    # Config-only: shows the developer's views (the Lens step's edge view) and hides the unsupported-platform warning.
     developer_mode: bool = False
 
     def __post_init__(self) -> None:

@@ -13,7 +13,7 @@ with the reasoning, before adding the variant.
 
 | Level | Means | Examples |
 |---|---|---|
-| **Error** | It does not work, and will not until someone acts | Video unreachable, a source over Full HD or 30 fps, a refused save, a missing controller, an OSC binding that can never fire, a marker two stations control, detection or 3D Mouse support unavailable, a power supply under voltage now |
+| **Error** | It does not work, and will not until someone acts | Video unreachable, a source over Full HD or 30 fps, a refused save, a missing controller, an OSC binding that can never fire, a marker two stations control, detection or 3D Mouse support unavailable, a power supply under voltage now, an unsupported platform |
 | **Caution** | It works, with a limitation worth knowing | A feature marked experimental, a marker no station controls, a web UI pin that missed and serves on every interface, an under voltage or throttling since the Pi last started |
 | **Info** | Nothing is wrong; progress or a fact | Starting, idle, restarting, an update is available, a value Save will correct, a parked marker |
 | **Success** | Something just worked, or is healthy | Saved, connected, running, marker added |
@@ -344,6 +344,9 @@ attributes, so it spells the token's value.
   bold) and one next step under it (muted), as the web's box. A banner the
   menu opened with brings its own step (`action=` beside `banner=`) or none;
   the video failure's step stands only under the video failure.
+- An unsupported platform is an ERROR box of its own, under the live fault's,
+  and a top-right error row after every live fault's; neither turns the
+  bottom-left panel red.
 - The Settings info box sits below the station card, under the ERROR box when
   one shows, in the info fill and border (`COLOR_INFO_FILL` /
   `COLOR_INFO_BORDER`), led by the off-white "i" (`draw_level_sign`). It names

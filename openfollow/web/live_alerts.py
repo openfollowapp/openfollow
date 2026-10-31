@@ -16,6 +16,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from openfollow.platform_support import STEP as PLATFORM_STEP
+from openfollow.platform_support import PlatformSupport
+
 __all__ = ["DiagnosticsAlerts", "PowerAlert", "diagnostics_alerts"]
 
 DETECTION_MISSING_STEP = "Install them from the Person Detection section, then restart."
@@ -49,10 +52,14 @@ class DiagnosticsAlerts:
     power: tuple[PowerAlert, ...] = ()
     # A source over the station's limits, and its step.
     video_limits: tuple[str, str] | None = None
+    # The unsupported platform's title; its step is ``PLATFORM_STEP``.
+    platform: str | None = None
 
     def spoken(self) -> list[str]:
         """Every box's text in page order, as the announcer reads it."""
         out = [" ".join(part for part in box if part) for box in (self.video, self.video_limits) if box is not None]
+        if self.platform is not None:
+            out.append(f"{self.platform}. {PLATFORM_STEP}")
         out.extend(self.controllers)
         out.extend(" ".join(part for part in (alert.text, alert.step) if part) for alert in self.power)
         if self.detection is not None:
@@ -93,13 +100,16 @@ def diagnostics_alerts(stats: Mapping[str, Any]) -> DiagnosticsAlerts:
     missing = tracking.get("missing_deps") or []
     # ``enabled`` is already off while the Person Detection feature is, so nothing speaks for its box.
     detection = f"Missing packages: {', '.join(missing)}." if missing and tracking.get("enabled") else None
-    power = (stats.get("system") or {}).get("power") or {}
+    system = stats.get("system") or {}
+    power = system.get("power") or {}
+    platform = system.get("platform") or {}
     return DiagnosticsAlerts(
         video=video_alert,
         controllers=tuple(controllers),
         detection=detection,
         power=_power_alerts(power),
         video_limits=limits_alert,
+        platform=PlatformSupport(False, str(platform.get("name") or "")).title if platform.get("warning") else None,
     )
 
 

@@ -54,7 +54,7 @@ if TYPE_CHECKING:
     from openfollow.web.discovery import PeerInfo
     from openfollow.web.server import ConfigWebServer
 
-from openfollow import config_restore, restore_hold
+from openfollow import config_restore, platform_support, restore_hold
 from openfollow.button_names import ButtonNameStyle, name_style
 from openfollow.configuration import (
     CALIBRATION_CORNERS,
@@ -549,14 +549,19 @@ def _redirect(location: str) -> NoReturn:
     raise HTTPResponse(status=303, headers={"Location": location})
 
 
+def _platform_context(cfg: AppConfig) -> dict[str, Any]:
+    """The unsupported-platform box every page shows between its navigation and its panels."""
+    return {"platform_warning": platform_support.current() if platform_support.warning_shown(cfg) else None}
+
+
 def _page_host_context(cfg: AppConfig) -> dict[str, Any]:
-    """base.tpl's banner for a page opened through a name its saves will be refused on."""
+    """base.tpl's boxes: a page opened through a name its saves will be refused on, an unsupported platform."""
     raw = (request.get_header("Host") or "").strip()
     try:
         host = urlsplit(f"//{raw}").hostname if raw else None
     except ValueError:
         host = None
-    return {"host_refusal": _host_refusal(host, cfg.station_fqdn)}
+    return {"host_refusal": _host_refusal(host, cfg.station_fqdn), **_platform_context(cfg)}
 
 
 def _is_navigation() -> bool:
@@ -5909,6 +5914,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             "host_refusal": refusal,
             "on_device": _is_on_device_request(),
             "cancel_button": _cancel_button_label(cfg),
+            **_platform_context(cfg),
         }
         if request.path == "/login":
             page = template("login", error=f"Not logged in. {refusal.message}", **page_context)

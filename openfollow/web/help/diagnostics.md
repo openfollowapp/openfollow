@@ -29,6 +29,8 @@ The Raspberry Pi and the OpenFollow process on it.
 
 A red box means the Pi is short of power or slowed down now: **under voltage** (freezes, USB dropouts) or **CPU throttled** (too hot). An orange box means it happened since the last start and stays until restart.
 
+A red **Unsupported platform** box means OpenFollow is not developed for this hardware or operating system. Supported are a Raspberry Pi 5, CM5 or Pi 500, and on other hardware Debian 13 or a Debian derivative. Errors are expected anywhere else and no support is provided. The same warning shows on every page and on the Operator Screen.
+
 - **IP** – the address this station is reachable on.
 - **Web port** – the port this web UI is served on, and the one other stations are told. **Fallback** means the configured port was taken and a backup port (8080 or 2010) is used.
 - **Uptime** – how long the OpenFollow process has been running.
@@ -63,7 +65,7 @@ The chip: green **Running** (processing frames), blue **Idle** (enabled, waiting
 
 The support file, and actions on this station.
 
-- **Download diagnostics bundle** – one plain-text file, named `ofdiag-<station>-<UTC date and time>.txt`, with the video signal, network, configuration, recent errors and a log tail, versions and power or USB faults. Credentials are always redacted. The station keeps its ten newest.
+- **Download diagnostics bundle** – one plain-text file, named `ofdiag-<station>-<UTC date and time>.txt`, with whether the platform is supported, the video signal, network, configuration, recent errors and a log tail, versions and power or USB faults. Credentials are always redacted. The station keeps its ten newest.
 - **Save to USB storage device** – the same file, to the top level of a USB stick or SD card reader on this station. A device that can't be written stays in the list, unavailable, with the reason. A file already on the device is never overwritten. A device the station mounted itself is unmounted again before the save reports success. One save runs at a time.
 - **Test peer connectivity** – probes every known station and shows a table: green with a round-trip time when it responded, red with a reason when it was unreachable.
 - **Restart application** – restarts the OpenFollow process, not the operating system, after a confirmation. The page reloads once the station is back. Refused while a software update is running.

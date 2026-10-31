@@ -330,6 +330,28 @@ _LABELS = (
 )
 
 
+def test_a_press_on_the_picture_outside_every_zone_lets_the_chosen_zone_go() -> None:
+    out = _camera(
+        """
+        await pick();
+        pointer(svg(), 'pointerdown', 300, 600); pointer(svg(), 'pointerup', 300, 600);
+        await settle();
+        out.pins = pins(); out.selected = svg().querySelectorAll('.pv-zone-selected').length;
+        out.details = document.querySelector('#zone-details').textContent.indexOf('Select a zone') >= 0;
+        out.deleteDisabled = document.getElementById('zone-delete-btn').disabled;
+        """
+    )
+    assert out == {"pins": [], "selected": 0, "details": True, "deleteDisabled": True}
+
+
+def test_a_press_inside_the_chosen_zone_keeps_it() -> None:
+    out = _camera(
+        "await pick(); pointer(zoneLines()[0], 'pointerdown', 700, 400); pointer(svg(), 'pointerup', 700, 400);"
+        " await settle(); out.pins = pins().length;"
+    )
+    assert out == {"pins": 4}
+
+
 def test_the_camera_view_names_each_zone_at_its_centre() -> None:
     out = _camera(
         _LABELS

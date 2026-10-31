@@ -266,10 +266,12 @@
         },
         changed: render,
         save: function() { updateZoneVertices(state.selectedIndex); },
+        // A press on a zone chooses it; one on the picture outside every zone chooses none.
         press: function(ev) {
             var line = ev.target && ev.target.closest && ev.target.closest('[data-zone]');
-            if (!line || +line.dataset.zone === state.selectedIndex) return;
-            state.selectedIndex = +line.dataset.zone;
+            var next = line ? +line.dataset.zone : -1;
+            if (next === state.selectedIndex) return;
+            state.selectedIndex = next;
             renderDetails();
         },
     });

@@ -290,7 +290,8 @@
 // Delete / selection checkboxes no longer churn 40× per minute.
 // The earlier ``isEditingTextInput`` blanket guard is replaced by a
 // per-cell focus check inside ``setIfChanged`` so a peer's rename
-// can land on row N while the operator is typing in row M.
+// can land on row N while the operator is typing in row M. A name or
+// colour the operator changed is held against the poll until Save lands.
 (function() {
     if (window.__markerCatalogInit) return;
     window.__markerCatalogInit = true;
@@ -355,6 +356,31 @@
     function setInputIfChanged(el, value) {
         if (document.activeElement === el) return;
         if (el.value !== value) el.value = value;
+    }
+
+    // ---- Unsaved edits. A field the operator changed stays held while it
+    // differs from the catalog's value: the poll leaves it alone, the field
+    // is outlined and the row's Unsaved chip shows.
+    const CATALOG_FIELDS = ['name', 'color'];
+
+    function fieldValue(tr, field) {
+        const el = tr.querySelector('[data-field="' + field + '"]');
+        return field === 'color' ? (el.dataset.value || '').toLowerCase() : el.value;
+    }
+
+    function storedValues(name, color) {
+        return {name: name || '', color: (color || '#000000').toLowerCase()};
+    }
+
+    function refreshUnsaved(tr) {
+        let any = false;
+        CATALOG_FIELDS.forEach(function(field) {
+            if (fieldValue(tr, field) === tr._stored[field]) tr._held[field] = false;
+            tr.querySelector('[data-field="' + field + '"]').classList.toggle('field-unsaved', tr._held[field]);
+            any = any || tr._held[field];
+        });
+        const chip = tr.querySelector('.unsaved-chip');
+        if (chip.hidden === any) chip.hidden = !any;
     }
 
     function setTextIfChanged(el, text) {
@@ -507,11 +533,22 @@
             '<td class="cell-soft" data-cell="controlled-by"></td>' +
             '<td data-cell="this-station">' + thisStationToggle('this-station-' + id, id) + parkToggle(id) + '</td>' +
             '<td class="row-actions">' +
+                '<span class="stat-chip info unsaved-chip" hidden>Unsaved</span>' +
                 '<button type="button" class="save-btn small" data-action="save">Save</button>' +
                 '<button type="button" class="danger small" data-action="delete">Delete</button>' +
             '</td>';
+        tr._held = {name: false, color: false};
+        tr._stored = storedValues('', '');
+        // Until then a poll begun before the save may still carry the old values.
+        tr._savedUntil = 0;
+        function edited(field) {
+            tr._held[field] = true;
+            refreshUnsaved(tr);
+        }
+        tr.querySelector('[data-field="name"]').addEventListener('input', function() { edited('name'); });
         window.OpenFollow.attachColorPicker(tr.querySelector('[data-field="color"]'), {
             mode: 'full',
+            onChange: function() { edited('color'); },
         });
         const park = tr.querySelector('button[data-park]');
         tr.querySelectorAll('input[data-this-station]').forEach(function(radio) {
@@ -533,7 +570,14 @@
                 method: 'PUT',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({name: name, color: color})
-            }).then(writeResult(tr)).catch(writeUnreachable(tr));
+            }).then(writeResult(tr)).then(function(ok) {
+                if (ok) {
+                    tr._stored = storedValues(name, color);
+                    tr._savedUntil = Date.now() + 1600;
+                    refreshUnsaved(tr);
+                }
+                flashRow(tr, ok);
+            }).catch(writeUnreachable(tr));
         });
         tr.querySelector('[data-action="delete"]').addEventListener('click', async function() {
             const ok = await modalConfirm({
@@ -553,8 +597,12 @@
         const conflict = controlConflict(entry, conflicts);
         tr.classList.toggle('conflict', conflict);
         setTextIfChanged(tr.querySelector('[data-cell="id"]'), String(entry.id));
-        setInputIfChanged(tr.querySelector('[data-field="name"]'), entry.name || '');
-        setSwatchIfChanged(tr.querySelector('[data-field="color"]'), entry.color || '');
+        if (Date.now() >= tr._savedUntil) {
+            tr._stored = storedValues(entry.name, entry.color);
+            if (!tr._held.name) setInputIfChanged(tr.querySelector('[data-field="name"]'), entry.name || '');
+            if (!tr._held.color) setSwatchIfChanged(tr.querySelector('[data-field="color"]'), entry.color || '');
+        }
+        refreshUnsaved(tr);
         const ctrlHTML = controlledByLabel(entry, thisStation, peers) +
             (conflict ? ' <span class="stat-chip off conflict-flag">Conflict</span>' : '');
         setHTMLIfChanged(tr.querySelector('[data-cell="controlled-by"]'), ctrlHTML);
@@ -821,6 +869,10 @@
     width: 100%;
     box-sizing: border-box;
 }
+/* An edit Save has not committed: the info chip by its Save, an info outline on each changed field. */
+.marker-catalog-table .unsaved-chip { margin-right: 0.4rem; vertical-align: 1px; }
+.marker-catalog-table .unsaved-chip[hidden] { display: none; }
+.marker-catalog-table .field-unsaved { outline: 1px solid var(--info-line); outline-offset: 1px; }
 .saved-flash {
     color: var(--success-text);
     font-weight: bold;

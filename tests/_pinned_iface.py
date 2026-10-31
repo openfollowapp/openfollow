@@ -13,13 +13,17 @@ import openfollow.net_utils as net_utils
 
 # Bound before any test swaps in the stand-in.
 REAL = net_utils.multicast_iface_info
+# The station's primary address while nothing is pinned.
+PRIMARY = "192.0.2.1"
 
 
 def pinned(iface: str = "", iface_ip: str = "") -> SimpleNamespace:
+    if not iface and not iface_ip:
+        raise net_utils.InterfaceUnavailable("no interface has an address to send from")
     return SimpleNamespace(machine_name=iface, iface_ip=iface_ip)
 
 
 def install(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The pinned interface as named, and Automatic resolving to nothing, never the host's own."""
+    """The pinned interface as named, and Automatic resolving to a primary address, never the host's own."""
     monkeypatch.setattr(net_utils, "multicast_iface_info", pinned)
-    monkeypatch.setattr(net_utils, "resolve_iface_ip", lambda configured: configured)
+    monkeypatch.setattr(net_utils, "resolve_iface_ip", lambda configured: configured or PRIMARY)

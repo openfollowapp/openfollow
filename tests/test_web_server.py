@@ -11013,3 +11013,65 @@ def test_the_latency_key_is_never_saved_with_the_video_source_form(live_server, 
     # Owned by a form id that does not exist, so the form leaves it out.
     assert 'form="video-source-latency-unsaved"' in key[: key.index(">")]
     assert 'id="video-source-latency-unsaved"' not in body
+
+
+_PLATFORM_BOX = '<div class="notice error platform-warning">'
+
+
+@pytest.fixture()
+def on_windows(monkeypatch):
+    from openfollow import platform_support
+
+    monkeypatch.setattr(platform_support, "current", lambda: platform_support.PlatformSupport(False, "Windows"))
+
+
+@pytest.mark.parametrize(
+    ("path", "navigation", "panels"),
+    [
+        ("/", '<div class="tab-bar">', 'class="tab-content'),
+        ("/about", '<div class="tab-bar">', 'class="tab-content'),
+        ("/wizard", '<nav class="wizard-steps"', 'class="wizard-content"'),
+    ],
+    ids=["index", "about", "wizard"],
+)
+def test_the_platform_box_sits_between_the_navigation_and_the_panels(
+    on_windows, live_server, path: str, navigation: str, panels: str
+) -> None:
+    _, base = live_server
+    status, body = _get(base, path)
+    assert status == 200
+    assert body.count(_PLATFORM_BOX) == 1
+    assert body.index(navigation) < body.index(_PLATFORM_BOX) < body.index(panels)
+    assert "<div>Unsupported platform: Windows</div>" in body
+    assert "Never use this setup in a show!</div>" in body
+
+
+def test_a_page_without_navigation_shows_the_box_under_the_header(on_windows, pin_protected_server) -> None:
+    _, base, _ = pin_protected_server
+    status, body = _get(base, "/login")
+    assert status == 200
+    assert body.count(_PLATFORM_BOX) == 1
+    assert body.index("</header>") < body.index(_PLATFORM_BOX) < body.index("<h2>Login</h2>")
+
+
+def test_the_refused_page_shows_the_box(on_windows, live_server) -> None:
+    _, base = live_server
+    headers = {"Origin": _REFUSED_ORIGIN, "Sec-Fetch-Mode": "navigate", "Accept": "text/html"}
+    status, body, _ = _raw_request(base, "/logout", headers=headers)
+    assert status == 403
+    assert body.count(_PLATFORM_BOX) == 1
+
+
+def test_developer_mode_hides_the_box_from_the_next_request(on_windows, live_server) -> None:
+    server, base = live_server
+    cfg = load_config(server.config_path)
+    cfg.ui.developer_mode = True
+    save_config(cfg, server.config_path)
+    for path in ("/", "/about", "/wizard"):
+        assert _PLATFORM_BOX not in _get(base, path)[1]
+
+
+def test_a_supported_platform_shows_no_box(live_server) -> None:
+    _, base = live_server
+    for path in ("/", "/about", "/wizard"):
+        assert "Unsupported platform" not in _get(base, path)[1]

@@ -1,4 +1,4 @@
-% rebase('base.tpl')
+% rebase('base.tpl', platform_warning_inline=True)
 % from openfollow.units import UnitSystem, unit_suffix_length
 % _us = UnitSystem(config.ui.unit_system)
 % _imp = _us is UnitSystem.IMPERIAL
@@ -400,6 +400,7 @@
   <button type="button" class="wizard-step-btn" data-step="{{_i}}" onclick="wizardGo({{_i}})">{{_i + 1}}. {{_label}}</button>
 % end
 </nav>
+% include('partials/platform_warning.tpl', platform_warning=get('platform_warning'))
 
 %# The four-corner icon of the full-screen button on every picture.
 % _fs_icon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg>'

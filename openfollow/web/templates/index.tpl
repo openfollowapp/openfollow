@@ -1,4 +1,4 @@
-% rebase('base.tpl', header_logout=bool(config.web_pin))
+% rebase('base.tpl', header_logout=bool(config.web_pin), platform_warning_inline=True)
 
 <div class="tab-bar">
     <button type="button" class="tab-btn" data-tab="overview">Overview</button>
@@ -9,6 +9,7 @@
     <button type="button" class="tab-btn" data-tab="output">Output</button>
     <button type="button" class="tab-btn" data-tab="detection" data-feature="detection">Person Detection</button>
 </div>
+% include('partials/platform_warning.tpl', platform_warning=get('platform_warning'))
 
 <!-- Overview -->
 <div class="tab-content" id="tab-overview">

@@ -26,12 +26,14 @@ from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
+from openfollow import platform_support
 from openfollow.configuration import (
     ControllerButtonTrigger,
     HotkeyTrigger,
     effective_lens,
     feature_gated,
     is_simple_mode,
+    marker_name_for_runtime,
     parked_within,
     viewed_with_controlled,
 )
@@ -40,7 +42,7 @@ from openfollow.input.mouse3d import idle_mouse3d_status
 from openfollow.input.parking import set_parked
 from openfollow.marker_catalog.control_conflicts import ControlConflict, find_control_conflicts
 from openfollow.net_adapters import display_name
-from openfollow.net_egress import Egress, is_loopback_host, resolve_egress
+from openfollow.net_egress import LOOPBACK_ONLY, Egress, is_loopback_host, resolve_egress, strands
 from openfollow.net_utils import ResolveStatus, interface_present, plane_source_iface
 from openfollow.network.adapter import format_lease_remaining
 from openfollow.osc.egress import OscEgressTable
@@ -103,6 +105,8 @@ if TYPE_CHECKING:
     from openfollow.video.detection import PersonDetector
     from openfollow.web import ConfigWebServer  # noqa: F401
 
+# The Operator Screen row for an RTTrPM output stranded on loopback.
+_RTTRPM_LOOPBACK_FLAG = "rttrpm_loopback"
 logger = logging.getLogger(__name__)
 
 
@@ -774,6 +778,9 @@ class AppRuntimeServices:
         self._app = app
         self._shutdown_in_progress = False
         self._is_pi = self._is_raspberry_pi()
+        support = platform_support.current()
+        if not support.supported:
+            logger.warning("%s. %s", support.title, platform_support.STEP)
         self._camera_setup_lock = threading.Lock()
         # Central registry of input-binding ownership, pre-populated with
         # the movement-key reservations under owner "system:movement".
@@ -1431,7 +1438,9 @@ class AppRuntimeServices:
             cfg = self.rttrpm_config()
             if not cfg.enabled or is_loopback_host(cfg.host):
                 return False
-            return bool(plane_source_iface(cfg.source_iface, self._app._config.psn_source_iface))
+            iface = plane_source_iface(cfg.source_iface, self._app._config.psn_source_iface)
+            # Stranded on loopback, no address it gains can make it send: nothing for the observer to follow.
+            return bool(iface) and strands(iface, cfg.host) is None
 
         def _start_osc_listener() -> None:
             # A failed restart leaves no listener: rebuild it from the config, raising while it cannot bind.
@@ -1729,6 +1738,7 @@ class AppRuntimeServices:
             mcast_ip=self._app._config.psn_mcast_ip,
             source_ip=source_ip or "",
             source_iface=self._app._config.psn_source_iface,
+            name_of=lambda marker_id: marker_name_for_runtime(self._app, marker_id),
         )
         if source_ip is None:
             # Down means silent, not absent. The server is built but never
@@ -1796,12 +1806,8 @@ class AppRuntimeServices:
         # strict checker instead of guarding every loop.
         server = self._app._server
         assert server is not None, "init_psn must run before init_markers"
-        catalog = getattr(self._app, "_marker_catalog", None)
         for marker_id in self._app._controlled_ids:
-            entry = catalog.get(marker_id) if catalog is not None else None
-            name = entry.name if (entry is not None and entry.name) else f"Marker {marker_id}"
-            marker = server.add_marker(marker_id, name)
-            marker.set_pos(*default_pos)
+            server.add_marker(marker_id, marker_name_for_runtime(self._app, marker_id)).set_pos(*default_pos)
         # No selection yet, so the first unparked marker is chosen as a start, not as a park moving it.
         self._app._selected_id = None
         parked = parked_within(self._app._controlled_ids, self._app._config.parked_marker_ids)
@@ -1869,10 +1875,21 @@ class AppRuntimeServices:
 
     def _rttrpm_egress(self, cfg: RttrpmOutputConfig) -> Egress | None:
         """RTTrPM's egress: None leaves the route to the OS, ``.down`` means its interface has no address."""
+        self._status_flags[_RTTRPM_LOOPBACK_FLAG] = None
         if is_loopback_host(cfg.host):
             # A socket pinned to a NIC cannot reach this box's own loopback.
             return None
         egress = resolve_egress(cfg.source_iface, self._app._config.psn_source_iface)
+        stranded = strands(egress.iface, cfg.host) if egress is not None else None
+        if stranded is not None:
+            self._status_flags[_RTTRPM_LOOPBACK_FLAG] = ("error", f"RTTrPM: {LOOPBACK_ONLY}")
+            logger.error(
+                "RTTrPM destination %s is not on this Mac and RTTrPM is on %s; %s, so RTTrPM output stays down.",
+                cfg.host,
+                self._iface_display_name(stranded.iface),
+                LOOPBACK_ONLY.lower(),
+            )
+            return stranded
         if egress is not None and egress.down:
             logger.error(
                 "Configured rttrpm_output.source_iface %s has no address; RTTrPM output stays down until it "
@@ -2316,6 +2333,8 @@ class AppRuntimeServices:
     def apply_rttrpm_output_change(self, new_cfg: RttrpmOutputConfig) -> None:
         """Apply an ``rttrpm_output`` config change live; same four-state
         matrix as ``apply_otp_output_change``."""
+        if not new_cfg.enabled:
+            self._status_flags[_RTTRPM_LOOPBACK_FLAG] = None
         server = self._app._rttrpm_server
         if server is not None and new_cfg.enabled:
             # Same transactional-rollback rationale as
@@ -3178,6 +3197,7 @@ class AppRuntimeServices:
             camera_setup_restart_handler=self._handle_camera_setup_restart,
             marker_catalog_provider=lambda: self._app._marker_catalog,
             marker_catalog_sync_provider=lambda: self._app._marker_catalog_sync,
+            marker_rename_handler=lambda marker_ids: self._app._apply_catalog_names(marker_ids),
             # Live gamepad snapshot for the diagnostics bundle's E9 section.
             gamepad_runtime_provider=self._gamepad_runtime_snapshot,
             # Diagnostics I/O providers (recent I/O + USB visibility).
@@ -4121,7 +4141,7 @@ class AppRuntimeServices:
             return {"skipped": True, "reason": "no destination selected"}
         egress = self._osc_egress.for_destination(dest)
         if egress is not None and egress.down:
-            return {"skipped": True, "reason": f"interface {self._iface_display_name(egress.iface)} is down"}
+            return {"skipped": True, "reason": egress.reason(self._iface_display_name(egress.iface))}
         typed_args = coerce_osc_args(str_args)
         sent = self._osc_service.send(
             address,
@@ -4257,6 +4277,7 @@ class AppRuntimeServices:
                 "hud_fps": 0.0,
                 "output_resolution": None,
                 "power": PowerState().to_dict(),
+                "platform": platform_support.stats_entry(cfg),
             },
             "video": {
                 "source_type": cfg.video_source_type,
@@ -4526,6 +4547,7 @@ class AppRuntimeServices:
                 "hud_fps": hud_fps,
                 "output_resolution": self._canvas_resolution(hud_fps),
                 "power": power.to_dict(),
+                "platform": platform_support.stats_entry(cfg),
             },
             "video": video_snapshot,
             "controllers": {

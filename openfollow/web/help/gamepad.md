@@ -4,7 +4,7 @@
 
 - **Gamepad** – master toggle. Off ignores the controller and keeps its configuration.
 - **Stick Y axis** – forward/back sense of the movement stick. **Push up to move down the screen** is flight-sim style.
-- **Axis Deadzone (0–1)** – stick travel treated as zero. Default `0.15`. Raise it if the marker creeps at rest.
+- **Axis Deadzone (0–1)** – stick travel treated as zero. Default `0.05`. Raise it if the marker creeps at rest.
 - **Response Curve** – how stick travel maps to speed. `Logarithmic` (default) is finer at small deflections.
 - **Button Names** – the pad family whose button names the station shows. Only the names change; every binding stays on its button.
 
@@ -33,12 +33,20 @@ For a pad whose layout does not match the Xbox reference: **Start Button Detecti
 
 Each button drives one action. Choosing a button another action uses moves it: the field you changed says in blue where it came from, and the field it left turns red and does nothing until it gets a button. Move X/Y and the marker fader stick cannot share a stick; that holds **Save**.
 
+### Default buttons
+
+The default bindings, by the names an Xbox and a PlayStation pad print.
+
+![Xbox pad with the default actions](/assets/help/gamepad-xbox.svg)
+
+![PlayStation pad with the default actions](/assets/help/gamepad-playstation.svg)
+
 ### Normal Mode
 
 - **Reset Marker** – active marker to its default position. Default `X`.
 - **Toggle Help** – opens or closes the key list on the Operator Screen; it starts closed as a Show help chip. Default `Y`.
 - **Settings Menu** – opens the Settings menu; in any menu it closes them all. Default `Back`.
-- **Move X/Y** – `Left Stick` or `Right Stick`. Default `Left Stick`.
+- **Move X/Y** – `Left Stick` or `Right Stick`. Default `Right Stick`.
 - **Marker fader stick** – which stick Y axis drives the marker's fader value, or `– (unused)`.
 - **Marker fader speed (s)** – full-deflection sweep time, 0.05–60. Default `1.0`.
 - **Speed −** / **Speed +** – tracking speed down / up. Defaults `LB` / `RB`.

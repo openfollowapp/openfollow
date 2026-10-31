@@ -483,6 +483,31 @@ class TestInitMarkers:
         # A start chooses; it moves nothing off a parked marker, so a following pin is not held back.
         assert getattr(services._app, "_pin_waits_for_selection", False) is False
 
+    def test_a_rename_saved_during_startup_reaches_its_output(self, services: AppRuntimeServices) -> None:
+        """The web server is up before the markers: a rename saved mid-startup is not lost."""
+        from openfollow.configuration import marker_name_for_runtime
+        from openfollow.marker_catalog import MarkerCatalog
+        from openfollow.psn.server import PsnServer
+
+        services._app._config = replace(services._app._config, controlled_marker_ids=[1, 2])
+        services._app._marker_catalog = catalog = MarkerCatalog()
+        catalog.upsert(1, "Lead", "#ff0000")
+        server = PsnServer(mcast_ip=None, name_of=lambda i: marker_name_for_runtime(services._app, i))
+        real_add = server.add_marker
+
+        def _rename_then_add(marker_id, name):  # noqa: ANN001
+            # The route's rename lands after init_markers read "Lead" but before the add:
+            # it finds no marker, so the add must not take the stale name it was handed.
+            if marker_id == 1:
+                catalog.upsert(1, "Spot", "#ff0000")
+                server.rename_markers([1])
+            return real_add(marker_id, name)
+
+        server.add_marker = _rename_then_add  # type: ignore[method-assign]
+        services._app._server = server
+        services.init_markers()
+        assert [server.get_marker(i).name for i in (1, 2)] == ["Spot", "Marker 2"]
+
     def test_empty_controlled_list_leaves_selected_id_none(self, services: AppRuntimeServices) -> None:
         cfg = replace(services._app._config, controlled_marker_ids=[])
         services._app._config = cfg
@@ -570,6 +595,25 @@ class TestInitPsn:
         assert factory.instances[0].start_called is True
         assert factory.last_kwargs["source_ip"] == "10.0.0.1"
         assert factory.last_kwargs["source_iface"] == "eth0"
+
+    def test_names_markers_from_the_catalog(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without the lookup every add keeps its given name and every rename is dropped."""
+        from openfollow.marker_catalog import MarkerCatalog
+
+        services._app._config = replace(services._app._config, psn_source_iface="")
+        services._app._marker_catalog = catalog = MarkerCatalog()
+        catalog.upsert(1, "Lead", "#ff0000")
+        factory = _FakePsnServerFactory()
+        monkeypatch.setattr(services_module, "PsnServer", factory)
+        monkeypatch.setattr(services, "station_source_ip_or_none", lambda: "192.0.2.10")
+
+        services.init_psn()
+        name_of = factory.last_kwargs["name_of"]
+        assert (name_of(1), name_of(9)) == ("Lead", "Marker 9")
+        catalog.upsert(1, "Spot", "#ff0000")
+        assert name_of(1) == "Spot"
 
     def test_stale_iface_stops_psn_rather_than_moving_it(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
@@ -1273,6 +1317,21 @@ class TestInitWebServer:
         # The beacons select the station interface by name.
         services._app._config = replace(services._app._config, psn_source_iface="eth3")
         assert srv.kwargs["station_iface_provider"]() == "eth3"
+
+    def test_wires_catalog_renames_to_the_running_outputs(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from openfollow import web
+
+        monkeypatch.setattr(web, "ConfigWebServer", _FakeWebServer)
+        services._preview_provider = SimpleNamespace(get_snapshot=lambda: None)
+        services._snapshot_provider = SimpleNamespace(get_snapshot=lambda: None)
+        renamed: list[list[int]] = []
+        services._app._apply_catalog_names = renamed.append
+
+        services.init_web_server()
+        services._app._web_server.kwargs["marker_rename_handler"]([3])
+        assert renamed == [[3]]
 
     def test_wires_marker_move_speeds_provider_returning_a_copy(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
@@ -5220,3 +5279,67 @@ class TestStationFollowersDoNotBindOnADownInterface:
         self._down_station(services, monkeypatch)
         assert services._resolved_source_ip() == ""
         assert services.station_source_ip_or_none() is None
+
+
+class TestRttrpmOnLoopback:
+    """Loopback reaches only this Mac: a destination elsewhere is not sent through it."""
+
+    def _on_lo0(self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, host: str) -> None:
+        import socket as _socket
+
+        from openfollow import net_utils
+
+        monkeypatch.setattr(net_utils, "LOOPBACK_OFFERED", True)
+        monkeypatch.setattr(
+            net_utils.psutil,
+            "net_if_addrs",
+            lambda: {"lo0": [SimpleNamespace(family=_socket.AF_INET, address="127.0.0.1")]},
+        )
+        monkeypatch.setattr(services_module, "RttrpmServer", _FakeRttrpmServer)
+        services._app._rttrpm_server = None
+        # Simple mode: the station-wide interface carries every output.
+        services._app._config = replace(
+            services._app._config, psn_source_iface="lo0", rttrpm_output=RttrpmOutputConfig(enabled=True, host=host)
+        )
+
+    def test_a_destination_off_this_mac_is_not_started(
+        self,
+        services: AppRuntimeServices,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        every_feature_on: None,
+    ) -> None:
+        self._on_lo0(services, monkeypatch, "192.0.2.50")
+        services.init_rttrpm()
+        assert services._app._rttrpm_server is None
+        assert "loopback reaches only this mac" in caplog.text
+        # The Operator Screen says so too, until the output is switched off.
+        assert services._status_flags["rttrpm_loopback"] == ("error", "RTTrPM: Loopback reaches only this Mac")
+        services.apply_rttrpm_output_change(RttrpmOutputConfig(enabled=False))
+        assert services._status_flags["rttrpm_loopback"] is None
+
+    def test_a_destination_on_this_mac_is_sent(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, every_feature_on: None
+    ) -> None:
+        self._on_lo0(services, monkeypatch, "127.0.0.1")
+        services.init_rttrpm()
+        assert services._app._rttrpm_server is not None
+        assert services._status_flags["rttrpm_loopback"] is None
+
+    def test_a_destination_moved_onto_this_mac_clears_the_row(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, every_feature_on: None
+    ) -> None:
+        self._on_lo0(services, monkeypatch, "192.0.2.50")
+        services.init_rttrpm()
+        # As a save does: the config first, then the live apply.
+        moved = RttrpmOutputConfig(enabled=True, host="127.0.0.1")
+        services._app._config = replace(services._app._config, rttrpm_output=moved)
+        services.apply_rttrpm_output_change(moved)
+        assert services._status_flags["rttrpm_loopback"] is None
+
+    def test_a_stranded_destination_gives_the_observer_no_plane_to_revive(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, every_feature_on: None
+    ) -> None:
+        self._on_lo0(services, monkeypatch, "192.0.2.50")
+        planes = {plane.label: plane for plane in services._build_network_planes()}
+        assert planes["RTTrPM output"].enabled() is False

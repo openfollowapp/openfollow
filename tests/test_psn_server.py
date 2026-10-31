@@ -167,22 +167,22 @@ def test_psn_server_get_marker_returns_registered_and_none_for_unknown() -> None
     assert server.get_marker(99) is None
 
 
-def test_psn_server_update_marker_name_renames_existing() -> None:
-    """Live-rename path used by the marker catalog sync's ``_on_change``
-    callback – a registered marker picks up the new name on the next PSN
-    info packet."""
-    server = PsnServer(mcast_ip=None)
-    server.add_marker(7, "Old")
-    assert server.update_marker_name(7, "New") is True
-    assert server.get_marker(7).name == "New"
+def test_a_name_lookup_names_every_add_and_rename() -> None:
+    """Read under the server's lock: a caller's stale name never wins over the lookup."""
+    names = {7: "Lead"}
+    server = PsnServer(mcast_ip=None, name_of=lambda marker_id: names.get(marker_id, f"Marker {marker_id}"))
+    assert server.add_marker(7, "stale").name == "Lead"
+    names[7] = "Spot"
+    server.rename_markers([7, 99])
+    assert server.get_marker(7).name == "Spot"
+    assert server.get_marker(99) is None
 
 
-def test_psn_server_update_marker_name_returns_false_when_absent() -> None:
-    """If the catalog learns about a marker the local station doesn't
-    control (i.e. not in ``app._controlled_ids`` → not registered), the
-    rename is a no-op."""
+def test_without_a_name_lookup_markers_keep_the_given_name() -> None:
     server = PsnServer(mcast_ip=None)
-    assert server.update_marker_name(99, "ghost") is False
+    assert server.add_marker(7, "Given").name == "Given"
+    server.rename_markers([7])
+    assert server.get_marker(7).name == "Given"
 
 
 # ---------------------------------------------------------------------------

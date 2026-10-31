@@ -20,10 +20,12 @@ from openfollow.configuration import (
     VALID_BUTTON_NAMES,
     AppConfig,
     ControllerButtonTrigger,
+    ControllerConfig,
     HotkeyTrigger,
     OscTransmitterConfig,
 )
 from openfollow.web import server as _server_module  # noqa: F401 - registers the template path
+from tests._template_source import function_body
 
 pytestmark = pytest.mark.unit
 
@@ -188,3 +190,18 @@ def test_osc_trigger_without_an_overlap_opens_plain() -> None:
     html, attrs = _trigger_form(ControllerButtonTrigger(button="A"), "")
     assert "data-binding-overlap" not in attrs
     assert "field-caution-msg" not in html
+
+
+@pytest.mark.parametrize(
+    ("function", "fields"),
+    [("resetButtonMappingDefaults", 17), ("resetKeyboardMappingDefaults", 14)],
+)
+def test_reset_to_defaults_restores_the_config_defaults(function: str, fields: int) -> None:
+    from pathlib import Path
+
+    base = Path(_server_module.__file__).parent / "templates" / "base.tpl"
+    table = re.search(r"const defaults = \{(.*?)\};", function_body(base.read_text(encoding="utf-8"), function), re.S)
+    assert table is not None
+    defaults = dict(re.findall(r"(\w+): '([^']*)'", table.group(1)))
+    assert len(defaults) >= fields
+    assert {name: value for name, value in defaults.items() if getattr(ControllerConfig(), name) != value} == {}

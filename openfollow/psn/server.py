@@ -254,20 +254,11 @@ class PsnServer:
         mcast_ip = self._mcast_ip
         if not mcast_ip:  # pragma: no cover
             return False
-        # Auto-detect primary outbound IPv4 to avoid default-route ambiguity.
-        from openfollow.net_utils import multicast_iface_info, resolve_iface_ip
+        from openfollow.net_utils import multicast_tx_socket
 
-        iface_ip = resolve_iface_ip(self._source_ip)
         staging = contextlib.ExitStack()
         try:
-            # Named, the interface is selected by index: an address another
-            # interface also holds cannot carry PSN there.
-            sock = multicast_expert.McastTxSocket(
-                socket.AF_INET,
-                mcast_ips=[mcast_ip],
-                iface=multicast_iface_info(self._source_iface, iface_ip),
-                enable_external_loopback=True,
-            )
+            sock = multicast_tx_socket([mcast_ip], self._source_iface, self._source_ip)
             opened = staging.enter_context(sock)
             source_address = opened.getsockname()[:2]
         except Exception as exc:

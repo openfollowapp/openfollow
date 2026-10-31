@@ -158,19 +158,23 @@ class TestTryOpenMulticastSocketOnce:
         assert srv._try_open_multicast_socket_once(attempt=1) is True
         assert srv._socket.kwargs["iface"].iface_ip == "10.0.0.7"  # type: ignore[union-attr]
 
-    def test_empty_source_ip_with_no_primary_asks_for_no_interface(
+    def test_empty_source_ip_with_no_primary_stays_closed(
         self,
         monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Offline host: ``resolve_iface_ip`` returns "" and the interface is
-        asked for with nothing pinned, which ``multicast_iface_info`` refuses."""
+        """Offline host: with no address to send from the socket stays closed
+        and says why, rather than letting the library guess an interface."""
         from openfollow import net_utils
 
+        monkeypatch.setattr(net_utils, "multicast_iface_info", _pinned_iface.REAL)
         monkeypatch.setattr(net_utils, "resolve_iface_ip", lambda _: "")
         srv = PsnServer(source_ip="")
         srv._exit_stack = contextlib.ExitStack()
-        assert srv._try_open_multicast_socket_once(attempt=1) is True
-        assert srv._socket.kwargs["iface"] == _pinned_iface.pinned()  # type: ignore[union-attr]
+        with caplog.at_level("WARNING", logger="openfollow.psn.server"):
+            assert srv._try_open_multicast_socket_once(attempt=1) is False
+        assert srv._socket is None
+        assert "no interface has an address to send from" in caplog.text
 
     def test_exception_logs_warning_and_returns_false(self, caplog: pytest.LogCaptureFixture) -> None:
         _FakeMcastSocket.script = [OSError(99, "Cannot assign requested address")]

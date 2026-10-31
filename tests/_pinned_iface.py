@@ -11,6 +11,9 @@ import pytest
 
 import openfollow.net_utils as net_utils
 
+# Bound before any test swaps in the stand-in.
+REAL = net_utils.multicast_iface_info
+
 
 def pinned(iface: str = "", iface_ip: str = "") -> SimpleNamespace:
     return SimpleNamespace(machine_name=iface, iface_ip=iface_ip)

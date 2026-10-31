@@ -384,6 +384,14 @@ def iface_mreqn(group: str, iface: str, iface_ip: str) -> bytes:
     return struct.pack("@4s4si", socket.inet_aton(group), socket.inet_aton(iface_ip), _iface_index(iface))
 
 
+def _ipv4_interface(address: str, netmask: str | None) -> ipaddress.IPv4Interface:
+    """*address* with its netmask, or as a single host when the netmask is missing or malformed."""
+    try:
+        return ipaddress.IPv4Interface((address, netmask) if netmask else address)
+    except ValueError:
+        return ipaddress.IPv4Interface(address)
+
+
 def multicast_iface_info(iface: str = "", iface_ip: str = "") -> multicast_expert.IfaceInfo:
     """*iface*, or the one interface holding *iface_ip*, as ``McastTxSocket`` takes it without scanning.
 
@@ -403,15 +411,13 @@ def multicast_iface_info(iface: str = "", iface_ip: str = "") -> multicast_exper
         if not holders:
             raise InterfaceUnavailable(f"no interface holds {iface_ip}; staying silent until one does")
         if len(holders) > 1:
-            raise InterfaceUnavailable(f"{iface_ip} is held by {', '.join(holders)}; pin one of them by name")
+            raise InterfaceUnavailable(
+                f"{iface_ip} is held by {', '.join(holders)}; staying silent until one interface holds it"
+            )
         iface = holders[0]
     index = _iface_index(iface)
     addrs = table.get(iface, [])
-    ip4 = [
-        ipaddress.IPv4Interface((a.address, a.netmask) if a.netmask else a.address)
-        for a in addrs
-        if a.family == socket.AF_INET
-    ]
+    ip4 = [_ipv4_interface(a.address, a.netmask) for a in addrs if a.family == socket.AF_INET]
     if not ip4:
         raise InterfaceUnavailable(f"{iface} has no IPv4 address; staying silent until it gets one")
     ip4.sort(key=lambda address: str(address.ip) != iface_ip)
@@ -421,6 +427,16 @@ def multicast_iface_info(iface: str = "", iface_ip: str = "") -> multicast_exper
         link_layer_address=next((str(a.address) for a in addrs if a.family == psutil.AF_LINK), None),
         ip4_addrs=tuple(ip4),
         ip6_addrs=(),
+    )
+
+
+def multicast_tx_socket(groups: list[str], iface: str, source_ip: str) -> multicast_expert.McastTxSocket:
+    """A PSN or OTP sender's socket, by interface index when named, else from the primary address."""
+    return multicast_expert.McastTxSocket(
+        socket.AF_INET,
+        mcast_ips=groups,
+        iface=multicast_iface_info(iface, resolve_iface_ip(source_ip)),
+        enable_external_loopback=True,
     )
 
 

@@ -1740,20 +1740,52 @@ class TestMulticastIfaceInfo:
         )
         assert sock.network_interface.machine_name == "en0"
 
-    def test_a_real_socket_opens_on_the_loopback_it_describes(self) -> None:
-        """Bind and ``IP_MULTICAST_IF`` take the description as built; nothing is sent."""
+    def test_the_library_opens_its_socket_on_the_description(self, monkeypatch) -> None:
+        """The library's own open runs on what was built: it binds the first address and sets
+        ``IP_MULTICAST_IF``. The OS socket is a recorder, so nothing reaches the host."""
         import multicast_expert
 
-        info = net_utils_module.multicast_iface_info(iface_ip="127.0.0.1")
-        with multicast_expert.McastTxSocket(socket.AF_INET, mcast_ips=["236.10.10.10"], iface=info) as sock:
-            assert sock.getsockname()[0] == "127.0.0.1"
+        calls: list[tuple] = []
+
+        class _Recorder:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            def bind(self, address) -> None:
+                calls.append(("bind", address))
+
+            def setsockopt(self, level, option, value) -> None:
+                calls.append(("setsockopt", level, option))
+
+            def close(self) -> None:
+                calls.append(("close",))
+
+        _driver_alias.install(monkeypatch)
+        monkeypatch.setattr(multicast_expert.tx_socket.socket, "socket", _Recorder)
+        info = net_utils_module.multicast_iface_info("lo0", "127.51.68.120")
+        with multicast_expert.McastTxSocket(socket.AF_INET, mcast_ips=["236.10.10.10"], iface=info):
+            pass
+        assert calls[0] == ("bind", ("127.51.68.120", 0))
+        assert ("setsockopt", socket.IPPROTO_IP, socket.IP_MULTICAST_IF) in calls
+        assert calls[-1] == ("close",)
+
+    @pytest.mark.parametrize(
+        "netmask", [None, "", "255.0.255.0", "abc"], ids=["none", "empty", "non-contiguous", "garbled"]
+    )
+    def test_a_missing_or_malformed_netmask_is_a_single_host(self, monkeypatch, netmask) -> None:
+        _driver_alias.install(monkeypatch)
+        table = {"en1": [SimpleNamespace(family=socket.AF_INET, address="198.51.100.4", netmask=netmask)]}
+        monkeypatch.setattr(net_utils_module.psutil, "net_if_addrs", lambda: table)
+        monkeypatch.setattr(_driver_alias, "INDEX", {"en1": 7})
+        info = net_utils_module.multicast_iface_info("en1")
+        assert list(info.ip4_addrs) == [ipaddress.IPv4Interface("198.51.100.4/32")]
 
     @pytest.mark.parametrize(
         ("kwargs", "reason"),
         [
             ({"iface": "eth9"}, "eth9 is not present"),
             ({"iface_ip": "198.51.100.7"}, "no interface holds 198.51.100.7"),
-            ({"iface_ip": "192.0.2.77"}, "192.0.2.77 is held by en0, en0.10; pin one of them by name"),
+            ({"iface_ip": "192.0.2.77"}, "192.0.2.77 is held by en0, en0.10; staying silent until one"),
             ({}, "no interface has an address to send from"),
             ({"iface": "en0.20"}, "en0.20 has no IPv4 address"),
         ],

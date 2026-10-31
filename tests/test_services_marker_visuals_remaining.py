@@ -31,6 +31,7 @@ import numpy as np
 import pypsn
 import pytest
 
+from openfollow import platform_support
 from openfollow.button_names import ButtonNameStyle
 from openfollow.configuration import AppConfig
 from openfollow.marker_catalog.control_conflicts import ControlConflict
@@ -2244,3 +2245,51 @@ class TestControlConflictSurfaces:
             "controller_missing_0",
             "midi_unavailable",
         ]
+
+
+class TestUnsupportedPlatform:
+    """The warning's two Operator Screen surfaces: the corner row and the Settings menu's box."""
+
+    _ROW = "Unsupported platform: macOS. Errors are expected. Never use this setup in a show!"
+
+    @pytest.fixture(autouse=True)
+    def _on_macos(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(platform_support, "current", lambda: platform_support.PlatformSupport(False, "macOS"))
+
+    @staticmethod
+    def _menu(app: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> OverlayState:
+        from openfollow.runtime import app_modes
+
+        monkeypatch.setattr(app_modes, "build_settings_menu_items", lambda a: (["X"], [True], [""], [False]))
+        return _build(app)
+
+    def test_the_row_is_the_last_error_and_comes_before_a_caution(self) -> None:
+        app = _build_app()
+        app._runtime_services = SimpleNamespace(_status_flags={"midi_unavailable": ("caution", "MIDI off")})
+        state = _build(app, network_alerts=["PSN: eth0 is down"])
+        assert state.status_flags == [
+            ("network_down_0", "PSN: eth0 is down", "error"),
+            ("platform", self._ROW, "error"),
+            ("midi_unavailable", "MIDI off", "caution"),
+        ]
+
+    def test_developer_mode_hides_the_row(self) -> None:
+        app = _build_app()
+        app._config.ui.developer_mode = True
+        assert _build(app).status_flags == []
+
+    def test_a_supported_platform_adds_no_row(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(platform_support, "current", lambda: platform_support.PlatformSupport(True, "Debian 13"))
+        assert _build(_build_app()).status_flags == []
+
+    def test_the_settings_menu_carries_the_title(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        state = self._menu(_build_app(settings_menu_active=True), monkeypatch)
+        assert state.settings_platform_warning == "Unsupported platform: macOS"
+
+    def test_developer_mode_hides_the_settings_box(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        app = _build_app(settings_menu_active=True)
+        app._config.ui.developer_mode = True
+        assert self._menu(app, monkeypatch).settings_platform_warning == ""
+
+    def test_a_closed_menu_carries_no_title(self) -> None:
+        assert _build(_build_app()).settings_platform_warning == ""

@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
+from openfollow import platform_support
 from openfollow.configuration import (
     ControllerButtonTrigger,
     HotkeyTrigger,
@@ -759,6 +760,9 @@ class AppRuntimeServices:
         self._app = app
         self._shutdown_in_progress = False
         self._is_pi = self._is_raspberry_pi()
+        support = platform_support.current()
+        if not support.supported:
+            logger.warning("%s. %s", support.title, platform_support.STEP)
         self._camera_setup_lock = threading.Lock()
         # Central registry of input-binding ownership, pre-populated with
         # the movement-key reservations under owner "system:movement".
@@ -4242,6 +4246,7 @@ class AppRuntimeServices:
                 "hud_fps": 0.0,
                 "output_resolution": None,
                 "power": PowerState().to_dict(),
+                "platform": platform_support.stats_entry(cfg),
             },
             "video": {
                 "source_type": cfg.video_source_type,
@@ -4506,6 +4511,7 @@ class AppRuntimeServices:
                 "hud_fps": hud_fps,
                 "output_resolution": self._canvas_resolution(hud_fps),
                 "power": power.to_dict(),
+                "platform": platform_support.stats_entry(cfg),
             },
             "video": video_snapshot,
             "controllers": {

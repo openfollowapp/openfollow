@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import openfollow
-from openfollow import keyboard_layout
+from openfollow import keyboard_layout, platform_support
 from openfollow.logging_setup import RingBufferLogHandler
 from openfollow.net_utils import HOST_RESOLVER, read_ipv4_routes
 from openfollow.network.validate import is_link_local
@@ -3164,6 +3164,7 @@ class DiagnosticsBundle:
     log_times: str = ""
     app_version: str = ""
     platform_label: str = ""
+    support_label: str = ""
     host_label: str = ""
     service_status: str = ""
     redactions_applied: str = ""
@@ -3242,6 +3243,17 @@ def station_zone(
             name = ""
     name = name or local.tzname() or ""
     return f"{label} ({name})" if name else label
+
+
+def support_label(p: DiagnosticsProviders) -> str:
+    """The header's verdict on the platform, said even while developer mode hides the warning."""
+    support = platform_support.current()
+    if support.supported:
+        return f"supported ({support.name})"
+    label = f"{support.title}. {platform_support.STEP}"
+    stats = _safely_value(p.runtime_stats, "runtime_stats", {})[0] if p.runtime_stats else {}
+    shown = ((stats or {}).get("system") or {}).get("platform", {}).get("warning")
+    return label + " (warning hidden: developer mode)" if shown is False else label
 
 
 def collect_bundle(
@@ -3354,6 +3366,7 @@ def collect_bundle(
         log_times=station_zone(now.astimezone()),
         app_version=openfollow.__version__,
         platform_label=_platform_label(),
+        support_label=support_label(p),
         host_label=f"{full_hostname()} ({platform.platform()})",
         service_status=("running" if p.web_port_configured is not None else "NOT RUNNING (sample)"),
         redactions_applied="web_pin=***, X-Auth-Signature stripped",
@@ -3380,6 +3393,7 @@ def format_bundle(bundle: DiagnosticsBundle) -> str:
         # tree does (E1's git rev needs a ``.git`` and is blank there).
         f"version: {bundle.app_version}",
         f"platform: {bundle.platform_label}",
+        f"support: {bundle.support_label}",
         f"generated: {bundle.generated_at}",
         f"log times: station time, {bundle.log_times}",
         f"host: {bundle.host_label}",

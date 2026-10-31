@@ -2518,6 +2518,10 @@
  </div>
  </div>
  % end
+ %# A page with navigation of its own places the box under it.
+ % if not get('platform_warning_inline', False):
+ % include('partials/platform_warning.tpl', platform_warning=get('platform_warning'))
+ % end
  {{!base}}
  % if defined('on_device') and on_device:
  <footer class="on-device-footer">

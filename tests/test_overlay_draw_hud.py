@@ -61,6 +61,7 @@ from openfollow.runtime.overlay_draw_hud import (
     draw_url_editor_overlay,
     draw_virtual_fader_card,
     draw_virtual_faders,
+    info_panel_in_error,
     keycaps_width,
 )
 from openfollow.runtime.overlay_draw_style import (
@@ -2561,6 +2562,46 @@ class TestTheChevron:
         xs = [x for x, _y in cr.move_tos + cr.line_tos]
         ys = [y for _x, y in cr.move_tos + cr.line_tos]
         assert max(xs) - min(xs) > max(ys) - min(ys)
+
+
+class TestSettingsPlatformBox:
+    """An unsupported platform is an error box of its own, under the live fault's."""
+
+    def _draw(self, *, platform: str = "", error: str = "") -> FakeCairo:
+        state = _base_state(ip_text="192.0.2.5", settings_items=["Network"], settings_items_enabled=[True])
+        state.settings_platform_warning = platform
+        state.error_message = error
+        cr = FakeCairo()
+        draw_settings_menu(FakeRenderer(state=state), cr, state, 1600, 900)
+        return cr
+
+    def _y(self, cr: FakeCairo, needle: str) -> float:
+        matches = cr.find_texts(needle)
+        assert matches, f"{needle!r} was not drawn"
+        return matches[0].y
+
+    def test_the_box_says_the_platform_and_the_step(self) -> None:
+        cr = self._draw(platform="Unsupported platform: Windows")
+        drawn = " ".join(cr.show_text_strings())
+        assert "Unsupported platform: Windows" in drawn
+        assert "errors are expected" in drawn
+        assert "Never use this setup in a show!" in drawn
+        assert cr.show_text_strings().count("ERROR") == 1
+        assert self._y(cr, "Station:") < self._y(cr, "Unsupported platform: Windows") < self._y(cr, "Network")
+
+    def test_a_live_fault_comes_first(self) -> None:
+        cr = self._draw(platform="Unsupported platform: Windows", error="Connection refused")
+        assert cr.show_text_strings().count("ERROR") == 2
+        assert self._y(cr, "Connection refused") < self._y(cr, "Unsupported platform: Windows")
+
+    def test_no_title_draws_no_box(self) -> None:
+        assert "ERROR" not in self._draw().show_text_strings()
+
+    def test_the_info_panel_stays_normal(self) -> None:
+        """A condition that never clears must not mask a live fault's red panel."""
+        state = _base_state(ip_text="192.0.2.5")
+        state.settings_platform_warning = "Unsupported platform: Windows"
+        assert info_panel_in_error(state) is False
 
 
 class TestTheSettingsMenuMarksWhatOpensAScreen:

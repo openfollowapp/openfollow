@@ -344,5 +344,5 @@ Read the guide before changing code in its paths.
 | `paths/`, `runtime/paths_runtime.py`, `osc/paths.py`, `runtime/overlay_draw_paths.py`, the path editor (`partials/paths.tpl`, `partials/path_editor.tpl`, `/api/paths`) | [paths](docs/architecture/paths.md) |
 | `web/` (copy, routes, auth, peers, Setup Wizard), `static/js/polygon-plan.js`, `static/js/picture-view.js`, `scene/lens_fit.py`, `scene/opencv_lens.py`, `scene/edge_snap.py`, `scene/edge_chains.py`, `scene/calibration_points.py`, `lens_model.py` | [web](docs/architecture/web.md) |
 | `runtime/deb_update.py`, `runtime/online_sync.py`, `web/whats_new.py`, `privilege/settings_backup.py` | [update](docs/architecture/update.md) |
-| `uri_redaction.py`, `power_health.py`, `web/diagnostics.py`, `runtime/removable_media.py`, `runtime/diagnostics_export.py`, `privilege/media_writer.py` | [diagnostics](docs/architecture/diagnostics.md) |
+| `uri_redaction.py`, `power_health.py`, `platform_support.py`, `web/diagnostics.py`, `runtime/removable_media.py`, `runtime/diagnostics_export.py`, `privilege/media_writer.py` | [diagnostics](docs/architecture/diagnostics.md) |
 | `packaging/`, the `.deb`, image and macOS bundle | [`docs/PACKAGING.md`](docs/PACKAGING.md) |

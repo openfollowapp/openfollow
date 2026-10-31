@@ -172,6 +172,14 @@ def _no_host_camera_modes(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _supported_platform(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test may depend on the host's platform; one that cares sets ``platform_support.current`` itself."""
+    from openfollow import platform_support
+
+    monkeypatch.setattr(platform_support, "current", lambda: platform_support.PlatformSupport(True, "Raspberry Pi 5"))
+
+
+@pytest.fixture(autouse=True)
 def _no_host_cgroup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """No test may resolve the unit the test process itself runs under.
 

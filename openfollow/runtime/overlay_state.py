@@ -256,6 +256,8 @@ class OverlayState:
     settings_selected_index: int = 0
     settings_menu_banner: str = ""
     settings_menu_banner_action: str = ""
+    # The unsupported platform's title; its box stands under the error box.
+    settings_platform_warning: str = ""
     # About / license screen – read-only, no extra payload.
     about_active: bool = False
     # Drive picker + diagnostics export screen.

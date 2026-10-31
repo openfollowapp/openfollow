@@ -4945,6 +4945,7 @@ def _register_marker_catalog_routes(
                 logger.exception("Failed to persist catalog: %s", exc)
                 response.status = 500
                 return json.dumps({"error": "could not persist catalog"})
+        server.apply_marker_renames([marker_id])
         sync = server.get_marker_catalog_sync()
         if sync is not None:
             sync.request_delta([marker_id])

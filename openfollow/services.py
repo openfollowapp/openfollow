@@ -3167,6 +3167,7 @@ class AppRuntimeServices:
             camera_setup_restart_handler=self._handle_camera_setup_restart,
             marker_catalog_provider=lambda: self._app._marker_catalog,
             marker_catalog_sync_provider=lambda: self._app._marker_catalog_sync,
+            marker_rename_handler=lambda marker_ids: self._app._apply_catalog_names(marker_ids),
             # Live gamepad snapshot for the diagnostics bundle's E9 section.
             gamepad_runtime_provider=self._gamepad_runtime_snapshot,
             # Diagnostics I/O providers (recent I/O + USB visibility).

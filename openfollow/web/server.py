@@ -449,6 +449,8 @@ class ConfigWebServer:
         # favour of the inline UI.
         marker_catalog_provider: Callable[[], Any] | None = None,
         marker_catalog_sync_provider: Callable[[], Any] | None = None,
+        # Renames saved on this station, handed to the running outputs.
+        marker_rename_handler: Callable[[list[int]], None] | None = None,
         # Live per-controller SDL snapshot for the diagnostics bundle's
         # gamepad section (backend / GUID / calibration-match). Optional so
         # the server still constructs in tests that don't wire input.
@@ -551,6 +553,7 @@ class ConfigWebServer:
         self._camera_setup_restart_handler = camera_setup_restart_handler
         self._marker_catalog_provider = marker_catalog_provider
         self._marker_catalog_sync_provider = marker_catalog_sync_provider
+        self._marker_rename_handler = marker_rename_handler
         # Public so ``_build_diagnostics_providers`` can pass it straight
         # through; ``None`` when unwired keeps the bundle's "not wired" vs
         # "no controllers connected" distinction meaningful.
@@ -622,6 +625,11 @@ class ConfigWebServer:
         if self._marker_catalog_provider is None:
             return None
         return self._marker_catalog_provider()
+
+    def apply_marker_renames(self, marker_ids: list[int]) -> None:
+        """Hand catalog entries saved on this station to the running outputs."""
+        if self._marker_rename_handler is not None:
+            self._marker_rename_handler(marker_ids)
 
     def get_marker_catalog_sync(self) -> Any:
         """Return the running :class:`MarkerCatalogSync`, or ``None``."""

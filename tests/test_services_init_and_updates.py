@@ -1274,6 +1274,21 @@ class TestInitWebServer:
         services._app._config = replace(services._app._config, psn_source_iface="eth3")
         assert srv.kwargs["station_iface_provider"]() == "eth3"
 
+    def test_wires_catalog_renames_to_the_running_outputs(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from openfollow import web
+
+        monkeypatch.setattr(web, "ConfigWebServer", _FakeWebServer)
+        services._preview_provider = SimpleNamespace(get_snapshot=lambda: None)
+        services._snapshot_provider = SimpleNamespace(get_snapshot=lambda: None)
+        renamed: list[list[int]] = []
+        services._app._apply_catalog_names = renamed.append
+
+        services.init_web_server()
+        services._app._web_server.kwargs["marker_rename_handler"]([3])
+        assert renamed == [[3]]
+
     def test_wires_marker_move_speeds_provider_returning_a_copy(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
     ) -> None:

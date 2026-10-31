@@ -366,7 +366,7 @@ class TestInitMarkerCatalogSyncOnChange:
             _marker_catalog_sync=None,
             _runtime_services=runtime_services,
         )
-        _bind(fake, "_marker_catalog_path", "_prune_selection_ids")
+        _bind(fake, "_marker_catalog_path", "_prune_selection_ids", "_apply_catalog_names")
         return fake
 
     def _capture_on_change(self, fake, monkeypatch):
@@ -420,7 +420,7 @@ class TestInitMarkerCatalogSyncOnChange:
         # Must not raise even though the server isn't up yet.
         captured["on_change"]([1])
 
-    def test_on_change_skips_when_entry_missing_or_unnamed(
+    def test_on_change_skips_a_tombstone_and_names_an_unnamed_marker_as_at_startup(
         self,
         tmp_path,
         monkeypatch,
@@ -439,7 +439,8 @@ class TestInitMarkerCatalogSyncOnChange:
         fake._marker_catalog.upsert(6, "", "#ff00ff", updated_at=1.0)
         captured = self._capture_on_change(fake, monkeypatch)
         captured["on_change"]([5, 6])
-        assert renames == []
+        # The tombstone is left to the prune; an empty name falls back as at startup.
+        assert renames == [(6, "Marker 6")]
 
     def test_on_change_prunes_selection_when_peer_deletes(
         self,
@@ -726,7 +727,7 @@ class TestMarkerCatalogSyncFollowsTheStationInterface:
                 station_source_ip_or_none=lambda: station_ip,
             ),
         )
-        _bind(fake, "_marker_catalog_path", "_prune_selection_ids")
+        _bind(fake, "_marker_catalog_path", "_prune_selection_ids", "_apply_catalog_names")
         return fake
 
     def _run(self, fake, monkeypatch):
@@ -800,3 +801,36 @@ def test_a_peer_delete_after_a_restore_is_logged_as_the_restart(tmp_path, monkey
     assert Path(fake._config_path).read_bytes() == before
     assert "Selection after a peer deleted markers [2] not saved: OpenFollow is restarting" in caplog.text
     assert [r for r in caplog.records if r.levelname in ("ERROR", "WARNING")] == []
+
+
+class TestApplyCatalogNames:
+    """A catalog rename reaches the running outputs under the name a restart would give."""
+
+    def _fake(self, *, server, controlled):
+        catalog = MarkerCatalog()
+        catalog.upsert(1, "Lead", "#ff0000")
+        catalog.upsert(2, "", "#00ff00")
+        catalog.upsert(3, "Gone", "#0000ff")
+        catalog.delete(3)
+        fake = types.SimpleNamespace(_server=server, _controlled_ids=controlled, _marker_catalog=catalog)
+        _bind(fake, "_apply_catalog_names")
+        return fake
+
+    def test_controlled_markers_take_the_catalog_name(self) -> None:
+        from openfollow.psn.server import PsnServer
+
+        server = PsnServer(mcast_ip=None)
+        server.add_marker(1, "Old")
+        server.add_marker(2, "Old")
+        server.add_marker(3, "Old")
+        self._fake(server=server, controlled=[1, 2, 3])._apply_catalog_names([1, 2, 3, 4])
+        assert [server.get_marker(i).name for i in (1, 2, 3)] == ["Lead", "Marker 2", "Old"]
+
+    def test_an_uncontrolled_marker_is_left_alone(self) -> None:
+        renames: list = []
+        server = types.SimpleNamespace(update_marker_name=lambda mid, name: renames.append((mid, name)))
+        self._fake(server=server, controlled=[2])._apply_catalog_names([1])
+        assert renames == []
+
+    def test_no_outputs_yet_is_a_no_op(self) -> None:
+        self._fake(server=None, controlled=[1])._apply_catalog_names([1])

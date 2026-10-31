@@ -5,6 +5,7 @@
 // One polygon's corners on a PictureView, handled as the Setup Wizard handles its
 // points: named pins, a drag with the loupe, a press that does not move only
 // chooses, keys on the focused picture, and a drag from an edge adds a corner.
+// A drag from a polygon's label (``.pv-grab``) moves it whole.
 // The caller owns the polygon and maps picture points to the stage and back.
 (function () {
     'use strict';
@@ -36,7 +37,8 @@
     // not see one), or null without a polygon; edge(i) picture points along the edge from corner i to the next;
     // place(i, at), insert(i, at) (a corner after corner i) and remove(i), each true when done; snapshot() and
     // restore(snap) to put a cancelled drag back; readout(i); changed() redraws, calling draw(); save(); press(ev)
-    // for a press off the corners. ``min`` is the fewest corners a polygon keeps. Esc with nothing chosen is left
+    // for a press off the corners; grab(label) makes a label's polygon the chosen one, true when it may move, and
+    // translate(from, at) moves it whole by the stage distance between two picture points, true when done. ``min`` is the fewest corners a polygon keeps. Esc with nothing chosen is left
     // to the page.
     function PicturePolygon(view, opts) {
         this.view = view;
@@ -164,13 +166,16 @@
 
     P._press = function (ev) {
         var target = ev.target && ev.target.closest ? ev.target : null;
-        var pin = target && target.closest('.pv-pin'), band = !pin && target && target.closest('.pv-edge');
+        var pin = target && target.closest('.pv-pin'), grab = !pin && target && target.closest('.pv-grab');
+        var band = !pin && !grab && target && target.closest('.pv-edge');
         // One corner at a time: another pointer waits for the drag to end. Only the main button presses.
         if (this._drag) { ev.preventDefault(); return; }
         if (ev.button > 0) return;
         this.flush();
         this._kind = ev.pointerType;
-        if (!pin && !band) {
+        if (grab) this.choose(null);
+        if (grab && !this.opts.grab(grab)) grab = null;
+        if (!pin && !band && !grab) {
             this.choose(null);
             this.opts.press(ev);
             this.opts.changed();
@@ -183,6 +188,8 @@
         if (pin) {
             this.choose(+pin.dataset.corner);
             drag.i = this.chosen;
+        } else if (grab) {
+            drag.whole = this._at(ev);
         } else {
             drag.edge = +band.dataset.edge;
         }
@@ -200,7 +207,9 @@
         if (!d.moved && Math.hypot(ev.clientX - d.start.x, ev.clientY - d.start.y) < d.start.slop) return;
         var at = this._at(ev);
         if (!at) return;
-        if (d.i === null) {
+        if (d.whole) {
+            if (!this.opts.translate(d.whole, at)) return;
+        } else if (d.i === null) {
             if (!this.opts.insert(d.edge, at)) return;
             d.i = this.chosen = d.edge + 1;
             this.keyboard = false;
@@ -216,7 +225,7 @@
         this._drag = null;
         this.opts.changed();
         if (!d.moved) return;
-        this.view.announce(this.opts.readout(d.i));
+        if (d.i !== null) this.view.announce(this.opts.readout(d.i));
         this.opts.save();
     };
 

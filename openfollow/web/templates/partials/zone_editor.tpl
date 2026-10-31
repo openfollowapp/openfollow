@@ -114,6 +114,25 @@
         onDragMove: function(vertexIdx) { syncVertexInputs(state.selectedIndex, vertexIdx); },
         onDragEnd: function() { updateZoneVertices(state.selectedIndex); },
         onInsert: function() { renderDetails(); },
+        labelAt: function(sx, sy) {
+            for (var i = labelBoxes.length - 1; i >= 0; i--) {
+                var b = labelBoxes[i];
+                if (b && sx >= b[0] && sx <= b[2] && sy >= b[1] && sy <= b[3]) return i;
+            }
+            return null;
+        },
+        grab: function(i) {
+            if (i !== state.selectedIndex) {
+                state.selectedIndex = i;
+                renderDetails();
+            }
+            return state.zones[i].vertices;
+        },
+        onGrabMove: function() {
+            edits++;
+            state.zones[state.selectedIndex].vertices.forEach(function(_, k) { syncVertexInputs(state.selectedIndex, k); });
+        },
+        onGrabEnd: function(moved) { if (moved) updateZoneVertices(state.selectedIndex); },
         onRender: function() { updateButtons(); updateFullScreenStatus(); renderPicture(); },
     });
 
@@ -182,6 +201,8 @@
         return zone && zone.vertices ? zone : null;
     }
 
+    // The corners of a zone whose label is held, as they were when it was pressed.
+    var grabbed = null;
     var corners = new window.OpenFollow.PicturePolygon(pv, {
         min: 3,
         corners: function() {
@@ -213,6 +234,25 @@
             renderDetails();
             return true;
         },
+        grab: function(label) {
+            var i = +label.dataset.zone;
+            if (i !== state.selectedIndex) {
+                state.selectedIndex = i;
+                renderDetails();
+            }
+            var zone = chosenZone();
+            grabbed = zone && zone.vertices.map(function(v) { return v.slice(); });
+            return !!zone;
+        },
+        translate: function(from, at) {
+            var zone = chosenZone(), cam = cameraModel(), z = zonePlane(zone);
+            var a = cam.unproject(from, z), b = cam.unproject(at, z);
+            if (!a || !b) return false;
+            zone.vertices = grabbed.map(function(v) { return [v[0] + b[0] - a[0], v[1] + b[1] - a[1]]; });
+            edits++;
+            zone.vertices.forEach(function(_, k) { syncVertexInputs(state.selectedIndex, k); });
+            return true;
+        },
         snapshot: function() { return JSON.stringify(chosenZone().vertices); },
         restore: function(snap) {
             chosenZone().vertices = JSON.parse(snap);
@@ -237,7 +277,7 @@
     function renderPicture() {
         if (mode !== 'camera') return;
         var cam = cameraModel(), k = pv.cssScale();
-        var shapes = state.zones.map(function(z) { return [z.vertices, z.color, z.z_offset]; });
+        var shapes = state.zones.map(function(z, i) { return [z.vertices, z.color, z.z_offset, zoneLabel(z, i)]; });
         var key = JSON.stringify([shapes, state.selectedIndex, corners.chosen, corners.keyboard, camera, floorZ(), heightsOn(),
             pv.w, pv.h, k]);
         if (key === pictureKey) return;
@@ -267,6 +307,20 @@
                 line.dataset.zone = i;
                 pv.svg.appendChild(line);
             });
+        });
+        state.zones.forEach(function(zone, i) {
+            if (!zone || !zone.vertices || zone.vertices.length < 3) return;
+            var c = zoneCentre(zone), at = cam.project([c[0], c[1], zonePlane(zone)]);
+            if (!pv.inPicture(at)) return;
+            var text = zoneLabel(zone, i), w = (text.length * 7 + 12) * k, h = 18 * k;
+            var label = pv.el('g', { 'class': 'pv-grab pv-zone-label', transform: 'translate(' + at[0] + ',' + at[1] + ')' });
+            label.dataset.zone = i;
+            label.appendChild(pv.el('rect', { x: -w / 2, y: -h / 2, width: w, height: h, rx: 3 * k }));
+            var name = pv.el('text', { 'text-anchor': 'middle', 'dominant-baseline': 'central', 'font-size': 12 * k,
+                fill: zone.color || '#ff8000' });
+            name.textContent = text;
+            label.appendChild(name);
+            pv.svg.appendChild(label);
         });
         corners.draw();
     }
@@ -363,7 +417,7 @@
             .then(function(r) { return r.ok ? r.json() : null; })
             .then(function(data) {
                 // A corner in hand, or edited or saved since this was asked, is newer than the answer.
-                if (!data || asked !== edits || saving || corners.busy()) return;
+                if (!data || asked !== edits || saving || corners.busy() || plan.drag) return;
                 // Don't replace the selected zone's data while the user is
                 // typing into its detail inputs (would clobber in-progress
                 // edits – in particular per-vertex coordinate fields).
@@ -422,7 +476,21 @@
             .catch(function() {});
     }
 
+    // A zone's label: its name, or its number, with the occupant count while occupied; drawn at its centre.
+    function zoneLabel(z, i) {
+        var name = z.name || ('Zone ' + (i + 1));
+        return z.is_occupied ? name + ' (' + z.occupant_count + ')' : name;
+    }
+    function zoneCentre(z) {
+        var x = 0, y = 0;
+        z.vertices.forEach(function(v) { x += v[0]; y += v[1]; });
+        return [x / z.vertices.length, y / z.vertices.length];
+    }
+
+    // Each zone's label box in canvas pixels, from the last render: a press in one moves the zone.
+    var labelBoxes = [];
     function renderZones() {
+        labelBoxes = [];
         for (var i = 0; i < state.zones.length; i++) {
             var z = state.zones[i];
             if (!z.vertices || z.vertices.length < 2) continue;
@@ -439,17 +507,12 @@
 
             if (isSel) plan.drawHandles(z.vertices, col);
 
-            // Label
-            if (z.name) {
-                var cx = 0, cy = 0;
-                for (var m = 0; m < z.vertices.length; m++) {
-                    var pv = plan.toScreen(z.vertices[m][0], z.vertices[m][1]);
-                    cx += pv[0]; cy += pv[1];
-                }
-                cx /= z.vertices.length; cy /= z.vertices.length;
+            if (z.vertices.length >= 3) {
+                var c = plan.toScreen.apply(plan, zoneCentre(z)), cx = c[0], cy = c[1];
                 ctx.font = '12px sans-serif';
-                var txt = isOcc ? (z.name + ' (' + z.occupant_count + ')') : z.name;
+                var txt = zoneLabel(z, i);
                 var metrics = ctx.measureText(txt);
+                labelBoxes[i] = [cx - metrics.width / 2 - 4, cy - 9, cx + metrics.width / 2 + 4, cy + 7];
                 ctx.fillStyle = 'rgba(0,0,0,0.6)';
                 ctx.fillRect(cx - metrics.width/2 - 4, cy - 9, metrics.width + 8, 16);
                 ctx.fillStyle = col;

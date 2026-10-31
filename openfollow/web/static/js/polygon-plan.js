@@ -5,6 +5,7 @@
 // A top-down stage plan on a <canvas> for drawing and editing polygons in
 // PSN-absolute world metres (X stage left, Y upstage): the main grid, the live
 // markers, and drag handles on one editable polygon, whose edges add a corner.
+// A polygon the page names under the pointer (its label) moves whole.
 // The page owns its polygons and draws them in ``opts.drawPolygons``.
 (function () {
     'use strict';
@@ -60,6 +61,10 @@
     //   onDragMove(index)   a handle moved; the array is already updated
     //   onDragEnd(index)    a drag ended
     //   onInsert(index)     a press on an edge added a corner at index, now held
+    //   labelAt(sx, sy)     the polygon whose label is at a canvas point, or null
+    //   grab(polygon)       its vertex array, which a press on its label moves whole
+    //   onGrabMove()        a held polygon moved; its array is already updated
+    //   onGrabEnd(moved)    a held polygon was let go
     //   onRender()          after every render (buttons, status)
     function PolygonPlan(canvas, opts) {
         this.canvas = canvas;
@@ -67,7 +72,7 @@
         this.opts = opts || {};
         this.grid = {width: 10, depth: 10, spacing: 1, x_offset: 0, y_offset: 0};
         this.markers = [];
-        this.drag = null;  // {index} while a handle is held
+        this.drag = null;  // {index} while a handle is held, {whole, from, before} while a polygon is
         this.hover = null;  // the point on an edge a press would add a corner at
         // The view stays put while a handle is dragged, so the world point
         // under the pointer does not move as the polygon grows past the edge.
@@ -267,12 +272,25 @@
     };
 
     P._endDrag = function () {
-        if (!this.drag) return;
-        var index = this.drag.index;
+        var drag = this.drag;
+        if (!drag) return;
         this.drag = null;
         this._frozenExtent = null;
-        if (this.opts.onDragEnd) this.opts.onDragEnd(index);
+        if (drag.whole) {
+            if (this.opts.onGrabEnd) this.opts.onGrabEnd(!!drag.moved);
+        } else if (this.opts.onDragEnd) this.opts.onDragEnd(drag.index);
         this.render();
+    };
+
+    P._labelAt = function (sx, sy) {
+        return this.opts.labelAt ? this.opts.labelAt(sx, sy) : null;
+    };
+
+    // The pointer over a label moves its polygon; over an edge of the editable one it adds a corner.
+    P._cursor = function (sx, sy) {
+        if (!this.canvas.style) return;
+        var over = this.vertexAt(sx, sy) !== null ? '' : this._labelAt(sx, sy) !== null ? 'move' : this.hover ? 'copy' : '';
+        if (this.canvas.style.cursor !== over) this.canvas.style.cursor = over;
     };
 
     P._bind = function () {
@@ -283,6 +301,15 @@
             if (vi !== null) {
                 plan._frozenExtent = plan._liveExtent();
                 plan.drag = {index: vi};
+                return;
+            }
+            var label = plan._labelAt(m[0], m[1]);
+            var whole = label !== null && plan.opts.grab ? plan.opts.grab(label) : null;
+            if (whole) {
+                plan._frozenExtent = plan._liveExtent();
+                plan.hover = null;
+                plan.drag = {whole: whole, from: plan.toWorld(m[0], m[1]), before: whole.map(function (v) { return v.slice(); })};
+                plan.render();
                 return;
             }
             var edge = plan.edgeAt(m[0], m[1]);
@@ -301,12 +328,23 @@
         canvas.addEventListener('mousemove', function (evt) {
             if (!plan.drag) {
                 var p = plan.pointer(evt);
-                var edge = plan.vertexAt(p[0], p[1]) === null ? plan.edgeAt(p[0], p[1]) : null;
+                var edge = plan.vertexAt(p[0], p[1]) === null && plan._labelAt(p[0], p[1]) === null
+                    ? plan.edgeAt(p[0], p[1]) : null;
                 var hover = edge ? edge.point : null;
                 if (JSON.stringify(hover) !== JSON.stringify(plan.hover)) {
                     plan.hover = hover;
                     plan.render();
                 }
+                plan._cursor(p[0], p[1]);
+                return;
+            }
+            if (plan.drag.whole) {
+                var w = plan.toWorld.apply(plan, plan.pointer(evt)), drag = plan.drag;
+                var dx = w[0] - drag.from[0], dy = w[1] - drag.from[1];
+                drag.before.forEach(function (v, i) { drag.whole[i] = [v[0] + dx, v[1] + dy]; });
+                drag.moved = true;
+                plan.render();
+                if (plan.opts.onGrabMove) plan.opts.onGrabMove();
                 return;
             }
             var verts = plan.opts.editable ? plan.opts.editable() : null;

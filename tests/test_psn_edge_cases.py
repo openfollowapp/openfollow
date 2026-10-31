@@ -26,6 +26,12 @@ from tests import _pinned_iface
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _pinned(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pinned interface as the sender names it, never the host's own."""
+    _pinned_iface.install(monkeypatch)
+
+
 @dataclass
 class _Vec:
     x: float
@@ -325,7 +331,6 @@ def test_server_rebind_swaps_socket_and_preserves_markers(monkeypatch) -> None:
         "McastTxSocket",
         _fake_mcast_socket,
     )
-    _pinned_iface.install(monkeypatch)
 
     server = PsnServer(mcast_ip="236.10.10.10", source_ip="10.0.0.1")
     server.add_marker(1, "T1")

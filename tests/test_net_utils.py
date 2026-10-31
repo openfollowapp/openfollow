@@ -1761,7 +1761,10 @@ class TestMulticastIfaceInfo:
                 calls.append(("close",))
 
         _driver_alias.install(monkeypatch)
-        monkeypatch.setattr(multicast_expert.tx_socket.socket, "socket", _Recorder)
+        # Only the library's own reference: the stdlib module stays untouched for every other thread.
+        monkeypatch.setattr(
+            multicast_expert.tx_socket, "socket", SimpleNamespace(**{**vars(socket), "socket": _Recorder})
+        )
         info = net_utils_module.multicast_iface_info("lo0", "127.51.68.120")
         with multicast_expert.McastTxSocket(socket.AF_INET, mcast_ips=["236.10.10.10"], iface=info):
             pass

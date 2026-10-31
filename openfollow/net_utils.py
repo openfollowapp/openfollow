@@ -435,7 +435,7 @@ def multicast_tx_socket(groups: list[str], iface: str, source_ip: str) -> multic
     return multicast_expert.McastTxSocket(
         socket.AF_INET,
         mcast_ips=groups,
-        iface=multicast_iface_info(iface, resolve_iface_ip(source_ip)),
+        iface=multicast_iface_info(iface, source_ip if iface else resolve_iface_ip(source_ip)),
         enable_external_loopback=True,
     )
 

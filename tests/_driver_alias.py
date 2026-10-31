@@ -27,9 +27,9 @@ ADDRS = {
 INDEX = {"en0": 4, "lo0": 1}
 
 
-def _index(name: str) -> int:
+def _iface_index(name: str) -> int:
     if name not in INDEX:
-        raise OSError(6, "Device not configured")
+        raise net_utils.InterfaceUnavailable(f"{name} is not present; staying silent until it returns")
     return INDEX[name]
 
 
@@ -40,5 +40,5 @@ def _library_scan() -> None:
 
 def install(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(net_utils.psutil, "net_if_addrs", lambda: ADDRS)
-    monkeypatch.setattr(net_utils.socket, "if_nametoindex", _index)
+    monkeypatch.setattr(net_utils, "_iface_index", _iface_index)
     monkeypatch.setattr(multicast_expert.interfaces, "scan_interfaces", _library_scan)

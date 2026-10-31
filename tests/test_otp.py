@@ -61,6 +61,12 @@ pytestmark = pytest.mark.unit
 _CID = b"\x11" * 16
 
 
+@pytest.fixture(autouse=True)
+def _pinned(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pinned interface as the sender names it, never the host's own."""
+    _pinned_iface.install(monkeypatch)
+
+
 def _marker(
     marker_id: int,
     x: float = 0.0,
@@ -972,10 +978,6 @@ class TestOtpStopThreadTimeouts:
 
 
 class TestOtpTryOpenSocketWithSourceIp:
-    @pytest.fixture(autouse=True)
-    def _pinned(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _pinned_iface.install(monkeypatch)
-
     def test_source_ip_passed_to_mcast_tx_socket(self) -> None:
         with patch("openfollow.otp.server.multicast_expert.McastTxSocket") as mcls:
             mcls.return_value = MagicMock()

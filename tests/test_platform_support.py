@@ -13,6 +13,9 @@ from openfollow import platform_support
 from openfollow.configuration import AppConfig
 from openfollow.platform_support import PlatformSupport, detect
 
+# Bound before ``conftest`` swaps ``current`` for every test.
+_REAL_CURRENT = platform_support.current
+
 pytestmark = pytest.mark.unit
 
 DEBIAN_13 = 'PRETTY_NAME="Debian GNU/Linux 13 (trixie)"\nNAME="Debian GNU/Linux"\nVERSION_ID="13"\nID=debian\n'
@@ -150,3 +153,29 @@ def test_developer_mode_hides_the_warning(
     cfg.ui.developer_mode = developer_mode
     assert platform_support.warning_shown(cfg) is shown
     assert platform_support.stats_entry(cfg) == {"supported": support.supported, "name": support.name, "warning": shown}
+
+
+def test_an_empty_model_file_falls_through_to_the_next(tmp_path: Path) -> None:
+    empty = tmp_path / "empty"
+    empty.write_bytes(b"\x00")
+    pi5 = tmp_path / "model"
+    pi5.write_bytes(b"Raspberry Pi 5 Model B Rev 1.0\x00")
+    assert detect("linux", model_paths=(empty, pi5), os_release_paths=()) == PlatformSupport(
+        True, "Raspberry Pi 5 Model B"
+    )
+
+
+def test_current_detects_once_per_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[int] = []
+
+    def counted() -> PlatformSupport:
+        calls.append(1)
+        return PlatformSupport(False, "Windows")
+
+    monkeypatch.setattr(platform_support, "detect", counted)
+    _REAL_CURRENT.cache_clear()
+    try:
+        assert _REAL_CURRENT() == _REAL_CURRENT() == PlatformSupport(False, "Windows")
+        assert calls == [1]
+    finally:
+        _REAL_CURRENT.cache_clear()

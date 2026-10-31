@@ -795,30 +795,11 @@ class OtpServer:
 
     def _try_open_multicast_socket_once(self, attempt: int, stop_event: threading.Event | None = None) -> bool:
         """Attempt to create the multicast TX socket once. Returns True on success."""
+        from openfollow.net_utils import multicast_tx_socket
+
         staging = contextlib.ExitStack()
         try:
-            groups = self._multicast_groups()
-            if self._source_iface:
-                # By name: selected by index, as PsnServer does.
-                sock = multicast_expert.McastTxSocket(
-                    socket.AF_INET,
-                    mcast_ips=groups,
-                    iface=self._source_iface,
-                    enable_external_loopback=True,
-                )
-            elif self._source_ip:
-                sock = multicast_expert.McastTxSocket(
-                    socket.AF_INET,
-                    mcast_ips=groups,
-                    iface_ip=self._source_ip,
-                    enable_external_loopback=True,
-                )
-            else:
-                sock = multicast_expert.McastTxSocket(
-                    socket.AF_INET,
-                    mcast_ips=groups,
-                    enable_external_loopback=True,
-                )
+            sock = multicast_tx_socket(self._multicast_groups(), self._source_iface, self._source_ip)
             opened = staging.enter_context(sock)
         except Exception as exc:
             logger.warning(

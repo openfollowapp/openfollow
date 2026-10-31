@@ -244,6 +244,7 @@ class TestDefaultRuntimeStatsSnapshot:
         # Nothing read yet: not available, never healthy.
         assert snap["system"]["power"]["available"] is False
         assert snap["system"]["power"]["under_voltage"] is None
+        assert snap["system"]["platform"] == {"supported": True, "name": "Raspberry Pi 5", "warning": False}
 
     def test_reflects_video_source_type_from_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(services_module, "gst_runtime_available", lambda: True)
@@ -873,6 +874,25 @@ class TestPublishRuntimeStats:
             "under_voltage_since_boot": True,
             "throttled_since_boot": True,
         }
+
+    @pytest.mark.parametrize("developer_mode", [False, True], ids=["shown", "developer-mode"])
+    def test_the_platform_verdict_is_published_and_reaches_the_alert(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, developer_mode: bool
+    ) -> None:
+        from openfollow import platform_support
+        from openfollow.web.live_alerts import diagnostics_alerts
+
+        monkeypatch.setattr(platform_support, "current", lambda: platform_support.PlatformSupport(False, "Windows"))
+        services._app._config.ui.developer_mode = developer_mode
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+
+        services.publish_runtime_stats(force=True)
+        snap = services.get_runtime_stats_snapshot()
+        assert snap["system"]["platform"] == {"supported": False, "name": "Windows", "warning": not developer_mode}
+        expected = None if developer_mode else "Unsupported platform: Windows"
+        assert diagnostics_alerts(snap).platform == expected
 
     def test_system_stats_with_none_temperature(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch

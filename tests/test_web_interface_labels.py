@@ -358,3 +358,67 @@ def test_a_protocol_section_points_at_its_interface_by_label(net_server, tmp_pat
     assert '<span class="ia-pointer-value">Lighting (enx9c69d3ac16ab)</span>' in psn
     _status, otp = _get(base, "/section/otp_output")
     assert '<span class="ia-pointer-value">eth1</span>' in otp
+
+
+def test_the_panel_says_a_destination_off_this_mac_cannot_go_through_loopback(
+    net_server,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+    every_feature_on,
+) -> None:
+    monkeypatch.setattr(net_utils_module, "LOOPBACK_OFFERED", True)
+    _ifaces(monkeypatch, {"eth0": "192.0.2.10", "lo0": "127.0.0.1"})
+    path = str(tmp_path / "config.toml")
+    cfg = load_config(path)
+    cfg.network_mode = "advanced"
+    cfg.psn_source_iface = "lo0"
+    cfg.rttrpm_output.enabled = True
+    cfg.rttrpm_output.host = "192.0.2.50"
+    save_config(cfg, path)
+    _fake, base = net_server
+    _status, body = _get(base, "/section/interface_assignment")
+    rttrpm_row = body[body.index("RTTrPM output") :].split("</tr>", 1)[0]
+    assert '<span class="stat-chip off">Loopback reaches only this Mac</span>' in rttrpm_row
+    # Multicast stays on this Mac: PSN simply sends there.
+    psn_row = body[body.index("PSN in / out") :].split("</tr>", 1)[0]
+    assert "127.0.0.1" in psn_row
+    assert "stat-chip off" not in psn_row
+
+
+def test_the_advanced_picker_names_loopback_on_a_mac(net_server, tmp_path, monkeypatch) -> None:  # noqa: F811
+    monkeypatch.setattr(net_utils_module, "LOOPBACK_OFFERED", True)
+    _ifaces(monkeypatch, {"eth0": "192.0.2.10", "lo0": "127.0.0.1"})
+    _fake, base = net_server
+    _status, body = _get(base, "/network/interfaces/by_name?current=")
+    assert '<option value="lo0" >Loopback (lo0) – 127.0.0.1</option>' in body
+
+
+def test_the_web_ui_picker_never_offers_loopback(net_server, tmp_path, monkeypatch) -> None:  # noqa: F811
+    """Bound to loopback the web UI would lock out every browser but this Mac's."""
+    monkeypatch.setattr(net_utils_module, "LOOPBACK_OFFERED", True)
+    _ifaces(monkeypatch, {"eth0": "192.0.2.10", "lo0": "127.0.0.1"})
+    _fake, base = net_server
+    _status, body = _get(base, "/network/interfaces/by_name?blank=all&loopback=0&current=")
+    assert 'value="lo0"' not in body
+    assert 'value="eth0"' in body
+    # A video input's wildcard listener shares the "all" wording but can take loopback.
+    _status, body = _get(base, "/network/interfaces/by_name?blank=all&current=")
+    assert 'value="lo0"' in body
+    _status, panel = _get(base, "/section/interface_assignment")
+    assert "blank=all&amp;loopback=0" in panel or "blank=all&loopback=0" in panel
+
+
+def test_a_switched_off_rttrpm_is_not_flagged_as_stranded(net_server, tmp_path, monkeypatch, every_feature_on) -> None:  # noqa: F811
+    monkeypatch.setattr(net_utils_module, "LOOPBACK_OFFERED", True)
+    _ifaces(monkeypatch, {"eth0": "192.0.2.10", "lo0": "127.0.0.1"})
+    path = str(tmp_path / "config.toml")
+    cfg = load_config(path)
+    cfg.network_mode = "advanced"
+    cfg.psn_source_iface = "lo0"
+    cfg.rttrpm_output.enabled = False
+    cfg.rttrpm_output.host = "192.0.2.50"
+    save_config(cfg, path)
+    _fake, base = net_server
+    _status, body = _get(base, "/section/interface_assignment")
+    rttrpm_row = body[body.index("RTTrPM output") :].split("</tr>", 1)[0]
+    assert "Loopback reaches only this Mac" not in rttrpm_row

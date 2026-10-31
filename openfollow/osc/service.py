@@ -699,8 +699,10 @@ class OscService:
         group = multicast_group.strip()
         self.stop_listener()
         try:
+            # The IPv4 wildcard, spelled out: python-osc takes the socket family from the
+            # host, and macOS resolves "" to IPv6, where no IPv4 group can be joined.
             listener = _FilteredOSCUDPServer(
-                ("", port),
+                ("0.0.0.0", port),
                 self._dispatcher,
                 normalised_ips,
             )

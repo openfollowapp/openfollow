@@ -54,7 +54,7 @@ if TYPE_CHECKING:
     from openfollow.web.discovery import PeerInfo
     from openfollow.web.server import ConfigWebServer
 
-from openfollow import config_restore, restore_hold
+from openfollow import config_restore, platform_support, restore_hold
 from openfollow.button_names import ButtonNameStyle, name_style
 from openfollow.configuration import (
     CALIBRATION_CORNERS,
@@ -115,6 +115,7 @@ from openfollow.lens_model import pull_back_to_valid
 # Module-level so handler closures resolve ``save_catalog`` from this
 # namespace at call time (tests monkeypatch it for persist-failure paths).
 from openfollow.marker_catalog import derive_station_name, save_catalog
+from openfollow.net_egress import LOOPBACK_ONLY
 from openfollow.net_utils import (
     HOST_RESOLVER,
     IPV4_RESOLVER,
@@ -549,14 +550,19 @@ def _redirect(location: str) -> NoReturn:
     raise HTTPResponse(status=303, headers={"Location": location})
 
 
+def _platform_context(cfg: AppConfig) -> dict[str, Any]:
+    """The unsupported-platform box every page shows between its navigation and its panels."""
+    return {"platform_warning": platform_support.current() if platform_support.warning_shown(cfg) else None}
+
+
 def _page_host_context(cfg: AppConfig) -> dict[str, Any]:
-    """base.tpl's banner for a page opened through a name its saves will be refused on."""
+    """base.tpl's boxes: a page opened through a name its saves will be refused on, an unsupported platform."""
     raw = (request.get_header("Host") or "").strip()
     try:
         host = urlsplit(f"//{raw}").hostname if raw else None
     except ValueError:
         host = None
-    return {"host_refusal": _host_refusal(host, cfg.station_fqdn)}
+    return {"host_refusal": _host_refusal(host, cfg.station_fqdn), **_platform_context(cfg)}
 
 
 def _is_navigation() -> bool:
@@ -1382,7 +1388,7 @@ def _osc_membership_address(
 # an error chip, since the picker beside it already names the interface.
 ADDRESS_NOT_CONNECTED = "Not connected"
 ADDRESS_INTERFACE_DOWN = "Interface down"
-_OUTAGE_ADDRESSES = frozenset({ADDRESS_NOT_CONNECTED, ADDRESS_INTERFACE_DOWN})
+_OUTAGE_ADDRESSES = frozenset({ADDRESS_NOT_CONNECTED, ADDRESS_INTERFACE_DOWN, LOOPBACK_ONLY})
 
 
 @dataclass(frozen=True)
@@ -1391,13 +1397,16 @@ class _PanelNames:
 
     labels: Mapping[str, str]
     present: frozenset[str]
+    # This machine's own addresses, for the loopback check.
+    station_addresses: frozenset[str] = frozenset()
 
 
 def _iface_who(name: str, labels: Mapping[str, str]) -> str:
     """How a picker names an interface: its label, else the name and which adapter it is."""
     from openfollow.net_adapters import describe, display_name
+    from openfollow.net_utils import offered_loopback
 
-    if name in labels:
+    if name in labels or offered_loopback(name):
         return display_name(name, labels)
     where = describe(name).where(labels)
     return f"{name} · {where}" if where else name
@@ -1469,15 +1478,18 @@ def _egress_address(
     wait_s: float | None,
     names: _PanelNames,
     unrouted: str = "Per routing table",
+    sends: bool = True,
 ) -> str:
     """The address cell for a row that sends to *host*, looked up by the resolver its output uses;
     *unrouted* when there is no host and no pin."""
-    from openfollow.net_egress import is_loopback_host
+    from openfollow.net_egress import is_loopback_host, strands
     from openfollow.net_utils import plane_source_iface
 
     if host and is_loopback_host(host):
         return "Loopback"
-    if plane_source_iface(pin, station_iface):
+    if iface := plane_source_iface(pin, station_iface):
+        if sends and strands(iface, host, names.station_addresses) is not None:
+            return LOOPBACK_ONLY
         return _plane_address(pin, station_iface, names)
     # Nothing pinned anywhere: show where the Pi sends it now, not that it chooses.
     return _route_pick(host, resolver, wait_s, names.labels) if host else unrouted
@@ -1583,7 +1595,7 @@ def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | 
     from openfollow.net_adapters import display_name
     from openfollow.net_utils import present_interfaces
 
-    names = _PanelNames(cfg.interface_labels, present_interfaces())
+    names = _PanelNames(cfg.interface_labels, present_interfaces(), frozenset(get_local_ipv4_addresses()))
     # Built once to start every lookup, then for real: each lookup waits from
     # when it started, so the render waits once for all of them.
     _interface_assignment_rows(cfg, web_bind, None, names)
@@ -1605,19 +1617,17 @@ def _interface_assignment_rows(
     def _addr(pin: str) -> str:
         return _plane_address(pin, station, names)
 
-    def _sender(pin: str, host: str, *, tcp: bool = False) -> str:
+    def _sender(pin: str, host: str, *, tcp: bool = False, sends: bool = True) -> str:
         # Each looked up the way its socket is: UDP from IPv4 sockets, TCP over both families.
         resolver = HOST_RESOLVER if tcp else IPV4_RESOLVER
-        return _egress_address(pin, host, station, resolver=resolver, wait_s=wait_s, names=names)
-
-    station_addresses = frozenset(get_local_ipv4_addresses())
+        return _egress_address(pin, host, station, resolver=resolver, wait_s=wait_s, names=names, sends=sends)
 
     def _osc_sender(dest: OscDestinationConfig) -> str:
         from openfollow.net_egress import is_loopback_host
         from openfollow.osc.egress import reaches_station
 
         # Never pinned, as the sender decides it: the kernel delivers it on this station.
-        if not is_loopback_host(dest.host) and reaches_station(dest.host, station_addresses):
+        if not is_loopback_host(dest.host) and reaches_station(dest.host, names.station_addresses):
             return "This station"
         return _sender(dest.source_iface, dest.host, tcp=dest.protocol == "tcp")
 
@@ -1661,7 +1671,8 @@ def _interface_assignment_rows(
             "key": "rttrpm_output.source_iface",
             "label": "RTTrPM output",
             "value": cfg.rttrpm_output.source_iface,
-            "address": _sender(cfg.rttrpm_output.source_iface, cfg.rttrpm_output.host),
+            # A switched-off output sends nowhere, so its host cannot strand it.
+            "address": _sender(cfg.rttrpm_output.source_iface, cfg.rttrpm_output.host, sends=cfg.rttrpm_output.enabled),
             "editable": True,
             "blank": "station",
             "feature": "rttrpm",
@@ -1706,6 +1717,7 @@ def _interface_assignment_rows(
             "address": resolved[0] if cfg.web_bind else _web_bind_address(cfg, resolved),
             "editable": not cfg.web_bind,
             "blank": "all",
+            "no_loopback": True,
             "note": f"Fixed to {cfg.web_bind} by web_bind in config.toml" if cfg.web_bind else "",
         },
     ]
@@ -4946,6 +4958,11 @@ def _register_marker_catalog_routes(
         sync = server.get_marker_catalog_sync()
         if sync is not None:
             sync.request_delta([marker_id])
+        # The rename is saved and sent to peers whatever the running outputs make of it.
+        try:
+            server.apply_marker_renames([marker_id])
+        except Exception:
+            logger.exception("Marker %d renamed, but the running outputs did not take the new name", marker_id)
         return json.dumps({"success": True, "entry": _catalog_entry_json(entry)})
 
     @app.delete("/api/markers/catalog/<marker_id:int>")
@@ -5912,6 +5929,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             "host_refusal": refusal,
             "on_device": _is_on_device_request(),
             "cancel_button": _cancel_button_label(cfg),
+            **_platform_context(cfg),
         }
         if request.path == "/login":
             page = template("login", error=f"Not logged in. {refusal.message}", **page_context)
@@ -6703,12 +6721,14 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         Returns the interface the station resolves to. ``station_names`` names each as the UI shows it.
         """
         from openfollow.net_adapters import display_name
-        from openfollow.net_utils import auto_station_iface
+        from openfollow.net_utils import auto_station_iface, offered_loopback_ifaces
 
         auto = auto_station_iface()
         net["station_iface"] = station
         net["station_auto"] = auto
         net["station_options"] = [(name, addr) for name, addr in options if name and name not in LOOPBACK_NAMES]
+        # The network backend never lists loopback; where the host offers it, it is offered here too.
+        net["station_options"] += offered_loopback_ifaces()
         if station and station not in [name for name, _addr in net["station_options"]]:
             net["station_options"].append((station, ""))
         named = {station, auto, *(name for name, _addr in net["station_options"])}
@@ -6718,12 +6738,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def _narrow_to_station(net: dict[str, Any], station: str, vlan_names: set[str], labels: Mapping[str, str]) -> None:
         """Simple: the card shows the station interface alone, and offers the picker that moves it."""
         from openfollow.net_adapters import display_name
+        from openfollow.net_utils import offered_loopback
 
         rows = net["iface_rows"]
         options = [(str(row.get("name", "")), str(row.get("address", ""))) for row in rows]
         resolved = _station_picker(net, station, options, labels)
         # Automatic with no address anywhere shows the first interface, as the Operator Screen edits it.
-        resolved = resolved or next((name for name, _addr in net["station_options"]), "")
+        resolved = resolved or next((name for name, _addr in net["station_options"] if not offered_loopback(name)), "")
         if resolved and resolved not in [name for name, _addr in options]:
             from openfollow.net_utils import get_iface_ipv4
 
@@ -10126,6 +10147,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         current = request.query.current if "current" in request.query else cfg.psn_source_iface
         blank_label = _BLANK_IFACE_LABELS.get(request.query.blank, _BLANK_IFACE_LABELS["auto"])
         ifaces = list_iface_ipv4()
+        if request.query.loopback == "0":
+            # The web UI's own pin, which never takes loopback (AppConfig drops it).
+            ifaces = [(name, ip) for name, ip in ifaces if name not in LOOPBACK_NAMES]
         options = [f'<option value="">{blank_label}</option>']
         names = {name for name, _ in ifaces}
         for name, ip in ifaces:

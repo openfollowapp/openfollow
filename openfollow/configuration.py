@@ -32,6 +32,7 @@ from openfollow.keyboard_layout import LAYOUT_RE as XKB_LAYOUT_RE
 from openfollow.keyboard_layout import VARIANT_RE as XKB_VARIANT_RE
 from openfollow.lens_model import C_BOUND, pull_back_to_valid
 from openfollow.net_adapters import normalize_labels
+from openfollow.network.adapter import LOOPBACK_NAMES
 from openfollow.restore_hold import unless_held
 from openfollow.station_fqdn import normalize_fqdn
 from openfollow.text_hygiene import CONTROL_CHARS_RE
@@ -2372,7 +2373,7 @@ class ControllerConfig:
     mouse_wheel_z_step: float = 0.1
     # Double right-click resets the controlled marker to the default position.
     mouse_double_click_reset: bool = True
-    deadzone: float = 0.15
+    deadzone: float = 0.05
     invert_y: bool = False
     curve: str = "logarithmic"
     # Which pad family's printed names buttons are shown by (button_names.py).
@@ -2398,7 +2399,7 @@ class ControllerConfig:
     btn_toggle_zones: str = ""
     btn_toggle_paths: str = ""
     btn_pathfinder: str = ""
-    move_xy_stick: str = "left"
+    move_xy_stick: str = "right"
     # Marker-fader integrator: which stick Y-axis (if any) drives the fader of
     # the currently-controlled marker. The bus integrates
     # ``deflection × dt × (1 / marker_fader_max_speed_s)`` per tick; the
@@ -2482,12 +2483,10 @@ class ControllerConfig:
         self.mouse_wheel_z_enabled = _coerce_bool(self.mouse_wheel_z_enabled, True)
         self.mouse_wheel_invert = _coerce_bool(self.mouse_wheel_invert, False)
         self.mouse_double_click_reset = _coerce_bool(self.mouse_double_click_reset, True)
-        if not 0.0 <= self.deadzone <= 1.0:
-            logger.warning(
-                "Invalid controller deadzone %s, clamping to [0.0, 1.0]",
-                self.deadzone,
-            )
-            self.deadzone = max(0.0, min(1.0, self.deadzone))
+        deadzone = _coerce_float(self.deadzone, _field_default(self, "deadzone"))
+        if not 0.0 <= deadzone <= 1.0:
+            logger.warning("Invalid controller deadzone %s, clamping to [0.0, 1.0]", deadzone)
+        self.deadzone = max(0.0, min(1.0, deadzone))
         if self.curve not in VALID_CURVES:
             logger.warning(
                 "Invalid controller curve %r, falling back to 'logarithmic'",
@@ -2497,10 +2496,11 @@ class ControllerConfig:
         self.button_name_style = _coerce_choice(self.button_name_style, BUTTON_NAME_STYLES, "standard")
         if self.move_xy_stick not in VALID_STICKS:
             logger.warning(
-                "Invalid move_xy_stick %r, falling back to 'left'",
+                "Invalid move_xy_stick %r, falling back to %r",
                 self.move_xy_stick,
+                _field_default(self, "move_xy_stick"),
             )
-            self.move_xy_stick = "left"
+            self.move_xy_stick = _field_default(self, "move_xy_stick")
         # Snap an unknown stick choice to "" (disable) rather than a working
         # default, so a typo can't route to a stick the operator didn't pick.
         self.marker_fader_stick = _coerce_choice(
@@ -2883,7 +2883,7 @@ class UiConfig:
 
     # Features that are on; every subsystem gated by one asks ``feature_on``.
     shown_features: list[str] = field(default_factory=lambda: list(DEFAULT_SHOWN_FEATURES))
-    # Config-only: shows the developer's views in the web UI (the Lens step's edge view).
+    # Config-only: shows the developer's views (the Lens step's edge view) and hides the unsupported-platform warning.
     developer_mode: bool = False
 
     def __post_init__(self) -> None:
@@ -3132,6 +3132,9 @@ class AppConfig:
         if not isinstance(self.web_bind_iface, str):
             self.web_bind_iface = ""
         self.web_bind_iface = self.web_bind_iface.strip()
+        # Bound to loopback the web UI would serve this machine alone: no browser on the LAN could fix it.
+        if self.web_bind_iface in LOOPBACK_NAMES:
+            self.web_bind_iface = ""
         if not isinstance(self.video_input_iface, str):
             self.video_input_iface = ""
         self.video_input_iface = self.video_input_iface.strip()
@@ -3962,13 +3965,8 @@ def _apply_with_fallback(
     return True
 
 
-def _marker_name_for_runtime(app: OpenFollowApp, marker_id: int) -> str:
-    """Pick a name for ``add_marker`` from the catalog, with a fallback.
-
-    Mirrors :func:`openfollow.services.init_markers`. Kept here so the
-    live-reload diff path doesn't need to import services to format
-    the label.
-    """
+def marker_name_for_runtime(app: OpenFollowApp, marker_id: int) -> str:
+    """The name a marker carries in the outputs: its catalog name, else ``Marker <id>``."""
     catalog = getattr(app, "_marker_catalog", None)
     if catalog is not None:
         entry = catalog.get(marker_id)
@@ -4319,9 +4317,6 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
             new_ids = set(filtered_controlled)
             to_remove = sorted(old_ids - new_ids)
             to_add = sorted(new_ids - old_ids)
-            # Capture old names up front so a rollback re-registers removed
-            # markers with their original label.
-            old_names = {marker_id: _marker_name_for_runtime(app, marker_id) for marker_id in to_remove}
             # Seed the same default position startup registration uses: an
             # unseeded marker broadcasts (0, 0, 0) and, having never taken a
             # data write, reports itself invalid on the PSN wire.
@@ -4332,7 +4327,7 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
                 for marker_id in to_remove:
                     server.remove_marker(marker_id)
                 for marker_id in to_add:
-                    server.add_marker(marker_id, _marker_name_for_runtime(app, marker_id)).set_pos(*default_pos)
+                    server.add_marker(marker_id, marker_name_for_runtime(app, marker_id)).set_pos(*default_pos)
 
                 # Mirror marker changes to OTP output if active
                 if app._otp_server is not None:
@@ -4377,10 +4372,17 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
                 # controlled ids / config; the next pass recomputes the same
                 # diff (and re-mirrors OTP/RTTrPM). Best-effort –
                 # ``_apply_with_fallback`` logs if this itself raises.
+                # The re-added markers are new objects; OTP and RTTrPM must send these, not the ones they held.
+                mirrors = [m for m in (app._otp_server, app._rttrpm_server) if m is not None]
                 for marker_id in to_add:
                     server.remove_marker(marker_id)
+                    for mirror in mirrors:
+                        mirror.unregister_marker(marker_id)
                 for marker_id in to_remove:
-                    server.add_marker(marker_id, old_names[marker_id]).set_pos(*default_pos)
+                    marker = server.add_marker(marker_id, marker_name_for_runtime(app, marker_id))
+                    marker.set_pos(*default_pos)
+                    for mirror in mirrors:
+                        mirror.register_marker(marker)
 
             _apply("controlled_marker_ids", _apply_controlled, on_failure=_restore_controlled)
         else:

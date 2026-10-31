@@ -2,7 +2,7 @@
 % # ``stats`` is the runtime snapshot, ``cards`` the web and discovery figures
 % # (``_build_diagnostics_cards``). Person Detection shows through ``data-feature``.
 % from openfollow.web.labels import pretty_label, video_error_token, video_signal_label
-% from openfollow.web.live_alerts import DETECTION_MISSING_STEP, diagnostics_alerts
+% from openfollow.web.live_alerts import DETECTION_MISSING_STEP, PLATFORM_STEP, diagnostics_alerts
 % system = stats.get("system", {})
 % video = stats.get("video", {})
 % resolution = video.get("resolution", {})
@@ -106,6 +106,12 @@
         <div class="stat-panel-head">
             <h3 class="stat-panel-title">This Station</h3>
         </div>
+% if alerts.platform is not None:
+        <div class="notice error">
+            <div>{{alerts.platform}}</div>
+            <div class="notice-sub">{{PLATFORM_STEP}}</div>
+        </div>
+% end
 % if alerts.controllers:
         <div class="notice error">
 % for line in alerts.controllers:

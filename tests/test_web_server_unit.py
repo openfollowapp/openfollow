@@ -2051,3 +2051,30 @@ def test_linux_wildcard_serves_loopback_itself(tmp_path, monkeypatch) -> None:
     started = _start_on(kernel, srv, monkeypatch)
 
     assert [slot for _host, _port, slot in started] == ["primary", "fallback"]
+
+
+def test_the_beacons_pin_to_loopback_when_the_station_is_on_it(tmp_path, monkeypatch) -> None:
+    """On a Mac a station on lo0 keeps discovery there: 127.0.0.1 is its address, not "unresolved"."""
+    import openfollow.net_utils as net_utils
+
+    monkeypatch.setattr(net_utils, "LOOPBACK_OFFERED", True)
+    monkeypatch.setattr("openfollow.web.server.get_local_ipv4_addresses", lambda: {"127.0.0.1", "10.0.0.1"})
+    station = {"iface": "lo0"}
+    resolved = ["127.0.0.1"]
+    srv = _make_quiet_server(
+        tmp_path,
+        monkeypatch,
+        local_ip="127.0.0.1",
+        station_ip="127.0.0.1",
+        local_ip_provider=lambda: resolved[0],
+        station_iface_provider=lambda: station["iface"],
+    )
+    assert (srv._beacon_sender.iface_ip, srv._beacon_sender.iface) == ("127.0.0.1", "lo0")
+
+    station["iface"], resolved[0] = "en0", "10.0.0.1"
+    srv._local_ip_refresh_ts -= 1000.0
+    assert srv.refresh_local_ip() is True
+    station["iface"], resolved[0] = "lo0", "127.0.0.1"
+    srv._local_ip_refresh_ts -= 1000.0
+    assert srv.refresh_local_ip() is True
+    assert (srv._beacon_sender.iface_ip, srv._beacon_receiver.iface_ip) == ("127.0.0.1", "127.0.0.1")

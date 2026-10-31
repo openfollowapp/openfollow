@@ -18,6 +18,7 @@ from typing import Any, cast
 import cairo
 
 from openfollow.button_names import hud_label
+from openfollow.platform_support import STEP
 from openfollow.runtime import overlay_button_symbols as symbols
 from openfollow.runtime.overlay_draw_style import (
     CHEVRON_SIZE,
@@ -790,6 +791,10 @@ def draw_settings_menu(renderer: Any, cr: Any, state: OverlayState, w: int, h: i
             content_x,
             cursor_y,
             content_w,
+        )
+    if state.settings_platform_warning:
+        cursor_y = _draw_settings_notice_box(
+            renderer, cr, "error", state.settings_platform_warning, STEP, content_x, cursor_y, content_w
         )
     unbound_text = _unbound_controllers_text(state.unbound_controllers)
     if unbound_text:

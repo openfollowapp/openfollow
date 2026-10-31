@@ -28,8 +28,9 @@ from typing import Any
 import pytest
 
 import openfollow
-from openfollow import net_utils
+from openfollow import net_utils, platform_support
 from openfollow.logging_setup import RingBufferLogHandler
+from openfollow.platform_support import PlatformSupport
 from openfollow.runtime.removable_media import Media
 from openfollow.video.source_limits import OverLimit, SourceReading, limits_snapshot
 from openfollow.web import diagnostics as diag
@@ -1956,6 +1957,46 @@ def test_format_bundle_header_identifies_version_and_platform(monkeypatch) -> No
     assert header[2] == "platform: arm64 (aarch64)"
 
 
+_UNSUPPORTED = (
+    "support: Unsupported platform: macOS. OpenFollow is not developed to work on this platform and errors are "
+    "expected. No support is provided. Never use this setup in a show!"
+)
+
+
+@pytest.mark.parametrize(
+    ("support", "runtime_stats", "line"),
+    [
+        (PlatformSupport(True, "Raspberry Pi 5 Model B"), None, "support: supported (Raspberry Pi 5 Model B)"),
+        (PlatformSupport(False, "macOS"), None, _UNSUPPORTED),
+        (PlatformSupport(False, "macOS"), {"system": {"platform": {"warning": True}}}, _UNSUPPORTED),
+        (
+            PlatformSupport(False, "macOS"),
+            {"system": {"platform": {"warning": False}}},
+            _UNSUPPORTED + " (warning hidden: developer mode)",
+        ),
+        (PlatformSupport(False, "macOS"), {}, _UNSUPPORTED),
+    ],
+    ids=["supported", "no-stats", "shown", "developer-mode", "stats-without-platform"],
+)
+def test_format_bundle_header_says_whether_the_platform_is_supported(
+    monkeypatch, support: PlatformSupport, runtime_stats: dict | None, line: str
+) -> None:
+    """Said even while developer mode hides the warning, so a bundle never hides what the station runs on."""
+    monkeypatch.setattr(platform_support, "current", lambda: support)
+    providers = diag.DiagnosticsProviders(runtime_stats=(lambda: runtime_stats) if runtime_stats is not None else None)
+    header = diag.format_bundle(diag.collect_bundle(providers, budget_s=0.0)).splitlines()
+    assert header[3] == line
+
+
+def test_a_failing_stats_provider_still_names_the_platform(monkeypatch) -> None:
+    monkeypatch.setattr(platform_support, "current", lambda: PlatformSupport(False, "macOS"))
+
+    def broken() -> dict:
+        raise RuntimeError("stats down")
+
+    assert diag.support_label(diag.DiagnosticsProviders(runtime_stats=broken)) == _UNSUPPORTED.removeprefix("support: ")
+
+
 class _Unnamed(tzinfo):
     """An offset with no abbreviation, which ``timezone`` cannot express."""
 
@@ -2040,8 +2081,8 @@ def test_format_bundle_header_says_which_zone_the_log_times_are_in(monkeypatch) 
     monkeypatch.setattr(diag, "station_zone", zone)
     monkeypatch.setattr(diag, "datetime", _Ticking)
     bundle = diag.collect_bundle()
-    header = diag.format_bundle(bundle).splitlines()[:5]
-    assert header[3:] == [f"generated: {bundle.generated_at}", "log times: station time, UTC+01:00 (Europe/London)"]
+    header = diag.format_bundle(bundle).splitlines()[:6]
+    assert header[4:] == [f"generated: {bundle.generated_at}", "log times: station time, UTC+01:00 (Europe/London)"]
     # Read at the moment the bundle is stamped, so the two lines describe one clock reading.
     (local,) = seen
     assert local.utcoffset() is not None

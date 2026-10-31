@@ -466,6 +466,27 @@ def test_example_config_seeds_the_default_features_and_names_the_experimental_on
 
 
 @pytest.mark.parametrize(("section", "defaults"), [("controller", ControllerConfig()), ("mouse3d", Mouse3DConfig())])
+def test_example_config_seeds_the_input_defaults(section: str, defaults: object) -> None:
+    """A first boot, a config missing the keys and Restore defaults must drive the pad alike."""
+    from pathlib import Path
+
+    example_path = Path(__file__).resolve().parents[1] / "config.example.toml"
+    example = tomllib.loads(example_path.read_text(encoding="utf-8"))[section]
+    differing = {
+        name: (value, getattr(defaults, name))
+        for name, value in example.items()
+        if hasattr(defaults, name) and value != getattr(defaults, name)
+    }
+    assert differing == {}
+
+
+def test_a_controller_section_missing_the_stick_and_deadzone_loads_the_defaults(temp_config_path) -> None:
+    temp_config_path.write_text("[controller]\nenabled = true\n", encoding="utf-8")
+    controller = load_config(str(temp_config_path)).controller
+    assert (controller.move_xy_stick, controller.deadzone) == ("right", 0.05)
+
+
+@pytest.mark.parametrize(("section", "defaults"), [("controller", ControllerConfig()), ("mouse3d", Mouse3DConfig())])
 def test_example_config_binds_nothing_the_defaults_leave_unbound(section: str, defaults: object) -> None:
     """A station seeded from the example must not start with a binding a fresh config leaves unbound."""
     from pathlib import Path
@@ -1413,6 +1434,13 @@ def test_marker_move_speeds_rejects_bool_keys() -> None:
 def test_controller_deadzone_is_clamped(input_deadzone: float, expected: float) -> None:
     config = ControllerConfig(deadzone=input_deadzone)
     assert config.deadzone == expected
+
+
+@pytest.mark.parametrize(
+    ("bad", "expected"), [("abc", 0.05), (None, 0.05), (float("nan"), 0.05), (True, 1.0), ("0.2", 0.2)]
+)
+def test_controller_wrongly_typed_deadzone_falls_back_to_the_default(bad: object, expected: float) -> None:
+    assert ControllerConfig(deadzone=bad).deadzone == expected  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("layout", ["wasd", "ijkl", "numpad"])
@@ -5371,11 +5399,16 @@ def test_a_bad_hand_edited_button_name_style_loads_as_standard(temp_config_path)
     assert load_config(str(temp_config_path)).controller.button_name_style == "standard"
 
 
-def test_controller_invalid_move_xy_stick_falls_back_to_left(caplog) -> None:
+@pytest.mark.parametrize("stick", ["middle", "LEFT", None, 7, True])
+def test_controller_invalid_move_xy_stick_falls_back_to_right(caplog, stick: object) -> None:
     with caplog.at_level("WARNING", logger="openfollow.configuration"):
-        cfg = ControllerConfig(move_xy_stick="middle")
-    assert cfg.move_xy_stick == "left"
+        cfg = ControllerConfig(move_xy_stick=stick)  # type: ignore[arg-type]
+    assert cfg.move_xy_stick == "right"
     assert any("Invalid move_xy_stick" in r.message for r in caplog.records)
+
+
+def test_controller_accepts_left_stick() -> None:
+    assert ControllerConfig(move_xy_stick="left").move_xy_stick == "left"
 
 
 def test_controller_accepts_right_stick() -> None:
@@ -5547,6 +5580,7 @@ def test_controller_migrates_legacy_vf1_keys_on_load() -> None:
 
     toml = textwrap.dedent("""
         [controller]
+        move_xy_stick = "left"
         vf1_stick = "right_y"
         vf1_max_speed_s = 2.5
     """)
@@ -6048,7 +6082,7 @@ def test_marker_name_for_runtime_pulls_from_catalog() -> None:
     reload diff path uses it; otherwise falls back to ``Marker <id>``."""
     import types
 
-    from openfollow.configuration import _marker_name_for_runtime
+    from openfollow.configuration import marker_name_for_runtime
     from openfollow.marker_catalog.catalog import MarkerCatalog
 
     catalog = MarkerCatalog()
@@ -6056,11 +6090,11 @@ def test_marker_name_for_runtime_pulls_from_catalog() -> None:
     catalog.upsert(6, "", "#00ff00", updated_at=1.0)  # name empty → fallback
 
     app = types.SimpleNamespace(_marker_catalog=catalog)
-    assert _marker_name_for_runtime(app, 5) == "Operator Name"
+    assert marker_name_for_runtime(app, 5) == "Operator Name"
     # Empty name in catalog falls back to default label.
-    assert _marker_name_for_runtime(app, 6) == "Marker 6"
+    assert marker_name_for_runtime(app, 6) == "Marker 6"
     # Missing entry falls back too.
-    assert _marker_name_for_runtime(app, 99) == "Marker 99"
+    assert marker_name_for_runtime(app, 99) == "Marker 99"
 
 
 def test_marker_name_for_runtime_without_catalog_uses_fallback() -> None:
@@ -6069,10 +6103,10 @@ def test_marker_name_for_runtime_without_catalog_uses_fallback() -> None:
     we fall back to ``Marker <id>``."""
     import types
 
-    from openfollow.configuration import _marker_name_for_runtime
+    from openfollow.configuration import marker_name_for_runtime
 
     app = types.SimpleNamespace()  # no _marker_catalog attribute
-    assert _marker_name_for_runtime(app, 3) == "Marker 3"
+    assert marker_name_for_runtime(app, 3) == "Marker 3"
 
 
 def test_load_config_strips_bool_and_non_int_marker_ids(tmp_path) -> None:
@@ -6178,7 +6212,7 @@ def test_apply_runtime_filters_invalid_ids_defense_in_depth() -> None:
 
 def test_apply_runtime_replays_controller_config_through_gamepad_handler() -> None:
     app = _app_with()
-    new_ctrl = ControllerConfig(deadzone=0.42)  # different from default 0.15
+    new_ctrl = ControllerConfig(deadzone=0.42)  # different from default 0.05
     new_config = AppConfig(controller=new_ctrl)
 
     apply_runtime_config_changes(app, new_config)
@@ -10188,3 +10222,60 @@ def test_a_stored_calibration_points_feature_is_dropped_as_unknown(temp_config_p
     assert load_config(str(temp_config_path)).ui.shown_features == ["paths"]
     assert "calibration_points" not in FEATURE_KEYS
     assert "calibration_points" not in EXPERIMENTAL_FEATURES
+
+
+def _app_on_a_real_psn_server(controlled: list[int]) -> _DummyApp:
+    """A live-apply app whose outputs are a real PsnServer reading a real catalog."""
+    from openfollow.configuration import marker_name_for_runtime
+    from openfollow.marker_catalog import MarkerCatalog
+    from openfollow.psn.server import PsnServer
+
+    app = _app_with(controlled_marker_ids=controlled, viewer_marker_ids=controlled)
+    app._marker_catalog = MarkerCatalog()
+    app._server = PsnServer(mcast_ip=None, name_of=lambda i: marker_name_for_runtime(app, i))
+    for marker_id in controlled:
+        app._server.add_marker(marker_id, f"Marker {marker_id}")
+    return app
+
+
+def test_a_rename_saved_while_a_marker_is_added_reaches_its_output() -> None:
+    """The web thread can save a rename after the live apply read the old name but before it
+    adds the marker: the rename finds no marker, so the add must not take the stale name."""
+    app = _app_on_a_real_psn_server([1])
+    app._marker_catalog.upsert(2, "Lead", "#ff0000")
+    real_add = app._server.add_marker
+
+    def _rename_then_add(marker_id, name):  # noqa: ANN001
+        # What the rename route does once its save landed: the catalog, then the outputs.
+        app._marker_catalog.upsert(marker_id, "Spot", "#ff0000")
+        app._server.rename_markers([marker_id])
+        return real_add(marker_id, name)
+
+    app._server.add_marker = _rename_then_add  # type: ignore[method-assign]
+    apply_runtime_config_changes(app, AppConfig(controlled_marker_ids=[1, 2], viewer_marker_ids=[1, 2]))
+    assert app._server.get_marker(2).name == "Spot"
+
+
+def test_a_rolled_back_marker_is_sent_by_otp_and_rttrpm_too() -> None:
+    """The rollback re-adds fresh Marker objects; the mirrors must hold those, or renames miss them."""
+    from openfollow.otp.server import OtpServer
+    from openfollow.rttrpm.server import RttrpmServer
+
+    app = _app_on_a_real_psn_server([1, 2])
+    app._otp_server = OtpServer()
+    app._rttrpm_server = RttrpmServer(host="192.0.2.30")
+    for marker_id in (1, 2):
+        app._otp_server.register_marker(app._server.get_marker(marker_id))
+        app._rttrpm_server.register_marker(app._server.get_marker(marker_id))
+    real_add = app._server.add_marker
+
+    def _failing_add(marker_id, name):  # noqa: ANN001
+        if marker_id == 3:
+            raise RuntimeError("PSN add failed")
+        return real_add(marker_id, name)
+
+    app._server.add_marker = _failing_add  # type: ignore[method-assign]
+    assert apply_runtime_config_changes(app, AppConfig(controlled_marker_ids=[1, 3], viewer_marker_ids=[1, 3])) is False
+    for mirror in (app._otp_server, app._rttrpm_server):
+        assert mirror.get_marker(2) is app._server.get_marker(2)
+        assert mirror.get_marker(3) is None

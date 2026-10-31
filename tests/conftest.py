@@ -118,6 +118,13 @@ def _no_shared_port_binds(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_loopback_interface(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test sees a host that does not offer loopback as an interface, as Linux;
+    a test about macOS's offer sets ``LOOPBACK_OFFERED`` itself."""
+    monkeypatch.setattr("openfollow.net_utils.LOOPBACK_OFFERED", False)
+
+
+@pytest.fixture(autouse=True)
 def _no_host_adapters(tmp_path: Path) -> Iterator[None]:
     """No test may describe the host's own network adapters.
 
@@ -169,6 +176,14 @@ def _no_host_input_devices(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: py
 def _no_host_camera_modes(monkeypatch: pytest.MonkeyPatch) -> None:
     """No test may read the mode list of a camera on the host; one that cares installs its own."""
     monkeypatch.setattr("openfollow.video.inputs.v4l2._read_capture_modes", lambda device: None)
+
+
+@pytest.fixture(autouse=True)
+def _supported_platform(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test may depend on the host's platform; one that cares sets ``platform_support.current`` itself."""
+    from openfollow import platform_support
+
+    monkeypatch.setattr(platform_support, "current", lambda: platform_support.PlatformSupport(True, "Raspberry Pi 5"))
 
 
 @pytest.fixture(autouse=True)

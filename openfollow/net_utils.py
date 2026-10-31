@@ -21,9 +21,14 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, NamedTuple
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 import psutil
+
+from openfollow.network.adapter import LOOPBACK_NAMES
+
+if TYPE_CHECKING:
+    import multicast_expert
 
 # Status from resolve_source_ip / resolve_plane_source_ip: "iface" (pinned),
 # "station" (inherited the station-wide pin), "primary" (auto-detected),
@@ -86,15 +91,32 @@ def get_local_ipv4_addresses() -> set[str]:
     return ips
 
 
+# A Mac's lo0 carries multicast, so a desk on the same Mac can take PSN there; Linux's lo does not.
+LOOPBACK_OFFERED = sys.platform == "darwin"
+LOOPBACK_IPV4 = "127.0.0.1"
+
+
+def offered_loopback(iface_name: str) -> bool:
+    """Whether *iface_name* is this host's loopback and the host offers it as an interface."""
+    return LOOPBACK_OFFERED and iface_name in LOOPBACK_NAMES
+
+
 def get_iface_ipv4(iface_name: str) -> str:
-    """Return first non-loopback IPv4 on iface, or empty string if unavailable."""
+    """The IPv4 a plane pinned to *iface_name* sends from, or "" when it has none.
+
+    The first non-loopback address; on an offered loopback, ``127.0.0.1``, never a
+    driver's alias on the same interface.
+    """
     if not iface_name:
         return ""
-    addrs = psutil.net_if_addrs().get(iface_name, [])
-    for addr in addrs:
-        if addr.family == socket.AF_INET and not addr.address.startswith("127."):
-            return str(addr.address)
-    return ""
+    return _send_address(iface_name, psutil.net_if_addrs().get(iface_name, []))
+
+
+def _send_address(iface_name: str, addrs: list[Any]) -> str:
+    ipv4 = [str(addr.address) for addr in addrs if addr.family == socket.AF_INET]
+    if offered_loopback(iface_name):
+        return LOOPBACK_IPV4 if LOOPBACK_IPV4 in ipv4 else ""
+    return next((address for address in ipv4 if not address.startswith("127.")), "")
 
 
 def interface_present(iface_name: str) -> bool:
@@ -124,18 +146,24 @@ def auto_station_iface() -> str:
 
 
 def list_iface_ipv4() -> list[tuple[str, str]]:
-    """Return [(iface_name, ipv4)] for every non-loopback IPv4, sorted by name."""
-    out: list[tuple[str, str]] = []
-    for iface, addrs in psutil.net_if_addrs().items():
-        for addr in addrs:
-            if addr.family != socket.AF_INET:
-                continue
-            if addr.address.startswith("127."):
-                continue
-            out.append((str(iface), str(addr.address)))
-            break  # first non-loopback IPv4 per iface is enough
+    """[(iface_name, ipv4)] for every interface a plane can pin, with the address it sends from, by name.
+
+    Loopback is listed only where the host offers it (:func:`offered_loopback`).
+    """
+    out = [
+        (str(name), address)
+        for name, addrs in psutil.net_if_addrs().items()
+        if (address := _send_address(str(name), addrs))
+    ]
     out.sort(key=lambda item: item[0])
     return out
+
+
+def offered_loopback_ifaces() -> list[tuple[str, str]]:
+    """The offered loopback as ``(name, address)``, for pickers built from a backend that never lists it."""
+    if not LOOPBACK_OFFERED:
+        return []
+    return [(name, address) for name in sorted(LOOPBACK_NAMES) if (address := get_iface_ipv4(name))]
 
 
 def resolve_source_ip(
@@ -336,7 +364,7 @@ def wait_for_source_ip(
     timeout_s: float = 30.0,
     interval_s: float = 1.0,
 ) -> str:
-    """Block until pinned source IP is live (returns loopback on timeout)."""
+    """Block until the pinned source IP is live; on timeout the primary address, or "" when there is none."""
     # When pinned, use fallback=False to wait for target; otherwise accept primary.
     pinned = bool(iface)
     deadline = time.monotonic() + timeout_s
@@ -346,11 +374,9 @@ def wait_for_source_ip(
             return resolved
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            # On timeout, fall back to primary or loopback.
+            # On timeout, fall back to the primary address; "" when there is none.
             primary = get_primary_local_ipv4(default="")
-            if primary and not primary.startswith("127."):
-                return primary
-            return "127.0.0.1"
+            return primary if primary and not primary.startswith("127.") else ""
         # Don't sleep past deadline.
         time.sleep(min(interval_s, remaining))
 
@@ -363,6 +389,15 @@ class InterfaceUnavailable(OSError):
     """
 
 
+def _iface_index(iface: str) -> int:
+    try:
+        return socket.if_nametoindex(iface)
+    except OSError as exc:
+        raise InterfaceUnavailable(
+            f"{iface} is not present ({exc}); staying silent until it returns rather than using another interface"
+        ) from exc
+
+
 def iface_mreqn(group: str, iface: str, iface_ip: str) -> bytes:
     """``struct ip_mreqn`` naming *iface* by its kernel index as well as its address.
 
@@ -371,13 +406,67 @@ def iface_mreqn(group: str, iface: str, iface_ip: str) -> bytes:
     so its link-local address. Linux honours the index; macOS reads only the
     group and address of an ``IP_ADD_MEMBERSHIP``, so the address stays real.
     """
+    return struct.pack("@4s4si", socket.inet_aton(group), socket.inet_aton(iface_ip), _iface_index(iface))
+
+
+def _ipv4_interface(address: str, netmask: str | None) -> ipaddress.IPv4Interface:
+    """*address* with its netmask, or as a single host when the netmask is missing or malformed."""
     try:
-        index = socket.if_nametoindex(iface)
-    except OSError as exc:
-        raise InterfaceUnavailable(
-            f"{iface} is not present ({exc}); staying silent until it returns rather than using another interface"
-        ) from exc
-    return struct.pack("@4s4si", socket.inet_aton(group), socket.inet_aton(iface_ip), index)
+        return ipaddress.IPv4Interface((address, netmask) if netmask else address)
+    except ValueError:
+        return ipaddress.IPv4Interface(address)
+
+
+def multicast_iface_info(iface: str = "", iface_ip: str = "") -> multicast_expert.IfaceInfo:
+    """*iface*, or the one interface holding *iface_ip*, as ``McastTxSocket`` takes it without scanning.
+
+    The library's own scan raises on an IPv4 address with no netmask, such as the peer
+    alias a 3D Mouse driver adds to macOS's lo0, so such an address is listed as a /32.
+    The socket binds the first address listed, so *iface_ip* leads.
+    """
+    import multicast_expert
+
+    table = psutil.net_if_addrs()
+    if not iface:
+        if not iface_ip:
+            raise InterfaceUnavailable("no interface has an address to send from; staying silent until one does")
+        holders = sorted(
+            name
+            for name, addrs in table.items()
+            if any(a.family == socket.AF_INET and a.address == iface_ip for a in addrs)
+        )
+        if not holders:
+            raise InterfaceUnavailable(f"no interface holds {iface_ip}; staying silent until one does")
+        if len(holders) > 1:
+            raise InterfaceUnavailable(
+                f"{iface_ip} is held by {', '.join(holders)}; staying silent until one interface holds it"
+            )
+        iface = holders[0]
+    index = _iface_index(iface)
+    addrs = table.get(iface, [])
+    ip4 = [_ipv4_interface(a.address, a.netmask) for a in addrs if a.family == socket.AF_INET]
+    if not ip4:
+        raise InterfaceUnavailable(f"{iface} has no IPv4 address; staying silent until it gets one")
+    ip4.sort(key=lambda address: str(address.ip) != iface_ip)
+    return multicast_expert.IfaceInfo(
+        machine_name=iface,
+        index=index,
+        link_layer_address=next((str(a.address) for a in addrs if a.family == psutil.AF_LINK), None),
+        ip4_addrs=tuple(ip4),
+        ip6_addrs=(),
+    )
+
+
+def multicast_tx_socket(groups: list[str], iface: str, source_ip: str) -> multicast_expert.McastTxSocket:
+    """A PSN or OTP sender's socket, by interface index when named, else from the primary address."""
+    import multicast_expert
+
+    return multicast_expert.McastTxSocket(
+        socket.AF_INET,
+        mcast_ips=groups,
+        iface=multicast_iface_info(iface, source_ip if iface else resolve_iface_ip(source_ip)),
+        enable_external_loopback=True,
+    )
 
 
 def bind_multicast_send_iface(sock: socket.socket, iface_ip: str | None, iface: str = "") -> None:

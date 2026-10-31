@@ -14,6 +14,7 @@ from typing import Any
 
 import numpy.typing as npt
 
+from openfollow import platform_support
 from openfollow.button_names import name_style
 from openfollow.configuration import (
     MOUSE3D_AXES,
@@ -640,6 +641,8 @@ def build_marker_visual_state(
         state.settings_selected_index = app._settings_menu_index
         state.settings_menu_banner = app._settings_menu_banner
         state.settings_menu_banner_action = app._settings_menu_banner_action
+        if platform_support.warning_shown(app._config):
+            state.settings_platform_warning = platform_support.current().title
     else:
         state.settings_items = []
         state.settings_items_enabled = []
@@ -981,6 +984,12 @@ def build_marker_visual_state(
         if info.get("name"):
             parts.append(str(info["name"]))
         state.status_flags.append((f"controller_missing_{info['controller_index']}", " · ".join(parts), "error"))
+
+    # Last of the errors: a live fault outranks a condition that never clears.
+    if platform_support.warning_shown(app._config):
+        state.status_flags.append(
+            ("platform", f"{platform_support.current().title}. {platform_support.SHORT_STEP}", "error")
+        )
 
     # Gravest first, each level in the order above: the badge shows a few rows
     # and folds the rest into "+N more", which must never hide a fault behind a notice.

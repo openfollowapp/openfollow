@@ -189,6 +189,8 @@ def run_selfcheck() -> int:
 def run_gui() -> int:
     """Seed per-user data, then hand off to the normal GUI entry point."""
     config_path = seed_user_data(default_config_dir(), resource_root())
+    # A Finder launch starts in read-only "/"; device-local stores resolve under the cwd, as on a Pi.
+    os.chdir(config_path.parent)
     sys.argv = [sys.argv[0], str(config_path)]
     from openfollow.main import main
 

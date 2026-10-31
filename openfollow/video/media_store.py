@@ -177,7 +177,10 @@ def resolve_media_storage_path() -> Path:
 
 def _ensure_storage_dir() -> Path:
     path = resolve_media_storage_path()
-    path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise MediaStoreError("The media storage folder can't be created on this station.") from exc
     return path
 
 

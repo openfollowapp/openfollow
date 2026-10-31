@@ -5290,6 +5290,9 @@ def _register_gallery_routes(app: Bottle, server: ConfigWebServer) -> None:
             item = media_store.save_captured_frame(jpeg)
         except MediaStoreError as exc:
             return json.dumps({"ok": False, "error": exc.message})
+        except OSError:
+            logger.exception("Media capture failed")
+            return json.dumps({"ok": False, "error": "Capture failed."})
         return json.dumps({"ok": True, "media_id": item.media_id})
 
     @app.get(_GALLERY_PREFIX + "/download/<media_id>")

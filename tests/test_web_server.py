@@ -9857,6 +9857,21 @@ def test_gallery_capture_store_error(gallery_server, monkeypatch) -> None:
     assert json.loads(body) == {"ok": False, "error": "gallery full"}
 
 
+def test_gallery_capture_write_failure_answers_json(gallery_server, monkeypatch) -> None:
+    from openfollow.video import media_store
+
+    server, base, _ = gallery_server
+    monkeypatch.setattr(server, "get_full_snapshot", lambda: _JPEG + b"frame")
+
+    def boom(jpeg):
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(media_store, "save_captured_frame", boom)
+    status, body = _post_bytes(base, f"{_GP}/capture", b"")
+    assert status == 200
+    assert json.loads(body) == {"ok": False, "error": "Capture failed."}
+
+
 def test_gallery_download_user_media(gallery_server) -> None:
     _, base, media_dir = gallery_server
     _post_bytes(base, f"{_GP}/upload", _PNG)

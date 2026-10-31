@@ -231,6 +231,14 @@ def test_save_captured_frame_rejects_non_jpeg(storage: Path) -> None:
         ms.save_captured_frame(_PNG)
 
 
+def test_save_captured_frame_reports_unwritable_storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_bytes(b"")
+    monkeypatch.setattr(ms, "resolve_media_storage_path", lambda: blocker / "media")
+    with pytest.raises(ms.MediaStoreError, match="can't be created"):
+        ms.save_captured_frame(_JPEG + b"frame")
+
+
 # -- video upload -------------------------------------------------------------
 
 

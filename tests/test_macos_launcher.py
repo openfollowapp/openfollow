@@ -187,6 +187,22 @@ def test_main_routes_selfcheck(launcher, monkeypatch) -> None:
     assert launcher.main([]) == 0
 
 
+def test_run_gui_starts_in_the_config_dir(launcher, monkeypatch, tmp_path) -> None:
+    # Finder starts the app in "/"; the media and detection stores resolve under the cwd.
+    config_dir = tmp_path / "config"
+    (tmp_path / "res").mkdir()
+    resources = _write_resources(tmp_path / "res")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["OpenFollow"])
+    monkeypatch.setattr(launcher, "default_config_dir", lambda: config_dir)
+    monkeypatch.setattr(launcher, "resource_root", lambda: resources)
+    seen: list[Path] = []
+    monkeypatch.setattr("openfollow.main.main", lambda: seen.append(Path.cwd()))
+
+    assert launcher.run_gui() == 0
+    assert seen == [config_dir.resolve()]
+
+
 def test_main_routes_gui_by_default(launcher, monkeypatch) -> None:
     monkeypatch.delenv("OPENFOLLOW_SELFCHECK", raising=False)
     monkeypatch.setattr(launcher, "run_gui", lambda: 0)

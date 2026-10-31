@@ -79,7 +79,8 @@ class PsnServer:
         name_of: Callable[[int], str] | None = None,
     ) -> None:
         self._system_name = system_name
-        # Where a marker's name comes from, read under ``_lock`` on every add and rename.
+        # Where a marker's name comes from, read under ``_lock`` on every add and rename;
+        # it must never call back into this server.
         self._name_of = name_of
         self._target_ip = target_ip
         self._port = port

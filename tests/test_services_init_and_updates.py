@@ -484,7 +484,7 @@ class TestInitMarkers:
         assert getattr(services._app, "_pin_waits_for_selection", False) is False
 
     def test_a_rename_saved_during_startup_reaches_its_output(self, services: AppRuntimeServices) -> None:
-        """The web server is up before the markers: a rename saved mid-loop finds no marker yet."""
+        """The web server is up before the markers: a rename saved mid-startup is not lost."""
         from openfollow.configuration import marker_name_for_runtime
         from openfollow.marker_catalog import MarkerCatalog
         from openfollow.psn.server import PsnServer
@@ -495,14 +495,14 @@ class TestInitMarkers:
         server = PsnServer(mcast_ip=None, name_of=lambda i: marker_name_for_runtime(services._app, i))
         real_add = server.add_marker
 
-        def _add_then_rename(marker_id, name):  # noqa: ANN001
-            marker = real_add(marker_id, name)
-            # What the rename route does once its save landed: the catalog, then the outputs.
+        def _rename_then_add(marker_id, name):  # noqa: ANN001
+            # The route's rename lands after init_markers read "Lead" but before the add:
+            # it finds no marker, so the add must not take the stale name it was handed.
             catalog.upsert(1, "Spot", "#ff0000")
             server.rename_markers([1])
-            return marker
+            return real_add(marker_id, name)
 
-        server.add_marker = _add_then_rename  # type: ignore[method-assign]
+        server.add_marker = _rename_then_add  # type: ignore[method-assign]
         services._app._server = server
         services.init_markers()
         assert [server.get_marker(i).name for i in (1, 2)] == ["Spot", "Marker 2"]

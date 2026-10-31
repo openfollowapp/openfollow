@@ -873,8 +873,6 @@ class OpenFollowApp:
 
         def _on_change(changed_ids: list[int]) -> None:
             # Background sync receiver: apply renames + prune deletions.
-            if self._server is None:
-                return
             catalog = self._marker_catalog
             # get() hides tombstones; None with a stored entry means a peer deleted it.
             tombstoned = [i for i in changed_ids if catalog.get(i) is None and catalog.get_any(i) is not None]

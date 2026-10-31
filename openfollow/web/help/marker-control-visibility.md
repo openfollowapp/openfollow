@@ -7,7 +7,7 @@ Defines which markers exist in the show and what this station does with each. Th
 Synced to all stations within a few seconds of saving.
 
 - **ID** – the number receivers see on PSN, OSC, OTP and RTTrPM (integer ≥ 1). Match your console's numbering.
-- **Name** – label for the interface, up to 64 characters. Not sent on the PSN wire.
+- **Name** – up to 64 characters. The label in the interface and the tracker name receivers see on PSN, OTP and RTTrPM; a saved rename reaches them at once.
 - **Color** – the marker's swatch on the Operator Screen and web UI.
 - **Controlled by** – which stations currently claim control. A red row with a **Conflict** chip means more than one station controls the marker: each sends it on every output, so receivers see it jump. The Operator Screen shows a red **Control conflict** status row and turns the marker's card red. **Not controlled** means no station has it.
 - **This Station** – what this station does with the marker. A click saves it.

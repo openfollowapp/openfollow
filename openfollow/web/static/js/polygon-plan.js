@@ -4,14 +4,15 @@
 //
 // A top-down stage plan on a <canvas> for drawing and editing polygons in
 // PSN-absolute world metres (X stage left, Y upstage): the main grid, the live
-// markers, a polygon being drawn, and drag handles on one editable polygon.
+// markers, and drag handles on one editable polygon, whose edges add a corner.
+// A polygon the page names under the pointer (its label) moves whole.
 // The page owns its polygons and draws them in ``opts.drawPolygons``.
 (function () {
     'use strict';
 
     var PAD = 20;
     var HANDLE_HIT_SQ = 49;  // 7 px
-    var CLOSE_HIT_SQ = 100;  // 10 px to the first corner closes a drawing
+    var EDGE_HIT_SQ = 100;  // 10 px from an edge of the editable polygon
 
     function pointInPolygon(x, y, verts) {
         var inside = false;
@@ -59,7 +60,11 @@
     //   onPress(world)      a press that hit no handle (selection)
     //   onDragMove(index)   a handle moved; the array is already updated
     //   onDragEnd(index)    a drag ended
-    //   onDraftClose(verts) a drawing closed with three or more corners
+    //   onInsert(index)     a press on an edge added a corner at index, now held
+    //   labelAt(sx, sy)     the polygon whose label is at a canvas point, or null
+    //   grab(polygon)       its vertex array, which a press on its label moves whole
+    //   onGrabMove()        a held polygon moved; its array is already updated
+    //   onGrabEnd(moved)    a held polygon was let go
     //   onRender()          after every render (buttons, status)
     function PolygonPlan(canvas, opts) {
         this.canvas = canvas;
@@ -67,8 +72,8 @@
         this.opts = opts || {};
         this.grid = {width: 10, depth: 10, spacing: 1, x_offset: 0, y_offset: 0};
         this.markers = [];
-        this.draft = null;  // {vertices: [[x, y], ...]} while drawing
-        this.drag = null;  // {index} while a handle is held
+        this.drag = null;  // {index} while a handle is held, {whole, from, before} while a polygon is
+        this.hover = null;  // the point on an edge a press would add a corner at
         // The view stays put while a handle is dragged, so the world point
         // under the pointer does not move as the polygon grows past the edge.
         this._frozenExtent = null;
@@ -141,12 +146,27 @@
         return null;
     };
 
+    // The editable polygon's edge nearest a canvas point within reach: the corner it starts at and the point on it.
+    P.edgeAt = function (sx, sy) {
+        var verts = this.opts.editable ? this.opts.editable() : null, best = null;
+        if (!verts || verts.length < 2) return null;
+        for (var i = 0; i < verts.length; i++) {
+            var a = this.toScreen(verts[i][0], verts[i][1]);
+            var b = this.toScreen(verts[(i + 1) % verts.length][0], verts[(i + 1) % verts.length][1]);
+            var ux = b[0] - a[0], uy = b[1] - a[1], len = ux * ux + uy * uy;
+            var t = len ? Math.max(0, Math.min(1, ((sx - a[0]) * ux + (sy - a[1]) * uy) / len)) : 0;
+            var qx = a[0] + t * ux, qy = a[1] + t * uy, d = (qx - sx) * (qx - sx) + (qy - sy) * (qy - sy);
+            if (d <= EDGE_HIT_SQ && (!best || d < best.d)) best = {index: i, point: [qx, qy], d: d};
+        }
+        return best;
+    };
+
     // -- drawing --------------------------------------------------------
 
     P.render = function () {
         this._renderGrid();
         if (this.opts.drawPolygons) this.opts.drawPolygons(this);
-        this._renderDraft();
+        this._renderHover();
         this._renderMarkers();
         if (this.opts.onRender) this.opts.onRender();
     };
@@ -220,26 +240,17 @@
         ctx.fill();
     };
 
-    P._renderDraft = function () {
-        if (!this.draft || this.draft.vertices.length === 0) return;
-        var ctx = this.ctx, verts = this.draft.vertices;
-        ctx.strokeStyle = '#7cf';
+    // The corner a press would add, as the camera view marks it: a dashed accent ring.
+    P._renderHover = function () {
+        if (!this.hover) return;
+        var ctx = this.ctx;
+        ctx.strokeStyle = '#ffbc00';
         ctx.lineWidth = 2;
-        ctx.setLineDash([5, 3]);
+        ctx.setLineDash([3, 3]);
         ctx.beginPath();
-        for (var i = 0; i < verts.length; i++) {
-            var p = this.toScreen(verts[i][0], verts[i][1]);
-            if (i === 0) ctx.moveTo(p[0], p[1]); else ctx.lineTo(p[0], p[1]);
-        }
+        ctx.arc(this.hover[0], this.hover[1], 7, 0, Math.PI * 2);
         ctx.stroke();
         ctx.setLineDash([]);
-        for (var j = 0; j < verts.length; j++) {
-            var q = this.toScreen(verts[j][0], verts[j][1]);
-            ctx.fillStyle = (j === 0) ? '#ffd76a' : '#7cf';
-            ctx.beginPath();
-            ctx.arc(q[0], q[1], 6, 0, Math.PI * 2);
-            ctx.fill();
-        }
     };
 
     P._renderMarkers = function () {
@@ -260,41 +271,31 @@
         }
     };
 
-    // -- drawing a new polygon ------------------------------------------
-
-    P.startDraft = function () {
-        this.draft = {vertices: []};
-        this.render();
-    };
-
-    P.cancelDraft = function () {
-        this.draft = null;
-        this.render();
-    };
-
-    // Closes the drawing when it has three corners; true when it did.
-    P.finishDraft = function () {
-        if (!this.draft || this.draft.vertices.length < 3) return false;
-        var verts = this.draft.vertices.slice();
-        this.draft = null;
-        if (this.opts.onDraftClose) this.opts.onDraftClose(verts);
-        this.render();
-        return true;
-    };
-
     P._endDrag = function () {
-        if (!this.drag) return;
-        var index = this.drag.index;
+        var drag = this.drag;
+        if (!drag) return;
         this.drag = null;
         this._frozenExtent = null;
-        if (this.opts.onDragEnd) this.opts.onDragEnd(index);
+        if (drag.whole) {
+            if (this.opts.onGrabEnd) this.opts.onGrabEnd(!!drag.moved);
+        } else if (this.opts.onDragEnd) this.opts.onDragEnd(drag.index);
         this.render();
+    };
+
+    P._labelAt = function (sx, sy) {
+        return this.opts.labelAt ? this.opts.labelAt(sx, sy) : null;
+    };
+
+    // The pointer over a label moves its polygon; over an edge of the editable one it adds a corner.
+    P._cursor = function (sx, sy) {
+        if (!this.canvas.style) return;
+        var over = this.vertexAt(sx, sy) !== null ? '' : this._labelAt(sx, sy) !== null ? 'move' : this.hover ? 'copy' : '';
+        if (this.canvas.style.cursor !== over) this.canvas.style.cursor = over;
     };
 
     P._bind = function () {
         var plan = this, canvas = this.canvas;
         canvas.addEventListener('mousedown', function (evt) {
-            if (plan.draft) return;
             var m = plan.pointer(evt);
             var vi = plan.vertexAt(m[0], m[1]);
             if (vi !== null) {
@@ -302,11 +303,50 @@
                 plan.drag = {index: vi};
                 return;
             }
+            var label = plan._labelAt(m[0], m[1]);
+            var whole = label !== null && plan.opts.grab ? plan.opts.grab(label) : null;
+            if (whole) {
+                plan._frozenExtent = plan._liveExtent();
+                plan.hover = null;
+                plan.drag = {whole: whole, from: plan.toWorld(m[0], m[1]), before: whole.map(function (v) { return v.slice(); })};
+                plan.render();
+                return;
+            }
+            var edge = plan.edgeAt(m[0], m[1]);
+            if (edge) {
+                plan._frozenExtent = plan._liveExtent();
+                plan.opts.editable().splice(edge.index + 1, 0, plan.toWorld(edge.point[0], edge.point[1]));
+                plan.drag = {index: edge.index + 1};
+                plan.hover = null;
+                if (plan.opts.onInsert) plan.opts.onInsert(edge.index + 1);
+                plan.render();
+                return;
+            }
             if (plan.opts.onPress) plan.opts.onPress(plan.toWorld(m[0], m[1]));
             plan.render();
         });
         canvas.addEventListener('mousemove', function (evt) {
-            if (!plan.drag) return;
+            if (!plan.drag) {
+                var p = plan.pointer(evt);
+                var edge = plan.vertexAt(p[0], p[1]) === null && plan._labelAt(p[0], p[1]) === null
+                    ? plan.edgeAt(p[0], p[1]) : null;
+                var hover = edge ? edge.point : null;
+                if (JSON.stringify(hover) !== JSON.stringify(plan.hover)) {
+                    plan.hover = hover;
+                    plan.render();
+                }
+                plan._cursor(p[0], p[1]);
+                return;
+            }
+            if (plan.drag.whole) {
+                var w = plan.toWorld.apply(plan, plan.pointer(evt)), drag = plan.drag;
+                var dx = w[0] - drag.from[0], dy = w[1] - drag.from[1];
+                drag.before.forEach(function (v, i) { drag.whole[i] = [v[0] + dx, v[1] + dy]; });
+                drag.moved = true;
+                plan.render();
+                if (plan.opts.onGrabMove) plan.opts.onGrabMove();
+                return;
+            }
             var verts = plan.opts.editable ? plan.opts.editable() : null;
             if (!verts || !verts[plan.drag.index]) return;
             var m = plan.pointer(evt);
@@ -319,22 +359,11 @@
         canvas.addEventListener('mouseup', end);
         window.addEventListener('mouseup', end);
         window.addEventListener('blur', end);
-        canvas.addEventListener('click', function (evt) {
-            if (!plan.draft) return;
-            var m = plan.pointer(evt);
-            var verts = plan.draft.vertices;
-            if (verts.length >= 3) {
-                var p0 = plan.toScreen(verts[0][0], verts[0][1]);
-                var dx = p0[0] - m[0], dy = p0[1] - m[1];
-                if (dx * dx + dy * dy <= CLOSE_HIT_SQ) {
-                    plan.finishDraft();
-                    return;
-                }
-            }
-            verts.push(plan.toWorld(m[0], m[1]));
+        canvas.addEventListener('mouseleave', function () {
+            if (!plan.hover) return;
+            plan.hover = null;
             plan.render();
         });
-        canvas.addEventListener('dblclick', function () { plan.finishDraft(); });
     };
 
     window.OpenFollow = window.OpenFollow || {};

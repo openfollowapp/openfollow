@@ -72,7 +72,7 @@ var plan = new window.OpenFollow.PolygonPlan(canvas, {
     onPress: record('press'),
     onDragMove: record('move'),
     onDragEnd: record('end'),
-    onDraftClose: record('close'),
+    onInsert: record('insert'),
 });
 plan.grid = { width: 10, depth: 6, spacing: 1, x_offset: 0, y_offset: 3 };
 """
@@ -106,41 +106,73 @@ class TestView:
         assert out["r"] == [True, True, False, False]
 
 
-class TestDrawing:
-    def test_clicks_add_corners_and_clicking_the_first_closes(self) -> None:
+class TestEdges:
+    _SQUARE = [[[0, 0], [2, 0], [2, 2], [0, 2]]]
+
+    def test_a_press_on_an_edge_adds_a_corner_there_and_holds_it(self) -> None:
         out = _run(
-            _plan()
+            _plan(self._SQUARE, 0)
             + """
-            plan.startDraft();
-            [[100, 100], [300, 100], [300, 300], [104, 104]].forEach(function (p) { fire('click', p[0], p[1]); });
-            out.calls = calls; out.draft = plan.draft;
+            var e = plan.toScreen(1, 0);
+            fire('mousemove', e[0], e[1] + 4); out.ring = !!plan.hover;
+            fire('mousedown', e[0], e[1] + 4);
+            out.added = polys[0].slice(); out.ringAfter = plan.hover;
+            var to = plan.toScreen(1, -1);
+            fire('mousemove', to[0], to[1]); fire('mouseup', to[0], to[1]);
+            out.corners = polys[0]; out.calls = calls;
             """
         )
-        assert out["draft"] is None
-        assert len(out["calls"]) == 1 and out["calls"][0][0] == "close"
-        assert len(out["calls"][0][1]) == 3
+        assert out["added"][1] == [pytest.approx(1), pytest.approx(0)]
+        assert len(out["corners"]) == 5
+        assert out["corners"][1] == [pytest.approx(1), pytest.approx(-1)]
+        assert out["calls"] == [["insert", 1], ["move", 1], ["end", 1]]
+        # The ring marks the spot until the press puts the corner there.
+        assert out["ring"] is True and out["ringAfter"] is None
 
-    def test_double_click_closes_once_three_corners_are_down(self) -> None:
+    def test_a_click_on_an_edge_keeps_the_corner_and_saves_it(self) -> None:
         out = _run(
-            _plan()
+            _plan(self._SQUARE, 0)
+            + "var e = plan.toScreen(2, 1); fire('mousedown', e[0], e[1]); fire('mouseup', e[0], e[1]);"
+            + " out.corners = polys[0]; out.calls = calls;"
+        )
+        assert out["corners"][2] == [pytest.approx(2), pytest.approx(1)]
+        assert out["calls"] == [["insert", 2], ["end", 2]]
+
+    def test_a_press_on_a_corner_moves_it_rather_than_adding_one(self) -> None:
+        out = _run(
+            _plan(self._SQUARE, 0)
+            + "var h = plan.toScreen(2, 0); fire('mousedown', h[0], h[1]); out.n = polys[0].length;"
+        )
+        assert out["n"] == 4
+
+    def test_a_press_away_from_the_edges_adds_nothing(self) -> None:
+        out = _run(
+            _plan(self._SQUARE, 0)
+            + "var p = plan.toScreen(1, 1); fire('mousedown', p[0], p[1]); out.n = polys[0].length;"
+            + " out.calls = calls.map(function (c) { return c[0]; });"
+        )
+        assert out == {"n": 4, "calls": ["press"]}
+
+    def test_an_unchosen_zone_has_no_edges_to_add_to(self) -> None:
+        out = _run(
+            _plan(self._SQUARE, None)
+            + "var e = plan.toScreen(1, 0); fire('mousedown', e[0], e[1]); out.n = polys[0].length;"
+        )
+        assert out["n"] == 4
+
+    def test_hovering_an_edge_marks_where_the_corner_would_land(self) -> None:
+        out = _run(
+            _plan(self._SQUARE, 0)
             + """
-            plan.startDraft();
-            fire('click', 100, 100); fire('click', 300, 100); fire('dblclick', 300, 100);
-            out.early = calls.length;
-            fire('click', 300, 300); fire('dblclick', 300, 300);
-            out.calls = calls;
+            var e = plan.toScreen(0, 1);
+            fire('mousemove', e[0] + 3, e[1]); out.on = plan.hover;
+            var c = plan.toScreen(1, 1);
+            fire('mousemove', c[0], c[1]); out.off = plan.hover;
+            out.near = e;
             """
         )
-        assert out["early"] == 0
-        assert [c[0] for c in out["calls"]] == ["close"]
-
-    def test_cancel_drops_the_drawing(self) -> None:
-        out = _run(_plan() + "plan.startDraft(); fire('click', 1, 1); plan.cancelDraft(); out.d = plan.draft;")
-        assert out["d"] is None
-
-    def test_a_press_while_drawing_is_not_a_selection(self) -> None:
-        out = _run(_plan() + "plan.startDraft(); fire('mousedown', 10, 10); out.calls = calls;")
-        assert out["calls"] == []
+        assert out["on"] == [pytest.approx(out["near"][0]), pytest.approx(out["near"][1])]
+        assert out["off"] is None
 
 
 class TestDragging:
@@ -221,3 +253,62 @@ def test_a_zone_hides_the_same_points_from_the_camera_as_on_the_operator_screen(
     want = [hidden_by_zone(point, eye, verts, 0.0, 1.0) for point, eye, verts in _SIGHT_LINES]
     assert out["hidden"] == want
     assert True in want and False in want
+
+
+class TestMovingWhole:
+    _SQUARE = [[[0, 0], [2, 0], [2, 2], [0, 2]]]
+    # The page reports the square's label around its centre (1, 1).
+    _LABEL = """
+    plan.opts.labelAt = function (sx, sy) {
+        var c = plan.toScreen(1, 1);
+        return Math.abs(sx - c[0]) < 20 && Math.abs(sy - c[1]) < 8 ? 0 : null;
+    };
+    plan.opts.grab = function (i) { calls.push(['grab', i]); return polys[i]; };
+    plan.opts.onGrabMove = record('grabMove');
+    plan.opts.onGrabEnd = record('grabEnd');
+    """
+
+    def test_a_drag_from_the_label_moves_every_corner(self) -> None:
+        out = _run(
+            _plan(self._SQUARE, None)
+            + self._LABEL
+            + """
+            var c = plan.toScreen(1, 1), to = plan.toScreen(2, 0.5);
+            fire('mousedown', c[0], c[1]); fire('mousemove', to[0], to[1]); fire('mouseup', to[0], to[1]);
+            out.corners = polys[0]; out.calls = calls; out.drag = plan.drag;
+            """
+        )
+        want = [[1, -0.5], [3, -0.5], [3, 1.5], [1, 1.5]]
+        assert out["corners"] == [[pytest.approx(x), pytest.approx(y)] for x, y in want]
+        assert out["calls"] == [["grab", 0], ["grabMove"], ["grabEnd", True]]
+        assert out["drag"] is None
+
+    def test_a_click_on_the_label_moves_nothing(self) -> None:
+        out = _run(
+            _plan(self._SQUARE, None)
+            + self._LABEL
+            + "var c = plan.toScreen(1, 1); fire('mousedown', c[0], c[1]); fire('mouseup', c[0], c[1]);"
+            + " out.corners = polys[0]; out.calls = calls;"
+        )
+        assert out["corners"] == self._SQUARE[0]
+        assert out["calls"] == [["grab", 0], ["grabEnd", False]]
+
+    def test_a_corner_handle_over_the_label_is_the_corner(self) -> None:
+        out = _run(
+            _plan([[[0, 0], [2, 0], [1, 1], [0, 2]]], 0)
+            + self._LABEL
+            + "var c = plan.toScreen(1, 1); fire('mousedown', c[0], c[1]); out.calls = calls; out.drag = plan.drag;"
+        )
+        assert out == {"calls": [], "drag": {"index": 2}}
+
+    def test_the_label_is_no_edge_to_add_a_corner_to(self) -> None:
+        out = _run(
+            _plan([[[0, 0.9], [2, 0.9], [2, 2], [0, 2]]], 0)
+            + self._LABEL
+            + """
+            var c = plan.toScreen(1, 1);
+            fire('mousemove', c[0], c[1]); out.hover = plan.hover;
+            fire('mousedown', c[0], c[1]); fire('mouseup', c[0], c[1]); out.n = polys[0].length;
+            """
+        )
+        assert out == {"hover": None, "n": 4}

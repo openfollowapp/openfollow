@@ -24,13 +24,10 @@
         </div>
         <div class="pv-nofeed" id="zone-picture-nofeed" hidden>No video picture.</div>
         <div id="zone-canvas-wrap" style="position:relative;border:1px solid var(--border,#444);border-radius:3px;background:#111;overflow:hidden;width:100%;">
-            <canvas id="zone-canvas" width="1280" height="720" style="display:block;width:100%;height:auto;background:#111;cursor:crosshair;"></canvas>
+            <canvas id="zone-canvas" width="1280" height="720" style="display:block;width:100%;height:auto;background:#111;"></canvas>
         </div>
         <div style="display:flex;gap:0.5rem;margin-top:0.5rem;flex-wrap:wrap;">
             <button type="button" id="zone-add-btn" class="save-btn">+ New Zone</button>
-            <button type="button" id="zone-finish-btn" class="secondary" disabled>Finish Polygon</button>
-            <button type="button" id="zone-cancel-btn" class="secondary" disabled>Cancel Drawing</button>
-            <button type="button" id="zone-corner-delete-btn" class="secondary" hidden disabled>Delete corner</button>
             <button type="button" id="zone-delete-btn" class="danger" disabled>Delete zone</button>
             <button type="button" id="zone-refresh-btn" class="secondary" hidden>Refresh Image</button>
             <!-- Save / Load template buttons. Save captures entire
@@ -43,7 +40,6 @@
                     data-template-save
                     data-template-deps="#zone-editor-section, #trigger-zones-section">Save as template…</button>
             <button type="button" id="zone-template-load-btn" class="secondary">Load template…</button>
-            <span id="zone-editor-status" class="section-note"></span>
         </div>
         <div id="zone-details" class="section-note" style="margin-top:1rem;">Select a zone to edit its OSC addresses and trigger source.</div>
     </div>
@@ -53,7 +49,6 @@
             <span class="pv-fs-status" id="zone-fs-status"></span>
             <span class="pv-fs-actions">
                 <button type="button" class="secondary small" id="zone-fs-refresh">Refresh Image</button>
-                <button type="button" class="secondary small" id="zone-fs-corner-delete" disabled>Delete corner</button>
             </span>
             <button type="button" class="secondary small" id="zone-fs-exit">Exit full screen</button>
         </div>
@@ -79,11 +74,8 @@
     var canvas = document.getElementById('zone-canvas');
     if (!canvas) return;
     var ctx = canvas.getContext('2d');
-    var statusEl = document.getElementById('zone-editor-status');
     var detailsEl = document.getElementById('zone-details');
     var addBtn = document.getElementById('zone-add-btn');
-    var finishBtn = document.getElementById('zone-finish-btn');
-    var cancelBtn = document.getElementById('zone-cancel-btn');
     var deleteBtn = document.getElementById('zone-delete-btn');
 
     // #154: vertex display/edit goes through the shared unit helpers
@@ -121,8 +113,27 @@
         },
         onDragMove: function(vertexIdx) { syncVertexInputs(state.selectedIndex, vertexIdx); },
         onDragEnd: function() { updateZoneVertices(state.selectedIndex); },
-        onDraftClose: createZone,
-        onRender: function() { updateButtons(); updateCornerControls(); renderPicture(); },
+        onInsert: function() { renderDetails(); },
+        labelAt: function(sx, sy) {
+            for (var i = labelBoxes.length - 1; i >= 0; i--) {
+                var b = labelBoxes[i];
+                if (b && sx >= b[0] && sx <= b[2] && sy >= b[1] && sy <= b[3]) return i;
+            }
+            return null;
+        },
+        grab: function(i) {
+            if (i !== state.selectedIndex) {
+                state.selectedIndex = i;
+                renderDetails();
+            }
+            return state.zones[i].vertices;
+        },
+        onGrabMove: function() {
+            edits++;
+            state.zones[state.selectedIndex].vertices.forEach(function(_, k) { syncVertexInputs(state.selectedIndex, k); });
+        },
+        onGrabEnd: function(moved) { if (moved) updateZoneVertices(state.selectedIndex); },
+        onRender: function() { updateButtons(); updateFullScreenStatus(); renderPicture(); },
     });
 
     // -- camera view: the zones as the saved camera sees them, projected in the browser ----
@@ -130,7 +141,6 @@
     var pictureEl = document.getElementById('zone-picture');
     var canvasWrap = document.getElementById('zone-canvas-wrap');
     var refreshBtn = document.getElementById('zone-refresh-btn');
-    var cornerDeleteBtn = document.getElementById('zone-corner-delete-btn');
     var fsShell = document.getElementById('zone-fs-shell');
     var pv = new window.OpenFollow.PictureView({
         stage: pictureEl, img: pictureEl.querySelector('img'), svg: document.getElementById('zone-picture-svg'),
@@ -191,6 +201,8 @@
         return zone && zone.vertices ? zone : null;
     }
 
+    // The corners of a zone whose label is held, as they were when it was pressed.
+    var grabbed = null;
     var corners = new window.OpenFollow.PicturePolygon(pv, {
         min: 3,
         corners: function() {
@@ -222,6 +234,25 @@
             renderDetails();
             return true;
         },
+        grab: function(label) {
+            var i = +label.dataset.zone;
+            if (i !== state.selectedIndex) {
+                state.selectedIndex = i;
+                renderDetails();
+            }
+            var zone = chosenZone();
+            grabbed = zone && zone.vertices.map(function(v) { return v.slice(); });
+            return !!zone;
+        },
+        translate: function(from, at) {
+            var zone = chosenZone(), cam = cameraModel(), z = zonePlane(zone);
+            var a = cam.unproject(from, z), b = cam.unproject(at, z);
+            if (!a || !b) return false;
+            zone.vertices = grabbed.map(function(v) { return [v[0] + b[0] - a[0], v[1] + b[1] - a[1]]; });
+            edits++;
+            zone.vertices.forEach(function(_, k) { syncVertexInputs(state.selectedIndex, k); });
+            return true;
+        },
         snapshot: function() { return JSON.stringify(chosenZone().vertices); },
         restore: function(snap) {
             chosenZone().vertices = JSON.parse(snap);
@@ -235,10 +266,12 @@
         },
         changed: render,
         save: function() { updateZoneVertices(state.selectedIndex); },
+        // A press on a zone chooses it; one on the picture outside every zone chooses none.
         press: function(ev) {
             var line = ev.target && ev.target.closest && ev.target.closest('[data-zone]');
-            if (!line || +line.dataset.zone === state.selectedIndex) return;
-            state.selectedIndex = +line.dataset.zone;
+            var next = line ? +line.dataset.zone : -1;
+            if (next === state.selectedIndex) return;
+            state.selectedIndex = next;
             renderDetails();
         },
     });
@@ -246,7 +279,7 @@
     function renderPicture() {
         if (mode !== 'camera') return;
         var cam = cameraModel(), k = pv.cssScale();
-        var shapes = state.zones.map(function(z) { return [z.vertices, z.color, z.z_offset]; });
+        var shapes = state.zones.map(function(z, i) { return [z.vertices, z.color, z.z_offset, zoneLabel(z, i)]; });
         var key = JSON.stringify([shapes, state.selectedIndex, corners.chosen, corners.keyboard, camera, floorZ(), heightsOn(),
             pv.w, pv.h, k]);
         if (key === pictureKey) return;
@@ -277,13 +310,25 @@
                 pv.svg.appendChild(line);
             });
         });
+        state.zones.forEach(function(zone, i) {
+            if (!zone || !zone.vertices || zone.vertices.length < 3) return;
+            var c = zoneCentre(zone), at = cam.project([c[0], c[1], zonePlane(zone)]);
+            if (!pv.inPicture(at)) return;
+            var text = zoneLabel(zone, i), w = (text.length * 7 + 12) * k, h = 18 * k;
+            var label = pv.el('g', { 'class': 'pv-grab pv-zone-label', transform: 'translate(' + at[0] + ',' + at[1] + ')' });
+            label.dataset.zone = i;
+            label.appendChild(pv.el('rect', { x: -w / 2, y: -h / 2, width: w, height: h, rx: 3 * k }));
+            var name = pv.el('text', { 'text-anchor': 'middle', 'dominant-baseline': 'central', 'font-size': 12 * k,
+                fill: zone.color || '#ff8000' });
+            name.textContent = text;
+            label.appendChild(name);
+            pv.svg.appendChild(label);
+        });
         corners.draw();
     }
 
-    function updateCornerControls() {
-        var zone = chosenZone(), can = corners.canDelete();
-        cornerDeleteBtn.disabled = !can;
-        document.getElementById('zone-fs-corner-delete').disabled = !can;
+    function updateFullScreenStatus() {
+        var zone = chosenZone();
         var name = zone && (zone.name || 'Zone ' + (state.selectedIndex + 1));
         document.getElementById('zone-fs-status').textContent = zone ? name + ' · ' + zone.vertices.length + ' corners' : 'No zone chosen';
     }
@@ -330,8 +375,6 @@
     document.getElementById('zone-fs-btn').addEventListener('click', openFull);
     document.getElementById('zone-fs-exit').addEventListener('click', closeFull);
     document.getElementById('zone-fs-refresh').addEventListener('click', function() { pv.load(); });
-    cornerDeleteBtn.addEventListener('click', function() { corners.deleteChosen(); });
-    document.getElementById('zone-fs-corner-delete').addEventListener('click', function() { corners.deleteChosen(); });
     // Esc from a bar button leaves; on the picture it lets go of the corner first.
     fsShell.addEventListener('keydown', function(ev) {
         if (ev.defaultPrevented) return;
@@ -357,9 +400,7 @@
         var onCamera = mode === 'camera';
         canvasWrap.hidden = onCamera;
         refreshBtn.hidden = !onCamera;
-        cornerDeleteBtn.hidden = !onCamera;
         if (onCamera) {
-            if (plan.draft) plan.cancelDraft();
             pictureKey = '';
             pv.load();
         } else {
@@ -378,7 +419,7 @@
             .then(function(r) { return r.ok ? r.json() : null; })
             .then(function(data) {
                 // A corner in hand, or edited or saved since this was asked, is newer than the answer.
-                if (!data || asked !== edits || saving || corners.busy()) return;
+                if (!data || asked !== edits || saving || corners.busy() || plan.drag) return;
                 // Don't replace the selected zone's data while the user is
                 // typing into its detail inputs (would clobber in-progress
                 // edits – in particular per-vertex coordinate fields).
@@ -437,7 +478,21 @@
             .catch(function() {});
     }
 
+    // A zone's label: its name, or its number, with the occupant count while occupied; drawn at its centre.
+    function zoneLabel(z, i) {
+        var name = z.name || ('Zone ' + (i + 1));
+        return z.is_occupied ? name + ' (' + z.occupant_count + ')' : name;
+    }
+    function zoneCentre(z) {
+        var x = 0, y = 0;
+        z.vertices.forEach(function(v) { x += v[0]; y += v[1]; });
+        return [x / z.vertices.length, y / z.vertices.length];
+    }
+
+    // Each zone's label box in canvas pixels, from the last render: a press in one moves the zone.
+    var labelBoxes = [];
     function renderZones() {
+        labelBoxes = [];
         for (var i = 0; i < state.zones.length; i++) {
             var z = state.zones[i];
             if (!z.vertices || z.vertices.length < 2) continue;
@@ -454,17 +509,12 @@
 
             if (isSel) plan.drawHandles(z.vertices, col);
 
-            // Label
-            if (z.name) {
-                var cx = 0, cy = 0;
-                for (var m = 0; m < z.vertices.length; m++) {
-                    var pv = plan.toScreen(z.vertices[m][0], z.vertices[m][1]);
-                    cx += pv[0]; cy += pv[1];
-                }
-                cx /= z.vertices.length; cy /= z.vertices.length;
+            if (z.vertices.length >= 3) {
+                var c = plan.toScreen.apply(plan, zoneCentre(z)), cx = c[0], cy = c[1];
                 ctx.font = '12px sans-serif';
-                var txt = isOcc ? (z.name + ' (' + z.occupant_count + ')') : z.name;
+                var txt = zoneLabel(z, i);
                 var metrics = ctx.measureText(txt);
+                labelBoxes[i] = [cx - metrics.width / 2 - 4, cy - 9, cx + metrics.width / 2 + 4, cy + 7];
                 ctx.fillStyle = 'rgba(0,0,0,0.6)';
                 ctx.fillRect(cx - metrics.width/2 - 4, cy - 9, metrics.width + 8, 16);
                 ctx.fillStyle = col;
@@ -482,28 +532,7 @@
     }
 
     function updateButtons() {
-        var drawing = !!plan.draft;
-        finishBtn.disabled = !(drawing && plan.draft.vertices.length >= 3);
-        cancelBtn.disabled = !drawing;
         deleteBtn.disabled = (state.selectedIndex < 0);
-        addBtn.disabled = drawing || mode === 'camera';
-        // The chosen zone is named by its details heading, so the line only speaks while drawing.
-        statusEl.textContent = drawing
-            ? 'Drawing: ' + plan.draft.vertices.length + ' point(s). Click first vertex or double-click to close.'
-            : '';
-        // Drawing-in-progress is a form of unsaved state: vertices
-        // are on the canvas but not yet on disk. Mark the section
-        // dirty so "Save as template" disables until the operator
-        // either Finishes or Cancels – otherwise the template would
-        // capture the on-disk zones list and silently drop the
-        // in-flight polygon.
-        var section = document.getElementById('zone-editor-section');
-        if (section) {
-            if (drawing) window.markFormDirty && window.markFormDirty(section);
-            // Don't auto-clean on draw end – the per-zone edit form's
-            // own input listener may have set dirty; let the explicit
-            // ``Save Zone`` flow clean it.
-        }
     }
 
     function hexToRgba(hex, a) {
@@ -1149,6 +1178,18 @@
         );
     }
 
+    // A new zone: a triangle pointing upstage, a sixth of the grid across, in the middle of the camera picture or,
+    // in the top-down view or where the picture's middle is no stage point, of the grid.
+    function newZoneTriangle() {
+        var g = plan.grid, cx = Number(g.x_offset) || 0, cy = Number(g.y_offset) || 0;
+        var cam = mode === 'camera' && cameraModel(), mid = cam && cam.unproject([pv.w / 2, pv.h / 2], floorZ());
+        if (mid) { cx = mid[0]; cy = mid[1]; }
+        var r = Math.max(0.5, Math.min(Number(g.width) || 0, Number(g.depth) || 0) / 6);
+        return [[cx, cy + r], [cx - r * 0.866, cy - r / 2], [cx + r * 0.866, cy - r / 2]].map(function(v) {
+            return [Math.round(v[0] * 100) / 100, Math.round(v[1] * 100) / 100];
+        });
+    }
+
     function createZone(vertices) {
         var body = {
             name: 'Zone ' + (state.zones.length + 1),
@@ -1245,13 +1286,7 @@
     }
 
     // Events
-    addBtn.addEventListener('click', function() {
-        state.selectedIndex = -1;
-        plan.startDraft();
-        renderDetails();
-    });
-    finishBtn.addEventListener('click', function() { plan.finishDraft(); });
-    cancelBtn.addEventListener('click', function() { plan.cancelDraft(); });
+    addBtn.addEventListener('click', function() { createZone(newZoneTriangle()); });
     deleteBtn.addEventListener('click', deleteSelected);
 
     // Save / Load template buttons. Modal helpers

@@ -1,10 +1,11 @@
 # Zone Editor
 
-Draw zone polygons that fire OSC messages when tracked markers (or detected people) enter or leave. Coordinates are in **metres** on the stage plane, relative to the Reference Point. The top-down view has upstage at the top; the camera view shows the zones on the camera picture.
+Zone polygons that fire OSC messages when tracked markers (or detected people) enter or leave. Coordinates are in **metres** on the stage plane, relative to the Reference Point. The top-down view has upstage at the top; the camera view shows the zones on the camera picture.
 
 ## Canvas
 
 - **Click a zone** to select it; drag its labelled handles (V1, V2, …) to reshape it.
+- **Click an edge** of the selected zone to add a corner there; keep the button down to drag it.
 - Occupied zones brighten and show the occupant count.
 - **Top-down / Camera** switches to the camera picture, the zones on the stage floor as the saved camera sees them. **Refresh Image** takes a new snapshot.
 
@@ -14,15 +15,12 @@ Corners move on the picture.
 
 - **Drag a corner** (V1, V2, …) – saved when let go. A press without a move only chooses it. The loupe and stage position stay on the chosen corner.
 - **Drag from an edge** – adds a corner there.
-- **Delete corner** – a zone keeps three.
 - A corner off the picture has no handle; it moves in the top-down view.
-- **Keys** – Tab: next corner; arrows: 1 px, 10 with Shift; Delete: remove; Esc: let go, then leave full screen.
+- **Keys** – Tab: next corner; arrows: 1 px, 10 with Shift; Delete: remove (a zone keeps three); Esc: let go, then leave full screen.
 
-## Drawing
+## Zones
 
-- **+ New Zone** – each click drops a vertex.
-- **Finish Polygon** – closes the zone at three or more vertices. Clicking the first vertex or double-clicking also closes it.
-- **Cancel Drawing** – discards the polygon in progress.
+- **+ New Zone** – adds a triangle in the middle of the view; shape it by its corners and edges.
 - **Delete zone** – permanently removes the chosen zone, after confirmation.
 
 ## Zone details

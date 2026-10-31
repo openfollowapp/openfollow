@@ -451,6 +451,9 @@
  .pv-zone-floor { fill: none; stroke-width: 1.5; stroke-opacity: 0.7; pointer-events: none; }
  .pv-zone-post { stroke-width: 2; stroke-dasharray: 2 4; stroke-linecap: round; }
  .pv-zone-floor.pv-behind { stroke-opacity: 0.18; }
+.pv-zone-label { cursor: move; }
+.pv-zone-label rect { fill: rgba(0, 0, 0, 0.6); }
+.pv-zone-label text { font-weight: 600; }
  .pv-grid-line { stroke: var(--muted); stroke-width: 1; fill: none; }
  .pv-outline { stroke: var(--accent); stroke-width: 2.5; fill: none; }
  .pv-handle { fill: var(--text); stroke: var(--accent); stroke-width: 2; }

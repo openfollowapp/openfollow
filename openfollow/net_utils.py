@@ -21,9 +21,11 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, NamedTuple
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 import psutil
+
+from openfollow.network.adapter import LOOPBACK_NAMES
 
 if TYPE_CHECKING:
     import multicast_expert
@@ -89,15 +91,32 @@ def get_local_ipv4_addresses() -> set[str]:
     return ips
 
 
+# A Mac's lo0 carries multicast, so a desk on the same Mac can take PSN there; Linux's lo does not.
+LOOPBACK_OFFERED = sys.platform == "darwin"
+LOOPBACK_IPV4 = "127.0.0.1"
+
+
+def offered_loopback(iface_name: str) -> bool:
+    """Whether *iface_name* is this host's loopback and the host offers it as an interface."""
+    return LOOPBACK_OFFERED and iface_name in LOOPBACK_NAMES
+
+
 def get_iface_ipv4(iface_name: str) -> str:
-    """Return first non-loopback IPv4 on iface, or empty string if unavailable."""
+    """The IPv4 a plane pinned to *iface_name* sends from, or "" when it has none.
+
+    The first non-loopback address; on an offered loopback, ``127.0.0.1``, never a
+    driver's alias on the same interface.
+    """
     if not iface_name:
         return ""
-    addrs = psutil.net_if_addrs().get(iface_name, [])
-    for addr in addrs:
-        if addr.family == socket.AF_INET and not addr.address.startswith("127."):
-            return str(addr.address)
-    return ""
+    return _send_address(iface_name, psutil.net_if_addrs().get(iface_name, []))
+
+
+def _send_address(iface_name: str, addrs: list[Any]) -> str:
+    ipv4 = [str(addr.address) for addr in addrs if addr.family == socket.AF_INET]
+    if offered_loopback(iface_name):
+        return LOOPBACK_IPV4 if LOOPBACK_IPV4 in ipv4 else ""
+    return next((address for address in ipv4 if not address.startswith("127.")), "")
 
 
 def interface_present(iface_name: str) -> bool:
@@ -127,18 +146,24 @@ def auto_station_iface() -> str:
 
 
 def list_iface_ipv4() -> list[tuple[str, str]]:
-    """Return [(iface_name, ipv4)] for every non-loopback IPv4, sorted by name."""
-    out: list[tuple[str, str]] = []
-    for iface, addrs in psutil.net_if_addrs().items():
-        for addr in addrs:
-            if addr.family != socket.AF_INET:
-                continue
-            if addr.address.startswith("127."):
-                continue
-            out.append((str(iface), str(addr.address)))
-            break  # first non-loopback IPv4 per iface is enough
+    """[(iface_name, ipv4)] for every interface a plane can pin, with the address it sends from, by name.
+
+    Loopback is listed only where the host offers it (:func:`offered_loopback`).
+    """
+    out = [
+        (str(name), address)
+        for name, addrs in psutil.net_if_addrs().items()
+        if (address := _send_address(str(name), addrs))
+    ]
     out.sort(key=lambda item: item[0])
     return out
+
+
+def offered_loopback_ifaces() -> list[tuple[str, str]]:
+    """The offered loopback as ``(name, address)``, for pickers built from a backend that never lists it."""
+    if not LOOPBACK_OFFERED:
+        return []
+    return [(name, address) for name in sorted(LOOPBACK_NAMES) if (address := get_iface_ipv4(name))]
 
 
 def resolve_source_ip(
@@ -339,7 +364,7 @@ def wait_for_source_ip(
     timeout_s: float = 30.0,
     interval_s: float = 1.0,
 ) -> str:
-    """Block until pinned source IP is live (returns loopback on timeout)."""
+    """Block until the pinned source IP is live; on timeout the primary address, or "" when there is none."""
     # When pinned, use fallback=False to wait for target; otherwise accept primary.
     pinned = bool(iface)
     deadline = time.monotonic() + timeout_s
@@ -349,11 +374,9 @@ def wait_for_source_ip(
             return resolved
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            # On timeout, fall back to primary or loopback.
+            # On timeout, fall back to the primary address; "" when there is none.
             primary = get_primary_local_ipv4(default="")
-            if primary and not primary.startswith("127."):
-                return primary
-            return "127.0.0.1"
+            return primary if primary and not primary.startswith("127.") else ""
         # Don't sleep past deadline.
         time.sleep(min(interval_s, remaining))
 

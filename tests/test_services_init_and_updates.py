@@ -5279,3 +5279,67 @@ class TestStationFollowersDoNotBindOnADownInterface:
         self._down_station(services, monkeypatch)
         assert services._resolved_source_ip() == ""
         assert services.station_source_ip_or_none() is None
+
+
+class TestRttrpmOnLoopback:
+    """Loopback reaches only this Mac: a destination elsewhere is not sent through it."""
+
+    def _on_lo0(self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, host: str) -> None:
+        import socket as _socket
+
+        from openfollow import net_utils
+
+        monkeypatch.setattr(net_utils, "LOOPBACK_OFFERED", True)
+        monkeypatch.setattr(
+            net_utils.psutil,
+            "net_if_addrs",
+            lambda: {"lo0": [SimpleNamespace(family=_socket.AF_INET, address="127.0.0.1")]},
+        )
+        monkeypatch.setattr(services_module, "RttrpmServer", _FakeRttrpmServer)
+        services._app._rttrpm_server = None
+        # Simple mode: the station-wide interface carries every output.
+        services._app._config = replace(
+            services._app._config, psn_source_iface="lo0", rttrpm_output=RttrpmOutputConfig(enabled=True, host=host)
+        )
+
+    def test_a_destination_off_this_mac_is_not_started(
+        self,
+        services: AppRuntimeServices,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        every_feature_on: None,
+    ) -> None:
+        self._on_lo0(services, monkeypatch, "192.0.2.50")
+        services.init_rttrpm()
+        assert services._app._rttrpm_server is None
+        assert "loopback reaches only this mac" in caplog.text
+        # The Operator Screen says so too, until the output is switched off.
+        assert services._status_flags["rttrpm_loopback"] == ("error", "RTTrPM: Loopback reaches only this Mac")
+        services.apply_rttrpm_output_change(RttrpmOutputConfig(enabled=False))
+        assert services._status_flags["rttrpm_loopback"] is None
+
+    def test_a_destination_on_this_mac_is_sent(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, every_feature_on: None
+    ) -> None:
+        self._on_lo0(services, monkeypatch, "127.0.0.1")
+        services.init_rttrpm()
+        assert services._app._rttrpm_server is not None
+        assert services._status_flags["rttrpm_loopback"] is None
+
+    def test_a_destination_moved_onto_this_mac_clears_the_row(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, every_feature_on: None
+    ) -> None:
+        self._on_lo0(services, monkeypatch, "192.0.2.50")
+        services.init_rttrpm()
+        # As a save does: the config first, then the live apply.
+        moved = RttrpmOutputConfig(enabled=True, host="127.0.0.1")
+        services._app._config = replace(services._app._config, rttrpm_output=moved)
+        services.apply_rttrpm_output_change(moved)
+        assert services._status_flags["rttrpm_loopback"] is None
+
+    def test_a_stranded_destination_gives_the_observer_no_plane_to_revive(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, every_feature_on: None
+    ) -> None:
+        self._on_lo0(services, monkeypatch, "192.0.2.50")
+        planes = {plane.label: plane for plane in services._build_network_planes()}
+        assert planes["RTTrPM output"].enabled() is False

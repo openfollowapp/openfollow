@@ -463,14 +463,12 @@ class OpenFollowApp:
             iface=self._config.psn_source_iface,
             timeout_s=10.0,
         )
-        if resolved_ip.startswith("127."):
+        if not resolved_ip:
             # Timed out; subsystems bind once (won't self-heal).
             logger.warning(
-                "Starting without a usable network address (local IP %s) – "
-                "web server, peer discovery, and PSN binding will use loopback "
-                "and will not recover automatically; restart OpenFollow once "
-                "networking is available.",
-                resolved_ip,
+                "Starting without a usable network address – peer discovery and PSN "
+                "have no interface to use and will not recover automatically; "
+                "restart OpenFollow once networking is available."
             )
         else:
             logger.info("Network ready for startup – local IP %s", resolved_ip)
@@ -512,9 +510,10 @@ class OpenFollowApp:
         if pinned_iface:
             banner = self._refresh_psn_source_advisory()
             if banner:
-                from openfollow.net_utils import list_iface_ipv4
+                from openfollow.net_utils import list_iface_ipv4, offered_loopback
 
-                candidates = list_iface_ipv4()
+                # Loopback is a deliberate choice, never one of the station's network candidates.
+                candidates = [(name, ip) for name, ip in list_iface_ipv4() if not offered_loopback(name)]
                 resolved = self._psn_source_resolved_ip
                 logger.warning(
                     "Pinned PSN source iface=%r unavailable – %s",

@@ -815,10 +815,9 @@ class TestWaitForSourceIp:
         )
         assert slept == [0.5]  # waited once between polls
 
-    def test_times_out_to_loopback_when_no_network(self, monkeypatch) -> None:
-        """No pin live AND no primary → loopback signals "no network"
-        to the caller (matches the prior behaviour for the offline-
-        host case)."""
+    def test_times_out_to_nothing_when_no_network(self, monkeypatch) -> None:
+        """No pin live and no primary: "" tells the caller there is no network. Not
+        127.0.0.1, which a station pinned to loopback on a Mac really has."""
         monkeypatch.setattr(
             net_utils_module.psutil,
             "net_if_addrs",
@@ -843,7 +842,7 @@ class TestWaitForSourceIp:
                 timeout_s=30,
                 interval_s=1,
             )
-            == "127.0.0.1"
+            == ""
         )
 
 

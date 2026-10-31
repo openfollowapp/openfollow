@@ -118,6 +118,13 @@ def _no_shared_port_binds(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_loopback_interface(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test sees a host that does not offer loopback as an interface, as Linux;
+    a test about macOS's offer sets ``LOOPBACK_OFFERED`` itself."""
+    monkeypatch.setattr("openfollow.net_utils.LOOPBACK_OFFERED", False)
+
+
+@pytest.fixture(autouse=True)
 def _no_host_adapters(tmp_path: Path) -> Iterator[None]:
     """No test may describe the host's own network adapters.
 

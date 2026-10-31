@@ -1181,10 +1181,10 @@ _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
     "paths": frozenset({"show_paths"}),
     # Whether this station takes remote driving from a browser at all.
     "touch_remote": frozenset({"enabled"}),
-    # The keyboard and pads plugged into this station, in every section that writes the controller
+    # The keyboard, pads and USB sockets of this station, in every section that writes the controller
     # config. Button names describe its pads, like the pad map: a file import restores them.
     **{
-        section: _KEYBOARD_LAYOUT_FIELDS | {"button_name_style"}
+        section: _KEYBOARD_LAYOUT_FIELDS | {"button_name_style", "slot_pins"}
         for section, attr in _SECTION_CONFIG_ATTRS.items()
         if attr == "controller"
     },
@@ -3326,6 +3326,8 @@ def _config_dict_redacted(cfg: AppConfig) -> dict[str, Any]:
     # has no such adapter it reads as a pin that is down, which drops the OSC
     # multicast membership there until somebody finds the setting.
     d["osc"].pop("listen_iface", None)
+    # USB sockets on this box: a peer's slots would follow sockets it does not have.
+    d["controller"].pop("slot_pins", None)
     d["rttrpm_output"].pop("source_iface", None)
     d["touch_remote"].pop("enabled", None)
     # Set for this station's GPU and driver: on another station it would hide a working GL display.
@@ -3398,6 +3400,7 @@ _DEVICE_IDENTITY_FIELDS: tuple[str, ...] = (
     "markers_catalog_path",
     "testpattern_selected_media",
     "detection.storage_path",
+    "controller.slot_pins",
     # Set for this station's GPU and driver.
     "display.operator_screen",
 )
@@ -3410,11 +3413,11 @@ def _device_field_owner(cfg: AppConfig, path: str) -> tuple[Any, str]:
 
 
 def capture_device_identity(cfg: AppConfig) -> dict[str, Any]:
-    """Snapshot the device-identity fields of *cfg*."""
+    """Snapshot the device-identity fields of *cfg*, as copies the snapshot owns."""
     out: dict[str, Any] = {}
     for path in _DEVICE_IDENTITY_FIELDS:
         owner, name = _device_field_owner(cfg, path)
-        out[path] = getattr(owner, name)
+        out[path] = copy.deepcopy(getattr(owner, name))
     return out
 
 
@@ -6399,7 +6402,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """The Controller Slots table, from the main loop's latest stats snapshot."""
         return template("partials/controller_slots_table", controllers=_controller_slots_view(server))
 
-    @app.post("/section/controller_slots/<action:re:identify|forget>/<index:int>")
+    @app.post("/section/controller_slots/<action:re:identify|forget|pin|unpin|cancel-pin>/<index:int>")
     def controller_slot_action(action: str, index: int) -> Any:
         """Queue Identify / Forget for one slot; the main loop, which owns the slots, runs it."""
         server.request_slot_action(action, index, request.forms.get("ref", ""))
@@ -11255,9 +11258,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def api_wizard_lens_edges() -> Any:
         """Suggest the snapshot's edges a Lens line could be traced along, from its scaled luma."""
         response.content_type = "application/json"
+        # Read before refusing: a refusal that leaves the body unread closes the connection mid-upload.
+        data = _load_json_body()
         if not _request_config(server).ui.feature_on("lens_suggestions"):
             return _json_error(403, "Lens line suggestions are switched off on this station.")
-        data = _load_json_body()
         if data is None:
             return json.dumps({"error": "Invalid JSON"})
         try:

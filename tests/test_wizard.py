@@ -1365,6 +1365,14 @@ class TestWizardLensEdgesEndpoint:
         assert status == 403
         assert data == {"error": "Lens line suggestions are switched off on this station."}
 
+    def test_refuses_a_large_body_with_an_answer_not_a_broken_connection(self, live_server) -> None:
+        # Refused before the body was read, the station closed the connection while the client still wrote.
+        _, base = live_server
+        body = self._body()
+        body["padding"] = "x" * (4 * 1024 * 1024)
+        status, data = _post_json(base, "/api/wizard/lens/edges", body)
+        assert (status, data) == (403, {"error": "Lens line suggestions are switched off on this station."})
+
     def test_suggests_the_stripe_with_five_sample_points(self, live_server_suggest) -> None:
         _, base = live_server_suggest
         status, data = _post_json(base, "/api/wizard/lens/edges", self._body())

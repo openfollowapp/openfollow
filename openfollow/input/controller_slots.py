@@ -5,14 +5,15 @@
 
 Slots are seeded in port order once the controllers attached at startup have
 been found, then frozen: a controller that leaves keeps its slot as *missing*
-instead of closing the gap, so nobody behind it changes marker. Pure logic; the
+instead of closing the gap, so nobody behind it changes marker. A slot pinned to
+a USB socket belongs to whatever is plugged into that socket. Pure logic; the
 main loop is the only caller that mutates it.
 """
 
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 
 from openfollow.input.controller_identity import natural_sort_key
@@ -20,6 +21,8 @@ from openfollow.input.controller_identity import natural_sort_key
 CONNECTED = "connected"
 MISSING = "missing"
 RESERVED = "reserved"
+# A slot below a pin that nothing fills: silent, drives no marker, any kind takes it.
+EMPTY = "empty"
 
 # What a slot's controller can't do. Published through /api/stats, so the
 # values are a wire interface.
@@ -52,7 +55,7 @@ class SlotEntry:
 
     ``notes`` follow the controller while it is connected, stay with the slot
     once it goes missing and are cleared when it is forgotten. They never count
-    as a change of the slot table.
+    as a change of the slot table. A ``pinned`` slot's ``key`` is its socket.
     """
 
     kind: str
@@ -61,6 +64,19 @@ class SlotEntry:
     state: str
     local_id: int | None = None
     notes: tuple[str, ...] = field(default=(), compare=False)
+    pinned: bool = False
+
+
+@dataclass(frozen=True)
+class SlotPin:
+    """A socket pinned to a slot, with what was pinned there, shown while it is empty."""
+
+    key: str
+    kind: str
+    label: str
+
+
+_EMPTY = SlotEntry(kind="", key=None, name="", state=EMPTY)
 
 
 def _port_order(controllers: Sequence[LiveController]) -> list[LiveController]:
@@ -82,24 +98,45 @@ def _unique_keys(controllers: Sequence[LiveController]) -> list[LiveController]:
     return out
 
 
-def _connected(c: LiveController) -> SlotEntry:
-    return SlotEntry(kind=c.kind, key=c.key, name=c.name, state=CONNECTED, local_id=c.local_id, notes=c.notes)
+def _connected(c: LiveController, *, pinned: bool = False) -> SlotEntry:
+    return SlotEntry(
+        kind=c.kind, key=c.key, name=c.name, state=CONNECTED, local_id=c.local_id, notes=c.notes, pinned=pinned
+    )
+
+
+def _pinned_absent(pin: SlotPin) -> SlotEntry:
+    return SlotEntry(kind=pin.kind, key=pin.key, name=pin.label, state=MISSING, pinned=True)
+
+
+def _trimmed(slots: list[SlotEntry]) -> tuple[SlotEntry, ...]:
+    """Without trailing empty slots: an empty slot exists only to keep a pin's place."""
+    while slots and slots[-1].state == EMPTY:
+        slots.pop()
+    return tuple(slots)
 
 
 def slot_ref(slot: SlotEntry) -> str:
     """What a slot row was showing, so an action that arrives late can tell the slot changed."""
-    return f"{slot.kind}|{slot.key or ''}|{slot.name}|{slot.state}"
+    return f"{slot.kind}|{slot.key or ''}|{slot.name}|{slot.state}|{'pinned' if slot.pinned else ''}"
 
 
 class ControllerSlotTable:
     """Session slot assignment. Read :attr:`slots` from any thread; mutate from one."""
 
-    def __init__(self, *, clock: Callable[[], float] = time.monotonic, seed_deadline_s: float = SEED_DEADLINE_S):
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        seed_deadline_s: float = SEED_DEADLINE_S,
+        pins: Mapping[int, SlotPin] | None = None,
+    ):
         self._clock = clock
         self._seed_deadline_s = seed_deadline_s
         self._seed_started = clock()
         self._seeding = True
         self._slots: tuple[SlotEntry, ...] = ()
+        # 0-based slot index -> the socket pinned there.
+        self._pins: dict[int, SlotPin] = dict(pins or {})
 
     @property
     def slots(self) -> tuple[SlotEntry, ...]:
@@ -110,6 +147,11 @@ class ControllerSlotTable:
     def seeding(self) -> bool:
         return self._seeding
 
+    @property
+    def pins(self) -> dict[int, SlotPin]:
+        """0-based slot index -> the socket pinned there; a copy."""
+        return dict(self._pins)
+
     def update(self, live: Sequence[LiveController], *, settled: bool) -> bool:
         """Fold this frame's attached controllers in; True when the slots changed.
 
@@ -118,7 +160,7 @@ class ControllerSlotTable:
         """
         controllers = _unique_keys(live)
         if self._seeding:
-            slots = tuple(_connected(c) for c in _port_order(controllers))
+            slots = self._seeded(controllers)
             if settled or self._clock() - self._seed_started >= self._seed_deadline_s:
                 self._seeding = False
         else:
@@ -126,6 +168,19 @@ class ControllerSlotTable:
         changed = slots != self._slots
         self._slots = slots
         return changed
+
+    def _seeded(self, controllers: Sequence[LiveController]) -> tuple[SlotEntry, ...]:
+        """Pinned sockets at their pins, everything else in port order around them."""
+        by_key = {c.key: c for c in controllers if c.key is not None}
+        placed: dict[int, SlotEntry] = {}
+        for index, pin in self._pins.items():
+            live = by_key.get(pin.key)
+            placed[index] = _pinned_absent(pin) if live is None else _connected(live, pinned=True)
+        pinned_keys = {pin.key for pin in self._pins.values()}
+        free = (i for i in range(len(controllers) + len(placed)) if i not in placed)
+        for c in _port_order([c for c in controllers if c.key not in pinned_keys]):
+            placed[next(free)] = _connected(c)
+        return _trimmed([placed.get(i, _EMPTY) for i in range(max(placed, default=-1) + 1)])
 
     def _frozen_update(self, controllers: Sequence[LiveController]) -> tuple[SlotEntry, ...]:
         by_id: dict[tuple[str, int | None], LiveController] = {(c.kind, c.local_id): c for c in controllers}
@@ -139,11 +194,17 @@ class ControllerSlotTable:
         slots = [carried(s) for s in self._slots]
         held = {(s.kind, s.local_id) for s in slots if s.state == CONNECTED}
         newcomers = _port_order([c for c in controllers if (c.kind, c.local_id) not in held])
+        pinned_at = {pin.key: index for index, pin in self._pins.items()}
         # Every returning controller reclaims its own slot before any newcomer
         # falls back to a vacant one, or one arriving in the same frame (a hub
-        # re-enumerating) could take a slot its owner was about to reclaim.
+        # re-enumerating) could take a slot its owner was about to reclaim. A
+        # pinned socket's slot is its own, whatever is plugged in.
         waiting = []
         for c in newcomers:
+            index = pinned_at.get(c.key) if c.key is not None else None
+            if index is not None and slots[index].state != CONNECTED:
+                slots[index] = _connected(c, pinned=True)
+                continue
             index = next(
                 (
                     i
@@ -164,12 +225,81 @@ class ControllerSlotTable:
                 slots[index] = _connected(c)
         return tuple(slots)
 
-    @staticmethod
-    def _vacant_for(slots: Sequence[SlotEntry], c: LiveController) -> int | None:
-        vacant = [i for i, s in enumerate(slots) if s.state != CONNECTED]
+    def _vacant_for(self, slots: Sequence[SlotEntry], c: LiveController) -> int | None:
+        vacant = [i for i, s in enumerate(slots) if s.state != CONNECTED and i not in self._pins]
         if len(slots) == 1 and vacant:
             return 0
-        return next((i for i in vacant if slots[i].kind == c.kind), None)
+        return next((i for i in vacant if slots[i].kind == c.kind or slots[i].state == EMPTY), None)
+
+    def pin(self, index: int, kind: str, local_id: int) -> bool:
+        """Pin the socket of the connected controller ``(kind, local_id)`` to slot ``index``.
+
+        The controller moves there. Whatever held that slot takes the
+        controller's old one, its pin along with it. False when the controller
+        holds no slot or has no socket to pin.
+        """
+        held = next(
+            (i for i, s in enumerate(self._slots) if s.state == CONNECTED and (s.kind, s.local_id) == (kind, local_id)),
+            None,
+        )
+        if held is None or index < 0:
+            return False
+        moving = self._slots[held]
+        key = moving.key
+        if key is None:
+            return False
+        slots = list(self._slots) + [_EMPTY] * (index + 1 - len(self._slots))
+        own_pin = next((i for i, pin in self._pins.items() if pin.key == key), None)
+        if own_pin is not None:
+            del self._pins[own_pin]
+        displaced, displaced_pin = slots[index], self._pins.pop(index, None)
+        slots[held] = replace(displaced, pinned=displaced_pin is not None)
+        if displaced_pin is not None:
+            self._pins[held] = displaced_pin
+        slots[index] = replace(moving, pinned=True)
+        self._pins[index] = SlotPin(key=key, kind=moving.kind, label=moving.name)
+        self._slots = _trimmed(slots)
+        return True
+
+    def unpin(self, index: int) -> bool:
+        """Drop slot ``index``'s pin. Nothing moves; port order returns at the next start."""
+        if self._pins.pop(index, None) is None:
+            return False
+        slots = list(self._slots)
+        if index < len(slots):
+            slots[index] = replace(slots[index], pinned=False)
+        self._slots = _trimmed(slots)
+        return True
+
+    def set_pins(self, pins: Mapping[int, SlotPin]) -> None:
+        """Take the pins as a whole, as a hand-edited configuration names them.
+
+        Each change is a targeted move: a pinned socket's controller goes to its
+        slot, a slot whose socket is empty shows missing, and whatever held it
+        moves to the end. While seeding, the next frame simply seeds with them.
+        """
+        if self._seeding:
+            self._pins = dict(pins)
+            return
+        for index in [i for i in self._pins if pins.get(i) != self._pins[i]]:
+            self.unpin(index)
+        for index, pin in sorted(pins.items()):
+            if self._pins.get(index) == pin:
+                continue
+            live = next((s for s in self._slots if s.state == CONNECTED and s.key == pin.key), None)
+            if live is not None and live.local_id is not None:
+                self.pin(index, live.kind, live.local_id)
+                continue
+            self._place_absent_pin(index, pin)
+
+    def _place_absent_pin(self, index: int, pin: SlotPin) -> None:
+        slots = list(self._slots) + [_EMPTY] * (index + 1 - len(self._slots))
+        occupant = slots[index]
+        if occupant.state != EMPTY:
+            slots.append(replace(occupant, pinned=False))
+        slots[index] = _pinned_absent(pin)
+        self._pins[index] = pin
+        self._slots = _trimmed(slots)
 
     def forget(self, index: int) -> bool:
         """Silence a missing slot: it keeps its position but drives no marker and raises no notes."""

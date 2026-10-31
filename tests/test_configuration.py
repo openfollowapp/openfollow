@@ -35,6 +35,7 @@ from openfollow.configuration import (
     OscConfig,
     OtpOutputConfig,
     RttrpmOutputConfig,
+    SlotPinConfig,
     TouchRemoteConfig,
     TriggerZonesConfig,
     _apply_with_fallback,
@@ -220,6 +221,10 @@ class _DummyInputManager:
         self.osc_listen_ifaces: list[str] = []
         self.operator_message_restarts = 0
         self.mouse3d_restarts: list[Mouse3DConfig] = []
+        self.slot_pin_applies: list[list[SlotPinConfig]] = []
+
+    def apply_slot_pins(self, pins: list[SlotPinConfig]) -> None:
+        self.slot_pin_applies.append(list(pins))
 
     def restart_mouse3d(self, config: Mouse3DConfig) -> None:
         self.mouse3d_restarts.append(config)
@@ -1447,6 +1452,91 @@ def test_controller_accepts_all_movement_layouts(layout: str) -> None:
 def test_controller_invalid_movement_layout_falls_back_to_wasd() -> None:
     config = ControllerConfig(key_move_layout="dvorak")
     assert config.key_move_layout == "wasd"
+
+
+_PIN = {"slot": 2, "key": "usb:platform/xhci-hcd.1:1.4", "kind": "gamepad", "label": "Xbox Pad"}
+
+
+def test_controller_slot_pins_default_to_none() -> None:
+    assert ControllerConfig().slot_pins == []
+
+
+def test_controller_slot_pin_entries_become_pins() -> None:
+    config = ControllerConfig(slot_pins=[_PIN, {**_PIN, "slot": 3, "key": "bt:aa:bb", "kind": "mouse3d"}])
+    assert config.slot_pins == [
+        SlotPinConfig(slot=2, key="usb:platform/xhci-hcd.1:1.4", kind="gamepad", label="Xbox Pad"),
+        SlotPinConfig(slot=3, key="bt:aa:bb", kind="mouse3d", label="Xbox Pad"),
+    ]
+
+
+@pytest.mark.parametrize("raw", ["usb:x:1", None, 3, {"slot": 2}, True])
+def test_controller_slot_pins_that_are_not_a_list_are_none(raw: object) -> None:
+    assert ControllerConfig(slot_pins=raw).slot_pins == []  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("entry", ["usb:x:1", None, 3, ["slot", 2], True])
+def test_controller_slot_pin_entries_of_the_wrong_type_are_dropped(entry: object) -> None:
+    assert ControllerConfig(slot_pins=[entry, _PIN]).slot_pins == [SlotPinConfig(**_PIN)]
+
+
+@pytest.mark.parametrize("slot", [0, -1, 17, 2.0, "2", True, None])
+def test_controller_slot_pins_outside_the_slots_are_dropped(slot: object) -> None:
+    assert ControllerConfig(slot_pins=[{**_PIN, "slot": slot}]).slot_pins == []
+
+
+@pytest.mark.parametrize("key", ["", "usb:", "bt:", "eth0", "USB:x:1", None, 5])
+def test_controller_slot_pins_naming_no_socket_are_dropped(key: object) -> None:
+    assert ControllerConfig(slot_pins=[{**_PIN, "key": key}]).slot_pins == []
+
+
+@pytest.mark.parametrize("kind", ["keyboard", "", None, "Gamepad"])
+def test_controller_slot_pins_of_an_unknown_kind_are_dropped(kind: object) -> None:
+    assert ControllerConfig(slot_pins=[{**_PIN, "kind": kind}]).slot_pins == []
+
+
+@pytest.mark.parametrize(
+    "second",
+    [{**_PIN, "key": "usb:platform/xhci-hcd.1:1.5"}, {**_PIN, "slot": 3}],
+    ids=["same slot", "same socket"],
+)
+def test_controller_slot_pins_named_twice_keep_the_first(second: dict[str, object]) -> None:
+    assert ControllerConfig(slot_pins=[_PIN, second]).slot_pins == [SlotPinConfig(**_PIN)]
+
+
+@pytest.mark.parametrize(
+    ("label", "kept"),
+    [
+        ("Xbox\x1b[31m Pad\u202e", "Xbox[31m Pad"),
+        ("  Pad  ", "Pad"),
+        ("x" * 200, "x" * 128),
+        (None, ""),
+        (7, ""),
+    ],
+)
+def test_controller_slot_pin_labels_are_cleaned(label: object, kept: str) -> None:
+    assert ControllerConfig(slot_pins=[{**_PIN, "label": label}]).slot_pins[0].label == kept
+
+
+def test_controller_slot_pins_survive_a_hand_edited_config(tmp_path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "[controller]\n"
+        "slot_pins = [\n"
+        '    { slot = 2, key = "usb:platform/xhci-hcd.1:1.4", kind = "gamepad", label = "Xbox Pad" },\n'
+        '    { slot = 99, key = "usb:platform/xhci-hcd.1:1.5", kind = "gamepad" },\n'
+        '    "not a pin",\n'
+        "]\n",
+        encoding="utf-8",
+    )
+    assert load_config(str(path)).controller.slot_pins == [SlotPinConfig(**_PIN)]
+
+
+def test_controller_slot_pins_round_trip_through_the_config_file(tmp_path) -> None:
+    path = str(tmp_path / "config.toml")
+    cfg = AppConfig()
+    cfg.controller = ControllerConfig(slot_pins=[_PIN])
+    save_config(cfg, path)
+    assert load_config(path).controller.slot_pins == [SlotPinConfig(**_PIN)]
 
 
 def test_controller_keyboard_layout_defaults_to_the_system_layout() -> None:
@@ -6129,6 +6219,21 @@ def test_apply_runtime_replays_controller_config_through_gamepad_handler() -> No
 
     assert app._input_manager.gamepad_handler.apply_called is True
     assert app._config.controller == new_ctrl
+
+
+def test_apply_runtime_moves_controllers_to_hand_edited_pins() -> None:
+    app = _app_with(controller=ControllerConfig())
+    pins = [SlotPinConfig(slot=2, key="usb:platform/xhci-hcd.1:1.4", label="Pad")]
+    apply_runtime_config_changes(app, AppConfig(controller=ControllerConfig(slot_pins=pins)))
+    assert app._input_manager.slot_pin_applies == [pins]
+    assert app._config.controller.slot_pins == pins
+
+
+def test_apply_runtime_leaves_the_pins_alone_on_another_controller_edit() -> None:
+    pins = [SlotPinConfig(slot=2, key="usb:platform/xhci-hcd.1:1.4", label="Pad")]
+    app = _app_with(controller=ControllerConfig(slot_pins=list(pins)))
+    apply_runtime_config_changes(app, AppConfig(controller=ControllerConfig(slot_pins=list(pins), deadzone=0.3)))
+    assert app._input_manager.slot_pin_applies == []
 
 
 def test_apply_runtime_disarms_mouse_when_mouse_enabled_toggled_off() -> None:

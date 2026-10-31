@@ -155,6 +155,10 @@ class _FakeInputManager:
         self._items = items or []
         self.mouse3d_manager = _FakeMouse3DManager(mouse3d)
         self._keyboard = keyboard or {"poller": "fallback", "devices": None}
+        self.pin_capture = {"slot": None, "seconds_left": 0.0, "result": None}
+
+    def pin_capture_status(self) -> dict:
+        return dict(self.pin_capture)
 
     def get_controller_info(self) -> list[dict]:
         return list(self._items)
@@ -224,7 +228,13 @@ class TestDefaultRuntimeStatsSnapshot:
         assert snap["video"]["connected"] is False
         assert snap["controllers"]["items"] == []
         # Same shape as a published snapshot, so /api/stats never changes schema at startup.
-        assert snap["controllers"] == {"connected_count": 0, "missing_count": 0, "mapped_count": 0, "items": []}
+        assert snap["controllers"] == {
+            "connected_count": 0,
+            "missing_count": 0,
+            "mapped_count": 0,
+            "items": [],
+            "pin_capture": {"slot": None, "seconds_left": 0.0, "result": None},
+        }
         assert snap["video"]["source_format"] == ""
         assert snap["video"]["limits"] == limits_snapshot(None)
         # Nothing scanned yet, so the 3D Mouse section claims neither a fault nor "none connected".
@@ -623,6 +633,36 @@ class TestPublishRuntimeStats:
         assert (puck["port_key"], reserved["port_key"]) == ("usb:platform/xhci-hcd.0:2", None)
         assert puck["slot_ref"] == "mouse3d|usb:platform/xhci-hcd.0:2|SpaceNavigator|connected"
         assert reserved["slot_ref"] == ""
+        assert (puck["pinned"], reserved["pinned"]) == (False, False)
+
+    def test_controller_slots_carry_their_pins_and_the_armed_pin_here(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mgr = _FakeInputManager(
+            [
+                {
+                    "controller_index": 0,
+                    "name": "GameSir",
+                    "kind": "gamepad",
+                    "state": "connected",
+                    "connected": True,
+                    "marker_id": 10,
+                    "effective_speed": 1.0,
+                    "backend": "joystick",
+                    "pinned": True,
+                }
+            ]
+        )
+        mgr.pin_capture = {"slot": 0, "seconds_left": 6.5, "result": None}
+        self._prime(services, input_manager=mgr)
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+
+        services.publish_runtime_stats(force=True)
+        c = services.get_runtime_stats_snapshot()["controllers"]
+        assert c["items"][0]["pinned"] is True
+        assert c["pin_capture"] == {"slot": 0, "seconds_left": 6.5, "result": None}
 
     def test_controller_items_publish_what_each_controller_cannot_do(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch

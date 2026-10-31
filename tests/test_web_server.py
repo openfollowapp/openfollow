@@ -467,7 +467,7 @@ def test_the_activity_dot_follows_a_connected_controllers_name(slots_server) -> 
 
 
 def test_each_slot_offers_only_the_action_its_state_allows(slots_server) -> None:
-    """Identify on a connected slot, Forget (destructive) on a missing one, nothing on a reserved one."""
+    """Identify on a connected slot, Forget (destructive) on a missing one, and Pin here on every slot."""
     _, base, _ = slots_server
     _, body = _get(base, "/section/controller_slots")
     missing, connected, reserved = _row(body, "C1"), _row(body, "C2"), _row(body, "C3")
@@ -475,7 +475,88 @@ def test_each_slot_offers_only_the_action_its_state_allows(slots_server) -> None
     assert "/identify/" not in missing
     assert '<button type="button" class="secondary small" hx-post="/section/controller_slots/identify/1"' in connected
     assert "/forget/" not in connected
-    assert "<button" not in reserved
+    assert "/identify/" not in reserved and "/forget/" not in reserved
+    for index, row in enumerate((missing, connected, reserved)):
+        assert f'hx-post="/section/controller_slots/pin/{index}"' in row
+        assert "/unpin/" not in row
+
+
+def test_a_pinned_slot_names_its_socket_and_offers_unpin(slots_server) -> None:
+    _, base, stats = slots_server
+    stats["controllers"]["items"][1] = {**_SLOT_ITEMS[1], "pinned": True}
+    _, body = _get(base, "/section/controller_slots")
+    row = _row(body, "C2")
+    assert '<span class="slot-port">Pinned to USB 1, port 2</span>' in row
+    assert 'hx-post="/section/controller_slots/unpin/1"' in row
+    assert 'hx-post="/section/controller_slots/pin/1"' in row
+
+
+def test_an_empty_slot_reads_empty_and_can_only_be_pinned(slots_server) -> None:
+    _, base, stats = slots_server
+    stats["controllers"]["items"][2] = {
+        "controller_index": 2,
+        "name": "",
+        "kind": "",
+        "state": "empty",
+        "connected": False,
+        "marker_id": None,
+        "port_key": None,
+        "slot_ref": "|||empty|",
+    }
+    _, body = _get(base, "/section/controller_slots")
+    row = _row(body, "C3")
+    assert '<span class="slot-state">Empty</span>' in row
+    assert "Gamepad" not in row and "slot-port" not in row
+    assert row.count("<button") == 1 and 'hx-post="/section/controller_slots/pin/2"' in row
+
+
+def test_an_armed_slot_counts_down_and_offers_only_cancel(slots_server) -> None:
+    _, base, stats = slots_server
+    stats["controllers"]["pin_capture"] = {"slot": 1, "seconds_left": 7.2, "result": None}
+    _, body = _get(base, "/section/controller_slots")
+    armed = _row(body, "C2")
+    assert '<span class="slot-waiting">Press a button · 8 s</span>' in armed
+    assert 'hx-post="/section/controller_slots/cancel-pin/1"' in armed
+    assert "/identify/" not in armed
+    # One capture at a time: no other row offers Pin here meanwhile, but Forget stays.
+    assert "/pin/" not in body.replace("/cancel-pin/", "")
+    assert 'hx-post="/section/controller_slots/forget/0"' in _row(body, "C1")
+
+
+@pytest.mark.parametrize(
+    ("result", "line"),
+    [
+        (
+            {"slot": 1, "outcome": "pinned", "detail": "USB 1, port 2"},
+            '<p class="slot-result ok">C2 pinned to USB 1, port 2.</p>',
+        ),
+        (
+            {"slot": 1, "outcome": "no_port", "detail": "8BitDo <Pro>"},
+            '<p class="slot-result error">8BitDo &lt;Pro&gt; has no stable port and can\'t be pinned.</p>',
+        ),
+        (
+            {"slot": 1, "outcome": "no_slot", "detail": ""},
+            '<p class="slot-result error">That controller holds no slot, so it can\'t be pinned.</p>',
+        ),
+        (
+            {"slot": 1, "outcome": "timeout", "detail": ""},
+            '<p class="slot-result">No button was pressed. C2 was not pinned.</p>',
+        ),
+    ],
+)
+def test_the_latest_pin_here_says_how_it_ended(slots_server, result: dict, line: str) -> None:
+    _, base, stats = slots_server
+    stats["controllers"]["pin_capture"] = {"slot": None, "seconds_left": 0.0, "result": result}
+    _, body = _get(base, "/section/controller_slots")
+    assert line in body
+
+
+@pytest.mark.parametrize("result", [None, {"slot": 1, "outcome": "cancelled", "detail": ""}])
+def test_no_result_line_without_news(slots_server, result: dict | None) -> None:
+    _, base, stats = slots_server
+    stats["controllers"]["pin_capture"] = {"slot": None, "seconds_left": 0.0, "result": result}
+    _, body = _get(base, "/section/controller_slots")
+    assert "slot-result" not in body
 
 
 def test_the_slot_actions_sit_at_the_right_edge(slots_server) -> None:
@@ -502,9 +583,10 @@ def test_no_controllers_says_so(slots_server) -> None:
     assert "No controller connected." in body
 
 
-@pytest.mark.parametrize(("action", "index"), [("identify", 1), ("forget", 0)])
+@pytest.mark.parametrize(("action", "index"), [("identify", 1), ("forget", 0), ("pin", 0), ("unpin", 1)])
 def test_slot_actions_are_queued_with_the_slot_the_row_showed(slots_server, action: str, index: int) -> None:
-    server, base, _ = slots_server
+    server, base, stats = slots_server
+    stats["controllers"]["items"][1] = {**_SLOT_ITEMS[1], "pinned": True}
     _, table = _get(base, "/section/controller_slots")
     row = _row(table, f"C{index + 1}")
     ref = _SLOT_ITEMS[index]["slot_ref"]
@@ -515,6 +597,14 @@ def test_slot_actions_are_queued_with_the_slot_the_row_showed(slots_server, acti
     assert status == 200
     assert "slot-table" in body
     assert server._command_queue.consume_slot_actions() == [(action, index, ref)]
+
+
+def test_cancel_is_queued_from_the_armed_row(slots_server) -> None:
+    server, base, stats = slots_server
+    stats["controllers"]["pin_capture"] = {"slot": 1, "seconds_left": 3.0, "result": None}
+    status, body = _post_form(base, "/section/controller_slots/cancel-pin/1", {})
+    assert status == 200
+    assert server._command_queue.consume_slot_actions() == [("cancel-pin", 1, "")]
 
 
 @pytest.mark.parametrize("path", ["/section/controller_slots/delete/0", "/section/controller_slots/identify/one"])

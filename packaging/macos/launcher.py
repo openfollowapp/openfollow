@@ -142,7 +142,10 @@ def run_selfcheck() -> int:
         from gi.repository import Gst
 
         Gst.init(None)
-        required = ("gtksink", "videoconvert", "videotestsrc", "avfvideosrc")
+        from openfollow.web.diagnostics import SHARED_GST_ELEMENTS
+
+        # Every shared element the app builds, plus the macOS capture source.
+        required = ("videoconvert", "avfvideosrc", *(name for name, _ in SHARED_GST_ELEMENTS))
         missing = [name for name in required if Gst.ElementFactory.find(name) is None]
         if missing:
             print(f"FAIL: missing GStreamer elements: {', '.join(missing)}")

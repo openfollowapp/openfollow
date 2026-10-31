@@ -751,6 +751,13 @@ class TestBundledDocResolution:
         monkeypatch.setattr(routes_module, "_SHARE_DOC_DIR", tmp_path)
         assert routes_module._bundled_doc_path("NOTICES.md") == tmp_path / "NOTICES.md"
 
+    def test_frozen_bundle_root(self, monkeypatch, tmp_path) -> None:
+        # The macOS app unpacks the package and its docs side by side under one root.
+        (tmp_path / "WRITTEN_OFFER.md").write_text("x")
+        monkeypatch.setattr(routes_module, "__file__", str(tmp_path / "openfollow" / "web" / "routes.pyc"))
+        monkeypatch.setattr(routes_module, "_SHARE_DOC_DIR", tmp_path / "absent")
+        assert routes_module._bundled_doc_path("WRITTEN_OFFER.md") == tmp_path / "WRITTEN_OFFER.md"
+
 
 class TestThirdPartyNotices:
     def test_none_when_no_file(self, monkeypatch) -> None:

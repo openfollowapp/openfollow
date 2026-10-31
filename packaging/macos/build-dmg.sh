@@ -116,6 +116,26 @@ poetry run pyinstaller --noconfirm --clean \
   exit 1
 }
 
+echo "==> Checking bundled Mach-O minimum macOS against Info.plist"
+# Homebrew bottles target the build host's macOS, so a library can need a newer
+# macOS than the plist declares; such an app fails to launch without a message.
+DECLARED_MIN="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$APP/Contents/Info.plist")"
+TOO_NEW="$(
+  find "$APP/Contents" -type f \( -name '*.dylib' -o -name '*.so' -o -perm -u+x \) -print0 |
+    while IFS= read -r -d '' bin; do
+      minos="$(otool -l "$bin" 2>/dev/null | awk '/LC_BUILD_VERSION/{b=1} b&&$1=="minos"{print $2; exit} /LC_VERSION_MIN_MACOSX/{v=1} v&&$1=="version"{print $2; exit}')"
+      [[ -n "$minos" ]] || continue
+      if [[ "$(printf '%s\n%s\n' "$DECLARED_MIN" "$minos" | sort -V | tail -1)" != "$DECLARED_MIN" ]]; then
+        echo "  $minos ${bin#"$APP/"}"
+      fi
+    done
+)"
+if [[ -n "$TOO_NEW" ]]; then
+  echo "Bundled binaries need a newer macOS than LSMinimumSystemVersion $DECLARED_MIN:" >&2
+  echo "$TOO_NEW" >&2
+  exit 1
+fi
+
 echo "==> Ad-hoc signing"
 codesign --force --deep --sign - "$APP"
 

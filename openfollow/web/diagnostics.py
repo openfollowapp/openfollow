@@ -306,7 +306,7 @@ def _run(
 # Elements no single input plugin owns, each named with what stops working
 # when it is missing. Universally present ones (queue, videoconvert) are left
 # out: listing what cannot plausibly be absent buries what can.
-_SHARED_GST_ELEMENTS: tuple[tuple[str, str], ...] = (
+SHARED_GST_ELEMENTS: tuple[tuple[str, str], ...] = (
     ("gtksink", "video output"),
     ("appsink", "detection, preview and wizard snapshots"),
     ("valve", "snapshot gating"),
@@ -1738,7 +1738,7 @@ def collect_video_capability() -> list[str]:
         return rows
 
     rows.append("  Shared GStreamer elements:")
-    for name, used_for in _SHARED_GST_ELEMENTS:
+    for name, used_for in SHARED_GST_ELEMENTS:
         present = "present" if Gst.ElementFactory.find(name) else "MISSING"
         rows.append(f"    {name:<18}{present:<9}({used_for})")
     found = []

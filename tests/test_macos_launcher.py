@@ -195,6 +195,30 @@ def test_main_routes_gui_by_default(launcher, monkeypatch) -> None:
     assert launcher.main([]) == 0
 
 
+def _stub_gst(monkeypatch, present: set[str]) -> None:
+    """Install a fake ``gi`` whose GStreamer registry holds only ``present``."""
+    gst = types.SimpleNamespace(
+        init=lambda _argv: None,
+        ElementFactory=types.SimpleNamespace(find=lambda name: object() if name in present else None),
+    )
+    gi = types.ModuleType("gi")
+    gi.require_version = lambda *_a: None  # type: ignore[attr-defined]
+    repository = types.ModuleType("gi.repository")
+    repository.Gst = gst  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "gi", gi)
+    monkeypatch.setitem(sys.modules, "gi.repository", repository)
+
+
+def test_selfcheck_fails_when_the_gallery_webp_decoder_is_missing(launcher, monkeypatch, capsys) -> None:
+    from openfollow.web.diagnostics import SHARED_GST_ELEMENTS
+
+    present = {"videoconvert", "avfvideosrc", *(name for name, _ in SHARED_GST_ELEMENTS)} - {"webpdec"}
+    _stub_gst(monkeypatch, present)
+
+    assert launcher.run_selfcheck() == 1
+    assert capsys.readouterr().out.strip() == "FAIL: missing GStreamer elements: webpdec"
+
+
 # ---------------------------------------------------------------------------
 # _export_workdir
 # ---------------------------------------------------------------------------

@@ -75,3 +75,15 @@ def test_the_gl_libraries_are_deb_runtime_dependencies() -> None:
     text = control.read_text(encoding="utf-8")
     # PyOpenGL loads them at runtime: they must be present on an offline target.
     assert "libegl1" in text and "libgles2" in text
+
+
+_MACOS_SPEC = _REPO_ROOT / "packaging" / "macos" / "openfollow.spec"
+
+
+@pytest.mark.parametrize("doc", ["LICENSE", "THIRD_PARTY_NOTICES.md", "WRITTEN_OFFER.md"])
+def test_the_macos_app_bundles_the_about_documents(doc: str) -> None:
+    if not _MACOS_SPEC.is_file():
+        pytest.skip("no macOS spec in this tree")
+    # About shows them offline from the bundle root; a missing one falls back to a web link.
+    assert (_REPO_ROOT / doc).is_file()
+    assert f'"{doc}"' in _MACOS_SPEC.read_text(encoding="utf-8")

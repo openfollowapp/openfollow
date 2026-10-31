@@ -552,7 +552,10 @@ make dmg            # -> dist/OpenFollow-<version>-<arch>.dmg
 the `detection` + `export` extras, then runs `build-dmg.sh`. The build host needs
 an uplink (torch / ultralytics wheels + the five YOLO26 tier weights). The output is
 **single-arch** (matches the build host; an Intel `.dmg` needs an Intel build
-host). It is **large** because of torch – on Apple Silicon the `.app` is ~900 MB
+host); the published `.dmg` is Apple Silicon only and needs **macOS 15** or later,
+because the bundled Homebrew libraries target the build host's macOS. The build
+fails when any bundled binary needs a newer macOS than the `LSMinimumSystemVersion`
+in the spec. It is **large** because of torch – on Apple Silicon the `.app` is ~900 MB
 and the compressed `.dmg` ~350 MB.
 
 A post-build self-check runs the frozen app with a scrubbed environment

@@ -115,6 +115,8 @@ hiddenimports += ["rtmidi", *collect_submodules("mido.backends")]
 
 # Bundle the first-run config seed and every pre-shipped quality-tier model.
 datas += [(str(MACOS / "config.seed.toml"), ".")]
+# About reads these offline from the bundle root (web/routes.py _bundled_doc_path).
+datas += [(str(REPO / name), ".") for name in ("LICENSE", "THIRD_PARTY_NOTICES.md", "WRITTEN_OFFER.md")]
 for _model in sorted((BUILD / "models").glob("*.onnx")):
     datas += [(str(_model), "models")]
 
@@ -172,7 +174,7 @@ _GST_PLUGIN_ALLOW = frozenset(
         "libgstgtk.dylib", "libgstapplemedia.dylib", "libgstosxaudio.dylib",
         # codecs / parsers / containers
         "libgstlibav.dylib", "libgstvideoparsersbad.dylib", "libgstaudioparsers.dylib",
-        "libgstjpeg.dylib", "libgstpng.dylib", "libgstpnm.dylib",
+        "libgstjpeg.dylib", "libgstpng.dylib", "libgstpnm.dylib", "libgstwebp.dylib",
         "libgstisomp4.dylib", "libgstmatroska.dylib", "libgstmpegtsdemux.dylib",
         "libgstmpegtsmux.dylib", "libgstmpegpsdemux.dylib", "libgstid3demux.dylib",
         "libgstid3tag.dylib", "libgsticydemux.dylib", "libgsttagdemux.dylib",
@@ -273,7 +275,7 @@ app = BUNDLE(  # noqa: F821
         "CFBundleShortVersionString": VERSION,
         "CFBundleVersion": VERSION,
         "NSHighResolutionCapable": True,
-        "LSMinimumSystemVersion": "12.0",
+        "LSMinimumSystemVersion": "15.0",
         "LSApplicationCategoryType": "public.app-category.video",
         "NSCameraUsageDescription": "OpenFollow uses connected cameras as a video source for tracking.",
         "NSMicrophoneUsageDescription": "OpenFollow may receive audio alongside NDI / AV video sources.",

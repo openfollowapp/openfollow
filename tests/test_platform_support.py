@@ -28,7 +28,13 @@ def _detect(tmp_path: Path, *, model: bytes | None = None, os_release: str | Non
         model_path.write_bytes(model)
     if os_release is not None:
         release_path.write_text(os_release, encoding="utf-8")
-    return detect("linux", model_paths=(model_path,), os_release_paths=(release_path,))
+    return detect(
+        "linux",
+        model_paths=(model_path,),
+        os_release_paths=(release_path,),
+        display_manager=tmp_path / "no-display-manager",
+        bits=64,
+    )
 
 
 @pytest.mark.parametrize(
@@ -112,7 +118,13 @@ def test_no_os_release_is_an_unsupported_linux(tmp_path: Path) -> None:
 def test_the_second_os_release_is_read_when_the_first_is_missing(tmp_path: Path) -> None:
     fallback = tmp_path / "usr-lib-os-release"
     fallback.write_text(DEBIAN_13, encoding="utf-8")
-    support = detect("linux", model_paths=(tmp_path / "absent",), os_release_paths=(tmp_path / "absent", fallback))
+    support = detect(
+        "linux",
+        model_paths=(tmp_path / "absent",),
+        os_release_paths=(tmp_path / "absent", fallback),
+        display_manager=tmp_path / "absent",
+        bits=64,
+    )
     assert support.supported is True
 
 
@@ -121,7 +133,16 @@ def test_an_unreadable_model_falls_back_to_the_os(tmp_path: Path) -> None:
     unreadable.mkdir()
     release = tmp_path / "os-release"
     release.write_text(DEBIAN_13, encoding="utf-8")
-    assert detect("linux", model_paths=(unreadable,), os_release_paths=(release,)).supported is True
+    assert (
+        detect(
+            "linux",
+            model_paths=(unreadable,),
+            os_release_paths=(release,),
+            display_manager=tmp_path / "absent",
+            bits=64,
+        ).supported
+        is True
+    )
 
 
 @pytest.mark.parametrize(
@@ -160,9 +181,9 @@ def test_an_empty_model_file_falls_through_to_the_next(tmp_path: Path) -> None:
     empty.write_bytes(b"\x00")
     pi5 = tmp_path / "model"
     pi5.write_bytes(b"Raspberry Pi 5 Model B Rev 1.0\x00")
-    assert detect("linux", model_paths=(empty, pi5), os_release_paths=()) == PlatformSupport(
-        True, "Raspberry Pi 5 Model B"
-    )
+    assert detect(
+        "linux", model_paths=(empty, pi5), os_release_paths=(), display_manager=tmp_path / "absent", bits=64
+    ) == PlatformSupport(True, "Raspberry Pi 5 Model B")
 
 
 def test_current_detects_once_per_process(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -179,3 +200,59 @@ def test_current_detects_once_per_process(monkeypatch: pytest.MonkeyPatch) -> No
         assert calls == [1]
     finally:
         _REAL_CURRENT.cache_clear()
+
+
+PI5 = b"Raspberry Pi 5 Model B Rev 1.0\x00"
+
+
+def _with(
+    tmp_path: Path, *, model: bytes | None, bits: int = 64, display_manager: str | None = None
+) -> PlatformSupport:
+    model_path = tmp_path / "model"
+    if model is not None:
+        model_path.write_bytes(model)
+    release_path = tmp_path / "os-release"
+    release_path.write_text(DEBIAN_13, encoding="utf-8")
+    link = tmp_path / "display-manager.service"
+    if display_manager is not None:
+        link.symlink_to(tmp_path / display_manager)
+    return detect("linux", model_paths=(model_path,), os_release_paths=(release_path,), display_manager=link, bits=bits)
+
+
+@pytest.mark.parametrize(
+    ("model", "kwargs", "expected"),
+    [
+        (PI5, {"display_manager": "lightdm.service"}, PlatformSupport(False, "Raspberry Pi 5 Model B with a desktop")),
+        (
+            None,
+            {"display_manager": "gdm3.service"},
+            PlatformSupport(False, "Debian GNU/Linux 13 (trixie) with a desktop"),
+        ),
+        (PI5, {"bits": 32}, PlatformSupport(False, "Raspberry Pi 5 Model B with a 32-bit OS")),
+        (None, {"bits": 32}, PlatformSupport(False, "Debian GNU/Linux 13 (trixie) with a 32-bit OS")),
+        (
+            PI5,
+            {"bits": 32, "display_manager": "lightdm.service"},
+            PlatformSupport(False, "Raspberry Pi 5 Model B with a 32-bit OS"),
+        ),
+    ],
+    ids=["pi-desktop", "debian-desktop", "pi-32-bit", "debian-32-bit", "32-bit-named-first"],
+)
+def test_a_desktop_or_a_32_bit_os_is_unsupported_on_supported_hardware(
+    tmp_path: Path, model: bytes | None, kwargs: dict, expected: PlatformSupport
+) -> None:
+    assert _with(tmp_path, model=model, **kwargs) == expected
+
+
+def test_a_dangling_display_manager_link_still_counts(tmp_path: Path) -> None:
+    """The link names a unit that may not be readable; enabled is enough."""
+    assert _with(tmp_path, model=PI5, display_manager="removed.service").supported is False
+
+
+def test_unsupported_hardware_keeps_its_own_name(tmp_path: Path) -> None:
+    support = _with(tmp_path, model=b"Raspberry Pi 4 Model B Rev 1.4\x00", bits=32, display_manager="lightdm.service")
+    assert support == PlatformSupport(False, "Raspberry Pi 4 Model B")
+
+
+def test_a_lite_pi_5_with_a_64_bit_os_is_supported(tmp_path: Path) -> None:
+    assert _with(tmp_path, model=PI5) == PlatformSupport(True, "Raspberry Pi 5 Model B")

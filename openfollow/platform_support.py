@@ -4,16 +4,19 @@
 """Whether this station runs on a platform OpenFollow supports.
 
 Supported: a Raspberry Pi of generation 5 or later (Pi 5, CM5, Pi 500), and on
-hardware that is not a Pi, Debian 13 or later or a Debian derivative. Anything
-else (an older Pi, macOS, Windows, another Linux) is unsupported, and every
-surface warns with the same words unless ``ui.developer_mode`` is on.
+hardware that is not a Pi, Debian 13 or later or a Debian derivative, each with a
+64-bit OS and no desktop. Anything else (an older Pi, macOS, Windows, another
+Linux, a 32-bit OS, a desktop install) is unsupported, and every surface warns
+with the same words unless ``ui.developer_mode`` is on.
 :func:`current` detects once per process; hardware and OS don't change at runtime.
 """
 
 from __future__ import annotations
 
 import functools
+import os
 import re
+import struct
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -32,6 +35,11 @@ __all__ = [
 
 MODEL_PATHS: tuple[Path, ...] = (Path("/proc/device-tree/model"), Path("/sys/firmware/devicetree/base/model"))
 OS_RELEASE_PATHS: tuple[Path, ...] = (Path("/etc/os-release"), Path("/usr/lib/os-release"))
+# Every display manager (lightdm, gdm3, sddm) enables itself through this link; the boot
+# target cannot tell, since a station whose kiosk starts with the session is graphical too.
+DISPLAY_MANAGER = Path("/etc/systemd/system/display-manager.service")
+# The OS's word size as the running Python sees it: a 32-bit OS on a Pi 5 boots a 64-bit kernel.
+_POINTER_BITS = struct.calcsize("P") * 8
 
 STEP = (
     "OpenFollow is not developed to work on this platform and errors are expected. "
@@ -63,6 +71,8 @@ def detect(
     platform: str = sys.platform,
     model_paths: Sequence[Path] = MODEL_PATHS,
     os_release_paths: Sequence[Path] = OS_RELEASE_PATHS,
+    display_manager: Path = DISPLAY_MANAGER,
+    bits: int = _POINTER_BITS,
 ) -> PlatformSupport:
     if platform == "darwin":
         return PlatformSupport(False, "macOS")
@@ -72,8 +82,17 @@ def detect(
         return PlatformSupport(False, platform)
     model = _first_text(model_paths)
     if "raspberry pi" in model.lower():
-        return _pi_support(model)
-    return _os_support(_os_release(os_release_paths))
+        support = _pi_support(model)
+    else:
+        support = _os_support(_os_release(os_release_paths))
+    if not support.supported:
+        return support
+    if bits < 64:
+        return PlatformSupport(False, f"{support.name} with a 32-bit OS")
+    # A dangling link still means a display manager is enabled.
+    if os.path.lexists(display_manager):
+        return PlatformSupport(False, f"{support.name} with a desktop")
+    return support
 
 
 @functools.cache

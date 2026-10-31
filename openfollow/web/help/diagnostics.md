@@ -29,7 +29,7 @@ The Raspberry Pi and the OpenFollow process on it.
 
 A red box means the Pi is short of power or slowed down now: **under voltage** (freezes, USB dropouts) or **CPU throttled** (too hot). An orange box means it happened since the last start and stays until restart.
 
-A red **Unsupported platform** box means OpenFollow is not developed for this hardware or operating system. Supported are a Raspberry Pi 5, CM5 or Pi 500, and on other hardware Debian 13 or a Debian derivative. Errors are expected anywhere else and no support is provided. The same warning shows on every page and on the Operator Screen.
+A red **Unsupported platform** box means OpenFollow is not developed for this hardware or operating system. Supported are a Raspberry Pi 5, CM5 or Pi 500, and on other hardware Debian 13 or a Debian derivative, each with a 64-bit OS and no desktop. Errors are expected anywhere else and no support is provided. The same warning shows on every page and on the Operator Screen.
 
 - **IP** – the address this station is reachable on.
 - **Web port** – the port this web UI is served on, and the one other stations are told. **Fallback** means the configured port was taken and a backup port (8080 or 2010) is used.

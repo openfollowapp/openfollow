@@ -18,7 +18,7 @@ provided for it.
 | Debian 13 (or later) or a Debian derivative, on hardware that is not a Pi | no Raspberry Pi model string; `/etc/os-release` `ID=debian` with `VERSION_ID` >= 13, or `debian` in `ID_LIKE` | Supported |
 | Any other Linux on hardware that is not a Pi (Fedora, Arch, Debian 12, …) | no Raspberry Pi model string, `/etc/os-release` as above does not match | Unsupported: the `PRETTY_NAME`, e.g. "Fedora Linux 42" |
 
-A Pi below generation 5 is unsupported whatever OS it runs; the OS rule applies
+Supported hardware with a 32-bit OS or a desktop (a display manager is enabled) is unsupported too: "Raspberry Pi 5 Model B with a desktop", "… with a 32-bit OS". A Pi below generation 5 is unsupported whatever OS it runs; the OS rule applies
 to hardware that is not a Pi. Derivatives are taken by `ID_LIKE` alone (Ubuntu,
 Linux Mint, Raspberry Pi OS), with no version check, since their own version
 numbers don't map onto Debian's. An unreadable `/etc/os-release` counts as

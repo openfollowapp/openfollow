@@ -1181,10 +1181,10 @@ _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
     "paths": frozenset({"show_paths"}),
     # Whether this station takes remote driving from a browser at all.
     "touch_remote": frozenset({"enabled"}),
-    # The keyboard, pads and USB sockets of this station, in every section that writes the controller
-    # config. Button names describe its pads, like the pad map: a file import restores them.
+    # The keyboard, pads, USB sockets and slot picks of this station, in every section that writes the
+    # controller config. Button names describe its pads, like the pad map: a file import restores them.
     **{
-        section: _KEYBOARD_LAYOUT_FIELDS | {"button_name_style", "slot_pins"}
+        section: _KEYBOARD_LAYOUT_FIELDS | {"button_name_style", "slot_pins", "slot_markers"}
         for section, attr in _SECTION_CONFIG_ATTRS.items()
         if attr == "controller"
     },
@@ -2811,6 +2811,10 @@ def _controller_slots_view(server: ConfigWebServer) -> dict[str, Any]:
             )
         items.append(item)
     controllers["items"] = items
+    controllers["marker_choices"] = [
+        {"id": int(mid), "label": _catalog_marker_label(int(mid), catalog)}
+        for mid in controllers.get("marker_choices") or []
+    ]
     return controllers
 
 
@@ -3326,8 +3330,9 @@ def _config_dict_redacted(cfg: AppConfig) -> dict[str, Any]:
     # has no such adapter it reads as a pin that is down, which drops the OSC
     # multicast membership there until somebody finds the setting.
     d["osc"].pop("listen_iface", None)
-    # USB sockets on this box: a peer's slots would follow sockets it does not have.
+    # This box's USB sockets and slots: on a peer they would rearrange its controllers.
     d["controller"].pop("slot_pins", None)
+    d["controller"].pop("slot_markers", None)
     d["rttrpm_output"].pop("source_iface", None)
     d["touch_remote"].pop("enabled", None)
     # Set for this station's GPU and driver: on another station it would hide a working GL display.
@@ -3401,6 +3406,7 @@ _DEVICE_IDENTITY_FIELDS: tuple[str, ...] = (
     "testpattern_selected_media",
     "detection.storage_path",
     "controller.slot_pins",
+    "controller.slot_markers",
     # Set for this station's GPU and driver.
     "display.operator_screen",
 )
@@ -6404,8 +6410,17 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.post("/section/controller_slots/<action:re:identify|forget|pin|unpin|cancel-pin>/<index:int>")
     def controller_slot_action(action: str, index: int) -> Any:
-        """Queue Identify / Forget for one slot; the main loop, which owns the slots, runs it."""
+        """Queue an action for one slot; the main loop, which owns the slots, runs it."""
         server.request_slot_action(action, index, request.forms.get("ref", ""))
+        return template("partials/controller_slots_table", controllers=_controller_slots_view(server))
+
+    @app.post("/section/controller_slots/marker/<index:int>")
+    def controller_slot_marker(index: int) -> Any:
+        """Queue the marker picked for one slot; the main loop checks it is one this station controls."""
+        raw = request.forms.get("marker_id", "")
+        if not raw.isdigit():
+            return _save_failed(400, "The station received no marker.", "Pick one of the controlled markers.")
+        server.request_slot_marker(index, request.forms.get("ref", ""), int(raw))
         return template("partials/controller_slots_table", controllers=_controller_slots_view(server))
 
     @app.get("/section/video_source/failure")

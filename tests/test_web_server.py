@@ -481,6 +481,100 @@ def test_each_slot_offers_only_the_action_its_state_allows(slots_server) -> None
         assert "/unpin/" not in row
 
 
+def test_a_slot_with_a_controller_picks_from_the_controlled_markers(slots_server) -> None:
+    _, base, stats = slots_server
+    stats["controllers"]["marker_choices"] = [11, 10]
+    _, body = _get(base, "/section/controller_slots")
+    connected, missing, reserved = _row(body, "C2"), _row(body, "C1"), _row(body, "C3")
+    assert 'aria-label="Marker for C2" hx-post="/section/controller_slots/marker/1" hx-trigger="change"' in connected
+    assert '<option value="11" selected>Marker 11</option>' in connected
+    assert '<option value="10">Lead &amp; &lt;Keys&gt; (10)</option>' in connected
+    assert '<option value="10" selected>' in missing
+    assert "<select" not in reserved
+    # The template's line joins render nothing of their own.
+    for row in (connected, missing):
+        cell = row[row.index('<span class="slot-marker">') : row.index("<select")]
+        assert "\\" not in cell
+
+
+def test_a_slot_without_a_marker_says_so_in_its_picker(slots_server) -> None:
+    _, base, stats = slots_server
+    stats["controllers"]["marker_choices"] = [10]
+    stats["controllers"]["items"][1] = {**_SLOT_ITEMS[1], "marker_id": None}
+    _, body = _get(base, "/section/controller_slots")
+    row = _row(body, "C2")
+    assert '<option value="" selected disabled>No marker</option>' in row
+    assert "slot-marker-dot" not in row
+
+
+def test_a_lone_slot_drives_all_markers(slots_server) -> None:
+    _, base, stats = slots_server
+    stats["controllers"]["marker_choices"] = [10, 11]
+    stats["controllers"]["items"][1] = {**_SLOT_ITEMS[1], "all_markers": True}
+    _, body = _get(base, "/section/controller_slots")
+    row = _row(body, "C2")
+    assert "<td>All markers</td>" in row
+    assert "<select" not in row
+
+
+@pytest.mark.parametrize(
+    ("extra", "before_badge"),
+    [({}, "</select>"), ({"all_markers": True}, "<td>All markers")],
+)
+def test_a_parked_marker_carries_the_p_badge_in_the_picker_and_for_a_lone_slot(
+    slots_server, extra: dict[str, Any], before_badge: str
+) -> None:
+    _, base, stats = slots_server
+    stats["controllers"]["marker_choices"] = [10, 11]
+    badge = (
+        '<span class="park-badge"><span aria-hidden="true">P</span><span class="visually-hidden">Parked</span></span>'
+    )
+    stats["controllers"]["items"][1] = {**_SLOT_ITEMS[1], **extra, "parked": True}
+    _, body = _get(base, "/section/controller_slots")
+    assert before_badge + badge in _row(body, "C2")
+    stats["controllers"]["items"][1] = {**_SLOT_ITEMS[1], **extra, "parked": False}
+    _, body = _get(base, "/section/controller_slots")
+    assert "park-badge" not in _row(body, "C2")
+
+
+def test_no_picker_while_pin_here_waits_or_nothing_is_controlled(slots_server) -> None:
+    _, base, stats = slots_server
+    _, body = _get(base, "/section/controller_slots")
+    assert "<select" not in body
+    stats["controllers"]["marker_choices"] = [10, 11]
+    stats["controllers"]["pin_capture"] = {"slot": 2, "seconds_left": 5.0, "result": None}
+    _, body = _get(base, "/section/controller_slots")
+    assert "<select" not in body
+
+
+def test_the_slots_poll_waits_while_a_picker_is_open(slots_server) -> None:
+    _, base, _ = slots_server
+    _, page = _get(base, "/")
+    section = page[page.index('id="controller-slots-content"') :]
+    assert "!this.querySelector('select:focus')" in section[: section.index(">")]
+
+
+def test_a_picked_marker_is_queued_with_the_slot_the_row_showed(slots_server) -> None:
+    server, base, _ = slots_server
+    ref = _SLOT_ITEMS[1]["slot_ref"]
+    status, body = _post_form(base, "/section/controller_slots/marker/1", {"ref": ref, "marker_id": "10"})
+    assert status == 200
+    assert "slot-table" in body
+    assert server._command_queue.consume_slot_marker_picks() == [(1, ref, 10)]
+
+
+@pytest.mark.parametrize("value", ["", "abc", "-3", "1.5"])
+def test_a_pick_that_names_no_marker_is_refused(slots_server, value: str) -> None:
+    server, base, _ = slots_server
+    status, body = _post_form(base, "/section/controller_slots/marker/1", {"ref": "r", "marker_id": value})
+    assert status == 400
+    assert json.loads(body) == {
+        "error": "The station received no marker.",
+        "action": "Pick one of the controlled markers.",
+    }
+    assert server._command_queue.consume_slot_marker_picks() == []
+
+
 def test_a_pinned_slot_names_its_socket_and_offers_unpin(slots_server) -> None:
     _, base, stats = slots_server
     stats["controllers"]["items"][1] = {**_SLOT_ITEMS[1], "pinned": True}
@@ -622,7 +716,10 @@ def test_the_input_tab_opens_with_the_controller_slots(slots_server) -> None:
     assert tab.index('id="controller-slots-section"') < tab.index('id="gamepad-section"')
     assert 'data-help="controller_slots"' in tab
     assert 'id="controller-slots-content"' in tab
-    assert 'hx-trigger="every 1s [pollShown(this)], poll-shown[pollShown(this)] from:body"' in tab
+    assert (
+        "hx-trigger=\"every 1s [pollShown(this) && !this.querySelector('select:focus')], "
+        'poll-shown[pollShown(this)] from:body"'
+    ) in tab
 
 
 def test_status_names_each_missing_controller(slots_server) -> None:

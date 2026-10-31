@@ -35,6 +35,7 @@ from openfollow.configuration import (
     OscConfig,
     OtpOutputConfig,
     RttrpmOutputConfig,
+    SlotMarkerConfig,
     SlotPinConfig,
     TouchRemoteConfig,
     TriggerZonesConfig,
@@ -1537,6 +1538,76 @@ def test_controller_slot_pins_round_trip_through_the_config_file(tmp_path) -> No
     cfg.controller = ControllerConfig(slot_pins=[_PIN])
     save_config(cfg, path)
     assert load_config(path).controller.slot_pins == [SlotPinConfig(**_PIN)]
+
+
+def test_controller_slot_markers_default_to_none() -> None:
+    assert ControllerConfig().slot_markers == []
+
+
+def test_controller_slot_marker_entries_become_picks_in_slot_order() -> None:
+    cfg = ControllerConfig(slot_markers=[{"slot": 3, "marker": 0}, SlotMarkerConfig(slot=1, marker=7)])
+    assert cfg.slot_markers == [SlotMarkerConfig(slot=1, marker=7), SlotMarkerConfig(slot=3, marker=0)]
+
+
+@pytest.mark.parametrize("raw", [None, "slot 1", {"slot": 1, "marker": 2}, 3])
+def test_controller_slot_markers_that_are_not_a_list_are_none(raw: object) -> None:
+    assert ControllerConfig(slot_markers=raw).slot_markers == []
+
+
+@pytest.mark.parametrize("entry", [None, "1=2", 4, [1, 2], {"marker": 2}, {"slot": 1}])
+def test_controller_slot_marker_entries_of_the_wrong_shape_are_dropped(entry: object) -> None:
+    assert ControllerConfig(slot_markers=[entry]).slot_markers == []
+
+
+@pytest.mark.parametrize("slot", [0, 17, -1, "2", 2.0, True, None])
+def test_controller_slot_markers_outside_the_slots_are_dropped(slot: object) -> None:
+    assert ControllerConfig(slot_markers=[{"slot": slot, "marker": 2}]).slot_markers == []
+
+
+@pytest.mark.parametrize("marker", [-1, "2", 2.5, True, None])
+def test_controller_slot_markers_naming_no_marker_id_are_dropped(marker: object) -> None:
+    assert ControllerConfig(slot_markers=[{"slot": 1, "marker": marker}]).slot_markers == []
+
+
+@pytest.mark.parametrize("second", [{"slot": 1, "marker": 3}, {"slot": 2, "marker": 2}])
+def test_controller_slot_markers_named_twice_keep_the_first(second: dict[str, object]) -> None:
+    cfg = ControllerConfig(slot_markers=[{"slot": 1, "marker": 2}, second])
+    assert cfg.slot_markers == [SlotMarkerConfig(slot=1, marker=2)]
+
+
+def test_several_slots_can_be_left_without_a_marker() -> None:
+    cfg = ControllerConfig(slot_markers=[{"slot": 1, "marker": 0}, {"slot": 2, "marker": 0}])
+    assert [pick.slot for pick in cfg.slot_markers] == [1, 2]
+
+
+def test_controller_slot_markers_round_trip_through_the_config_file(tmp_path) -> None:
+    path = str(tmp_path / "config.toml")
+    cfg = AppConfig(controlled_marker_ids=[2, 5])
+    cfg.controller = ControllerConfig(slot_markers=[{"slot": 1, "marker": 5}, {"slot": 2, "marker": 0}])
+    save_config(cfg, path)
+    assert load_config(path).controller.slot_markers == [
+        SlotMarkerConfig(slot=1, marker=5),
+        SlotMarkerConfig(slot=2, marker=0),
+    ]
+
+
+def test_a_pick_for_a_marker_no_longer_controlled_is_dropped_on_load(tmp_path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "controlled_marker_ids = [2, 5]\n"
+        "[controller]\n"
+        "slot_markers = [\n"
+        "    { slot = 1, marker = 5 },\n"
+        "    { slot = 2, marker = 9 },\n"
+        "    { slot = 3, marker = 0 },\n"
+        '    "not a pick",\n'
+        "]\n",
+        encoding="utf-8",
+    )
+    assert load_config(str(path)).controller.slot_markers == [
+        SlotMarkerConfig(slot=1, marker=5),
+        SlotMarkerConfig(slot=3, marker=0),
+    ]
 
 
 def test_controller_keyboard_layout_defaults_to_the_system_layout() -> None:

@@ -106,7 +106,11 @@ def test_every_page_loads_the_gate_from_the_station(live_server: str) -> None:
         ('id="marker-catalog-root"', f"load, every 1500ms {_SECTION}"),
         ('id="overview-peers"', f"every 5s {_SECTION}"),
         ('id="diagnostics-live"', f"every 1s {_SECTION}"),
-        ('id="controller-slots-content"', f"every 1s {_SECTION}"),
+        # Not while a marker picker is open, or the swap would close it.
+        (
+            'id="controller-slots-content"',
+            "every 1s [pollShown(this) && !this.querySelector('select:focus')], poll-shown[pollShown(this)] from:body",
+        ),
         ('id="mouse3d-status"', f"every 1s {_SECTION}"),
         # Page-wide: nobody can answer a prompt in a hidden tab, and it shows on return.
         ('id="privilege-password-modal"', "load, every 3s [!document.hidden], poll-shown from:body"),

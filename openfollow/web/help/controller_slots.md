@@ -15,7 +15,13 @@ Slots follow the **USB socket** each controller is plugged into, so the same cab
   - **Missing** – unplugged, dropped out, or its kind was switched off. Slot and marker stay put, so nobody else changes marker. The marker card turns red on the Operator Screen, and the status corner and Status & Diagnostics name it.
   - **Reserved** – a missing slot that was forgotten. It keeps its place in the numbering but drives no marker and raises no warning.
   - **Empty** – a free slot below a pinned one; the next controller plugged in takes it.
-- **Marker** – the marker this slot drives, by name and ID, with a dot in its colour. A blue **P** means the marker is parked: the controller stays connected but moves and resets nothing until the marker is unparked (Marker Control & Visibility).
+- **Marker** – the marker this slot drives, by name and ID, with a dot in its colour. A blue **P** means the marker is parked: the controller stays connected but moves and resets nothing until the marker is unparked (Marker Control & Visibility). On a connected or missing slot it is a picker of the controlled markers; a lone controller shows **All markers**.
+
+### Picking a slot's marker
+
+Swaps, and what stays on this station.
+
+Picking a marker another slot drives swaps the two; if this slot had none, the other is left without one. Picks stay on this station: export and sending settings leave them out.
 
 ## Actions
 
@@ -24,6 +30,8 @@ Slots follow the **USB socket** each controller is plugged into, so the same cab
 - **Pin here** – waits up to 10 seconds for a button press and pins that controller's socket to this slot, swapping it with the slot's controller. No marker moves while it waits; **Cancel** or Esc stops it. A controller with no stable port (as on macOS) can't be pinned.
 - **Unpin** – drops the pin. Slots renumber by socket at the next restart.
 
-## When a controller comes back
+### When a controller comes back
+
+Which slot it takes.
 
 A controller plugged into a pinned socket takes that slot. One plugged back into its own socket takes its own slot again. A different controller of the same kind takes the lowest missing or reserved slot. Anything else joins at the end. A restart numbers everything by socket again.

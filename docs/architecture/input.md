@@ -145,6 +145,20 @@ with `from_app=True`, drawn even with `[operator_messages] enabled = false`
 ends. Pins are device-local: in `_DEVICE_IDENTITY_FIELDS`, stripped from
 export and section broadcast.
 
+**Which marker a slot drives** is `controller_slots.slot_markers(slot_count,
+controlled, picks)`: a slot's pick from `ControllerConfig.slot_markers`
+(1-based `SlotMarkerConfig(slot, marker)`, marker `0` = none), else the next
+controlled marker no slot picked, in `controlled_marker_ids` order, so
+without picks it is `controlled[slot]`. A pick naming a marker that is not
+controlled counts as none (and is dropped on load). `_controller_marker_id`
+reads it for every consumer (HUD badge, OSC `cN`, Detection, speed), after
+the single-controller rule, which ignores picks. `pick_marker` (web Marker
+column, main loop, `pick_slot_marker`) materialises every slot's current
+marker as a pick, then swaps: the slot that held the marker takes the picked
+slot's previous one, or none. So a pick moves at most two slots, and a
+marker controlled later reaches only a slot that never had one. Picks are
+device-local like the pins and saved with `save_config_fields`.
+
 Without pins, every start numbers by socket again. 3D mice carry
 session-unique instance ids (like SDL's), so a puck keeps its id while a
 sibling comes and goes. `identify_slot` rumbles a pad (main loop) or blinks a

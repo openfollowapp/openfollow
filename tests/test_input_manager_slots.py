@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 import openfollow.input.input_manager as input_manager_module
-from openfollow.configuration import AppConfig, SlotPinConfig
+from openfollow.configuration import AppConfig, SlotMarkerConfig, SlotPinConfig
 from openfollow.input.controller_slots import NOTE_BUTTON_MAP_OTHER_MODEL, NOTE_CANNOT_IDENTIFY
 from openfollow.input.gamepad import GamepadUpdate
 from openfollow.input.input_manager import InputManager
@@ -497,6 +497,7 @@ def test_unpinning_keeps_every_pad_where_it_is(station, caplog) -> None:
 def test_a_lone_pad_pinned_above_the_first_slot_still_follows_the_selection(station) -> None:
     manager, app = station({0: (_key("1"), "Solo")}, controller__slot_pins=[_pin(3, "1", "Solo")])
     assert _states(manager) == [("empty", None), ("empty", None), ("connected", app._selected_id)]
+    assert [c["all_markers"] for c in manager.get_controller_info()] == [False, False, True]
     assert manager.controller_marker_id(0) is None
     assert manager._gamepad_marker_id(0) == app._selected_id
     assert manager.marker_cycle_active() is True
@@ -854,6 +855,141 @@ def test_a_capture_armed_without_a_prompt_ends_cleanly(running) -> None:
     app_modes.exit_slot_pin_capture(app)
     assert manager.pin_capture_active is False
     assert _prompts(app) == [("from OSC", False)]
+
+
+def _markers(manager: InputManager) -> list[int | None]:
+    return [c["marker_id"] for c in manager.get_controller_info()]
+
+
+def _pick(slot: int, marker: int) -> SlotMarkerConfig:
+    return SlotMarkerConfig(slot=slot, marker=marker)
+
+
+def test_a_picked_marker_routes_its_slot_everywhere(station) -> None:
+    manager, _ = station({0: (_key("1"), "Left"), 1: (_key("2"), "Right")}, controller__slot_markers=[_pick(1, 12)])
+    assert _markers(manager) == [12, 10]
+    assert manager._gamepad_marker_id(0) == 12
+    assert manager.controller_marker_id(0) == 12
+
+
+def test_picking_a_marker_swaps_it_with_the_slot_that_drove_it(station, caplog) -> None:
+    manager, app = station({0: (_key("1"), "Left"), 1: (_key("2"), "Right")})
+    with caplog.at_level("INFO", logger=input_manager_module.__name__):
+        assert manager.pick_slot_marker(0, 11) is True
+    assert "C1 drives marker 11; C1 11, C2 10" in caplog.text
+    assert _markers(manager) == [11, 10]
+    assert app._config.controller.slot_markers == [_pick(1, 11), _pick(2, 10)]
+
+
+def test_a_missing_slot_can_be_given_a_marker(station) -> None:
+    manager, _ = station({0: (_key("1"), "Left"), 1: (_key("2"), "Right")})
+    del manager.gamepad_handler.pads[0]
+    manager.update(0.016)
+    assert manager.pick_slot_marker(0, 12) is True
+    assert _states(manager) == [("missing", 12), ("connected", 11)]
+
+
+def test_picking_for_a_slot_without_a_marker_leaves_the_other_without_one(station) -> None:
+    manager, app = station({0: (_key("1"), "A"), 1: (_key("2"), "B"), 2: (_key("3"), "C"), 3: (_key("4"), "D")})
+    assert _markers(manager) == [10, 11, 12, None]
+    assert manager.pick_slot_marker(3, 10) is True
+    assert _markers(manager) == [None, 11, 12, 10]
+    # A newly controlled marker goes nowhere it wasn't picked: the emptied slot stays empty.
+    app._controlled_ids.append(13)
+    assert _markers(manager) == [None, 11, 12, 10]
+
+
+def test_an_unassigned_slot_takes_a_newly_controlled_marker(station) -> None:
+    manager, app = station({0: (_key("1"), "A"), 1: (_key("2"), "B"), 2: (_key("3"), "C"), 3: (_key("4"), "D")})
+    manager.pick_slot_marker(0, 11)
+    app._controlled_ids.append(13)
+    assert _markers(manager) == [11, 10, 12, 13]
+
+
+def test_a_marker_that_stops_being_controlled_lets_its_slot_fall_back(station) -> None:
+    manager, app = station({0: (_key("1"), "Left"), 1: (_key("2"), "Right")}, controller__slot_markers=[_pick(1, 12)])
+    app._controlled_ids.remove(12)
+    assert _markers(manager) == [10, 11]
+
+
+def test_hand_edited_picks_apply_at_once(station) -> None:
+    manager, app = station({0: (_key("1"), "Left"), 1: (_key("2"), "Right")})
+    app._config.controller.slot_markers = [_pick(2, 10), _pick(1, 0)]
+    assert _markers(manager) == [None, 10]
+
+
+@pytest.mark.parametrize("marker", [99, 0])
+def test_only_a_controlled_marker_can_be_picked(station, marker: int) -> None:
+    manager, app = station({0: (_key("1"), "Left"), 1: (_key("2"), "Right")})
+    assert manager.pick_slot_marker(0, marker) is False
+    assert app._config.controller.slot_markers == []
+
+
+def test_a_reserved_or_empty_slot_has_no_marker_to_pick(station) -> None:
+    manager, app = station(
+        {0: (_key("1"), "Left"), 1: (_key("2"), "Right")}, controller__slot_pins=[_pin(4, "2", "Right")]
+    )
+    del manager.gamepad_handler.pads[0]
+    manager.update(0.016)
+    manager.forget_slot(0)
+    assert [c["state"] for c in manager.get_controller_info()] == ["reserved", "empty", "empty", "connected"]
+    assert manager.pick_slot_marker(0, 11) is False
+    assert manager.pick_slot_marker(1, 11) is False
+    assert manager.pick_slot_marker(9, 11) is False
+    assert app._config.controller.slot_markers == []
+
+
+def test_a_lone_slot_drives_all_markers_and_has_no_pick(station) -> None:
+    manager, app = station({0: (_key("1"), "Solo")}, controller__slot_markers=[_pick(1, 12), _pick(2, 10)])
+    info = manager.get_controller_info()[0]
+    assert (info["all_markers"], info["marker_id"]) == (True, app._selected_id)
+    assert manager.pick_slot_marker(0, 11) is False
+    # The picks wait for a second slot.
+    manager.gamepad_handler.pads[1] = (_key("2"), "Second")
+    manager.update(0.016)
+    assert _markers(manager) == [12, 10]
+    assert [c["all_markers"] for c in manager.get_controller_info()] == [False, False]
+
+
+def _pick_click(app: _App, index: int, marker: int, ref: str | None = None) -> None:
+    app._web_commands.request_slot_marker(index, app._input_manager.slot_ref(index) if ref is None else ref, marker)
+    app_commands.check_controller_slot_actions(app)
+
+
+def _saved_picks(app: _App) -> list[SlotMarkerConfig]:
+    from openfollow.configuration import load_config
+
+    return load_config(app._config_path).controller.slot_markers
+
+
+def test_a_marker_picked_on_the_web_is_saved(running) -> None:
+    manager, app, _ = running({0: (_key("1"), "Left"), 1: (_key("2"), "Right")})
+    app._config.controlled_marker_ids = [10, 11, 12]
+    _pick_click(app, 1, 12)
+    assert _markers(manager) == [10, 12]
+    assert _saved_picks(app) == [_pick(1, 10), _pick(2, 12)]
+
+
+def test_a_pick_for_a_slot_that_changed_since_is_left_alone(running, caplog) -> None:
+    manager, app, _ = running({0: (_key("1"), "Left"), 1: (_key("2"), "Right")})
+    with caplog.at_level("INFO", logger=app_commands.__name__):
+        _pick_click(app, 1, 12, ref="stale")
+    assert "C2 changed since its marker was picked" in caplog.text
+    assert _markers(manager) == [10, 11]
+    assert not os.path.exists(app._config_path)
+
+
+def test_a_refused_pick_writes_nothing(running) -> None:
+    _, app, _ = running({0: (_key("1"), "Left"), 1: (_key("2"), "Right")})
+    _pick_click(app, 0, 99)
+    assert not os.path.exists(app._config_path)
+
+
+def test_picks_without_input_are_dropped() -> None:
+    queue = WebCommandQueue()
+    queue.request_slot_marker(0, "r", 10)
+    app_commands.check_controller_slot_actions(SimpleNamespace(_input_manager=None, _web_commands=queue))
+    assert queue.consume_slot_marker_picks() == []
 
 
 def _positions(app: _App) -> dict[int, tuple[float, float, float]]:

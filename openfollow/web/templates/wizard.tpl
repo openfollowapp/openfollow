@@ -69,7 +69,7 @@
   .wizard-step-btn:hover {
     color: var(--text);
     background: rgba(255,255,255,0.04);
-    transform: none; filter: none;
+    filter: none;
   }
   .wizard-step-btn.active {
     color: var(--accent);
@@ -247,7 +247,7 @@
   .lens-bubble .lb-reject:hover .ring, .lens-bubble .lb-reject:focus-visible .ring { fill: var(--error-chip); }
   .lens-bubble button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   /* The app's buttons lift by 1 px on hover; these must not move in any state, in any browser. */
-  .lens-bubble button, .lens-bubble button:hover, .lens-bubble button:active, .lens-bubble button:focus, .lens-bubble button:focus-visible { transform: none !important; filter: none !important; transition: color 120ms ease; }
+  .lens-bubble button, .lens-bubble button:hover, .lens-bubble button:active, .lens-bubble button:focus, .lens-bubble button:focus-visible { filter: none !important; transition: color 120ms ease; }
   .lens-edges { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: none; pointer-events: none; }
   .lens-dev { margin-top: 0.72rem; }
   /* Graded meter (docs/STATUS_LANGUAGE.md): five segments, filled in the level's line colour. */
@@ -328,9 +328,9 @@
   .pin-menu-head { display: flex; align-items: center; justify-content: space-between; gap: 0.4rem; }
   .pin-menu-title { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); padding: 0.3rem 0.5rem; }
   .pin-menu .pm-close { width: 1.7rem; height: 1.7rem; padding: 0; border-radius: 0.225rem; background: transparent; color: var(--muted); font-size: 1.1rem; line-height: 1; }
-  .pin-menu .pm-close:hover, .pin-menu .pm-close:focus-visible { background: var(--surface-strong); color: var(--text); outline: none; transform: none; }
+  .pin-menu .pm-close:hover, .pin-menu .pm-close:focus-visible { background: var(--surface-strong); color: var(--text); outline: none; }
   .pin-menu .pm-item { display: flex; width: 100%; justify-content: space-between; align-items: center; gap: 0.6rem; padding: 0.4rem 0.5rem; border-radius: 0.225rem; background: transparent; color: var(--text); font-weight: 600; font-size: 0.86rem; text-align: left; }
-  .pin-menu .pm-item:hover, .pin-menu .pm-item:focus-visible { background: var(--surface-strong); outline: none; transform: none; }
+  .pin-menu .pm-item:hover, .pin-menu .pm-item:focus-visible { background: var(--surface-strong); outline: none; }
   .pin-menu .pm-item.danger { color: var(--error-text); }
   .pin-menu .kind { font-size: 0.72rem; font-weight: 500; color: var(--muted); }
   .pin-menu hr { border: 0; border-top: 1px solid var(--border-soft); margin: 0.3rem 0; }
@@ -346,7 +346,7 @@
   .pm-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.2rem; }
   /* The full-screen picture with its one-line toolbar. */
   .fs-btn { position: absolute; top: 8px; right: 8px; z-index: 4; width: 2.2rem; height: 2.2rem; padding: 0; display: flex; align-items: center; justify-content: center; border-radius: 0.25rem; background: color-mix(in srgb, var(--bg-deep) 72%, transparent); border: 1px solid var(--border); color: var(--text); }
-  .fs-btn:hover, .fs-btn:focus-visible { background: var(--bg-soft); border-color: var(--accent); transform: none; }
+  .fs-btn:hover, .fs-btn:focus-visible { background: var(--bg-soft); border-color: var(--accent); }
   .fs-btn svg { width: 1.15rem; height: 1.15rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
   .fs-shell { position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column; background: var(--bg-deep); }
   .fs-shell[hidden], .wizard-solved-params[hidden], .metric-echo[hidden], .tier-list[hidden], button[hidden] { display: none; }

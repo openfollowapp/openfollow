@@ -101,7 +101,7 @@
  --btn-primary-bg: var(--accent);
  --btn-neutral-bg: rgba(255, 255, 255, 0.12);
  --btn-secondary-border: rgba(255, 188, 0, 0.42);
- --btn-transition: transform 0.17s ease, filter 0.17s ease;
+ --btn-transition: filter 0.17s ease, background-color 0.17s ease, border-color 0.17s ease;
  /* width of the inline help drawer. While the drawer is
  open this same size is applied as <body> padding-right, so the
  content column shrinks/shifts left instead of being covered. */
@@ -476,7 +476,7 @@
  .pv-loupe[hidden], .pv-readout[hidden] { display: none; }
  /* The picture full screen, with its one-line bar, as in the Setup Wizard. */
  .pv-fs-btn { position: absolute; top: 8px; right: 8px; z-index: 4; width: 2.2rem; height: 2.2rem; padding: 0; display: flex; align-items: center; justify-content: center; border-radius: 0.25rem; background: color-mix(in srgb, var(--bg-deep) 72%, transparent); border: 1px solid var(--border); color: var(--text); }
- .pv-fs-btn:hover, .pv-fs-btn:focus-visible { background: var(--bg-soft); border-color: var(--accent); transform: none; }
+ .pv-fs-btn:hover, .pv-fs-btn:focus-visible { background: var(--bg-soft); border-color: var(--accent); }
  .pv-fs-btn svg { width: 1.15rem; height: 1.15rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
  .pv-fs-shell { position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column; background: var(--bg-deep); }
  .pv-fs-shell[hidden], .pv-fs-btn[hidden] { display: none; }
@@ -894,11 +894,10 @@
  line-height: 1.2;
  transition: var(--btn-transition);
  }
- button:hover, a.btn-link:hover { transform: translateY(-1px); filter: brightness(1.03); }
+ button:hover, a.btn-link:hover { filter: brightness(1.1); }
  button:disabled, .btn-disabled {
  opacity: 0.5;
  cursor: not-allowed;
- transform: none;
  filter: none;
  }
  /* Primary – the one commit action in a context. Save/Update/Restart
@@ -923,6 +922,12 @@
  border: 1px solid var(--error-line);
  color: var(--error-text);
  font-weight: 600;
+ }
+ /* Hover: an outline button fills with its own colour instead of brightening. */
+ .btn-secondary:hover:not(:disabled), button.secondary:hover:not(:disabled), .button-secondary:hover:not(:disabled),
+ .broadcast-btn:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent); filter: none; }
+ .btn-danger:hover:not(:disabled), button.danger:hover:not(:disabled) {
+ background: var(--error-row); border-color: var(--error-text); filter: none;
  }
  /* Neutral – low-emphasis dismiss actions (e.g. the network-edit
  Cancel via .ghost-btn). */
@@ -1347,7 +1352,7 @@
  margin-left: 0.25rem; padding: 0; border-radius: 0; background: none;
  color: var(--accent); font: inherit; font-weight: 600; transition: none;
  }
- .license-footer .whats-new-link:hover { transform: none; filter: none; text-decoration: underline; }
+ .license-footer .whats-new-link:hover { filter: none; text-decoration: underline; }
  .license-footer .update-flag {
  display: inline-block; margin-left: 0.4rem; vertical-align: 1px; border-radius: 0.2rem;
  --pill-pad-y: 0.1rem; padding-inline: 0.45rem; font-size: 0.7rem; font-weight: 500;
@@ -1647,7 +1652,6 @@
  .tab-btn:hover {
  color: var(--text);
  background: rgba(255, 255, 255, 0.04);
- transform: none;
  filter: none;
  }
  .tab-btn.active {

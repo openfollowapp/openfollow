@@ -816,6 +816,17 @@ class OpenFollowApp:
             return str(p)
         return str(Path(self._config_path).parent / p)
 
+    def _apply_catalog_names(self, marker_ids: list[int]) -> None:
+        """Rename controlled markers in the running outputs from the catalog, as a restart would name them.
+
+        OTP and RTTrPM share PsnServer's Marker objects, so one rename reaches all three.
+        """
+        server = self._server
+        if server is None:
+            return
+        # The server holds only controlled markers, including one still being added; a tombstone is left to the prune.
+        server.rename_markers([i for i in marker_ids if self._marker_catalog.get(i) is not None])
+
     def _prune_selection_ids(self, ids: list[int]) -> None:
         """Drop ids from persisted selection (on-disk config for race-free hot-reload)."""
         drop = set(ids)
@@ -861,22 +872,10 @@ class OpenFollowApp:
         from openfollow.marker_catalog.sync import MarkerCatalogSync
 
         def _on_change(changed_ids: list[int]) -> None:
-            # Background sync receiver: apply renames + prune deletions.
-            server = self._server
-            if server is None:
-                return
+            # Background sync receiver: save, prune deletions, then rename the running outputs.
             catalog = self._marker_catalog
-            controlled = set(self._controlled_ids)
-            tombstoned: list[int] = []
-            for marker_id in changed_ids:
-                entry = catalog.get(marker_id)
-                if entry is None:
-                    # get() hides tombstones; None means peer deleted it.
-                    if catalog.get_any(marker_id) is not None:
-                        tombstoned.append(marker_id)
-                    continue
-                if marker_id in controlled and entry.name:
-                    server.update_marker_name(marker_id, entry.name)
+            # get() hides tombstones; None with a stored entry means a peer deleted it.
+            tombstoned = [i for i in changed_ids if catalog.get(i) is None and catalog.get_any(i) is not None]
             # Persist remote changes.
             try:
                 save_catalog(self._marker_catalog, self._marker_catalog_path())
@@ -888,6 +887,10 @@ class OpenFollowApp:
                 )
             if tombstoned:
                 self._prune_selection_ids(tombstoned)
+            try:
+                self._apply_catalog_names(changed_ids)
+            except Exception:
+                logger.exception("Catalog changes from a peer saved, but the running outputs did not take the names")
 
         def _selection_provider() -> tuple[list[int], list[int]]:
             return (

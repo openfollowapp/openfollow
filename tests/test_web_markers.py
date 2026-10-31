@@ -69,6 +69,103 @@ def live_server(tmp_path, monkeypatch):
         yield server, base, str(config_path), catalog, sync
 
 
+@pytest.fixture
+def live_server_with_outputs(tmp_path, monkeypatch):
+    """A live server wired to a station whose outputs record each rename handed to them."""
+    monkeypatch.setattr(discovery_module.BeaconSender, "start", lambda self: None)
+    monkeypatch.setattr(discovery_module.BeaconSender, "stop", lambda self: None)
+    monkeypatch.setattr(discovery_module.BeaconReceiver, "start", lambda self: None)
+    monkeypatch.setattr(discovery_module.BeaconReceiver, "stop", lambda self: None)
+    catalog = MarkerCatalog()
+    renamed: list[list[int]] = []
+    with live_on_free_port(
+        lambda port: ConfigWebServer(
+            config_path=str(tmp_path / "config.toml"),
+            host="127.0.0.1",
+            port=port,
+            system_name="OpenFollow test",
+            marker_catalog_provider=lambda: catalog,
+            marker_catalog_sync_provider=lambda: _FakeSync(),
+            marker_rename_handler=renamed.append,
+        )
+    ) as (_server, base):
+        yield base, catalog, renamed
+
+
+class TestRenameReachesTheOutputs:
+    """A rename saved on this station reaches its running outputs, as one from a peer does."""
+
+    def test_a_saved_rename_is_handed_to_the_outputs(self, live_server_with_outputs) -> None:
+        base, catalog, renamed = live_server_with_outputs
+        catalog.upsert(1, "Lead", "#ff0000")
+        status, _ = _request(base, "/api/markers/catalog/1", method="PUT", body={"name": "Spot", "color": "#ff0000"})
+        assert status == 200
+        assert renamed == [[1]]
+
+    def test_outputs_that_fail_to_take_the_name_leave_the_save_standing(
+        self, live_server_with_outputs, monkeypatch, caplog
+    ) -> None:
+        base, catalog, _renamed = live_server_with_outputs
+        catalog.upsert(1, "Lead", "#ff0000")
+
+        def _broken(self, ids):  # noqa: ANN001
+            raise RuntimeError("server tearing down")
+
+        monkeypatch.setattr(ConfigWebServer, "apply_marker_renames", _broken)
+        status, body = _request(base, "/api/markers/catalog/1", method="PUT", body={"name": "Spot", "color": "#ff0000"})
+        assert status == 200
+        assert json.loads(body)["entry"]["name"] == "Spot"
+        assert "did not take the new name" in caplog.text
+
+    def test_the_rename_reaches_a_real_psn_server(self, tmp_path, monkeypatch) -> None:
+        """Route, app and output, all real: the seam the station runs."""
+        import types
+
+        from openfollow.app import OpenFollowApp
+        from openfollow.psn.server import PsnServer
+
+        for cls in (discovery_module.BeaconSender, discovery_module.BeaconReceiver):
+            monkeypatch.setattr(cls, "start", lambda self: None)
+            monkeypatch.setattr(cls, "stop", lambda self: None)
+        catalog = MarkerCatalog()
+        catalog.upsert(1, "Lead", "#ff0000")
+        from openfollow.configuration import marker_name_for_runtime
+
+        app = types.SimpleNamespace(_controlled_ids=[1], _marker_catalog=catalog)
+        psn = app._server = PsnServer(mcast_ip=None, name_of=lambda i: marker_name_for_runtime(app, i))
+        psn.add_marker(1, "ignored")
+        app._apply_catalog_names = types.MethodType(OpenFollowApp._apply_catalog_names, app)
+        with live_on_free_port(
+            lambda port: ConfigWebServer(
+                config_path=str(tmp_path / "config.toml"),
+                host="127.0.0.1",
+                port=port,
+                system_name="OpenFollow test",
+                marker_catalog_provider=lambda: catalog,
+                marker_rename_handler=app._apply_catalog_names,
+            )
+        ) as (_server, base):
+            status, _ = _request(
+                base, "/api/markers/catalog/1", method="PUT", body={"name": "Spot", "color": "#ff0000"}
+            )
+        assert status == 200
+        assert psn.get_marker(1).name == "Spot"
+
+    def test_a_rename_that_failed_to_save_is_not(self, live_server_with_outputs, monkeypatch) -> None:
+        from openfollow.web import routes as routes_module
+
+        base, catalog, renamed = live_server_with_outputs
+        catalog.upsert(1, "Lead", "#ff0000")
+
+        def boom(*_a, **_kw):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(routes_module, "save_catalog", boom)
+        status, _ = _request(base, "/api/markers/catalog/1", method="PUT", body={"name": "Spot", "color": "#ff0000"})
+        assert status == 500
+        assert renamed == []
+
+
 def _request(base: str, path: str, method: str = "GET", body: dict | None = None):
     url = base + path
     data = json.dumps(body).encode("utf-8") if body is not None else None

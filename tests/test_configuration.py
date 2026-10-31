@@ -5958,7 +5958,7 @@ def test_marker_name_for_runtime_pulls_from_catalog() -> None:
     reload diff path uses it; otherwise falls back to ``Marker <id>``."""
     import types
 
-    from openfollow.configuration import _marker_name_for_runtime
+    from openfollow.configuration import marker_name_for_runtime
     from openfollow.marker_catalog.catalog import MarkerCatalog
 
     catalog = MarkerCatalog()
@@ -5966,11 +5966,11 @@ def test_marker_name_for_runtime_pulls_from_catalog() -> None:
     catalog.upsert(6, "", "#00ff00", updated_at=1.0)  # name empty → fallback
 
     app = types.SimpleNamespace(_marker_catalog=catalog)
-    assert _marker_name_for_runtime(app, 5) == "Operator Name"
+    assert marker_name_for_runtime(app, 5) == "Operator Name"
     # Empty name in catalog falls back to default label.
-    assert _marker_name_for_runtime(app, 6) == "Marker 6"
+    assert marker_name_for_runtime(app, 6) == "Marker 6"
     # Missing entry falls back too.
-    assert _marker_name_for_runtime(app, 99) == "Marker 99"
+    assert marker_name_for_runtime(app, 99) == "Marker 99"
 
 
 def test_marker_name_for_runtime_without_catalog_uses_fallback() -> None:
@@ -5979,10 +5979,10 @@ def test_marker_name_for_runtime_without_catalog_uses_fallback() -> None:
     we fall back to ``Marker <id>``."""
     import types
 
-    from openfollow.configuration import _marker_name_for_runtime
+    from openfollow.configuration import marker_name_for_runtime
 
     app = types.SimpleNamespace()  # no _marker_catalog attribute
-    assert _marker_name_for_runtime(app, 3) == "Marker 3"
+    assert marker_name_for_runtime(app, 3) == "Marker 3"
 
 
 def test_load_config_strips_bool_and_non_int_marker_ids(tmp_path) -> None:
@@ -10083,3 +10083,60 @@ def test_a_stored_calibration_points_feature_is_dropped_as_unknown(temp_config_p
     assert load_config(str(temp_config_path)).ui.shown_features == ["paths"]
     assert "calibration_points" not in FEATURE_KEYS
     assert "calibration_points" not in EXPERIMENTAL_FEATURES
+
+
+def _app_on_a_real_psn_server(controlled: list[int]) -> _DummyApp:
+    """A live-apply app whose outputs are a real PsnServer reading a real catalog."""
+    from openfollow.configuration import marker_name_for_runtime
+    from openfollow.marker_catalog import MarkerCatalog
+    from openfollow.psn.server import PsnServer
+
+    app = _app_with(controlled_marker_ids=controlled, viewer_marker_ids=controlled)
+    app._marker_catalog = MarkerCatalog()
+    app._server = PsnServer(mcast_ip=None, name_of=lambda i: marker_name_for_runtime(app, i))
+    for marker_id in controlled:
+        app._server.add_marker(marker_id, f"Marker {marker_id}")
+    return app
+
+
+def test_a_rename_saved_while_a_marker_is_added_reaches_its_output() -> None:
+    """The web thread can save a rename after the live apply read the old name but before it
+    adds the marker: the rename finds no marker, so the add must not take the stale name."""
+    app = _app_on_a_real_psn_server([1])
+    app._marker_catalog.upsert(2, "Lead", "#ff0000")
+    real_add = app._server.add_marker
+
+    def _rename_then_add(marker_id, name):  # noqa: ANN001
+        # What the rename route does once its save landed: the catalog, then the outputs.
+        app._marker_catalog.upsert(marker_id, "Spot", "#ff0000")
+        app._server.rename_markers([marker_id])
+        return real_add(marker_id, name)
+
+    app._server.add_marker = _rename_then_add  # type: ignore[method-assign]
+    apply_runtime_config_changes(app, AppConfig(controlled_marker_ids=[1, 2], viewer_marker_ids=[1, 2]))
+    assert app._server.get_marker(2).name == "Spot"
+
+
+def test_a_rolled_back_marker_is_sent_by_otp_and_rttrpm_too() -> None:
+    """The rollback re-adds fresh Marker objects; the mirrors must hold those, or renames miss them."""
+    from openfollow.otp.server import OtpServer
+    from openfollow.rttrpm.server import RttrpmServer
+
+    app = _app_on_a_real_psn_server([1, 2])
+    app._otp_server = OtpServer()
+    app._rttrpm_server = RttrpmServer(host="192.0.2.30")
+    for marker_id in (1, 2):
+        app._otp_server.register_marker(app._server.get_marker(marker_id))
+        app._rttrpm_server.register_marker(app._server.get_marker(marker_id))
+    real_add = app._server.add_marker
+
+    def _failing_add(marker_id, name):  # noqa: ANN001
+        if marker_id == 3:
+            raise RuntimeError("PSN add failed")
+        return real_add(marker_id, name)
+
+    app._server.add_marker = _failing_add  # type: ignore[method-assign]
+    assert apply_runtime_config_changes(app, AppConfig(controlled_marker_ids=[1, 3], viewer_marker_ids=[1, 3])) is False
+    for mirror in (app._otp_server, app._rttrpm_server):
+        assert mirror.get_marker(2) is app._server.get_marker(2)
+        assert mirror.get_marker(3) is None

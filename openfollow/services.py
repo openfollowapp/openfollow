@@ -33,6 +33,7 @@ from openfollow.configuration import (
     effective_lens,
     feature_gated,
     is_simple_mode,
+    marker_name_for_runtime,
     parked_within,
     viewed_with_controlled,
 )
@@ -1718,6 +1719,7 @@ class AppRuntimeServices:
             mcast_ip=self._app._config.psn_mcast_ip,
             source_ip=source_ip or "",
             source_iface=self._app._config.psn_source_iface,
+            name_of=lambda marker_id: marker_name_for_runtime(self._app, marker_id),
         )
         if source_ip is None:
             # Down means silent, not absent. The server is built but never
@@ -1785,12 +1787,8 @@ class AppRuntimeServices:
         # strict checker instead of guarding every loop.
         server = self._app._server
         assert server is not None, "init_psn must run before init_markers"
-        catalog = getattr(self._app, "_marker_catalog", None)
         for marker_id in self._app._controlled_ids:
-            entry = catalog.get(marker_id) if catalog is not None else None
-            name = entry.name if (entry is not None and entry.name) else f"Marker {marker_id}"
-            marker = server.add_marker(marker_id, name)
-            marker.set_pos(*default_pos)
+            server.add_marker(marker_id, marker_name_for_runtime(self._app, marker_id)).set_pos(*default_pos)
         # No selection yet, so the first unparked marker is chosen as a start, not as a park moving it.
         self._app._selected_id = None
         parked = parked_within(self._app._controlled_ids, self._app._config.parked_marker_ids)
@@ -3167,6 +3165,7 @@ class AppRuntimeServices:
             camera_setup_restart_handler=self._handle_camera_setup_restart,
             marker_catalog_provider=lambda: self._app._marker_catalog,
             marker_catalog_sync_provider=lambda: self._app._marker_catalog_sync,
+            marker_rename_handler=lambda marker_ids: self._app._apply_catalog_names(marker_ids),
             # Live gamepad snapshot for the diagnostics bundle's E9 section.
             gamepad_runtime_provider=self._gamepad_runtime_snapshot,
             # Diagnostics I/O providers (recent I/O + USB visibility).

@@ -4948,6 +4948,11 @@ def _register_marker_catalog_routes(
         sync = server.get_marker_catalog_sync()
         if sync is not None:
             sync.request_delta([marker_id])
+        # The rename is saved and sent to peers whatever the running outputs make of it.
+        try:
+            server.apply_marker_renames([marker_id])
+        except Exception:
+            logger.exception("Marker %d renamed, but the running outputs did not take the new name", marker_id)
         return json.dumps({"success": True, "entry": _catalog_entry_json(entry)})
 
     @app.delete("/api/markers/catalog/<marker_id:int>")

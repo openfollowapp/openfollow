@@ -3901,13 +3901,8 @@ def _apply_with_fallback(
     return True
 
 
-def _marker_name_for_runtime(app: OpenFollowApp, marker_id: int) -> str:
-    """Pick a name for ``add_marker`` from the catalog, with a fallback.
-
-    Mirrors :func:`openfollow.services.init_markers`. Kept here so the
-    live-reload diff path doesn't need to import services to format
-    the label.
-    """
+def marker_name_for_runtime(app: OpenFollowApp, marker_id: int) -> str:
+    """The name a marker carries in the outputs: its catalog name, else ``Marker <id>``."""
     catalog = getattr(app, "_marker_catalog", None)
     if catalog is not None:
         entry = catalog.get(marker_id)
@@ -4258,9 +4253,6 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
             new_ids = set(filtered_controlled)
             to_remove = sorted(old_ids - new_ids)
             to_add = sorted(new_ids - old_ids)
-            # Capture old names up front so a rollback re-registers removed
-            # markers with their original label.
-            old_names = {marker_id: _marker_name_for_runtime(app, marker_id) for marker_id in to_remove}
             # Seed the same default position startup registration uses: an
             # unseeded marker broadcasts (0, 0, 0) and, having never taken a
             # data write, reports itself invalid on the PSN wire.
@@ -4271,7 +4263,7 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
                 for marker_id in to_remove:
                     server.remove_marker(marker_id)
                 for marker_id in to_add:
-                    server.add_marker(marker_id, _marker_name_for_runtime(app, marker_id)).set_pos(*default_pos)
+                    server.add_marker(marker_id, marker_name_for_runtime(app, marker_id)).set_pos(*default_pos)
 
                 # Mirror marker changes to OTP output if active
                 if app._otp_server is not None:
@@ -4316,10 +4308,17 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
                 # controlled ids / config; the next pass recomputes the same
                 # diff (and re-mirrors OTP/RTTrPM). Best-effort –
                 # ``_apply_with_fallback`` logs if this itself raises.
+                # The re-added markers are new objects; OTP and RTTrPM must send these, not the ones they held.
+                mirrors = [m for m in (app._otp_server, app._rttrpm_server) if m is not None]
                 for marker_id in to_add:
                     server.remove_marker(marker_id)
+                    for mirror in mirrors:
+                        mirror.unregister_marker(marker_id)
                 for marker_id in to_remove:
-                    server.add_marker(marker_id, old_names[marker_id]).set_pos(*default_pos)
+                    marker = server.add_marker(marker_id, marker_name_for_runtime(app, marker_id))
+                    marker.set_pos(*default_pos)
+                    for mirror in mirrors:
+                        mirror.register_marker(marker)
 
             _apply("controlled_marker_ids", _apply_controlled, on_failure=_restore_controlled)
         else:

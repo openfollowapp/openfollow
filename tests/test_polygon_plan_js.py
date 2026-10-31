@@ -250,3 +250,62 @@ def test_a_zone_hides_the_same_points_from_the_camera_as_on_the_operator_screen(
     want = [hidden_by_zone(point, eye, verts, 0.0, 1.0) for point, eye, verts in _SIGHT_LINES]
     assert out["hidden"] == want
     assert True in want and False in want
+
+
+class TestMovingWhole:
+    _SQUARE = [[[0, 0], [2, 0], [2, 2], [0, 2]]]
+    # The page reports the square's label around its centre (1, 1).
+    _LABEL = """
+    plan.opts.labelAt = function (sx, sy) {
+        var c = plan.toScreen(1, 1);
+        return Math.abs(sx - c[0]) < 20 && Math.abs(sy - c[1]) < 8 ? 0 : null;
+    };
+    plan.opts.grab = function (i) { calls.push(['grab', i]); return polys[i]; };
+    plan.opts.onGrabMove = record('grabMove');
+    plan.opts.onGrabEnd = record('grabEnd');
+    """
+
+    def test_a_drag_from_the_label_moves_every_corner(self) -> None:
+        out = _run(
+            _plan(self._SQUARE, None)
+            + self._LABEL
+            + """
+            var c = plan.toScreen(1, 1), to = plan.toScreen(2, 0.5);
+            fire('mousedown', c[0], c[1]); fire('mousemove', to[0], to[1]); fire('mouseup', to[0], to[1]);
+            out.corners = polys[0]; out.calls = calls; out.drag = plan.drag;
+            """
+        )
+        want = [[1, -0.5], [3, -0.5], [3, 1.5], [1, 1.5]]
+        assert out["corners"] == [[pytest.approx(x), pytest.approx(y)] for x, y in want]
+        assert out["calls"] == [["grab", 0], ["grabMove"], ["grabEnd", True]]
+        assert out["drag"] is None
+
+    def test_a_click_on_the_label_moves_nothing(self) -> None:
+        out = _run(
+            _plan(self._SQUARE, None)
+            + self._LABEL
+            + "var c = plan.toScreen(1, 1); fire('mousedown', c[0], c[1]); fire('mouseup', c[0], c[1]);"
+            + " out.corners = polys[0]; out.calls = calls;"
+        )
+        assert out["corners"] == self._SQUARE[0]
+        assert out["calls"] == [["grab", 0], ["grabEnd", False]]
+
+    def test_a_corner_handle_over_the_label_is_the_corner(self) -> None:
+        out = _run(
+            _plan([[[0, 0], [2, 0], [1, 1], [0, 2]]], 0)
+            + self._LABEL
+            + "var c = plan.toScreen(1, 1); fire('mousedown', c[0], c[1]); out.calls = calls; out.drag = plan.drag;"
+        )
+        assert out == {"calls": [], "drag": {"index": 2}}
+
+    def test_the_label_is_no_edge_to_add_a_corner_to(self) -> None:
+        out = _run(
+            _plan([[[0, 0.9], [2, 0.9], [2, 2], [0, 2]]], 0)
+            + self._LABEL
+            + """
+            var c = plan.toScreen(1, 1);
+            fire('mousemove', c[0], c[1]); out.hover = plan.hover;
+            fire('mousedown', c[0], c[1]); fire('mouseup', c[0], c[1]); out.n = polys[0].length;
+            """
+        )
+        assert out == {"hover": None, "n": 4}

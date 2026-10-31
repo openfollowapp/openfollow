@@ -165,6 +165,49 @@ def test_pressing_inside_a_zone_selects_it_and_dragging_a_corner_saves_it() -> N
     assert moved[2] == [pytest.approx(3.0), pytest.approx(4.0)]
 
 
+_TWO_ZONES = """
+model.zones.push({ name: 'Wing', color: '#00aaff', vertices: [[-4, 1], [-2, 1], [-2, 2], [-4, 2]], enabled: true,
+                   trigger_source: 'markers', triggered_by: [], is_occupied: false, occupant_count: 0,
+                   z_offset: 0, raise_markers: false, height_transition_s: 0.3 });
+"""
+
+
+def test_a_drag_from_a_zones_label_moves_the_zone_and_saves_it_once() -> None:
+    # The square's label is at its centre (1, 3), canvas (725, 360); 85 px per metre.
+    out = _editor(
+        """
+        at('mousedown', 725, 360); at('mousemove', 768, 360); at('mousemove', 810, 317.5); at('mouseup', 810, 317.5);
+        await settle();
+        out.puts = puts().map(function (r) { return r.url + ' ' + JSON.stringify(r.body.vertices); });
+        """
+    )
+    assert out["puts"] == ["/api/zones/0 [[1,2.5],[3,2.5],[3,4.5],[1,4.5]]"]
+
+
+def test_pressing_another_zones_label_chooses_that_zone() -> None:
+    # Wing's centre (-3, 1.5) is canvas (385, 487.5).
+    out = _editor(
+        "at('mousedown', 385, 488); at('mouseup', 385, 488); await settle();"
+        " out.heading = document.querySelector('#zone-details').textContent.indexOf('Zone 2 Details') >= 0;"
+        " out.puts = puts().length;",
+        _TWO_ZONES,
+    )
+    assert out == {"heading": True, "puts": 0}
+
+
+def test_the_poll_leaves_a_zone_alone_while_its_label_is_held() -> None:
+    out = _editor(
+        """
+        at('mousedown', 725, 360); at('mousemove', 810, 360);
+        model.zones[0].vertices = [[5, 5], [6, 5], [6, 6]];
+        tickIntervals(); await settle();
+        at('mouseup', 810, 360); await settle();
+        out.puts = puts().map(function (r) { return r.body.vertices; });
+        """
+    )
+    assert out["puts"] == [[[1, 2], [3, 2], [3, 4], [1, 4]]]
+
+
 def test_a_chosen_zone_is_named_by_its_details_heading() -> None:
     out = _editor(
         """
@@ -280,6 +323,49 @@ def test_new_zone_falls_back_to_the_grid_where_the_picture_middle_is_no_stage_po
         " button('zone-add-btn'); await settle(); out.posts = posts().map(function (r) { return r.body.vertices; });"
     )
     assert out["posts"] == [[[0, 4], [-0.87, 2.5], [0.87, 2.5]]]
+
+
+_LABELS = (
+    "function labels() { return svg().querySelectorAll('.pv-zone-label').map(function (g) { return g.textContent; }); }"
+)
+
+
+def test_the_camera_view_names_each_zone_at_its_centre() -> None:
+    out = _camera(
+        _LABELS
+        + " choose('camera'); await showPicture(); out.labels = labels();"
+        + " out.at = svg().querySelector('.pv-zone-label').getAttribute('transform');"
+    )
+    # The square's centre (1, 3) is picture (740, 360).
+    assert out == {"labels": ["Square"], "at": "translate(740,360)"}
+
+
+def test_a_drag_from_a_label_on_the_picture_moves_the_zone_and_saves_it() -> None:
+    out = _camera(
+        """
+        tickIntervals(); await settle(); choose('camera'); await showPicture();
+        drag(svg().querySelector('.pv-zone-label'), [740, 360], [790, 310]);
+        await settle();
+        out.saved = stored();
+        out.heading = document.querySelector('#zone-details').textContent.indexOf('Zone 1 Details') >= 0;
+        """
+    )
+    assert out == {"saved": [[[0.5, 2.5], [2.5, 2.5], [2.5, 4.5], [0.5, 4.5]]], "heading": True}
+
+
+def test_esc_during_a_label_drag_puts_the_zone_back_and_saves_nothing() -> None:
+    out = _camera(
+        """
+        tickIntervals(); await settle(); choose('camera'); await showPicture();
+        pointer(svg().querySelector('.pv-zone-label'), 'pointerdown', 740, 360);
+        pointer(svg(), 'pointermove', 840, 360);
+        key('Escape');
+        pointer(svg(), 'pointerup', 840, 360);
+        await settle();
+        out.puts = puts().length; out.at = svg().querySelector('.pv-zone-label').getAttribute('transform');
+        """
+    )
+    assert out == {"puts": 0, "at": "translate(740,360)"}
 
 
 def test_choosing_a_zone_names_its_corners_like_the_top_down_view() -> None:

@@ -43,8 +43,11 @@ Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 
 
 def display_name(name: str, labels: Mapping[str, str]) -> str:
-    """``Lighting (enx9c69d3ac16ab)`` for a labelled interface, the bare name otherwise."""
-    label = labels.get(name, "") if name else ""
+    """``Lighting (enx9c69d3ac16ab)`` for a labelled interface, ``Loopback (lo0)`` for an offered
+    loopback without a label, the bare name otherwise."""
+    from openfollow.net_utils import offered_loopback
+
+    label = (labels.get(name, "") or ("Loopback" if offered_loopback(name) else "")) if name else ""
     return f"{label} ({name})" if label else name
 
 

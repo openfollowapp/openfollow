@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
-from openfollow.net_egress import Egress, is_loopback_host
+from openfollow.net_egress import Egress, is_loopback_host, strands
 from openfollow.net_utils import IPV4_RESOLVER, get_iface_ipv4, get_local_ipv4_addresses, plane_source_iface
 
 if TYPE_CHECKING:
@@ -87,6 +87,8 @@ class OscEgressTable:
             return None
         if reaches_station(dest.host, self._current_station_addresses(), addresses_of=self._last_answer):
             return None
+        if (stranded := strands(iface, dest.host)) is not None:
+            return stranded
         # An interface not staged yet reads as down: unpinned would be the leak.
         return Egress(iface, snapshot.addresses.get(iface, ""))
 

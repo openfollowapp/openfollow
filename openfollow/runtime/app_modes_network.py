@@ -799,9 +799,14 @@ def _station_picker_rows(app: OpenFollowApp, ifaces: list[tuple[str, str]]) -> l
     auto = str(getattr(app, "_pi_network_auto_iface", "") or "")
     labels = _labels(app)
     now = f"now {display_name(auto, labels)}" if auto else ""
+    from openfollow.net_utils import offered_loopback
+
+    cached: dict[str, str] = getattr(app, "_pi_network_addr_cache", None) or {}
     if not ifaces:
         # No backend to list them: the kernel's interfaces with an address still carry traffic.
-        ifaces = sorted((getattr(app, "_pi_network_addr_cache", None) or {}).items())
+        ifaces = sorted(cached.items())
+    # A backend never lists loopback; where the host offers it, it is offered here too.
+    ifaces = [*ifaces, *((n, a) for n, a in sorted(cached.items()) if offered_loopback(n) and (n, a) not in ifaces)]
     auto_address = next((addr for name, addr in ifaces if name == auto), "")
     rows: list[dict[str, object]] = [{"kind": "header", "label": "Carries all of this station's traffic"}]
     rows.append(

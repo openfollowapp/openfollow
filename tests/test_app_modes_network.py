@@ -3699,3 +3699,24 @@ class TestTheSimpleScreenTitles:
         _populate_pi_network_overlay(app, state)
         assert state.pi_network.title == "Network Interface: eth0"
         assert state.pi_network.subtitle == ""
+
+
+@pytest.mark.parametrize("offered", [True, False], ids=["mac", "elsewhere"])
+def test_the_operator_screen_offers_loopback_on_a_mac_only(monkeypatch, tmp_path, offered) -> None:
+    import openfollow.net_utils as net_utils
+
+    monkeypatch.setattr(net_utils, "LOOPBACK_OFFERED", offered)
+    app = _simple_app(monkeypatch, tmp_path)
+
+    def _addresses(app_):  # noqa: ANN001
+        app_._pi_network_addr_cache = {"eth0": "192.168.1.50", "lo0": "127.0.0.1"}
+        return [("eth0", "192.168.1.50")]
+
+    monkeypatch.setattr(anm, "_iface_addresses", _addresses)
+    app._pi_network_picker = "interface"
+    rows = [r for r in anm.build_pi_network_rows(app) if r.get("kind") == "choice"]
+    loopback = [r for r in rows if str(r.get("key", "")).endswith("lo0")]
+    if offered:
+        assert [(r["label"], r["value"]) for r in loopback] == [("Loopback (lo0)", "127.0.0.1")]
+    else:
+        assert loopback == []

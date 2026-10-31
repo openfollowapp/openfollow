@@ -358,3 +358,28 @@ def test_a_protocol_section_points_at_its_interface_by_label(net_server, tmp_pat
     assert '<span class="ia-pointer-value">Lighting (enx9c69d3ac16ab)</span>' in psn
     _status, otp = _get(base, "/section/otp_output")
     assert '<span class="ia-pointer-value">eth1</span>' in otp
+
+
+def test_the_panel_says_a_destination_off_this_mac_cannot_go_through_loopback(
+    net_server,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+    every_feature_on,
+) -> None:
+    monkeypatch.setattr(net_utils_module, "LOOPBACK_OFFERED", True)
+    _ifaces(monkeypatch, {"eth0": "192.0.2.10", "lo0": "127.0.0.1"})
+    path = str(tmp_path / "config.toml")
+    cfg = load_config(path)
+    cfg.network_mode = "advanced"
+    cfg.psn_source_iface = "lo0"
+    cfg.rttrpm_output.enabled = True
+    cfg.rttrpm_output.host = "192.0.2.50"
+    save_config(cfg, path)
+    _fake, base = net_server
+    _status, body = _get(base, "/section/interface_assignment")
+    rttrpm_row = body[body.index("RTTrPM output") :].split("</tr>", 1)[0]
+    assert '<span class="stat-chip off">Loopback reaches only this Mac</span>' in rttrpm_row
+    # Multicast stays on this Mac: PSN simply sends there.
+    psn_row = body[body.index("PSN in / out") :].split("</tr>", 1)[0]
+    assert "127.0.0.1" in psn_row
+    assert "stat-chip off" not in psn_row

@@ -21,6 +21,12 @@ A pinned function stops; it never moves to another interface. The Address column
 
 Pins are left out of a config export.
 
+### Loopback on a Mac
+
+On a Mac, every picker also offers **Loopback (lo0)**, for a desk or media server on the same Mac.
+
+It reaches grandMA3 onPC with its PSN interface on `lo0 (127.0.0.1)`, for example, without a network. PSN, OTP and discovery stay on this Mac. An RTTrPM or OSC destination on another machine cannot be reached through loopback: it gets nothing, and the Address column reads **Loopback reaches only this Mac**. Loopback is not offered on a Raspberry Pi.
+
 ## USB Ethernet adapters
 
 A USB Ethernet adapter is named after its hardware address, like `enx88a29edf04e3`, so the name stays with that adapter. A replacement adapter gets a new name: re-pick the rows. Give each adapter a label under **Network Interface Settings** to tell long names apart.

@@ -9,7 +9,7 @@ The station's network adapters and their IPv4 settings. If this page is unreacha
 
 **Switching to Simple** asks first: every interface pin is cleared and every VLAN is removed except the station interface's own and the one carrying this browser session. **Switching to Advanced** changes nothing.
 
-In Simple, **Interface** picks the one that carries every function; **Automatic** (default) lets the station pick. A camera reached only through another interface is refused.
+In Simple, **Interface** picks the one that carries every function; **Automatic** (default) lets the station pick. A camera reached only through another interface is refused. On a Mac it also offers **Loopback (lo0)**: the station then works alone on this Mac, finding no stations and no camera on the network.
 
 ## The list
 

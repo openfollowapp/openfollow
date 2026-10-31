@@ -23,31 +23,32 @@ as an interface on macOS, the way MA3 offers it.
 
 ## What changes
 
-- [ ] **One rule** in `net_utils`: `loopback_offered()` is true on macOS. With
+- [x] **One rule** in `net_utils`: `LOOPBACK_OFFERED` is true on macOS and
+      `offered_loopback(name)` checks it. With
       it, `get_iface_ipv4("lo0")` resolves `127.0.0.1` (never a driver alias
       such as `127.51.68.120`), and `list_iface_ipv4` lists `lo0`. Every picker,
       resolver and the network observer go through these two.
-- [ ] **Startup:** `wait_for_source_ip` reports a pinned loopback as resolved,
+- [x] **Startup:** `wait_for_source_ip` reports a pinned loopback as resolved,
       not as its timeout fallback, so the "Starting without a usable network
       address" warning does not fire for a station deliberately on `lo0`.
-- [ ] **Simple mode station picker** (web `_station_picker`, Operator Screen
+- [x] **Simple mode station picker** (web `_station_picker`, Operator Screen
       `_station_picker_rows`): offer `lo0` on a Mac. The network backend's
       reading drops loopback, so the row is added from `list_iface_ipv4`.
-- [ ] **Labels:** the interface shows as `Loopback (lo0)`, and the Interface
-      Assignment address column reads `Loopback`.
-- [ ] **Fail closed for unicast:** an RTTrPM or OSC destination off this Mac
+- [x] **Labels:** the interface shows as `Loopback (lo0)` in every picker
+      (`display_name`); a plane on it shows `127.0.0.1` as its address.
+- [x] **Fail closed for unicast:** an RTTrPM or OSC destination off this Mac
       cannot be reached through loopback. When its plane resolves to `lo0` and
       the destination is not a loopback address, it is not sent; the panel and
       the skip reason say "Loopback reaches only this Mac". (PSN, OTP, discovery
       and sync are multicast and simply stay on this Mac.)
-- [ ] **Help:** the network and interface-assignment help drawers explain that
+- [x] **Help:** the network and interface-assignment help drawers explain that
       loopback reaches only programs on this Mac, and what follows a
       station-wide choice.
-- [ ] **Docs:** `docs/architecture/network.md` describes the rule.
+- [x] **Docs:** `docs/architecture/network.md` describes the rule.
 
 ## Tests
 
-- [ ] `loopback_offered` on darwin and not on Linux; `get_iface_ipv4` and
+- [ ] The rule on and off (tests pin it off, as Linux); `get_iface_ipv4` and
       `list_iface_ipv4` with an injected interface table holding `lo0` with
       `127.0.0.1` and a driver alias, on both platforms.
 - [ ] Automatic resolution never picks loopback on a Mac.

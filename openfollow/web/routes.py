@@ -115,6 +115,7 @@ from openfollow.lens_model import pull_back_to_valid
 # Module-level so handler closures resolve ``save_catalog`` from this
 # namespace at call time (tests monkeypatch it for persist-failure paths).
 from openfollow.marker_catalog import derive_station_name, save_catalog
+from openfollow.net_egress import LOOPBACK_ONLY
 from openfollow.net_utils import (
     HOST_RESOLVER,
     IPV4_RESOLVER,
@@ -1387,7 +1388,7 @@ def _osc_membership_address(
 # an error chip, since the picker beside it already names the interface.
 ADDRESS_NOT_CONNECTED = "Not connected"
 ADDRESS_INTERFACE_DOWN = "Interface down"
-_OUTAGE_ADDRESSES = frozenset({ADDRESS_NOT_CONNECTED, ADDRESS_INTERFACE_DOWN})
+_OUTAGE_ADDRESSES = frozenset({ADDRESS_NOT_CONNECTED, ADDRESS_INTERFACE_DOWN, LOOPBACK_ONLY})
 
 
 @dataclass(frozen=True)
@@ -1477,12 +1478,14 @@ def _egress_address(
 ) -> str:
     """The address cell for a row that sends to *host*, looked up by the resolver its output uses;
     *unrouted* when there is no host and no pin."""
-    from openfollow.net_egress import is_loopback_host
+    from openfollow.net_egress import is_loopback_host, strands
     from openfollow.net_utils import plane_source_iface
 
     if host and is_loopback_host(host):
         return "Loopback"
-    if plane_source_iface(pin, station_iface):
+    if iface := plane_source_iface(pin, station_iface):
+        if strands(iface, host) is not None:
+            return LOOPBACK_ONLY
         return _plane_address(pin, station_iface, names)
     # Nothing pinned anywhere: show where the Pi sends it now, not that it chooses.
     return _route_pick(host, resolver, wait_s, names.labels) if host else unrouted
@@ -6711,12 +6714,14 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         Returns the interface the station resolves to. ``station_names`` names each as the UI shows it.
         """
         from openfollow.net_adapters import display_name
-        from openfollow.net_utils import auto_station_iface
+        from openfollow.net_utils import auto_station_iface, list_iface_ipv4, offered_loopback
 
         auto = auto_station_iface()
         net["station_iface"] = station
         net["station_auto"] = auto
         net["station_options"] = [(name, addr) for name, addr in options if name and name not in LOOPBACK_NAMES]
+        # The network backend never lists loopback; where the host offers it, it is offered here too.
+        net["station_options"] += [(name, addr) for name, addr in list_iface_ipv4() if offered_loopback(name)]
         if station and station not in [name for name, _addr in net["station_options"]]:
             net["station_options"].append((station, ""))
         named = {station, auto, *(name for name, _addr in net["station_options"])}

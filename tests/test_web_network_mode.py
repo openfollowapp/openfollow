@@ -636,3 +636,21 @@ def test_a_simple_station_takes_no_plane_pin_from_any_section(net_server, tmp_pa
     _post(base, "/section/interface_assignment", {"otp_output.source_iface": "wlan0", "web_bind_iface": "wlan0"})
     saved = _saved(tmp_path)
     assert (saved.otp_output.source_iface, saved.web_bind_iface) == ("", "")
+
+
+@pytest.mark.parametrize("offered", [True, False], ids=["mac", "elsewhere"])
+def test_a_simple_station_is_offered_loopback_on_a_mac_only(net_server, tmp_path, monkeypatch, offered) -> None:  # noqa: F811
+    """The backend never lists loopback; on a Mac the picker offers it beside the backend's interfaces."""
+    addrs = {
+        "eth0": [SimpleNamespace(family=socket.AF_INET, address="10.0.0.5")],
+        "lo0": [SimpleNamespace(family=socket.AF_INET, address="127.0.0.1")],
+    }
+    monkeypatch.setattr(net_utils_module.psutil, "net_if_addrs", lambda: addrs)
+    monkeypatch.setattr(net_utils_module, "auto_station_iface", lambda: "eth0")
+    monkeypatch.setattr(net_utils_module, "LOOPBACK_OFFERED", offered)
+    _fake, base = net_server
+    _set(tmp_path, network_mode="simple")
+    _status, body = _get(base, "/section/network/status")
+    option = '<option value="lo0" data-name="Loopback (lo0)">Loopback (lo0) – 127.0.0.1</option>'
+    assert (option in body) is offered
+    assert ('value="lo0"' in body) is offered

@@ -129,8 +129,7 @@ class TestTryOpenMulticastSocketOnce:
         srv._exit_stack = contextlib.ExitStack()
         assert srv._try_open_multicast_socket_once(attempt=1) is True
         assert isinstance(srv._socket, _FakeMcastSocket)
-        assert srv._socket.kwargs["iface"].machine_name == "eth1"
-        assert "iface_ip" not in srv._socket.kwargs
+        assert srv._socket.kwargs["iface"] == _pinned_iface.pinned("eth1", "169.254.7.7")
 
     def test_rebind_takes_the_new_interface_and_keeps_it_when_not_given(self) -> None:
         srv = PsnServer(source_ip="10.0.0.5", source_iface="eth0", mcast_ip="236.10.10.10")
@@ -159,21 +158,19 @@ class TestTryOpenMulticastSocketOnce:
         assert srv._try_open_multicast_socket_once(attempt=1) is True
         assert srv._socket.kwargs["iface"].iface_ip == "10.0.0.7"  # type: ignore[union-attr]
 
-    def test_empty_source_ip_omits_iface_when_no_primary_available(
+    def test_empty_source_ip_with_no_primary_asks_for_no_interface(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Offline host: ``resolve_iface_ip`` returns "" and we fall
-        through to the no-iface_ip branch so multicast_expert doesn't
-        receive an empty string (some versions reject that)."""
+        """Offline host: ``resolve_iface_ip`` returns "" and the interface is
+        asked for with nothing pinned, which ``multicast_iface_info`` refuses."""
         from openfollow import net_utils
 
         monkeypatch.setattr(net_utils, "resolve_iface_ip", lambda _: "")
         srv = PsnServer(source_ip="")
         srv._exit_stack = contextlib.ExitStack()
         assert srv._try_open_multicast_socket_once(attempt=1) is True
-        assert "iface" not in srv._socket.kwargs  # type: ignore[union-attr]
-        assert "iface_ip" not in srv._socket.kwargs  # type: ignore[union-attr]
+        assert srv._socket.kwargs["iface"] == _pinned_iface.pinned()  # type: ignore[union-attr]
 
     def test_exception_logs_warning_and_returns_false(self, caplog: pytest.LogCaptureFixture) -> None:
         _FakeMcastSocket.script = [OSError(99, "Cannot assign requested address")]

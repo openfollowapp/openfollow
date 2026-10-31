@@ -39,5 +39,5 @@ def test_the_sender_opens_on_the_pinned_interface(host: None, server_cls: Any, p
     server = server_cls(mcast_ip="236.10.10.10", **pin)
     server._exit_stack = contextlib.ExitStack()
     assert server._try_open_multicast_socket_once(attempt=1) is True
-    assert server._socket._iface_info.machine_name == "en0"
-    assert server._socket._iface_info.index == 4
+    assert server._socket.network_interface.machine_name == "en0"
+    assert server._socket.network_interface.index == 4

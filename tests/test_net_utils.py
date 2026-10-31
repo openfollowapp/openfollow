@@ -15,6 +15,7 @@ import threading
 from types import SimpleNamespace
 from typing import Any
 
+import psutil
 import pytest
 
 import openfollow.net_utils as net_utils_module
@@ -1699,12 +1700,30 @@ class TestAutoStationIface:
 class TestMulticastIfaceInfo:
     """The interface a multicast sender pins, described without the library's own scan."""
 
-    def test_only_addresses_with_a_netmask_are_listed(self, monkeypatch) -> None:
+    def test_an_address_without_a_netmask_is_kept_as_a_single_host(self, monkeypatch) -> None:
         _driver_alias.install(monkeypatch)
         info = net_utils_module.multicast_iface_info("lo0")
-        assert (info.machine_name, info.index) == ("lo0", 1)
-        assert list(info.ip4_addrs) == [ipaddress.IPv4Interface("127.0.0.1/8")]
-        assert info.link_layer_address is None
+        assert (info.machine_name, info.index, info.link_layer_address) == ("lo0", 1, None)
+        assert list(info.ip4_addrs) == [
+            ipaddress.IPv4Interface("127.0.0.1/8"),
+            ipaddress.IPv4Interface("127.51.68.120/32"),
+        ]
+
+    @pytest.mark.parametrize(
+        ("iface", "iface_ip", "first"),
+        [
+            ("lo0", "127.51.68.120", "127.51.68.120"),
+            ("", "127.51.68.120", "127.51.68.120"),
+            ("", "127.0.0.1", "127.0.0.1"),
+        ],
+        ids=["named", "by-alias", "by-loopback"],
+    )
+    def test_the_address_asked_for_comes_first(self, monkeypatch, iface, iface_ip, first) -> None:
+        """The socket binds the first address, so it sends from the one the plane resolved."""
+        _driver_alias.install(monkeypatch)
+        info = net_utils_module.multicast_iface_info(iface, iface_ip)
+        assert info.machine_name == "lo0"
+        assert str(info.ip4_addrs[0].ip) == first
 
     def test_an_address_finds_the_interface_holding_it(self, monkeypatch) -> None:
         _driver_alias.install(monkeypatch)
@@ -1719,14 +1738,39 @@ class TestMulticastIfaceInfo:
         sock = multicast_expert.McastTxSocket(
             socket.AF_INET, mcast_ips=["236.10.10.10"], iface=net_utils_module.multicast_iface_info("en0")
         )
-        assert sock._iface_info.machine_name == "en0"
+        assert sock.network_interface.machine_name == "en0"
+
+    def test_a_real_socket_opens_on_the_loopback_it_describes(self) -> None:
+        """Bind and ``IP_MULTICAST_IF`` take the description as built; nothing is sent."""
+        import multicast_expert
+
+        info = net_utils_module.multicast_iface_info(iface_ip="127.0.0.1")
+        with multicast_expert.McastTxSocket(socket.AF_INET, mcast_ips=["236.10.10.10"], iface=info) as sock:
+            assert sock.getsockname()[0] == "127.0.0.1"
 
     @pytest.mark.parametrize(
         ("kwargs", "reason"),
-        [({"iface": "eth9"}, "eth9 is not present"), ({"iface_ip": "198.51.100.7"}, "no interface holds 198.51.100.7")],
-        ids=["absent-interface", "address-held-by-none"],
+        [
+            ({"iface": "eth9"}, "eth9 is not present"),
+            ({"iface_ip": "198.51.100.7"}, "no interface holds 198.51.100.7"),
+            ({"iface_ip": "192.0.2.77"}, "192.0.2.77 is held by en0, en0.10; pin one of them by name"),
+            ({}, "no interface has an address to send from"),
+            ({"iface": "en0.20"}, "en0.20 has no IPv4 address"),
+        ],
+        ids=["absent-interface", "address-held-by-none", "address-held-by-two", "nothing-pinned", "no-ipv4"],
     )
-    def test_an_interface_it_cannot_find_stops_the_plane(self, monkeypatch, kwargs, reason) -> None:
+    def test_an_interface_it_cannot_pin_stops_the_plane(self, monkeypatch, kwargs, reason) -> None:
         _driver_alias.install(monkeypatch)
+        table = {
+            **_driver_alias.ADDRS,
+            "en0": [
+                *_driver_alias.ADDRS["en0"],
+                SimpleNamespace(family=socket.AF_INET, address="192.0.2.77", netmask="255.255.255.0"),
+            ],
+            "en0.10": [SimpleNamespace(family=socket.AF_INET, address="192.0.2.77", netmask="255.255.255.0")],
+            "en0.20": [SimpleNamespace(family=psutil.AF_LINK, address="02:00:00:00:00:20", netmask=None)],
+        }
+        monkeypatch.setattr(net_utils_module.psutil, "net_if_addrs", lambda: table)
+        monkeypatch.setattr(_driver_alias, "INDEX", {**_driver_alias.INDEX, "en0.10": 5, "en0.20": 6})
         with pytest.raises(net_utils_module.InterfaceUnavailable, match=reason):
             net_utils_module.multicast_iface_info(**kwargs)

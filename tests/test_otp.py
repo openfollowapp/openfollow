@@ -992,8 +992,7 @@ class TestOtpTryOpenSocketWithSourceIp:
             mcls.return_value = MagicMock()
             srv = OtpServer(system_number=1, source_ip="169.254.7.7", source_iface="eth1")
             assert srv._try_open_multicast_socket_once(attempt=1) is True
-            assert mcls.call_args.kwargs["iface"].machine_name == "eth1"
-            assert "iface_ip" not in mcls.call_args.kwargs
+            assert mcls.call_args.kwargs["iface"] == _pinned_iface.pinned("eth1", "169.254.7.7")
 
     def test_restart_takes_the_new_interface(self) -> None:
         with patch("openfollow.otp.server.multicast_expert.McastTxSocket") as mcls:
@@ -1007,12 +1006,15 @@ class TestOtpTryOpenSocketWithSourceIp:
             finally:
                 srv.stop()
 
-    def test_no_source_ip_omits_iface_ip(self) -> None:
+    def test_no_source_ip_sends_from_the_primary_address(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import openfollow.net_utils as net_utils
+
+        monkeypatch.setattr(net_utils, "resolve_iface_ip", lambda configured: configured or "192.0.2.9")
         with patch("openfollow.otp.server.multicast_expert.McastTxSocket") as mcls:
             mcls.return_value = MagicMock()
             srv = OtpServer(system_number=1)
             assert srv._try_open_multicast_socket_once(attempt=1) is True
-            assert "iface_ip" not in mcls.call_args.kwargs
+            assert mcls.call_args.kwargs["iface"] == _pinned_iface.pinned("", "192.0.2.9")
 
 
 # ===========================================================================

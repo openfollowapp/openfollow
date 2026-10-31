@@ -260,28 +260,14 @@ class PsnServer:
         iface_ip = resolve_iface_ip(self._source_ip)
         staging = contextlib.ExitStack()
         try:
-            if self._source_iface:
-                # By name, multicast_expert selects the interface by index: an
-                # address another interface also holds cannot carry PSN there.
-                sock = multicast_expert.McastTxSocket(
-                    socket.AF_INET,
-                    mcast_ips=[mcast_ip],
-                    iface=multicast_iface_info(self._source_iface),
-                    enable_external_loopback=True,
-                )
-            elif iface_ip:
-                sock = multicast_expert.McastTxSocket(
-                    socket.AF_INET,
-                    mcast_ips=[mcast_ip],
-                    iface=multicast_iface_info(iface_ip=iface_ip),
-                    enable_external_loopback=True,
-                )
-            else:
-                sock = multicast_expert.McastTxSocket(
-                    socket.AF_INET,
-                    mcast_ips=[mcast_ip],
-                    enable_external_loopback=True,
-                )
+            # Named, the interface is selected by index: an address another
+            # interface also holds cannot carry PSN there.
+            sock = multicast_expert.McastTxSocket(
+                socket.AF_INET,
+                mcast_ips=[mcast_ip],
+                iface=multicast_iface_info(self._source_iface, iface_ip),
+                enable_external_loopback=True,
+            )
             opened = staging.enter_context(sock)
             source_address = opened.getsockname()[:2]
         except Exception as exc:

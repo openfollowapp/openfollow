@@ -364,6 +364,15 @@ class InterfaceUnavailable(OSError):
     """
 
 
+def _iface_index(iface: str) -> int:
+    try:
+        return socket.if_nametoindex(iface)
+    except OSError as exc:
+        raise InterfaceUnavailable(
+            f"{iface} is not present ({exc}); staying silent until it returns rather than using another interface"
+        ) from exc
+
+
 def iface_mreqn(group: str, iface: str, iface_ip: str) -> bytes:
     """``struct ip_mreqn`` naming *iface* by its kernel index as well as its address.
 
@@ -372,36 +381,45 @@ def iface_mreqn(group: str, iface: str, iface_ip: str) -> bytes:
     so its link-local address. Linux honours the index; macOS reads only the
     group and address of an ``IP_ADD_MEMBERSHIP``, so the address stays real.
     """
-    try:
-        index = socket.if_nametoindex(iface)
-    except OSError as exc:
-        raise InterfaceUnavailable(
-            f"{iface} is not present ({exc}); staying silent until it returns rather than using another interface"
-        ) from exc
-    return struct.pack("@4s4si", socket.inet_aton(group), socket.inet_aton(iface_ip), index)
+    return struct.pack("@4s4si", socket.inet_aton(group), socket.inet_aton(iface_ip), _iface_index(iface))
 
 
 def multicast_iface_info(iface: str = "", iface_ip: str = "") -> multicast_expert.IfaceInfo:
-    """*iface*, or the interface holding *iface_ip*, as ``McastTxSocket`` takes it without scanning.
+    """*iface*, or the one interface holding *iface_ip*, as ``McastTxSocket`` takes it without scanning.
 
-    The library's own scan raises on an IPv4 address with no netmask, such as the
-    peer alias a 3D Mouse driver adds to macOS's lo0, so only addresses with one are listed.
+    The library's own scan raises on an IPv4 address with no netmask, such as the peer
+    alias a 3D Mouse driver adds to macOS's lo0, so such an address is listed as a /32.
+    The socket binds the first address listed, so *iface_ip* leads.
     """
-    name = iface or get_iface_for_ip(iface_ip)
-    if not name:
-        raise InterfaceUnavailable(f"no interface holds {iface_ip}; staying silent until one does")
-    try:
-        index = socket.if_nametoindex(name)
-    except OSError as exc:
-        raise InterfaceUnavailable(f"{name} is not present ({exc}); staying silent until it returns") from exc
-    addrs = psutil.net_if_addrs().get(name, [])
+    table = psutil.net_if_addrs()
+    if not iface:
+        if not iface_ip:
+            raise InterfaceUnavailable("no interface has an address to send from; staying silent until one does")
+        holders = sorted(
+            name
+            for name, addrs in table.items()
+            if any(a.family == socket.AF_INET and a.address == iface_ip for a in addrs)
+        )
+        if not holders:
+            raise InterfaceUnavailable(f"no interface holds {iface_ip}; staying silent until one does")
+        if len(holders) > 1:
+            raise InterfaceUnavailable(f"{iface_ip} is held by {', '.join(holders)}; pin one of them by name")
+        iface = holders[0]
+    index = _iface_index(iface)
+    addrs = table.get(iface, [])
+    ip4 = [
+        ipaddress.IPv4Interface((a.address, a.netmask) if a.netmask else a.address)
+        for a in addrs
+        if a.family == socket.AF_INET
+    ]
+    if not ip4:
+        raise InterfaceUnavailable(f"{iface} has no IPv4 address; staying silent until it gets one")
+    ip4.sort(key=lambda address: str(address.ip) != iface_ip)
     return multicast_expert.IfaceInfo(
-        machine_name=name,
+        machine_name=iface,
         index=index,
         link_layer_address=next((str(a.address) for a in addrs if a.family == psutil.AF_LINK), None),
-        ip4_addrs=tuple(
-            ipaddress.IPv4Interface((a.address, a.netmask)) for a in addrs if a.family == socket.AF_INET and a.netmask
-        ),
+        ip4_addrs=tuple(ip4),
         ip6_addrs=(),
     )
 

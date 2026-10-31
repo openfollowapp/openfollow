@@ -1478,6 +1478,7 @@ def _egress_address(
     wait_s: float | None,
     names: _PanelNames,
     unrouted: str = "Per routing table",
+    sends: bool = True,
 ) -> str:
     """The address cell for a row that sends to *host*, looked up by the resolver its output uses;
     *unrouted* when there is no host and no pin."""
@@ -1487,7 +1488,7 @@ def _egress_address(
     if host and is_loopback_host(host):
         return "Loopback"
     if iface := plane_source_iface(pin, station_iface):
-        if strands(iface, host, names.station_addresses) is not None:
+        if sends and strands(iface, host, names.station_addresses) is not None:
             return LOOPBACK_ONLY
         return _plane_address(pin, station_iface, names)
     # Nothing pinned anywhere: show where the Pi sends it now, not that it chooses.
@@ -1616,10 +1617,10 @@ def _interface_assignment_rows(
     def _addr(pin: str) -> str:
         return _plane_address(pin, station, names)
 
-    def _sender(pin: str, host: str, *, tcp: bool = False) -> str:
+    def _sender(pin: str, host: str, *, tcp: bool = False, sends: bool = True) -> str:
         # Each looked up the way its socket is: UDP from IPv4 sockets, TCP over both families.
         resolver = HOST_RESOLVER if tcp else IPV4_RESOLVER
-        return _egress_address(pin, host, station, resolver=resolver, wait_s=wait_s, names=names)
+        return _egress_address(pin, host, station, resolver=resolver, wait_s=wait_s, names=names, sends=sends)
 
     def _osc_sender(dest: OscDestinationConfig) -> str:
         from openfollow.net_egress import is_loopback_host
@@ -1671,9 +1672,7 @@ def _interface_assignment_rows(
             "label": "RTTrPM output",
             "value": cfg.rttrpm_output.source_iface,
             # A switched-off output sends nowhere, so its host cannot strand it.
-            "address": _sender(
-                cfg.rttrpm_output.source_iface, cfg.rttrpm_output.host if cfg.rttrpm_output.enabled else ""
-            ),
+            "address": _sender(cfg.rttrpm_output.source_iface, cfg.rttrpm_output.host, sends=cfg.rttrpm_output.enabled),
             "editable": True,
             "blank": "station",
             "feature": "rttrpm",

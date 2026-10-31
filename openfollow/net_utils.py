@@ -21,10 +21,12 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, NamedTuple
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
-import multicast_expert
 import psutil
+
+if TYPE_CHECKING:
+    import multicast_expert
 
 # Status from resolve_source_ip / resolve_plane_source_ip: "iface" (pinned),
 # "station" (inherited the station-wide pin), "primary" (auto-detected),
@@ -399,6 +401,8 @@ def multicast_iface_info(iface: str = "", iface_ip: str = "") -> multicast_exper
     alias a 3D Mouse driver adds to macOS's lo0, so such an address is listed as a /32.
     The socket binds the first address listed, so *iface_ip* leads.
     """
+    import multicast_expert
+
     table = psutil.net_if_addrs()
     if not iface:
         if not iface_ip:
@@ -432,6 +436,8 @@ def multicast_iface_info(iface: str = "", iface_ip: str = "") -> multicast_exper
 
 def multicast_tx_socket(groups: list[str], iface: str, source_ip: str) -> multicast_expert.McastTxSocket:
     """A PSN or OTP sender's socket, by interface index when named, else from the primary address."""
+    import multicast_expert
+
     return multicast_expert.McastTxSocket(
         socket.AF_INET,
         mcast_ips=groups,

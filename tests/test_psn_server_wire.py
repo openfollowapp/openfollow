@@ -158,6 +158,18 @@ class TestTryOpenMulticastSocketOnce:
         assert srv._try_open_multicast_socket_once(attempt=1) is True
         assert srv._socket.kwargs["iface"].iface_ip == "10.0.0.7"  # type: ignore[union-attr]
 
+    def test_a_named_interface_never_looks_up_the_primary_address(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from openfollow import net_utils
+
+        def _no_lookup(_configured: str) -> str:
+            raise AssertionError("a named sender resolved the primary address")
+
+        monkeypatch.setattr(net_utils, "resolve_iface_ip", _no_lookup)
+        srv = PsnServer(source_iface="eth1", mcast_ip="236.10.10.10")
+        srv._exit_stack = contextlib.ExitStack()
+        assert srv._try_open_multicast_socket_once(attempt=1) is True
+        assert srv._socket.kwargs["iface"] == _pinned_iface.pinned("eth1", "")  # type: ignore[union-attr]
+
     def test_empty_source_ip_with_no_primary_stays_closed(
         self,
         monkeypatch: pytest.MonkeyPatch,

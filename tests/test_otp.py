@@ -1655,3 +1655,16 @@ class TestOtpBoundSourceIp:
         srv._transform_thread = object()
         srv._stop_event.set()
         assert srv.bound_source_ip() is None
+
+
+def test_with_no_address_to_send_from_otp_stays_closed(monkeypatch: pytest.MonkeyPatch, caplog) -> None:
+    """Automatic on a host with no address: the socket stays closed and says why."""
+    import openfollow.net_utils as net_utils
+
+    monkeypatch.setattr(net_utils, "multicast_iface_info", _pinned_iface.REAL)
+    monkeypatch.setattr(net_utils, "resolve_iface_ip", lambda _configured: "")
+    srv = OtpServer(system_number=1)
+    with caplog.at_level("WARNING", logger="openfollow.otp.server"):
+        assert srv._try_open_multicast_socket_once(attempt=1) is False
+    assert srv._socket is None
+    assert "no interface has an address to send from" in caplog.text

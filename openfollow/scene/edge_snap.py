@@ -234,7 +234,7 @@ class _Band:
     length: float
 
     def column(self, fraction: float) -> int:
-        cols = self.grad.shape[1]
+        cols = int(self.grad.shape[1])
         return min(max(int(round(fraction * self.length / self.step)), 0), cols - 1)
 
     def peak(self, profile: FloatArray, lo: int, hi: int) -> float | None:

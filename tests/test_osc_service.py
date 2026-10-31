@@ -2048,3 +2048,29 @@ def test_stats_and_evict_address_a_pinned_client_by_its_egress(patched_service: 
     assert patched_service.stats_for("198.51.100.20", 9000).total_sent == 0
     patched_service.evict("198.51.100.20", 9000, egress=_EGRESS)
     assert _FakeClient.instances[0]._sock.closed is True
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
+def test_the_listener_is_ipv4_where_the_wildcard_resolves_to_ipv6_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    """python-osc takes the socket's family from the host. macOS resolves "" to IPv6 first,
+    and an IPv6 socket cannot join an IPv4 group: the listener binds the IPv4 wildcard."""
+    import pythonosc.osc_server as osc_server
+
+    real = socket.getaddrinfo
+
+    def _ipv6_first(host, port, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+        if host == "":
+            return [(socket.AF_INET6, socket.SOCK_DGRAM, 17, "", ("::", port, 0, 0))]
+        return real(host, port, *args, **kwargs)
+
+    monkeypatch.setattr(osc_server.socket, "getaddrinfo", _ipv6_first)
+    svc = OscService()
+    port = bind_free_udp_port(lambda p: svc.start_listener(p, allowed_ips=()))
+    try:
+        listener = svc._listener
+        assert listener is not None
+        assert listener.socket.family == socket.AF_INET
+        assert listener.socket.getsockname() == ("0.0.0.0", port)
+    finally:
+        svc.stop_listener()

@@ -992,7 +992,7 @@ def _make_visual_app(marker: object, *, controlled: bool) -> SimpleNamespace:
         ),
         source_name="",
         source_selection_active=False,
-        discovered_sources=[],
+        discovered_source_names=[],
         selected_source_index=0,
         source_selection_title="",
     )

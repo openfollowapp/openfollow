@@ -2427,6 +2427,15 @@ class TestDiscovery:
         assert discovery_receiver.discovered_sources == ["cam-a", "cam-b"]
         assert discovery_receiver._discovery_running is False
 
+    def test_discovered_source_names_come_from_the_input(self, discovery_receiver, monkeypatch) -> None:
+        monkeypatch.setattr(
+            FakeInput, "source_display_name", classmethod(lambda cls, source: f"Camera {source}"), raising=False
+        )
+        discovery_receiver._discovered_sources = ["cam-a", "cam-b"]
+
+        assert discovery_receiver.discovered_source_names == ["Camera cam-a", "Camera cam-b"]
+        assert discovery_receiver.discovered_sources == ["cam-a", "cam-b"]
+
     def test_do_discovery_preserves_selection_when_source_still_present(self, discovery_receiver, monkeypatch) -> None:
         class SyncThread:
             def __init__(self, target, daemon=False, name=""):  # noqa: ANN001

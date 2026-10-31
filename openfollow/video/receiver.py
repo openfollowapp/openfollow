@@ -388,6 +388,10 @@ class GstNativeSinkReceiver:
             return list(self._discovered_sources)
 
     @property
+    def discovered_source_names(self) -> list[str]:
+        return [self._input.source_display_name(source) for source in self.discovered_sources]
+
+    @property
     def selected_source_index(self) -> int:
         with self._discovery_lock:
             return self._selected_source_index

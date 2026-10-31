@@ -29,6 +29,10 @@ from openfollow.video.inputs._base import (
 logger = logging.getLogger(__name__)
 
 
+# unique_id -> camera name from the latest scan; read without scanning.
+_device_names: dict[str, str] = {}
+
+
 def _discover_avf_devices() -> list[dict[str, str]]:
     """Enumerate AVFoundation video sources via ``Gst.DeviceMonitor``.
 
@@ -80,6 +84,7 @@ def _discover_avf_devices() -> list[dict[str, str]]:
                 }
             )
             avf_index += 1
+        _device_names.update((d["unique_id"], d["name"]) for d in result if d["unique_id"])
         return result
     except Exception as exc:
         logger.debug("AVFoundation device discovery failed: %s", exc)
@@ -275,6 +280,10 @@ class AvfInput(VideoInputBase):
         """Return AVF camera ``unique_id``s (stable across reboots)."""
         return [d["unique_id"] for d in _discover_avf_devices()]
 
+    @classmethod
+    def source_display_name(cls, source: str) -> str:
+        return _device_names.get(source, source)
+
     # -- Web UI ---------------------------------------------------------
 
     @classmethod
@@ -375,5 +384,5 @@ class AvfInput(VideoInputBase):
         width = config.get("avf_width", 1920)
         height = config.get("avf_height", 1080)
         framerate = config.get("avf_framerate", 30)
-        name = unique_id or "default"
+        name = cls.source_display_name(unique_id) if unique_id else "default"
         return f"{name} ({width}x{height}@{framerate})"

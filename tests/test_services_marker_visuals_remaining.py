@@ -147,7 +147,7 @@ class _FakeVideoReceiver:
         )
         self.source_name = "NDI://CAM"
         self.source_selection_active = False
-        self.discovered_sources = ["CAM1", "CAM2"]
+        self.discovered_source_names = ["CAM1", "CAM2"]
         self.selected_source_index = 1
         self.source_selection_title = "SELECT NDI"
 

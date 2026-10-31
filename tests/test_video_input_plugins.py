@@ -332,6 +332,9 @@ class TestOptionalHooks:
             )
         assert isinstance(plugin.discover_sources(timeout=0.0), list)
 
+    def test_an_unknown_source_is_shown_as_its_key(self, plugin: type[VideoInputBase]) -> None:
+        assert plugin.source_display_name("not-a-discovered-source") == "not-a-discovered-source"
+
     def test_cleanup_and_lifecycle_hooks_are_no_op_by_default(self, plugin: type[VideoInputBase]) -> None:
         instance = plugin()
         # None of the optional hooks should raise for a plain dummy value.

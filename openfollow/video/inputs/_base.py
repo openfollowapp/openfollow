@@ -268,6 +268,11 @@ class VideoInputBase(ABC):
         return []
 
     @classmethod
+    def source_display_name(cls, source: str) -> str:
+        """What the operator sees for a discovered *source* key."""
+        return source
+
+    @classmethod
     def web_routes(cls) -> list[WebRoute]:
         """Declare additional HTTP endpoints this input needs."""
         return []

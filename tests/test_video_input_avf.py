@@ -87,6 +87,17 @@ def _make_fake_gst_with_devices(
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _no_known_device_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(avf_module, "_device_names", {})
+
+
+def _scan(monkeypatch: pytest.MonkeyPatch, devices: list[_FakeDevice]) -> None:
+    monkeypatch.setattr(sys, "platform", "darwin")
+    with patch("gi.repository.Gst", _make_fake_gst_with_devices(devices)):
+        _discover_avf_devices()
+
+
 class TestAvfRegistration:
     """Plugin is auto-discovered by the registry."""
 
@@ -362,6 +373,14 @@ class TestAvfSourceLabel:
         )
         assert label == "default (1920x1080@30)"
 
+    def test_label_names_a_scanned_camera(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _scan(monkeypatch, [_FakeDevice(props={"device.api": "avf", "avf.unique_id": "FX30"}, display_name="Sony")])
+
+        label = AvfInput.get_source_label(
+            {"avf_unique_id": "FX30", "avf_width": 1280, "avf_height": 720, "avf_framerate": 60}
+        )
+        assert label == "Sony (1280x720@60)"
+
     def test_label_does_not_invoke_device_discovery(self, monkeypatch: pytest.MonkeyPatch) -> None:
 
         def _boom() -> list[dict[str, str]]:
@@ -378,6 +397,23 @@ class TestAvfSourceLabel:
             }
         )
         assert label == "ABCD-1234 (1280x720@60)"
+
+
+class TestAvfSourceDisplayName:
+    def test_names_a_scanned_camera(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(sys, "platform", "darwin")
+        devices = [
+            _FakeDevice(props={"device.api": "avf", "avf.unique_id": "BUILTIN"}, display_name="Built-in Camera"),
+            _FakeDevice(props={"device.api": "avf", "avf.unique_id": "VIRT"}, display_name="Virtual Camera"),
+        ]
+        with patch("gi.repository.Gst", _make_fake_gst_with_devices(devices)):
+            sources = AvfInput.discover_sources()
+
+        assert sources == ["BUILTIN", "VIRT"]
+        assert [AvfInput.source_display_name(uid) for uid in sources] == ["Built-in Camera", "Virtual Camera"]
+
+    def test_unscanned_camera_keeps_its_id(self) -> None:
+        assert AvfInput.source_display_name("ABCD-1234") == "ABCD-1234"
 
 
 class TestAvfResolveDeviceIndex:

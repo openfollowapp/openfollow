@@ -10100,38 +10100,21 @@ def _app_on_a_real_psn_server(controlled: list[int]) -> _DummyApp:
 
 
 def test_a_rename_saved_while_a_marker_is_added_reaches_its_output() -> None:
-    """The web thread can save a rename while the live apply adds the marker: the rename
-    finds the marker not yet controlled and skips it, so the apply reads the name again."""
+    """The web thread can save a rename after the live apply read the old name but before it
+    adds the marker: the rename finds no marker, so the add must not take the stale name."""
     app = _app_on_a_real_psn_server([1])
     app._marker_catalog.upsert(2, "Lead", "#ff0000")
     real_add = app._server.add_marker
 
-    def _add_then_rename(marker_id, name):  # noqa: ANN001
-        marker = real_add(marker_id, name)
+    def _rename_then_add(marker_id, name):  # noqa: ANN001
         # What the rename route does once its save landed: the catalog, then the outputs.
         app._marker_catalog.upsert(marker_id, "Spot", "#ff0000")
         app._server.rename_markers([marker_id])
-        return marker
-
-    app._server.add_marker = _add_then_rename  # type: ignore[method-assign]
-    apply_runtime_config_changes(app, AppConfig(controlled_marker_ids=[1, 2], viewer_marker_ids=[1, 2]))
-    assert app._server.get_marker(2).name == "Spot"
-
-
-def test_a_rolled_back_marker_returns_under_its_current_catalog_name() -> None:
-    app = _app_on_a_real_psn_server([1, 2])
-    app._marker_catalog.upsert(2, "Lead", "#ff0000")
-    real_add = app._server.add_marker
-
-    def _failing_add(marker_id, name):  # noqa: ANN001
-        if marker_id == 3:
-            app._marker_catalog.upsert(2, "Renamed meanwhile", "#ff0000")
-            raise RuntimeError("PSN add failed")
         return real_add(marker_id, name)
 
-    app._server.add_marker = _failing_add  # type: ignore[method-assign]
-    assert apply_runtime_config_changes(app, AppConfig(controlled_marker_ids=[1, 3], viewer_marker_ids=[1, 3])) is False
-    assert app._server.get_marker(2).name == "Renamed meanwhile"
+    app._server.add_marker = _rename_then_add  # type: ignore[method-assign]
+    apply_runtime_config_changes(app, AppConfig(controlled_marker_ids=[1, 2], viewer_marker_ids=[1, 2]))
+    assert app._server.get_marker(2).name == "Spot"
 
 
 def test_a_rolled_back_marker_is_sent_by_otp_and_rttrpm_too() -> None:

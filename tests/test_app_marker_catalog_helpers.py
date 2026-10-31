@@ -414,6 +414,19 @@ class TestInitMarkerCatalogSyncOnChange:
         captured["on_change"]([2])  # not controlled: the server holds no marker 2 and ignores it
         assert renames == [2]
 
+    def test_outputs_failing_to_take_a_peer_rename_leave_it_saved(self, tmp_path, monkeypatch, caplog) -> None:
+        from openfollow.marker_catalog.catalog import load_catalog
+
+        class FakeServer:
+            def rename_markers(self, ids):
+                raise RuntimeError("server tearing down")
+
+        fake = self._build_fake(tmp_path, server=FakeServer(), controlled=[1])
+        captured = self._capture_on_change(fake, monkeypatch)
+        captured["on_change"]([1])
+        assert load_catalog(fake._marker_catalog_path()).get(1).name == "Renamed"
+        assert "did not take the names" in caplog.text
+
     def test_without_psn_a_peer_rename_is_still_saved(self, tmp_path, monkeypatch) -> None:
         """PSN failing to start must not stop the station keeping its peers' catalog."""
         from openfollow.marker_catalog.catalog import load_catalog

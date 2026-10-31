@@ -872,11 +872,10 @@ class OpenFollowApp:
         from openfollow.marker_catalog.sync import MarkerCatalogSync
 
         def _on_change(changed_ids: list[int]) -> None:
-            # Background sync receiver: apply renames + prune deletions.
+            # Background sync receiver: save, prune deletions, then rename the running outputs.
             catalog = self._marker_catalog
             # get() hides tombstones; None with a stored entry means a peer deleted it.
             tombstoned = [i for i in changed_ids if catalog.get(i) is None and catalog.get_any(i) is not None]
-            self._apply_catalog_names(changed_ids)
             # Persist remote changes.
             try:
                 save_catalog(self._marker_catalog, self._marker_catalog_path())
@@ -888,6 +887,10 @@ class OpenFollowApp:
                 )
             if tombstoned:
                 self._prune_selection_ids(tombstoned)
+            try:
+                self._apply_catalog_names(changed_ids)
+            except Exception:
+                logger.exception("Catalog changes from a peer saved, but the running outputs did not take the names")
 
         def _selection_provider() -> tuple[list[int], list[int]]:
             return (

@@ -21,9 +21,12 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, NamedTuple
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
 import psutil
+
+if TYPE_CHECKING:
+    import multicast_expert
 
 # Status from resolve_source_ip / resolve_plane_source_ip: "iface" (pinned),
 # "station" (inherited the station-wide pin), "primary" (auto-detected),
@@ -363,6 +366,15 @@ class InterfaceUnavailable(OSError):
     """
 
 
+def _iface_index(iface: str) -> int:
+    try:
+        return socket.if_nametoindex(iface)
+    except OSError as exc:
+        raise InterfaceUnavailable(
+            f"{iface} is not present ({exc}); staying silent until it returns rather than using another interface"
+        ) from exc
+
+
 def iface_mreqn(group: str, iface: str, iface_ip: str) -> bytes:
     """``struct ip_mreqn`` naming *iface* by its kernel index as well as its address.
 
@@ -371,13 +383,67 @@ def iface_mreqn(group: str, iface: str, iface_ip: str) -> bytes:
     so its link-local address. Linux honours the index; macOS reads only the
     group and address of an ``IP_ADD_MEMBERSHIP``, so the address stays real.
     """
+    return struct.pack("@4s4si", socket.inet_aton(group), socket.inet_aton(iface_ip), _iface_index(iface))
+
+
+def _ipv4_interface(address: str, netmask: str | None) -> ipaddress.IPv4Interface:
+    """*address* with its netmask, or as a single host when the netmask is missing or malformed."""
     try:
-        index = socket.if_nametoindex(iface)
-    except OSError as exc:
-        raise InterfaceUnavailable(
-            f"{iface} is not present ({exc}); staying silent until it returns rather than using another interface"
-        ) from exc
-    return struct.pack("@4s4si", socket.inet_aton(group), socket.inet_aton(iface_ip), index)
+        return ipaddress.IPv4Interface((address, netmask) if netmask else address)
+    except ValueError:
+        return ipaddress.IPv4Interface(address)
+
+
+def multicast_iface_info(iface: str = "", iface_ip: str = "") -> multicast_expert.IfaceInfo:
+    """*iface*, or the one interface holding *iface_ip*, as ``McastTxSocket`` takes it without scanning.
+
+    The library's own scan raises on an IPv4 address with no netmask, such as the peer
+    alias a 3D Mouse driver adds to macOS's lo0, so such an address is listed as a /32.
+    The socket binds the first address listed, so *iface_ip* leads.
+    """
+    import multicast_expert
+
+    table = psutil.net_if_addrs()
+    if not iface:
+        if not iface_ip:
+            raise InterfaceUnavailable("no interface has an address to send from; staying silent until one does")
+        holders = sorted(
+            name
+            for name, addrs in table.items()
+            if any(a.family == socket.AF_INET and a.address == iface_ip for a in addrs)
+        )
+        if not holders:
+            raise InterfaceUnavailable(f"no interface holds {iface_ip}; staying silent until one does")
+        if len(holders) > 1:
+            raise InterfaceUnavailable(
+                f"{iface_ip} is held by {', '.join(holders)}; staying silent until one interface holds it"
+            )
+        iface = holders[0]
+    index = _iface_index(iface)
+    addrs = table.get(iface, [])
+    ip4 = [_ipv4_interface(a.address, a.netmask) for a in addrs if a.family == socket.AF_INET]
+    if not ip4:
+        raise InterfaceUnavailable(f"{iface} has no IPv4 address; staying silent until it gets one")
+    ip4.sort(key=lambda address: str(address.ip) != iface_ip)
+    return multicast_expert.IfaceInfo(
+        machine_name=iface,
+        index=index,
+        link_layer_address=next((str(a.address) for a in addrs if a.family == psutil.AF_LINK), None),
+        ip4_addrs=tuple(ip4),
+        ip6_addrs=(),
+    )
+
+
+def multicast_tx_socket(groups: list[str], iface: str, source_ip: str) -> multicast_expert.McastTxSocket:
+    """A PSN or OTP sender's socket, by interface index when named, else from the primary address."""
+    import multicast_expert
+
+    return multicast_expert.McastTxSocket(
+        socket.AF_INET,
+        mcast_ips=groups,
+        iface=multicast_iface_info(iface, source_ip if iface else resolve_iface_ip(source_ip)),
+        enable_external_loopback=True,
+    )
 
 
 def bind_multicast_send_iface(sock: socket.socket, iface_ip: str | None, iface: str = "") -> None:

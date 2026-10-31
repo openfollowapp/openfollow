@@ -36,6 +36,7 @@ import pytest
 
 import openfollow.psn.server as server_module
 from openfollow.psn.server import _MAX_SOCKET_RETRIES, PsnServer
+from tests import _pinned_iface
 
 pytestmark = pytest.mark.unit
 
@@ -95,6 +96,7 @@ def _reset_fake_mcast() -> None:
 @pytest.fixture(autouse=True)
 def _patch_mcast(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(server_module.multicast_expert, "McastTxSocket", _FakeMcastSocket)
+    _pinned_iface.install(monkeypatch)
 
 
 # --------------------------------------------------------------------------- #
@@ -114,7 +116,7 @@ class TestTryOpenMulticastSocketOnce:
         ok = srv._try_open_multicast_socket_once(attempt=1)
         assert ok is True
         assert isinstance(srv._socket, _FakeMcastSocket)
-        assert srv._socket.kwargs["iface_ip"] == "10.0.0.5"
+        assert srv._socket.kwargs["iface"].iface_ip == "10.0.0.5"
         assert srv._socket.kwargs["mcast_ips"] == ["236.10.10.10"]
         assert srv._socket.kwargs["enable_external_loopback"] is True
 
@@ -127,16 +129,15 @@ class TestTryOpenMulticastSocketOnce:
         srv._exit_stack = contextlib.ExitStack()
         assert srv._try_open_multicast_socket_once(attempt=1) is True
         assert isinstance(srv._socket, _FakeMcastSocket)
-        assert srv._socket.kwargs["iface"] == "eth1"
-        assert "iface_ip" not in srv._socket.kwargs
+        assert srv._socket.kwargs["iface"] == _pinned_iface.pinned("eth1", "169.254.7.7")
 
     def test_rebind_takes_the_new_interface_and_keeps_it_when_not_given(self) -> None:
         srv = PsnServer(source_ip="10.0.0.5", source_iface="eth0", mcast_ip="236.10.10.10")
         srv.rebind("10.0.1.5", source_iface="eth1")
         try:
-            assert _FakeMcastSocket.instances[-1].kwargs["iface"] == "eth1"
+            assert _FakeMcastSocket.instances[-1].kwargs["iface"].machine_name == "eth1"
             srv.rebind_mcast_ip("236.10.10.11")
-            assert _FakeMcastSocket.instances[-1].kwargs["iface"] == "eth1"
+            assert _FakeMcastSocket.instances[-1].kwargs["iface"].machine_name == "eth1"
         finally:
             srv.stop()
 
@@ -155,22 +156,37 @@ class TestTryOpenMulticastSocketOnce:
         srv = PsnServer(source_ip="")
         srv._exit_stack = contextlib.ExitStack()
         assert srv._try_open_multicast_socket_once(attempt=1) is True
-        assert srv._socket.kwargs["iface_ip"] == "10.0.0.7"  # type: ignore[union-attr]
+        assert srv._socket.kwargs["iface"].iface_ip == "10.0.0.7"  # type: ignore[union-attr]
 
-    def test_empty_source_ip_omits_iface_when_no_primary_available(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Offline host: ``resolve_iface_ip`` returns "" and we fall
-        through to the no-iface_ip branch so multicast_expert doesn't
-        receive an empty string (some versions reject that)."""
+    def test_a_named_interface_never_looks_up_the_primary_address(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from openfollow import net_utils
 
+        def _no_lookup(_configured: str) -> str:
+            raise AssertionError("a named sender resolved the primary address")
+
+        monkeypatch.setattr(net_utils, "resolve_iface_ip", _no_lookup)
+        srv = PsnServer(source_iface="eth1", mcast_ip="236.10.10.10")
+        srv._exit_stack = contextlib.ExitStack()
+        assert srv._try_open_multicast_socket_once(attempt=1) is True
+        assert srv._socket.kwargs["iface"] == _pinned_iface.pinned("eth1", "")  # type: ignore[union-attr]
+
+    def test_empty_source_ip_with_no_primary_stays_closed(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Offline host: with no address to send from the socket stays closed
+        and says why, rather than letting the library guess an interface."""
+        from openfollow import net_utils
+
+        monkeypatch.setattr(net_utils, "multicast_iface_info", _pinned_iface.REAL)
         monkeypatch.setattr(net_utils, "resolve_iface_ip", lambda _: "")
         srv = PsnServer(source_ip="")
         srv._exit_stack = contextlib.ExitStack()
-        assert srv._try_open_multicast_socket_once(attempt=1) is True
-        assert "iface_ip" not in srv._socket.kwargs  # type: ignore[union-attr]
+        with caplog.at_level("WARNING", logger="openfollow.psn.server"):
+            assert srv._try_open_multicast_socket_once(attempt=1) is False
+        assert srv._socket is None
+        assert "no interface has an address to send from" in caplog.text
 
     def test_exception_logs_warning_and_returns_false(self, caplog: pytest.LogCaptureFixture) -> None:
         _FakeMcastSocket.script = [OSError(99, "Cannot assign requested address")]

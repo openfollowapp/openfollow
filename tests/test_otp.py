@@ -54,10 +54,17 @@ from openfollow.otp.server import (
     transform_mcast_ip,
 )
 from openfollow.psn.marker import Marker
+from tests import _pinned_iface
 
 pytestmark = pytest.mark.unit
 
 _CID = b"\x11" * 16
+
+
+@pytest.fixture(autouse=True)
+def _pinned(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pinned interface as the sender names it, never the host's own."""
+    _pinned_iface.install(monkeypatch)
 
 
 def _marker(
@@ -977,7 +984,7 @@ class TestOtpTryOpenSocketWithSourceIp:
             srv = OtpServer(system_number=1, source_ip="192.0.2.5")
             assert srv._try_open_multicast_socket_once(attempt=1) is True
             kwargs = mcls.call_args.kwargs
-            assert kwargs.get("iface_ip") == "192.0.2.5"
+            assert kwargs["iface"].iface_ip == "192.0.2.5"
             # Both transform and advertisement groups should be subscribed.
             assert "239.159.1.1" in kwargs["mcast_ips"]
             assert "239.159.2.1" in kwargs["mcast_ips"]
@@ -987,8 +994,7 @@ class TestOtpTryOpenSocketWithSourceIp:
             mcls.return_value = MagicMock()
             srv = OtpServer(system_number=1, source_ip="169.254.7.7", source_iface="eth1")
             assert srv._try_open_multicast_socket_once(attempt=1) is True
-            assert mcls.call_args.kwargs["iface"] == "eth1"
-            assert "iface_ip" not in mcls.call_args.kwargs
+            assert mcls.call_args.kwargs["iface"] == _pinned_iface.pinned("eth1", "169.254.7.7")
 
     def test_restart_takes_the_new_interface(self) -> None:
         with patch("openfollow.otp.server.multicast_expert.McastTxSocket") as mcls:
@@ -998,16 +1004,19 @@ class TestOtpTryOpenSocketWithSourceIp:
                 system_name="x", system_number=1, port=5568, source_ip="10.0.1.5", priority=100, source_iface="eth1"
             )
             try:
-                assert mcls.call_args.kwargs["iface"] == "eth1"
+                assert mcls.call_args.kwargs["iface"].machine_name == "eth1"
             finally:
                 srv.stop()
 
-    def test_no_source_ip_omits_iface_ip(self) -> None:
+    def test_no_source_ip_sends_from_the_primary_address(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import openfollow.net_utils as net_utils
+
+        monkeypatch.setattr(net_utils, "resolve_iface_ip", lambda configured: configured or "192.0.2.9")
         with patch("openfollow.otp.server.multicast_expert.McastTxSocket") as mcls:
             mcls.return_value = MagicMock()
             srv = OtpServer(system_number=1)
             assert srv._try_open_multicast_socket_once(attempt=1) is True
-            assert "iface_ip" not in mcls.call_args.kwargs
+            assert mcls.call_args.kwargs["iface"] == _pinned_iface.pinned("", "192.0.2.9")
 
 
 # ===========================================================================
@@ -1646,3 +1655,16 @@ class TestOtpBoundSourceIp:
         srv._transform_thread = object()
         srv._stop_event.set()
         assert srv.bound_source_ip() is None
+
+
+def test_with_no_address_to_send_from_otp_stays_closed(monkeypatch: pytest.MonkeyPatch, caplog) -> None:
+    """Automatic on a host with no address: the socket stays closed and says why."""
+    import openfollow.net_utils as net_utils
+
+    monkeypatch.setattr(net_utils, "multicast_iface_info", _pinned_iface.REAL)
+    monkeypatch.setattr(net_utils, "resolve_iface_ip", lambda _configured: "")
+    srv = OtpServer(system_number=1)
+    with caplog.at_level("WARNING", logger="openfollow.otp.server"):
+        assert srv._try_open_multicast_socket_once(attempt=1) is False
+    assert srv._socket is None
+    assert "no interface has an address to send from" in caplog.text

@@ -21,7 +21,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 import multicast_expert
 import psutil
@@ -399,7 +399,10 @@ def multicast_iface_info(iface: str = "", iface_ip: str = "") -> multicast_exper
     alias a 3D Mouse driver adds to macOS's lo0, so such an address is listed as a /32.
     The socket binds the first address listed, so *iface_ip* leads.
     """
-    table = psutil.net_if_addrs()
+    # Linux reports a labelled secondary address (``eth0:1``) under its label.
+    table: dict[str, list[Any]] = {}
+    for name, entries in psutil.net_if_addrs().items():
+        table.setdefault(name.partition(":")[0], []).extend(entries)
     if not iface:
         if not iface_ip:
             raise InterfaceUnavailable("no interface has an address to send from; staying silent until one does")

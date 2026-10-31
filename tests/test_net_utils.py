@@ -1809,3 +1809,19 @@ class TestMulticastIfaceInfo:
         monkeypatch.setattr(_driver_alias, "INDEX", {**_driver_alias.INDEX, "en0.10": 5, "en0.20": 6})
         with pytest.raises(net_utils_module.InterfaceUnavailable, match=reason):
             net_utils_module.multicast_iface_info(**kwargs)
+
+
+@pytest.mark.parametrize(
+    ("iface", "iface_ip"), [("", "192.0.2.20"), ("en0", "192.0.2.20")], ids=["by-address", "named"]
+)
+def test_a_labelled_secondary_address_counts_as_its_interface(monkeypatch, iface, iface_ip) -> None:
+    """Linux lists ``ip addr add ... label en0:1`` under the label, which ``if_nametoindex`` rejects."""
+    _driver_alias.install(monkeypatch)
+    table = {
+        **_driver_alias.ADDRS,
+        "en0:1": [SimpleNamespace(family=socket.AF_INET, address="192.0.2.20", netmask="255.255.255.0")],
+    }
+    monkeypatch.setattr(net_utils_module.psutil, "net_if_addrs", lambda: table)
+    info = net_utils_module.multicast_iface_info(iface, iface_ip)
+    assert (info.machine_name, info.index) == ("en0", 4)
+    assert [str(address.ip) for address in info.ip4_addrs] == ["192.0.2.20", "192.0.2.10"]

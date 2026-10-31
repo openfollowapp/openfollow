@@ -20,4 +20,6 @@ def pinned(iface: str = "", iface_ip: str = "") -> SimpleNamespace:
 
 
 def install(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pinned interface as named, and Automatic resolving to nothing, never the host's own."""
     monkeypatch.setattr(net_utils, "multicast_iface_info", pinned)
+    monkeypatch.setattr(net_utils, "resolve_iface_ip", lambda configured: configured)

@@ -8,7 +8,7 @@ Configure how a connected USB gamepad drives markers: stick sensitivity and resp
 - **Stick Y axis** – the forward/back sense of the movement stick, and nothing else. **Push up to move down the screen** is flight-sim style. Left/right and height are unaffected: height comes from the triggers, not the stick.
 
     > This is a personal stick-feel preference, separate from **Control frame** under Markers & Zones → Marker Movement, which sets which way every input device steers relative to the camera. Set the frame there, and the stick's feel here.
-- **Axis Deadzone (0–1)** – the fraction of stick travel treated as zero. Default `0.15`. Raise it if the marker creeps when the stick is released; lower it for tighter response on a well-centred stick.
+- **Axis Deadzone (0–1)** – the fraction of stick travel treated as zero. Default `0.05`. Raise it if the marker creeps when the stick is released; lower it for tighter response on a well-centred stick.
 - **Response Curve** – how stick deflection translates to marker velocity:
   - `Linear` – velocity scales proportionally with deflection.
   - `Logarithmic` – finer movement at small deflections, faster at large ones. The default and usually best for live tracking.
@@ -61,7 +61,7 @@ Controls active during show operation.
 - **Reset Marker** – snaps the active marker to its configured default position. Default: `X`.
 - **Toggle Help** – shows or hides the help overlay on the Operator Screen. Default: `Y`.
 - **Settings Menu** – opens the on-screen Settings menu; pressed in any menu, it closes them all. Default: `Back`.
-- **Move X/Y** – which stick drives the marker's horizontal position: `Left Stick` or `Right Stick`. Default: `Left Stick`. The deadzone and response curve above apply to the chosen stick.
+- **Move X/Y** – which stick drives the marker's horizontal position: `Left Stick` or `Right Stick`. Default: `Right Stick`. The deadzone and response curve above apply to the chosen stick.
 - **Marker fader stick** – which stick Y axis continuously drives the fader value of the marker this controller currently controls: `Left Stick Y`, `Right Stick Y`, or `– (unused)`. The same deadzone and response curve apply. See Hardware Inputs → Marker Faders to send this value via OSC.
 - **Marker fader speed (s)** – seconds a full stick deflection takes to sweep the fader end to end. Range 0.05–60 s. Default: `1.0`. Lower values give faster response; higher values give finer resolution over slow sweeps.
 - **Speed −** / **Speed +** – step tracking speed down or up through the configured range. Defaults: `LB` / `RB`.

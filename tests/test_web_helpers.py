@@ -398,6 +398,7 @@ def test_apply_section_data_mouse3d_button_goes_to_the_field_that_changed() -> N
 )
 def test_apply_section_data_move_stick_always_keeps_its_stick(data: dict[str, str], move: str, fader: str) -> None:
     config = AppConfig()
+    config.controller.move_xy_stick = "left"
     config.controller.marker_fader_stick = "right_y"  # on the stick Move X/Y is not using
     apply_section_data(config, "gamepad", data)
     assert (config.controller.move_xy_stick, config.controller.marker_fader_stick) == (move, fader)

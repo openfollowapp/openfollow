@@ -24,6 +24,7 @@ import signal
 import subprocess
 import sys
 from types import SimpleNamespace
+from typing import Any
 
 import pygame
 import pytest
@@ -181,13 +182,17 @@ class FakeController:
         self._buttons[btn] = False
 
 
+def _cfg(**fields: Any) -> ControllerConfig:
+    """A controller config on the left stick, the axes these tests deflect."""
+    return ControllerConfig(**{"move_xy_stick": "left", **fields})
+
+
 class FakeApp:
     """Minimal app stub exposing the surface GamepadHandler reads."""
 
     def __init__(self, controller_cfg: ControllerConfig | None = None) -> None:
         self._config = AppConfig()
-        if controller_cfg is not None:
-            self._config.controller = controller_cfg
+        self._config.controller = controller_cfg if controller_cfg is not None else _cfg()
         self._config.marker = MarkerConfig(move_speed=4.0)
         # Tuple ``(delta, marker_id)`` mirrors the signature
         # extension: ``adjust_move_speed`` now takes an optional marker_id
@@ -409,7 +414,7 @@ class TestReadAxes:
         assert dz == 0.0
 
     def test_joystick_invert_y_true_preserves_sign(self, stubbed_pygame) -> None:
-        cfg = ControllerConfig(invert_y=True)
+        cfg = _cfg(invert_y=True)
         handler, _ = make_handler(stubbed_pygame, config=cfg)
         joy = FakeJoystick(num_axes=4)
         joy.set_axis(1, 0.8)
@@ -417,7 +422,7 @@ class TestReadAxes:
         assert dy > 0  # invert_y=True means sign preserved
 
     def test_joystick_right_stick_uses_axes_2_3(self, stubbed_pygame) -> None:
-        cfg = ControllerConfig(move_xy_stick="right")
+        cfg = _cfg(move_xy_stick="right")
         handler, _ = make_handler(stubbed_pygame, config=cfg)
         joy = FakeJoystick(num_axes=4)
         joy.set_axis(0, 0.5)  # not read (left stick)
@@ -426,7 +431,7 @@ class TestReadAxes:
         assert dx > 0
 
     def test_joystick_too_few_axes_returns_zero(self, stubbed_pygame) -> None:
-        cfg = ControllerConfig(move_xy_stick="right")
+        cfg = _cfg(move_xy_stick="right")
         handler, _ = make_handler(stubbed_pygame, config=cfg)
         joy = FakeJoystick(num_axes=2)  # right stick needs axis 3
         assert handler._read_axes_from_joystick(joy) == (0.0, 0.0, 0.0)
@@ -442,7 +447,7 @@ class TestReadAxes:
         assert dy == pytest.approx(1.0)
 
     def test_controller_backend_invert_y(self, stubbed_pygame) -> None:
-        cfg = ControllerConfig(invert_y=True)
+        cfg = _cfg(invert_y=True)
         handler, _ = make_handler(stubbed_pygame, config=cfg)
         ctrl = FakeController()
         ctrl.set_axis(CONTROLLER_AXIS_LEFTY, -32768)
@@ -450,7 +455,7 @@ class TestReadAxes:
         assert dy == pytest.approx(-1.0)
 
     def test_controller_backend_right_stick(self, stubbed_pygame) -> None:
-        cfg = ControllerConfig(move_xy_stick="right")
+        cfg = _cfg(move_xy_stick="right")
         handler, _ = make_handler(stubbed_pygame, config=cfg)
         ctrl = FakeController()
         ctrl.set_axis(CONTROLLER_AXIS_RIGHTX, 32768)
@@ -570,7 +575,7 @@ class TestReadZInput:
         assert handler._read_z_input(0, joy, BUTTON_ID_RT, is_lt=False) == pytest.approx(0.6)
 
     def test_swap_triggers_flips_lt_rt(self, stubbed_pygame) -> None:
-        cfg = ControllerConfig(swap_triggers=True)
+        cfg = _cfg(swap_triggers=True)
         handler, _ = make_handler(stubbed_pygame, config=cfg)
         joy = FakeJoystick(num_axes=6)
         ctrl = FakeController()
@@ -900,7 +905,7 @@ class TestUpdate:
         assert 0 in result.resets
 
     def test_dispatch_edges_for_configured_buttons(self, stubbed_pygame) -> None:
-        handler, _ = make_handler(stubbed_pygame, config=ControllerConfig(btn_toggle_zones="B"))
+        handler, _ = make_handler(stubbed_pygame, config=_cfg(btn_toggle_zones="B"))
         joy = FakeJoystick(num_buttons=16)
         joy.press(CONTROLLER_BUTTON_Y)  # toggle help
         joy.press(CONTROLLER_BUTTON_B)  # toggle zones
@@ -921,7 +926,7 @@ class TestUpdate:
     def test_button_bound_to_two_actions_fires_the_one_upper_on_the_form(self, stubbed_pygame) -> None:
         # Settings is checked last per frame, so before the config settled
         # duplicates, Next Marker consumed the press and the menu never opened.
-        config = ControllerConfig(btn_settings="START", btn_next_marker="START")
+        config = _cfg(btn_settings="START", btn_next_marker="START")
         handler, _ = make_handler(stubbed_pygame, config=config)
         joy = FakeJoystick(num_buttons=16)
         joy.press(CONTROLLER_BUTTON_START)
@@ -935,7 +940,7 @@ class TestUpdate:
 
     def test_clear_messages_button_edge_fires_when_bound(self, stubbed_pygame) -> None:
         # btn_clear_messages bound → edge sets the flag.
-        handler, _ = make_handler(stubbed_pygame, config=ControllerConfig(btn_clear_messages="START"))
+        handler, _ = make_handler(stubbed_pygame, config=_cfg(btn_clear_messages="START"))
         joy = FakeJoystick(num_buttons=16)
         joy.press(CONTROLLER_BUTTON_START)
         handler.joysticks[0] = joy
@@ -960,7 +965,7 @@ class TestUpdate:
     def test_clear_messages_trigger_binding_fires(self, stubbed_pygame) -> None:
         # Bound to a trigger (LT) → deflection past the deadzone fires the edge.
         # The negative LT id used to be blocked by a >= 0 dispatch guard.
-        config = ControllerConfig(btn_clear_messages="LT", btn_move_z_down="")
+        config = _cfg(btn_clear_messages="LT", btn_move_z_down="")
         handler, _ = make_handler(stubbed_pygame, config=config)
         joy = FakeJoystick(num_buttons=16, num_axes=8)
         joy.set_axis(4, 0.9)  # LT raw axis, past TRIGGER_DEADZONE
@@ -985,7 +990,7 @@ class TestUpdate:
         assert result.toggle_paths_pressed is False
 
     def test_a_pathfinder_press_is_reported_for_the_pad_that_pressed(self, stubbed_pygame) -> None:
-        handler, _ = make_handler(stubbed_pygame, config=ControllerConfig(btn_pathfinder="START"))
+        handler, _ = make_handler(stubbed_pygame, config=_cfg(btn_pathfinder="START"))
         for idx in (0, 1):
             joy = FakeJoystick(num_buttons=16)
             if idx == 1:
@@ -999,7 +1004,7 @@ class TestUpdate:
         assert handler.update(0.016).pathfinder_presses == set()
 
     def test_toggle_paths_fires_on_its_button(self, stubbed_pygame) -> None:
-        handler, _ = make_handler(stubbed_pygame, config=ControllerConfig(btn_toggle_paths="START"))
+        handler, _ = make_handler(stubbed_pygame, config=_cfg(btn_toggle_paths="START"))
         joy = FakeJoystick(num_buttons=16)
         joy.press(CONTROLLER_BUTTON_START)
         handler.joysticks[0] = joy
@@ -1009,7 +1014,7 @@ class TestUpdate:
         assert handler.update(0.016).toggle_paths_pressed is True
 
     def test_toggle_zones_trigger_binding_fires(self, stubbed_pygame) -> None:
-        config = ControllerConfig(btn_toggle_zones="LT", btn_move_z_down="")
+        config = _cfg(btn_toggle_zones="LT", btn_move_z_down="")
         handler, _ = make_handler(stubbed_pygame, config=config)
         joy = FakeJoystick(num_buttons=16, num_axes=8)
         joy.set_axis(4, 0.9)  # LT raw axis, past TRIGGER_DEADZONE
@@ -1238,7 +1243,7 @@ class TestSettingsMenuInput:
         assert handler._detect_button_edge(0, CONTROLLER_BUTTON_X) is False
 
     def test_clear_messages_held_through_the_menu_does_not_fire_on_close(self, stubbed_pygame) -> None:
-        handler, _ = make_handler(stubbed_pygame, config=ControllerConfig(btn_clear_messages="START"))
+        handler, _ = make_handler(stubbed_pygame, config=_cfg(btn_clear_messages="START"))
         joy = FakeJoystick(num_buttons=16)
         joy.press(CONTROLLER_BUTTON_START)  # pressed inside the menu, which ignores it
         handler.joysticks[0] = joy
@@ -1249,7 +1254,7 @@ class TestSettingsMenuInput:
         assert handler.update(0.016).clear_messages_pressed is False
 
     def test_path_buttons_held_through_the_menu_do_not_fire_on_close(self, stubbed_pygame) -> None:
-        config = ControllerConfig(btn_pathfinder="START", btn_toggle_paths="Y", btn_toggle_help="")
+        config = _cfg(btn_pathfinder="START", btn_toggle_paths="Y", btn_toggle_help="")
         handler, _ = make_handler(stubbed_pygame, config=config)
         joy = FakeJoystick(num_buttons=16)
         joy.press(CONTROLLER_BUTTON_START)
@@ -1320,12 +1325,12 @@ class TestControllerInfo:
 
 class TestApplyConfig:
     def test_empty_binding_string_maps_to_unbound(self, stubbed_pygame) -> None:
-        cfg = ControllerConfig(btn_toggle_zones="")
+        cfg = _cfg(btn_toggle_zones="")
         handler, _ = make_handler(stubbed_pygame, config=cfg)
         assert handler._btn_toggle_zones_id == BUTTON_ID_UNBOUND
 
     def test_raw_indices_seed_remap(self, stubbed_pygame) -> None:
-        cfg = ControllerConfig(button_raw_indices={"A": 2, "B": 3})
+        cfg = _cfg(button_raw_indices={"A": 2, "B": 3})
         handler, _ = make_handler(stubbed_pygame, config=cfg)
         # A (SDL2 id 0) → raw idx 2; B (id 1) → raw idx 3
         assert handler._raw_button_remap[CONTROLLER_BUTTON_A] == 2
@@ -1337,12 +1342,12 @@ class TestApplyConfig:
     def test_map_field_remap_for_swapped_a_b(self, stubbed_pygame) -> None:
         # If physical A reports as B, the remap should redirect logical A
         # to the B id.
-        cfg = ControllerConfig(map_a="B")
+        cfg = _cfg(map_a="B")
         handler, _ = make_handler(stubbed_pygame, config=cfg)
         assert handler._button_remap.get(CONTROLLER_BUTTON_A) == CONTROLLER_BUTTON_B
 
     def test_map_field_no_change_skips_remap_entry(self, stubbed_pygame) -> None:
-        cfg = ControllerConfig()  # defaults: each map_* matches its logical id
+        cfg = _cfg()  # defaults: each map_* matches its logical id
         handler, _ = make_handler(stubbed_pygame, config=cfg)
         assert handler._button_remap == {}
 
@@ -2632,7 +2637,7 @@ class TestApplyConfigRawIndicesRemap:
         that's how oddly-laid-out raw joysticks get corrected. Indices
         that already match the logical ID are skipped to keep the
         remap minimal."""
-        cfg = ControllerConfig()
+        cfg = _cfg()
         cfg.button_raw_indices = {"A": 99, "B": CONTROLLER_BUTTON_B}
         handler, _ = make_handler(stubbed_pygame, config=cfg)
         # A's raw idx (99) != logical CONTROLLER_BUTTON_A → entry installed.
@@ -2643,7 +2648,7 @@ class TestApplyConfigRawIndicesRemap:
     def test_raw_indices_unknown_label_skipped(self, stubbed_pygame) -> None:
         """An unknown label in the raw_indices dict (e.g. typo "XX") must
         not install a remap entry – and must not crash with KeyError."""
-        cfg = ControllerConfig()
+        cfg = _cfg()
         cfg.button_raw_indices = {"XX": 5}
         handler, _ = make_handler(stubbed_pygame, config=cfg)
         # Empty remap; nothing matched the unknown label.
@@ -2658,7 +2663,7 @@ class TestApplyConfigRawIndicesRemap:
         the SDL2 controller path must read via the SDL2-logical remap
         only – feeding a raw hardware index to ``controller.get_button``
         would silently mis-read (raw 4 ≠ SDL2 logical BACK)."""
-        cfg = ControllerConfig()
+        cfg = _cfg()
         cfg.button_raw_indices = {"LB": 4, "RB": 5}
         cfg.map_lb = "BACK"  # SDL2 maps physical LB → logical BACK
         cfg.map_rb = "RB"  # SDL2 maps physical RB → logical RB
@@ -2687,7 +2692,7 @@ class TestApplyConfigRawIndicesRemap:
         remap is what reaches the joystick – the same wizard data that
         was previously misapplied to SDL2 now correctly drives the
         joystick fallback."""
-        cfg = ControllerConfig()
+        cfg = _cfg()
         cfg.button_raw_indices = {"LB": 4, "RB": 5}
         handler, _ = make_handler(stubbed_pygame, config=cfg)
 
@@ -2702,7 +2707,7 @@ class TestApplyConfigRawIndicesRemap:
 
 class TestApplyCurveFallthrough:
     def test_unknown_curve_returns_value_verbatim(self, stubbed_pygame) -> None:
-        cfg = ControllerConfig()
+        cfg = _cfg()
         cfg.curve = "no-such-curve"
         handler, _ = make_handler(stubbed_pygame, config=cfg)
         assert handler._apply_curve(0.5) == 0.5
@@ -2762,7 +2767,7 @@ class TestGetButtonMissingDevice:
         """With swap_triggers=True the LT button reads the *right* trigger
         axis on an SDL2 controller (and vice versa) – needed when the
         physical controller has the trigger cables crossed."""
-        cfg = ControllerConfig()
+        cfg = _cfg()
         cfg.swap_triggers = True
         handler, _ = make_handler(stubbed_pygame, config=cfg)
         joy = FakeJoystick(num_axes=8)
@@ -2783,7 +2788,7 @@ class TestGetButtonMissingDevice:
         """Same swap semantics on a raw joystick (no SDL2 controller bound).
         Raw triggers report a delta from baseline, so prime the baseline at
         rest before deflecting."""
-        cfg = ControllerConfig()
+        cfg = _cfg()
         cfg.swap_triggers = True
         handler, _ = make_handler(stubbed_pygame, config=cfg)
         joy = FakeJoystick(num_axes=8)
@@ -3445,7 +3450,7 @@ class TestMarkerFaderIntegrator:
         # Handler constructed without a bus (legacy path). Even with
         # ``marker_fader_stick`` set, integrator must not crash on the missing
         # reference.
-        cfg = ControllerConfig(move_xy_stick="right", marker_fader_stick="left_y")
+        cfg = _cfg(move_xy_stick="right", marker_fader_stick="left_y")
         app = FakeApp(controller_cfg=cfg)
         handler = GamepadHandler(app)  # no virtual_faders kwarg
         joy = FakeJoystick(num_buttons=12, num_axes=6)
@@ -3460,7 +3465,7 @@ class TestMarkerFaderIntegrator:
         # Bus + stick set but no marker_resolver wired (isolated handler
         # construction): the integrator can't know which marker to drive,
         # so it must no-op rather than guess.
-        cfg = ControllerConfig(
+        cfg = _cfg(
             move_xy_stick="right",
             marker_fader_stick="left_y",
             marker_fader_max_speed_s=1.0,
@@ -3481,7 +3486,7 @@ class TestMarkerFaderIntegrator:
         # Orphan / unbound pad: the resolver returns None (no marker for
         # this controller). The deflection is read but there's no marker
         # fader to drive, so nothing is enqueued.
-        cfg = ControllerConfig(
+        cfg = _cfg(
             move_xy_stick="right",
             marker_fader_stick="left_y",
             marker_fader_max_speed_s=1.0,
@@ -3506,7 +3511,7 @@ class TestMarkerFaderIntegrator:
         self,
         stubbed_pygame,
     ) -> None:
-        cfg = ControllerConfig(
+        cfg = _cfg(
             move_xy_stick="right",
             marker_fader_stick="left_y",
             marker_fader_max_speed_s=1.0,
@@ -3536,7 +3541,7 @@ class TestMarkerFaderIntegrator:
 
     def test_right_y_stick_drives_fader_one(self, stubbed_pygame) -> None:
         # On raw joysticks, right stick Y is axis index 3.
-        cfg = ControllerConfig(marker_fader_stick="right_y", marker_fader_max_speed_s=1.0)
+        cfg = _cfg(marker_fader_stick="right_y", marker_fader_max_speed_s=1.0)
         bus = _FakeFaderBus()
         app = FakeApp(controller_cfg=cfg)
         handler = GamepadHandler(
@@ -3558,7 +3563,7 @@ class TestMarkerFaderIntegrator:
     def test_centered_stick_emits_no_fader_call(self, stubbed_pygame) -> None:
         # Inside deadzone → ``_apply_deadzone`` returns 0 → no fader
         # call (saves a no-op subscriber fan-out on the hot path).
-        cfg = ControllerConfig(move_xy_stick="right", marker_fader_stick="left_y", marker_fader_max_speed_s=1.0)
+        cfg = _cfg(move_xy_stick="right", marker_fader_stick="left_y", marker_fader_max_speed_s=1.0)
         bus = _FakeFaderBus()
         app = FakeApp(controller_cfg=cfg)
         handler = GamepadHandler(
@@ -3578,8 +3583,8 @@ class TestMarkerFaderIntegrator:
     def test_max_speed_scales_delta(self, stubbed_pygame) -> None:
         # ``marker_fader_max_speed_s = 0.5`` halves the time for full travel,
         # so the per-tick delta doubles compared to the 1.0 s baseline.
-        cfg_slow = ControllerConfig(move_xy_stick="right", marker_fader_stick="left_y", marker_fader_max_speed_s=1.0)
-        cfg_fast = ControllerConfig(move_xy_stick="right", marker_fader_stick="left_y", marker_fader_max_speed_s=0.5)
+        cfg_slow = _cfg(move_xy_stick="right", marker_fader_stick="left_y", marker_fader_max_speed_s=1.0)
+        cfg_fast = _cfg(move_xy_stick="right", marker_fader_stick="left_y", marker_fader_max_speed_s=0.5)
         slow_bus, fast_bus = _FakeFaderBus(), _FakeFaderBus()
         slow_handler = GamepadHandler(
             FakeApp(controller_cfg=cfg_slow),
@@ -3609,7 +3614,7 @@ class TestMarkerFaderIntegrator:
     ) -> None:
         # SDL2 controller path uses CONTROLLER_AXIS_LEFTY (= 1) at
         # 16-bit ints. Pushing up = -32768; bus delta should be > 0.
-        cfg = ControllerConfig(move_xy_stick="right", marker_fader_stick="left_y", marker_fader_max_speed_s=1.0)
+        cfg = _cfg(move_xy_stick="right", marker_fader_stick="left_y", marker_fader_max_speed_s=1.0)
         bus = _FakeFaderBus()
         app = FakeApp(controller_cfg=cfg)
         handler = GamepadHandler(
@@ -3636,7 +3641,7 @@ class TestMarkerFaderIntegrator:
         # Cheap controllers may report fewer than 4 axes; right_y at
         # index 3 isn't present. Read must return 0.0 (no call) rather
         # than crash on an out-of-range axis read.
-        cfg = ControllerConfig(marker_fader_stick="right_y", marker_fader_max_speed_s=1.0)
+        cfg = _cfg(marker_fader_stick="right_y", marker_fader_max_speed_s=1.0)
         bus = _FakeFaderBus()
         app = FakeApp(controller_cfg=cfg)
         handler = GamepadHandler(
@@ -3656,7 +3661,7 @@ class TestMarkerFaderIntegrator:
         self,
         stubbed_pygame,
     ) -> None:
-        cfg = ControllerConfig(move_xy_stick="right", marker_fader_stick="left_y", marker_fader_max_speed_s=1.0)
+        cfg = _cfg(move_xy_stick="right", marker_fader_stick="left_y", marker_fader_max_speed_s=1.0)
         bus = _FakeFaderBus()
         app = FakeApp(controller_cfg=cfg)
         handler = GamepadHandler(
@@ -3700,7 +3705,7 @@ class TestMarkerFaderIntegrator:
         # Hot-reload path: operator changes ``marker_fader_stick`` mid-session.
         # The runtime ``apply_config`` re-caches so the next ``update``
         # uses the new value without restarting.
-        cfg_off = ControllerConfig()
+        cfg_off = _cfg()
         bus = _FakeFaderBus()
         app = FakeApp(controller_cfg=cfg_off)
         handler = GamepadHandler(
@@ -3709,7 +3714,7 @@ class TestMarkerFaderIntegrator:
             marker_resolver=_resolve_to(1),
         )
         # Operator picks a stick.
-        app._config.controller = ControllerConfig(
+        app._config.controller = _cfg(
             move_xy_stick="right",
             marker_fader_stick="left_y",
             marker_fader_max_speed_s=2.0,
@@ -3749,7 +3754,7 @@ class TestMarkerFaderIntegrator:
         stubbed_pygame,
         caplog,
     ) -> None:
-        cfg = ControllerConfig(move_xy_stick="right", marker_fader_stick="left_y", marker_fader_max_speed_s=1.0)
+        cfg = _cfg(move_xy_stick="right", marker_fader_stick="left_y", marker_fader_max_speed_s=1.0)
         bus = _FakeFaderBus()
         app = FakeApp(controller_cfg=cfg)
         handler = GamepadHandler(
@@ -3820,7 +3825,7 @@ class TestRuntimeSnapshot:
         assert [i.index for i in handler.runtime_snapshot()] == [0, 2]
 
     def test_matches_calibration_by_guid(self, stubbed_pygame) -> None:
-        cfg = ControllerConfig()
+        cfg = _cfg()
         cfg.mapped_controller_guid = "abc123"
         handler, _ = make_handler(stubbed_pygame, config=cfg)
         handler.capabilities[0] = ControllerCapabilities(backend="joystick", guid="abc123")
@@ -3831,7 +3836,7 @@ class TestRuntimeSnapshot:
         assert snap[1].matches_calibration is False
 
     def test_matches_calibration_by_name_when_no_guid(self, stubbed_pygame) -> None:
-        cfg = ControllerConfig()
+        cfg = _cfg()
         cfg.mapped_controller_name = "GameSir-G7 SE"
         handler, _ = make_handler(stubbed_pygame, config=cfg)
         handler.capabilities[0] = ControllerCapabilities(backend="joystick", name="GameSir-G7 SE")
@@ -3841,7 +3846,7 @@ class TestRuntimeSnapshot:
         assert snap[1].matches_calibration is False
 
     def test_calibrated_by_raw_indices_only_cannot_mismatch(self, stubbed_pygame) -> None:
-        cfg = ControllerConfig()
+        cfg = _cfg()
         cfg.button_raw_indices = {"A": 0, "RB": 7}
         handler, _ = make_handler(stubbed_pygame, config=cfg)
         handler.capabilities[0] = ControllerCapabilities(backend="joystick", guid="whatever")
@@ -3871,7 +3876,7 @@ class TestRuntimeSnapshot:
     def test_connect_warns_once_per_guid_on_mismatch(self, stubbed_pygame, caplog) -> None:
         import logging as _logging
 
-        cfg = ControllerConfig()
+        cfg = _cfg()
         cfg.mapped_controller_guid = "calibrated-guid"
         handler, _ = make_handler(stubbed_pygame, config=cfg)
         stubbed_pygame["state"]["factories"][0] = lambda idx: FakeJoystick(
@@ -3891,7 +3896,7 @@ class TestRuntimeSnapshot:
     def test_guidless_pad_warns_once_across_reconnects(self, stubbed_pygame, caplog) -> None:
         import logging as _logging
 
-        cfg = ControllerConfig()
+        cfg = _cfg()
         cfg.mapped_controller_guid = "calibrated-guid"
         handler, _ = make_handler(stubbed_pygame, config=cfg)
         state = stubbed_pygame["state"]
@@ -3911,7 +3916,7 @@ class TestRuntimeSnapshot:
     def test_no_warn_when_identity_matches(self, stubbed_pygame, caplog) -> None:
         import logging as _logging
 
-        cfg = ControllerConfig()
+        cfg = _cfg()
         cfg.mapped_controller_guid = "same-guid"
         handler, _ = make_handler(stubbed_pygame, config=cfg)
         stubbed_pygame["state"]["factories"][0] = lambda idx: FakeJoystick(guid="same-guid")
@@ -3921,7 +3926,7 @@ class TestRuntimeSnapshot:
         assert not [r for r in caplog.records if "does not match the saved" in r.message]
 
     def test_warn_helper_no_op_for_missing_index(self, stubbed_pygame) -> None:
-        cfg = ControllerConfig()
+        cfg = _cfg()
         cfg.mapped_controller_guid = "x"
         handler, _ = make_handler(stubbed_pygame, config=cfg)
         # No capabilities entry for index 5 → must not raise.
@@ -3958,7 +3963,7 @@ class TestRuntimeSnapshot:
         assert len(snap) == 1  # snapshot unaffected by the later mutation
 
     def test_apply_config_clears_warned_on_identity_change(self, stubbed_pygame) -> None:
-        cfg = ControllerConfig()
+        cfg = _cfg()
         cfg.mapped_controller_guid = "cal-A"
         handler, app = make_handler(stubbed_pygame, config=cfg)
         handler.capabilities[0] = ControllerCapabilities(
@@ -3974,7 +3979,7 @@ class TestRuntimeSnapshot:
         assert handler._calibration_warned == set()
 
     def test_apply_config_keeps_warned_when_identity_unchanged(self, stubbed_pygame) -> None:
-        cfg = ControllerConfig()
+        cfg = _cfg()
         cfg.mapped_controller_guid = "cal-A"
         handler, _ = make_handler(stubbed_pygame, config=cfg)
         handler._calibration_warned.add("connected")
@@ -3988,7 +3993,7 @@ class TestRuntimeSnapshot:
     ) -> None:
         import logging as _logging
 
-        cfg = ControllerConfig()
+        cfg = _cfg()
         cfg.mapped_controller_name = "Calibrated Pad"
         handler, _ = make_handler(stubbed_pygame, config=cfg)
         handler.capabilities[0] = ControllerCapabilities(backend="joystick", guid="", name="Pad A")
@@ -4118,7 +4123,7 @@ class TestStickPrimingAfterDetection:
 
     def test_phantom_does_not_drive_marker_fader(self, stubbed_pygame) -> None:
         bus = _FakeFaderBus()
-        cfg = ControllerConfig(move_xy_stick="right", marker_fader_stick="left_y", marker_fader_max_speed_s=1.0)
+        cfg = _cfg(move_xy_stick="right", marker_fader_stick="left_y", marker_fader_max_speed_s=1.0)
         app = FakeApp(controller_cfg=cfg)
         joy = FakeJoystick(num_buttons=12, num_axes=6)
         joy.set_axis(1, -0.8)  # phantom Y deflection
@@ -4303,7 +4308,7 @@ class TestControllerNotes:
     def test_each_note_appears_exactly_in_its_condition(
         self, stubbed_pygame, backend: str, calibration: dict, can_rumble: bool | None, expected: tuple[str, ...]
     ) -> None:
-        handler, _ = make_handler(stubbed_pygame, config=ControllerConfig(**calibration))
+        handler, _ = make_handler(stubbed_pygame, config=_cfg(**calibration))
         cap = ControllerCapabilities(backend=backend, guid="pad", can_rumble=can_rumble)
         assert handler.controller_notes(cap) == expected
 
@@ -4533,7 +4538,7 @@ class TestParkedSlotThroughTheRealHandler:
 
         monkeypatch.setattr(input_manager_module, "KeyboardHandler", _Keyboard)
         monkeypatch.setattr(input_manager_module, "Mouse3DManager", _Pucks)
-        cfg = ControllerConfig(move_xy_stick="right", marker_fader_stick="left_y", marker_fader_max_speed_s=1.0)
+        cfg = _cfg(move_xy_stick="right", marker_fader_stick="left_y", marker_fader_max_speed_s=1.0)
         app = FakeApp(controller_cfg=cfg)
         app._config.osc.enabled = False
         app._controlled_ids = [10, 11]

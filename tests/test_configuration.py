@@ -461,6 +461,27 @@ def test_example_config_seeds_the_default_features_and_names_the_experimental_on
 
 
 @pytest.mark.parametrize(("section", "defaults"), [("controller", ControllerConfig()), ("mouse3d", Mouse3DConfig())])
+def test_example_config_seeds_the_input_defaults(section: str, defaults: object) -> None:
+    """A first boot, a config missing the keys and Restore defaults must drive the pad alike."""
+    from pathlib import Path
+
+    example_path = Path(__file__).resolve().parents[1] / "config.example.toml"
+    example = tomllib.loads(example_path.read_text(encoding="utf-8"))[section]
+    differing = {
+        name: (value, getattr(defaults, name))
+        for name, value in example.items()
+        if hasattr(defaults, name) and value != getattr(defaults, name)
+    }
+    assert differing == {}
+
+
+def test_a_controller_section_missing_the_stick_and_deadzone_loads_the_defaults(temp_config_path) -> None:
+    temp_config_path.write_text("[controller]\nenabled = true\n", encoding="utf-8")
+    controller = load_config(str(temp_config_path)).controller
+    assert (controller.move_xy_stick, controller.deadzone) == ("right", 0.05)
+
+
+@pytest.mark.parametrize(("section", "defaults"), [("controller", ControllerConfig()), ("mouse3d", Mouse3DConfig())])
 def test_example_config_binds_nothing_the_defaults_leave_unbound(section: str, defaults: object) -> None:
     """A station seeded from the example must not start with a binding a fresh config leaves unbound."""
     from pathlib import Path
@@ -1408,6 +1429,13 @@ def test_marker_move_speeds_rejects_bool_keys() -> None:
 def test_controller_deadzone_is_clamped(input_deadzone: float, expected: float) -> None:
     config = ControllerConfig(deadzone=input_deadzone)
     assert config.deadzone == expected
+
+
+@pytest.mark.parametrize(
+    ("bad", "expected"), [("abc", 0.05), (None, 0.05), (float("nan"), 0.05), (True, 1.0), ("0.2", 0.2)]
+)
+def test_controller_wrongly_typed_deadzone_falls_back_to_the_default(bad: object, expected: float) -> None:
+    assert ControllerConfig(deadzone=bad).deadzone == expected  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("layout", ["wasd", "ijkl", "numpad"])
@@ -5281,11 +5309,16 @@ def test_a_bad_hand_edited_button_name_style_loads_as_standard(temp_config_path)
     assert load_config(str(temp_config_path)).controller.button_name_style == "standard"
 
 
-def test_controller_invalid_move_xy_stick_falls_back_to_left(caplog) -> None:
+@pytest.mark.parametrize("stick", ["middle", "LEFT", None, 7, True])
+def test_controller_invalid_move_xy_stick_falls_back_to_right(caplog, stick: object) -> None:
     with caplog.at_level("WARNING", logger="openfollow.configuration"):
-        cfg = ControllerConfig(move_xy_stick="middle")
-    assert cfg.move_xy_stick == "left"
+        cfg = ControllerConfig(move_xy_stick=stick)  # type: ignore[arg-type]
+    assert cfg.move_xy_stick == "right"
     assert any("Invalid move_xy_stick" in r.message for r in caplog.records)
+
+
+def test_controller_accepts_left_stick() -> None:
+    assert ControllerConfig(move_xy_stick="left").move_xy_stick == "left"
 
 
 def test_controller_accepts_right_stick() -> None:
@@ -5457,6 +5490,7 @@ def test_controller_migrates_legacy_vf1_keys_on_load() -> None:
 
     toml = textwrap.dedent("""
         [controller]
+        move_xy_stick = "left"
         vf1_stick = "right_y"
         vf1_max_speed_s = 2.5
     """)
@@ -6088,7 +6122,7 @@ def test_apply_runtime_filters_invalid_ids_defense_in_depth() -> None:
 
 def test_apply_runtime_replays_controller_config_through_gamepad_handler() -> None:
     app = _app_with()
-    new_ctrl = ControllerConfig(deadzone=0.42)  # different from default 0.15
+    new_ctrl = ControllerConfig(deadzone=0.42)  # different from default 0.05
     new_config = AppConfig(controller=new_ctrl)
 
     apply_runtime_config_changes(app, new_config)

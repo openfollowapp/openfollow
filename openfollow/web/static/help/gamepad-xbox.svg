@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 560" width="1000" height="560" role="img">
+<title>Xbox gamepad with the OpenFollow default actions</title>
+<path d="M 318 196 Q 352 168 420 166 L 422 182 Q 362 184 332 206 Z" fill="#1d3326" stroke="#ffbc00" stroke-width="1.8"/>
+<path d="M 682 196 Q 648 168 580 166 L 578 182 Q 638 184 668 206 Z" fill="#1d3326" stroke="#ffbc00" stroke-width="1.8"/>
+<rect x="348" y="128" width="66" height="30" rx="11" fill="#1d3326" stroke="#ffbc00" stroke-width="1.8"/>
+<rect x="586" y="128" width="66" height="30" rx="11" fill="#1d3326" stroke="#ffbc00" stroke-width="1.8"/>
+<path d="M 370 190 C 420 175, 580 175, 630 190 C 690 200, 730 240, 745 310 C 760 380, 775 450, 740 480 C 710 505, 675 490, 655 460 C 635 430, 600 415, 500 415 C 400 415, 365 430, 345 460 C 325 490, 290 505, 260 480 C 225 450, 240 380, 255 310 C 270 240, 310 200, 370 190 Z" fill="#13241a" stroke="rgba(247,245,233,0.45)" stroke-width="2"/>
+<circle cx="395" cy="268" r="31" fill="#1d3326" stroke="rgba(247,245,233,0.5)" stroke-width="2"/><circle cx="395" cy="268" r="19" fill="none" stroke="rgba(247,245,233,0.5)" stroke-opacity="0.6" stroke-width="1.5"/>
+<circle cx="560" cy="357" r="31" fill="#1d3326" stroke="#ffbc00" stroke-width="2"/><circle cx="560" cy="357" r="19" fill="none" stroke="#ffbc00" stroke-opacity="0.6" stroke-width="1.5"/>
+<path d="M 429 327 H 451 V 346 H 470 V 368 H 451 V 387 H 429 V 368 H 410 V 346 H 429 Z" fill="#1d3326" stroke="rgba(247,245,233,0.5)" stroke-width="1.5"/><path d="M 410 346 H 429 V 368 H 410 Z M 451 346 H 470 V 368 H 451 Z" fill="none" stroke="#ffbc00" stroke-width="2"/>
+<circle cx="605" cy="238" r="15" fill="#1d3326" stroke="#ffbc00" stroke-width="1.8"/>
+<text x="605" y="243" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif" font-size="14" font-weight="700" fill="#f7f5e9">Y</text>
+<circle cx="575" cy="268" r="15" fill="#1d3326" stroke="#ffbc00" stroke-width="1.8"/>
+<text x="575" y="273" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif" font-size="14" font-weight="700" fill="#f7f5e9">X</text>
+<circle cx="635" cy="268" r="15" fill="#1d3326" stroke="#ffbc00" stroke-width="1.8"/>
+<text x="635" y="273" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif" font-size="14" font-weight="700" fill="#f7f5e9">B</text>
+<circle cx="605" cy="298" r="15" fill="#1d3326" stroke="#ffbc00" stroke-width="1.8"/>
+<text x="605" y="303" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif" font-size="14" font-weight="700" fill="#f7f5e9">A</text>
+<rect x="452" y="260" width="26" height="16" rx="8" fill="#1d3326" stroke="#ffbc00" stroke-width="1.6"/>
+<rect x="522" y="260" width="26" height="16" rx="8" fill="#1d3326" stroke="rgba(247,245,233,0.5)" stroke-width="1.6"/>
+<polyline points="246,65 313.5,65 381,128" fill="none" stroke="#ffbc00" stroke-width="1.3" stroke-opacity="0.85"/>
+<circle cx="381" cy="128" r="3" fill="#ffbc00"/>
+<text x="238" y="60" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif" font-size="14" font-weight="700" fill="#ffbc00">LT</text>
+<text x="238" y="79" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif" font-size="15" font-weight="400" fill="#f7f5e9">Lower the marker (Z−)</text>
+<polyline points="246,123 293.0,123 340,186" fill="none" stroke="#ffbc00" stroke-width="1.3" stroke-opacity="0.85"/>
+<circle cx="340" cy="186" r="3" fill="#ffbc00"/>
+<text x="238" y="118" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif" font-size="14" font-weight="700" fill="#ffbc00">LB</text>
+<text x="238" y="137" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif" font-size="15" font-weight="400" fill="#f7f5e9">Slower</text>
+<polyline points="246,209 349.0,209 452,268" fill="none" stroke="#ffbc00" stroke-width="1.3" stroke-opacity="0.85"/>
+<circle cx="452" cy="268" r="3" fill="#ffbc00"/>
+<text x="238" y="204" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif" font-size="14" font-weight="700" fill="#ffbc00">View</text>
+<text x="238" y="223" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif" font-size="15" font-weight="400" fill="#f7f5e9">Settings menu</text>
+<polyline points="246,295 305.0,295 364,268" fill="none" stroke="rgba(247,245,233,0.55)" stroke-width="1.3" stroke-opacity="0.6"/>
+<circle cx="364" cy="268" r="3" fill="rgba(247,245,233,0.55)"/>
+<text x="238" y="290" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif" font-size="14" font-weight="700" fill="rgba(247,245,233,0.55)">Left stick</text>
+<text x="238" y="309" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif" font-size="15" font-weight="400" fill="rgba(247,245,233,0.55)">(not used)</text>
+<polyline points="246,381 328.0,381 410,357" fill="none" stroke="#ffbc00" stroke-width="1.3" stroke-opacity="0.85"/>
+<circle cx="410" cy="357" r="3" fill="#ffbc00"/>
+<text x="238" y="376" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif" font-size="14" font-weight="700" fill="#ffbc00">D-pad left / right</text>
+<text x="238" y="395" text-anchor="end" font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif" font-size="15" font-weight="400" fill="#f7f5e9">Previous / next marker</text>
+<polyline points="754,65 686.5,65 619,128" fill="none" stroke="#ffbc00" stroke-width="1.3" stroke-opacity="0.85"/>
+<circle cx="619" cy="128" r="3" fill="#ffbc00"/>
+<text x="762" y="60" text-anchor="start" font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif" font-size="14" font-weight="700" fill="#ffbc00">RT</text>
+<text x="762" y="79" text-anchor="start" font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif" font-size="15" font-weight="400" fill="#f7f5e9">Raise the marker (Z+)</text>
+<polyline points="754,123 707.0,123 660,186" fill="none" stroke="#ffbc00" stroke-width="1.3" stroke-opacity="0.85"/>
+<circle cx="660" cy="186" r="3" fill="#ffbc00"/>
+<text x="762" y="118" text-anchor="start" font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif" font-size="14" font-weight="700" fill="#ffbc00">RB</text>
+<text x="762" y="137" text-anchor="start" font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif" font-size="15" font-weight="400" fill="#f7f5e9">Faster</text>
+<polyline points="754,181 687.0,181 620,238" fill="none" stroke="#ffbc00" stroke-width="1.3" stroke-opacity="0.85"/>
+<circle cx="620" cy="238" r="3" fill="#ffbc00"/>
+<text x="762" y="176" text-anchor="start" font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif" font-size="14" font-weight="700" fill="#ffbc00">Y</text>
+<text x="762" y="195" text-anchor="start" font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif" font-size="15" font-weight="400" fill="#f7f5e9">Show the key list</text>
+<polyline points="754,231 702.0,231 650,268" fill="none" stroke="#ffbc00" stroke-width="1.3" stroke-opacity="0.85"/>
+<circle cx="650" cy="268" r="3" fill="#ffbc00"/>
+<text x="762" y="226" text-anchor="start" font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif" font-size="14" font-weight="700" fill="#ffbc00">B</text>
+<text x="762" y="245" text-anchor="start" font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif" font-size="15" font-weight="400" fill="#f7f5e9">Cancel in a menu</text>
+<polyline points="754,281 687.0,281 620,298" fill="none" stroke="#ffbc00" stroke-width="1.3" stroke-opacity="0.85"/>
+<circle cx="620" cy="298" r="3" fill="#ffbc00"/>
+<text x="762" y="276" text-anchor="start" font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif" font-size="14" font-weight="700" fill="#ffbc00">A</text>
+<text x="762" y="295" text-anchor="start" font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif" font-size="15" font-weight="400" fill="#f7f5e9">Confirm in a menu</text>
+<polyline points="754,331 575,318 575,283" fill="none" stroke="#ffbc00" stroke-width="1.3" stroke-opacity="0.85"/>
+<circle cx="575" cy="283" r="3" fill="#ffbc00"/>
+<text x="762" y="326" text-anchor="start" font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif" font-size="14" font-weight="700" fill="#ffbc00">X</text>
+<text x="762" y="345" text-anchor="start" font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif" font-size="15" font-weight="400" fill="#f7f5e9">Reset the marker</text>
+<polyline points="754,395 672.5,395 591,357" fill="none" stroke="#ffbc00" stroke-width="1.3" stroke-opacity="0.85"/>
+<circle cx="591" cy="357" r="3" fill="#ffbc00"/>
+<text x="762" y="390" text-anchor="start" font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif" font-size="14" font-weight="700" fill="#ffbc00">Right stick</text>
+<text x="762" y="409" text-anchor="start" font-family="system-ui, -apple-system, 'Segoe UI', Inter, sans-serif" font-size="15" font-weight="400" fill="#f7f5e9">Move the marker on stage</text>
+</svg>

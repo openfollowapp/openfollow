@@ -18,7 +18,7 @@ from bottle import template
 
 import openfollow.web.discovery as discovery_module
 from openfollow.button_names import STYLE_TITLES, SYMBOL_SHAPES, ButtonNameStyle, button_label, button_symbol
-from openfollow.configuration import AppConfig
+from openfollow.configuration import AppConfig, ControllerConfig
 from openfollow.web import server as _server_module  # noqa: F401 – registers tpl path
 from openfollow.web._md import render_help_markdown
 from openfollow.web.routes import _WEB_HELP_DIR
@@ -243,6 +243,56 @@ class TestHelpDocImageAssets:
                 elif not (_WEB_STATIC_DIR / src[len("/assets/") :]).is_file():
                     offenders.setdefault(doc.name, []).append(f"missing: {src}")
         assert not offenders, f"help image refs must be bundled under web/static: {offenders}"
+
+
+class TestGamepadDrawings:
+    """The Gamepad drawer's drawings label the default bindings by each family's printed names."""
+
+    pytestmark = pytest.mark.unit
+
+    _ACTIONS = {
+        "btn_move_z_down": "Lower the marker (Z−)",
+        "btn_move_z_up": "Raise the marker (Z+)",
+        "btn_speed_down": "Slower",
+        "btn_speed_up": "Faster",
+        "btn_settings": "Settings menu",
+        "btn_toggle_help": "Show the key list",
+        "btn_reset": "Reset the marker",
+        "btn_menu_confirm": "Confirm in a menu",
+        "btn_menu_cancel": "Cancel in a menu",
+    }
+
+    @staticmethod
+    def _labels(svg: str) -> dict[str, str]:
+        """Each bold button name with the action line drawn under it."""
+        texts = re.findall(r'<text [^>]*font-weight="(\d+)"[^>]*>([^<]*)</text>', svg)
+        return {
+            name: action
+            for (weight, name), (next_weight, action) in zip(texts, texts[1:], strict=False)
+            if weight == "700" and next_weight == "400"
+        }
+
+    @pytest.mark.parametrize(
+        ("drawing", "style"),
+        [("gamepad-xbox.svg", ButtonNameStyle.XBOX), ("gamepad-playstation.svg", ButtonNameStyle.PLAYSTATION)],
+    )
+    def test_each_default_binding_is_labelled_with_its_action(self, drawing: str, style: ButtonNameStyle) -> None:
+        from openfollow.web.routes import _WEB_STATIC_DIR
+
+        defaults = ControllerConfig()
+        labels = self._labels((_WEB_STATIC_DIR / "help" / drawing).read_text(encoding="utf-8"))
+        expected = {button_label(getattr(defaults, field), style): action for field, action in self._ACTIONS.items()}
+        unused = "left" if defaults.move_xy_stick == "right" else "right"
+        expected[f"{defaults.move_xy_stick.capitalize()} stick"] = "Move the marker on stage"
+        expected[f"{unused.capitalize()} stick"] = "(not used)"
+        assert (defaults.btn_prev_marker, defaults.btn_next_marker) == ("DPAD_LEFT", "DPAD_RIGHT")
+        expected["D-pad left / right"] = "Previous / next marker"
+        assert labels == expected
+
+    def test_the_gamepad_drawer_shows_both_drawings(self) -> None:
+        html = render_help_markdown((_WEB_HELP_DIR / "gamepad.md").read_text(encoding="utf-8"))
+        assert '<img src="/assets/help/gamepad-xbox.svg"' in html
+        assert '<img src="/assets/help/gamepad-playstation.svg"' in html
 
 
 # ---------------------------------------------------------------------------

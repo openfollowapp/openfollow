@@ -180,6 +180,7 @@ class GtkNativeSinkWindow:
         self._poll_last_pos: tuple[int, int] | None = None
         self._poll_btn1 = False
         self._poll_btn3 = False
+        self._poll_ctrl_click = False
         # The pointer poll runs every frame; throttle its failure log so a
         # persistent error can't flood the journal at the display tick rate.
         self._poll_err_log = ThrottledExceptionLogger(logger, "Pointer poll failed")
@@ -497,6 +498,10 @@ class GtkNativeSinkWindow:
         Gdk = self._Gdk
         b1 = bool(mask & Gdk.ModifierType.BUTTON1_MASK)
         b3 = bool(mask & Gdk.ModifierType.BUTTON3_MASK)
+        # Control+click is the macOS right-click, latched until the button is let go.
+        self._poll_ctrl_click = b1 and (self._poll_ctrl_click or bool(mask & Gdk.ModifierType.CONTROL_MASK))
+        if self._poll_ctrl_click:
+            b1, b3 = False, True
         cw, ch = self.get_canvas_size()
         within = 0 <= x < cw and 0 <= y < ch
         events, new_state = self._poll_pointer_events(

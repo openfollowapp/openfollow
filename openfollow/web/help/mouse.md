@@ -6,7 +6,7 @@ Click-and-drag control for steering markers directly on the live video. Off by d
 
 ## Taking and releasing control
 
-**Left-click a marker's ground circle** to take control of that marker, then move the mouse to steer it. The marker is grabbed where it stands and does not jump to the cursor. A click on empty stage does nothing. Left-click another marker's circle to switch. **Right-click** releases control. If the ground circle is turned off in Marker settings, the small area around the marker's base stays clickable.
+**Left-click a marker's ground circle** to take control of that marker, then move the mouse to steer it. The marker is grabbed where it stands and does not jump to the cursor. A click on empty stage does nothing. Left-click another marker's circle to switch. **Right-click** (on a Mac also Control+click) releases control. If the ground circle is turned off in Marker settings, the small area around the marker's base stays clickable.
 
 **Double right-click** – when on, snaps the controlled marker back to the default position (like the reset key) and lets go of it.
 

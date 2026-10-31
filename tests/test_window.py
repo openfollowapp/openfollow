@@ -1856,6 +1856,25 @@ class TestPointerPoll:
         assert downs == [{"x": 100, "y": 200, "button": 1}]
         assert moves == [{"x": 140, "y": 260}]
 
+    def test_poll_pointer_ctrl_click_is_a_right_click(self, window) -> None:
+        window._pointer_poll = True
+        window._pointer_device = object()
+        window._box._alloc_w = 1280
+        window._box._alloc_h = 720
+        ctrl = FakeGdkModifierType.CONTROL_MASK
+        window._window._gdk_window = _PollSurface(
+            [
+                (100, 200, _B1 | ctrl),  # Control+click -> right-click
+                (100, 200, _B1),  # Control let go first: still the same right-click
+                (100, 200, 0),
+                (300, 400, _B1),  # a plain click afterwards grabs
+            ]
+        )
+        downs = self._handler_list(window, "pointer_down")
+        for _ in range(4):
+            window.poll_pointer()
+        assert downs == [{"x": 100, "y": 200, "button": 3}, {"x": 300, "y": 400, "button": 1}]
+
     def test_poll_pointer_disables_when_device_unavailable(self, window) -> None:
         # Lazy acquisition fails (FakeGdk has no Display) -> polling disables
         # itself rather than retrying every frame.

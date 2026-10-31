@@ -114,8 +114,9 @@ class TestEdges:
             _plan(self._SQUARE, 0)
             + """
             var e = plan.toScreen(1, 0);
+            fire('mousemove', e[0], e[1] + 4); out.ring = !!plan.hover;
             fire('mousedown', e[0], e[1] + 4);
-            out.added = polys[0].slice();
+            out.added = polys[0].slice(); out.ringAfter = plan.hover;
             var to = plan.toScreen(1, -1);
             fire('mousemove', to[0], to[1]); fire('mouseup', to[0], to[1]);
             out.corners = polys[0]; out.calls = calls;
@@ -125,6 +126,8 @@ class TestEdges:
         assert len(out["corners"]) == 5
         assert out["corners"][1] == [pytest.approx(1), pytest.approx(-1)]
         assert out["calls"] == [["insert", 1], ["move", 1], ["end", 1]]
+        # The ring marks the spot until the press puts the corner there.
+        assert out["ring"] is True and out["ringAfter"] is None
 
     def test_a_click_on_an_edge_keeps_the_corner_and_saves_it(self) -> None:
         out = _run(

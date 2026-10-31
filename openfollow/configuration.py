@@ -2314,7 +2314,7 @@ class ControllerConfig:
     mouse_wheel_z_step: float = 0.1
     # Double right-click resets the controlled marker to the default position.
     mouse_double_click_reset: bool = True
-    deadzone: float = 0.15
+    deadzone: float = 0.05
     invert_y: bool = False
     curve: str = "logarithmic"
     # Which pad family's printed names buttons are shown by (button_names.py).
@@ -2340,7 +2340,7 @@ class ControllerConfig:
     btn_toggle_zones: str = ""
     btn_toggle_paths: str = ""
     btn_pathfinder: str = ""
-    move_xy_stick: str = "left"
+    move_xy_stick: str = "right"
     # Marker-fader integrator: which stick Y-axis (if any) drives the fader of
     # the currently-controlled marker. The bus integrates
     # ``deflection × dt × (1 / marker_fader_max_speed_s)`` per tick; the
@@ -2421,12 +2421,10 @@ class ControllerConfig:
         self.mouse_wheel_z_enabled = _coerce_bool(self.mouse_wheel_z_enabled, True)
         self.mouse_wheel_invert = _coerce_bool(self.mouse_wheel_invert, False)
         self.mouse_double_click_reset = _coerce_bool(self.mouse_double_click_reset, True)
-        if not 0.0 <= self.deadzone <= 1.0:
-            logger.warning(
-                "Invalid controller deadzone %s, clamping to [0.0, 1.0]",
-                self.deadzone,
-            )
-            self.deadzone = max(0.0, min(1.0, self.deadzone))
+        deadzone = _coerce_float(self.deadzone, _field_default(self, "deadzone"))
+        if not 0.0 <= deadzone <= 1.0:
+            logger.warning("Invalid controller deadzone %s, clamping to [0.0, 1.0]", deadzone)
+        self.deadzone = max(0.0, min(1.0, deadzone))
         if self.curve not in VALID_CURVES:
             logger.warning(
                 "Invalid controller curve %r, falling back to 'logarithmic'",
@@ -2436,10 +2434,11 @@ class ControllerConfig:
         self.button_name_style = _coerce_choice(self.button_name_style, BUTTON_NAME_STYLES, "standard")
         if self.move_xy_stick not in VALID_STICKS:
             logger.warning(
-                "Invalid move_xy_stick %r, falling back to 'left'",
+                "Invalid move_xy_stick %r, falling back to %r",
                 self.move_xy_stick,
+                _field_default(self, "move_xy_stick"),
             )
-            self.move_xy_stick = "left"
+            self.move_xy_stick = _field_default(self, "move_xy_stick")
         # Snap an unknown stick choice to "" (disable) rather than a working
         # default, so a typo can't route to a stick the operator didn't pick.
         self.marker_fader_stick = _coerce_choice(

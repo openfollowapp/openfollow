@@ -340,6 +340,7 @@
  .help-drawer-body ul,
  .help-drawer-body ol { margin: 0 0 0.7rem; }
  .help-drawer-body li { margin: 0.2rem 0; }
+ .help-drawer-body img { max-width: 100%; height: auto; }
  .help-drawer-body code {
  background: rgba(255, 255, 255, 0.08);
  padding: 0.1em 0.35em;
@@ -4199,7 +4200,7 @@
  btn_next_marker: 'DPAD_RIGHT', btn_prev_marker: 'DPAD_LEFT',
  btn_clear_messages: '',
  btn_toggle_zones: '', btn_toggle_paths: '', btn_pathfinder: '',
- move_xy_stick: 'left', marker_fader_stick: '',
+ move_xy_stick: 'right', marker_fader_stick: '',
  btn_menu_confirm: 'A', btn_menu_cancel: 'B',
  };
  container.querySelectorAll('select').forEach(sel => {

@@ -40,3 +40,23 @@ def test_buttons_animate_no_transform() -> None:
     transition = re.search(r"--btn-transition:([^;]+);", base)
     assert transition is not None
     assert "transform" not in transition.group(1)
+
+
+def _rule(selector_start: str) -> str:
+    base = (_TEMPLATES / "base.tpl").read_text(encoding="utf-8")
+    match = re.search(re.escape(selector_start) + r"[^{]*\{([^}]*)\}", base)
+    assert match is not None, selector_start
+    return " ".join(match.group(1).split())
+
+
+def test_an_outline_button_fills_with_its_own_colour_on_hover() -> None:
+    assert _rule(".btn-secondary:hover:not(:disabled)") == (
+        "background: var(--accent-soft); border-color: var(--accent); filter: none;"
+    )
+    assert _rule(".btn-danger:hover:not(:disabled)") == (
+        "background: var(--error-row); border-color: var(--error-text); filter: none;"
+    )
+
+
+def test_a_filled_button_lightens_on_hover() -> None:
+    assert _rule("button:hover, a.btn-link:hover") == "filter: brightness(1.1);"

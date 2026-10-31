@@ -101,7 +101,7 @@
  --btn-primary-bg: var(--accent);
  --btn-neutral-bg: rgba(255, 255, 255, 0.12);
  --btn-secondary-border: rgba(255, 188, 0, 0.42);
- --btn-transition: filter 0.17s ease;
+ --btn-transition: filter 0.17s ease, background-color 0.17s ease, border-color 0.17s ease;
  /* width of the inline help drawer. While the drawer is
  open this same size is applied as <body> padding-right, so the
  content column shrinks/shifts left instead of being covered. */
@@ -891,7 +891,7 @@
  line-height: 1.2;
  transition: var(--btn-transition);
  }
- button:hover, a.btn-link:hover { filter: brightness(1.03); }
+ button:hover, a.btn-link:hover { filter: brightness(1.1); }
  button:disabled, .btn-disabled {
  opacity: 0.5;
  cursor: not-allowed;
@@ -919,6 +919,12 @@
  border: 1px solid var(--error-line);
  color: var(--error-text);
  font-weight: 600;
+ }
+ /* Hover: an outline button fills with its own colour instead of brightening. */
+ .btn-secondary:hover:not(:disabled), button.secondary:hover:not(:disabled), .button-secondary:hover:not(:disabled),
+ .broadcast-btn:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent); filter: none; }
+ .btn-danger:hover:not(:disabled), button.danger:hover:not(:disabled) {
+ background: var(--error-row); border-color: var(--error-text); filter: none;
  }
  /* Neutral – low-emphasis dismiss actions (e.g. the network-edit
  Cancel via .ghost-btn). */

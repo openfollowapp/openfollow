@@ -102,6 +102,53 @@ class TestRenameReachesTheOutputs:
         assert status == 200
         assert renamed == [[1]]
 
+    def test_outputs_that_fail_to_take_the_name_leave_the_save_standing(
+        self, live_server_with_outputs, monkeypatch, caplog
+    ) -> None:
+        base, catalog, _renamed = live_server_with_outputs
+        catalog.upsert(1, "Lead", "#ff0000")
+
+        def _broken(self, ids):  # noqa: ANN001
+            raise RuntimeError("server tearing down")
+
+        monkeypatch.setattr(ConfigWebServer, "apply_marker_renames", _broken)
+        status, body = _request(base, "/api/markers/catalog/1", method="PUT", body={"name": "Spot", "color": "#ff0000"})
+        assert status == 200
+        assert json.loads(body)["entry"]["name"] == "Spot"
+        assert "did not take the new name" in caplog.text
+
+    def test_the_rename_reaches_a_real_psn_server(self, tmp_path, monkeypatch) -> None:
+        """Route, app and output, all real: the seam the station runs."""
+        import types
+
+        from openfollow.app import OpenFollowApp
+        from openfollow.psn.server import PsnServer
+
+        for cls in (discovery_module.BeaconSender, discovery_module.BeaconReceiver):
+            monkeypatch.setattr(cls, "start", lambda self: None)
+            monkeypatch.setattr(cls, "stop", lambda self: None)
+        catalog = MarkerCatalog()
+        catalog.upsert(1, "Lead", "#ff0000")
+        psn = PsnServer(mcast_ip=None)
+        psn.add_marker(1, "Lead")
+        app = types.SimpleNamespace(_server=psn, _controlled_ids=[1], _marker_catalog=catalog)
+        app._apply_catalog_names = types.MethodType(OpenFollowApp._apply_catalog_names, app)
+        with live_on_free_port(
+            lambda port: ConfigWebServer(
+                config_path=str(tmp_path / "config.toml"),
+                host="127.0.0.1",
+                port=port,
+                system_name="OpenFollow test",
+                marker_catalog_provider=lambda: catalog,
+                marker_rename_handler=app._apply_catalog_names,
+            )
+        ) as (_server, base):
+            status, _ = _request(
+                base, "/api/markers/catalog/1", method="PUT", body={"name": "Spot", "color": "#ff0000"}
+            )
+        assert status == 200
+        assert psn.get_marker(1).name == "Spot"
+
     def test_a_rename_that_failed_to_save_is_not(self, live_server_with_outputs, monkeypatch) -> None:
         from openfollow.web import routes as routes_module
 

@@ -90,6 +90,9 @@ class _FakePsnServer:
     def get_marker(self, marker_id: int) -> _FakeMarker | None:
         return self._markers.get(marker_id)
 
+    def update_marker_name(self, marker_id: int, name: str) -> bool:  # noqa: ARG002
+        return marker_id in self._markers
+
     def start(self) -> None:
         self.start_called = True
 
@@ -482,6 +485,27 @@ class TestInitMarkers:
         assert services._app._selected_id == 2
         # A start chooses; it moves nothing off a parked marker, so a following pin is not held back.
         assert getattr(services._app, "_pin_waits_for_selection", False) is False
+
+    def test_a_rename_saved_during_startup_reaches_its_output(self, services: AppRuntimeServices) -> None:
+        """The web server is up before the markers: a rename saved mid-loop finds no marker yet."""
+        from openfollow.marker_catalog import MarkerCatalog
+        from openfollow.psn.server import PsnServer
+
+        services._app._config = replace(services._app._config, controlled_marker_ids=[1, 2])
+        services._app._marker_catalog = catalog = MarkerCatalog()
+        catalog.upsert(1, "Lead", "#ff0000")
+        server = PsnServer(mcast_ip=None)
+        real_add = server.add_marker
+
+        def _add_then_rename(marker_id, name):  # noqa: ANN001
+            marker = real_add(marker_id, name)
+            catalog.upsert(1, "Spot", "#ff0000")
+            return marker
+
+        server.add_marker = _add_then_rename  # type: ignore[method-assign]
+        services._app._server = server
+        services.init_markers()
+        assert [server.get_marker(i).name for i in (1, 2)] == ["Spot", "Marker 2"]
 
     def test_empty_controlled_list_leaves_selected_id_none(self, services: AppRuntimeServices) -> None:
         cfg = replace(services._app._config, controlled_marker_ids=[])

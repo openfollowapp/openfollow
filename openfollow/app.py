@@ -23,13 +23,13 @@ from typing import TYPE_CHECKING, Any
 from openfollow.config_restore import recover_interrupted_restore
 from openfollow.configuration import (
     AppConfig,
-    _marker_name_for_runtime,
     bootstrap_config_if_missing,
     config_write_lock,
     load_config,
     load_config_for_save,
     network_mode_unsaved,
     parked_within,
+    refresh_marker_names,
     restore_empty_config,
     save_config,
 )
@@ -822,13 +822,10 @@ class OpenFollowApp:
 
         OTP and RTTrPM share PsnServer's Marker objects, so one rename reaches all three.
         """
-        server = self._server
-        if server is None:
-            return
         controlled = set(self._controlled_ids)
-        for marker_id in marker_ids:
-            if marker_id in controlled and self._marker_catalog.get(marker_id) is not None:
-                server.update_marker_name(marker_id, _marker_name_for_runtime(self, marker_id))
+        refresh_marker_names(
+            self, [i for i in marker_ids if i in controlled and self._marker_catalog.get(i) is not None]
+        )
 
     def _prune_selection_ids(self, ids: list[int]) -> None:
         """Drop ids from persisted selection (on-disk config for race-free hot-reload)."""

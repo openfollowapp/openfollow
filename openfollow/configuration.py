@@ -3901,19 +3901,27 @@ def _apply_with_fallback(
     return True
 
 
-def _marker_name_for_runtime(app: OpenFollowApp, marker_id: int) -> str:
-    """Pick a name for ``add_marker`` from the catalog, with a fallback.
-
-    Mirrors :func:`openfollow.services.init_markers`. Kept here so the
-    live-reload diff path doesn't need to import services to format
-    the label.
-    """
+def marker_name_for_runtime(app: OpenFollowApp, marker_id: int) -> str:
+    """The name a marker carries in the outputs: its catalog name, else ``Marker <id>``."""
     catalog = getattr(app, "_marker_catalog", None)
     if catalog is not None:
         entry = catalog.get(marker_id)
         if entry is not None and entry.name:
             return str(entry.name)
     return f"Marker {marker_id}"
+
+
+def refresh_marker_names(app: OpenFollowApp, marker_ids: Iterable[int]) -> None:
+    """Rename the registered markers in *marker_ids* to the name the catalog gives them now.
+
+    A rename saved while a marker was being added finds no marker to update, so
+    every path that adds markers ends with this.
+    """
+    server = app._server
+    if server is None:
+        return
+    for marker_id in marker_ids:
+        server.update_marker_name(marker_id, marker_name_for_runtime(app, marker_id))
 
 
 def _video_config_changed(old_config: AppConfig, new_config: AppConfig) -> bool:
@@ -4258,9 +4266,6 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
             new_ids = set(filtered_controlled)
             to_remove = sorted(old_ids - new_ids)
             to_add = sorted(new_ids - old_ids)
-            # Capture old names up front so a rollback re-registers removed
-            # markers with their original label.
-            old_names = {marker_id: _marker_name_for_runtime(app, marker_id) for marker_id in to_remove}
             # Seed the same default position startup registration uses: an
             # unseeded marker broadcasts (0, 0, 0) and, having never taken a
             # data write, reports itself invalid on the PSN wire.
@@ -4271,7 +4276,7 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
                 for marker_id in to_remove:
                     server.remove_marker(marker_id)
                 for marker_id in to_add:
-                    server.add_marker(marker_id, _marker_name_for_runtime(app, marker_id)).set_pos(*default_pos)
+                    server.add_marker(marker_id, marker_name_for_runtime(app, marker_id)).set_pos(*default_pos)
 
                 # Mirror marker changes to OTP output if active
                 if app._otp_server is not None:
@@ -4309,6 +4314,7 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
                     app._selected_id = next((m for m in app._controlled_ids if not is_parked(app, m)), None)
                 receiver.set_ignore_ids(new_ids)
                 app._config.controlled_marker_ids = filtered_controlled
+                refresh_marker_names(app, to_add)
 
             def _restore_controlled() -> None:
                 # Reconcile the server back to old_ids so a partial apply
@@ -4319,7 +4325,8 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
                 for marker_id in to_add:
                     server.remove_marker(marker_id)
                 for marker_id in to_remove:
-                    server.add_marker(marker_id, old_names[marker_id]).set_pos(*default_pos)
+                    server.add_marker(marker_id, marker_name_for_runtime(app, marker_id)).set_pos(*default_pos)
+                refresh_marker_names(app, to_remove)
 
             _apply("controlled_marker_ids", _apply_controlled, on_failure=_restore_controlled)
         else:

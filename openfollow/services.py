@@ -33,7 +33,9 @@ from openfollow.configuration import (
     effective_lens,
     feature_gated,
     is_simple_mode,
+    marker_name_for_runtime,
     parked_within,
+    refresh_marker_names,
     viewed_with_controlled,
 )
 from openfollow.input import InputManager
@@ -1785,12 +1787,10 @@ class AppRuntimeServices:
         # strict checker instead of guarding every loop.
         server = self._app._server
         assert server is not None, "init_psn must run before init_markers"
-        catalog = getattr(self._app, "_marker_catalog", None)
         for marker_id in self._app._controlled_ids:
-            entry = catalog.get(marker_id) if catalog is not None else None
-            name = entry.name if (entry is not None and entry.name) else f"Marker {marker_id}"
-            marker = server.add_marker(marker_id, name)
-            marker.set_pos(*default_pos)
+            server.add_marker(marker_id, marker_name_for_runtime(self._app, marker_id)).set_pos(*default_pos)
+        # The web server is already up, so a rename may have landed mid-loop.
+        refresh_marker_names(self._app, self._app._controlled_ids)
         # No selection yet, so the first unparked marker is chosen as a start, not as a park moving it.
         self._app._selected_id = None
         parked = parked_within(self._app._controlled_ids, self._app._config.parked_marker_ids)

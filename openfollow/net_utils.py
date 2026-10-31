@@ -159,6 +159,11 @@ def list_iface_ipv4() -> list[tuple[str, str]]:
     return out
 
 
+def offered_loopback_ifaces() -> list[tuple[str, str]]:
+    """The offered loopback as ``(name, address)``, for pickers built from a backend that never lists it."""
+    return [(name, address) for name, address in list_iface_ipv4() if offered_loopback(name)]
+
+
 def resolve_source_ip(
     iface: str,
     *,

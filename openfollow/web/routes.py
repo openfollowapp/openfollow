@@ -1402,8 +1402,9 @@ class _PanelNames:
 def _iface_who(name: str, labels: Mapping[str, str]) -> str:
     """How a picker names an interface: its label, else the name and which adapter it is."""
     from openfollow.net_adapters import describe, display_name
+    from openfollow.net_utils import offered_loopback
 
-    if name in labels:
+    if name in labels or offered_loopback(name):
         return display_name(name, labels)
     where = describe(name).where(labels)
     return f"{name} · {where}" if where else name
@@ -6714,14 +6715,14 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         Returns the interface the station resolves to. ``station_names`` names each as the UI shows it.
         """
         from openfollow.net_adapters import display_name
-        from openfollow.net_utils import auto_station_iface, list_iface_ipv4, offered_loopback
+        from openfollow.net_utils import auto_station_iface, offered_loopback_ifaces
 
         auto = auto_station_iface()
         net["station_iface"] = station
         net["station_auto"] = auto
         net["station_options"] = [(name, addr) for name, addr in options if name and name not in LOOPBACK_NAMES]
         # The network backend never lists loopback; where the host offers it, it is offered here too.
-        net["station_options"] += [(name, addr) for name, addr in list_iface_ipv4() if offered_loopback(name)]
+        net["station_options"] += offered_loopback_ifaces()
         if station and station not in [name for name, _addr in net["station_options"]]:
             net["station_options"].append((station, ""))
         named = {station, auto, *(name for name, _addr in net["station_options"])}
@@ -6731,12 +6732,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def _narrow_to_station(net: dict[str, Any], station: str, vlan_names: set[str], labels: Mapping[str, str]) -> None:
         """Simple: the card shows the station interface alone, and offers the picker that moves it."""
         from openfollow.net_adapters import display_name
+        from openfollow.net_utils import offered_loopback
 
         rows = net["iface_rows"]
         options = [(str(row.get("name", "")), str(row.get("address", ""))) for row in rows]
         resolved = _station_picker(net, station, options, labels)
         # Automatic with no address anywhere shows the first interface, as the Operator Screen edits it.
-        resolved = resolved or next((name for name, _addr in net["station_options"]), "")
+        resolved = resolved or next((name for name, _addr in net["station_options"] if not offered_loopback(name)), "")
         if resolved and resolved not in [name for name, _addr in options]:
             from openfollow.net_utils import get_iface_ipv4
 

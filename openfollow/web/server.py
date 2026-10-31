@@ -30,7 +30,7 @@ from bottle import TEMPLATE_PATH, Bottle, HTTPError
 
 import openfollow
 from openfollow import net_utils
-from openfollow.net_utils import get_local_ipv4_addresses, get_primary_local_ipv4
+from openfollow.net_utils import get_local_ipv4_addresses, get_primary_local_ipv4, offered_loopback
 from openfollow.services import WebCommandQueue
 from openfollow.web.discovery import BeaconReceiver, BeaconSender, PeerInfo
 from openfollow.web.pushed_settings import PushedSettings
@@ -595,8 +595,9 @@ class ConfigWebServer:
         self._loopback_http_server: Any = None
 
         # Peer discovery
-        beacon_iface_ip = station_ip if station_ip != "127.0.0.1" else ""
         beacon_iface = self._station_iface()
+        # 127.0.0.1 is "could not resolve", unless the station is pinned to an offered loopback.
+        beacon_iface_ip = station_ip if station_ip != "127.0.0.1" or offered_loopback(beacon_iface) else ""
         self._beacon_sender = BeaconSender(
             name=system_name,
             web_port=port,
@@ -949,9 +950,9 @@ class ConfigWebServer:
                 self._beacon_sender.update_iface_ip(None)
                 self._beacon_receiver.update_iface_ip(None)
             return True
-        if not candidate or candidate.startswith("127."):
-            return False
         iface = self._station_iface()
+        if not candidate or (candidate.startswith("127.") and not offered_loopback(iface)):
+            return False
         with self._local_ip_lock:
             self._station_interface_down = False
             if (

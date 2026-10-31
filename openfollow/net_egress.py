@@ -17,7 +17,13 @@ import socket
 import sys
 from dataclasses import dataclass
 
-from openfollow.net_utils import InterfaceUnavailable, get_iface_ipv4, offered_loopback, plane_source_iface
+from openfollow.net_utils import (
+    InterfaceUnavailable,
+    get_iface_ipv4,
+    get_local_ipv4_addresses,
+    offered_loopback,
+    plane_source_iface,
+)
 
 # <asm-generic/socket.h>. typeshed declares socket.SO_BINDTODEVICE on Linux only,
 # and macOS Python exports one that is not the option used there.
@@ -49,14 +55,17 @@ class Egress:
 
 
 def strands(iface: str, host: str) -> Egress | None:
-    """A down egress when *iface* is an offered loopback and *host* is off this machine, else None.
+    """A down egress when *iface* is an offered loopback and unicast *host* is off this machine, else None.
 
     Loopback cannot carry a unicast send to another machine: the sender stays silent
     rather than leave on another interface.
     """
-    if host and offered_loopback(iface) and not is_loopback_host(host):
-        return Egress(iface, "", refused=LOOPBACK_ONLY)
-    return None
+    if not host or not offered_loopback(iface) or is_loopback_host(host) or is_multicast_host(host):
+        return None
+    # A send to this machine's own address never leaves it either.
+    if host.strip() in get_local_ipv4_addresses():
+        return None
+    return Egress(iface, "", refused=LOOPBACK_ONLY)
 
 
 def resolve_egress(pin: str, station_iface: str = "") -> Egress | None:

@@ -127,3 +127,12 @@ def test_an_osc_destination_on_loopback_reaches_only_this_mac(
     dest = OscDestinationConfig(host=host, source_iface="lo0")
     table.restage("", [dest])
     assert table.for_destination(dest) == expected
+
+
+@pytest.mark.parametrize("host", ["239.0.0.1", "192.0.2.10"], ids=["multicast", "this-macs-own-address"])
+def test_multicast_and_this_macs_own_address_stay_on_this_mac(monkeypatch: pytest.MonkeyPatch, host: str) -> None:
+    import openfollow.net_egress as net_egress
+
+    monkeypatch.setattr(net_utils, "LOOPBACK_OFFERED", True)
+    monkeypatch.setattr(net_egress, "get_local_ipv4_addresses", lambda: {"127.0.0.1", "192.0.2.10"})
+    assert strands("lo0", host) is None

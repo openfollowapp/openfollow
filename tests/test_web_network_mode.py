@@ -654,3 +654,20 @@ def test_a_simple_station_is_offered_loopback_on_a_mac_only(net_server, tmp_path
     option = '<option value="lo0" data-name="Loopback (lo0)">Loopback (lo0) – 127.0.0.1</option>'
     assert (option in body) is offered
     assert ('value="lo0"' in body) is offered
+
+
+def test_automatic_with_no_address_anywhere_never_shows_loopback(net_server, tmp_path, monkeypatch) -> None:  # noqa: F811
+    """Automatic never picks loopback, not even as the first interface to show."""
+    monkeypatch.setattr(net_utils_module, "LOOPBACK_OFFERED", True)
+    monkeypatch.setattr(
+        net_utils_module.psutil,
+        "net_if_addrs",
+        lambda: {"lo0": [SimpleNamespace(family=socket.AF_INET, address="127.0.0.1")]},
+    )
+    monkeypatch.setattr(net_utils_module, "auto_station_iface", lambda: "")
+    _fake, base = net_server
+    _set(tmp_path, network_mode="simple")
+    _status, body = _get(base, "/section/network/status")
+    assert "Loopback (lo0)&#x27;s addressing is not managed here." not in body
+    assert "Loopback (lo0)'s addressing is not managed here." not in body
+    assert 'data-adv-key="net-iface-eth0"' in body

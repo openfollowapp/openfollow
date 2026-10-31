@@ -383,3 +383,11 @@ def test_the_panel_says_a_destination_off_this_mac_cannot_go_through_loopback(
     psn_row = body[body.index("PSN in / out") :].split("</tr>", 1)[0]
     assert "127.0.0.1" in psn_row
     assert "stat-chip off" not in psn_row
+
+
+def test_the_advanced_picker_names_loopback_on_a_mac(net_server, tmp_path, monkeypatch) -> None:  # noqa: F811
+    monkeypatch.setattr(net_utils_module, "LOOPBACK_OFFERED", True)
+    _ifaces(monkeypatch, {"eth0": "192.0.2.10", "lo0": "127.0.0.1"})
+    _fake, base = net_server
+    _status, body = _get(base, "/network/interfaces/by_name?current=")
+    assert '<option value="lo0" >Loopback (lo0) – 127.0.0.1</option>' in body

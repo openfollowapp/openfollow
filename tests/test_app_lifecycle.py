@@ -426,6 +426,32 @@ class TestRun:
         assert any(r.levelname == "WARNING" and "loopback" in r.message for r in caplog.records)
         assert not any("Network ready" in r.message for r in caplog.records)
 
+    @pytest.mark.parametrize(
+        ("lo0_address", "warned"), [("127.0.0.1", False), ("", True)], ids=["resolved", "no-address"]
+    )
+    def test_a_station_on_loopback_is_ready_only_when_lo0_resolves(
+        self,
+        patched_ctor,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog,  # noqa: ANN001
+        lo0_address: str,
+        warned: bool,
+    ) -> None:
+        """On a Mac, 127.0.0.1 from a lo0 pin is the station's address, not the wait's timeout fallback."""
+        from dataclasses import replace
+
+        from openfollow import net_utils
+
+        monkeypatch.setattr(net_utils, "LOOPBACK_OFFERED", True)
+        monkeypatch.setattr(net_utils, "get_iface_ipv4", lambda name: lo0_address if name == "lo0" else "")
+        monkeypatch.setattr(net_utils, "wait_for_source_ip", lambda **kw: "127.0.0.1")
+        app = OpenFollowApp(config_path=patched_ctor.cfg_path)
+        app._config = replace(app._config, psn_source_iface="lo0")
+        with caplog.at_level("INFO"):
+            app.run()
+        assert any(r.levelname == "WARNING" and "usable network address" in r.message for r in caplog.records) is warned
+        assert any("Network ready" in r.message for r in caplog.records) is not warned
+
     def test_uses_short_bounded_ip_wait(
         self,
         patched_ctor,
@@ -486,6 +512,29 @@ class TestRun:
         app.run()
         assert len(banners) == 1
         assert "ghost0" in banners[0]
+
+    def test_a_mac_with_one_nic_is_not_made_ambiguous_by_loopback(
+        self,
+        patched_ctor,
+        monkeypatch: pytest.MonkeyPatch,  # noqa: ANN001
+    ) -> None:
+        app = OpenFollowApp(config_path=patched_ctor.cfg_path)
+        from dataclasses import replace
+
+        app._config = replace(app._config, psn_source_iface="ghost0")
+
+        from openfollow import net_utils
+
+        monkeypatch.setattr(net_utils, "LOOPBACK_OFFERED", True)
+        monkeypatch.setattr(net_utils, "get_local_ipv4_addresses", lambda: {"127.0.0.1", "10.0.0.1"})
+        monkeypatch.setattr(net_utils, "list_iface_ipv4", lambda: [("en0", "10.0.0.1"), ("lo0", "127.0.0.1")])
+        monkeypatch.setattr(net_utils, "get_primary_local_ipv4", lambda default="": "10.0.0.1")
+        banners: list[str] = []
+        monkeypatch.setattr(
+            app_module, "runtime_enter_settings_menu", lambda a, *, banner="", action="": banners.append(banner)
+        )
+        app.run()
+        assert banners == []
 
     def test_stale_pin_with_single_nic_proceeds_silently(
         self,

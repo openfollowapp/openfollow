@@ -90,9 +90,6 @@ class _FakePsnServer:
     def get_marker(self, marker_id: int) -> _FakeMarker | None:
         return self._markers.get(marker_id)
 
-    def update_marker_name(self, marker_id: int, name: str) -> bool:  # noqa: ARG002
-        return marker_id in self._markers
-
     def start(self) -> None:
         self.start_called = True
 
@@ -488,18 +485,21 @@ class TestInitMarkers:
 
     def test_a_rename_saved_during_startup_reaches_its_output(self, services: AppRuntimeServices) -> None:
         """The web server is up before the markers: a rename saved mid-loop finds no marker yet."""
+        from openfollow.configuration import marker_name_for_runtime
         from openfollow.marker_catalog import MarkerCatalog
         from openfollow.psn.server import PsnServer
 
         services._app._config = replace(services._app._config, controlled_marker_ids=[1, 2])
         services._app._marker_catalog = catalog = MarkerCatalog()
         catalog.upsert(1, "Lead", "#ff0000")
-        server = PsnServer(mcast_ip=None)
+        server = PsnServer(mcast_ip=None, name_of=lambda i: marker_name_for_runtime(services._app, i))
         real_add = server.add_marker
 
         def _add_then_rename(marker_id, name):  # noqa: ANN001
             marker = real_add(marker_id, name)
+            # What the rename route does once its save landed: the catalog, then the outputs.
             catalog.upsert(1, "Spot", "#ff0000")
+            server.rename_markers([1])
             return marker
 
         server.add_marker = _add_then_rename  # type: ignore[method-assign]

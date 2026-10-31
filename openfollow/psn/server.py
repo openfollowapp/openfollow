@@ -14,7 +14,7 @@ import errno
 import logging
 import socket
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import TypeVar
 
 import multicast_expert
@@ -76,8 +76,11 @@ class PsnServer:
         data_fps: float = 60.0,
         info_fps: float = 1.0,
         clock: Callable[[], int] = psn_timestamp_usec,
+        name_of: Callable[[int], str] | None = None,
     ) -> None:
         self._system_name = system_name
+        # Where a marker's name comes from, read under ``_lock`` on every add and rename.
+        self._name_of = name_of
         self._target_ip = target_ip
         self._port = port
         self._mcast_ip = mcast_ip
@@ -106,20 +109,25 @@ class PsnServer:
         self._oversize_drops: int = 0
 
     def add_marker(self, marker_id: int, name: str) -> Marker:
-        """Register new marker (marker_id must be >= 1)."""
-        marker = Marker(marker_id, name, clock=self._clock)
+        """Register new marker (marker_id must be >= 1), named by ``name_of`` when the server has one.
+
+        The name is read under the lock :meth:`rename_markers` takes, so whichever of an add
+        and a concurrent rename runs second sees the newest name.
+        """
         with self._lock:
+            marker = Marker(marker_id, self._name_of(marker_id) if self._name_of else name, clock=self._clock)
             self._markers[marker_id] = marker
         return marker
 
-    def update_marker_name(self, marker_id: int, name: str) -> bool:
-        """Rename marker under single lock to prevent dict-level races."""
+    def rename_markers(self, marker_ids: Iterable[int]) -> None:
+        """Rename the registered markers among *marker_ids* to the name ``name_of`` gives them now."""
+        if self._name_of is None:
+            return
         with self._lock:
-            marker = self._markers.get(marker_id)
-            if marker is None:
-                return False
-            marker.set_name(name)
-            return True
+            for marker_id in marker_ids:
+                marker = self._markers.get(marker_id)
+                if marker is not None:
+                    marker.set_name(self._name_of(marker_id))
 
     def remove_marker(self, marker_id: int) -> None:
         """Remove a marker by ID (no-op if absent)."""

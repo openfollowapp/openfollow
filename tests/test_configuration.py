@@ -179,9 +179,6 @@ class _DummyPsnServer:
         self.markers[marker_id] = marker
         return marker
 
-    def update_marker_name(self, marker_id: int, _name: str) -> bool:
-        return marker_id in self.markers
-
     def remove_marker(self, marker_id: int) -> None:
         self.markers.pop(marker_id, None)
 
@@ -10090,12 +10087,13 @@ def test_a_stored_calibration_points_feature_is_dropped_as_unknown(temp_config_p
 
 def _app_on_a_real_psn_server(controlled: list[int]) -> _DummyApp:
     """A live-apply app whose outputs are a real PsnServer reading a real catalog."""
+    from openfollow.configuration import marker_name_for_runtime
     from openfollow.marker_catalog import MarkerCatalog
     from openfollow.psn.server import PsnServer
 
     app = _app_with(controlled_marker_ids=controlled, viewer_marker_ids=controlled)
-    app._server = PsnServer(mcast_ip=None)
     app._marker_catalog = MarkerCatalog()
+    app._server = PsnServer(mcast_ip=None, name_of=lambda i: marker_name_for_runtime(app, i))
     for marker_id in controlled:
         app._server.add_marker(marker_id, f"Marker {marker_id}")
     return app
@@ -10110,7 +10108,9 @@ def test_a_rename_saved_while_a_marker_is_added_reaches_its_output() -> None:
 
     def _add_then_rename(marker_id, name):  # noqa: ANN001
         marker = real_add(marker_id, name)
+        # What the rename route does once its save landed: the catalog, then the outputs.
         app._marker_catalog.upsert(marker_id, "Spot", "#ff0000")
+        app._server.rename_markers([marker_id])
         return marker
 
     app._server.add_marker = _add_then_rename  # type: ignore[method-assign]
@@ -10134,9 +10134,26 @@ def test_a_rolled_back_marker_returns_under_its_current_catalog_name() -> None:
     assert app._server.get_marker(2).name == "Renamed meanwhile"
 
 
-def test_refresh_marker_names_skips_a_station_without_outputs() -> None:
-    from openfollow.configuration import refresh_marker_names
+def test_a_rolled_back_marker_is_sent_by_otp_and_rttrpm_too() -> None:
+    """The rollback re-adds fresh Marker objects; the mirrors must hold those, or renames miss them."""
+    from openfollow.otp.server import OtpServer
+    from openfollow.rttrpm.server import RttrpmServer
 
-    app = _app_with(controlled_marker_ids=[1])
-    app._server = None
-    refresh_marker_names(app, [1])
+    app = _app_on_a_real_psn_server([1, 2])
+    app._otp_server = OtpServer()
+    app._rttrpm_server = RttrpmServer(host="192.0.2.30")
+    for marker_id in (1, 2):
+        app._otp_server.register_marker(app._server.get_marker(marker_id))
+        app._rttrpm_server.register_marker(app._server.get_marker(marker_id))
+    real_add = app._server.add_marker
+
+    def _failing_add(marker_id, name):  # noqa: ANN001
+        if marker_id == 3:
+            raise RuntimeError("PSN add failed")
+        return real_add(marker_id, name)
+
+    app._server.add_marker = _failing_add  # type: ignore[method-assign]
+    assert apply_runtime_config_changes(app, AppConfig(controlled_marker_ids=[1, 3], viewer_marker_ids=[1, 3])) is False
+    for mirror in (app._otp_server, app._rttrpm_server):
+        assert mirror.get_marker(2) is app._server.get_marker(2)
+        assert mirror.get_marker(3) is None

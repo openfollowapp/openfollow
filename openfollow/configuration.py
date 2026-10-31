@@ -3911,19 +3911,6 @@ def marker_name_for_runtime(app: OpenFollowApp, marker_id: int) -> str:
     return f"Marker {marker_id}"
 
 
-def refresh_marker_names(app: OpenFollowApp, marker_ids: Iterable[int]) -> None:
-    """Rename the registered markers in *marker_ids* to the name the catalog gives them now.
-
-    A rename saved while a marker was being added finds no marker to update, so
-    every path that adds markers ends with this.
-    """
-    server = app._server
-    if server is None:
-        return
-    for marker_id in marker_ids:
-        server.update_marker_name(marker_id, marker_name_for_runtime(app, marker_id))
-
-
 def _video_config_changed(old_config: AppConfig, new_config: AppConfig) -> bool:
     """Whether the video input must be rebuilt: plugin-driven via the active
     source's ``config_changed(old, new)``, which covers ``video_source_type``,
@@ -4314,7 +4301,6 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
                     app._selected_id = next((m for m in app._controlled_ids if not is_parked(app, m)), None)
                 receiver.set_ignore_ids(new_ids)
                 app._config.controlled_marker_ids = filtered_controlled
-                refresh_marker_names(app, to_add)
 
             def _restore_controlled() -> None:
                 # Reconcile the server back to old_ids so a partial apply
@@ -4326,7 +4312,16 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
                     server.remove_marker(marker_id)
                 for marker_id in to_remove:
                     server.add_marker(marker_id, marker_name_for_runtime(app, marker_id)).set_pos(*default_pos)
-                refresh_marker_names(app, to_remove)
+                # The re-added markers are new objects; OTP and RTTrPM must send these, not the ones they held.
+                for mirror in (app._otp_server, app._rttrpm_server):
+                    if mirror is None:
+                        continue
+                    for marker_id in to_add:
+                        mirror.unregister_marker(marker_id)
+                    for marker_id in to_remove:
+                        marker = server.get_marker(marker_id)
+                        if marker is not None:
+                            mirror.register_marker(marker)
 
             _apply("controlled_marker_ids", _apply_controlled, on_failure=_restore_controlled)
         else:

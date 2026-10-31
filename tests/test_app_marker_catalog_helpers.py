@@ -394,25 +394,25 @@ class TestInitMarkerCatalogSyncOnChange:
         renames: list = []
 
         class FakeServer:
-            def update_marker_name(self, mid, name):
-                renames.append((mid, name))
+            def rename_markers(self, ids):
+                renames.extend(ids)
 
         fake = self._build_fake(tmp_path, server=FakeServer(), controlled=[1])
         captured = self._capture_on_change(fake, monkeypatch)
         captured["on_change"]([1])
-        assert renames == [(1, "Renamed")]
+        assert renames == [1]
 
-    def test_on_change_skips_uncontrolled_markers(self, tmp_path, monkeypatch) -> None:
+    def test_on_change_leaves_which_markers_it_holds_to_the_server(self, tmp_path, monkeypatch) -> None:
         renames: list = []
 
         class FakeServer:
-            def update_marker_name(self, mid, name):
-                renames.append((mid, name))
+            def rename_markers(self, ids):
+                renames.extend(ids)
 
         fake = self._build_fake(tmp_path, server=FakeServer(), controlled=[1])
         captured = self._capture_on_change(fake, monkeypatch)
-        captured["on_change"]([2])  # 2 not in controlled_ids
-        assert renames == []
+        captured["on_change"]([2])  # not controlled: the server holds no marker 2 and ignores it
+        assert renames == [2]
 
     def test_on_change_skips_when_server_is_none(self, tmp_path, monkeypatch) -> None:
         fake = self._build_fake(tmp_path, server=None)
@@ -428,8 +428,8 @@ class TestInitMarkerCatalogSyncOnChange:
         renames: list = []
 
         class FakeServer:
-            def update_marker_name(self, mid, name):
-                renames.append((mid, name))
+            def rename_markers(self, ids):
+                renames.extend(ids)
 
         fake = self._build_fake(tmp_path, server=FakeServer(), controlled=[5, 6])
         # Make 5 a tombstone (entry comes back as None from .get) and 6
@@ -439,8 +439,8 @@ class TestInitMarkerCatalogSyncOnChange:
         fake._marker_catalog.upsert(6, "", "#ff00ff", updated_at=1.0)
         captured = self._capture_on_change(fake, monkeypatch)
         captured["on_change"]([5, 6])
-        # The tombstone is left to the prune; an empty name falls back as at startup.
-        assert renames == [(6, "Marker 6")]
+        # The tombstone is left to the prune; the server names marker 6 as at startup.
+        assert renames == [6]
 
     def test_on_change_prunes_selection_when_peer_deletes(
         self,
@@ -454,7 +454,7 @@ class TestInitMarkerCatalogSyncOnChange:
         from openfollow.configuration import load_config, save_config
 
         class FakeServer:
-            def update_marker_name(self, mid, name):
+            def rename_markers(self, ids):
                 pass
 
         fake = self._build_fake(tmp_path, server=FakeServer(), controlled=[1, 2])
@@ -484,7 +484,7 @@ class TestInitMarkerCatalogSyncOnChange:
         from openfollow.configuration import save_config
 
         class FakeServer:
-            def update_marker_name(self, mid, name):
+            def rename_markers(self, ids):
                 pass
 
         fake = self._build_fake(tmp_path, server=FakeServer(), controlled=[1])
@@ -512,8 +512,8 @@ class TestInitMarkerCatalogSyncOnChange:
     ) -> None:
 
         class FakeServer:
-            def update_marker_name(self, mid, name):
-                raise AssertionError("must not rename an unknown id")
+            def rename_markers(self, ids):
+                assert not ids, "must not rename an unknown id"
 
         fake = self._build_fake(tmp_path, server=FakeServer(), controlled=[1])
         saves: list = []
@@ -531,7 +531,7 @@ class TestInitMarkerCatalogSyncOnChange:
         monkeypatch,
     ) -> None:
         class FakeServer:
-            def update_marker_name(self, mid, name):
+            def rename_markers(self, ids):
                 pass
 
         fake = self._build_fake(tmp_path, server=FakeServer(), controlled=[1])
@@ -770,7 +770,7 @@ def test_a_peer_change_after_a_restore_is_logged_as_the_restart(tmp_path, monkey
     from openfollow import restore_hold
 
     helper = TestInitMarkerCatalogSyncOnChange()
-    fake = helper._build_fake(tmp_path, server=types.SimpleNamespace(update_marker_name=lambda *_: None))
+    fake = helper._build_fake(tmp_path, server=types.SimpleNamespace(rename_markers=lambda *_: None))
     captured = helper._capture_on_change(fake, monkeypatch)
     (tmp_path / "markers.toml").write_text("[[marker]]\nid = 4\n", encoding="utf-8")
     restore_hold.hold(tmp_path / "markers.toml")
@@ -788,7 +788,7 @@ def test_a_peer_delete_after_a_restore_is_logged_as_the_restart(tmp_path, monkey
     from openfollow.configuration import save_config
 
     helper = TestInitMarkerCatalogSyncOnChange()
-    fake = helper._build_fake(tmp_path, server=types.SimpleNamespace(update_marker_name=lambda *_: None))
+    fake = helper._build_fake(tmp_path, server=types.SimpleNamespace(rename_markers=lambda *_: None))
     save_config(fake._config, fake._config_path)
     before = Path(fake._config_path).read_bytes()
     fake._marker_catalog.delete(2)
@@ -806,31 +806,38 @@ def test_a_peer_delete_after_a_restore_is_logged_as_the_restart(tmp_path, monkey
 class TestApplyCatalogNames:
     """A catalog rename reaches the running outputs under the name a restart would give."""
 
-    def _fake(self, *, server, controlled):
+    def _station(self, controlled):
+        from openfollow.configuration import marker_name_for_runtime
+        from openfollow.psn.server import PsnServer
+
         catalog = MarkerCatalog()
         catalog.upsert(1, "Lead", "#ff0000")
         catalog.upsert(2, "", "#00ff00")
         catalog.upsert(3, "Gone", "#0000ff")
         catalog.delete(3)
-        fake = types.SimpleNamespace(_server=server, _controlled_ids=controlled, _marker_catalog=catalog)
+        fake = types.SimpleNamespace(_controlled_ids=controlled, _marker_catalog=catalog)
+        fake._server = PsnServer(mcast_ip=None, name_of=lambda i: marker_name_for_runtime(fake, i))
+        for marker_id in controlled:
+            fake._server.add_marker(marker_id, "ignored")
+        for marker in fake._server._markers.values():
+            marker.set_name("Old")
         _bind(fake, "_apply_catalog_names")
         return fake
 
-    def test_controlled_markers_take_the_catalog_name(self) -> None:
-        from openfollow.psn.server import PsnServer
+    def test_held_markers_take_the_catalog_name_and_a_tombstone_keeps_its_own(self) -> None:
+        fake = self._station([1, 2, 3])
+        fake._apply_catalog_names([1, 2, 3, 4])
+        assert [fake._server.get_marker(i).name for i in (1, 2, 3)] == ["Lead", "Marker 2", "Old"]
+        assert fake._server.get_marker(4) is None
 
-        server = PsnServer(mcast_ip=None)
-        server.add_marker(1, "Old")
-        server.add_marker(2, "Old")
-        server.add_marker(3, "Old")
-        self._fake(server=server, controlled=[1, 2, 3])._apply_catalog_names([1, 2, 3, 4])
-        assert [server.get_marker(i).name for i in (1, 2, 3)] == ["Lead", "Marker 2", "Old"]
-
-    def test_an_uncontrolled_marker_is_left_alone(self) -> None:
-        renames: list = []
-        server = types.SimpleNamespace(update_marker_name=lambda mid, name: renames.append((mid, name)))
-        self._fake(server=server, controlled=[2])._apply_catalog_names([1])
-        assert renames == []
+    def test_a_marker_still_being_added_is_renamed_too(self) -> None:
+        """A live selection change adds the marker before it commits the controlled ids."""
+        fake = self._station([1])
+        fake._controlled_ids = []
+        fake._apply_catalog_names([1])
+        assert fake._server.get_marker(1).name == "Lead"
 
     def test_no_outputs_yet_is_a_no_op(self) -> None:
-        self._fake(server=None, controlled=[1])._apply_catalog_names([1])
+        fake = types.SimpleNamespace(_server=None, _controlled_ids=[1], _marker_catalog=MarkerCatalog())
+        _bind(fake, "_apply_catalog_names")
+        fake._apply_catalog_names([1])

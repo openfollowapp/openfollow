@@ -29,7 +29,6 @@ from openfollow.configuration import (
     load_config_for_save,
     network_mode_unsaved,
     parked_within,
-    refresh_marker_names,
     restore_empty_config,
     save_config,
 )
@@ -822,10 +821,11 @@ class OpenFollowApp:
 
         OTP and RTTrPM share PsnServer's Marker objects, so one rename reaches all three.
         """
-        controlled = set(self._controlled_ids)
-        refresh_marker_names(
-            self, [i for i in marker_ids if i in controlled and self._marker_catalog.get(i) is not None]
-        )
+        server = self._server
+        if server is None:
+            return
+        # The server holds only controlled markers, including one still being added; a tombstone is left to the prune.
+        server.rename_markers([i for i in marker_ids if self._marker_catalog.get(i) is not None])
 
     def _prune_selection_ids(self, ids: list[int]) -> None:
         """Drop ids from persisted selection (on-disk config for race-free hot-reload)."""

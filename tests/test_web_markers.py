@@ -129,9 +129,11 @@ class TestRenameReachesTheOutputs:
             monkeypatch.setattr(cls, "stop", lambda self: None)
         catalog = MarkerCatalog()
         catalog.upsert(1, "Lead", "#ff0000")
-        psn = PsnServer(mcast_ip=None)
-        psn.add_marker(1, "Lead")
-        app = types.SimpleNamespace(_server=psn, _controlled_ids=[1], _marker_catalog=catalog)
+        from openfollow.configuration import marker_name_for_runtime
+
+        app = types.SimpleNamespace(_controlled_ids=[1], _marker_catalog=catalog)
+        psn = app._server = PsnServer(mcast_ip=None, name_of=lambda i: marker_name_for_runtime(app, i))
+        psn.add_marker(1, "ignored")
         app._apply_catalog_names = types.MethodType(OpenFollowApp._apply_catalog_names, app)
         with live_on_free_port(
             lambda port: ConfigWebServer(

@@ -35,7 +35,6 @@ from openfollow.configuration import (
     is_simple_mode,
     marker_name_for_runtime,
     parked_within,
-    refresh_marker_names,
     viewed_with_controlled,
 )
 from openfollow.input import InputManager
@@ -1720,6 +1719,7 @@ class AppRuntimeServices:
             mcast_ip=self._app._config.psn_mcast_ip,
             source_ip=source_ip or "",
             source_iface=self._app._config.psn_source_iface,
+            name_of=lambda marker_id: marker_name_for_runtime(self._app, marker_id),
         )
         if source_ip is None:
             # Down means silent, not absent. The server is built but never
@@ -1789,8 +1789,6 @@ class AppRuntimeServices:
         assert server is not None, "init_psn must run before init_markers"
         for marker_id in self._app._controlled_ids:
             server.add_marker(marker_id, marker_name_for_runtime(self._app, marker_id)).set_pos(*default_pos)
-        # The web server is already up, so a rename may have landed mid-loop.
-        refresh_marker_names(self._app, self._app._controlled_ids)
         # No selection yet, so the first unparked marker is chosen as a start, not as a park moving it.
         self._app._selected_id = None
         parked = parked_within(self._app._controlled_ids, self._app._config.parked_marker_ids)

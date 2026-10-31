@@ -1992,12 +1992,16 @@ class TestWizardLensTemplateBubbles:
     def _src() -> str:
         return WIZARD_TEMPLATE.read_text(encoding="utf-8")
 
-    def test_the_bubble_buttons_never_move(self) -> None:
-        # The app's buttons lift on hover; a bubble's two buttons stay put in every state.
-        assert (
-            ".lens-bubble button, .lens-bubble button:hover, .lens-bubble button:active, .lens-bubble button:focus,"
-            " .lens-bubble button:focus-visible { transform: none !important; filter: none !important;"
-        ) in self._src()
+    def test_the_bubble_buttons_never_change_look(self) -> None:
+        # The app's buttons brighten on hover; a bubble's two buttons keep their look in every state.
+        rule = re.search(
+            r"\.lens-bubble button, \.lens-bubble button:hover, \.lens-bubble button:active,"
+            r" \.lens-bubble button:focus, \.lens-bubble button:focus-visible \{([^}]*)\}",
+            self._src(),
+        )
+        assert rule is not None
+        assert "filter: none !important" in rule.group(1)
+        assert "translate" not in rule.group(1)
 
     def test_the_hint_box_sits_above_the_picture(self) -> None:
         src = self._src()

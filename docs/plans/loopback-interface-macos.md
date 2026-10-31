@@ -48,18 +48,18 @@ as an interface on macOS, the way MA3 offers it.
 
 ## Tests
 
-- [ ] The rule on and off (tests pin it off, as Linux); `get_iface_ipv4` and
+- [x] The rule on and off (tests pin it off, as Linux); `get_iface_ipv4` and
       `list_iface_ipv4` with an injected interface table holding `lo0` with
       `127.0.0.1` and a driver alias, on both platforms.
-- [ ] Automatic resolution never picks loopback on a Mac.
-- [ ] `wait_for_source_ip` with a `lo0` pin returns at once, and startup logs
+- [x] Automatic resolution never picks loopback on a Mac.
+- [x] `wait_for_source_ip` with a `lo0` pin returns at once, and startup logs
       no warning.
-- [ ] The Simple mode pickers (web and Operator Screen) offer `lo0` on a Mac
+- [x] The Simple mode pickers (web and Operator Screen) offer `lo0` on a Mac
       only; the Advanced pickers list it.
-- [ ] A plane pinned to `lo0` resolves `127.0.0.1`; PSN and OTP open on `lo0`.
-- [ ] RTTrPM and an OSC destination on `lo0` with a LAN host are not sent and
+- [x] A plane pinned to `lo0` resolves `127.0.0.1`; PSN and OTP open on `lo0`.
+- [x] RTTrPM and an OSC destination on `lo0` with a LAN host are not sent and
       report the reason; with a loopback host they are sent.
-- [ ] Existing tests that assert loopback is excluded keep doing so off macOS.
+- [x] Existing tests that assert loopback is excluded keep doing so off macOS.
 
 ## Verification
 

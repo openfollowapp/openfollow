@@ -406,3 +406,19 @@ def test_the_web_ui_picker_never_offers_loopback(net_server, tmp_path, monkeypat
     assert 'value="lo0"' in body
     _status, panel = _get(base, "/section/interface_assignment")
     assert "blank=all&amp;loopback=0" in panel or "blank=all&loopback=0" in panel
+
+
+def test_a_switched_off_rttrpm_is_not_flagged_as_stranded(net_server, tmp_path, monkeypatch, every_feature_on) -> None:  # noqa: F811
+    monkeypatch.setattr(net_utils_module, "LOOPBACK_OFFERED", True)
+    _ifaces(monkeypatch, {"eth0": "192.0.2.10", "lo0": "127.0.0.1"})
+    path = str(tmp_path / "config.toml")
+    cfg = load_config(path)
+    cfg.network_mode = "advanced"
+    cfg.psn_source_iface = "lo0"
+    cfg.rttrpm_output.enabled = False
+    cfg.rttrpm_output.host = "192.0.2.50"
+    save_config(cfg, path)
+    _fake, base = net_server
+    _status, body = _get(base, "/section/interface_assignment")
+    rttrpm_row = body[body.index("RTTrPM output") :].split("</tr>", 1)[0]
+    assert "Loopback reaches only this Mac" not in rttrpm_row

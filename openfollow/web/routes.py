@@ -1621,14 +1621,12 @@ def _interface_assignment_rows(
         resolver = HOST_RESOLVER if tcp else IPV4_RESOLVER
         return _egress_address(pin, host, station, resolver=resolver, wait_s=wait_s, names=names)
 
-    station_addresses = frozenset(get_local_ipv4_addresses())
-
     def _osc_sender(dest: OscDestinationConfig) -> str:
         from openfollow.net_egress import is_loopback_host
         from openfollow.osc.egress import reaches_station
 
         # Never pinned, as the sender decides it: the kernel delivers it on this station.
-        if not is_loopback_host(dest.host) and reaches_station(dest.host, station_addresses):
+        if not is_loopback_host(dest.host) and reaches_station(dest.host, names.station_addresses):
             return "This station"
         return _sender(dest.source_iface, dest.host, tcp=dest.protocol == "tcp")
 
@@ -1672,7 +1670,10 @@ def _interface_assignment_rows(
             "key": "rttrpm_output.source_iface",
             "label": "RTTrPM output",
             "value": cfg.rttrpm_output.source_iface,
-            "address": _sender(cfg.rttrpm_output.source_iface, cfg.rttrpm_output.host),
+            # A switched-off output sends nowhere, so its host cannot strand it.
+            "address": _sender(
+                cfg.rttrpm_output.source_iface, cfg.rttrpm_output.host if cfg.rttrpm_output.enabled else ""
+            ),
             "editable": True,
             "blank": "station",
             "feature": "rttrpm",

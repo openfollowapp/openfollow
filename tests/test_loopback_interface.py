@@ -65,7 +65,7 @@ def test_automatic_never_picks_loopback_on_a_mac(on_a_mac: None, monkeypatch: py
 
 
 def test_a_loopback_pin_is_ready_at_startup(on_a_mac: None, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Resolved at once, not after the timeout whose fallback is also 127.0.0.1."""
+    """Resolved at once, without waiting for the timeout."""
 
     def _no_wait(_seconds: float) -> None:
         raise AssertionError("a loopback pin waited")

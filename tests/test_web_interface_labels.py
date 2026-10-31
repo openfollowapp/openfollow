@@ -391,3 +391,13 @@ def test_the_advanced_picker_names_loopback_on_a_mac(net_server, tmp_path, monke
     _fake, base = net_server
     _status, body = _get(base, "/network/interfaces/by_name?current=")
     assert '<option value="lo0" >Loopback (lo0) – 127.0.0.1</option>' in body
+
+
+def test_the_web_ui_picker_never_offers_loopback(net_server, tmp_path, monkeypatch) -> None:  # noqa: F811
+    """Bound to loopback the web UI would lock out every browser but this Mac's."""
+    monkeypatch.setattr(net_utils_module, "LOOPBACK_OFFERED", True)
+    _ifaces(monkeypatch, {"eth0": "192.0.2.10", "lo0": "127.0.0.1"})
+    _fake, base = net_server
+    _status, body = _get(base, "/network/interfaces/by_name?blank=all&current=")
+    assert 'value="lo0"' not in body
+    assert 'value="eth0"' in body

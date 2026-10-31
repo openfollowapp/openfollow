@@ -161,7 +161,9 @@ def list_iface_ipv4() -> list[tuple[str, str]]:
 
 def offered_loopback_ifaces() -> list[tuple[str, str]]:
     """The offered loopback as ``(name, address)``, for pickers built from a backend that never lists it."""
-    return [(name, address) for name, address in list_iface_ipv4() if offered_loopback(name)]
+    if not LOOPBACK_OFFERED:
+        return []
+    return [(name, address) for name in sorted(LOOPBACK_NAMES) if (address := get_iface_ipv4(name))]
 
 
 def resolve_source_ip(
@@ -341,7 +343,8 @@ def resolve_web_bind(web_bind: str, web_bind_iface: str) -> tuple[str, ResolveSt
         return web_bind, "iface"
     if not web_bind_iface:
         return WEB_BIND_ALL, "none"
-    resolved = get_iface_ipv4(web_bind_iface)
+    # Loopback would leave the UI to this machine alone, locking out every browser on the LAN.
+    resolved = "" if offered_loopback(web_bind_iface) else get_iface_ipv4(web_bind_iface)
     if resolved:
         return resolved, "iface"
     return WEB_BIND_ALL, "down"
@@ -362,7 +365,7 @@ def wait_for_source_ip(
     timeout_s: float = 30.0,
     interval_s: float = 1.0,
 ) -> str:
-    """Block until pinned source IP is live (returns loopback on timeout)."""
+    """Block until the pinned source IP is live; on timeout the primary address, or "" when there is none."""
     # When pinned, use fallback=False to wait for target; otherwise accept primary.
     pinned = bool(iface)
     deadline = time.monotonic() + timeout_s
@@ -372,11 +375,9 @@ def wait_for_source_ip(
             return resolved
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            # On timeout, fall back to primary or loopback.
+            # On timeout, fall back to the primary address; "" when there is none.
             primary = get_primary_local_ipv4(default="")
-            if primary and not primary.startswith("127."):
-                return primary
-            return "127.0.0.1"
+            return primary if primary and not primary.startswith("127.") else ""
         # Don't sleep past deadline.
         time.sleep(min(interval_s, remaining))
 

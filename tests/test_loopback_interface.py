@@ -102,12 +102,12 @@ def test_loopback_strands_only_a_destination_off_this_mac(
     monkeypatch: pytest.MonkeyPatch, iface: str, host: str, stranded: bool
 ) -> None:
     monkeypatch.setattr(net_utils, "LOOPBACK_OFFERED", True)
-    egress = strands(iface, host)
+    egress = strands(iface, host, station_addresses={"127.0.0.1", "192.0.2.10"})
     assert (egress == Egress(iface, "", refused=LOOPBACK_ONLY)) if stranded else egress is None
 
 
 def test_without_the_offer_nothing_is_stranded() -> None:
-    assert strands("lo0", "192.0.2.50") is None
+    assert strands("lo0", "192.0.2.50", station_addresses=set()) is None
 
 
 def test_a_refused_egress_says_why_and_a_down_one_names_its_interface() -> None:
@@ -136,3 +136,9 @@ def test_multicast_and_this_macs_own_address_stay_on_this_mac(monkeypatch: pytes
     monkeypatch.setattr(net_utils, "LOOPBACK_OFFERED", True)
     monkeypatch.setattr(net_egress, "get_local_ipv4_addresses", lambda: {"127.0.0.1", "192.0.2.10"})
     assert strands("lo0", host) is None
+
+
+def test_the_web_ui_is_never_bound_to_loopback(on_a_mac: None) -> None:
+    """It would serve this Mac alone; failing open keeps it reachable from the LAN."""
+    assert net_utils.resolve_web_bind("", "lo0") == (net_utils.WEB_BIND_ALL, "down")
+    assert net_utils.resolve_web_bind("", "en0") == ("192.0.2.10", "iface")

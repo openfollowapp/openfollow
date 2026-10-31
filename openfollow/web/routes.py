@@ -10141,6 +10141,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         current = request.query.current if "current" in request.query else cfg.psn_source_iface
         blank_label = _BLANK_IFACE_LABELS.get(request.query.blank, _BLANK_IFACE_LABELS["auto"])
         ifaces = list_iface_ipv4()
+        if request.query.blank == "all":
+            from openfollow.net_utils import offered_loopback
+
+            # The web UI's own pin: loopback would serve this machine alone (resolve_web_bind refuses it).
+            ifaces = [(name, ip) for name, ip in ifaces if not offered_loopback(name)]
         options = [f'<option value="">{blank_label}</option>']
         names = {name for name, _ in ifaces}
         for name, ip in ifaces:

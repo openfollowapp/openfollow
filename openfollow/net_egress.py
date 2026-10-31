@@ -15,6 +15,7 @@ from __future__ import annotations
 import ipaddress
 import socket
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from openfollow.net_utils import (
@@ -54,16 +55,17 @@ class Egress:
         return self.refused or f"interface {iface_name} is down"
 
 
-def strands(iface: str, host: str) -> Egress | None:
+def strands(iface: str, host: str, station_addresses: Iterable[str] | None = None) -> Egress | None:
     """A down egress when *iface* is an offered loopback and unicast *host* is off this machine, else None.
 
     Loopback cannot carry a unicast send to another machine: the sender stays silent
-    rather than leave on another interface.
+    rather than leave on another interface. *station_addresses* are this machine's
+    own, read here when the caller holds none.
     """
     if not host or not offered_loopback(iface) or is_loopback_host(host) or is_multicast_host(host):
         return None
     # A send to this machine's own address never leaves it either.
-    if host.strip() in get_local_ipv4_addresses():
+    if host.strip() in (get_local_ipv4_addresses() if station_addresses is None else station_addresses):
         return None
     return Egress(iface, "", refused=LOOPBACK_ONLY)
 

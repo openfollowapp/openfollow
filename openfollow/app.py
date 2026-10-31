@@ -457,23 +457,19 @@ class OpenFollowApp:
         svc.init_video()
 
         # Bounded wait for pinned source IP (prevents loopback latch on fresh boot).
-        from openfollow.net_utils import get_iface_ipv4, offered_loopback, wait_for_source_ip
+        from openfollow.net_utils import wait_for_source_ip
 
         resolved_ip = wait_for_source_ip(
             iface=self._config.psn_source_iface,
             timeout_s=10.0,
         )
-        on_loopback = offered_loopback(self._config.psn_source_iface) and resolved_ip == get_iface_ipv4(
-            self._config.psn_source_iface
-        )
-        if resolved_ip.startswith("127.") and not on_loopback:
+        if not resolved_ip:
             # Timed out; subsystems bind once (won't self-heal).
             logger.warning(
-                "Starting without a usable network address (local IP %s) – "
+                "Starting without a usable network address – "
                 "web server, peer discovery, and PSN binding will use loopback "
                 "and will not recover automatically; restart OpenFollow once "
-                "networking is available.",
-                resolved_ip,
+                "networking is available."
             )
         else:
             logger.info("Network ready for startup – local IP %s", resolved_ip)

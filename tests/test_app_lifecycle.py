@@ -419,38 +419,31 @@ class TestRun:
         than the misleading "Network ready" INFO."""
         from openfollow import net_utils
 
-        monkeypatch.setattr(net_utils, "wait_for_source_ip", lambda **kw: "127.0.0.1")
+        monkeypatch.setattr(net_utils, "wait_for_source_ip", lambda **kw: "")
         app = OpenFollowApp(config_path=patched_ctor.cfg_path)
         with caplog.at_level("INFO"):
             app.run()
         assert any(r.levelname == "WARNING" and "loopback" in r.message for r in caplog.records)
         assert not any("Network ready" in r.message for r in caplog.records)
 
-    @pytest.mark.parametrize(
-        ("lo0_address", "warned"), [("127.0.0.1", False), ("", True)], ids=["resolved", "no-address"]
-    )
-    def test_a_station_on_loopback_is_ready_only_when_lo0_resolves(
+    def test_a_station_on_loopback_starts_ready(
         self,
         patched_ctor,
         monkeypatch: pytest.MonkeyPatch,
         caplog,  # noqa: ANN001
-        lo0_address: str,
-        warned: bool,
     ) -> None:
-        """On a Mac, 127.0.0.1 from a lo0 pin is the station's address, not the wait's timeout fallback."""
+        """On a Mac, a lo0 pin resolves to 127.0.0.1: the station's address, which is no timeout."""
         from dataclasses import replace
 
         from openfollow import net_utils
 
-        monkeypatch.setattr(net_utils, "LOOPBACK_OFFERED", True)
-        monkeypatch.setattr(net_utils, "get_iface_ipv4", lambda name: lo0_address if name == "lo0" else "")
         monkeypatch.setattr(net_utils, "wait_for_source_ip", lambda **kw: "127.0.0.1")
         app = OpenFollowApp(config_path=patched_ctor.cfg_path)
         app._config = replace(app._config, psn_source_iface="lo0")
         with caplog.at_level("INFO"):
             app.run()
-        assert any(r.levelname == "WARNING" and "usable network address" in r.message for r in caplog.records) is warned
-        assert any("Network ready" in r.message for r in caplog.records) is not warned
+        assert not any("usable network address" in r.message for r in caplog.records)
+        assert any("Network ready for startup – local IP 127.0.0.1" in r.message for r in caplog.records)
 
     def test_uses_short_bounded_ip_wait(
         self,
@@ -607,7 +600,7 @@ class TestRun:
 
         from openfollow import net_utils
 
-        monkeypatch.setattr(net_utils, "wait_for_source_ip", lambda **kw: "127.0.0.1")
+        monkeypatch.setattr(net_utils, "wait_for_source_ip", lambda **kw: "")
         monkeypatch.setattr(net_utils, "list_iface_ipv4", lambda: [])
         monkeypatch.setattr(net_utils, "get_local_ipv4_addresses", lambda: {"127.0.0.1"})
         monkeypatch.setattr(net_utils, "get_primary_local_ipv4", lambda default="": "")

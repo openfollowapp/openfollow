@@ -28,7 +28,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-from openfollow.privilege.broker import PrivilegeBroker, PrivilegeError
+from openfollow.privilege.broker import (
+    INSTALL_SUDO_REMEDY,
+    REINSTALL_REMEDY,
+    PrivilegeBroker,
+    PrivilegeError,
+    sudo_installed,
+)
 from openfollow.privilege.capabilities import MEDIA_WRITE, MEDIA_WRITE_SCRIPT, CapabilityState
 from openfollow.privilege.media_writer import (
     EXIT_UNMOUNT_FAILED,
@@ -163,7 +169,7 @@ def _drive_name(disk: dict[str, Any]) -> str:
     return " ".join(p for p in parts if p) or "USB storage device"
 
 
-def _linux_media(tree: dict[str, Any], can_mount: bool) -> list[Media]:
+def _linux_media(tree: dict[str, Any], mount_refusal: str) -> list[Media]:
     media: list[Media] = []
     for disk in nest_devices(tree):
         if disk.get("tran") != "usb" or is_system_disk(disk) or not int(disk.get("size") or 0):
@@ -185,7 +191,7 @@ def _linux_media(tree: dict[str, Any], can_mount: bool) -> list[Media]:
                 writable = os.access(mountpoint, os.W_OK)
                 reason = "" if writable else "mounted read-only"
             else:
-                writable, reason = can_mount, "" if can_mount else "needs Apply Permissions"
+                writable, reason = not mount_refusal, mount_refusal
             which = f" ({part.get('label') or part.get('name')})" if len(parts) > 1 else ""
             media.append(
                 Media(
@@ -274,8 +280,11 @@ def _output(run: Runner, argv: list[str]) -> str:
     return run(argv, capture_output=True, text=True, timeout=_PROBE_TIMEOUT_S, check=True).stdout
 
 
-def _can_mount(broker: PrivilegeBroker | None) -> bool:
-    return broker is not None and broker.state(MEDIA_WRITE) is CapabilityState.PASSWORDLESS
+def _mount_refusal(broker: PrivilegeBroker | None) -> str:
+    """Why an unmounted drive can't be written, or "" when the mount grant is passwordless."""
+    if broker is not None and broker.state(MEDIA_WRITE) is CapabilityState.PASSWORDLESS:
+        return ""
+    return "missing a system permission" if sudo_installed() else "sudo is not installed"
 
 
 def scan_media(
@@ -291,7 +300,7 @@ def scan_media(
     try:
         if platform.startswith("linux"):
             tree = json.loads(_output(run, ["/usr/bin/lsblk", "-J", "-b", "-o", _LSBLK_COLUMNS]))
-            return _linux_media(tree, _can_mount(broker))
+            return _linux_media(tree, _mount_refusal(broker))
         if platform == "darwin":
             return _mac_media(run)
     except Exception as exc:  # noqa: BLE001 – it parses another tool's output; any failure there is a failed listing
@@ -364,10 +373,13 @@ def _write_through_helper(media: Media, filename: str, data: bytes, broker: Priv
             raise MediaError(exc.detail.splitlines()[-1], action="Wait before removing it." if wait else "") from exc
         # Not the helper's sentence (a timeout, a crash, a lost grant): the operator reads ours, the log the rest.
         logger.warning("Writing to %s failed: %s", media.device, exc)
+        if exc.sudo_missing:
+            raise MediaError(
+                "Writing to a USB storage device needs sudo, which is not installed.", action=INSTALL_SUDO_REMEDY
+            ) from exc
         if broker.state(MEDIA_WRITE) is not CapabilityState.PASSWORDLESS:
             raise MediaError(
-                "Writing to a USB storage device needs Apply Permissions.",
-                action="Run Apply Permissions on the Device page, then try again.",
+                "Writing to a USB storage device is missing a system permission.", action=REINSTALL_REMEDY
             ) from exc
         raise MediaError("The USB storage device could not be written.") from exc
     return proc.stdout.strip() or filename

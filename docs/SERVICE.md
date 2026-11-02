@@ -74,9 +74,10 @@ on-disk update status on startup.
 ### Required privilege
 
 The service user needs a NOPASSWD sudoers rule for the install (`systemd-run` → the
-update wrapper script + `apt-get`). This is provisioned by the package / Ansible install;
-if it is missing, the update fails with a hint to run **Apply Permissions** on the Device
-page first.
+update wrapper script + `apt-get`). The package ships it in
+`/etc/sudoers.d/openfollow-privileged` and depends on `sudo`. If the rule is missing, the
+update fails with a hint to reinstall the package as root; on a host with no sudo binary,
+it asks for `apt install sudo` instead.
 
 ### Failure behavior
 

@@ -15,7 +15,7 @@ import pytest
 
 import openfollow.privilege.media_writer as mw
 import openfollow.runtime.removable_media as rm
-from openfollow.privilege.broker import PrivilegeError
+from openfollow.privilege.broker import INSTALL_SUDO_REMEDY, REINSTALL_REMEDY, PrivilegeError
 from openfollow.privilege.capabilities import MEDIA_WRITE, MEDIA_WRITE_SCRIPT, CapabilityState
 from openfollow.runtime.removable_media import MediaError, list_media, scan_media, write_file
 from tests._lsblk_samples import APP_LIST, APP_TREE
@@ -171,9 +171,17 @@ class TestLinuxListing:
         assert media["sdb1"].mountpoint == str(tmp_path / "CARD")
 
     @pytest.mark.parametrize("broker", [None, _Broker(CapabilityState.NEEDS_PASSWORD)], ids=["no-broker", "no-grant"])
-    def test_without_the_grant_only_mounted_drives_can_be_written(self, tmp_path: Path, broker: _Broker | None) -> None:
+    @pytest.mark.parametrize(
+        ("sudo", "reason"),
+        [("/usr/bin/sudo", "missing a system permission"), (None, "sudo is not installed")],
+        ids=["sudo", "no-sudo"],
+    )
+    def test_without_the_grant_only_mounted_drives_can_be_written(
+        self, tmp_path: Path, monkeypatch, broker: _Broker | None, sudo: str | None, reason: str
+    ) -> None:  # noqa: ANN001
+        monkeypatch.setattr("openfollow.privilege.broker.shutil.which", lambda name: sudo)
         media = _by_id(list_media(broker, platform="linux", run=_linux(_tree(tmp_path))))
-        assert (media["sda1"].writable, media["sda1"].reason) == (False, "needs Apply Permissions")
+        assert (media["sda1"].writable, media["sda1"].reason) == (False, reason)
         assert media["sdb1"].writable is True
 
     def test_a_read_only_mount(self, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
@@ -419,11 +427,17 @@ class TestWriting:
             (
                 PrivilegeError(f"{MEDIA_WRITE.description}: password required but prompting is disabled here."),
                 CapabilityState.NEEDS_PASSWORD,
-                "Writing to a USB storage device needs Apply Permissions.",
-                "Run Apply Permissions on the Device page, then try again.",
+                "Writing to a USB storage device is missing a system permission.",
+                REINSTALL_REMEDY,
+            ),
+            (
+                PrivilegeError(f"{MEDIA_WRITE.description}: sudo is not installed on this host.", sudo_missing=True),
+                CapabilityState.UNAVAILABLE,
+                "Writing to a USB storage device needs sudo, which is not installed.",
+                INSTALL_SUDO_REMEDY,
             ),
         ],
-        ids=["helper-sentence", "written-but-still-mounted", "timed-out", "helper-crashed", "grant-gone"],
+        ids=["helper-sentence", "written-but-still-mounted", "timed-out", "helper-crashed", "grant-gone", "no-sudo"],
     )
     def test_what_the_operator_reads_when_the_helper_fails(
         self,

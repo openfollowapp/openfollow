@@ -401,6 +401,7 @@
 % end
 </nav>
 % include('partials/platform_warning.tpl', platform_warning=get('platform_warning'))
+% include('partials/privilege_warning.tpl', privilege_warning=get('privilege_warning'))
 
 %# The four-corner icon of the full-screen button on every picture.
 % _fs_icon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg>'

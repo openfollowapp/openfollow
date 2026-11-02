@@ -51,6 +51,15 @@ Surfaces, all from `warning_shown`:
 - **Bundle:** a `support:` line in the header after `platform:`, with ` (warning hidden: developer mode)` when the stats say so.
 - **Log:** one warning at startup.
 
+## System permissions (`privilege/readiness.py`)
+
+Every system action (updates, USB export, network and clock changes, the Pi camera setup) runs through `sudo` with the rules the `.deb` ships in `/etc/sudoers.d/openfollow-privileged`. `current(broker)` names the one thing that stops them, or `None`:
+
+- **`NO_SUDO`:** no `sudo` binary on `PATH`, on any install. Read on every call, never cached, so the box goes once sudo is installed.
+- **`RULES_MISSING`:** on the `.deb` only (`sys.prefix` is `/opt/openfollow/venv`), the self-update rule is not passwordless. A source checkout or the macOS bundle asks for the device password instead, so it never warns about rules.
+
+Each carries its next step (`INSTALL_SUDO_REMEDY` / `REINSTALL_REMEDY` in `privilege/broker.py`), the same sentence the updater and the USB write give when they are refused. The web UI shows it as an error box (`partials/privilege_warning.tpl`) beside the unsupported-platform box on every page, with a `?` that opens the `system-permissions` help: the SSH steps for both cases. Tests never read the host's sudo (`_sudo_installed` in `tests/conftest.py`).
+
 ## Power supply and throttling (`power_health.py`)
 
 A Raspberry Pi on a weak supply freezes and drops USB devices; one that runs hot slows its CPU. Both are read by `PowerMonitor`, owned by the `SystemStatsCollector` and read with the other system stats once a second:

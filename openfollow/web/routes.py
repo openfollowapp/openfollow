@@ -550,19 +550,22 @@ def _redirect(location: str) -> NoReturn:
     raise HTTPResponse(status=303, headers={"Location": location})
 
 
-def _platform_context(cfg: AppConfig) -> dict[str, Any]:
-    """The unsupported-platform box every page shows between its navigation and its panels."""
-    return {"platform_warning": platform_support.current() if platform_support.warning_shown(cfg) else None}
+def _platform_context(cfg: AppConfig, server: ConfigWebServer | None = None) -> dict[str, Any]:
+    """The unsupported-platform and system-permissions boxes every page shows between its navigation and its panels."""
+    return {
+        "platform_warning": platform_support.current() if platform_support.warning_shown(cfg) else None,
+        "privilege_warning": server.get_privilege_warning() if server is not None else None,
+    }
 
 
-def _page_host_context(cfg: AppConfig) -> dict[str, Any]:
+def _page_host_context(cfg: AppConfig, server: ConfigWebServer | None = None) -> dict[str, Any]:
     """base.tpl's boxes: a page opened through a name its saves will be refused on, an unsupported platform."""
     raw = (request.get_header("Host") or "").strip()
     try:
         host = urlsplit(f"//{raw}").hostname if raw else None
     except ValueError:
         host = None
-    return {"host_refusal": _host_refusal(host, cfg.station_fqdn), **_platform_context(cfg)}
+    return {"host_refusal": _host_refusal(host, cfg.station_fqdn), **_platform_context(cfg, server)}
 
 
 def _is_navigation() -> bool:
@@ -5935,7 +5938,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             "host_refusal": refusal,
             "on_device": _is_on_device_request(),
             "cancel_button": _cancel_button_label(cfg),
-            **_platform_context(cfg),
+            **_platform_context(cfg, server),
         }
         if request.path == "/login":
             page = template("login", error=f"Not logged in. {refusal.message}", **page_context)
@@ -6064,7 +6067,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             error="",
             on_device=_is_on_device_request(),
             cancel_button=_cancel_button_label(cfg),
-            **_page_host_context(cfg),
+            **_page_host_context(cfg, server),
         )
 
     @app.post("/login")
@@ -6107,7 +6110,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             error="Incorrect PIN",
             on_device=_is_on_device_request(),
             cancel_button=_cancel_button_label(cfg),
-            **_page_host_context(cfg),
+            **_page_host_context(cfg, server),
         )
 
     @app.post("/logout")
@@ -6248,7 +6251,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             written_offer_html=_written_offer_html(),
             on_device=_is_on_device_request(),
             cancel_button=_cancel_button_label(cfg),
-            **_page_host_context(cfg),
+            **_page_host_context(cfg, server),
         )
 
     @app.get("/about/license.txt")
@@ -6341,7 +6344,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # Update-available box (General section) + footer flag (base.tpl);
             # read once so the flag and version label can't disagree mid-render.
             **_page_update_context(server),
-            **_page_host_context(config),
+            **_page_host_context(config, server),
             # index.tpl includes the General partial directly, so the platform
             # gate for the Startup box has to be supplied here too.
             startup_supported=_startup_settings_supported(),
@@ -11050,7 +11053,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # Footer "Update available" flag: an update is most often discovered
         # while the operator is still in the Setup Wizard.
         return template(
-            "wizard", config=config, **input_data, **_page_update_context(server), **_page_host_context(config)
+            "wizard", config=config, **input_data, **_page_update_context(server), **_page_host_context(config, server)
         )
 
     @app.get("/api/video/snapshot/full")

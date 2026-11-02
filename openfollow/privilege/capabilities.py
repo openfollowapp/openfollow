@@ -283,8 +283,7 @@ SERVICE_DISABLE = Capability(
 
 SERVICE_MASK = Capability(
     name="service.mask",
-    # ``systemctl mask`` is only ever called on ``getty@tty1.service``
-    # (the cage-tty1 conflict mask in :func:`device_repair.apply_mask_getty`).
+    # ``systemctl mask`` is for ``getty@tty1.service`` (the cage-tty1 conflict).
     # Pinning the pattern to ``getty@*.service`` keeps the rule open to other
     # getty units (e.g. tty2 on a multi-tty deployment) while preventing it
     # from being repurposed to mask security-critical services.
@@ -328,7 +327,7 @@ JOURNAL_GROUP_JOIN = Capability(
 
 
 # ---------------------------------------------------------------------------
-# Device Setup Repair – idempotent system-state items the Ansible
+# Device setup – idempotent system-state items the Ansible
 # installer normally deploys. Each capability is one ``sudo`` call.
 # Reboot-required and destructive items are deliberately excluded.
 # ---------------------------------------------------------------------------
@@ -342,8 +341,7 @@ REQUIRED_HARDWARE_GROUPS: tuple[str, ...] = (
     "dialout",
 )
 """Canonical set of supplemental groups the device user needs for
-cage / GPU / gamepad / udev access. Lives in this module (not
-:mod:`openfollow.privilege.device_repair`) so the sudoers pattern
+cage / GPU / gamepad / udev access. Lives in this module so the sudoers pattern
 below can include the exact comma-joined list and a test in
 ``tests/test_privilege_capabilities.py`` pins the link between the
 constant, the sudoers rule, and the rendered Ansible drop-in. Both the
@@ -421,8 +419,7 @@ DEVICE_HOSTS_WRITE = Capability(
 # ---------------------------------------------------------------------------
 
 SUDOERS_TMP_PREFIX = "openfollow-sudoers-"
-"""mkstemp prefix used by :func:`openfollow.privilege.drop_in.install_drop_in`
-for the staged sudoers drop-in before it's atomically moved into
+"""Prefix of a staged sudoers drop-in before it's atomically moved into
 ``/etc/sudoers.d/``. Referenced from the sudoers pattern below."""
 
 SYSTEMD_UNIT_TMP_PREFIX = "openfollow-"

@@ -187,6 +187,14 @@ def _supported_platform(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _sudo_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No page may depend on the host's sudo; a test that cares sets ``readiness.sudo_installed`` itself."""
+    from openfollow.privilege import readiness
+
+    monkeypatch.setattr(readiness, "sudo_installed", lambda: True)
+
+
+@pytest.fixture(autouse=True)
 def _no_host_cgroup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """No test may resolve the unit the test process itself runs under.
 

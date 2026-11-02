@@ -1,33 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
 # Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
-"""Generate + install sudoers drop-in: render, validate, install, cache-invalidate."""
+"""Render the sudoers drop-in the .deb ships, one NOPASSWD rule per capability."""
 
 from __future__ import annotations
 
-import logging
 import os
-import tempfile
-from pathlib import Path
 
-from openfollow.privilege.broker import PrivilegeBroker, PrivilegeError
-from openfollow.privilege.capabilities import (
-    ALL_CAPABILITIES,
-    DEVICE_INSTALL_SUDOERS_DROPIN,
-    DEVICE_TRUNCATE_LEGACY_SUDOERS,
-    DEVICE_VISUDO_VALIDATE,
-    LEGACY_SUDOERS_DROP_IN_FILENAME,
-    SUDOERS_DROP_IN_FILENAME,
-    SUDOERS_TMP_PREFIX,
-    Capability,
-)
-
-logger = logging.getLogger(__name__)
-
-
-SUDOERS_DROP_IN_PATH = Path(f"/etc/sudoers.d/{SUDOERS_DROP_IN_FILENAME}")
-LEGACY_DROP_IN_PATH = Path(f"/etc/sudoers.d/{LEGACY_SUDOERS_DROP_IN_FILENAME}")
-# Legacy path; truncated with /dev/null to disable rules.
+from openfollow.privilege.capabilities import ALL_CAPABILITIES, Capability
 
 
 def render_drop_in(
@@ -51,139 +31,6 @@ def render_drop_in(
     return "\n".join(lines) + "\n"
 
 
-def _friendly_install_error(exc: PrivilegeError) -> str:
-    """Translate a broker ``PrivilegeError`` into UI-ready copy.
-
-    The broker prefixes its error messages with the failing
-    capability's technical ``description`` (e.g. "Validate a sudoers
-    fragment with visudo -cf: ..."). Surfacing that string directly
-    exposes internal plumbing to the caller; this helper detects the
-    standard failure shapes and rewrites them in plain language.
-    """
-    raw = str(exc).lower()
-    if "cancelled" in raw or "timed out" in raw:
-        return "Cancelled – no changes were made."
-    # Drop the capability prefix (everything up to the first ``: ``)
-    # so the operator sees just the sudo / system reason. Keeping
-    # the whole prefix would re-introduce the jargon the rewrite is
-    # trying to hide.
-    detail = str(exc)
-    head, sep, tail = detail.partition(": ")
-    detail = tail.strip() if sep else detail
-    return f"Couldn't apply new permissions: {detail}"
-
-
-def install_drop_in(
-    broker: PrivilegeBroker,
-    *,
-    user: str,
-    capabilities: tuple[Capability, ...] = ALL_CAPABILITIES,
-    target_path: Path = SUDOERS_DROP_IN_PATH,
-    legacy_path: Path | None = LEGACY_DROP_IN_PATH,
-) -> None:
-    """Render, validate, and install the sudoers drop-in.
-
-    See the module docstring for the full install flow. Raises
-    :class:`PrivilegeError` on any failure; the caller surfaces the
-    message to the operator. The temp file is always removed.
-    """
-    content = render_drop_in(user, capabilities=capabilities)
-
-    fd, temp_name = tempfile.mkstemp(
-        prefix=SUDOERS_TMP_PREFIX,
-        suffix=".d",
-        dir="/tmp",  # nosec B108
-    )
-    temp_path = Path(temp_name)
-    try:
-        with os.fdopen(fd, "w") as fh:
-            fh.write(content)
-        # sudoers files must be group/other unreadable when validated
-        # by some visudo builds; 0600 is also the safe default for any
-        # secret-bearing temp file.
-        os.chmod(temp_path, 0o600)
-
-        # Validate before installing – a bad drop-in in /etc/sudoers.d/
-        # would break sudo system-wide.
-        try:
-            broker.run(
-                DEVICE_VISUDO_VALIDATE,
-                ["/usr/sbin/visudo", "-cf", str(temp_path)],
-                reason="Apply new permissions",
-                timeout=10,
-            )
-        except PrivilegeError as exc:
-            raise PrivilegeError(_friendly_install_error(exc)) from exc
-
-        # Atomic move into /etc/sudoers.d/ with the correct perms.
-        # ``DEVICE_INSTALL_SUDOERS_DROPIN``'s sudoers pattern pins the
-        # ``/tmp/{SUDOERS_TMP_PREFIX}*`` source and the exact target,
-        # so this NOPASSWD grant can't be repurposed to overwrite
-        # other system files.
-        try:
-            broker.run(
-                DEVICE_INSTALL_SUDOERS_DROPIN,
-                [
-                    "/usr/bin/install",
-                    "-m",
-                    "0440",
-                    "-o",
-                    "root",
-                    "-g",
-                    "root",
-                    str(temp_path),
-                    str(target_path),
-                ],
-                reason="Apply new permissions",
-                timeout=10,
-            )
-        except PrivilegeError as exc:
-            raise PrivilegeError(_friendly_install_error(exc)) from exc
-    finally:
-        # Best-effort cleanup; the temp file is owned by us so no sudo
-        # is needed. ``missing_ok=True`` keeps this quiet if a prior
-        # step already removed it (e.g. an interrupted install).
-        try:
-            temp_path.unlink(missing_ok=True)
-        except OSError as exc:  # pragma: no cover – would require an
-            # unusual /tmp ACL that our installer can't predict.
-            logger.warning("Could not remove temp sudoers file %s: %s", temp_path, exc)
-
-    # Truncate the legacy file (best-effort; failure here doesn't
-    # invalidate the install – the legacy file's rules are a strict
-    # subset of the new one's). Scoped to its own capability so the
-    # generic "install file" surface stays narrow.
-    #
-    # No unprivileged exists() probe: /etc/sudoers.d is 0750 root:root,
-    # so stat-ing a file inside it raises EACCES, which Path.exists()
-    # converts to False – that would silently skip the truncate when a
-    # legacy file is in fact present. Installing /dev/null is idempotent
-    # (creates an empty 0440 file when the target is absent), so always
-    # attempt it through the broker.
-    if legacy_path is not None:
-        try:
-            broker.run(
-                DEVICE_TRUNCATE_LEGACY_SUDOERS,
-                [
-                    "/usr/bin/install",
-                    "-m",
-                    "0440",
-                    "-o",
-                    "root",
-                    "-g",
-                    "root",
-                    "/dev/null",
-                    str(legacy_path),
-                ],
-                reason="Apply new permissions",
-                timeout=10,
-            )
-        except PrivilegeError as exc:
-            logger.warning("Could not truncate legacy drop-in %s: %s", legacy_path, exc)
-
-    broker.invalidate()
-
-
 # Username regex matches POSIX-portable account names: lowercase + digits
 # + underscore + hyphen, starting with a letter. Rejects ``..``, ``/``,
 # and shell metacharacters that would break the sudoers rule rendering.
@@ -201,10 +48,6 @@ def _is_safe_user(user: str) -> bool:
 
 def current_device_user() -> str:
     """Return the user the running process is executing as.
-
-    Used as the default for :func:`install_drop_in` so the drop-in
-    grants the actual user – not whatever default the operator picked
-    when they wrote their custom systemd unit.
 
     ``getlogin`` falls over on systemd-spawned services without a
     controlling tty; the ``LOGNAME`` / ``USER`` / pwuid chain is the

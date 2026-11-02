@@ -417,6 +417,15 @@ def test_privilege_states_provider_returns_value_dict(monkeypatch) -> None:
     assert all(isinstance(v, str) for v in states.values())
 
 
+@pytest.mark.parametrize(("installed", "shown"), [(True, False), (False, True)])
+def test_privilege_warning_provider_reads_the_running_broker(monkeypatch, installed: bool, shown: bool) -> None:
+    from openfollow.privilege import readiness
+
+    services = _build_services_with_psutil_backend(monkeypatch)
+    monkeypatch.setattr(readiness, "sudo_installed", lambda: installed)
+    assert (services._privilege_warning_provider() is readiness.NO_SUDO) is shown
+
+
 def test_privilege_states_provider_returns_empty_without_broker(monkeypatch) -> None:
     """Test the defensive ``broker is None`` branch – when called
     before broker init completes (e.g. mid-bootstrap) the provider

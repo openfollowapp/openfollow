@@ -221,9 +221,7 @@ class PrivilegeBroker:
         cached_state = self.state(capability)
         if cached_state == CapabilityState.UNAVAILABLE:
             if shutil.which("sudo") is None:
-                raise PrivilegeError(
-                    f"{capability.description}: sudo is not installed on this host.", sudo_missing=True
-                )
+                raise _sudo_missing(capability)
             raise PrivilegeError(f"{capability.description}: sudo is unavailable on this host.")
 
         # Try non-interactive first regardless of cached_state (warm timestamp cache helps).
@@ -240,6 +238,8 @@ class PrivilegeBroker:
             )
         except subprocess.TimeoutExpired as exc:
             raise PrivilegeError(f"{capability.description}: timed out after {timeout:g}s.") from exc
+        except OSError as exc:
+            raise _sudo_not_started(capability, exc) from exc
         proc = _decoded(raw) if binary else raw
         if proc.returncode == 0:
             return proc
@@ -307,10 +307,23 @@ class PrivilegeBroker:
             )
         except subprocess.TimeoutExpired as exc:
             raise PrivilegeError(f"{capability.description}: timed out after {timeout:g}s.") from exc
+        except OSError as exc:
+            raise _sudo_not_started(capability, exc) from exc
         if proc.returncode == 0:
             # Successful; caller invalidates cache if needed.
             return proc
         raise _exit_failure(capability, proc)
+
+
+def _sudo_missing(capability: Capability) -> PrivilegeError:
+    return PrivilegeError(f"{capability.description}: sudo is not installed on this host.", sudo_missing=True)
+
+
+def _sudo_not_started(capability: Capability, exc: OSError) -> PrivilegeError:
+    """The refusal for a sudo that could not be started, e.g. removed under a cached verdict."""
+    if shutil.which("sudo") is None:
+        return _sudo_missing(capability)
+    return PrivilegeError(f"{capability.description}: could not start sudo: {exc}")
 
 
 def _decoded(proc: subprocess.CompletedProcess[bytes]) -> subprocess.CompletedProcess[str]:

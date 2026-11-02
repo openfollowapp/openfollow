@@ -718,6 +718,59 @@ class TestRunUnavailable:
             broker.run(SERVICE_RESTART, ["/usr/bin/systemctl", "restart", "x"])
         assert excinfo.value.sudo_missing is True
 
+    def test_sudo_gone_under_a_cached_verdict_is_named(self, broker, monkeypatch) -> None:
+        broker._cache[SERVICE_RESTART.name] = (
+            __import__("time").monotonic(),
+            CapabilityState.PASSWORDLESS,
+        )
+        monkeypatch.setattr("openfollow.privilege.broker.shutil.which", lambda name: None)
+
+        def _run(argv, **kw):
+            raise FileNotFoundError(2, "No such file or directory", "sudo")
+
+        monkeypatch.setattr("openfollow.privilege.broker.subprocess.run", _run)
+        with pytest.raises(PrivilegeError, match="sudo is not installed") as excinfo:
+            broker.run(SERVICE_RESTART, ["/usr/bin/systemctl", "restart", "x"])
+        assert excinfo.value.sudo_missing is True
+
+    def test_sudo_that_cannot_start_raises_a_privilege_error(self, broker, monkeypatch) -> None:
+        broker._cache[SERVICE_RESTART.name] = (
+            __import__("time").monotonic(),
+            CapabilityState.PASSWORDLESS,
+        )
+        monkeypatch.setattr("openfollow.privilege.broker.shutil.which", lambda name: "/usr/bin/sudo")
+
+        def _run(argv, **kw):
+            raise PermissionError(13, "Permission denied", "sudo")
+
+        monkeypatch.setattr("openfollow.privilege.broker.subprocess.run", _run)
+        with pytest.raises(PrivilegeError, match="could not start sudo") as excinfo:
+            broker.run(SERVICE_RESTART, ["/usr/bin/systemctl", "restart", "x"])
+        assert excinfo.value.sudo_missing is False
+
+    def test_sudo_gone_before_the_password_retry_is_named(self, broker, monkeypatch) -> None:
+        broker._cache[SERVICE_RESTART.name] = (
+            __import__("time").monotonic(),
+            CapabilityState.NEEDS_PASSWORD,
+        )
+        sudo_path: list[str | None] = ["/usr/bin/sudo"]
+        monkeypatch.setattr("openfollow.privilege.broker.shutil.which", lambda name: sudo_path[0])
+
+        def _run(argv, **kw):
+            if "-S" in argv:
+                raise FileNotFoundError(2, "No such file or directory", "sudo")
+            return subprocess.CompletedProcess(argv, 1, "", f"sudo: {_PASSWORD_REQUIRED_MARKER}\n")
+
+        def _prompt(cap, reason):
+            sudo_path[0] = None
+            return "pw"
+
+        monkeypatch.setattr("openfollow.privilege.broker.subprocess.run", _run)
+        broker.set_prompter(_prompt)
+        with pytest.raises(PrivilegeError, match="sudo is not installed") as excinfo:
+            broker.run(SERVICE_RESTART, ["/usr/bin/systemctl", "restart", "x"])
+        assert excinfo.value.sudo_missing is True
+
     def test_installing_sudo_takes_effect_on_the_next_run(self, broker, monkeypatch) -> None:
         sudo_path: list[str | None] = [None]
         monkeypatch.setattr("openfollow.privilege.broker.shutil.which", lambda name: sudo_path[0])

@@ -51,6 +51,18 @@ _NOPASSWD_OPTION_TOKEN: Final[str] = "!authenticate"
 # action may in fact have been applied. Shared so the two surfaces can't drift.
 PROMPT_CANCELLED_DETAIL: Final[str] = "cancelled or timed out waiting for the device password."
 
+# The operator's next step for a refused privileged action: the package ships every sudoers rule.
+INSTALL_SUDO_REMEDY: Final[str] = "As root, run 'apt install sudo', then try again."
+REINSTALL_REMEDY: Final[str] = (
+    "As root, reinstall the OpenFollow package (apt install --reinstall ./openfollow_<version>_<arch>.deb), "
+    "then try again."
+)
+
+
+def sudo_installed() -> bool:
+    """Whether the host has a sudo binary on PATH; read on every call, never cached."""
+    return shutil.which("sudo") is not None
+
 
 def _has_nopasswd_option(listing: str) -> bool:
     """Return True if sudo -n -ll output shows NOPASSWD on Options: line."""
@@ -123,7 +135,7 @@ class PrivilegeBroker:
             if cached is not None and now - cached[0] < _CACHE_TTL_S:
                 return cached[1]
 
-        if shutil.which("sudo") is None:
+        if not sudo_installed():
             # Not cached: once sudo is installed the next call probes it.
             return CapabilityState.UNAVAILABLE
         probed = self._probe(capability)
@@ -220,7 +232,7 @@ class PrivilegeBroker:
 
         cached_state = self.state(capability)
         if cached_state == CapabilityState.UNAVAILABLE:
-            if shutil.which("sudo") is None:
+            if not sudo_installed():
                 raise _sudo_missing(capability)
             raise PrivilegeError(f"{capability.description}: sudo is unavailable on this host.")
 
@@ -321,7 +333,7 @@ def _sudo_missing(capability: Capability) -> PrivilegeError:
 
 def _sudo_not_started(capability: Capability, exc: OSError) -> PrivilegeError:
     """The refusal for a sudo that could not be started, e.g. removed under a cached verdict."""
-    if shutil.which("sudo") is None:
+    if not sudo_installed():
         return _sudo_missing(capability)
     return PrivilegeError(f"{capability.description}: could not start sudo: {exc}")
 

@@ -48,7 +48,7 @@ from typing import TYPE_CHECKING, Any
 
 from packaging.version import InvalidVersion, Version
 
-from openfollow.privilege.broker import PrivilegeError
+from openfollow.privilege.broker import INSTALL_SUDO_REMEDY, REINSTALL_REMEDY, PrivilegeError
 from openfollow.privilege.capabilities import (
     DEB_UPDATE_TMP_PREFIX,
     PACKAGE_SELF_UPDATE,
@@ -213,11 +213,10 @@ def _apply_update(
     except PrivilegeError as exc:
         if exc.sudo_missing:
             raise RuntimeError(
-                "Package install failed: sudo is not installed on this device. "
-                "As root, run 'apt install sudo', then try again."
+                f"Package install failed: sudo is not installed on this device. {INSTALL_SUDO_REMEDY}"
             ) from exc
         raise RuntimeError(
-            f"Package install failed. Run 'Apply Permissions' on the Device page, then try again. Detail: {exc}"
+            f"Package install failed: this device is missing a system permission. {REINSTALL_REMEDY} Detail: {exc}"
         ) from exc
 
     # The detached unit now installs and restarts the service; this process will

@@ -21,6 +21,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from openfollow.privilege.broker import INSTALL_SUDO_REMEDY, REINSTALL_REMEDY
 from openfollow.runtime.deb_update import (
     _assert_download_url,
     _deb_arch,
@@ -860,7 +861,7 @@ class TestRunDebUpdate:
         app._runtime_services.privilege_broker.run.side_effect = PrivilegeError("no sudoers rule")
         run_deb_update(app, {"kind": "deb", "service_name": "openfollow"})
         assert app._statuses[-1][0] == "failed"
-        assert "Apply Permissions" in app._errors[-1]
+        assert REINSTALL_REMEDY in app._errors[-1]
 
     def test_install_without_sudo_asks_for_sudo_not_permissions(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from openfollow.privilege.broker import PrivilegeError
@@ -877,8 +878,8 @@ class TestRunDebUpdate:
         )
         run_deb_update(app, {"kind": "deb", "service_name": "openfollow"})
         assert app._statuses[-1][0] == "failed"
-        assert "apt install sudo" in app._errors[-1]
-        assert "Apply Permissions" not in app._errors[-1]
+        assert INSTALL_SUDO_REMEDY in app._errors[-1]
+        assert REINSTALL_REMEDY not in app._errors[-1]
 
     def test_invalid_inner_deb_sets_failed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # A verified bundle whose inner package fails the package/arch check must

@@ -1781,7 +1781,7 @@ def test_render_usb_table_leaves_a_3d_mouse_the_status_does_not_report_unmatched
     [
         ([_part("sda2", "sda")], "storage: writable"),
         ([_part("sda1", "sda", False, "APFS can't be written"), _part("sda2", "sda")], "storage: writable"),
-        ([_part("sda1", "sda", False, "needs Apply Permissions")], "storage: needs Apply Permissions"),
+        ([_part("sda1", "sda", False, "missing a system permission")], "storage: missing a system permission"),
         (
             [
                 _part("sda1", "sda", False, "APFS can't be written"),

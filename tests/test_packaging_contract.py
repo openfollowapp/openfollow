@@ -14,6 +14,7 @@ build's own bundled-in-venv assertion.
 
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -75,3 +76,13 @@ def test_the_gl_libraries_are_deb_runtime_dependencies() -> None:
     text = control.read_text(encoding="utf-8")
     # PyOpenGL loads them at runtime: they must be present on an offline target.
     assert "libegl1" in text and "libgles2" in text
+
+
+def test_sudo_is_a_deb_runtime_dependency() -> None:
+    control = _REPO_ROOT / "packaging" / "debian" / "control.in"
+    if not control.is_file():
+        pytest.skip("no debian/control.in in this tree")
+    # The package ships a sudoers drop-in and every privileged action runs through sudo;
+    # a Debian install set up with a root password has none.
+    depends = control.read_text(encoding="utf-8").split("Depends:", 1)[1].split("Recommends:", 1)[0]
+    assert re.search(r"(^|[\s,])sudo([\s,]|$)", depends), "sudo must be a Depends in debian/control.in"

@@ -66,12 +66,17 @@ class PrivilegeError(RuntimeError):
 
     When the command itself ran and exited non-zero, ``returncode`` and ``detail`` (its own
     stderr, else stdout) are set, so a caller can read the command's words apart from ours.
+    ``sudo_missing`` marks a refusal because the host has no ``sudo`` binary at all, which
+    no sudoers rule can fix.
     """
 
-    def __init__(self, message: str, *, returncode: int | None = None, detail: str = "") -> None:
+    def __init__(
+        self, message: str, *, returncode: int | None = None, detail: str = "", sudo_missing: bool = False
+    ) -> None:
         super().__init__(message)
         self.returncode = returncode
         self.detail = detail
+        self.sudo_missing = sudo_missing
 
 
 Prompter = Callable[[Capability, str], "str | None"]
@@ -215,6 +220,10 @@ class PrivilegeBroker:
 
         cached_state = self.state(capability)
         if cached_state == CapabilityState.UNAVAILABLE:
+            if shutil.which("sudo") is None:
+                raise PrivilegeError(
+                    f"{capability.description}: sudo is not installed on this host.", sudo_missing=True
+                )
             raise PrivilegeError(f"{capability.description}: sudo is unavailable on this host.")
 
         # Try non-interactive first regardless of cached_state (warm timestamp cache helps).

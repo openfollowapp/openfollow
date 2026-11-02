@@ -703,8 +703,20 @@ class TestRunUnavailable:
             __import__("time").monotonic(),
             CapabilityState.UNAVAILABLE,
         )
-        with pytest.raises(PrivilegeError, match="sudo is unavailable"):
+        monkeypatch.setattr("openfollow.privilege.broker.shutil.which", lambda name: "/usr/bin/sudo")
+        with pytest.raises(PrivilegeError, match="sudo is unavailable") as excinfo:
             broker.run(SERVICE_RESTART, ["/usr/bin/systemctl", "restart", "x"])
+        assert excinfo.value.sudo_missing is False
+
+    def test_missing_sudo_binary_is_named(self, broker, monkeypatch) -> None:
+        monkeypatch.setattr("openfollow.privilege.broker.shutil.which", lambda name: None)
+        monkeypatch.setattr(
+            "openfollow.privilege.broker.subprocess.run",
+            lambda *a, **kw: pytest.fail("no sudo call without a sudo binary"),
+        )
+        with pytest.raises(PrivilegeError, match="sudo is not installed") as excinfo:
+            broker.run(SERVICE_RESTART, ["/usr/bin/systemctl", "restart", "x"])
+        assert excinfo.value.sudo_missing is True
 
 
 class TestStdinPassthrough:

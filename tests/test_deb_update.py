@@ -718,9 +718,11 @@ def _make_app(
 ) -> Any:
     """Build a minimal app-shaped object for the worker."""
     statuses: list[tuple[str, str]] = []
+    errors: list[str] = []
 
     def set_update_status(state: str, message: str = "", error: str = "") -> None:
         statuses.append((state, message))
+        errors.append(error)
 
     def settle_finished_install() -> dict[str, str]:
         statuses.append(("settled", ""))
@@ -744,6 +746,7 @@ def _make_app(
         _config=config,
         _runtime_services=SimpleNamespace(privilege_broker=broker),
         _statuses=statuses,
+        _errors=errors,
     )
     return app
 
@@ -857,6 +860,25 @@ class TestRunDebUpdate:
         app._runtime_services.privilege_broker.run.side_effect = PrivilegeError("no sudoers rule")
         run_deb_update(app, {"kind": "deb", "service_name": "openfollow"})
         assert app._statuses[-1][0] == "failed"
+        assert "Apply Permissions" in app._errors[-1]
+
+    def test_install_without_sudo_asks_for_sudo_not_permissions(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from openfollow.privilege.broker import PrivilegeError
+
+        _patch_online_io(monkeypatch, inner_deb="/tmp/openfollow-update-x.ofupdate.d/openfollow_0.2.4_arm64.deb")
+        monkeypatch.setattr(
+            "openfollow.runtime.deb_update.validate_uploaded_deb",
+            lambda path, arch: {"Package": "openfollow", "Version": "0.2.4", "Architecture": arch},
+        )
+
+        app = _make_app(current_version="0.2.3")
+        app._runtime_services.privilege_broker.run.side_effect = PrivilegeError(
+            "Install an OpenFollow update: sudo is not installed on this host.", sudo_missing=True
+        )
+        run_deb_update(app, {"kind": "deb", "service_name": "openfollow"})
+        assert app._statuses[-1][0] == "failed"
+        assert "apt install sudo" in app._errors[-1]
+        assert "Apply Permissions" not in app._errors[-1]
 
     def test_invalid_inner_deb_sets_failed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # A verified bundle whose inner package fails the package/arch check must

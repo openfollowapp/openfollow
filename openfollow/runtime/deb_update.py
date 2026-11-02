@@ -211,6 +211,11 @@ def _apply_update(
             reason=f"Install OpenFollow v{version_label}",
         )
     except PrivilegeError as exc:
+        if exc.sudo_missing:
+            raise RuntimeError(
+                "Package install failed: sudo is not installed on this device. "
+                "As root, run 'apt install sudo', then try again."
+            ) from exc
         raise RuntimeError(
             f"Package install failed. Run 'Apply Permissions' on the Device page, then try again. Detail: {exc}"
         ) from exc

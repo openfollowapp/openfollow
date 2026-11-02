@@ -8,7 +8,7 @@ Install a newer OpenFollow release and restart the service – no SSH session ne
 
 **Install Latest Version Online** checks GitHub for the newest release. If it is newer, a confirmation dialog appears; confirming downloads the signed update bundle (`.ofupdate`) for this device's architecture, verifies it and installs it. A locked dialog shows progress and the page reloads once the new version is up, then opens **What's new** once per update. **(What's new)** after the version at the foot of the page opens it again. If the device is already current, nothing is changed.
 
-The device briefly goes away while the service restarts. An install that fails before the service has stopped shows its reason in the dialog, and the running version stays. An update is refused while OpenFollow is restarting. If the updater lacks a privilege, run **Apply Permissions** on the Device page first.
+The device briefly goes away while the service restarts. An install that fails before the service has stopped shows its reason in the dialog, and the running version stays. An update is refused while OpenFollow is restarting. If the updater lacks a privilege, run **Apply Permissions** on the Device page first. If it reports that sudo is not installed (a Debian install set up with a root password has none), install it as root with `apt install sudo`, then try again.
 
 > **Needs internet.** This option reaches GitHub. On an isolated show LAN with no uplink, use **Install .ofupdate File**.
 

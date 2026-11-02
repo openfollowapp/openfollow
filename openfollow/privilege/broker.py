@@ -123,6 +123,9 @@ class PrivilegeBroker:
             if cached is not None and now - cached[0] < _CACHE_TTL_S:
                 return cached[1]
 
+        if shutil.which("sudo") is None:
+            # Not cached: once sudo is installed the next call probes it.
+            return CapabilityState.UNAVAILABLE
         probed = self._probe(capability)
 
         with self._lock:
@@ -147,9 +150,6 @@ class PrivilegeBroker:
 
         Never raises (errors → UNAVAILABLE).
         """
-        if shutil.which("sudo") is None:
-            return CapabilityState.UNAVAILABLE
-
         env = {**os.environ, **_ENV_OVERRIDES}
         try:
             probe = subprocess.run(

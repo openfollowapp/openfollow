@@ -718,6 +718,21 @@ class TestRunUnavailable:
             broker.run(SERVICE_RESTART, ["/usr/bin/systemctl", "restart", "x"])
         assert excinfo.value.sudo_missing is True
 
+    def test_installing_sudo_takes_effect_on_the_next_run(self, broker, monkeypatch) -> None:
+        sudo_path: list[str | None] = [None]
+        monkeypatch.setattr("openfollow.privilege.broker.shutil.which", lambda name: sudo_path[0])
+
+        def _run(argv, **kw):
+            if "-ll" in argv:
+                return subprocess.CompletedProcess(argv, 0, _NOPASSWD_LISTING, "")
+            return subprocess.CompletedProcess(argv, 0, "ok", "")
+
+        monkeypatch.setattr("openfollow.privilege.broker.subprocess.run", _run)
+        with pytest.raises(PrivilegeError, match="sudo is not installed"):
+            broker.run(SERVICE_RESTART, ["/usr/bin/systemctl", "restart", "x"])
+        sudo_path[0] = "/usr/bin/sudo"
+        assert broker.run(SERVICE_RESTART, ["/usr/bin/systemctl", "restart", "x"]).stdout == "ok"
+
 
 class TestStdinPassthrough:
     def test_extra_stdin_follows_password(self, broker, monkeypatch) -> None:

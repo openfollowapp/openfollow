@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from openfollow.input.touch_remote import TouchRemote
     from openfollow.logging_setup import RingBufferLogHandler
     from openfollow.network.adapter import ApplyResult
+    from openfollow.privilege.readiness import PrivilegeWarning
     from openfollow.runtime.diagnostics_export import DiagnosticsExport
     from openfollow.runtime.latency_warning import LatencyWarning
     from openfollow.runtime.removable_media import Media
@@ -433,6 +434,8 @@ class ConfigWebServer:
         network_rescan_handler: Callable[[], None] | None = None,
         # Privilege capability snapshot for the diagnostics bundle; optional for tests.
         privilege_states_provider: Callable[[], dict[str, str]] | None = None,
+        # The page banner for privileged actions that can't run; optional for tests.
+        privilege_warning_provider: Callable[[], PrivilegeWarning | None] | None = None,
         # Boot-autostart switch: host state on read, broker-elevated write.
         autostart_state_provider: (Callable[[str], dict[str, Any]] | None) = None,
         autostart_apply_handler: (Callable[[str, bool], dict[str, Any]] | None) = None,
@@ -546,6 +549,7 @@ class ConfigWebServer:
         self._psn_source_advisory_provider = psn_source_advisory_provider
         self._web_bind_advisory_provider = web_bind_advisory_provider
         self._privilege_states_provider = privilege_states_provider
+        self._privilege_warning_provider = privilege_warning_provider
         self._autostart_state_provider = autostart_state_provider
         self._autostart_apply_handler = autostart_apply_handler
         self._camera_setup_state_provider = camera_setup_state_provider
@@ -675,6 +679,16 @@ class ConfigWebServer:
     def get_peers(self) -> list[PeerInfo]:
         """Get list of discovered peers."""
         return self._beacon_receiver.get_peers()
+
+    def get_privilege_warning(self) -> PrivilegeWarning | None:
+        """The banner for privileged actions that can't run; ``None`` when they can or when unwired."""
+        if self._privilege_warning_provider is None:
+            return None
+        try:
+            return self._privilege_warning_provider()
+        except Exception:  # noqa: BLE001
+            logger.exception("Privilege warning provider raised")
+            return None
 
     def get_privilege_capability_states(self) -> dict[str, str]:
         """Snapshot of every privilege capability's state; empty dict when unwired."""

@@ -2401,6 +2401,7 @@
  .notice.error::before, .update-notice.error::before, .modal-error::before, .diag-error::before,
  .gallery-error::before, .network-banner.network-banner-error::before { width: 17px; background-image: var(--error-sign); }
  .notice.warning, .wizard-action-required { border-color: var(--caution-border); background: var(--caution-fill); }
+ .privilege-warning { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
  .notice.success, .network-banner.network-banner-ok { border-color: var(--success-border); background: var(--success-fill); }
  .notice.success::before, .network-banner.network-banner-ok::before { background-image: var(--success-sign); }
  /* The next step under what the station observed. */
@@ -2535,6 +2536,7 @@
  %# A page with navigation of its own places the box under it.
  % if not get('platform_warning_inline', False):
  % include('partials/platform_warning.tpl', platform_warning=get('platform_warning'))
+ % include('partials/privilege_warning.tpl', privilege_warning=get('privilege_warning'))
  % end
  {{!base}}
  % if defined('on_device') and on_device:

@@ -26,6 +26,7 @@
     <button type="button" class="tab-btn" data-tab="about-written-offer">Written offer</button>
 </div>
 % include('partials/platform_warning.tpl', platform_warning=get('platform_warning'))
+% include('partials/privilege_warning.tpl', privilege_warning=get('privilege_warning'))
 
 <div class="tab-content active" id="tab-about-info">
     <div class="section">

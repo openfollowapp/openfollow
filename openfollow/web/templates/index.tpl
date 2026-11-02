@@ -10,6 +10,7 @@
     <button type="button" class="tab-btn" data-tab="detection" data-feature="detection">Person Detection</button>
 </div>
 % include('partials/platform_warning.tpl', platform_warning=get('platform_warning'))
+% include('partials/privilege_warning.tpl', privilege_warning=get('privilege_warning'))
 
 <!-- Overview -->
 <div class="tab-content" id="tab-overview">

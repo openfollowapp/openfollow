@@ -180,7 +180,7 @@ class TestHelpDocPackaging:
     def test_every_referenced_help_id_has_a_doc(self) -> None:
         referenced: set[str] = set()
         for tpl in _TEMPLATES_DIR.rglob("*.tpl"):
-            referenced.update(re.findall(r'data-help="([a-z0-9_-]+)"', tpl.read_text()))
+            referenced.update(re.findall(r'data-help(?:-open)?="([a-z0-9_-]+)"', tpl.read_text()))
         assert referenced, "expected at least one data-help reference (camera, grid)"
         missing = {doc_id for doc_id in referenced if not (_WEB_HELP_DIR / f"{doc_id}.md").is_file()}
         assert not missing, f"data-help ids without a help/<id>.md doc: {sorted(missing)}"

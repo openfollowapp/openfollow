@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
 # Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
-"""Tests for the sudoers drop-in renderer + installer."""
+"""Tests for the sudoers drop-in renderer."""
 
 from __future__ import annotations
 
@@ -11,21 +11,15 @@ from pathlib import Path
 
 import pytest
 
-from openfollow.privilege.broker import PrivilegeError
 from openfollow.privilege.capabilities import (
     ALL_CAPABILITIES,
-    DEVICE_INSTALL_SUDOERS_DROPIN,
-    DEVICE_TRUNCATE_LEGACY_SUDOERS,
-    DEVICE_VISUDO_VALIDATE,
     Capability,
 )
 from openfollow.privilege.drop_in import (
     _is_safe_user,
     current_device_user,
-    install_drop_in,
     render_drop_in,
 )
-from tests._fake_broker import FakeBroker, make_failure
 
 pytestmark = pytest.mark.unit
 
@@ -126,190 +120,3 @@ class TestCurrentDeviceUser:
         # running the test – just check it returns a non-empty string.
         result = current_device_user()
         assert isinstance(result, str) and result
-
-
-# ---------- install --------------------------------------------------------
-
-
-@pytest.fixture
-def tmp_targets(tmp_path):
-    """Use tmp paths so the test never touches real ``/etc/sudoers.d``."""
-    return {
-        "target": tmp_path / "openfollow-privileged",
-        "legacy": tmp_path / "openfollow-update",
-    }
-
-
-class TestInstallDropIn:
-    def test_validates_then_installs(self, tmp_targets) -> None:
-        broker = FakeBroker()
-        install_drop_in(
-            broker,
-            user="openfollow",
-            target_path=tmp_targets["target"],
-            legacy_path=tmp_targets["legacy"],
-        )
-        # visudo + install(new) + always-attempted legacy truncate.
-        assert len(broker.calls) == 3
-        # visudo first
-        assert broker.calls[0].capability == DEVICE_VISUDO_VALIDATE
-        assert broker.calls[0].argv[0] == "/usr/sbin/visudo"
-        assert broker.calls[0].argv[1] == "-cf"
-        # install second; uses the narrow sudoers-dropin capability.
-        # Target is the supplied tmp path; the install capability's sudoers pattern
-        # pins both the source prefix and the destination.
-        assert broker.calls[1].capability == DEVICE_INSTALL_SUDOERS_DROPIN
-        assert broker.calls[1].argv[0] == "/usr/bin/install"
-        assert broker.calls[1].argv[-1] == str(tmp_targets["target"])
-        assert len(broker.invalidate_calls) == 1  # cache wiped on success
-
-    def test_validation_failure_does_not_install(self, tmp_targets) -> None:
-        """Broker validation errors are rewritten to operator-friendly
-        ``Couldn't apply new permissions:``; install is still skipped."""
-        broker = FakeBroker()
-        broker.exceptions = [make_failure("visudo: syntax error")]
-        with pytest.raises(PrivilegeError, match="Couldn't apply new permissions"):
-            install_drop_in(
-                broker,
-                user="openfollow",
-                target_path=tmp_targets["target"],
-                legacy_path=tmp_targets["legacy"],
-            )
-        # Install was never attempted.
-        assert all(call.argv[0] != "/usr/bin/install" for call in broker.calls)
-        # Cache must NOT be invalidated on failure (no PASSWORDLESS
-        # grants were created).
-        assert broker.invalidate_calls == []
-
-    def test_validation_cancel_surfaces_cancel_copy(self, tmp_targets) -> None:
-        """Operator hitting Cancel on the password prompt produces the
-        broker's "cancelled or timed out" PrivilegeError. The drop-in
-        layer rewrites that into a clean "Cancelled – no changes were
-        made." message so the install-result row in the Device
-        Permissions section reads cleanly instead of leaking the
-        capability description + the technical broker prefix."""
-        broker = FakeBroker()
-        broker.exceptions = [
-            make_failure(
-                "Validate a sudoers fragment with visudo -cf: cancelled or timed out waiting for the device password.",
-            )
-        ]
-        with pytest.raises(PrivilegeError, match="Cancelled – no changes were made"):
-            install_drop_in(
-                broker,
-                user="openfollow",
-                target_path=tmp_targets["target"],
-                legacy_path=tmp_targets["legacy"],
-            )
-        assert all(call.argv[0] != "/usr/bin/install" for call in broker.calls)
-
-    def test_install_failure_surfaces(self, tmp_targets) -> None:
-        broker = FakeBroker()
-        broker.exceptions = [None, make_failure("install: cannot stat")]
-        with pytest.raises(PrivilegeError, match="Couldn't apply new permissions"):
-            install_drop_in(
-                broker,
-                user="openfollow",
-                target_path=tmp_targets["target"],
-                legacy_path=tmp_targets["legacy"],
-            )
-        assert broker.invalidate_calls == []
-
-    def test_legacy_file_truncated_when_present(self, tmp_targets) -> None:
-        """``install /dev/null /etc/sudoers.d/openfollow-update`` zeroes
-        the legacy file's rules without needing a separate ``rm``
-        capability."""
-        tmp_targets["legacy"].write_text("legacy contents")
-        broker = FakeBroker()
-        install_drop_in(
-            broker,
-            user="openfollow",
-            target_path=tmp_targets["target"],
-            legacy_path=tmp_targets["legacy"],
-        )
-        # 3 calls now: visudo + install(new) + install(/dev/null over legacy)
-        install_calls = [c for c in broker.calls if c.argv[0] == "/usr/bin/install"]
-        assert len(install_calls) == 2
-        assert install_calls[-1].argv[-2] == "/dev/null"
-        assert install_calls[-1].argv[-1] == str(tmp_targets["legacy"])
-        # The legacy-truncate install uses its own narrow capability
-        # whose sudoers pattern pins the legacy filename.
-        assert install_calls[-1].capability == DEVICE_TRUNCATE_LEGACY_SUDOERS
-
-    def test_legacy_truncate_failure_does_not_raise(self, tmp_targets) -> None:
-        """Failing to truncate the legacy file is best-effort: the
-        new drop-in is already in place, so the install is considered
-        a success and the leftover legacy file is at worst a no-op
-        whose rules are a subset of the new file's."""
-        tmp_targets["legacy"].write_text("legacy contents")
-        broker = FakeBroker()
-        # visudo (ok), install (ok), legacy install (fail).
-        broker.exceptions = [None, None, make_failure("legacy install boom")]
-        install_drop_in(
-            broker,
-            user="openfollow",
-            target_path=tmp_targets["target"],
-            legacy_path=tmp_targets["legacy"],
-        )
-        assert len(broker.invalidate_calls) == 1
-
-    def test_legacy_truncate_attempted_even_when_file_absent(self, tmp_targets) -> None:
-        """Regression: the truncate must not be gated on an unprivileged
-        ``exists()`` probe. On a real host ``/etc/sudoers.d`` is 0750
-        root:root, so the non-root device user gets EACCES stat-ing a
-        file inside it and ``Path.exists()`` reports ``False`` even when a
-        legacy drop-in is present – silently skipping the cleanup. The
-        installer now always attempts the broker-mediated truncate
-        (``install /dev/null`` is idempotent), so it must fire even when
-        the legacy path does not exist on disk."""
-        # Deliberately do NOT create tmp_targets["legacy"].
-        assert not tmp_targets["legacy"].exists()
-        broker = FakeBroker()
-        install_drop_in(
-            broker,
-            user="openfollow",
-            target_path=tmp_targets["target"],
-            legacy_path=tmp_targets["legacy"],
-        )
-        install_calls = [c for c in broker.calls if c.argv[0] == "/usr/bin/install"]
-        assert len(install_calls) == 2  # new drop-in + legacy truncate
-        assert install_calls[-1].capability == DEVICE_TRUNCATE_LEGACY_SUDOERS
-        assert install_calls[-1].argv[-2] == "/dev/null"
-        assert install_calls[-1].argv[-1] == str(tmp_targets["legacy"])
-        assert len(broker.invalidate_calls) == 1
-
-    def test_legacy_path_none_skips_truncate_branch(self, tmp_targets) -> None:
-        broker = FakeBroker()
-        install_drop_in(
-            broker,
-            user="openfollow",
-            target_path=tmp_targets["target"],
-            legacy_path=None,
-        )
-        install_calls = [c for c in broker.calls if c.argv[0] == "/usr/bin/install"]
-        assert len(install_calls) == 1
-
-    def test_temp_file_removed_after_install(self, tmp_targets) -> None:
-        broker = FakeBroker()
-        # Capture the temp path from the broker's visudo argv.
-        install_drop_in(
-            broker,
-            user="openfollow",
-            target_path=tmp_targets["target"],
-            legacy_path=tmp_targets["legacy"],
-        )
-        temp_path = Path(broker.calls[0].argv[-1])
-        assert not temp_path.exists()
-
-    def test_temp_file_removed_after_validation_failure(self, tmp_targets) -> None:
-        broker = FakeBroker()
-        broker.exceptions = [make_failure("bad syntax")]
-        with pytest.raises(PrivilegeError):
-            install_drop_in(
-                broker,
-                user="openfollow",
-                target_path=tmp_targets["target"],
-                legacy_path=tmp_targets["legacy"],
-            )
-        temp_path = Path(broker.calls[0].argv[-1])
-        assert not temp_path.exists()

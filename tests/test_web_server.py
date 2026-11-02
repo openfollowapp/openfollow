@@ -11071,6 +11071,76 @@ def test_developer_mode_hides_the_box_from_the_next_request(on_windows, live_ser
         assert _PLATFORM_BOX not in _get(base, path)[1]
 
 
+_PRIVILEGE_BOX = '<div class="notice error privilege-warning">'
+
+
+@pytest.mark.parametrize(
+    ("path", "navigation", "panels"),
+    [
+        ("/", '<div class="tab-bar">', 'class="tab-content'),
+        ("/about", '<div class="tab-bar">', 'class="tab-content'),
+        ("/wizard", '<nav class="wizard-steps"', 'class="wizard-content"'),
+    ],
+    ids=["index", "about", "wizard"],
+)
+@pytest.mark.parametrize("warning", ["NO_SUDO", "RULES_MISSING"])
+def test_the_privilege_box_names_the_problem_and_its_fix(
+    live_server, path: str, navigation: str, panels: str, warning: str
+) -> None:
+    from bottle import html_escape
+
+    from openfollow.privilege import readiness
+
+    server, base = live_server
+    shown = getattr(readiness, warning)
+    server._privilege_warning_provider = lambda: shown
+    status, body = _get(base, path)
+    assert status == 200
+    assert body.count(_PRIVILEGE_BOX) == 1
+    assert body.index(navigation) < body.index(_PRIVILEGE_BOX) < body.index(panels)
+    box = body[body.index(_PRIVILEGE_BOX) :]
+    assert f"<div>{html_escape(shown.title)}</div>" in box
+    assert f'<div class="notice-sub">{html_escape(shown.step)}</div>' in box
+    assert 'data-help-open="system-permissions"' in box[: box.index("</button>")]
+
+
+def test_a_page_without_navigation_shows_the_privilege_box(pin_protected_server) -> None:
+    from openfollow.privilege import readiness
+
+    server, base, _ = pin_protected_server
+    server._privilege_warning_provider = lambda: readiness.NO_SUDO
+    status, body = _get(base, "/login")
+    assert status == 200
+    assert body.count(_PRIVILEGE_BOX) == 1
+
+
+def test_working_privileges_show_no_privilege_box(live_server) -> None:
+    server, base = live_server
+    server._privilege_warning_provider = lambda: None
+    for path in ("/", "/about", "/wizard"):
+        assert _PRIVILEGE_BOX not in _get(base, path)[1]
+
+
+def test_a_failing_privilege_check_shows_the_page_without_the_box(live_server) -> None:
+    server, base = live_server
+
+    def _boom() -> None:
+        raise RuntimeError("probe failed")
+
+    server._privilege_warning_provider = _boom
+    status, body = _get(base, "/")
+    assert status == 200
+    assert _PRIVILEGE_BOX not in body
+
+
+def test_the_system_permissions_help_explains_both_fixes(live_server) -> None:
+    _, base = live_server
+    status, body = _get(base, "/help/system-permissions.html")
+    assert status == 200
+    assert "apt-get install -y sudo" in body
+    assert "--reinstall" in body
+
+
 def test_a_supported_platform_shows_no_box(live_server) -> None:
     _, base = live_server
     for path in ("/", "/about", "/wizard"):

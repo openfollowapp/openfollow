@@ -100,6 +100,7 @@ if TYPE_CHECKING:
         NetworkReading,
     )
     from openfollow.privilege import PrivilegeBroker  # noqa: F401
+    from openfollow.privilege.readiness import PrivilegeWarning
     from openfollow.psn.marker import Marker
     from openfollow.runtime.diagnostics_export import DiagnosticsExport
     from openfollow.video.detection import PersonDetector
@@ -292,7 +293,7 @@ class WebCommandQueue:
         # Generic privilege-password prompt. The PrivilegeBroker uses this
         # any time a sudoers grant is missing and a password is needed to
         # elevate. Not tied to the update state machine – any subsystem
-        # (network apply, sudoers drop-in install, device repair) can park
+        # (network apply, camera setup) can park
         # on it. ``_privilege_request`` is the active prompt payload
         # (capability name, operator-facing reason); the web modal is the
         # sole consumer.
@@ -3188,6 +3189,7 @@ class AppRuntimeServices:
             network_rescan_handler=self._forget_network_reading,
             # Privilege capability snapshot for the diagnostics bundle.
             privilege_states_provider=self._privilege_states_provider,
+            privilege_warning_provider=self._privilege_warning_provider,
             # Boot-autostart switch: host state on read, broker-elevated write.
             autostart_state_provider=self._autostart_state_provider,
             autostart_apply_handler=self._handle_autostart_apply,
@@ -3637,6 +3639,12 @@ class AppRuntimeServices:
             return ApplyResult(ok=False, message="Read-only host – cannot delete saved settings.")
         with self.network_change():
             return cast(ApplyResult, adapter.forget_interface(name))
+
+    def _privilege_warning_provider(self) -> PrivilegeWarning | None:
+        """The web UI's page banner when privileged actions can't run."""
+        from openfollow.privilege.readiness import current
+
+        return current(getattr(self, "_privilege_broker", None))
 
     def _privilege_states_provider(self) -> dict[str, str]:
         """Snapshot every capability's state for the web UI.

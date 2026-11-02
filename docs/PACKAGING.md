@@ -134,7 +134,15 @@ Cage/DRM kiosk, so the machine also needs a GPU + display – it will not come u
 a headless server / VM.
 
 `postinst` creates the user, enables linger, and starts the service. Open the
-web UI at `http://<host-ip>/`.
+web UI at `http://<host-ip>/`. On a host that boots to a desktop (a display
+manager under `graphical.target`) it also prints the `systemctl set-default
+multi-user.target` step, since the display manager holds the display Cage needs;
+the install goes ahead either way.
+
+`network-manager` is a `Recommends`: Debian's installer leaves ifupdown in
+charge, which the station can only read, and an online `apt install` pulls
+NetworkManager in. It leaves an interface still listed in
+`/etc/network/interfaces` unmanaged until that stanza is removed.
 
 > In a chroot/image-build context (no running systemd), the maintainer scripts
 > enable the units but skip the live start – exactly what `rpi-image-gen` needs.

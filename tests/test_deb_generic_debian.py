@@ -29,10 +29,10 @@ def _control_field(name: str) -> list[str]:
     return []
 
 
-def test_deb_recommends_networkmanager() -> None:
-    """Debian's installer leaves ifupdown in charge, which OpenFollow can only
-    read; NetworkManager is what lets the station set its own address."""
-    assert "network-manager" in _control_field("Recommends")
+def test_deb_adds_no_recommends() -> None:
+    """An update installs a new Recommends, and an offline station cannot
+    download one, so the update fails; optional packages stay out of it."""
+    assert _control_field("Recommends") == ["gir1.2-webkit2-4.1"]
 
 
 def _run_postinst(tmp_path: Path, *, default_target: str, dm_load_state: str) -> str:

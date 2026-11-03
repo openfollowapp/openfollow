@@ -139,10 +139,13 @@ manager under `graphical.target`) it also prints the `systemctl set-default
 multi-user.target` step, since the display manager holds the display Cage needs;
 the install goes ahead either way.
 
-`network-manager` is a `Recommends`: Debian's installer leaves ifupdown in
-charge, which the station can only read, and an online `apt install` pulls
-NetworkManager in. It leaves an interface still listed in
+Debian's installer leaves ifupdown in charge, which the station can only read:
+the Network page sets addresses only once NetworkManager is installed
+(`sudo apt install network-manager`). It leaves an interface still listed in
 `/etc/network/interfaces` unmanaged until that stanza is removed.
+`network-manager` is deliberately neither a `Depends` nor a `Recommends`: an
+update installs both, and an offline station cannot download them, so the
+update would fail.
 
 > In a chroot/image-build context (no running systemd), the maintainer scripts
 > enable the units but skip the live start – exactly what `rpi-image-gen` needs.

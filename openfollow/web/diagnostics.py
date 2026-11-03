@@ -127,12 +127,14 @@ _FAILURE_EXTRACT_TIMEOUT_S = 12.0
 # own. Without one its overshoot past any outer budget would be five times the
 # default cap rather than one probe's.
 _RUNTIME_SECTION_BUDGET_S = 10.0
+# E11 reads sysfs, the compositor, the journal and systemctl twice.
+_DISPLAY_SECTION_BUDGET_S = 8.0
 
 # Whole-assembly wall-clock budget. The caps above bound each probe, but an
 # operator's browser (or a reverse proxy in front of it) waits on their sum,
 # which no single cap constrains. ``collect_bundle`` checks this deadline
 # between sections and lists the ones it never reaches as skipped. Every
-# section that runs more than one probe – D, E1, E5b – takes the remaining
+# section that runs more than one probe – D, E1, E5b, E11 – takes the remaining
 # budget explicitly, so the section running when the deadline passes overshoots
 # by one probe's cap (+8 s where ``system_profiler`` runs, +5 s elsewhere) and
 # not by the sum of its probes.
@@ -2952,6 +2954,18 @@ def collect_usb(p: DiagnosticsProviders) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Section E11 – displays
+# ---------------------------------------------------------------------------
+
+
+def _collect_displays(unit: str | None, budget_s: float) -> list[str]:
+    """Section E11, whose module reads this one's probe helpers."""
+    from openfollow.web.diagnostics_display import collect_displays  # noqa: PLC0415
+
+    return collect_displays(unit=unit, budget_s=budget_s)
+
+
+# ---------------------------------------------------------------------------
 # Section F – recent I/O activity
 # ---------------------------------------------------------------------------
 
@@ -3190,6 +3204,7 @@ class DiagnosticsBundle:
     e8_usb: list[str] = field(default_factory=list)
     e9_gamepad: list[str] = field(default_factory=list)
     e10_mouse3d: list[str] = field(default_factory=list)
+    e11_displays: list[str] = field(default_factory=list)
     f_io: list[str] = field(default_factory=list)
     g_permissions: list[str] = field(default_factory=list)
 
@@ -3220,6 +3235,7 @@ _BUNDLE_SECTIONS: tuple[tuple[str, str], ...] = (
     ("E8. USB devices", "e8_usb"),
     ("E9. Gamepad controllers", "e9_gamepad"),
     ("E10. 3D Mouse", "e10_mouse3d"),
+    ("E11. Displays", "e11_displays"),
     ("F. Recent I/O activity", "f_io"),
     ("G. Device permissions", "g_permissions"),
 )
@@ -3357,6 +3373,7 @@ def collect_bundle(
         "e8_usb": lambda: collect_usb(p),
         "e9_gamepad": lambda: collect_gamepad_runtime(p),
         "e10_mouse3d": lambda: collect_mouse3d(p),
+        "e11_displays": lambda: _collect_displays(update_service_name, remaining(_DISPLAY_SECTION_BUDGET_S)),
         "f_io": lambda: collect_recent_io(p),
         "g_permissions": lambda: collect_device_permissions(p),
     }

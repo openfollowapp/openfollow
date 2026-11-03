@@ -54,7 +54,7 @@ if TYPE_CHECKING:
     from openfollow.web.discovery import PeerInfo
     from openfollow.web.server import ConfigWebServer
 
-from openfollow import config_restore, platform_support, restore_hold
+from openfollow import config_restore, optional_packages, platform_support, restore_hold
 from openfollow.button_names import ButtonNameStyle, name_style
 from openfollow.configuration import (
     CALIBRATION_CORNERS,
@@ -4265,6 +4265,7 @@ def _build_diagnostics_providers(
         interface_assignment_rows=lambda: build_interface_assignment_rows(cfg, resolve_web_bind_for(cfg)),
         network_planes=server.network_planes_provider,
         address_sources=server.read_address_sources,
+        network_writable=lambda: (server.get_network_config() or {}).get("writable"),
         web_listener=lambda: server.listener,
         recent_midi_events=server.recent_midi_events_provider,
         # USB-visibility cross-reference indices.
@@ -6605,6 +6606,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             "available": True,
             "editable": editable,
             "writable": cfg.get("writable", False),
+            "nm_missing": optional_packages.network_manager_missing(writable=bool(cfg.get("writable"))),
             "backend": cfg.get("backend"),
             "interfaces": cfg.get("interfaces", []),
             "active_interface": cfg.get("active_interface", ""),

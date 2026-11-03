@@ -21,10 +21,22 @@ import re
 
 import pytest
 
-from openfollow.runtime.overlay_links import DISCORD, DOCS, LINKS, QUIET_MODULES, SUPPORT, draw_link_qr, link_qr_svg
+from openfollow.runtime.overlay_links import (
+    DISCORD,
+    DOCS,
+    INSTALL_PACKAGES,
+    LINKS,
+    QUIET_MODULES,
+    SUPPORT,
+    draw_link_qr,
+    link_qr_svg,
+)
 from tests._fake_cairo import FakeCairo
 
 pytestmark = pytest.mark.unit
+
+# Every stored symbol: the Settings screen's links and the web UI's install article.
+_CODES = (*LINKS, INSTALL_PACKAGES)
 
 _FINDER = (
     "#######",
@@ -37,7 +49,7 @@ _FINDER = (
 )
 
 
-@pytest.mark.parametrize("code", LINKS, ids=lambda c: c.url)
+@pytest.mark.parametrize("code", _CODES, ids=lambda c: c.url)
 class TestSymbolData:
     def test_is_a_square_grid_of_modules(self, code) -> None:
         size = len(code.symbol)
@@ -80,6 +92,15 @@ class TestPayloads:
 
     def test_only_the_support_code_is_a_contribution_request(self) -> None:
         assert [code for code in LINKS if code.contribution] == [SUPPORT]
+
+    def test_the_install_article_is_not_a_settings_screen_link(self) -> None:
+        assert INSTALL_PACKAGES not in LINKS
+        assert not INSTALL_PACKAGES.contribution
+
+
+def test_the_install_article_is_a_fixed_address() -> None:
+    """The website forwards it to the current release's article, so a station never needs a new symbol."""
+    assert INSTALL_PACKAGES.url == "https://openfollow.app/docs/install-packages"
 
 
 class TestDrawing:
@@ -129,7 +150,7 @@ class TestDrawing:
         assert max(a[2] for a in cr.arcs) <= QUIET_MODULES * module + 1e-6
 
 
-@pytest.mark.parametrize("code", LINKS, ids=lambda c: c.url)
+@pytest.mark.parametrize("code", _CODES, ids=lambda c: c.url)
 def test_the_checked_in_symbol_decodes_to_its_url(code) -> None:
     """The rows that ship must carry the address the caption promises.
 
@@ -150,7 +171,7 @@ def test_the_checked_in_symbol_decodes_to_its_url(code) -> None:
     assert decoded == code.url
 
 
-@pytest.mark.parametrize("code", LINKS, ids=lambda c: c.url)
+@pytest.mark.parametrize("code", _CODES, ids=lambda c: c.url)
 class TestSvg:
     """The web UI's rendering of the same rows the Operator Screen draws."""
 

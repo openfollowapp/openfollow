@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
 # Copyright (C) 2026 Michel Honold and Paul Hermann
-"""The links shown on the Settings screen, each with its QR symbol.
+"""The links shown on the Settings screen and in the web UI, each with its QR symbol.
 
 The symbols are stored rather than generated: encoding one needs a library the
 runtime does not otherwise want, and the payloads rarely change. Regenerate
@@ -151,6 +151,45 @@ SUPPORT = LinkCode(
 )
 
 LINKS: tuple[LinkCode, ...] = (DOCS, DISCORD, SUPPORT)
+
+
+# The web UI's link for a missing optional package. The website forwards it to
+# the current release's article, so the address never changes.
+INSTALL_PACKAGES = LinkCode(
+    url="https://openfollow.app/docs/install-packages",
+    lines=("Install a missing package:", "openfollow.app/docs"),
+    symbol=(
+        "#######...#.#.#.####..#######",
+        "#.....#.#.#....###....#.....#",
+        "#.###.#.....#..##.....#.###.#",
+        "#.###.#.###.###..#..#.#.###.#",
+        "#.###.#..#........###.#.###.#",
+        "#.....#.##.##..#......#.....#",
+        "#######.#.#.#.#.#.#.#.#######",
+        ".........###..###.#..........",
+        "#####.####.#.##..#..##.#.#.#.",
+        "..##......#.#...#########...#",
+        "##...###..#..#.#.#..#........",
+        "#......##...#.###....###.#.#.",
+        "##.#.##.###.###..#.......##..",
+        "#.#.##.##....#..#.#######...#",
+        ".#....##.#####.####...#####..",
+        ".##.##..####..##...##.###..#.",
+        "#.##.###...#.###.#.#.....##..",
+        "###.#...#.#.#...#..#.####.#.#",
+        "#.###.#.##.....#.##.#.#.#.#..",
+        "#....#.#.##.#.###..###..#..#.",
+        "##.#..#.....#######.#####.###",
+        "........##......#####...#####",
+        "#######.##.#######.##.#.###..",
+        "#.....#..###..#....##...#..#.",
+        "#.###.#.##.#######..#####.#.#",
+        "#.###.#.#...#...#####..#.####",
+        "#.###.#.###...##..##########.",
+        "#.....#.##.##.#.#...#.##.#.#.",
+        "#######.#.#..##..#.#.#.#..#..",
+    ),
+)
 
 
 def draw_link_qr(cr: Any, code: LinkCode, x: float, y: float, size: float, *, radius: float = 10.0) -> None:

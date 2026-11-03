@@ -840,6 +840,50 @@ def test_read_only_host_offers_no_edit_at_all(net_server) -> None:
     assert "on-screen Settings menu" in body
 
 
+def test_a_read_only_host_without_networkmanager_names_it_and_links_the_install_article(
+    net_server, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import openfollow.web.routes as routes_module
+    from openfollow.runtime.overlay_links import INSTALL_PACKAGES
+
+    seen: list[bool] = []
+
+    def nm_missing(*, writable: bool) -> bool:
+        seen.append(writable)
+        return True
+
+    monkeypatch.setattr(routes_module.optional_packages, "network_manager_missing", nm_missing)
+    fake, base = net_server
+    fake.writable = False
+    _, body = _get(base, "/section/network/status")
+    assert seen == [False]
+    assert "Addresses can't be set from this station." in body
+    assert "on-screen Settings menu" not in body
+    notice = _outer_html(body, 'class="notice warning qr-notice"')
+    assert "NetworkManager is not installed." in notice
+    assert f'href="{INSTALL_PACKAGES.url}"' in notice
+    assert INSTALL_PACKAGES.url.split("//", 1)[1] in notice
+    assert '<svg class="qr"' in notice
+
+
+def test_a_read_only_host_with_networkmanager_keeps_the_general_wording(net_server) -> None:
+    fake, base = net_server
+    fake.writable = False
+    _, body = _get(base, "/section/network/status")
+    assert "on-screen Settings menu" in body
+    assert "qr-notice" not in body
+
+
+def test_a_writable_host_never_shows_the_install_notice(net_server, monkeypatch: pytest.MonkeyPatch) -> None:
+    import openfollow.web.routes as routes_module
+
+    monkeypatch.setattr(routes_module.optional_packages, "network_manager_missing", lambda *, writable: not writable)
+    _, base = net_server
+    _, body = _get(base, "/section/network/status")
+    assert "qr-notice" not in body
+    assert "net-mode-pill readonly" not in body
+
+
 @pytest.mark.parametrize(
     "path",
     [

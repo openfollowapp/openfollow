@@ -19,7 +19,7 @@ import sys
 import cv2
 import numpy as np
 
-from openfollow.runtime.overlay_links import LINKS, QUIET_MODULES
+from openfollow.runtime.overlay_links import INSTALL_PACKAGES, LINKS, QUIET_MODULES
 
 
 def _symbol(url: str) -> np.ndarray:
@@ -41,7 +41,7 @@ def _decodes_back(symbol: np.ndarray, url: str) -> bool:
 
 def main() -> int:
     stale = False
-    for code in LINKS:
+    for code in (*LINKS, INSTALL_PACKAGES):
         symbol = _symbol(code.url)
         if not _decodes_back(symbol, code.url):
             print(f"{code.url} did not decode back from its own symbol", file=sys.stderr)

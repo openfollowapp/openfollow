@@ -34,6 +34,16 @@ Section A5 of the bundle ([`web/diagnostics.py`](../../openfollow/web/diagnostic
 
 Section E8 lists every USB device and, in its OpenFollow column, what OpenFollow picks up on it. Exact evidence decides first: a gamepad by the USB ids in its SDL GUID, a 3D mouse by the USB ids its status reports, storage by the disks under it, a camera by the V4L2 devices under it (`/sys/class/video4linux/*` resolved up to the USB device, Linux only) when the USB Camera input lists that name. Only then does a name decide: MIDI ports, gamepads without USB ids, and cameras found under no USB device (every camera on macOS). A shared word is weak evidence, so a camera placed through sysfs is never offered to the name match, and another device sharing its vendor or model word stays unclaimed.
 
+## Displays (E11)
+
+Section E11 ([`web/diagnostics_display.py`](../../openfollow/web/diagnostics_display.py), Linux only) sets three readings of the displays side by side, so a display Cage dropped, one kanshi left extended and a desktop holding the screen read differently:
+
+- **Kernel:** each `/sys/class/drm/cardN` with its driver and PCI ids (`boot display` marks the firmware's), and every connector with `status`, `enabled`, `dpms` and its modes.
+- **Compositor:** every head Cage announces through wlr-output-management, enabled or not, with mode, position, scale and transform; then whether the enabled ones are mirrored (one position) or extended, and which connected connectors are not shown. [`wayland_outputs.py`](../../openfollow/wayland_outputs.py) is a read-only stdlib client: it binds `zwlr_output_manager_v1` at version 2, reads to the manager's `done` and disconnects without creating a configuration. Cage logs nothing when an output's first commit fails, so this reading is the only evidence of it.
+- **Session:** this boot's unit journal, read once: kanshi's last verdict (applied, failed, no profile matched) with the modes its last profile could not set, and the wlroots / Cage lines (told apart from the app's by the `[file.c:line]` tag) that mention outputs, modes, swapchains, connectors or the DRM backend, collapsed, capped and through `redact_log_line`. Then the default boot target and the display manager, running or not.
+
+Each part says why when it could not be read, so a missing reading never reads as no display.
+
 ## Platform support (`platform_support.py`)
 
 OpenFollow is developed for one platform, and a station on any other warns loudly on every surface. `detect` decides once per process (`current()` caches it): hardware and OS never change while the app runs.

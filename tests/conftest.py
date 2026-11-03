@@ -179,6 +179,15 @@ def _no_host_camera_modes(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_host_displays(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
+    """No test may read the host's GPUs or its Wayland session; one that cares installs its own."""
+    from openfollow.web import diagnostics_display
+
+    monkeypatch.setattr(diagnostics_display, "_DRM_ROOT", tmp_path_factory.getbasetemp() / "no-drm")
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _supported_platform(monkeypatch: pytest.MonkeyPatch) -> None:
     """No test may depend on the host's platform; one that cares sets ``platform_support.current`` itself."""
     from openfollow import platform_support

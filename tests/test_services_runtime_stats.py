@@ -631,6 +631,19 @@ class TestPublishRuntimeStats:
         services.publish_runtime_stats(force=True)
         assert services.get_runtime_stats_snapshot()["tracking"]["pin_status"] is None
 
+    @pytest.mark.parametrize("compiling", [True, False])
+    def test_pending_coreml_compile_surfaces_into_tracking_section(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, compiling: bool
+    ) -> None:
+        self._prime(services)
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+        services._detector_build = object() if compiling else None  # type: ignore[assignment]
+
+        services.publish_runtime_stats(force=True)
+        assert services.get_runtime_stats_snapshot()["tracking"]["compiling"] is compiling
+
     def test_missing_deps_surface_into_tracking_section(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
     ) -> None:

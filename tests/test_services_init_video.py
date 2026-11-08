@@ -417,10 +417,32 @@ class TestInitVideoDetectionEnabled:
             if rec.levelname == "WARNING"
         )
 
+    # --------------------------------------------------------------------------- #
+    # init_video – plugin / pipeline / canvas capability branches
+    # --------------------------------------------------------------------------- #
 
-# --------------------------------------------------------------------------- #
-# init_video – plugin / pipeline / canvas capability branches
-# --------------------------------------------------------------------------- #
+    def test_detector_needing_a_compile_starts_after_it(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        recv_factory: _RecordingReceiverFactory,
+        patched_subsystems: None,
+    ) -> None:
+        """Startup with a model CoreML has not compiled yet: the pipeline comes up
+        without a detector and a build compiles it off the GTK thread."""
+        from openfollow.runtime import detector_build
+
+        builds: list[DetectionConfig] = []
+        monkeypatch.setattr(detector_build, "needs_compile", lambda _cfg: True)
+        monkeypatch.setattr(detector_build, "DetectorBuild", lambda cfg: builds.append(cfg) or SimpleNamespace())
+        svc = self._enabled_services(monkeypatch)
+
+        svc.init_video()
+
+        assert svc._person_detector is None
+        assert _FakePersonDetector.instances == []
+        assert recv_factory.last is not None
+        assert recv_factory.last.detector is None
+        assert builds == [svc._app._config.detection]
 
 
 class TestInitVideoInputPluginAbsent:

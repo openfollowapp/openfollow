@@ -25,6 +25,11 @@ def _render(tracking: dict[str, object]) -> str:
         ({"enabled": True, "running": True}, '<span class="stat-chip ok">Running</span>'),
         # It does not work until someone acts, so it is an error, never a caution.
         ({"enabled": True, "missing_deps": ["onnxruntime"]}, '<span class="stat-chip off">Unavailable</span>'),
+        ({"enabled": True, "compiling": True}, '<span class="stat-chip info">Compiling model</span>'),
+        (
+            {"enabled": True, "running": True, "compiling": True},
+            '<span class="stat-chip info">Compiling model</span>',
+        ),
     ],
 )
 def test_person_detection_chip_takes_the_level_of_its_state(tracking: dict[str, object], chip: str) -> None:

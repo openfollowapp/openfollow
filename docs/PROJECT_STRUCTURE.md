@@ -28,6 +28,7 @@ openfollow/              # Single unified package
 │   ├── receiver.py      # Generic GStreamer orchestrator
 │   ├── overlay.py       # Cairo HUD renderer
 │   ├── detection.py     # Optional person detection
+│   ├── coreml_compile.py # First CoreML compile of a model, in a child process
 │   ├── tracking.py      # ByteTrack tracker (Kalman + two-stage association)
 │   ├── media_store.py   # Media Gallery library (images/clips, storage, validation)
 │   ├── connection_status.py

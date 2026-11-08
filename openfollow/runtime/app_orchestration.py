@@ -108,6 +108,7 @@ def housekeeping(app: OpenFollowApp) -> bool:
         app._check_restart_request,
         app._check_pi_network_worker,
         app._check_diagnostics_export,
+        app._check_detector_build,
         app._check_button_detection_request,
         app._check_controller_slot_actions,
         app._check_camera_setup_requests,

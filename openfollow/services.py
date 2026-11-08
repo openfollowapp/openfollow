@@ -83,6 +83,7 @@ if TYPE_CHECKING:
     )
     from openfollow.privilege import PrivilegeBroker  # noqa: F401
     from openfollow.psn.marker import Marker
+    from openfollow.runtime.detector_build import DetectorBuild
     from openfollow.runtime.diagnostics_export import DiagnosticsExport
     from openfollow.video.detection import PersonDetector
     from openfollow.web import ConfigWebServer  # noqa: F401
@@ -94,6 +95,7 @@ logger = logging.getLogger(__name__)
 # diagnostics bundle shows; bounds output rather than dumping every row's
 # full per-row ring.
 _RECENT_OSC_SENDS_LIMIT = 100
+_DETECTOR_BUILD_JOIN_S = 1.0
 
 # Per-request budget for the web 3D-Mouse button-detect poll. Kept short so a
 # Detect click never pins its request thread for seconds; the browser widget
@@ -667,6 +669,8 @@ class AppRuntimeServices:
         self._overlay_renderer: CairoOverlayRenderer | None = None  # set in init_video
         self._system_stats: SystemStatsCollector | None = None  # set in init_video
         self._person_detector: PersonDetector | None = None  # set in init_video if enabled
+        # A detector waiting on its model's CoreML compile; wired by ``finish_detector_build``.
+        self._detector_build: DetectorBuild | None = None
 
         # Object pool for OverlayState to reduce GC pressure.
         self._overlay_state_pool = OverlayStatePool(pool_size=3)
@@ -970,7 +974,9 @@ class AppRuntimeServices:
 
         # Optional person detection (lazy import, zero cost when disabled)
         detector = None
+        startup_build: DetectionConfig | None = None
         if cfg.detection.enabled:
+            from openfollow.runtime.detector_build import needs_compile
             from openfollow.video.detection import (
                 PersonDetector,
                 check_detection_dependencies,
@@ -983,6 +989,8 @@ class AppRuntimeServices:
                     "Install with: pip install openfollow[detection]",
                     ", ".join(missing),
                 )
+            elif needs_compile(cfg.detection):
+                startup_build = cfg.detection
             else:
                 detector = PersonDetector(cfg.detection)
 
@@ -1039,6 +1047,8 @@ class AppRuntimeServices:
             self._person_detector = detector
             if self._person_detector is not None:
                 self._person_detector.start()
+            if startup_build is not None:
+                self._start_detector_build(startup_build)
         except Exception:
             try:
                 receiver.stop()
@@ -2590,6 +2600,13 @@ class AppRuntimeServices:
         not exist on the real app and would raise ``AttributeError`` in
         production while still passing ``SimpleNamespace`` tests.
         """
+        build = self._detector_build
+        if build is not None:
+            if new_cfg.enabled:
+                build.update(new_cfg)
+                return
+            self._detector_build = None
+            build.cancel()
         detector = self._person_detector
         if detector is not None and new_cfg.enabled:
             detector.reload_config(new_cfg)
@@ -2607,14 +2624,17 @@ class AppRuntimeServices:
 
         Each case reduces to the same primitive: rebuild the receiver
         pipeline so the detection branch matches the new detector's
-        appsink caps. The detector is built here, on the GTK thread, and
-        its session build holds the GIL, so every thread (frame clock,
-        output senders, web server) stops until it is done: on CoreML a
-        model's first build compiles it for seconds, while later builds
-        load the compiled copy from the storage cache; the CPU provider
-        (the Pi) builds without one. Backend-init failures land as
-        ``available=False`` (swallowed in ``__init__``); the reason
-        surfaces via runtime-stats ``missing_deps``, not a raise.
+        appsink caps. The detector is built on the GTK thread and its
+        session build holds the GIL, so every thread (frame clock, output
+        senders, web server) stops until it is done. A build that would
+        compile the model for CoreML is deferred instead: a
+        ``DetectorBuild`` compiles it in a child process and
+        ``finish_detector_build`` wires it from housekeeping, loading the
+        compiled copy. While one is pending, every detection change
+        updates its request. The CPU provider (the Pi) always builds here.
+        Backend-init failures land as ``available=False`` (swallowed in
+        ``__init__``); the reason surfaces via runtime-stats
+        ``missing_deps``, not a raise.
 
         Skip-rebuild fast path: when **both** old and new detector are
         unavailable (or there's no old detector) the prior pipeline never
@@ -2632,13 +2652,52 @@ class AppRuntimeServices:
         sink to a new pipeline while the old one is still alive);
         re-raise WITHOUT a rollback attempt.
         """
+        from openfollow.runtime.detector_build import needs_compile
+
+        # A missing receiver means the runtime isn't initialised; raise so
+        # ``_apply_with_fallback`` reverts rather than committing the new
+        # cfg against a missing runtime.
+        if self._app._video_receiver is None:
+            raise RuntimeError(
+                "swap_detector: no video receiver to swap – runtime is not initialised",
+            )
+        if self._detector_build is not None:
+            self._detector_build.update(new_cfg)
+            return
+        if needs_compile(new_cfg):
+            self._start_detector_build(new_cfg)
+            return
+        self._swap_detector_now(new_cfg)
+
+    def _start_detector_build(self, cfg: DetectionConfig) -> None:
+        from openfollow.runtime.detector_build import DetectorBuild
+
+        logger.info("Detection waits for its model's CoreML compile before it starts")
+        self._detector_build = DetectorBuild(cfg)
+
+    def finish_detector_build(self) -> None:
+        """Wire a deferred detector once its compile is done. Called from housekeeping.
+
+        The config is already committed, so a failed wiring is logged; the
+        receiver keeps the detector ``_swap_detector_now`` rolled back to.
+        """
+        build = self._detector_build
+        if build is None:
+            return
+        cfg = build.ready()
+        if cfg is None:
+            return
+        self._detector_build = None
+        try:
+            self._swap_detector_now(cfg)
+        except Exception:
+            logger.exception("Starting detection after its CoreML compile failed")
+
+    def _swap_detector_now(self, new_cfg: DetectionConfig) -> None:
         from openfollow.video.detection import PersonDetector
         from openfollow.video.receiver import PipelineStuckError
 
         receiver = self._app._video_receiver
-        # A missing receiver means the runtime isn't initialised; raise so
-        # ``_apply_with_fallback`` reverts rather than committing the new
-        # cfg against a missing runtime.
         if receiver is None:
             raise RuntimeError(
                 "swap_detector: no video receiver to swap – runtime is not initialised",
@@ -4030,6 +4089,7 @@ class AppRuntimeServices:
         }
         if self._person_detector is not None:
             detection_snapshot = dict(self._person_detector.performance_stats)
+        detection_snapshot["compiling"] = self._detector_build is not None
         detection_snapshot["pin_status"] = self._detection_pin_status()
         detection_snapshot["missing_deps"] = self._resolve_detection_missing_deps(
             cfg.detection,
@@ -4132,6 +4192,12 @@ class AppRuntimeServices:
         online_sync = getattr(self, "_online_sync", None)
         if online_sync is not None:
             self._safe_stop("online sync", online_sync.stop)
+        build = self._detector_build
+        if build is not None:
+            self._detector_build = None
+            build.cancel()
+            # The build thread kills its compile child within a poll; don't leave it orphaned.
+            self._safe_stop("detector build", lambda: build.join(_DETECTOR_BUILD_JOIN_S))
         if self._person_detector is not None:
             self._safe_stop("person detector", self._person_detector.stop)
         if app._input_manager is not None:

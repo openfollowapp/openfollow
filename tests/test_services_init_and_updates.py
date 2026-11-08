@@ -4709,3 +4709,169 @@ class TestStationFollowersDoNotBindOnADownInterface:
         self._down_station(services, monkeypatch)
         assert services._resolved_source_ip() == ""
         assert services.station_source_ip_or_none() is None
+
+
+class _FakeDetectorBuild:
+    """Recording ``DetectorBuild``: the test decides when the compile is done."""
+
+    instances: list[_FakeDetectorBuild] = []
+
+    def __init__(self, cfg: Any) -> None:
+        self.cfg = cfg
+        self.done = False
+        self.cancelled = False
+        type(self).instances.append(self)
+
+    def update(self, cfg: Any) -> None:
+        self.cfg = cfg
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+    def ready(self) -> Any:
+        return self.cfg if self.done and not self.cancelled else None
+
+    def join(self, timeout: float | None = None) -> None:
+        self.joined = timeout
+
+
+class TestDeferredDetectorBuild:
+    """A detection change that would compile its model for CoreML in-process
+    waits for a ``DetectorBuild`` instead; housekeeping wires it."""
+
+    def _setup(
+        self,
+        services: AppRuntimeServices,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        compile_needed: bool = True,
+        existing_detector: Any = None,
+    ) -> tuple[_RecordingReceiver, type[_FakePersonDetector]]:
+        from openfollow.runtime import detector_build
+        from openfollow.video import detection as detection_mod
+
+        receiver = _RecordingReceiver()
+        services._app._video_receiver = receiver  # type: ignore[assignment]
+        services._person_detector = existing_detector
+        _FakePersonDetector.instances = []
+        _FakePersonDetector.available_default = True
+        _FakeDetectorBuild.instances = []
+        monkeypatch.setattr(detection_mod, "PersonDetector", _FakePersonDetector)
+        monkeypatch.setattr(detector_build, "DetectorBuild", _FakeDetectorBuild)
+        monkeypatch.setattr(detector_build, "needs_compile", lambda _cfg: compile_needed)
+        return receiver, _FakePersonDetector
+
+    def test_swap_needing_a_compile_returns_without_building(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receiver, detector_cls = self._setup(services, monkeypatch)
+        cfg = DetectionConfig(enabled=True)
+
+        services.swap_detector(cfg)
+
+        assert detector_cls.instances == []
+        assert receiver.swap_detector_calls == []
+        assert [b.cfg for b in _FakeDetectorBuild.instances] == [cfg]
+
+    def test_swap_without_a_compile_builds_at_once(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receiver, detector_cls = self._setup(services, monkeypatch, compile_needed=False)
+
+        services.swap_detector(DetectionConfig(enabled=True))
+
+        assert _FakeDetectorBuild.instances == []
+        assert receiver.swap_detector_calls == detector_cls.instances
+
+    def test_finished_compile_wires_the_latest_request(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receiver, detector_cls = self._setup(services, monkeypatch)
+        services.swap_detector(DetectionConfig(enabled=True, confidence=0.5))
+        latest = DetectionConfig(enabled=True, confidence=0.9)
+        services.swap_detector(latest)
+        services.apply_detection_change(replace(latest, max_persons=3))
+        build = _FakeDetectorBuild.instances[0]
+
+        services.finish_detector_build()
+        assert detector_cls.instances == []
+
+        build.done = True
+        services.finish_detector_build()
+
+        assert len(_FakeDetectorBuild.instances) == 1
+        assert [d.cfg for d in detector_cls.instances] == [replace(latest, max_persons=3)]
+        assert receiver.swap_detector_calls == detector_cls.instances
+        assert services._person_detector is detector_cls.instances[0]
+        assert services._detector_build is None
+
+    def test_running_detector_keeps_its_config_until_the_build_is_wired(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        running = _FakeDetector()
+        self._setup(services, monkeypatch, existing_detector=running)
+        services.swap_detector(DetectionConfig(enabled=True, inference_size=640))
+
+        services.apply_detection_change(DetectionConfig(enabled=True, inference_size=640, confidence=0.7))
+
+        assert running.reload_calls == []
+        assert running.stopped is False
+        assert _FakeDetectorBuild.instances[0].cfg.confidence == 0.7
+
+    def test_disabling_detection_cancels_the_build(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        running = _FakeDetector()
+        _, detector_cls = self._setup(services, monkeypatch, existing_detector=running)
+        services.swap_detector(DetectionConfig(enabled=True))
+        build = _FakeDetectorBuild.instances[0]
+
+        services.apply_detection_change(DetectionConfig(enabled=False))
+        build.done = True
+        services.finish_detector_build()
+
+        assert build.cancelled is True
+        assert running.stopped is True
+        assert services._person_detector is None
+        assert detector_cls.instances == []
+
+    def test_failed_wiring_is_logged_not_raised(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        receiver, _ = self._setup(services, monkeypatch)
+        services.swap_detector(DetectionConfig(enabled=True))
+        _FakeDetectorBuild.instances[0].done = True
+        receiver._swap_raises = [RuntimeError("pipeline refused"), None]
+
+        with caplog.at_level("ERROR", logger="openfollow.services"):
+            services.finish_detector_build()
+
+        assert services._detector_build is None
+        assert services._person_detector is None
+        assert any("CoreML compile" in r.getMessage() for r in caplog.records)
+
+    def test_receiver_gone_by_the_time_the_compile_is_done(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        _, detector_cls = self._setup(services, monkeypatch)
+        services.swap_detector(DetectionConfig(enabled=True))
+        _FakeDetectorBuild.instances[0].done = True
+        services._app._video_receiver = None
+
+        with caplog.at_level("ERROR", logger="openfollow.services"):
+            services.finish_detector_build()
+
+        assert detector_cls.instances == []
+        assert any("CoreML compile" in r.getMessage() for r in caplog.records)
+
+    def test_shutdown_cancels_the_build(self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._setup(services, monkeypatch)
+        services.swap_detector(DetectionConfig(enabled=True))
+        services._app._video_receiver = None
+
+        services.shutdown()
+
+        build = _FakeDetectorBuild.instances[0]
+        assert build.cancelled is True
+        assert build.joined == services_module._DETECTOR_BUILD_JOIN_S
+        assert services._detector_build is None

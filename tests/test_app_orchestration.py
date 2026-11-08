@@ -136,6 +136,7 @@ def _make_fake_app(
         _check_restart_request=_recorder("check_restart_request"),
         _check_pi_network_worker=_recorder("check_pi_network_worker"),
         _check_diagnostics_export=_recorder("check_diagnostics_export"),
+        _check_detector_build=_recorder("check_detector_build"),
         _check_button_detection_request=_recorder("check_button_detection_request"),
         _check_controller_slot_actions=_recorder("check_controller_slot_actions"),
         _check_camera_setup_requests=_recorder("check_camera_setup_requests"),
@@ -264,6 +265,7 @@ class TestAnimate:
             "check_restart_request",
             "check_pi_network_worker",
             "check_diagnostics_export",
+            "check_detector_build",
             "check_button_detection_request",
         ):
             assert moved not in app._calls
@@ -287,6 +289,7 @@ class TestHousekeeping:
             "check_restart_request",
             "check_pi_network_worker",
             "check_diagnostics_export",
+            "check_detector_build",
             "check_button_detection_request",
             "check_controller_slot_actions",
             "check_camera_setup_requests",
@@ -314,6 +317,7 @@ class TestHousekeeping:
             "check_update_request",
             "check_pi_network_worker",
             "check_diagnostics_export",
+            "check_detector_build",
             "check_button_detection_request",
             "check_controller_slot_actions",
             "check_camera_setup_requests",

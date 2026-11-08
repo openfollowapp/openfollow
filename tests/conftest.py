@@ -136,6 +136,13 @@ def _no_host_adapters(tmp_path: Path) -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _no_coreml_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test compiles a model in a child process: every test sees a host
+    without the CoreML provider, as the Pi; a test that cares installs its own."""
+    monkeypatch.setattr("openfollow.video.coreml_compile.coreml_available", lambda: False)
+
+
+@pytest.fixture(autouse=True)
 def _no_station_dir(monkeypatch: pytest.MonkeyPatch) -> None:
     """No test inherits the config directory an earlier test's app anchored the device-local stores to."""
     monkeypatch.setattr("openfollow.station_dir._config_dir", None)

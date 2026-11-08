@@ -2,13 +2,16 @@
 # Copyright (C) 2026 OpenFollow Project
 """Entry point baked into the macOS .app bundle.
 
-A single frozen binary serves three roles, dispatched on argv / env so the GUI,
+A single frozen binary serves four roles, dispatched on argv / env so the GUI,
 the in-app model export, and the build-time self-check all run from one bundle:
 
 - ``--export <args>``: re-exec target for the web UI's model download. The
   frozen ``sys.executable`` is the app (not python), so the export route
   (``web/routes.py``) re-invokes the app with a leading ``--export``; we forward
   the rest to ``export_onnx`` in-process.
+- ``--coreml-compile <model> <cache-root>``: re-exec target that compiles a
+  detection model for CoreML outside the app process
+  (``openfollow/video/coreml_compile.py``).
 - ``OPENFOLLOW_SELFCHECK=1``: import the native stack (gi/Gst + detection deps)
   and verify every typelib, GStreamer element and typefinder the app needs
   resolves from the bundle, then exit. Used by the DMG build's post-bundle
@@ -278,6 +281,10 @@ def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if args and args[0] == "--export":
         return run_export(args[1:])
+    if args and args[0] == "--coreml-compile":
+        from openfollow.video.coreml_compile import main as compile_main
+
+        return compile_main(args[1:])
     if os.environ.get("OPENFOLLOW_SELFCHECK") == "1":
         return run_selfcheck()
     return run_gui()

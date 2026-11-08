@@ -50,6 +50,9 @@ class _FakeRuntimeServices:
     def init_video(self) -> None:
         self.calls.append("init_video")
 
+    def finish_detector_build(self) -> None:
+        self.calls.append("finish_detector_build")
+
     def init_web_server(self) -> None:
         self.calls.append("init_web_server")
         if "web_server" in self.init_errors:
@@ -269,6 +272,11 @@ class TestRun:
         # No worker result stashed → the main-tick drain is a no-op.
         app._check_pi_network_worker()
         assert app._pi_network_pending_result is None
+
+    def test_check_detector_build_polls_the_runtime(self, patched_ctor) -> None:  # noqa: ANN001
+        app = OpenFollowApp(config_path=patched_ctor.cfg_path)
+        app._check_detector_build()
+        assert app._runtime_services.calls[-1] == "finish_detector_build"
 
     def test_check_diagnostics_export_posts_a_finished_hud_export(self, patched_ctor) -> None:  # noqa: ANN001
         import threading

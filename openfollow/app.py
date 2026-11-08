@@ -544,6 +544,9 @@ class OpenFollowApp:
 
         drain_pi_network_worker(self)
 
+    def _check_detector_build(self) -> None:
+        self._runtime_services.finish_detector_build()
+
     def _check_diagnostics_export(self) -> None:
         from openfollow.runtime.app_modes_media import check_diagnostics_export
 

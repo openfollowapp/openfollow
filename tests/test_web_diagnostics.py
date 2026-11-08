@@ -766,6 +766,117 @@ def test_collect_log_tail_handles_no_ring() -> None:
     assert "no log source available" in src
 
 
+# -- The macOS app's log file ---------------------------------------------------
+
+_JOURNAL_MISSING = (-1, "[unavailable: journalctl not found]")
+
+
+def _log_file(tmp_path: Path, *contents: str) -> Path:
+    """A log file and its rotated copies, ``contents`` oldest first: the last is the current file."""
+    names = [f"openfollow.log.{i}" for i in range(len(contents) - 1, 0, -1)] + ["openfollow.log"]
+    for name, text in zip(names, contents, strict=True):
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    return tmp_path / "openfollow.log"
+
+
+def test_collect_log_tail_reads_the_log_file_without_a_journal(monkeypatch, tmp_path) -> None:
+    """The macOS app has no journal; its log file reaches back past a restart, the ring cannot."""
+    monkeypatch.setattr(diag, "_run", lambda *a, **kw: _JOURNAL_MISSING)
+    log_file = _log_file(tmp_path, "older process\n", "this process\n")
+    src, lines = diag.collect_log_tail(_seed_ring("ring"), update_service_name="openfollow", log_file=log_file)
+    assert src == f"log file {log_file}"
+    assert lines == ["older process", "this process"]
+
+
+def test_collect_log_tail_takes_the_last_lines_of_the_log_file(tmp_path) -> None:
+    _src, lines = diag.collect_log_tail(None, log_file=_log_file(tmp_path, "a\nb\n", "c\n"), last_n=2)
+    assert lines == ["b", "c"]
+
+
+def test_collect_log_tail_prefers_the_journal_to_a_log_file(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(diag, "_run", lambda *a, **kw: (0, "journal line"))
+    log_file = _log_file(tmp_path, "file line\n")
+    assert diag.collect_log_tail(None, update_service_name="openfollow", log_file=log_file) == (
+        "journalctl",
+        ["journal line"],
+    )
+
+
+def test_collect_log_tail_falls_back_to_the_ring_without_the_log_file(tmp_path) -> None:
+    src, lines = diag.collect_log_tail(_seed_ring("ring line"), log_file=tmp_path / "openfollow.log")
+    assert src.startswith("in-memory ring buffer (log file unreadable: ")
+    assert lines == ["ring line"]
+
+
+def test_collect_failure_extract_from_the_log_file_keeps_each_failure_whole(monkeypatch, tmp_path) -> None:
+    """A traceback stays with its record, and a crash or an uncaught exception
+    written straight to stderr counts as a failure: on the macOS app nothing
+    else keeps them."""
+    monkeypatch.setattr(diag, "_run", lambda *a, **kw: _JOURNAL_MISSING)
+    older = [
+        "2026-10-26 09:00:00 [INFO] openfollow.app: started",
+        "2026-10-26 09:00:01 [ERROR] openfollow.video: decode failed",
+        "Traceback (most recent call last):",
+        '  File "receiver.py", line 1, in run',
+        "RuntimeError: boom",
+        "Exception in thread WebUpdateWorker:",
+        "Traceback (most recent call last):",
+        "ValueError: bad",
+    ]
+    current = [
+        "2026-10-26 09:00:02 [INFO] openfollow.app: still running",
+        "(OpenFollow:42): Gtk-WARNING **: native output after an INFO record",
+        "Fatal Python error: Segmentation fault",
+        "",
+        "Current thread 0x00000001 (most recent call first):",
+        '  File "receiver.py", line 9 in _on_frame',
+        "2026-10-26 09:05:00 [INFO] openfollow.logging_setup: Process 4242 logging to openfollow.log",
+    ]
+    log_file = _log_file(tmp_path, "\n".join(older) + "\n", "\n".join(current) + "\n")
+    src, lines = diag.collect_failure_extract(
+        _seed_ring("2026 [ERROR] ring"), update_service_name="openfollow", log_file=log_file
+    )
+    assert src == f"log file {log_file}"
+    assert lines == older[1:] + current[2:6]
+
+
+@pytest.mark.parametrize(("last_n", "expected"), [(3, ["e7", "e8", "e9"]), (0, [])])
+def test_collect_failure_extract_from_the_log_file_keeps_the_last_lines(
+    tmp_path, last_n: int, expected: list[str]
+) -> None:
+    log_file = _log_file(tmp_path, "".join(f"2026-10-26 09:00:{i:02d} [ERROR] x: e{i}\n" for i in range(10)))
+    _src, lines = diag.collect_failure_extract(None, log_file=log_file, last_n=last_n)
+    assert [line.rpartition(" ")[2] for line in lines] == expected
+
+
+def test_collect_failure_extract_falls_back_to_the_ring_without_the_log_file(tmp_path) -> None:
+    src, lines = diag.collect_failure_extract(_seed_ring("2026 [ERROR] ring"), log_file=tmp_path / "openfollow.log")
+    assert src.startswith("in-memory ring buffer (log file unreadable: ")
+    assert lines == ["2026 [ERROR] ring"]
+
+
+def test_collect_recent_failures_says_a_log_file_extract_spans_the_kept_files() -> None:
+    rows = diag.collect_recent_failures(
+        diag.DiagnosticsProviders(),
+        lambda: ("log file /x/openfollow.log", ["[INFO] ok"]),
+        lambda: ("log file /x/openfollow.log", ["[ERROR] boom"]),
+    )
+    label = next(line for line in rows if line.strip().startswith("Failure extract"))
+    assert label == "  Failure extract (WARNING+, all kept log files, source: log file /x/openfollow.log):"
+
+
+def test_collect_bundle_reads_the_log_file_and_redacts_it(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(diag, "_run", lambda cmd, **_kw: (-1, f"[unavailable: {cmd[0]} not found]"))
+    log_file = _log_file(tmp_path, _GST_AUTH_ERROR + "\n")
+    bundle = diag.collect_bundle(log_ring=_seed_ring("ring line"), update_service_name="openfollow", log_file=log_file)
+    joined = "\n".join(bundle.d_failures)
+    assert f"  Log source: log file {log_file}" in bundle.d_failures
+    assert f"Failure extract (WARNING+, all kept log files, source: log file {log_file}):" in joined
+    assert "hunter2" not in joined
+    # Once in the tail, once in the extract.
+    assert joined.count("rtsp://192.168.0.182:554/video/stream1") == 2
+
+
 @pytest.mark.parametrize(
     ("service", "journalctl_ok", "ring", "expected"),
     [
@@ -1083,11 +1194,11 @@ def test_collect_bundle_requests_2000_line_tail_and_wires_failure_extract(monkey
     failure extract into Section D."""
     seen: dict[str, Any] = {}
 
-    def fake_log_tail(ring, *, update_service_name=None, last_n=500, timeout_s=0.0):  # noqa: ARG001
+    def fake_log_tail(ring, *, update_service_name=None, log_file=None, last_n=500, timeout_s=0.0):  # noqa: ARG001
         seen["last_n"] = last_n
         return "journalctl", ["[INFO] x"]
 
-    def fake_failure(ring, *, update_service_name=None, since="-24h", last_n=1000, timeout_s=0.0):  # noqa: ARG001
+    def fake_failure(ring, *, update_service_name=None, log_file=None, since="-24h", last_n=1000, timeout_s=0.0):  # noqa: ARG001
         seen["failure_called"] = True
         return "journalctl", ["[ERROR] boom"]
 
@@ -2145,7 +2256,7 @@ def test_collect_bundle_clamps_the_log_tail_to_the_remaining_budget(monkeypatch,
         clock.advance(17.0)
         return ["  ran"]
 
-    def fake_tail(ring, *, update_service_name=None, last_n=500, timeout_s=0.0):  # noqa: ARG001
+    def fake_tail(ring, *, update_service_name=None, log_file=None, last_n=500, timeout_s=0.0):  # noqa: ARG001
         seen["timeout_s"] = timeout_s
         return "journalctl", []
 
@@ -2166,7 +2277,7 @@ def test_collect_bundle_clamps_the_failure_extract_to_the_remaining_budget(monke
         clock.advance(10.0)
         return ["  ran"]
 
-    def fake_failure(ring, *, update_service_name=None, since="-24h", last_n=1000, timeout_s=0.0):  # noqa: ARG001
+    def fake_failure(ring, *, update_service_name=None, log_file=None, since="-24h", last_n=1000, timeout_s=0.0):  # noqa: ARG001
         seen["timeout_s"] = timeout_s
         return "journalctl", []
 
@@ -2184,11 +2295,11 @@ def test_collect_bundle_never_hands_a_section_a_negative_cap(monkeypatch, no_hos
     monkeypatch.setattr(diag, "time", clock)
     seen: dict[str, float] = {}
 
-    def slow_tail(ring, *, update_service_name=None, last_n=500, timeout_s=0.0):  # noqa: ARG001
+    def slow_tail(ring, *, update_service_name=None, log_file=None, last_n=500, timeout_s=0.0):  # noqa: ARG001
         clock.advance(60.0)
         return "journalctl", []
 
-    def fake_failure(ring, *, update_service_name=None, since="-24h", last_n=1000, timeout_s=-1.0):  # noqa: ARG001
+    def fake_failure(ring, *, update_service_name=None, log_file=None, since="-24h", last_n=1000, timeout_s=-1.0):  # noqa: ARG001
         seen["timeout_s"] = timeout_s
         return "journalctl", []
 

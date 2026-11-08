@@ -346,6 +346,38 @@ def test_api_diagnostics_bundle_redacts_the_log_tail(live_server, monkeypatch, t
     assert "latency=125" in body
 
 
+def test_api_diagnostics_bundle_reads_the_log_file_the_station_writes(live_server, monkeypatch, tmp_path) -> None:
+    """The macOS app logs to a file; the bundle reads it back, past restarts, and redacts it."""
+    _, base, _ = live_server
+    import logging
+
+    from openfollow.logging_setup import LogFileHandler
+    from openfollow.web import diagnostics
+
+    monkeypatch.setattr(diagnostics, "default_disk_root", lambda: tmp_path / "bundles")
+    (tmp_path / "Logs").mkdir()
+    log_file = tmp_path / "Logs" / "openfollow.log"
+    log_file.write_text("2026-10-26 09:00:00 [ERROR] openfollow.app: from the previous process\n", encoding="utf-8")
+    std_fds = tuple(os.open(tmp_path / name, os.O_WRONLY | os.O_CREAT, 0o600) for name in ("out", "err"))
+    try:
+        setup_logging(log_file=log_file, std_fds=std_fds)
+        logging.getLogger("openfollow.test.file").error(
+            "GStreamer error: Unauthorized rtsp://operator:hunter2@192.0.2.10:554/video/stream1"
+        )
+        status, body, _ = _get(base, "/api/diagnostics/bundle")
+    finally:
+        for h in logging.getLogger().handlers:
+            if isinstance(h, LogFileHandler):
+                h.close()
+        for fd in std_fds:
+            os.close(fd)
+    assert status == 200
+    assert f"Log source: log file {log_file}" in body
+    assert "from the previous process" in body
+    assert "hunter2" not in body
+    assert "rtsp://192.0.2.10:554/video/stream1" in body
+
+
 def test_api_diagnostics_bundle_sizes_configured_storage_path(
     live_server,
     monkeypatch,

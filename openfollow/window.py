@@ -259,6 +259,7 @@ class GtkNativeSinkWindow:
         # Held buttons, each with whether its press was the Operator Screen's.
         self._poll_held: dict[int, bool] = {}
         self._poll_was_key = True
+        self._poll_ctrl_click = False
         # The pointer poll runs every frame; throttle its failure log so a
         # persistent error can't flood the journal at the display tick rate.
         self._poll_err_log = ThrottledExceptionLogger(logger, "Pointer poll failed")
@@ -574,6 +575,11 @@ class GtkNativeSinkWindow:
         m = self._Gdk.ModifierType
         bits = (m.BUTTON1_MASK, m.BUTTON2_MASK, m.BUTTON3_MASK, m.BUTTON4_MASK, m.BUTTON5_MASK)
         down = [button for button, bit in enumerate(bits, 1) if mask & bit]
+        # Control at the press makes it the macOS right-click, latched until the button is let go.
+        was_b1 = 1 in self._poll_held or self._poll_ctrl_click
+        self._poll_ctrl_click = 1 in down and (self._poll_ctrl_click if was_b1 else bool(mask & m.CONTROL_MASK))
+        if self._poll_ctrl_click:
+            down = sorted({3 if button == 1 else button for button in down})
         cw, ch = self.get_canvas_size()
         within = 0 <= x < cw and 0 <= y < ch
         key = bool(self._window.has_toplevel_focus())

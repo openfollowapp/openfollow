@@ -10,8 +10,10 @@ is called the way the Apple Event Manager calls it.
 from __future__ import annotations
 
 import ctypes
+import gc
 import logging
 import sys
+import weakref
 from typing import Any
 
 import pytest
@@ -43,6 +45,25 @@ class _FakeInstall:
 class _FakeCoreServices:
     def __init__(self, result: int = 0) -> None:
         self.AEInstallEventHandler = _FakeInstall(result)
+
+
+class _WeakInstall:
+    """``AEInstallEventHandler`` that, like the real one, holds no reference to the callback."""
+
+    def __init__(self, result: int) -> None:
+        self.result = result
+        self.handler: weakref.ref[Any] = weakref.ref(_FakeInstall)
+        self.argtypes: Any = None
+        self.restype: Any = None
+
+    def __call__(self, _event_class: int, _event_id: int, handler: Any, _refcon: Any, _is_system: Any) -> int:
+        self.handler = weakref.ref(handler)
+        return self.result
+
+
+class _Library:
+    def __init__(self, install: _WeakInstall) -> None:
+        self.AEInstallEventHandler = install
 
 
 def _install(on_quit: Any, core_services: Any) -> bool:
@@ -145,6 +166,25 @@ class TestOnMacOS:
             assert _install(lambda: None, core_services) is False
 
         assert [r.levelno for r in caplog.records] == [logging.WARNING]
+
+    def test_the_installed_handler_outlives_the_install_call(self) -> None:
+        """The Apple Event Manager keeps only the address: a freed callback crashes the next quit."""
+        installed = _WeakInstall(0)
+
+        assert macos_quit.install_quit_handler(lambda: None, load_library=lambda: _Library(installed)) is True
+        gc.collect()
+
+        assert installed.handler() is not None
+
+    def test_a_refused_install_keeps_the_handler_still_installed(self) -> None:
+        installed = _WeakInstall(0)
+        macos_quit.install_quit_handler(lambda: None, load_library=lambda: _Library(installed))
+        first = installed.handler
+
+        macos_quit.install_quit_handler(lambda: None, load_library=lambda: _FakeCoreServices(result=-50))
+        gc.collect()
+
+        assert first() is not None
 
     def test_default_loader_opens_core_services(self, monkeypatch: pytest.MonkeyPatch) -> None:
         opened: list[str] = []

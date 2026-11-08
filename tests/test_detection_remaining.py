@@ -746,6 +746,31 @@ class TestDetectorModelChangeCompile:
         assert detector._model_path == str(tmp_path / "models" / "yolo26n.onnx")
         assert os.environ.get("XDG_CACHE_HOME") == env_before
 
+    @pytest.mark.parametrize(
+        ("newer_model", "builds"),
+        [("yolo26s.onnx", False), ("yolo26m.onnx", True)],
+    )
+    def test_newer_change_staged_while_compiling(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, newer_model: str, builds: bool
+    ) -> None:
+        # Another model cuts the compile short and is drained next; the same model lets it build.
+        calls: list[dict[str, Any]] = []
+        detector = self._detector(monkeypatch, tmp_path, calls)
+        detector._running = True
+        newer = _cfg(enabled=True, model=newer_model, storage_path=str(tmp_path), confidence=0.9)
+
+        def _compile(_model: str, _root: Path, cancelled: Any) -> bool:
+            assert cancelled() is False
+            detector.reload_config(newer)
+            return not cancelled()
+
+        monkeypatch.setattr(detection_module, "precompile", _compile)
+        detector.reload_config(_cfg(enabled=True, model="yolo26m.onnx", storage_path=str(tmp_path)))
+        detector._drain_pending_config()
+
+        assert (len(calls) == 2) is builds
+        assert detector._pending_config is newer
+
     def test_failed_compile_still_builds_in_process(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         calls: list[dict[str, Any]] = []
         detector = self._detector(monkeypatch, tmp_path, calls)

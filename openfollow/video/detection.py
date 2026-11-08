@@ -1066,6 +1066,12 @@ class PersonDetector:
         with self._config_lock:
             self._pending_config = new_cfg
 
+    def _model_change_superseded(self, pending: DetectionConfig) -> bool:
+        """Whether a newer staged config asks for another model or storage than ``pending``."""
+        with self._config_lock:
+            newer = self._pending_config
+        return newer is not None and (newer.model, newer.storage_path) != (pending.model, pending.storage_path)
+
     def _drain_pending_config(self) -> None:
         """Apply a staged config update from inside the worker thread.
 
@@ -1123,14 +1129,18 @@ class PersonDetector:
                 self._restore_storage_env(old_env)
                 return
             cache_root = detection_cache_dir(pending.storage_path)
+
             # Waits for a CoreML compile without holding the GIL; a failed one
             # leaves the compile to the in-process build below.
+            def cut_short() -> bool:
+                return not self._running or self._model_change_superseded(pending)
+
             self._compiling = True
             try:
-                compiled = precompile(new_model_path, cache_root, cancelled=lambda: not self._running)
+                compiled = precompile(new_model_path, cache_root, cancelled=cut_short)
             finally:
                 self._compiling = False
-            if not compiled and not self._running:
+            if not compiled and cut_short():
                 self._restore_storage_env(old_env)
                 return
             try:

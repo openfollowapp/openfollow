@@ -12,6 +12,7 @@ from __future__ import annotations
 import io
 import logging
 import os
+import sys
 import threading
 import time
 from collections import deque
@@ -207,7 +208,11 @@ class LogFileHandler(RotatingFileHandler):
 
     def _watch(self, every_s: float) -> None:
         while not self._closing.wait(every_s):
-            self.roll_over_if_full()
+            try:
+                self.roll_over_if_full()
+            except Exception as exc:  # noqa: BLE001 - one failed rotation must not end the checks
+                # Not through logging: a record would retry the rotation that just failed.
+                sys.stderr.write(f"Log file rotation failed: {exc!r}\n")
 
     def close(self) -> None:
         # No join: ``logging.shutdown`` calls this holding the lock a check may be waiting for.

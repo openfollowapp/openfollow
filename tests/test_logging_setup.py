@@ -363,6 +363,33 @@ def test_the_log_file_checks_its_size_in_the_background(tmp_path: Path, std_fds:
         handler.close()
 
 
+class _FailingOnceLogFileHandler(_SignallingLogFileHandler):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.failures = 0
+        super().__init__(*args, **kwargs)
+
+    def doRollover(self) -> None:
+        if self.failures == 0:
+            self.failures += 1
+            raise PermissionError("rename refused")
+        super().doRollover()
+
+
+def test_a_failed_background_rotation_does_not_end_the_size_checks(
+    tmp_path: Path, std_fds: tuple[int, int], capsys: pytest.CaptureFixture[str]
+) -> None:
+    handler = _FailingOnceLogFileHandler(
+        tmp_path / "openfollow.log", max_bytes=200, backup_count=2, std_fds=std_fds, check_every_s=0.01
+    )
+    try:
+        os.write(std_fds[1], b"n" * 300 + b"\n")
+        assert handler.rolled.wait(timeout=10)
+    finally:
+        handler.close()
+    assert handler.failures == 1
+    assert "rename refused" in capsys.readouterr().err
+
+
 def test_closing_the_log_file_stops_its_size_checks(tmp_path: Path, std_fds: tuple[int, int]) -> None:
     before = set(threading.enumerate())
     handler = _file_handler(tmp_path / "openfollow.log", std_fds)

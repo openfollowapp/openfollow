@@ -2,10 +2,10 @@
 # Copyright (C) 2026 OpenFollow Project
 """Device-local media store for the Media Gallery video source.
 
-Holds operator-uploaded still images and short looping clips, plus the two
-read-only bundled defaults (Stage, Grey). This module is the single source of
-truth for the storage layout, id rules, hard caps, and upload validation shared
-by the gallery plugin (``video/inputs/testpattern.py``) and the web routes.
+Holds operator-uploaded still images and short looping clips, plus the
+read-only bundled defaults (Stage, Concert, Festival, Grey). This module
+is the single source of truth for the storage layout, id rules, hard caps, and
+upload validation shared by the gallery plugin (``video/inputs/testpattern.py``) and the web routes.
 
 The storage directory is device-local *by construction* (resolved per host,
 never a config field), so nothing here ever crosses machines.
@@ -54,9 +54,16 @@ _store_lock = threading.Lock()
 # -- Reserved defaults --------------------------------------------------------
 
 DEFAULT_STAGE_ID = "default:stage"
+DEFAULT_CONCERT_ID = "default:concert"
+DEFAULT_FESTIVAL_ID = "default:festival"
 DEFAULT_GREY_ID = "default:grey"
 # Ordered for display: defaults always render first in the grid.
-DEFAULT_IDS: tuple[str, ...] = (DEFAULT_STAGE_ID, DEFAULT_GREY_ID)
+DEFAULT_IDS: tuple[str, ...] = (
+    DEFAULT_STAGE_ID,
+    DEFAULT_CONCERT_ID,
+    DEFAULT_FESTIVAL_ID,
+    DEFAULT_GREY_ID,
+)
 # The AppConfig default for ``testpattern_selected_media``.
 DEFAULT_SELECTED_MEDIA = DEFAULT_STAGE_ID
 
@@ -73,6 +80,10 @@ _LOCAL_STORAGE_DIRNAME = "media"
 # JPG-preferred-over-SVG ordering, shared with the gallery plugin.
 STAGE_ASSET_JPG = Path(__file__).parent / "inputs" / "assets" / "stage_default.jpg"
 STAGE_ASSET_SVG = STAGE_ASSET_JPG.with_suffix(".svg")
+# A concert stage from the back truss, rendered by scripts/gen_concert_default.py.
+CONCERT_ASSET_JPG = STAGE_ASSET_JPG.with_name("concert_default.jpg")
+# A festival stage from the front truss, rendered by scripts/gen_festival_default.py.
+FESTIVAL_ASSET_JPG = STAGE_ASSET_JPG.with_name("festival_default.jpg")
 
 # -- Hard caps ----------------------------------------------------------------
 
@@ -235,9 +246,20 @@ def _new_user_id(storage: Path) -> str:
 # -- Listing / resolution -----------------------------------------------------
 
 
-def _default_item(media_id: str) -> MediaItem:
+def _bundled_image(media_id: str, path: Path, label: str) -> MediaItem | None:
+    # Without its file the default is not offered, and a selection of it falls back to Stage.
+    if not path.is_file():
+        return None
+    return MediaItem(media_id, "image", True, path, path.stat().st_size, label)
+
+
+def _default_item(media_id: str) -> MediaItem | None:
     if media_id == DEFAULT_GREY_ID:
         return MediaItem(DEFAULT_GREY_ID, "grey", True, None, 0, "Grey")
+    if media_id == DEFAULT_CONCERT_ID:
+        return _bundled_image(DEFAULT_CONCERT_ID, CONCERT_ASSET_JPG, "Concert")
+    if media_id == DEFAULT_FESTIVAL_ID:
+        return _bundled_image(DEFAULT_FESTIVAL_ID, FESTIVAL_ASSET_JPG, "Festival")
     asset = stage_asset_path()
     size = asset.stat().st_size if asset is not None else 0
     return MediaItem(DEFAULT_STAGE_ID, "stage", True, asset, size, "Stage")
@@ -280,11 +302,11 @@ def _stat_user_files(storage: Path) -> list[tuple[Path, os.stat_result]]:
 
 
 def list_media() -> list[MediaItem]:
-    """Every gallery entry: the two defaults first, then user media newest-first.
+    """Every gallery entry: the bundled defaults first, then user media newest-first.
 
     A store that cannot be listed lists the defaults alone, so the grid still renders.
     """
-    items = [_default_item(mid) for mid in DEFAULT_IDS]
+    items = [item for item in map(_default_item, DEFAULT_IDS) if item is not None]
     storage = resolve_media_storage_path()
     try:
         files = _stat_user_files(storage)

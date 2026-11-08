@@ -439,7 +439,7 @@ class TestGrant:
         from openfollow.privilege.drop_in import render_drop_in
 
         assert (
-            "openfollow ALL=(root) NOPASSWD: /usr/share/openfollow/write-to-media write ^/dev/sd[a-z]+[0-9]*$"
+            "openfollow ALL=(root) NOPASSWD: /usr/share/openfollow/write-to-media ^write /dev/sd[a-z]+[0-9]*$"
             in render_drop_in("openfollow").splitlines()
         )
 

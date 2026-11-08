@@ -168,6 +168,27 @@ class _FakeOscHandler:
         return snapshot
 
 
+class _FakePathOscAdapter:
+    """Stand-in for ``PathOscAdapter``: the fake service here cannot subscribe."""
+
+    instances: list[_FakePathOscAdapter] = []
+
+    def __init__(self, service: Any) -> None:
+        self.service = service
+        self.started = False
+        self.stopped = False
+        _FakePathOscAdapter.instances.append(self)
+
+    def start(self) -> None:
+        self.started = True
+
+    def stop(self) -> None:
+        self.stopped = True
+
+    def take(self) -> list[Any]:
+        return []
+
+
 class _FakeOperatorMessageAdapter:
     """Recording stand-in for ``OperatorMessageOscAdapter``.
 
@@ -252,6 +273,8 @@ def _patch_handlers(monkeypatch: pytest.MonkeyPatch) -> None:
         "OperatorMessageOscAdapter",
         _FakeOperatorMessageAdapter,
     )
+    monkeypatch.setattr(input_manager_module, "PathOscAdapter", _FakePathOscAdapter)
+    _FakePathOscAdapter.instances = []
     _FakeOscHandler.instances = []
     _FakeOscHandler.next_updates = {}
     _FakeOperatorMessageAdapter.instances = []
@@ -504,6 +527,51 @@ class TestRestartOsc:
         assert any("OSC input restart failed" in rec.message for rec in caplog.records)
 
 
+class TestResumeOsc:
+    """The network observer's retry of OSC input that is not running."""
+
+    def test_rebuilds_from_the_live_config(self) -> None:
+        app = _DummyApp(osc_enabled=True)
+        manager = InputManager(app)
+        first = manager.osc_handler
+        app._config.osc.port = 9010
+        app._config.osc.multicast_group = "239.1.2.3"
+
+        manager.resume_osc()
+
+        assert first is not None and first.stopped is True
+        handler = _FakeOscHandler.instances[-1]
+        assert manager.osc_handler is handler
+        assert (handler.port, handler.allowed_sender_ips, handler.multicast_group) == (
+            9010,
+            ["10.0.0.1"],
+            "239.1.2.3",
+        )
+        assert handler.started is True
+        assert manager.path_osc_handler is not None
+
+    def test_raises_while_the_listener_cannot_bind(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The observer reads a return as recovery, so a bind failure must reach it."""
+        app = _DummyApp(osc_enabled=True)
+        app._config.operator_messages.enabled = True
+        manager = InputManager(app)
+
+        class _FailingOscHandler(_FakeOscHandler):
+            def start(self) -> None:
+                raise OSError("port 9001 already in use")
+
+        monkeypatch.setattr(input_manager_module, "OscMarkerAdapter", _FailingOscHandler)
+        store = app._runtime_services._operator_message_store
+        store.add("Standby")
+        with pytest.raises(OSError, match="already in use"):
+            manager.resume_osc()
+        assert manager.osc_handler is None
+        assert manager.path_osc_handler is None
+        assert manager.operator_message_handler is None
+        # No listener, so no card it brought in stays on screen.
+        assert store.snapshot() == []
+
+
 # --------------------------------------------------------------------------- #
 # stop
 # --------------------------------------------------------------------------- #
@@ -623,6 +691,39 @@ class TestListenIface:
 # --------------------------------------------------------------------------- #
 # Operator-message adapter wiring
 # --------------------------------------------------------------------------- #
+
+
+class TestPathCommandWiring:
+    """Path commands are heard exactly while the OSC listener is up."""
+
+    def test_subscribed_with_the_listener(self) -> None:
+        manager = InputManager(_DummyApp(osc_enabled=True))
+        [adapter] = _FakePathOscAdapter.instances
+        assert manager.path_osc_handler is adapter
+        assert adapter.started is True
+        assert adapter.service is manager.app._runtime_services._osc_service
+
+    def test_not_subscribed_without_a_listener(self) -> None:
+        manager = InputManager(_DummyApp(osc_enabled=False))
+        assert manager.path_osc_handler is None
+        assert _FakePathOscAdapter.instances == []
+
+    def test_restarting_osc_replaces_the_subscription(self) -> None:
+        app = _DummyApp(osc_enabled=True)
+        manager = InputManager(app)
+        first = manager.path_osc_handler
+        manager.restart_osc(enabled=True, port=9010)
+        assert first is not None and first.stopped is True
+        assert manager.path_osc_handler is not first
+        manager.restart_osc(enabled=False, port=9010)
+        assert manager.path_osc_handler is None
+
+    def test_stop_unsubscribes(self) -> None:
+        manager = InputManager(_DummyApp(osc_enabled=True))
+        adapter = manager.path_osc_handler
+        manager.stop()
+        assert adapter is not None and adapter.stopped is True
+        assert manager.path_osc_handler is None
 
 
 class TestOperatorMessageWiring:

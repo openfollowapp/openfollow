@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""GStreamer native sink receiver with HUD overlay via gtksink."""
+"""GStreamer receiver ending in a shared video sink: gtksink, or the GL display's own."""
 
 from __future__ import annotations
 
@@ -47,6 +47,10 @@ logger = logging.getLogger(__name__)
 # ``swap_input`` raises ``PipelineStuckError``.
 _NULL_CONFIRM_TIMEOUT_NS: int = 2_000_000_000  # 2 s in nanoseconds
 
+# How many discovery passes may list an awaited source that sent no video before
+# it is tried again: about 30 s at the 5 s interval, so the picker stays usable.
+_LISTED_RETRY_PASSES = 6
+
 
 def gst_runtime_available() -> bool:
     return Gst is not None
@@ -84,14 +88,17 @@ class GstNativeSinkReceiver:
         reconnect_delay: float = 1.0,
         overlay_renderer: CairoOverlayRenderer | None = None,
         on_widget_changed: Callable[..., Any] | None = None,
-        config_path: str = "config.toml",
+        on_source_picked: Callable[[str, str], None] | None = None,
         detector: PersonDetector | None = None,
         preview_provider: PreviewProvider | None = None,
         snapshot_provider: SnapshotProvider | None = None,
         stall_timeout: float | None = None,
         heal_interval: float | None = None,
         iface_name: Callable[[str], str] | None = None,
+        display: Any = None,
     ) -> None:
+        # A GL display brings its own sink and widget in place of gtksink.
+        self._display = display
         # Resolve the active video input plugin
         input_cls = get_input_class(source_type)
         if input_cls is None:
@@ -109,8 +116,11 @@ class GstNativeSinkReceiver:
         self._apply_policy_overrides()
         self._source_type = source_type
         self._input_config: dict[str, Any] = input_config or {}
+        # source_name's label, keyed on (pipeline builds, input class, config copy).
+        self._pipeline_builds = 0
+        self._source_label: tuple[tuple[int, type, dict[str, Any]], str] | None = None
 
-        self._config_path = config_path
+        self._on_source_picked = on_source_picked
         self._reconnect_delay = max(0.1, reconnect_delay)
         self._state = ReceiverStateMachine(reconnect_delay=self._reconnect_delay)
         self._overlay_renderer = overlay_renderer
@@ -134,6 +144,11 @@ class GstNativeSinkReceiver:
         self._selected_source_index: int = 0
         self._discovery_thread: threading.Thread | None = None
         self._discovery_lock = threading.Lock()
+        # The configured source an input with a picker gave up on: reconnected
+        # by itself once discovery announces it again, until another is picked.
+        self._awaited_source = ""
+        # Listed passes to let by before returning to it; a pass that does not list it clears them.
+        self._passes_before_return = 0
         # Why the input's preflight refused the last build, if it did.
         self._pin_refusal: PinRefusal | None = None
         # How a refusal names the pinned interface: "Lighting (eth1)" when labelled.
@@ -154,6 +169,8 @@ class GstNativeSinkReceiver:
 
         # Shared sink created lazily
         self._shared_sink = None
+        # Told of every frame that reaches the display sink, from its streaming thread.
+        self._display_frame_listener: Callable[[], None] | None = None
         # The gtksink is shared across pipeline rebuilds, and pad probes live
         # on its (persistent) sink pad – so attach them exactly once. Without
         # this guard every reconnect/heal rebuild would stack another pair of
@@ -200,9 +217,14 @@ class GstNativeSinkReceiver:
     # -- Shared sink management -----------------------------------------------
 
     def _create_shared_sink(self) -> Any:
-        """Create a single gtksink that will be reused across all pipelines."""
+        """The sink every pipeline ends in, the GL display's or a gtksink, watched for the frames reaching it."""
         Gst.init(None)
+        sink = self._display.sink if self._display is not None else self._create_platform_sink()
+        if sink is not None:
+            sink.get_static_pad("sink").add_probe(Gst.PadProbeType.BUFFER, self._on_display_frame)
+        return sink
 
+    def _create_platform_sink(self) -> Any:
         sink_name = self._select_sink_name()
         if sink_name is None:
             logger.error("No embeddable video sink available")
@@ -221,6 +243,16 @@ class GstNativeSinkReceiver:
         logger.info("Created shared %s element for all pipelines", sink_name)
         return sink
 
+    def set_display_frame_listener(self, listener: Callable[[], None] | None) -> None:
+        """Call ``listener`` (from the sink's streaming thread) for each frame that reaches the display."""
+        self._display_frame_listener = listener
+
+    def _on_display_frame(self, _pad: Any, _info: Any) -> Any:
+        listener = self._display_frame_listener
+        if listener is not None:
+            listener()
+        return Gst.PadProbeReturn.OK
+
     def _get_shared_sink(self) -> Any:
         """Get the shared sink, creating it if needed."""
         if self._shared_sink is None:
@@ -235,6 +267,9 @@ class GstNativeSinkReceiver:
         parent = sink.get_parent()
         if parent is not None:
             parent.remove(sink)
+        # Every build passes here after its old pipeline stopped, so none of that pipeline's frames are shown.
+        if self._display is not None:
+            self._display.accept_frames()
         try:
             sink.set_property("sync", False)
         except Exception:
@@ -283,8 +318,14 @@ class GstNativeSinkReceiver:
 
     @property
     def source_name(self) -> str:
-        """Return the active source label."""
-        return self._input.get_source_label(self._input_config)
+        """The active source's label; read every frame, so worked out only when input, config or pipeline change."""
+        current = (self._pipeline_builds, type(self._input), self._input_config)
+        cached = self._source_label
+        if cached is None or cached[0] != current:
+            # Key and label from one snapshot: the GTK thread may rebuild, swap or edit the config meanwhile.
+            builds, input_cls, config = current[0], current[1], dict(current[2])
+            cached = self._source_label = ((builds, input_cls, config), input_cls.get_source_label(config))
+        return cached[1]
 
     @property
     def source_kind(self) -> SourceKind:
@@ -339,7 +380,13 @@ class GstNativeSinkReceiver:
     def start(self) -> None:
         self.play()
 
+    def _release_display_frames(self) -> None:
+        """Before a NULL transition: a decoder may not stop while the display holds its frames."""
+        if self._display is not None:
+            self._display.release_frames()
+
     def stop(self) -> None:
+        self._awaited_source = ""
         self._cancel_connection_timeout()
         self._cancel_reconnect()
         self._cancel_heal()
@@ -356,6 +403,7 @@ class GstNativeSinkReceiver:
             # Drop the bus signal watch so the pipeline (and its sockets) is
             # freed once NULL completes – otherwise stop() leaks fds.
             self._bus_handler.teardown_bus(pipeline)
+            self._release_display_frames()
             # set_state(NULL) can block indefinitely on network pipelines (RTSP/SRT)
             # when the remote end is unresponsive. Run in a daemon thread with a
             # timeout so shutdown never enters an uninterruptible kernel wait.
@@ -395,6 +443,7 @@ class GstNativeSinkReceiver:
         if self._pipeline is None:
             return
         pipeline = self._pipeline
+        self._release_display_frames()
 
         confirmed: list[bool] = []
 
@@ -445,6 +494,7 @@ class GstNativeSinkReceiver:
         reach NULL. Raises ``PipelineStuckError`` when this one does not.
         Only runs on GTK main thread.
         """
+        self._awaited_source = ""
         self._cancel_connection_timeout()
         self._cancel_reconnect()
         self._cancel_heal()
@@ -532,6 +582,7 @@ class GstNativeSinkReceiver:
             self._discovered_sources = []
             self._discovered_labels = []
             self._selected_source_index = 0
+        self._awaited_source = ""
         self._state.set_placeholder_pipeline(False)
 
         source_label = self._input.get_source_label(self._input_config)
@@ -549,6 +600,34 @@ class GstNativeSinkReceiver:
         # ``embed_widget`` no-ops when the widget is already parented,
         # so re-embedding is free during a swap that lands on the
         # same shared sink.
+        self.play()
+
+    def drop_display(self) -> None:
+        """Fall back from the GL display to the platform sink: rebuild the pipeline on it.
+
+        The platform sink's widget replaces the display's in the window even when
+        the old pipeline does not stop (``PipelineStuckError``); the next rebuild
+        then lands on the platform sink. GTK main thread only, like ``swap_input``.
+        """
+        if self._display is None:
+            return
+        self._cancel_connection_timeout()
+        self._cancel_reconnect()
+        self._cancel_heal()
+        self._cancel_watchdog()
+        self._release_display_frames()
+        self._display = None
+        self._shared_sink = None
+        # The flow probes sit on the old sink's pad; the new sink gets its own.
+        self._sink_probes_added = False
+        try:
+            self._null_transition_current_pipeline(swap_label="drop_display")
+        finally:
+            # ``play`` embeds a widget only for a placeholder; a configured source keeps the display's.
+            widget = self.get_sink_widget()
+            if self._on_widget_changed is not None and widget is not None:
+                self._on_widget_changed(widget)
+        self._reset_video_flow_state()
         self.play()
 
     def swap_detection_branch(
@@ -577,7 +656,7 @@ class GstNativeSinkReceiver:
 
         old_detector = self._detector
         if old_detector is not None:
-            old_detector.stop()
+            old_detector.stop(wait=False)
 
         self._detector = new_detector
         self._pipeline_assembler.set_detector(new_detector)
@@ -592,6 +671,8 @@ class GstNativeSinkReceiver:
     def create_pipeline(self) -> None:
         """Build the GStreamer pipeline via the active input plugin."""
         Gst.init(None)
+        # The input resolves what it plays as it builds; the label follows it.
+        self._pipeline_builds += 1
         self._reset_video_flow_state()
         self._note_pin()
         available, reason = self._input.__class__.is_available()
@@ -748,6 +829,8 @@ class GstNativeSinkReceiver:
 
     def get_sink_widget(self) -> Any:
         """Return the GTK widget from shared gtksink."""
+        if self._display is not None:
+            return self._display.widget
         sink = self._get_shared_sink()
         if sink is None:
             return None
@@ -861,6 +944,7 @@ class GstNativeSinkReceiver:
     def set_source(self, source_name: str) -> None:
         """Change the source and attempt to connect."""
         source_name = source_name.strip()
+        self._awaited_source = ""
         # Update the primary config field
         if self._input.config_fields():
             primary_field = self._input.config_fields()[0].name
@@ -934,28 +1018,11 @@ class GstNativeSinkReceiver:
                 return False
         logger.info("User selected %s source: %s", self._input.display_name, source)
         self.set_source(source)
-        self._save_source_to_config(source)
+        fields = self._input.config_fields()
+        if fields and self._on_source_picked is not None:
+            primary_field = fields[0].name
+            self._on_source_picked(primary_field, self._input_config[primary_field])
         return True
-
-    def _save_source_to_config(self, source_name: str) -> None:
-        """Persist the selected source name back to the config file."""
-        try:
-            from openfollow.configuration import load_config, save_config
-
-            cfg = load_config(self._config_path)
-            if self._input.config_fields():
-                primary_field = self._input.config_fields()[0].name
-                # The web save's path, so an input stores what goes with the source too.
-                self._input.apply_config_fields(cfg, {primary_field: source_name})
-            save_config(cfg, self._config_path)
-            logger.info(
-                "Saved %s source '%s' to %s",
-                self._input.display_name,
-                source_name,
-                self._config_path,
-            )
-        except Exception as e:
-            logger.warning("Failed to save source to config: %s", e)
 
     def enter_source_selection(self) -> None:
         """Enter source selection mode (only for inputs with discovery)."""
@@ -976,6 +1043,9 @@ class GstNativeSinkReceiver:
         source_label = self._input.get_source_label(self._input_config)
         if self._state.restore_connection_after_selection():
             self._status_marker.set_connected(source_label)
+        elif self._awaited_source:
+            # Closing the picker keeps the wait for the lost source, and its verdict.
+            self._schedule_discovery()
         elif source_label:
             # No message and no verdict: this is progress, not a failure.
             # A message would be stored as the error, and an input with
@@ -1127,6 +1197,11 @@ class GstNativeSinkReceiver:
         # reason, and published with the verdict it explains.
         failure = self._classify(error) if failure is None else failure
         phase = self._state.phase
+        if error is not None:
+            try:
+                self._input.on_bus_error(error)
+            except Exception:
+                logger.exception("Error handing the failure to the %s input", self._input.display_name)
         self._cancel_connection_timeout()
         self._cancel_reconnect()
         self._cancel_heal()
@@ -1135,6 +1210,7 @@ class GstNativeSinkReceiver:
         if self._pipeline is not None:
             try:
                 self._bus_handler.teardown_bus(self._pipeline)
+                self._release_display_frames()
                 self._pipeline.set_state(Gst.State.NULL)
             except Exception:
                 logger.exception("Error setting pipeline to NULL during reconnect")
@@ -1190,6 +1266,7 @@ class GstNativeSinkReceiver:
 
         if self._pipeline is not None:
             self._bus_handler.teardown_bus(self._pipeline)
+            self._release_display_frames()
             self._pipeline.set_state(Gst.State.NULL)
             self._pipeline = None
 
@@ -1220,6 +1297,11 @@ class GstNativeSinkReceiver:
                 # Clear primary config field for selection-based inputs.
                 if self._input.config_fields():
                     primary_field = self._input.config_fields()[0].name
+                    lost = str(self._input_config.get(primary_field) or "")
+                    if self._input_caps.has_source_discovery and lost:
+                        self._awaited_source = lost
+                        video_seen = self._state.phase >= ConnectionPhase.DECODING
+                        self._passes_before_return = 0 if video_seen else _LISTED_RETRY_PASSES
                     self._input_config[primary_field] = ""
                 self._state.activate_source_selection()
             else:
@@ -1482,9 +1564,25 @@ class GstNativeSinkReceiver:
                 logger.debug("Discovered %d source(s): %s", len(sources), sources)
             else:
                 logger.debug("No sources discovered")
+            awaited = self._awaited_source
+            if awaited:
+                GLib.idle_add(self._on_awaited_pass, awaited, awaited in sources)
         finally:
             with self._discovery_lock:
                 self._discovery_running = False
+
+    def _on_awaited_pass(self, source: str, listed: bool) -> bool:
+        """Main loop: a discovery pass while *source* is awaited; reconnects once it is announced again."""
+        if self._awaited_source != source:
+            return False
+        if not listed:
+            self._passes_before_return = 0
+        elif self._passes_before_return > 0:
+            self._passes_before_return -= 1
+        elif self._state.is_placeholder_pipeline:
+            logger.info("%s source '%s' is back – reconnecting", self._input.display_name, source)
+            self.set_source(source)
+        return False
 
 
 def _pixel_aspect(caps: str) -> tuple[int, int]:

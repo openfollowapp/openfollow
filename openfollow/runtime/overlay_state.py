@@ -14,13 +14,11 @@ from openfollow.configuration import (
     _GRID_THICKNESS_DEFAULT,
     _GRID_TRANSPARENCY_DEFAULT,
 )
-from openfollow.runtime import overlay_layout
+from openfollow.runtime.overlay_layout import SceneView
 from openfollow.units import UnitSystem
 
 if TYPE_CHECKING:
     from openfollow.video.detection import DetectionBox
-
-_MAX_MARKERS = 16  # Pre-allocated pool size
 
 
 @dataclass
@@ -47,8 +45,10 @@ class PiNetworkOverlayState:
     active_iface: str = ""
     # Interface whose own screen is open; "" is the interface list.
     open_iface: str = ""
-    # That screen's headline: "Network Interface: Lighting (enx…)".
+    # That screen's headline: "Network Interface: Lighting (enx…)", or a Simple screen's.
     title: str = ""
+    # Set for the Simple screens, which have no interface list above them.
+    subtitle: str = ""
     banner: str = ""
     # "error", "caution", "info" or "success".
     banner_level: str = ""
@@ -61,21 +61,6 @@ class PiNetworkOverlayState:
     # Character offset of the d-pad cursor within ``field_value``, or -1
     # when the value is freely typed and the caret belongs at the end.
     field_caret_offset: int = -1
-
-    def reset(self) -> None:
-        self.screen_active = False
-        self.rows = []
-        self.selected_index = 0
-        self.active_iface = ""
-        self.open_iface = ""
-        self.title = ""
-        self.banner = ""
-        self.banner_level = ""
-        self.busy = False
-        self.field_edit_active = False
-        self.field_label = ""
-        self.field_value = ""
-        self.field_caret_offset = -1
 
 
 @dataclass
@@ -97,6 +82,8 @@ class MarkerOverlayData:
     # On/off phase of an Identify flash on this card, set per frame.
     identify_flash: bool = False
     is_controlled: bool = False
+    # Another station controls this marker too.
+    control_conflict: bool = False
     # Per-controlled-marker gamepad fader value (0..1) or None.
     marker_fader: float | None = None
     # Detection assist-mode "ghost": the AI-corrected PSN output, drawn as a dim
@@ -136,31 +123,33 @@ class OperatorMessageView:
 
 @dataclass
 class OverlayState:
-    """Snapshot of overlay state. Swapped atomically (GIL) between threads."""
+    """Snapshot of overlay state, built new each frame and never changed once the render thread receives it."""
 
     markers: list[MarkerOverlayData] = field(default_factory=list)
-    # Pre-allocated marker data objects (reuse to avoid per-frame allocation)
-    _marker_pool: list[MarkerOverlayData] = field(
-        default_factory=lambda: [MarkerOverlayData(marker_id=0, x=0, y=0, z=0, color="") for _ in range(_MAX_MARKERS)],
-        repr=False,
-    )
     selected_id: int | None = None
     # Camera: [pos_x, pos_y, pos_z, pitch, yaw, roll, fov]
     camera_params: npt.NDArray[Any] | None = None
-    # The last source picture on the sink, (0, 0) before any: the scene is drawn
-    # where gtksink letterboxes that frame, stretched as gtksink stretches it.
-    picture_size: tuple[int, int] = (0, 0)
-    picture_par: tuple[int, int] = (1, 1)
-    # Radial lens-distortion coefficients bowing the overlay to match the lens.
-    # 0/0 = pinhole (no curvature) – the renderer fast-paths to straight lines.
+    # Where the scene sits on the canvas, worked out on the main thread
+    # (window.operator_scene_view); None draws it on the whole canvas.
+    scene_view: SceneView | None = None
+    # The lens the overlay is bowed to match (openfollow.lens_model): the pair and
+    # the lens centre. A 0 pair draws straight lines; a centre alone shifts them.
     lens_k1: float = 0.0
     lens_k2: float = 0.0
+    lens_cx: float = 0.0
+    lens_cy: float = 0.0
     # Grid: (width, depth, spacing, x_offset, y_offset, z_offset)
     grid_config: tuple[float, float, float, float, float, float] | None = None
     grid_visible: bool = True
     grid_color: str = _GRID_COLOR_DEFAULT
     grid_thickness: int = _GRID_THICKNESS_DEFAULT
     grid_transparency: float = _GRID_TRANSPARENCY_DEFAULT
+    # Ground grid: a polygon floor at its own Z. ``ground_grid_active`` redirects
+    # the floor elements of markers inside it; ``ground_grid_visible`` draws it, on its own.
+    ground_grid_active: bool = False
+    ground_grid_visible: bool = False
+    ground_grid_z: float = 0.0
+    ground_grid_vertices: list[tuple[float, float]] = field(default_factory=list)
     # Marker visual config
     marker_style: str = "crosshair"
     cone_base_diameter: float = 0.6
@@ -265,6 +254,7 @@ class OverlayState:
     settings_items_submenu: list[bool] = field(default_factory=list)
     settings_selected_index: int = 0
     settings_menu_banner: str = ""
+    settings_menu_banner_action: str = ""
     # About / license screen – read-only, no extra payload.
     about_active: bool = False
     # Drive picker + diagnostics export screen.
@@ -324,126 +314,24 @@ class OverlayState:
     # Each entry: (vertices_world_xy, color_hex, name, is_occupied, count)
     zone_polygons: list[tuple[list[tuple[float, float]], str, str, bool, int]] = field(default_factory=list)
     zone_z_offset: float = 0.0
+    # Paths: (curve, ends, locked) each, world X/Y/Z; an end is (at, a point just inside the path, releases).
+    show_paths: bool = False
+    path_lines: list[
+        tuple[
+            list[tuple[float, float, float]],
+            list[tuple[tuple[float, float, float], tuple[float, float, float], bool]],
+            bool,
+        ]
+    ] = field(default_factory=list)
+    # Where a locked marker can turn at a nearby junction: a short (tail, tip) stretch along each way.
+    path_arrows: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = field(default_factory=list)
 
     @property
     def pixel_aspect(self) -> float:
-        """How much wider than tall gtksink draws one frame pixel; 1.0 when square."""
-        return overlay_layout.pixel_aspect(*self.picture_size, self.picture_par)
+        """How much wider than tall one frame pixel is drawn; 1.0 when square."""
+        return 1.0 if self.scene_view is None else self.scene_view.pixel_aspect
 
-    def reset(self) -> None:
-        """Reset state for reuse in object pool."""
-        self.markers.clear()
-        self.selected_id = None
-        self.camera_params = None
-        self.picture_size = (0, 0)
-        self.picture_par = (1, 1)
-        self.lens_k1 = 0.0
-        self.lens_k2 = 0.0
-        self.grid_config = None
-        self.grid_visible = True
-        self.grid_color = _GRID_COLOR_DEFAULT
-        self.grid_thickness = _GRID_THICKNESS_DEFAULT
-        self.grid_transparency = _GRID_TRANSPARENCY_DEFAULT
-        self.marker_style = "crosshair"
-        self.cone_base_diameter = 0.6
-        self.cone_top_diameter = 0.3
-        self.cone_thickness = 2
-        self.cone_filled = True
-        self.cone_opacity = 0.4
-        self.cone_shaded = True
-        self.show_ball = True
-        self.show_crosshair = True
-        self.crosshair_size = 0.3
-        self.crosshair_color = "#ffffff"
-        self.crosshair_thickness = 2
-        self.transparency = 0.5
-        self.show_z_line = True
-        self.z_line_thickness = 1
-        self.show_ground_circle = False
-        self.ground_circle_size = 0.3
-        self.ground_circle_filled = True
-        self.z_display_from_stage = False
-        self.min_speed = 0.1
-        self.max_speed = 3.0
-        self.unit_system = UnitSystem.METRIC
-        self.show_origin = False
-        self.origin_length = 1.0
-        self.origin_thickness = 3
-        self.controller_connected = False
-        self.keyboard_connected = False
-        self.unbound_controller_indices = []
-        self.mouse_enabled = False
-        self.mouse_double_click_reset = True
-        self.mouse_wheel_z_enabled = True
-        self.ip_text = ""
-        self.hostname_text = ""
-        self.ip_is_fallback = False
-        self.network_alerts = []
-        self.show_hud_help = True
-        self.cpu_percent = 0.0
-        self.ram_percent = 0.0
-        self.temperature = None
-        self.station_name = ""
-        self.video_source_type = "ndi"
-        self.video_connected = True
-        self.source_label = ""
-        self.reconnect_attempt = 0
-        self.error_message = ""
-        self.video_failure_text = ""
-        self.video_failure_action = ""
-        self.source_selection_active = False
-        self.source_selection_title = "SELECT SOURCE"
-        self.discovered_sources.clear()
-        self.selected_source_index = 0
-        self.source_type_selection_active = False
-        self.available_source_types.clear()
-        self.selected_source_type_index = 0
-        self.url_editor_active = False
-        self.url_editor_field_label = ""
-        self.url_editor_value = ""
-        self.url_editor_banner = ""
-        self.field_choice_active = False
-        self.field_choice_title = ""
-        self.field_choice_items.clear()
-        self.field_choice_selected_index = 0
-        self.settings_menu_active = False
-        self.settings_items.clear()
-        self.settings_items_enabled.clear()
-        self.settings_items_disabled_reasons.clear()
-        self.settings_items_submenu.clear()
-        self.settings_selected_index = 0
-        self.settings_menu_banner = ""
-        self.about_active = False
-        self.media_picker_active = False
-        self.media_picker_title = ""
-        self.media_picker_items.clear()
-        self.media_picker_enabled.clear()
-        self.media_picker_index = -1
-        self.media_picker_empty = ""
-        self.media_export_active = False
-        self.media_export_lines = ("", "", None)
-        self.pi_network.reset()
-        self.detections = []
-        self.detection_show_boxes = False
-        self.detection_show_labels = False
-        self.detection_box_color = "#808080"
-        self.detection_box_thickness = 2
-        self.detection_attached_colors = {}
-        self.button_detection = None
-        self.button_labels = {}
-        self.keyboard_labels = {}
-        self.mouse3d_connected = False
-        self.mouse3d_axis_map = {}
-        self.mouse3d_buttons = {}
-        self.marker_cycle_enabled = True
-        self.show_zones = False
-        self.zone_polygons = []
-        self.zone_z_offset = 0.0
-        # Clear fader/badge stacks on pool reuse to avoid stale entries.
-        self.virtual_faders_display = []
-        self.status_flags = []
-        # Clear operator-message cards on pool reuse.
-        self.operator_messages = []
-        self.operator_message_position = "bottom"
-        self.operator_message_overflow = 0
-        self.operator_message_scale = 1.0
+    @property
+    def lens(self) -> tuple[float, float, float, float]:
+        """``(k1, k2, cx, cy)``, in the order the warp functions take them."""
+        return self.lens_k1, self.lens_k2, self.lens_cx, self.lens_cy

@@ -14,12 +14,16 @@ from openfollow.privilege.capabilities import (
     _PROBE_PLACEHOLDER,
     _USERNAME_ARG_RE,
     ALL_CAPABILITIES,
+    CAMERA_CONFIG_WRITE,
+    CAMERA_OVERLAY_LOAD,
+    CAMERA_OVERLAY_UNLOAD,
     DEB_UPDATE_TMP_PREFIX,
     DEVICE_GROUP_JOIN,
     DEVICE_INSTALL_SUDOERS_DROPIN,
     DEVICE_INSTALL_SYSTEMD_UNIT,
     DEVICE_TRUNCATE_LEGACY_SUDOERS,
     JOURNAL_GROUP_JOIN,
+    MEDIA_WRITE,
     NETWORK_DHCPCD_CONF_COMMIT,
     NETWORK_DHCPCD_CONF_WRITE_TMP,
     NETWORK_NM_CON_MOD,
@@ -118,7 +122,7 @@ def test_set_clock_rejects_extra_args() -> None:
 
 def test_set_clock_sudoers_pattern_is_anchored_not_glob() -> None:
     # Must NOT be a bare trailing ``*`` (that would allow arbitrary date args).
-    assert SYSTEM_SET_CLOCK.sudoers_pattern == "/usr/bin/date -s ^@[0-9]+$"
+    assert SYSTEM_SET_CLOCK.sudoers_pattern == "/usr/bin/date ^-s @[0-9]+$"
 
 
 def test_set_clock_probe_command_uses_epoch_token() -> None:
@@ -210,7 +214,8 @@ def test_package_self_update_in_registry() -> None:
 def test_usermod_caps_pin_user_slot_with_anchored_regex(cap: Capability) -> None:
     """The user slot must be the anchored ``^…$`` regex, NOT a trailing ``*``
     (which would also match an injected ``-aG sudo <user>``)."""
-    assert cap.sudoers_pattern.endswith(_USERNAME_ARG_RE)
+    assert cap.sudoers_pattern.endswith(" " + _USERNAME_ARG_RE.removeprefix("^"))
+    assert cap.sudoers_pattern.startswith("/usr/sbin/usermod ^-aG ")
     assert not cap.sudoers_pattern.endswith("*")
     assert cap.arg_pattern == _USERNAME_ARG_RE
 
@@ -318,3 +323,81 @@ def test_package_self_update_pattern_pins_systemd_run_script_and_prefix() -> Non
         SELF_UPDATE_SCRIPT,
     )
     assert DEB_UPDATE_TMP_PREFIX in PACKAGE_SELF_UPDATE.probe_argv[4]
+
+
+# ---- argument regexes as sudo reads them -----------------------------
+
+
+def _regex_rules() -> list[Capability]:
+    return [cap for cap in ALL_CAPABILITIES if "^" in cap.sudoers_pattern or "$" in cap.sudoers_pattern]
+
+
+def _rule_args(cap: Capability) -> str:
+    return cap.sudoers_pattern.split(" ", 1)[1]
+
+
+def _sudo_admits(cap: Capability, args: str) -> bool:
+    # sudo searches the space-joined arguments (regexec): only the rule's own ``^`` and ``$`` anchor it.
+    return re.search(_rule_args(cap), args) is not None
+
+
+def test_the_registry_has_regex_rules() -> None:
+    assert len(_regex_rules()) == 7
+
+
+@pytest.mark.parametrize("cap", _regex_rules(), ids=lambda c: c.name)
+def test_a_regex_rule_is_all_of_its_argument_text(cap: Capability) -> None:
+    """sudo reads the arguments as a regex only when the whole text starts with ``^``."""
+    args = _rule_args(cap)
+    assert args.startswith("^")
+    assert args.endswith("$")
+    assert args.count("^") == 1
+
+
+@pytest.mark.parametrize("cap", _regex_rules(), ids=lambda c: c.name)
+def test_the_words_before_a_rules_regex_are_plain(cap: Capability) -> None:
+    *words, _arg_re = _rule_args(cap).removeprefix("^").split(" ")
+    assert words
+    assert all(re.fullmatch(r"[A-Za-z0-9,_-]+", word) for word in words)
+
+
+@pytest.mark.parametrize("cap", _regex_rules(), ids=lambda c: c.name)
+def test_a_regex_rules_alternation_stays_grouped(cap: Capability) -> None:
+    """A top-level ``|`` would split the rule into ``^<words> a`` or ``b$``."""
+    depth = 0
+    for char in _rule_args(cap):
+        depth += {"(": 1, ")": -1}.get(char, 0)
+        assert not (char == "|" and depth == 0)
+
+
+@pytest.mark.parametrize("cap", _regex_rules(), ids=lambda c: c.name)
+def test_a_regex_rule_admits_its_own_probe(cap: Capability) -> None:
+    assert _sudo_admits(cap, " ".join(cap.probe_command()[1:]))
+
+
+@pytest.mark.parametrize(
+    ("cap", "args", "admitted"),
+    [
+        (SYSTEM_SET_CLOCK, "-s @1700000000", True),
+        (SYSTEM_SET_CLOCK, "-s @abc", False),
+        (SYSTEM_SET_CLOCK, "-s @1 -u", False),
+        (SYSTEM_SET_CLOCK, "-s 2020-01-01", False),
+        (JOURNAL_GROUP_JOIN, "-aG systemd-journal openfollow", True),
+        (JOURNAL_GROUP_JOIN, "-aG systemd-journal openfollow extra", False),
+        (JOURNAL_GROUP_JOIN, "-aG systemd-journal -aG sudo x", False),
+        (JOURNAL_GROUP_JOIN, "-aG sudo openfollow", False),
+        (DEVICE_GROUP_JOIN, f"-aG {REQUIRED_HARDWARE_GROUPS_JOINED} openfollow", True),
+        (DEVICE_GROUP_JOIN, f"-aG {REQUIRED_HARDWARE_GROUPS_JOINED},sudo openfollow", False),
+        (CAMERA_CONFIG_WRITE, "write automatic", True),
+        (CAMERA_CONFIG_WRITE, "write imx708,cam0", True),
+        (CAMERA_CONFIG_WRITE, "write imx708,cam0 extra", False),
+        (CAMERA_OVERLAY_LOAD, "load imx708,cam1", True),
+        (CAMERA_OVERLAY_LOAD, "load automatic", False),
+        (CAMERA_OVERLAY_UNLOAD, "unload ov5647,cam0", True),
+        (MEDIA_WRITE, "write /dev/sda1", True),
+        (MEDIA_WRITE, "write /dev/mmcblk0p1", False),
+        (MEDIA_WRITE, "write /dev/sda1 extra", False),
+    ],
+)
+def test_a_regex_rule_admits_only_its_calls(cap: Capability, args: str, admitted: bool) -> None:
+    assert _sudo_admits(cap, args) is admitted

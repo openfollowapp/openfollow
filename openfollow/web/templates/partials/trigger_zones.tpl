@@ -2,7 +2,7 @@
 % _us = UnitSystem(config.ui.unit_system)
 % _imp = _us is UnitSystem.IMPERIAL
 % _len = unit_suffix_length(_us)
-<form id="trigger-zones-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="trigger_zones" data-help="trigger_zones"
+<form id="trigger-zones-section" data-feature="zones" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="trigger_zones" data-help="trigger_zones"
       data-template-form="1"
       hx-post="/section/trigger_zones" hx-target="#trigger-zones-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
@@ -14,12 +14,18 @@
         <h3 class="group-title">Global</h3>
         <div class="row">
             <div class="field checkbox-field">
-                <label>Enabled</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="enabled" {{'checked' if config.trigger_zones.enabled else ''}}></div>
+                <label for="trigger-zones-enabled">Trigger zones</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="trigger-zones-enabled" name="enabled" {{'checked' if config.trigger_zones.enabled else ''}}>
+                    <label for="trigger-zones-enabled">Send zone OSC events</label>
+                </div>
             </div>
             <div class="field checkbox-field">
-                <label>Show Overlay</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="show_overlay" {{'checked' if config.trigger_zones.show_overlay else ''}}></div>
+                <label for="trigger-zones-show-overlay">Overlay</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="trigger-zones-show-overlay" name="show_overlay" {{'checked' if config.trigger_zones.show_overlay else ''}}>
+                    <label for="trigger-zones-show-overlay">Show zones on the Operator Screen</label>
+                </div>
             </div>
             <div class="field">
                 <label>Eval Rate (FPS)</label>

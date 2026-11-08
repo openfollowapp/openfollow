@@ -22,6 +22,8 @@ Pinned contracts:
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from bottle import template
 
@@ -29,6 +31,12 @@ from openfollow.configuration import AppConfig
 from openfollow.web import server as _server_module  # noqa: F401
 
 pytestmark = pytest.mark.unit
+
+# The Network Interface card polls while no label edit is pending and its section is in view.
+_NET_POLL = (
+    'hx-trigger="every 5s [netLabelsIdle() && pollShown(this)], '
+    'poll-shown[netLabelsIdle() && pollShown(this)] from:body"'
+)
 
 
 def _render_general(**overrides):
@@ -43,7 +51,6 @@ def _render_general(**overrides):
     ctx = {
         "config": cfg,
         "saved": False,
-        "restarting": False,
         "local_ips": ["127.0.0.1"],
         "update_status": {"state": "idle", "message": "", "error": ""},
         "network_state": None,
@@ -101,7 +108,7 @@ class TestGeneralStructure:
 
     def test_software_update_shows_current_version(self) -> None:
         """The update section must display the installed version so the
-        operator can see what's running before clicking Check & Install."""
+        operator can see what's running before installing."""
         body = _render_general(current_version="0.2.3rc6")
         assert "v0.2.3rc6" in body
 
@@ -226,7 +233,7 @@ class TestNetworkPartialStructure:
             "partials/network",
             net={"available": True, "writable": False, "editable": False, "iface_rows": []},
         )
-        assert 'hx-trigger="every 5s [netLabelsIdle()]"' in body
+        assert _NET_POLL in body
         assert 'hx-target="#net-iface-list"' in body
 
 
@@ -278,6 +285,97 @@ def _update_script_function(name: str) -> str:
     return match.group(1)
 
 
+def _software_update_section(**overrides) -> str:
+    body = _render_general(**overrides)
+    start = body.index('id="general-software-update-section"')
+    return body[start : body.index("<script>", start)]
+
+
+def _failed_box(section: str) -> tuple[str, str | None]:
+    """The error box's main line and its second line (``None`` without one)."""
+    box = re.search(r'<div class="notice error">(.*?)\n    </div>', section, re.DOTALL)
+    assert box is not None, "no error box"
+    main = re.search(r"<div>(.*?)</div>", box.group(1))
+    sub = re.search(r'<div class="notice-sub">(.*?)</div>', box.group(1))
+    assert main is not None
+    return main.group(1), sub.group(1) if sub else None
+
+
+_UPDATE_STATES = [
+    pytest.param({}, id="nothing-known"),
+    pytest.param({"update_available": True, "latest_version": "0.5.1"}, id="update-available"),
+    pytest.param(
+        {"update_status": {"state": "failed", "message": "Update failed.", "error": "Bad signature."}},
+        id="last-install-failed",
+    ),
+]
+
+
+class TestSoftwareUpdateLayout:
+    """One layout in every state: the online install and the offline bundle side by side."""
+
+    @pytest.mark.parametrize("ctx", _UPDATE_STATES)
+    def test_both_installs_are_one_click_away_in_every_state(self, ctx: dict) -> None:
+        section = _software_update_section(**ctx)
+        assert section.count('onclick="openfollowCheckUpdate(this)"') == 1
+        assert "Install Latest Version Online" in section
+        assert "document.getElementById('general-update-file').click()" in section
+        assert "Install .ofupdate File" in section
+        assert "<details" not in section
+
+    def test_an_available_release_is_an_info_box_naming_it(self) -> None:
+        section = _software_update_section(update_available=True, latest_version="0.5.1", current_version="0.5.0")
+        assert '<div class="notice" role="status">' in section
+        assert "Version 0.5.1 is available." in section
+        assert "Installed: v0.5.0" in section
+        assert "style=" not in section.replace('style="display:none"', "")
+
+    def test_no_box_while_no_release_is_known(self) -> None:
+        assert 'class="notice"' not in _software_update_section()
+
+    def test_a_failed_install_shows_its_error(self) -> None:
+        section = _software_update_section(
+            update_status={"state": "failed", "message": "Update failed.", "error": "Bad signature."}
+        )
+        assert _failed_box(section) == ("Update failed.", "Bad signature.")
+
+    def test_a_failed_install_without_a_reason_has_one_line(self) -> None:
+        section = _software_update_section(update_status={"state": "failed", "message": "", "error": ""})
+        assert _failed_box(section) == ("Update failed.", None)
+
+    def test_a_failed_install_outranks_an_available_release(self) -> None:
+        section = _software_update_section(
+            update_available=True,
+            latest_version="0.5.1",
+            update_status={"state": "failed", "message": "Update failed.", "error": "Bad signature."},
+        )
+        assert _failed_box(section) == ("Update failed.", "Bad signature.")
+        assert 'class="notice"' not in section
+
+    @pytest.mark.parametrize("state", ["queued", "running", "restarting"])
+    def test_a_release_is_not_offered_while_an_install_runs(self, state: str) -> None:
+        section = _software_update_section(
+            update_available=True, latest_version="0.5.1", update_status={"state": state, "message": "", "error": ""}
+        )
+        assert "is available" not in section
+
+    @pytest.mark.parametrize("state", ["queued", "running", "restarting"])
+    def test_both_installs_are_disabled_while_one_runs(self, state: str) -> None:
+        section = _software_update_section(
+            update_available=True, latest_version="0.5.1", update_status={"state": state, "message": "", "error": ""}
+        )
+        controls = re.findall(r"<(?:button|input)\b[^>]*>", section.split('<div class="actions">', 1)[1])
+        assert len(controls) == 3
+        assert all(" disabled" in c for c in controls)
+
+    @pytest.mark.parametrize("state", ["idle", "failed", ""])
+    def test_both_installs_are_enabled_otherwise(self, state: str) -> None:
+        section = _software_update_section(update_status={"state": state, "message": "", "error": ""})
+        controls = re.findall(r"<(?:button|input)\b[^>]*>", section.split('<div class="actions">', 1)[1])
+        assert len(controls) == 3
+        assert not any(" disabled" in c for c in controls)
+
+
 class TestSoftwareUpdateProgressModal:
     """Once the operator confirms an install, the page stays locked and says
     which step is running until the device restarts."""
@@ -288,7 +386,7 @@ class TestSoftwareUpdateProgressModal:
         body = _render_general(update_supported=True)
         assert "document.getElementById('general-update-file').click()" in body
         assert 'onchange="openfollowUploadUpdate(this)"' in body
-        assert "Choose Update &amp; Install" in body
+        assert "Install .ofupdate File" in body
         assert "modalConfirm" not in _update_script_function("openfollowUploadUpdate")
 
     def test_upload_locks_the_page_before_the_bundle_is_sent(self) -> None:

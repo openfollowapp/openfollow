@@ -127,16 +127,16 @@ browser on the same network. Use it to select your video source, set PSN/network
 and manage markers/controllers. Changes apply live when possible; settings that require a
 restart will prompt you in the UI.
 
-A built-in **Setup Wizard** (accessible from the Camera & Grid tab) guides you through camera positioning and grid calibration step by step – including a live preview overlay, draggable reference and corner points, and automatic DLT camera solve.
+A built-in **Setup Wizard** (accessible from the Camera & Grid tab) guides you through the video source, the lens and the camera calibration step by step – the camera is solved from the four corners of a measured rectangle or from known and triangulated points pinned on the picture, with a live preview overlay.
 
 ### Updating OpenFollow
 
 Update from the **General → Software Update** page of the Web UI:
 
-- **Check & Install Latest** downloads, verifies, and installs the newest release
-  (needs internet on the device).
-- **Offline install** installs a signed `.ofupdate` bundle you upload over the LAN
-  (no internet).
+- **Install Latest Version Online** downloads, verifies, and installs the newest
+  release (needs internet on the device).
+- **Install .ofupdate File** installs a signed `.ofupdate` bundle you upload over
+  the LAN (no internet).
 
 See the [Software Update help](openfollow/web/help/general-software-update.md) for
 details.
@@ -145,7 +145,7 @@ details.
 
 ## Security notes
 
-OpenFollow is designed for trusted LAN deployment, but a few knobs are worth reviewing before running on a shared production network:
+OpenFollow is designed for trusted LAN deployment, but a few knobs are worth reviewing before running on a shared production network. To report a vulnerability, see [SECURITY.md](SECURITY.md); please don't open a public issue.
 
 - **Web PIN (`web_pin`):** set a PIN under General → Network to require authentication for every non-asset route. Browser sessions use a `SameSite=Strict` cookie; peer-to-peer broadcasts between OpenFollow instances are HMAC-signed (the PIN itself never travels on the wire). Unset PIN = open, useful for bench testing only.
 - **OSC input allowlist (`osc.allowed_sender_ips`):** any LAN device can otherwise inject `/marker/{id} x y z` messages and hijack marker positions. Leave empty only while you're sure the LAN is trusted – OpenFollow logs a prominent warning at startup in that case. List one IP per authorised control surface (lighting console, touch panel, etc.).

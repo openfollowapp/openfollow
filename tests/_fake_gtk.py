@@ -73,8 +73,9 @@ class FakeCanvas:
     def embed_widget(self, widget: Any) -> None:
         self.embed_widget_calls.append(widget)
 
-    def attach_hud(self, draw_fn: Callable[..., Any]) -> None:
+    def attach_hud(self, draw_fn: Callable[..., Any], tick: Callable[[], bool] | None = None) -> None:
         self.hud_draw_fn = draw_fn
+        self.hud_tick = tick
 
     def set_title(self, title: str) -> None:
         self.title = title

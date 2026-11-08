@@ -4,7 +4,7 @@
 
 ``apply_section_data`` is the trust boundary for the config web UI: it takes a
 section name and a JSON-decoded dict straight off the wire and mutates the live
-``AppConfig``. The contract (CLAUDE.md "Validation contract") is that a
+``AppConfig``. The contract (docs/architecture/config.md "Validation contract") is that a
 crafted POST is held to the same rules as a hand-edited config.toml – it must
 never raise, never persist a non-finite number, and only ever apply a coerced
 value or preserve the prior one. These tests fuzz it with hostile JSON values
@@ -61,8 +61,6 @@ _FIELD_POOL = [
     "pitch",
     "yaw",
     "roll",
-    "sensor_width_mm",
-    "focal_length_mm",
     "width",
     "depth",
     "spacing",

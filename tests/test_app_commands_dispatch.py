@@ -20,10 +20,20 @@ from openfollow.services import WebCommandQueue
 pytestmark = pytest.mark.unit
 
 
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 100.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
 def _make_app(**overrides):  # noqa: ANN202
+    clock = _Clock()
     defaults = {
         "_update_worker": None,
-        "_web_commands": WebCommandQueue(),
+        "_clock": clock,
+        "_web_commands": WebCommandQueue(clock=clock),
         "_restart_called": False,
         "_enter_button_detection_called": False,
         "_exit_button_detection_called": False,
@@ -61,12 +71,33 @@ def _make_app(**overrides):  # noqa: ANN202
 # ---------------------------------------------------------------------------
 
 
-def test_check_restart_triggers_restart_when_requested() -> None:
+def test_check_restart_triggers_restart_half_a_second_after_the_request() -> None:
+    """The request that asked for it gets its answer out before the station goes."""
     app = _make_app()
     app._web_commands.request_restart()
 
+    app._clock.now = 100.49
     app_commands.check_restart_request(app)
+    assert app._restart_called is False
 
+    app._clock.now = 100.5
+    app_commands.check_restart_request(app)
+    assert app._restart_called is True
+
+
+def test_check_restart_waits_out_the_grace_of_the_latest_request() -> None:
+    """Each request has an answer to get out, so a second one restarts the wait."""
+    app = _make_app()
+    app._web_commands.request_restart()
+    app._clock.now = 100.4
+    app._web_commands.request_restart()
+
+    app._clock.now = 100.8
+    app_commands.check_restart_request(app)
+    assert app._restart_called is False
+
+    app._clock.now = 100.9
+    app_commands.check_restart_request(app)
     assert app._restart_called is True
 
 
@@ -79,6 +110,7 @@ def test_check_restart_is_noop_when_no_request() -> None:
 def test_check_restart_skips_when_update_worker_alive() -> None:
     app = _make_app()
     app._web_commands.request_restart()
+    app._clock.now = 100.5
 
     class _LiveWorker:
         def is_alive(self) -> bool:

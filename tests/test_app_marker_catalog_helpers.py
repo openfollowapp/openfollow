@@ -68,11 +68,23 @@ class TestBootstrapStationIdentity:
             "openfollow.app.save_config",
             lambda *_a, **_k: saved.append(1),
         )
-        fake = types.SimpleNamespace(_config=cfg, _config_path=str(tmp_path / "c.toml"))
+        path = tmp_path / "c.toml"
+        path.write_text('network_mode = "simple"\n')
+        fake = types.SimpleNamespace(_config=cfg, _config_path=str(path))
         OpenFollowApp._bootstrap_station_identity(fake)  # type: ignore[arg-type]
-        # No save: station_id was set and psn_system_name is operator-chosen.
+        # No save: station_id was set, psn_system_name is operator-chosen and the mode is stored.
         assert saved == []
         assert cfg.psn_system_name == "Stage Left"
+
+    def test_a_config_without_a_stored_mode_saves_the_one_it_started_in(self, tmp_path, monkeypatch) -> None:
+        cfg = AppConfig(station_id="abc", psn_system_name="Stage Left")
+        saved: list = []
+        monkeypatch.setattr("openfollow.app.save_config", lambda *_a, **_k: saved.append(1))
+        path = tmp_path / "c.toml"
+        path.write_text('psn_system_name = "Stage Left"\n')
+        fake = types.SimpleNamespace(_config=cfg, _config_path=str(path))
+        OpenFollowApp._bootstrap_station_identity(fake)  # type: ignore[arg-type]
+        assert saved == [1]
 
     def test_oserror_on_save_is_logged_not_raised(self, tmp_path, monkeypatch) -> None:
         cfg = AppConfig(station_id="", psn_system_name="")
@@ -564,6 +576,22 @@ class TestPruneSelectionIds:
         monkeypatch.setattr("openfollow.app.save_config", boom)
         # Must not raise even though persisting the prune fails.
         OpenFollowApp._prune_selection_ids(fake, [2])  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("content", ["", "  \n\t\n", "not [[ toml"], ids=["empty", "whitespace", "unparseable"])
+    def test_a_broken_file_is_left_alone_and_logged(self, tmp_path, caplog, content: str) -> None:
+        from openfollow.configuration import save_config
+
+        config_path = tmp_path / "config.toml"
+        for _ in range(2):
+            save_config(AppConfig(controlled_marker_ids=[1, 2], viewer_marker_ids=[2]), str(config_path))
+        config_path.write_text(content, encoding="utf-8")
+        fake = types.SimpleNamespace(_config=AppConfig(), _config_path=str(config_path))
+
+        with caplog.at_level("ERROR"):
+            OpenFollowApp._prune_selection_ids(fake, [2])  # type: ignore[arg-type]
+
+        assert config_path.read_text(encoding="utf-8") == content
+        assert "Failed to persist selection" in caplog.text
 
 
 class TestInitMarkerCatalogSyncIfaceResolution:

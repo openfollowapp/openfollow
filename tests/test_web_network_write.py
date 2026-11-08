@@ -18,27 +18,19 @@ import urllib.request
 import pytest
 
 import openfollow.web.discovery as discovery_module
+from openfollow.configuration import config_write_lock
 from openfollow.network.adapter import ApplyResult, Ipv4Method
 from openfollow.network.validate import vlan_interface_name
-from openfollow.web.routes import _port_suffix
 from openfollow.web.server import ConfigWebServer
 from tests._ports import free_tcp_port, live_on_free_port
 
 pytestmark = pytest.mark.integration
 
-
-@pytest.mark.parametrize(
-    "netloc,expected",
-    [
-        ("192.168.1.5:8080", ":8080"),  # IPv4 + port
-        ("192.168.1.5", ""),  # IPv4, no port
-        ("host.local:9", ":9"),  # hostname + port
-        ("[fe80::1]:8080", ":8080"),  # IPv6 literal + port
-        ("[fe80::1]", ""),  # IPv6 literal, no port (was misread as :1)
-    ],
+# The Network Interface card polls while no label edit is pending and its section is in view.
+_NET_POLL = (
+    'hx-trigger="every 5s [netLabelsIdle() && pollShown(this)], '
+    'poll-shown[netLabelsIdle() && pollShown(this)] from:body"'
 )
-def test_port_suffix(netloc: str, expected: str) -> None:
-    assert _port_suffix(netloc) == expected
 
 
 # --------------------------------------------------------------------------- #
@@ -83,6 +75,7 @@ class FakeNetwork:
         self.kinds: dict[str, str] = {}
         self.vlans_created: list[tuple[str, int]] = []
         self.vlans_deleted: list[str] = []
+        self.config_lock_held: list[bool] = []
         self.vlan_create_result = ApplyResult(ok=True, message="Created.")
         self.vlan_delete_result = ApplyResult(ok=True, message="Deleted.")
         # Which interface is answering the browser. Loopback in a test, so the
@@ -165,10 +158,10 @@ class FakeNetwork:
 
     def vlan_create_handler(self, parent: str, vlan_id: int) -> ApplyResult:
         self.vlans_created.append((parent, vlan_id))
+        self.config_lock_held.append(config_write_lock.locked())
         if self.vlan_create_result.ok:
             # The card is re-rendered from the interface list straight after,
-            # so the new link has to be in it - that is the whole point of the
-            # forced re-read.
+            # so the new link has to be in it.
             name = vlan_interface_name(parent, vlan_id)
             self.interfaces.append(name)
             self.vlans.append({"name": name, "parent": parent, "vlan_id": vlan_id})
@@ -176,6 +169,7 @@ class FakeNetwork:
 
     def vlan_delete_handler(self, name: str) -> ApplyResult:
         self.vlans_deleted.append(name)
+        self.config_lock_held.append(config_write_lock.locked())
         return self.vlan_delete_result
 
 
@@ -222,13 +216,13 @@ def _outer_html(body: str, marker: str, tag: str = "div") -> str:
             return body[at:pos]
 
 
-def _post_resp(base: str, path: str, data: dict) -> tuple[int, str, dict]:
+def _post_resp(base: str, path: str, data: dict, headers: dict | None = None) -> tuple[int, str, dict]:
     """POST that also returns lower-cased response headers (for HX-Redirect)."""
     body = urllib.parse.urlencode(data, doseq=True).encode()
     req = urllib.request.Request(
         f"{base}{path}",
         data=body,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={"Content-Type": "application/x-www-form-urlencoded", **(headers or {})},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=5) as r:
@@ -251,7 +245,7 @@ def net_server(tmp_path, monkeypatch):
     monkeypatch.setattr(routes_module, "request_local_iface", lambda _environ: fake.session_iface)
     monkeypatch.setattr(routes_module, "request_local_addr", lambda _environ: fake.session_address)
     config_path = tmp_path / "config.toml"
-    config_path.write_text("controlled_marker_ids = [1]\n", encoding="utf-8")
+    config_path.write_text('network_mode = "advanced"\ncontrolled_marker_ids = [1]\n', encoding="utf-8")
     with live_on_free_port(
         lambda port: ConfigWebServer(
             config_path=str(config_path),
@@ -853,7 +847,7 @@ def test_no_provider_renders_unavailable(tmp_path, monkeypatch) -> None:
         monkeypatch.setattr(getattr(discovery_module, attr), "start", lambda self: None)
         monkeypatch.setattr(getattr(discovery_module, attr), "stop", lambda self: None)
     config_path = tmp_path / "config.toml"
-    config_path.write_text("controlled_marker_ids = [1]\n", encoding="utf-8")
+    config_path.write_text('network_mode = "advanced"\ncontrolled_marker_ids = [1]\n', encoding="utf-8")
     with live_on_free_port(
         lambda port: ConfigWebServer(
             config_path=str(config_path),
@@ -895,7 +889,7 @@ def test_no_provider_renders_unavailable(tmp_path, monkeypatch) -> None:
 
 def _make_server(tmp_path, **kwargs) -> ConfigWebServer:
     config_path = tmp_path / "config.toml"
-    config_path.write_text("controlled_marker_ids = [1]\n", encoding="utf-8")
+    config_path.write_text('network_mode = "advanced"\ncontrolled_marker_ids = [1]\n', encoding="utf-8")
     return ConfigWebServer(
         config_path=str(config_path),
         host="127.0.0.1",
@@ -1016,7 +1010,7 @@ def test_no_interfaces_renders_empty_list_not_a_crash(tmp_path, monkeypatch) -> 
         monkeypatch.setattr(getattr(discovery_module, attr), "stop", lambda self: None)
     fake = FakeNetwork(interfaces=())
     config_path = tmp_path / "config.toml"
-    config_path.write_text("controlled_marker_ids = [1]\n", encoding="utf-8")
+    config_path.write_text('network_mode = "advanced"\ncontrolled_marker_ids = [1]\n', encoding="utf-8")
     with live_on_free_port(
         lambda port: ConfigWebServer(
             config_path=str(config_path),
@@ -1048,7 +1042,7 @@ def test_interface_list_uses_the_richer_provider_when_wired(tmp_path, monkeypatc
         ]
 
     config_path = tmp_path / "config.toml"
-    config_path.write_text("controlled_marker_ids = [1]\n", encoding="utf-8")
+    config_path.write_text('network_mode = "advanced"\ncontrolled_marker_ids = [1]\n', encoding="utf-8")
     with live_on_free_port(
         lambda port: ConfigWebServer(
             config_path=str(config_path),
@@ -1063,14 +1057,12 @@ def test_interface_list_uses_the_richer_provider_when_wired(tmp_path, monkeypatc
         # wlan0 is not the active interface, yet its own address is shown.
         assert "172.16.4.20" in body
         assert "Static" in body
-        # A second render inside the TTL window reuses the snapshot rather
-        # than shelling out to the backend again.
+        # Every render, Scan included, reads the list once, so a freshly
+        # plugged NIC appears at once.
         before = len(calls)
         _get(base, "/section/network/status")
-        assert len(calls) == before
-        # Scan bypasses the cache so a freshly plugged NIC appears at once.
         _get(base, "/section/network/status?scan=1")
-        assert len(calls) == before + 1
+        assert len(calls) == before + 2
 
 
 # --------------------------------------------------------------------------- #
@@ -1091,10 +1083,10 @@ def test_the_poll_swaps_the_interface_list_and_nothing_else(net_server) -> None:
     _fake, base = net_server
     status, body = _get(base, "/section/network/status")
     assert status == 200
-    assert 'hx-trigger="every 5s [netLabelsIdle()]"' in body
+    assert _NET_POLL in body
     assert 'hx-select="#net-iface-list" hx-target="#net-iface-list" hx-swap="outerHTML"' in body
     # Plain path: the poll names no interface, so it can't reopen a closed row.
-    assert 'hx-get="/section/network/status" hx-trigger="every 5s [netLabelsIdle()]"' in body
+    assert 'hx-get="/section/network/status" ' + _NET_POLL in body
     # The page defines the filter the trigger calls.
     _status, page = _get(base, "/")
     assert "function netLabelsIdle()" in page
@@ -1179,7 +1171,6 @@ def test_card_synthesises_rows_when_no_interface_provider_is_wired(net_server) -
     interface snapshot rather than showing an empty list."""
     fake, base = net_server
     fake.provide_rows = False
-    # ?scan=1 bypasses the TTL cache the earlier requests populated.
     status, body = _get(base, "/section/network/status?scan=1")
     assert status == 200
     assert "eth0" in body and "wlan0" in body
@@ -1244,6 +1235,21 @@ def test_a_clean_apply_still_redirects(net_server) -> None:
         },
     )
     assert "hx-redirect" in headers
+
+
+def test_the_new_address_redirect_ignores_forwarded_headers(net_server) -> None:
+    """The reload URL keeps this connection's scheme and port; client-set
+    X-Forwarded-Host / -Proto never steer it to another host, port or scheme."""
+    fake, base = net_server
+    fake.session_iface = "eth0"
+    _status, _body, headers = _post_resp(
+        base,
+        "/section/network/apply",
+        {"iface": "eth0", "method": "static", "address": "192.168.9.9", "subnet_mask": "255.255.255.0"},
+        headers={"X-Forwarded-Host": "attacker.example:4444", "X-Forwarded-Proto": "https"},
+    )
+    port = urllib.parse.urlsplit(base).port
+    assert headers["hx-redirect"] == f"http://192.168.9.9:{port}/"
 
 
 def test_a_pending_apply_still_shows_its_warnings(net_server) -> None:
@@ -1587,6 +1593,17 @@ def test_delete_passes_the_interface_to_the_adapter(net_server) -> None:
     status, _body = _post(base, "/section/network/vlan/delete", {"iface": "eth0.10"})
     assert status == 200
     assert fake.vlans_deleted == ["eth0.10"]
+
+
+def test_vlan_changes_leave_the_config_lock_free(net_server) -> None:
+    """The frame clock takes the config lock for an on-screen save; a VLAN change
+    waiting on the network backend must not hold it for that long."""
+    fake, base = net_server
+    _post(base, "/section/network/vlan/create", {"vlan_parent": "eth0", "vlan_id": "10"})
+    _post(base, "/section/network/vlan/delete", {"iface": "eth0.10"})
+    assert fake.vlans_created == [("eth0", 10)]
+    assert fake.vlans_deleted == ["eth0.10"]
+    assert fake.config_lock_held == [False, False]
 
 
 def test_delete_refuses_a_non_vlan_interface(net_server) -> None:

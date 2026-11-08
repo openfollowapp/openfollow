@@ -137,13 +137,13 @@
  % # all .save-btn if any control has it; blocks
  % # fix-up workflow). Custom data attribute gives
  % # red border via CSS + sync via oscEditorSyncEnabledUnresolved.
- <label>Enabled</label>
+ <label for="osc-{{row.id}}-enabled">Transmitter</label>
  % # {{!...}} bypasses Bottle HTML escape (else
  % # inner quotes → &quot;). data-osc-unresolved
  % # (visual-only) + aria-describedby to hidden span
  % # for a11y. oscEditorSyncEnabledUnresolved keeps
  % # span in sync; aria-live="polite" announces changes.
- <div class="checkbox-wrap"><input type="checkbox" name="enabled" {{'checked' if row.enabled else ''}} {{!'data-osc-unresolved="true"' if has_unresolved else ''}} aria-describedby="enabled-{{row.id}}-unresolved-help"><span id="enabled-{{row.id}}-unresolved-help" class="visually-hidden" aria-live="polite">{{'Will save disabled: this row uses placeholder values that are not resolved yet (no default marker, an explicit marker reference targets an unregistered marker, or a fractional height needs Grid → Maximum Height set).' if has_unresolved else ''}}</span></div>
+ <div class="checkbox-wrap checkbox-field inline"><input type="checkbox" id="osc-{{row.id}}-enabled" name="enabled" {{'checked' if row.enabled else ''}} {{!'data-osc-unresolved="true"' if has_unresolved else ''}} aria-describedby="enabled-{{row.id}}-unresolved-help"><label for="osc-{{row.id}}-enabled">Send this transmitter's messages</label><span id="enabled-{{row.id}}-unresolved-help" class="visually-hidden" aria-live="polite">{{'Will save disabled: this row uses placeholder values that are not resolved yet (no default marker, an explicit marker reference targets an unregistered marker, or a fractional height needs Grid → Maximum Height set).' if has_unresolved else ''}}</span></div>
  </div>
  <div class="field">
  <label>Name</label>

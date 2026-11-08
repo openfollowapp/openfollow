@@ -88,6 +88,19 @@ def test_clear_messages_key_is_queued_on_press(monkeypatch) -> None:
     assert handler.consume_key_presses() == ["c"]
 
 
+@pytest.mark.parametrize(("field", "key"), [("key_pathfinder", "p"), ("key_toggle_paths", "o")])
+def test_path_keys_are_queued_on_press(monkeypatch, field: str, key: str) -> None:
+    poller = _FakePoller()
+    monkeypatch.setattr(keyboard_module, "create_keyboard_poller", lambda: poller)
+    app = _DummyApp()
+    setattr(app._config.controller, field, key)
+    handler = KeyboardHandler(app)
+
+    poller.pressed = {key}
+    handler.poll_discrete_keys()
+    assert handler.consume_key_presses() == [key]
+
+
 def test_discrete_key_polling_detects_edges(monkeypatch) -> None:
     poller = _FakePoller()
     monkeypatch.setattr(keyboard_module, "create_keyboard_poller", lambda: poller)

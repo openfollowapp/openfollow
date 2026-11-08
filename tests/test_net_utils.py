@@ -1615,3 +1615,21 @@ class TestInterfacePresent:
     def test_no_name_is_never_present(self, monkeypatch) -> None:
         monkeypatch.setattr(net_utils_module.psutil, "net_if_addrs", lambda: {"": []})
         assert net_utils_module.interface_present("") is False
+
+
+class TestAutoStationIface:
+    """What an Automatic station interface resolves to, by name."""
+
+    def test_names_the_interface_holding_the_primary_address(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            net_utils_module.psutil,
+            "net_if_addrs",
+            lambda: _fake_addrs({"eth0": [(socket.AF_INET, "192.0.2.5")], "wlan0": [(socket.AF_INET, "198.51.100.7")]}),
+        )
+        monkeypatch.setattr(net_utils_module, "get_primary_local_ipv4", lambda default="N/A": "198.51.100.7")
+        assert net_utils_module.auto_station_iface() == "wlan0"
+
+    def test_is_blank_when_no_address_resolves(self, monkeypatch) -> None:
+        monkeypatch.setattr(net_utils_module.psutil, "net_if_addrs", lambda: {})
+        monkeypatch.setattr(net_utils_module, "get_primary_local_ipv4", lambda default="N/A": default)
+        assert net_utils_module.auto_station_iface() == ""

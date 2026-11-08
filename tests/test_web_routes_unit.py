@@ -14,20 +14,14 @@ branches in the coercion + validation helpers that:
 
 Targeted helpers:
 
-* ``_as_float`` / ``_as_optional_float`` / ``_as_int`` / ``_as_positive_int``
+* ``_as_float`` / ``_as_int`` / ``_as_positive_int``
   OverflowError + None / blank-string branches.
 * ``_as_int_list`` ValueError on malformed CSV + tuple input.
 * ``_parse_vertices`` malformed entries (non-list root, short pair,
   non-numeric coord).
 * ``_apply_zone_fields`` vertex/field interaction + ``__post_init__``
   re-run.
-* ``_wizard_camera_params`` error surface (non-dict, missing key,
-  non-numeric value) – each raises a distinct exception that the
-  ``/api/wizard/*`` routes translate to HTTP 400.
-* ``_import_needs_restart`` section-change detection matrix.
-* ``_apply_import_data`` skip-restart-sections branch (detection /
-  video_source / OTP / RTTrPM preserved when a non-restart import is
-  applied).
+* ``_apply_import_data`` applying every section from one import.
 
 ``_is_private_peer_ip`` and ``_load_json_body`` already have parametrised
 coverage in :mod:`tests.test_web_helpers`; we rely on those rather than
@@ -38,17 +32,13 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
-try:
-    import tomllib
-except ImportError:  # Python 3.10 – project floor is >=3.10 (tomllib is 3.11+)
-    import tomli as tomllib  # type: ignore[no-redef]
-
-import numpy as np
 import pytest
+import tomllib
 
 import openfollow.web.routes as routes_module
-from openfollow.configuration import AppConfig, DetectionConfig, DetectionMaskConfig, TriggerZoneConfig
+from openfollow.configuration import AppConfig, DetectionMaskConfig, TriggerZoneConfig
 from openfollow.web.routes import (
     _apply_import_data,
     _apply_mask_fields,
@@ -57,14 +47,11 @@ from openfollow.web.routes import (
     _as_float_or_zero,
     _as_int,
     _as_int_list,
-    _as_optional_float,
     _as_positive_int,
     _config_to_toml,
     _find_by_id,
-    _import_needs_restart,
     _parse_vertices,
     _swap_for_direction,
-    _wizard_camera_params,
     apply_section_data,
     build_interface_assignment_rows,
     strip_device_local_fields,
@@ -126,7 +113,7 @@ class TestSwapForDirection:
 
 
 # --------------------------------------------------------------------------- #
-# _as_float / _as_optional_float / _as_int / _as_positive_int
+# _as_float / _as_int / _as_positive_int
 # --------------------------------------------------------------------------- #
 
 
@@ -199,23 +186,6 @@ class TestAsFloatOrZero:
         the prior value was non-zero."""
         assert _as_float_or_zero("0", default=4.0) == 0.0
         assert _as_float_or_zero(0.0, default=4.0) == 0.0
-
-
-class TestAsOptionalFloat:
-    def test_none_returns_none_regardless_of_default(self) -> None:
-        assert _as_optional_float(None, default=5.0) is None
-
-    def test_blank_string_returns_none(self) -> None:
-        assert _as_optional_float("   ", default=5.0) is None
-
-    def test_malformed_string_falls_back_to_default(self) -> None:
-        assert _as_optional_float("abc", default=5.0) == 5.0
-
-    def test_overflow_falls_back_to_default(self) -> None:
-        assert _as_optional_float(10**5000, default=5.0) == 5.0
-
-    def test_valid_number_is_returned_as_float(self) -> None:
-        assert _as_optional_float(42, default=5.0) == 42.0
 
 
 class TestAsIntEdgeCases:
@@ -446,50 +416,6 @@ class TestApplyMaskFields:
 
 
 # --------------------------------------------------------------------------- #
-# _wizard_camera_params – error matrix (maps to HTTP 400 at the route layer)
-# --------------------------------------------------------------------------- #
-
-
-class TestWizardCameraParams:
-    def test_non_dict_raises_typeerror(self) -> None:
-        with pytest.raises(TypeError):
-            _wizard_camera_params("not a dict")
-
-    def test_missing_key_raises_keyerror(self) -> None:
-        bad = {"pos_x": 0, "pos_y": 0, "pos_z": 0, "pitch": 0, "yaw": 0, "roll": 0}
-        with pytest.raises(KeyError):
-            _wizard_camera_params(bad)
-
-    def test_non_numeric_value_raises_valueerror(self) -> None:
-        with pytest.raises((TypeError, ValueError)):
-            _wizard_camera_params(
-                {
-                    "pos_x": "abc",
-                    "pos_y": 0,
-                    "pos_z": 0,
-                    "pitch": 0,
-                    "yaw": 0,
-                    "roll": 0,
-                    "fov": 60,
-                }
-            )
-
-    def test_valid_input_returns_float64_vector(self) -> None:
-        cam = {
-            "pos_x": 1.0,
-            "pos_y": 2.0,
-            "pos_z": 3.0,
-            "pitch": 4.0,
-            "yaw": 5.0,
-            "roll": 6.0,
-            "fov": 60.0,
-        }
-        vec = _wizard_camera_params(cam)
-        assert vec.dtype == np.float64
-        assert vec.tolist() == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 60.0]
-
-
-# --------------------------------------------------------------------------- #
 # _is_private_peer_ip – LAN/public matrix lives in tests/test_web_helpers.py.
 # Only the IPv6 loopback edge case was new here; it has been folded into the
 # existing parametrized test to keep the SSRF policy in one place.
@@ -497,109 +423,13 @@ class TestWizardCameraParams:
 
 
 # --------------------------------------------------------------------------- #
-# _import_needs_restart – section-change matrix
+# _apply_import_data
 # --------------------------------------------------------------------------- #
 
 
-class TestImportNeedsRestart:
-    def test_no_changes_returns_empty(self) -> None:
-        cfg = AppConfig()
-        assert _import_needs_restart(cfg, cfg) == []
-
-    def test_video_source_change_not_flagged(self) -> None:
-        """Video source / per-plugin field changes apply live via the
-        ``swap_video`` orchestrator. The import flow must not flag a
-        restart for video-only changes – the user gets a live-applied
-        pipeline rebuild."""
-        old = AppConfig()
-        new = replace(old, video_source_type="ndi")
-        assert _import_needs_restart(old, new) == []
-
-    def test_plugin_field_change_not_flagged(self) -> None:
-        """Per-plugin fields (e.g. ``rtsp_url``) also live-swap;
-        ``Plugin.config_changed(old, new)`` drives the dispatcher
-        but no restart is needed."""
-        old = AppConfig(video_source_type="rtsp", rtsp_url="rtsp://a:554/x")
-        new = AppConfig(video_source_type="rtsp", rtsp_url="rtsp://b:554/y")
-        assert _import_needs_restart(old, new) == []
-
-    def test_detection_off_to_on_not_flagged(self) -> None:
-        """Enabling detection applies live via ``swap_detector``, which
-        rebuilds the receiver pipeline with a fresh detection branch.
-        The import flow must NOT flag a restart for this case."""
-        old = AppConfig()
-        new = replace(old, detection=replace(old.detection, enabled=True))
-        assert _import_needs_restart(old, new) == []
-
-    def test_detection_inference_size_change_not_flagged_when_enabled(self) -> None:
-        """``inference_size`` change while detection is enabled applies
-        live via ``swap_detector`` – the orchestrator constructs a fresh
-        detector and rebuilds the pipeline so the appsink caps match the
-        new ``input_resolution``."""
-        old = AppConfig(detection=DetectionConfig(enabled=True, inference_size=320))
-        new = AppConfig(detection=DetectionConfig(enabled=True, inference_size=640))
-        assert _import_needs_restart(old, new) == []
-
-    def test_detection_inference_size_change_not_flagged_when_disabled(self) -> None:
-        """An ``inference_size`` change while detection is disabled
-        has no runtime effect (the appsink pipeline isn't running),
-        so the dispatcher doesn't even take any action – and
-        ``_import_needs_restart`` must not over-report."""
-        old = AppConfig(detection=DetectionConfig(enabled=False, inference_size=320))
-        new = AppConfig(detection=DetectionConfig(enabled=False, inference_size=640))
-        assert _import_needs_restart(old, new) == []
-
-    def test_detection_running_change_not_flagged(self) -> None:
-        """An on→on detection edit (e.g. ``confidence`` change) routes
-        through the orchestrator and does NOT need a restart, so the
-        import flow must not flag it.
-        """
-        old = AppConfig(detection=DetectionConfig(enabled=True, confidence=0.5))
-        new = AppConfig(detection=DetectionConfig(enabled=True, confidence=0.8))
-        assert _import_needs_restart(old, new) == []
-
-    def test_detection_on_to_off_not_flagged(self) -> None:
-        """Disabling detection is a live transition."""
-        old = AppConfig(detection=DetectionConfig(enabled=True))
-        new = AppConfig(detection=DetectionConfig(enabled=False))
-        assert _import_needs_restart(old, new) == []
-
-    def test_otp_output_change_not_flagged(self) -> None:
-        """OTP output applies live via the orchestrator. The import
-        flow must NOT flag a restart for OTP-only changes – the user
-        gets a live-applied import."""
-        old = AppConfig()
-        new = replace(old, otp_output=replace(old.otp_output, enabled=True))
-        assert _import_needs_restart(old, new) == []
-
-    def test_rttrpm_output_change_not_flagged(self) -> None:
-        """Same as OTP."""
-        old = AppConfig()
-        new = replace(old, rttrpm_output=replace(old.rttrpm_output, enabled=True))
-        assert _import_needs_restart(old, new) == []
-
-    def test_camera_change_is_not_flagged(self) -> None:
-        """Camera edits are live-reloadable – must NOT surface as a
-        restart reason.
-        """
-        old = AppConfig()
-        new = replace(old, camera=replace(old.camera, fov=75.0))
-        assert _import_needs_restart(old, new) == []
-
-
-# --------------------------------------------------------------------------- #
-# _apply_import_data – skip-restart-sections branch
-# --------------------------------------------------------------------------- #
-
-
-class TestApplyImportDataSkipRestart:
-    def test_skip_restart_still_applies_every_section(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Every section (incl. detection) applies live now, so
-        ``skip_restart_sections=True`` no longer gates any section. The
-        flag is preserved on the API for backwards compatibility with
-        callers but doesn't change the outcome – a ``skip_restart=1``
-        import lands the full payload.
-        """
+class TestApplyImportData:
+    def test_every_section_applies_from_one_import(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Video source, camera, detection and both outputs land together."""
         # ``apply_section_data("video_source", ...)`` imports
         # ``get_available_input_ids`` lazily from ``openfollow.video.inputs``
         # – the real helper triggers plugin auto-discovery (NDI probes
@@ -624,26 +454,12 @@ class TestApplyImportDataSkipRestart:
             "otp_output": {"enabled": True},
             "rttrpm_output": {"enabled": True},
         }
-        out = _apply_import_data(current, payload, skip_restart_sections=True)
+        out = _apply_import_data(current, payload)
 
         assert out.camera.fov == 75.0
         assert out.otp_output.enabled is True
         assert out.rttrpm_output.enabled is True
         assert out.video_source_type == "ndi"
-        # Detection now applies even with skip_restart_sections=True
-        # (every detection edit is live).
-        assert out.detection.enabled is True
-
-    def test_non_skip_applies_every_section(self) -> None:
-        """Without ``skip_restart_sections`` every section applies –
-        symmetric to the skip path now that no section is gated.
-        """
-        current = AppConfig()
-        out = _apply_import_data(
-            current,
-            {"detection": {"enabled": True}},
-            skip_restart_sections=False,
-        )
         assert out.detection.enabled is True
 
     def test_preserves_psn_source_iface_regardless_of_payload(self) -> None:
@@ -659,6 +475,78 @@ class TestApplyImportDataSkipRestart:
             {"psn_source_iface": "wlan0"},
         )
         assert out.psn_source_iface == "eth0"
+
+    def test_touch_remote_import_takes_the_tuning_and_keeps_this_station_s_switch(self) -> None:
+        current = AppConfig()
+        current.touch_remote.enabled = True
+        out = _apply_import_data(current, {"touch_remote": {"enabled": False, "stick_curve": 1.5, "z_notch_px": 30}})
+        assert out.touch_remote.enabled is True
+        assert out.touch_remote.stick_curve == 1.5
+        assert out.touch_remote.z_notch_px == 30
+
+    @pytest.mark.parametrize(("pushed", "show_paths"), [(False, True), (True, False)], ids=["file", "push"])
+    def test_paths_import_with_this_station_s_active_flags_and_visibility(self, pushed: bool, show_paths: bool) -> None:
+        """A file import restores whether paths are drawn; a push leaves it, and both keep the active flags."""
+        from openfollow.configuration import PathConfig, PathsConfig
+
+        current = AppConfig(paths=PathsConfig(show_paths=False, paths=[PathConfig(name="cross", active=True)]))
+        out = _apply_import_data(
+            current,
+            {
+                "paths": {
+                    "show_paths": True,
+                    "slide_time": 2.0,
+                    "paths": [
+                        {"name": "cross", "active": False, "points": [{"x": 1}, {"x": 3}]},
+                        {"name": "loop", "active": True, "closed": True},
+                    ],
+                }
+            },
+            pushed=pushed,
+        )
+        assert [(p.name, p.active) for p in out.paths.paths] == [("cross", True), ("loop", False)]
+        assert [p.x for p in out.paths.paths[0].points] == [1.0, 3.0]
+        assert out.paths.slide_time == 2.0
+        assert out.paths.show_paths is show_paths
+
+    @staticmethod
+    def _experimental_station() -> AppConfig:
+        from openfollow.configuration import (
+            FEATURE_KEYS,
+            DetectionConfig,
+            GroundGridConfig,
+            PathConfig,
+            PathsConfig,
+            UiConfig,
+        )
+
+        return AppConfig(
+            ui=UiConfig(shown_features=list(FEATURE_KEYS)),
+            detection=DetectionConfig(enabled=True),
+            ground_grid=GroundGridConfig(enabled=True),
+            paths=PathsConfig(paths=[PathConfig(name="cross", active=True), PathConfig(name="loop", active=True)]),
+        )
+
+    @pytest.mark.parametrize(
+        "ui", [{"shown_features": []}, {"show_experimental_features": False}, {"unit_system": "imperial"}, None]
+    )
+    def test_an_import_never_switches_off_what_the_features_gate(self, ui: dict[str, Any] | None) -> None:
+        data: dict[str, Any] = {
+            "paths": {"paths": [{"name": "cross", "active": True}, {"name": "loop", "active": True}]}
+        }
+        if ui is not None:
+            data["ui"] = ui
+        out = _apply_import_data(self._experimental_station(), data)
+        assert [p.active for p in out.paths.paths] == [True, True]
+        assert out.detection.enabled is True
+        assert out.ground_grid.enabled is True
+
+    def test_an_import_without_paths_keeps_this_station_s(self) -> None:
+        from openfollow.configuration import PathConfig, PathsConfig
+
+        current = AppConfig(paths=PathsConfig(paths=[PathConfig(name="cross")]))
+        assert _apply_import_data(current, {"paths": "junk"}).paths == current.paths
+        assert _apply_import_data(current, {}).paths == current.paths
 
     def test_trigger_zones_list_imports_atomically(self) -> None:
         """The zones list replaces the existing zones entirely – an
@@ -937,6 +825,10 @@ class TestStripDeviceLocalFields:
         scrubbed = strip_device_local_fields("rttrpm_output", {"enabled": True, "source_iface": "eth0"})
         assert scrubbed == {"enabled": True}
 
+    def test_the_paths_section_drops_this_station_s_visibility(self) -> None:
+        scrubbed = strip_device_local_fields("paths", {"show_paths": False, "slide_time": 1.0, "paths": []})
+        assert scrubbed == {"slide_time": 1.0, "paths": []}
+
     def test_the_interface_assignment_section_is_dropped_whole(self) -> None:
         """Its per-destination keys are not known in advance, so a field list
         cannot name them; nothing in the section is this box's to receive."""
@@ -1101,7 +993,7 @@ class TestInterfaceAssignmentRows:
 
     def test_the_rows_that_always_ride_the_station_sit_directly_under_it(self, monkeypatch) -> None:
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        rows = build_interface_assignment_rows(AppConfig(psn_source_iface="eth0"))
+        rows = build_interface_assignment_rows(AppConfig(network_mode="advanced", psn_source_iface="eth0"))
         labels = [row["label"] for row in rows]
         assert labels[:3] == ["Station default", "PSN in / out", "Discovery / marker sync"]
         # Each is listed once.
@@ -1110,7 +1002,7 @@ class TestInterfaceAssignmentRows:
 
     def test_station_row_owns_psn_source_iface(self, monkeypatch) -> None:
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         station = rows["Station default"]
         assert station["key"] == "psn_source_iface"
@@ -1123,7 +1015,7 @@ class TestInterfaceAssignmentRows:
         """An OTP row left on "follow station" must display where it actually
         points – an empty cell would hide the indirection entirely."""
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
         cfg.otp_output.source_iface = ""
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         assert rows["OTP output"]["value"] == ""
@@ -1132,7 +1024,7 @@ class TestInterfaceAssignmentRows:
 
     def test_pinned_plane_shows_its_own_address(self, monkeypatch) -> None:
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
         cfg.otp_output.source_iface = "eth1"
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         assert rows["OTP output"]["address"] == "10.0.0.9"
@@ -1142,7 +1034,7 @@ class TestInterfaceAssignmentRows:
         they follow the station pin and must not offer their own dropdown –
         a picker would imply an independence they don't have."""
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         for label in ("PSN in / out", "Discovery / marker sync"):
             assert rows[label]["editable"] is False
@@ -1151,7 +1043,7 @@ class TestInterfaceAssignmentRows:
 
     def test_osc_input_row_follows_the_station_by_default(self, monkeypatch) -> None:
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         osc = rows["OSC input"]
         assert osc["key"] == "osc.listen_iface"
@@ -1161,7 +1053,7 @@ class TestInterfaceAssignmentRows:
 
     def test_osc_input_row_shows_its_own_pin(self, monkeypatch) -> None:
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
         cfg.osc.listen_iface = "eth1"
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         assert rows["OSC input"]["address"] == "10.0.0.9"
@@ -1171,7 +1063,7 @@ class TestInterfaceAssignmentRows:
         per membership. Naming the auto-detected primary would read as a
         restriction the socket does not have."""
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        cfg = AppConfig(psn_source_iface="")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="")
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         assert rows["OSC input"]["address"] == "Default interface"
 
@@ -1180,7 +1072,7 @@ class TestInterfaceAssignmentRows:
         is no membership, so an address here would imply the row was doing
         something to a listener it does not touch."""
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
         cfg.osc.multicast_group = ""
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         assert rows["OSC input"]["address"] == "No multicast group"
@@ -1195,7 +1087,7 @@ class TestInterfaceAssignmentRows:
         would claim a subscription that does not exist. An unplugged adapter
         and one without an address are told apart."""
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5", **({} if eth9 is None else {"eth9": eth9})})
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
         cfg.osc.listen_iface = "eth9"
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         assert rows["OSC input"]["address"] == state
@@ -1204,7 +1096,10 @@ class TestInterfaceAssignmentRows:
 
     def test_a_down_station_puts_its_followers_down_too(self, monkeypatch) -> None:
         self._ifaces(monkeypatch, {"eth0": ""})
-        rows = {r["label"]: r for r in build_interface_assignment_rows(AppConfig(psn_source_iface="eth0"))}
+        rows = {
+            r["label"]: r
+            for r in build_interface_assignment_rows(AppConfig(network_mode="advanced", psn_source_iface="eth0"))
+        }
         assert {label: rows[label]["address"] for label in ("Station default", "PSN in / out")} == {
             "Station default": "Interface down",
             "PSN in / out": "Interface down",
@@ -1213,7 +1108,7 @@ class TestInterfaceAssignmentRows:
 
     def test_a_row_names_its_pin_by_label_for_the_bundle(self, monkeypatch) -> None:
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        cfg = AppConfig(psn_source_iface="eth0", interface_labels={"eth0": "Lighting"})
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0", interface_labels={"eth0": "Lighting"})
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         assert rows["Station default"]["value_display"] == "Lighting (eth0)"
         assert rows["OTP output"]["value_display"] == ""
@@ -1222,13 +1117,13 @@ class TestInterfaceAssignmentRows:
         """Both read one resolution. A second NIC walk could disagree with the
         row above if an address moves mid-render."""
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         assert rows["OSC input"]["address"] == rows["Station default"]["address"]
 
     def _video_row(self, monkeypatch, **fields: object) -> dict:
         self._ifaces(monkeypatch, {"eth0": "192.0.2.10", "eth1": "198.51.100.10"})
-        cfg = AppConfig(**fields)
+        cfg = AppConfig(network_mode="advanced", **fields)
         return next(r for r in build_interface_assignment_rows(cfg) if r["label"].startswith("Video input"))
 
     @pytest.mark.parametrize(
@@ -1408,7 +1303,7 @@ class TestInterfaceAssignmentRows:
         names = {f"osc{i}.example": f"203.0.113.{i}" for i in range(3)}
         self._names(monkeypatch, names, barrier=threading.Barrier(3))
         self._ifaces(monkeypatch, {"eth1": "198.51.100.10"})
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         cfg.rttrpm_output.host = ""
         cfg.osc_destinations.destinations = [
             OscDestinationConfig(id=f"d{i}", name=f"d{i}", host=host, port=8000) for i, host in enumerate(names)
@@ -1421,7 +1316,7 @@ class TestInterfaceAssignmentRows:
         asked = self._pick(monkeypatch, "198.51.100.10")
         self._names(monkeypatch, {"dual.example": ["2001:db8::20", "203.0.113.20"]})
         self._ifaces(monkeypatch, {"eth1": "198.51.100.10"})
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         cfg.rttrpm_output.host = "dual.example"
         build_interface_assignment_rows(cfg)
         assert asked == ["203.0.113.20"]
@@ -1438,7 +1333,7 @@ class TestInterfaceAssignmentRows:
         monkeypatch.setattr("openfollow.video.inputs._pin.route_source", lambda _a, _p=0: "198.51.100.10")
         check_video_pin("eth1", "camera.example", 5000, forced_device=False)
         osc_service._resolve_host("osc.example")
-        cfg = AppConfig(video_source_type="srt", srt_host="srt://camera.example:5000")
+        cfg = AppConfig(network_mode="advanced", video_source_type="srt", srt_host="srt://camera.example:5000")
         cfg.rttrpm_output.host = "osc.example"
         build_interface_assignment_rows(cfg)
         assert sorted(looked_up) == ["camera.example", "osc.example"]
@@ -1449,7 +1344,7 @@ class TestInterfaceAssignmentRows:
 
         asked = self._pick(monkeypatch, "2001:db8::10")
         self._names(monkeypatch, {"v6.example": ["2001:db8::20"]})
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         cfg.osc_destinations.destinations = [
             OscDestinationConfig(id="tcp", name="tcp", host="v6.example", port=8000, protocol="tcp"),
             OscDestinationConfig(id="udp", name="udp", host="v6.example", port=8000),
@@ -1470,14 +1365,14 @@ class TestInterfaceAssignmentRows:
 
         resolver = net_utils.BoundedResolver(thread_factory=lambda **_k: _NoThread())
         monkeypatch.setattr(routes_module, "IPV4_RESOLVER", resolver)
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         cfg.rttrpm_output.host = "rttrpm.example"
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         assert rows["RTTrPM output"]["address"] == "Name not looked up"
 
     def test_an_ipv6_literal_for_an_ipv4_output_says_so(self, monkeypatch) -> None:
         self._names(monkeypatch, {})
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         cfg.rttrpm_output.host = "2001:db8::20"
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         assert rows["RTTrPM output"]["address"] == "Not an IPv4 address"
@@ -1490,7 +1385,7 @@ class TestInterfaceAssignmentRows:
     def test_a_sender_with_no_destination_is_left_to_the_routing_table(self, monkeypatch) -> None:
         """Not "All interfaces": an output sends from one interface, not all of them."""
         self._ifaces(monkeypatch, {"eth0": "192.0.2.10"})
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         cfg.rttrpm_output.host = ""
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
         assert rows["RTTrPM output"]["address"] == "Per routing table"
@@ -1535,7 +1430,7 @@ class TestInterfaceAssignmentRows:
 
     def test_an_unknown_video_input_is_read_only(self, monkeypatch) -> None:
         self._ifaces(monkeypatch, {"eth0": "192.0.2.10"})
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         cfg.video_source_type = "gone"
         row = next(r for r in build_interface_assignment_rows(cfg) if r["label"].startswith("Video input"))
         assert row["label"] == "Video input (gone)"
@@ -1543,7 +1438,7 @@ class TestInterfaceAssignmentRows:
         assert row["note"] == "Not a network input"
 
     def test_saving_the_panel_sets_the_video_input_pin(self, monkeypatch) -> None:
-        cfg = AppConfig(video_source_type="srt")
+        cfg = AppConfig(network_mode="advanced", video_source_type="srt")
         apply_section_data(cfg, "interface_assignment", {"video_input_iface": "  eth1  "})
         assert cfg.video_input_iface == "eth1"
         apply_section_data(cfg, "interface_assignment", {"video_input_iface": ""})
@@ -1554,7 +1449,7 @@ class TestInterfaceAssignmentRows:
         write – the row list and the target map have to stay in step."""
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
         # A network video input, so the Video input row is a control too.
-        cfg = AppConfig(video_source_type="srt")
+        cfg = AppConfig(network_mode="advanced", video_source_type="srt")
         rows = build_interface_assignment_rows(cfg)
         editable = {r["key"] for r in rows if r["editable"]}
         destinations = {f"osc_destinations.{dest.id}.source_iface" for dest in cfg.osc_destinations.destinations}
@@ -1566,12 +1461,12 @@ class TestInterfaceAssignmentRows:
 
     def test_the_rttrpm_row_follows_the_station_and_its_own_pin(self, monkeypatch) -> None:
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
         cfg.rttrpm_output.host = "198.51.100.20"
         row = self._row(cfg, "RTTrPM output")
         assert (row["key"], row["blank"], row["address"]) == ("rttrpm_output.source_iface", "station", "192.168.1.5")
-        # Hidden with its section while experimental features are.
-        assert row["experimental"] is True
+        # Hidden with its section while the RTTrPM feature is off.
+        assert row["feature"] == "rttrpm"
 
         cfg.rttrpm_output.source_iface = "eth1"
         assert self._row(cfg, "RTTrPM output")["address"] == "10.0.0.9"
@@ -1583,7 +1478,7 @@ class TestInterfaceAssignmentRows:
         where it routes this one now, not an auto-detected address it is not bound to."""
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
         asked = TestInterfaceAssignmentRows._pick(monkeypatch, "10.0.0.9")
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         cfg.rttrpm_output.host = "198.51.100.20"
         cfg.osc_destinations.destinations[0].host = "198.51.100.21"
         assert self._row(cfg, "RTTrPM output")["address"] == "eth1 – 10.0.0.9"
@@ -1593,7 +1488,7 @@ class TestInterfaceAssignmentRows:
     def test_the_pis_pick_names_its_interface_by_label(self, monkeypatch) -> None:
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
         TestInterfaceAssignmentRows._pick(monkeypatch, "10.0.0.9")
-        cfg = AppConfig(interface_labels={"eth1": "Lighting"})
+        cfg = AppConfig(network_mode="advanced", interface_labels={"eth1": "Lighting"})
         cfg.rttrpm_output.host = "198.51.100.20"
         assert self._row(cfg, "RTTrPM output")["address"] == "Lighting (eth1) – 10.0.0.9"
 
@@ -1605,7 +1500,7 @@ class TestInterfaceAssignmentRows:
         reads: list[int] = []
         real = net_utils_module.present_interfaces
         monkeypatch.setattr(net_utils_module, "present_interfaces", lambda: reads.append(1) or real())
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
         cfg.otp_output.source_iface = "eth8"
         cfg.osc.listen_iface = "eth9"
         rows = {r["label"]: r for r in build_interface_assignment_rows(cfg)}
@@ -1614,16 +1509,26 @@ class TestInterfaceAssignmentRows:
 
     def test_a_loopback_destination_reads_loopback(self, monkeypatch) -> None:
         self._ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
         assert cfg.rttrpm_output.host == "127.0.0.1"
         assert self._row(cfg, "RTTrPM output")["address"] == "Loopback"
         assert self._row(cfg, "OSC Destination Default")["address"] == "Loopback"
+
+    def test_an_osc_destination_at_the_stations_own_address_reads_this_station(self, monkeypatch) -> None:
+        """Never pinned: the sender leaves it to the kernel, which delivers it on this station."""
+        self._ifaces(monkeypatch, {"eth0": "192.168.1.5", "eth1": "10.0.0.9"})
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
+        dest = cfg.osc_destinations.destinations[0]
+        dest.host, dest.source_iface = "192.168.1.5", "eth1"
+        assert self._row(cfg, "OSC Destination Default")["address"] == "This station"
+        dest.host = "198.51.100.20"
+        assert self._row(cfg, "OSC Destination Default")["address"] == "10.0.0.9"
 
     def test_each_osc_destination_gets_a_row(self, monkeypatch) -> None:
         from openfollow.configuration import OscDestinationConfig, OscDestinationsConfig
 
         self._ifaces(monkeypatch, {"eth1": "10.0.0.9"})
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         cfg.osc_destinations = OscDestinationsConfig(
             destinations=[
                 OscDestinationConfig(id="foh", name="FOH console", host="198.51.100.20", source_iface="eth1"),
@@ -1645,7 +1550,7 @@ class TestApplyInterfaceAssignment:
     """The panel writes across several owning dataclasses in one save."""
 
     def test_writes_top_level_and_sub_config_pins(self) -> None:
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         apply_section_data(
             cfg,
             "interface_assignment",
@@ -1657,7 +1562,7 @@ class TestApplyInterfaceAssignment:
     def test_strips_whitespace_like_post_init(self) -> None:
         """A stray-space pin would compare unequal to the stored value on
         every hot-reload pass and trigger a needless socket rebind."""
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         apply_section_data(
             cfg,
             "interface_assignment",
@@ -1669,12 +1574,12 @@ class TestApplyInterfaceAssignment:
     def test_writes_the_osc_listener_pin(self) -> None:
         """The panel is the only editing surface for this field, so a save that
         skipped it would leave the row visibly set and the socket unmoved."""
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         apply_section_data(cfg, "interface_assignment", {"osc.listen_iface": "  eth1 "})
         assert cfg.osc.listen_iface == "eth1"
 
     def test_absent_key_leaves_current_value(self) -> None:
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
         cfg.otp_output.source_iface = "eth1"
         apply_section_data(cfg, "interface_assignment", {"psn_source_iface": "eth2"})
         assert cfg.psn_source_iface == "eth2"
@@ -1682,13 +1587,13 @@ class TestApplyInterfaceAssignment:
 
     def test_blank_clears_a_pin(self) -> None:
         """Selecting "follow station interface" has to be able to undo a pin."""
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         cfg.otp_output.source_iface = "eth1"
         apply_section_data(cfg, "interface_assignment", {"otp_output.source_iface": ""})
         assert cfg.otp_output.source_iface == ""
 
     def test_none_pin_preserves_current(self) -> None:
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
         apply_section_data(cfg, "interface_assignment", {"psn_source_iface": None})
         assert cfg.psn_source_iface == "eth0"
 
@@ -1699,7 +1604,7 @@ class TestApplyInterfaceAssignment:
         save paths, the value is stringified rather than rejected: the result
         is a nonsense interface name that resolves to nothing and falls through
         to the station pin, so output degrades rather than crashing."""
-        cfg = AppConfig(psn_source_iface="eth0")
+        cfg = AppConfig(network_mode="advanced", psn_source_iface="eth0")
         apply_section_data(cfg, "interface_assignment", {"psn_source_iface": bad})
         assert isinstance(cfg.psn_source_iface, str)
 
@@ -1707,7 +1612,7 @@ class TestApplyInterfaceAssignment:
         """The re-run is what stops a crafted POST bypassing validation a
         hand-edited TOML would trip – prove it by smuggling an out-of-range
         sibling field past the parser and watching it get clamped."""
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         cfg.otp_output.port = 999999
         apply_section_data(cfg, "interface_assignment", {"otp_output.source_iface": "eth1"})
         assert cfg.otp_output.port == 65535
@@ -1715,7 +1620,7 @@ class TestApplyInterfaceAssignment:
     def test_untouched_config_is_not_renormalised(self) -> None:
         """``__post_init__`` runs only on the dataclasses the save touched, so
         a panel save can't silently rewrite an unrelated section."""
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         cfg.otp_output.port = 999999
         apply_section_data(cfg, "interface_assignment", {"psn_source_iface": "eth0"})
         assert cfg.otp_output.port == 999999
@@ -1866,7 +1771,7 @@ class TestApplyInterfaceAssignmentSenders:
     def _cfg() -> AppConfig:
         from openfollow.configuration import OscDestinationConfig, OscDestinationsConfig
 
-        cfg = AppConfig()
+        cfg = AppConfig(network_mode="advanced")
         cfg.osc_destinations = OscDestinationsConfig(
             destinations=[
                 OscDestinationConfig(id="foh", host="198.51.100.20"),
@@ -1913,3 +1818,76 @@ class TestApplyInterfaceAssignmentSenders:
         cfg = self._cfg()
         apply_section_data(cfg, "interface_assignment", {"osc_destinations.media.v2.source_iface": None})
         assert cfg.osc_destinations.destinations[1].source_iface == "eth2"
+
+
+class TestApplyPathsSection:
+    def _cfg(self) -> AppConfig:
+        from openfollow.configuration import PathConfig, PathsConfig
+
+        return AppConfig(paths=PathsConfig(paths=[PathConfig(name="cross", active=True), PathConfig(name="loop")]))
+
+    def test_paths_are_replaced_and_keep_their_active_flags(self) -> None:
+        cfg = self._cfg()
+        assert apply_section_data(cfg, "paths", {"paths": [{"name": "loop", "active": True}, {"name": "cross"}]})
+        assert [(p.name, p.active) for p in cfg.paths.paths] == [("loop", False), ("cross", True)]
+
+    @pytest.mark.parametrize("raw", ["junk", {"name": "x"}, None])
+    def test_a_paths_value_that_is_not_a_list_leaves_them_alone(self, raw: object) -> None:
+        cfg = self._cfg()
+        before = list(cfg.paths.paths)
+        assert apply_section_data(cfg, "paths", {"paths": raw, "slide_time": 2})
+        assert cfg.paths.paths == before
+        assert cfg.paths.slide_time == 2.0
+
+    @pytest.mark.parametrize(("raw", "want"), [("1.5", 1.5), ("x", 1.0), (-3, 0.0), (50, 10.0)])
+    def test_the_slide_time_is_coerced_like_a_toml_load(self, raw: object, want: float) -> None:
+        cfg = self._cfg()
+        apply_section_data(cfg, "paths", {"slide_time": raw})
+        assert cfg.paths.slide_time == want
+
+    def test_this_station_s_own_save_sets_visibility(self) -> None:
+        cfg = self._cfg()
+        apply_section_data(cfg, "paths", {"show_paths": "off"})
+        assert cfg.paths.show_paths is False
+
+    @pytest.mark.parametrize("raw", [".", ".."])
+    def test_a_pushed_name_of_dots_alone_is_renamed(self, raw: str) -> None:
+        cfg = self._cfg()
+        apply_section_data(cfg, "paths", {"paths": [{"name": "cross"}, {"name": raw}]})
+        assert [p.name for p in cfg.paths.paths] == ["cross", "path-2"]
+
+
+# --------------------------------------------------------------------------- #
+# The lens centre travels with the camera and resets with it
+# --------------------------------------------------------------------------- #
+
+
+class TestLensCentreTransfer:
+    """The lens centre belongs to the camera and lens: not device-local, not device identity."""
+
+    @staticmethod
+    def _station() -> AppConfig:
+        from openfollow.configuration import CameraConfig
+
+        return AppConfig(camera=CameraConfig(lens_k1=-0.3, lens_k2=-0.02, lens_cx=0.05, lens_cy=-0.02))
+
+    def test_an_export_carries_the_lens_centre(self) -> None:
+        camera = routes_module._config_dict_redacted(self._station())["camera"]
+        assert (camera["lens_cx"], camera["lens_cy"]) == (0.05, -0.02)
+
+    def test_an_import_takes_the_lens_centre(self) -> None:
+        out = _apply_import_data(AppConfig(), {"camera": {"lens_k1": -0.3, "lens_cx": 0.05, "lens_cy": -0.02}})
+        assert (out.camera.lens_k1, out.camera.lens_cx, out.camera.lens_cy) == (-0.3, 0.05, -0.02)
+
+    def test_an_imported_lens_centre_is_clamped_as_a_hand_edited_file_is(self) -> None:
+        out = _apply_import_data(AppConfig(), {"camera": {"lens_cx": 9.0, "lens_cy": "abc"}})
+        assert (out.camera.lens_cx, out.camera.lens_cy) == (0.25, 0.0)
+
+    def test_a_push_carries_the_lens_centre(self) -> None:
+        section = {"lens_k1": -0.3, "lens_cx": 0.05, "lens_cy": -0.02}
+        assert strip_device_local_fields("camera", section) == section
+        assert routes_module._without_station_name(section) == section
+
+    def test_restore_defaults_resets_the_lens_centre_with_the_pair(self) -> None:
+        camera = routes_module.reset_config_to_defaults(self._station()).camera
+        assert (camera.lens_k1, camera.lens_k2, camera.lens_cx, camera.lens_cy) == (0.0, 0.0, 0.0, 0.0)

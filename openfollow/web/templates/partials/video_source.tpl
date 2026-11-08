@@ -5,38 +5,12 @@
         <span class="section-note">Camera input and live preview</span>
     </div>
 
-% # This is the form the fix gets typed into, and the tab an operator opens
-% # first when the picture is missing, so it carries the same box Live
-% # Statistics does rather than a reduced version. Already credential-free -
-% # the status marker redacts on the way in.
-% from openfollow.web.labels import video_error_token
-% video_failure = str(defined("video_failure") and video_failure or "none")
-% video_failure_text = str(defined("video_failure_text") and video_failure_text or "")
-% video_error_message = str(defined("video_error_message") and video_error_message or "")
-% video_failure_action = str(defined("video_failure_action") and video_failure_action or "")
-%# Keyed on what there is to show. Several receiver paths publish an error
-%# with no classification, and Statistics renders that raw text; suppressing it
-%# here would leave this box empty while the other answered the question.
-% show_failure = bool(video_failure_text or video_error_message)
-%# Polled on its own so a failure that starts while this page is open still
-%# shows up. Only the box is swapped - re-rendering the form would discard
-%# whatever the operator is part-way through typing, which is what they came
-%# here to do.
-<div id="video-source-failure"
-     hx-get="/section/video_source/failure"
-     hx-trigger="every 3s"
-     hx-target="this"
-     hx-swap="innerHTML">
-% if show_failure:
-%     token = video_error_token(video_failure_text, video_error_message, video_failure_action)
-%     include('partials/video_error_box.tpl', failure_text=video_failure_text, error_message=video_error_message, action=video_failure_action, token=token, scope='source', live='status')
-% end
-</div>
+% include('partials/video_source_failure.tpl')
 
     <div class="group">
         <div class="row">
             <div class="field">
-                <label>Source Type</label>
+                <label for="video-source-type">Source Type</label>
                 <select name="video_source_type" id="video-source-type"
                         onchange="ofVideoSourceToggle(this.value)">
                     % for iid, iname in available_inputs:
@@ -101,9 +75,12 @@
         </div>
         <!-- Live preview is redundant for the Media Gallery's static content. -->
         <div class="row" id="preview-row" style="margin-top:0.5rem;display:{{'none' if config.video_source_type == 'testpattern' else ''}}">
-            <div class="field checkbox-field inline">
-                <input type="checkbox" id="show-preview-cb">
-                <label for="show-preview-cb">Show Preview</label>
+            <div class="field checkbox-field">
+                <label for="show-preview-cb">Preview</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="show-preview-cb">
+                    <label for="show-preview-cb">Show a snapshot of the video input</label>
+                </div>
             </div>
         </div>
         <div id="video-preview-wrap" style="display:none;">
@@ -121,12 +98,8 @@
             var img = document.getElementById('video-preview');
             var hint = document.getElementById('video-preview-hint');
             var timer = null;
-            function isExpanded(){
-                var sec = document.getElementById('video-source-section');
-                return sec && !sec.classList.contains('is-collapsed');
-            }
             function refresh(){
-                if(!cb.checked || !isExpanded()) return;
+                if(!cb.checked || !pollShown(cb)) return;
                 var next = new Image();
                 next.onload = function(){
                     img.src = next.src;
@@ -152,6 +125,12 @@
                 }
             }
             cb.addEventListener('change', toggle);
+            // A re-render of the section runs this again; the replaced copy lets go.
+            function onShown(){
+                if(document.body.contains(cb)) refresh();
+                else document.body.removeEventListener('poll-shown', onShown);
+            }
+            document.body.addEventListener('poll-shown', onShown);
         })();
         </script>
     </div>

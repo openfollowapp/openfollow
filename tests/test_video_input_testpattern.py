@@ -127,6 +127,37 @@ class TestImageChain:
         assert pipeline.get_by_name("image_scale_caps") is not None
         assert pipeline.get_by_name("convert") is not None
 
+    @pytest.mark.parametrize(
+        ("media_id", "asset"),
+        [
+            (media_store.DEFAULT_CONCERT_ID, "CONCERT_ASSET_JPG"),
+            (media_store.DEFAULT_FESTIVAL_ID, "FESTIVAL_ASSET_JPG"),
+        ],
+    )
+    def test_a_bundled_picture_plays_its_jpeg(self, media_id: str, asset: str) -> None:
+        pipeline = _build({"testpattern_selected_media": media_id})
+        assert pipeline.get_by_name("media_source").properties["location"] == str(getattr(media_store, asset))
+        assert pipeline.get_by_name("image_imagefreeze") is not None
+        with pytest.raises(RuntimeError, match="jpegdec"):
+            _build({"testpattern_selected_media": media_id}, fake=make_fake_gst(missing_elements={"jpegdec"}))
+
+    @pytest.mark.parametrize(
+        ("media_id", "asset"),
+        [
+            (media_store.DEFAULT_CONCERT_ID, "CONCERT_ASSET_JPG"),
+            (media_store.DEFAULT_FESTIVAL_ID, "FESTIVAL_ASSET_JPG"),
+        ],
+    )
+    def test_a_bundled_picture_without_its_file_plays_stage(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, media_id: str, asset: str
+    ) -> None:
+        jpg = tmp_path / "stage_default.jpg"
+        jpg.write_bytes(b"fake")
+        monkeypatch.setattr(media_store, "STAGE_ASSET_JPG", jpg)
+        monkeypatch.setattr(media_store, asset, tmp_path / "missing.jpg")
+        pipeline = _build({"testpattern_selected_media": media_id})
+        assert pipeline.get_by_name("media_source").properties["location"] == str(jpg)
+
     def test_image_chain_forces_fixed_1080p_output(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # A fixed output size (not a range) keeps the picture crisp on the HDMI
         # display; a range lets the sink negotiate a tiny default (640x360).
@@ -188,6 +219,19 @@ class TestImageChain:
         pipeline = _build({"testpattern_selected_media": "ffffffffffffffff"})
         # Rendered the Stage default image chain, not a blank/error pipeline.
         assert pipeline.get_by_name("media_source").properties["location"] == str(jpg)
+
+    def test_a_default_this_version_does_not_ship_plays_stage(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A reserved id this version offers no default for, as a config from another version may hold.
+        jpg = tmp_path / "stage_default.jpg"
+        jpg.write_bytes(b"fake")
+        monkeypatch.setattr(media_store, "STAGE_ASSET_JPG", jpg)
+        pipeline = _build({"testpattern_selected_media": "default:arena"})
+        assert pipeline.get_by_name("media_source").properties["location"] == str(jpg)
+        assert MediaGalleryInput.get_source_label({"testpattern_selected_media": "default:arena"}) == (
+            "Media Gallery (Stage)"
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -454,6 +498,8 @@ class TestConfigAndLabels:
         ("media_id", "expected"),
         [
             (media_store.DEFAULT_STAGE_ID, "Media Gallery (Stage)"),
+            (media_store.DEFAULT_CONCERT_ID, "Media Gallery (Concert)"),
+            (media_store.DEFAULT_FESTIVAL_ID, "Media Gallery (Festival)"),
             (media_store.DEFAULT_GREY_ID, "Media Gallery (Grey)"),
         ],
     )

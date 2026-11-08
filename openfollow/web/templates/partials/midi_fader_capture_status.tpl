@@ -9,7 +9,7 @@
     <span class="status-pill status-pill-info" aria-live="polite">Listening for MIDI…</span>
     <span class="field-note">Move the fader or turn the knob you want to assign.</span>
     <div hx-get="/section/midi/faders/{{fader_index}}/learn/poll"
-         hx-trigger="every 250ms"
+         hx-trigger="every 250ms [!document.hidden], poll-shown from:body"
          hx-target="#midi-fader-learn-status-{{fader_index}}"
          hx-swap="innerHTML"></div>
 % elif _status == 'captured':

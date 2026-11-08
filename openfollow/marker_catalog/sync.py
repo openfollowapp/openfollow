@@ -14,8 +14,9 @@ beacons. Entries merge independently and idempotently on the receiver,
 so every chunk is a complete beacon in its own right - there is no
 sequencing and no reassembly.
 
-Selection is broadcast purely for UI display ("controlled by:
-this station + bright-fox") – it's never applied as a remote write.
+Selection is broadcast for display ("controlled by: this station +
+bright-fox") and for the control-conflict check (``control_conflicts``);
+it's never applied as a remote write.
 """
 
 from __future__ import annotations
@@ -100,7 +101,7 @@ _TRANSIENT_SEND_ERRNOS: frozenset[int] = frozenset(
 
 @dataclass
 class PeerSelection:
-    """A peer's broadcast selection – used purely for UI display."""
+    """A peer's broadcast selection – displayed and checked for control conflicts, never applied."""
 
     station_id: str
     station_name: str
@@ -220,9 +221,9 @@ def _fit_envelope(
     The envelope is as unbounded as the entry array was: a station viewing every
     marker on the LAN serialises hundreds of ids, which would otherwise crowd the
     catalog out of its own beacon or push the empty-entries shell past the cap and
-    drop the beacon outright. Selection is display-only, so trimming ids (then the
-    station name) degrades a peer's "controlled by" list rather than stopping the
-    catalog from syncing. Returns the fitted parts and whether anything was cut.
+    drop the beacon outright. Selection is never applied, so trimming ids (then the
+    station name) degrades a peer's "controlled by" list and conflict check rather
+    than stopping the catalog from syncing. Returns the fitted parts and whether anything was cut.
     """
     limit = _MAX_TX_PACKET - _MIN_ENTRY_BUDGET
     # The name comes from a caller-supplied provider, so it is sanitised rather

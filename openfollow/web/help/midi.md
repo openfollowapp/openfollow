@@ -18,7 +18,9 @@ Each row has its own **Save** and **Delete** buttons.
 
 ## Virtual Faders
 
-Eight normalised faders (0.00 – 1.00), addressed by position on the bus (1 through 8). Each fader's live value shows in its strip and feeds OSC Transmitters rows via fader placeholders. The bus is fixed at eight; you cannot add or remove entries.
+Eight normalised faders (0.00 – 1.00), addressed by position on the bus (1 through 8). Each fader's value shows in its strip and feeds OSC Transmitters rows via fader placeholders. The bus is fixed at eight; you cannot add or remove entries.
+
+The strips show the values as they were when the page opened. **Show live** follows them twice a second for 10 seconds, then stops by itself, and **Stop live** ends it sooner. The same button above the Marker Faders runs both rows. Every update is a request the station answers, so the strips are not kept live while nobody is looking.
 
 Click a strip to open its settings in the detail panel below.
 
@@ -27,7 +29,7 @@ Click a strip to open its settings in the detail panel below.
 - **Display name** – label shown on the Operator Screen (when enabled) and in trigger forms referencing this fader. Up to 32 characters; defaults to `Fader 1`, `Fader 2`, etc.
 - **Default value** – the fader's value at startup (0.00 to 1.00).
 - **Colour** – swatch that tints the fader strip in the web interface.
-- **Show on Operator Screen** – when checked, this fader appears on the Operator Screen.
+- **Operator Screen** – when checked, this fader appears on the Operator Screen.
 
 ### Source
 

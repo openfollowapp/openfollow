@@ -8,8 +8,11 @@
         <h3 class="group-title">OSC Server</h3>
         <div class="row">
             <div class="field checkbox-field">
-                <label>Enabled</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="enabled" {{'checked' if config.osc.enabled else ''}}></div>
+                <label for="osc-enabled">OSC server</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="osc-enabled" name="enabled" {{'checked' if config.osc.enabled else ''}}>
+                    <label for="osc-enabled">Listen for OSC messages</label>
+                </div>
             </div>
             <div class="field">
                 <label>UDP Port</label>
@@ -32,6 +35,7 @@
                 <span id="osc-multicast-group-error" class="field-error"></span>
             </div>
         </div>
+        % if config.network_mode == 'advanced':
         <div class="row">
             <div class="field" style="flex: 1 1 100%;">
                 <label>Multicast Interface</label>
@@ -45,6 +49,7 @@
                 </div>
             </div>
         </div>
+        % end
         <div class="row">
             <div class="field" style="flex: 1 1 100%;">
                 <label>Allowed sender IPs</label>

@@ -8,12 +8,18 @@
     <div class="group">
         <div class="row">
             <div class="field checkbox-field">
-                <label>Enabled</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="enabled" {{'checked' if config.operator_messages.enabled else ''}}></div>
+                <label for="operator-messages-enabled">Operator messages</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="operator-messages-enabled" name="enabled" {{'checked' if config.operator_messages.enabled else ''}}>
+                    <label for="operator-messages-enabled">Show messages on the Operator Screen</label>
+                </div>
             </div>
-            <div class="field checkbox-field">
-                <label>Route by marker</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="route_by_marker" {{'checked' if config.operator_messages.route_by_marker else ''}}></div>
+            <div class="field wide">
+                <label for="operator-messages-route-by-marker">Routing</label>
+                <select id="operator-messages-route-by-marker" name="route_by_marker">
+                    <option value="true" {{'selected' if config.operator_messages.route_by_marker else ''}}>Only the marker's station</option>
+                    <option value="false" {{'' if config.operator_messages.route_by_marker else 'selected'}}>Every station</option>
+                </select>
             </div>
             <div class="field">
                 <label>Placement</label>

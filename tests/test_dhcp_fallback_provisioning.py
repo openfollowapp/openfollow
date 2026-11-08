@@ -12,6 +12,7 @@ and the Ansible playbook.
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -219,3 +220,245 @@ def test_help_does_not_promise_the_station_name_resolves() -> None:
         encoding="utf-8"
     )
     assert "<station-name>.local" not in help_text
+
+
+# --- network-online.target on a station whose DHCP may go unanswered ----------
+
+_WAIT_SCRIPT = _REPO_ROOT / "packaging" / "debian" / "nm-wait-online.sh"
+_WAIT_DROPIN = _REPO_ROOT / "packaging" / "debian" / "nm-wait-online-timeout.conf"
+_WAIT_INSTALLED = "/usr/share/openfollow/nm-wait-online.sh"
+_IP_CONFIG = "connecting (getting IP configuration)"
+_FALLBACK = "169.254.7.9/16"
+_LEASE = "192.0.2.10/24"
+# The script polls four times a second; a device counts once it has held only its fallback for 3 s, 12 polls.
+_POLLS_PER_S = 4
+_GRACE = 3 * _POLLS_PER_S
+
+# One poll's view: is NetworkManager's startup complete, and each device's
+# (type, state, IPv4 addresses). ``None`` for devices: NetworkManager not running.
+_Poll = tuple[bool, dict[str, tuple[str, str, list[str]]] | None]
+
+
+def _run_wait(
+    tmp_path: Path, polls: list[_Poll], cap: int = 10, shell: str = "/bin/sh", clock_runs: bool = True
+) -> tuple[int, int]:
+    """Run the packaged wait with ``nm-online``, ``nmcli``, ``ip`` and ``sleep`` stubbed.
+
+    Poll *n* sees ``polls[n]``, the last one repeating. ``sleep`` advances the
+    script's clock instead of waiting, unless *clock_runs* is false. Returns the
+    exit code and how many times it polled.
+    """
+    if not _WAIT_SCRIPT.is_file():
+        pytest.skip("no packaging/debian/nm-wait-online.sh in this tree")
+    for n, (started, devices) in enumerate(polls):
+        poll = tmp_path / f"p{n}"
+        poll.mkdir()
+        (poll / "startup").write_text("0" if started else "1", encoding="utf-8")
+        if devices is None:
+            continue
+        rows = [f"{name}:{kind}:{state}" for name, (kind, state, _) in devices.items()]
+        (poll / "devices").write_text("".join(f"{row}\n" for row in rows), encoding="utf-8")
+        for name, (_, _, addresses) in devices.items():
+            lines = [f"2: {name}    inet {a} scope global {name}\\       valid_lft forever" for a in addresses]
+            (poll / f"addr_{name}").write_text("".join(f"{line}\n" for line in lines), encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    clock = tmp_path / "uptime"
+    clock.write_text("100.00 0.00\n", encoding="utf-8")
+    state = f'cur="$(cat "{tmp_path}/cur")"; dir="{tmp_path}/p$cur"'
+    stubs = {
+        # Answers only the startup question (-s), and only once without waiting (--timeout=0).
+        "nm-online": (
+            'case " $* " in *" -s "*" --timeout=0 "*) ;; *) exit 2 ;; esac\n'
+            f'n="$(cat "{tmp_path}/count" 2>/dev/null || echo 0)"\n'
+            f'echo "$((n + 1))" > "{tmp_path}/count"\n'
+            f'[ "$n" -lt {len(polls)} ] && cur="$n" || cur={len(polls) - 1}\n'
+            f'echo "$cur" > "{tmp_path}/cur"\n'
+            f'exit "$(cat "{tmp_path}/p$cur/startup")"\n'
+        ),
+        "nmcli": f'{state}\n[ -f "$dir/devices" ] || exit 8\ncat "$dir/devices"\n',
+        # ip -4 -o addr show dev <name>
+        "ip": f'{state}\neval "dev=\\${{$#}}"\ncat "$dir/addr_$dev" 2>/dev/null\nexit 0\n',
+        "sleep": (
+            f'echo "$1" >> "{tmp_path}/sleeps"\n'
+            + (
+                f'awk -v d="$1" \'{{ printf "%.2f 0.00\\n", $1 + d }}\' "{clock}" > "{clock}.new"\n'
+                f'mv "{clock}.new" "{clock}"\n'
+                if clock_runs
+                else ""
+            )
+        ),
+    }
+    for name, body in stubs.items():
+        stub = bin_dir / name
+        stub.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+        stub.chmod(0o755)
+    result = subprocess.run(
+        [shell, str(_WAIT_SCRIPT), str(cap)],
+        env={"PATH": f"{bin_dir}:/usr/bin:/bin", "OPENFOLLOW_UPTIME": str(clock)},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    return result.returncode, int((tmp_path / "count").read_text(encoding="utf-8"))
+
+
+def test_wait_online_dropin_runs_the_station_wait() -> None:
+    """``nm-online -s`` alone waits for NetworkManager's startup to complete,
+    which a DHCP activation with an infinite timeout never reaches: every boot
+    on a LAN without DHCP would run out the cap and leave the system degraded."""
+    if not _WAIT_DROPIN.is_file():
+        pytest.skip("no packaging/debian/nm-wait-online-timeout.conf in this tree")
+    exec_lines = re.findall(r"^ExecStart=(.*)$", _WAIT_DROPIN.read_text(encoding="utf-8"), re.MULTILINE)
+    assert exec_lines == ["", f"{_WAIT_INSTALLED} 20"]
+
+
+def test_deb_installs_the_station_wait_executable() -> None:
+    text = _read("deb build script")
+    assert re.search(rf'install -m 0755 "\$DEBIAN_DIR/nm-wait-online\.sh"\s+"\$SHARE/{_WAIT_SCRIPT.name}"', text)
+
+
+@pytest.fixture(params=["sh", "dash"])
+def shell(request: pytest.FixtureRequest) -> str:
+    """The station's ``/bin/sh`` is dash; run under the host's ``sh`` too."""
+    path = "/bin/sh" if request.param == "sh" else shutil.which("dash")
+    if path is None:
+        pytest.skip("no dash on this host")
+    return path
+
+
+def _eth0(state: str, *addresses: str) -> dict[str, tuple[str, str, list[str]]]:
+    return {"eth0": ("ethernet", state, list(addresses))}
+
+
+_ON_FALLBACK = (False, _eth0(_IP_CONFIG, _FALLBACK))
+_ADDRESSLESS = (False, _eth0(_IP_CONFIG))
+
+
+@pytest.mark.parametrize(
+    ("polls", "expected_polls"),
+    [
+        pytest.param([(True, _eth0("connected", _LEASE))], 1, id="startup-complete"),
+        pytest.param([(False, _eth0(_IP_CONFIG, _LEASE))], 1, id="lease-while-activating-counts-at-once"),
+        pytest.param([(False, _eth0(_IP_CONFIG, _FALLBACK, _LEASE))], 1, id="lease-beside-the-fallback-counts-at-once"),
+        pytest.param([_ON_FALLBACK], 1 + _GRACE, id="only-nic-holds-its-fallback-for-the-grace"),
+        pytest.param(
+            [
+                (
+                    False,
+                    {
+                        "eth0": ("ethernet", "connected", [_LEASE]),
+                        "eth0.20": ("vlan", _IP_CONFIG, [_FALLBACK]),
+                    },
+                )
+            ],
+            1 + _GRACE,
+            id="lease-on-one-fallback-on-the-vlan",
+        ),
+        pytest.param(
+            [
+                (
+                    False,
+                    {
+                        "lo": ("loopback", "connecting (externally)", []),
+                        "eth0": ("ethernet", _IP_CONFIG, [_FALLBACK]),
+                    },
+                )
+            ],
+            1 + _GRACE,
+            id="loopback-is-not-waited-for",
+        ),
+        pytest.param(
+            [(False, _eth0("unavailable")), _ADDRESSLESS, _ON_FALLBACK],
+            3 + _GRACE,
+            id="fallback-arrives-on-the-third-poll",
+        ),
+        # Fallback first seen on poll 1; the lease ends the wait before the grace would.
+        pytest.param(
+            [_ON_FALLBACK, _ON_FALLBACK, (True, _eth0("connected", _LEASE))],
+            3,
+            id="lease-within-the-grace-completes-startup",
+        ),
+        pytest.param(
+            [_ON_FALLBACK, _ON_FALLBACK, (False, _eth0(_IP_CONFIG, _LEASE))],
+            3,
+            id="lease-within-the-grace-while-activating",
+        ),
+        # Held on polls 1-2, gone on 3, back on 4: the grace runs again from poll 4.
+        pytest.param(
+            [_ON_FALLBACK, _ON_FALLBACK, _ADDRESSLESS, _ON_FALLBACK], 4 + _GRACE, id="fallback-lost-restarts-the-grace"
+        ),
+        pytest.param(
+            [_ON_FALLBACK, _ON_FALLBACK, (False, _eth0("unavailable")), _ON_FALLBACK],
+            4 + _GRACE,
+            id="carrier-lost-restarts-the-grace",
+        ),
+        # eth0 has held its fallback for the grace when eth1's lease lands, the poll after it.
+        pytest.param(
+            [(False, {**_eth0(_IP_CONFIG, _FALLBACK), "eth1": ("ethernet", _IP_CONFIG, [])})] * _GRACE
+            + [(False, {**_eth0(_IP_CONFIG, _FALLBACK), "eth1": ("ethernet", _IP_CONFIG, [_LEASE])})],
+            1 + _GRACE,
+            id="grace-counts-per-device",
+        ),
+        # eth1's fallback lands on poll 3, so its grace ends three polls after eth0's would.
+        pytest.param(
+            [(False, {**_eth0(_IP_CONFIG, _FALLBACK), "eth1": ("ethernet", _IP_CONFIG, [])})] * 2
+            + [(False, {**_eth0(_IP_CONFIG, _FALLBACK), "eth1": ("ethernet", _IP_CONFIG, [_FALLBACK])})],
+            3 + _GRACE,
+            id="every-fallback-serves-its-own-grace",
+        ),
+    ],
+)
+def test_wait_online_succeeds_once_every_activating_device_has_an_address(
+    tmp_path: Path, shell: str, polls: list[_Poll], expected_polls: int
+) -> None:
+    """A DHCP profile with no server stays activating beside its link-local
+    fallback; the station is reachable there, so network-online is reached. A
+    lease counts at once; the fallback only once held for the grace, so a lease
+    that arrives just after it is the address the station starts on."""
+    assert _run_wait(tmp_path, polls, shell=shell) == (0, expected_polls)
+
+
+@pytest.mark.parametrize(
+    "devices",
+    [
+        pytest.param({"eth0": ("ethernet", _IP_CONFIG, [])}, id="activating-with-no-address-yet"),
+        pytest.param(
+            {
+                "eth0": ("ethernet", _IP_CONFIG, [_FALLBACK]),
+                "eth1": ("ethernet", "connecting (configuring)", []),
+            },
+            id="one-addressed-one-not",
+        ),
+        # Before carrier, nothing is activating yet: passing here would race the lease.
+        pytest.param({"eth0": ("ethernet", "unavailable", [])}, id="nothing-activating-yet"),
+        pytest.param(
+            {
+                "lo": ("loopback", "connecting (externally)", ["127.0.0.1/8"]),
+                "eth0": ("ethernet", "unavailable", []),
+            },
+            id="only-loopback-activating",
+        ),
+        pytest.param({"eth0": ("ethernet", _IP_CONFIG, ["127.0.0.2/8"])}, id="only-a-loopback-address"),
+        # The cap ends before the fallback has been held for the grace.
+        pytest.param({"eth0": ("ethernet", _IP_CONFIG, [_FALLBACK])}, id="fallback-held-short-of-the-grace"),
+        pytest.param(None, id="networkmanager-not-running"),
+    ],
+)
+def test_wait_online_fails_at_the_cap_while_a_device_has_no_address(
+    tmp_path: Path, shell: str, devices: dict[str, tuple[str, str, list[str]]] | None
+) -> None:
+    assert _run_wait(tmp_path, [(False, devices)], cap=3, shell=shell) == (1, 3 * _POLLS_PER_S)
+
+
+def test_wait_online_checks_four_times_a_second_without_waiting_in_nm_online(tmp_path: Path) -> None:
+    """``nm-online --timeout=0`` answers at once, so the script's own pause sets the rate, and a lease ends the
+    wait within a quarter second instead of a second."""
+    assert _run_wait(tmp_path, [_ON_FALLBACK], cap=1) == (1, _POLLS_PER_S)
+    assert (tmp_path / "sleeps").read_text(encoding="utf-8").split() == ["0.25"] * _POLLS_PER_S
+
+
+def test_wait_online_ends_on_a_clock_that_does_not_move(tmp_path: Path, shell: str) -> None:
+    """A frozen clock never runs the cap out; the wait still ends, at twice the polls the cap allows."""
+    assert _run_wait(tmp_path, [_ON_FALLBACK], cap=1, shell=shell, clock_runs=False) == (1, 2 * _POLLS_PER_S)

@@ -7,7 +7,7 @@
       hx-post="/section/movement" hx-target="#movement-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
         <h2>Marker Movement</h2>
-        <span class="section-note">Marker speed limits, default speed, and default position</span>
+        <span class="section-note">Marker speed limits, default speed, default position, and control frame</span>
     </div>
 
     <div class="group">
@@ -85,11 +85,24 @@
     </div>
 
     <div class="group">
-        <h3 class="group-title">Control direction</h3>
-        <div class="row">
-            <div class="field checkbox-field wide">
-                <label for="movement-invert-control-direction">Invert control direction</label>
-                <div class="checkbox-wrap"><input type="checkbox" id="movement-invert-control-direction" name="invert_control_direction" {{'checked' if config.marker.invert_control_direction else ''}}></div>
+        <h3 class="group-title">Control frame</h3>
+        <div class="fields-grid">
+            <div class="field">
+                <label for="movement-control-frame">Control frame</label>
+                <select id="movement-control-frame" name="control_frame"
+                        onchange="document.getElementById('movement-control-heading-field').hidden = this.value !== 'heading'">
+                    % for _value, _label in (("stage", "Stage axes"), ("heading", "Fixed heading"), ("camera", "Camera heading"), ("screen", "Screen")):
+                    <option value="{{_value}}" {{'selected' if config.marker.control_frame == _value else ''}}>{{_label}}</option>
+                    % end
+                </select>
+            </div>
+            <div class="field" id="movement-control-heading-field" {{'' if config.marker.control_frame == 'heading' else 'hidden'}}>
+                <label for="movement-control-heading">Heading (°)</label>
+                <input id="movement-control-heading" type="number" name="control_heading" value="{{config.marker.control_heading}}" step="any"
+                       hx-get="/api/validate/movement/control_heading" hx-trigger="blur changed delay:200ms"
+                       hx-target="#movement-control-heading-error" hx-swap="innerHTML" hx-include="closest form"
+                       aria-describedby="movement-control-heading-error" aria-invalid="false">
+                <span id="movement-control-heading-error" class="field-error"></span>
             </div>
         </div>
     </div>

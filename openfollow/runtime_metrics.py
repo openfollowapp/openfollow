@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""Reusable runtime metrics and pooling helpers.
+"""Reusable runtime metrics.
 
 ``FrameMetrics`` tracks per-frame timing (lifetime + recent-window FPS,
-slow-frame counts); ``OverlayStatePool`` recycles ``OverlayState``
-objects to reduce GC pressure on the frame loop.
+slow-frame counts).
 """
 
 from __future__ import annotations
@@ -12,8 +11,6 @@ from __future__ import annotations
 import logging
 from collections import deque
 from dataclasses import dataclass, field
-
-from openfollow.runtime.overlay_state import OverlayState
 
 logger = logging.getLogger(__name__)
 
@@ -94,30 +91,3 @@ class FrameMetrics:
             "last_frame_ms": float(self.last_frame_time * 1000.0),
             "slow_frame_threshold_ms": float(self.slow_frame_threshold * 1000.0),
         }
-
-
-class OverlayStatePool:
-    """Object pool for OverlayState to reduce garbage collection pressure."""
-
-    def __init__(self, pool_size: int = 3) -> None:
-        self._pool_size = pool_size
-        self._pool: deque[OverlayState] = deque([OverlayState() for _ in range(pool_size)])
-        self._allocated_count = 0
-        self._fallback_count = 0
-
-    def acquire(self) -> OverlayState:
-        """Get a state from the pool, or allocate a new one if pool is empty."""
-        if self._pool:
-            state = self._pool.popleft()
-            state.reset()
-            self._allocated_count += 1
-            return state
-        # Allocate if pool exhausted.
-        self._fallback_count += 1
-        logger.debug("OverlayStatePool exhausted (fallback allocations: %d)", self._fallback_count)
-        return OverlayState()
-
-    def release(self, state: OverlayState) -> None:
-        """Return a state to the pool for reuse."""
-        if len(self._pool) < self._pool_size:
-            self._pool.append(state)

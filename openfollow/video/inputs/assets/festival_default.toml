@@ -1,0 +1,22 @@
+# The camera and grid festival_default.jpg was drawn with, written by scripts/gen_festival_default.py.
+
+[camera]
+pos_x = 0.0
+pos_y = -4.0
+pos_z = 9.3
+pitch = -42.0
+yaw = 0.0
+roll = 0.0
+fov = 84.2
+lens_k1 = -0.31
+lens_k2 = -0.01
+lens_cx = 0.025420953166132687
+lens_cy = -0.014526258952075821
+
+[grid]
+width = 12.0
+depth = 6.0
+spacing = 2.0
+x_offset = 0.0
+y_offset = 3.0
+z_offset = 0.0

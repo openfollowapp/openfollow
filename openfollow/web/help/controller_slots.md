@@ -1,6 +1,6 @@
 # Controller Slots
 
-Which controller holds which slot (`C1`, `C2`, …) on this station, and which marker each slot drives. Gamepads and 3D mice share one numbering. The table refreshes every second while it is open.
+Which controller holds which slot (`C1`, `C2`, …) on this station, and which marker each slot drives. Gamepads and 3D mice share one numbering. The table refreshes every second while it is open and in view.
 
 ## How slots are assigned
 

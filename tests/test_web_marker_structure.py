@@ -342,6 +342,13 @@ class TestMarkerAddRowReCreate:
         assert "flash('Added marker ' + id, 'ok');" in body
         assert "flash.textContent = 'Saved';" in body
 
+    def test_the_conflict_flag_reads_the_runtimes_decision(self) -> None:
+        """The table flags what ``marker_conflicts`` lists, so it cannot disagree with the Operator Screen."""
+        body = _render_marker()
+        assert "const conflicts = data.marker_conflicts || [];" in body
+        assert "return conflicts.some(function(c) { return c.marker_id === entry.id; });" in body
+        assert "const conflict = controlConflict(entry, conflicts);" in body
+
     def test_add_row_blocks_live_duplicate(self) -> None:
         """Adding a live id is blocked by the duplicate guard."""
         body = _render_marker()

@@ -13,6 +13,16 @@ Interactive top-down stage view; the grid and any placed markers stay visible as
 - **Drag a vertex** to move it. The Area tab's coordinate fields update live.
 - **Click an empty area** in drawing mode to place the next vertex.
 
+## Camera view
+
+**Top-down / Camera** above the canvas switches to the camera picture, with every zone drawn on the stage floor as the saved camera and lens see it. Use it to check that a zone sits where it should on the real stage. This browser remembers the choice.
+
+- **Click a zone** to select it; its corners show as handles.
+- **Drag a corner** to move it. It lands on the stage floor under the pointer and saves straight away.
+- **Refresh Image** takes a new snapshot.
+
+New zones are drawn in the top-down view. Without a video picture the view says so. The zones follow the saved camera position: after changing the camera, save it before checking zones here.
+
 ## Drawing controls
 
 - **+ New Zone** – enter drawing mode (crosshair cursor); each click drops a vertex.
@@ -28,7 +38,7 @@ Selecting a zone opens a tabbed detail panel below the canvas.
 
 - **Name** – label shown on the canvas and in diagnostics.
 - **Color** – zone outline and label colour. Click the swatch for the colour picker.
-- **Enabled** – uncheck to disable without deleting. Disabled zones don't fire OSC messages and aren't evaluated for occupancy.
+- **Zone** – untick **Use this zone** to disable it without deleting. Disabled zones don't fire OSC messages, aren't evaluated for occupancy and aren't drawn.
 - **Trigger Source** – what feeds the occupancy engine:
   - `Markers (PSN)` – tracked markers drive events (default).
   - `Detection (AI)` – person-detection bounding boxes drive events. Requires Person Detection enabled.

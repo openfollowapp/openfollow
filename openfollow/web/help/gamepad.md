@@ -4,10 +4,10 @@ Configure how a connected USB gamepad drives markers: stick sensitivity and resp
 
 ## General
 
-- **Enabled** – master toggle for gamepad input. Turn off to ignore the controller while keeping its configuration intact.
-- **Invert Stick Y** – flips the forward/back sense of the movement stick, and nothing else. Enable for flight-sim style, where pushing up moves the marker downstage. Left/right and height are unaffected: height comes from the triggers, not the stick.
+- **Gamepad** – master toggle for gamepad input. Turn off to ignore the controller while keeping its configuration intact.
+- **Stick Y axis** – the forward/back sense of the movement stick, and nothing else. **Push up to move down the screen** is flight-sim style. Left/right and height are unaffected: height comes from the triggers, not the stick.
 
-    > This is a personal stick-feel preference, separate from **Invert control direction** under Markers & Zones → Marker Movement, which reverses *both* axes for every input device so the controls match an upstage camera's view. With both switched on they cancel out on this stick's Y axis while the keyboard and 3D Mouse still flip – use one or the other, not both.
+    > This is a personal stick-feel preference, separate from **Control frame** under Markers & Zones → Marker Movement, which sets which way every input device steers relative to the camera. Set the frame there, and the stick's feel here.
 - **Axis Deadzone (0–1)** – the fraction of stick travel treated as zero. Default `0.15`. Raise it if the marker creeps when the stick is released; lower it for tighter response on a well-centred stick.
 - **Response Curve** – how stick deflection translates to marker velocity:
   - `Linear` – velocity scales proportionally with deflection.
@@ -40,7 +40,6 @@ Controls active during show operation.
 
 - **Reset Marker** – snaps the active marker to its configured default position. Default: `X`.
 - **Toggle Help** – shows or hides the help overlay on the Operator Screen. Default: `Y`.
-- **Toggle Zone Overlay** – shows or hides the zone overlay on the Operator Screen. Default: `B`.
 - **Settings Menu** – opens the on-screen Settings menu; pressed in any menu, it closes them all. Default: `Back`.
 - **Move X/Y** – which stick drives the marker's horizontal position: `Left Stick` or `Right Stick`. Default: `Left Stick`. The deadzone and response curve above apply to the chosen stick.
 - **Marker fader stick** – which stick Y axis continuously drives the fader value of the marker this controller currently controls: `Left Stick Y`, `Right Stick Y`, or `– (unused)`. The same deadzone and response curve apply. See Hardware Inputs → Marker Faders to send this value via OSC.
@@ -49,6 +48,9 @@ Controls active during show operation.
 - **Move Z−** / **Move Z+** – lower or raise the marker's height. Defaults: `LT` / `RT`.
 - **Next Marker** / **Prev Marker** – cycle which marker this controller drives. Defaults: `D-Pad Right` / `D-Pad Left`. These are suppressed automatically when more than one controller is connected – gamepads and 3D mice share one numbering – since each controller is pinned to its own marker by the USB socket it is plugged into (see Controller Slots).
 - **Clear Messages** – clears every operator-message card. Default: unbound.
+- **Toggle Zone Overlay** – shows or hides the zone overlay on the Operator Screen. Default: unbound.
+- **Toggle Paths** *(experimental)* – shows or hides paths on the Operator Screen. Default: unbound.
+- **Pathfinder** *(experimental)* – slides the marker this controller drives onto the nearest active path, where it stays until pressed again or moved past an end of the path that releases it; while a path is recording, adds the marker's position to it instead. Default: unbound.
 
 ### Menu Navigation
 

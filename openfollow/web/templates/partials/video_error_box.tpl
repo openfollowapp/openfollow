@@ -1,6 +1,7 @@
-%# The one video-failure box. Rendered on Live Statistics and on Camera & Grid,
-%# which is where an operator looks first when the picture is missing, so both
-%# must say the same thing rather than one carrying a reduced version.
+%# The one video-failure box. Rendered on Live Statistics, on Camera & Grid and
+%# in the Setup Wizard's Video Source step, which is where an operator looks
+%# first when the picture is missing, so all must say the same thing rather than
+%# one carrying a reduced version.
 %#
 %# Two lines: what the station saw, then the one thing to try. The pipeline's
 %# own wording ("Could not open resource for reading and writing.") is not here

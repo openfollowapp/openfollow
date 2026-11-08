@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -31,6 +32,7 @@ from openfollow.configuration import (
 )
 from openfollow.net_egress import Egress
 from openfollow.osc.transmitter import (
+    _TICK_INTERVAL_S,
     BindingRingBuffer,
     OscTransmitter,
     OscTransmitterManager,
@@ -4046,3 +4048,240 @@ class TestEgressPin:
         state["address"] = ""
         manager._tick_once()
         assert manager.ring_buffer_for("row-1")[-1].error == "interface eth1 is down"
+
+
+# ---------------------------------------------------------------------------
+# Idle scheduler
+# ---------------------------------------------------------------------------
+
+
+def _first_wait(manager: OscTransmitterManager) -> float | None:
+    """Run one scheduler iteration on this thread; the timeout of the wait it ends in (``None``: until woken)."""
+    waits: list[float | None] = []
+
+    class _Recorded(threading.Event):
+        def wait(self, timeout: float | None = None) -> bool:
+            waits.append(timeout)
+            manager._stop.set()
+            return True
+
+    manager._wake, manager._stop = _Recorded(), _Recorded()
+    manager._clock = lambda: 100.0
+    manager._loop()
+    return waits[0]
+
+
+def _start_asleep(manager: OscTransmitterManager) -> None:
+    """Start the scheduler and return once it sleeps waiting for work."""
+    asleep = threading.Event()
+
+    class _Watched(threading.Event):
+        def wait(self, timeout: float | None = None) -> bool:
+            asleep.set()
+            return super().wait(timeout)
+
+    manager._wake = _Watched()
+    manager.start()
+    assert asleep.wait(2.0), "scheduler never went to sleep"
+
+
+def _sent_within(svc: _FakeOscService, seconds: float = 2.0) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline and not svc.calls:
+        time.sleep(0.01)
+    return bool(svc.calls)
+
+
+class TestIdleScheduler:
+    """The scheduler ticks only while a Stream row is enabled; otherwise it sleeps until there is work."""
+
+    @pytest.mark.parametrize(
+        "rows",
+        [
+            [],
+            [_row(enabled=False)],
+            [_row(trigger=HotkeyTrigger(key="F1"))],
+        ],
+        ids=["no-rows", "stream-row-disabled", "event-row-only"],
+    )
+    def test_without_an_enabled_stream_row_it_sleeps_until_woken(self, rows: list[OscTransmitterConfig]) -> None:
+        manager, _svc = _manager(markers={0: _FakeMarker((1.0, 2.0, 3.0))})
+        manager.restart(OscTransmittersConfig(transmitters=rows))
+        assert _first_wait(manager) is None
+
+    def test_an_enabled_stream_row_keeps_it_ticking(self) -> None:
+        manager, _svc = _manager(markers={0: _FakeMarker((1.0, 2.0, 3.0))})
+        manager.restart(OscTransmittersConfig(transmitters=[_row(trigger=HotkeyTrigger(key="F1")), _row(id="row-2")]))
+        assert _first_wait(manager) == pytest.approx(_TICK_INTERVAL_S)
+
+    def test_a_queued_event_wakes_an_idle_scheduler(self) -> None:
+        manager, svc = _manager(markers={0: _FakeMarker((1.0, 2.0, 3.0))})
+        manager.restart(OscTransmittersConfig(transmitters=[_row(trigger=HotkeyTrigger(key="F1"))]))
+        bus = InputEventBus()
+        manager.attach_event_bus(bus)
+        _start_asleep(manager)
+        try:
+            bus.emit_key(KeyEvent(key="F1", edge="press"))
+            assert _sent_within(svc)
+        finally:
+            manager.stop()
+
+    def test_enabling_a_stream_row_wakes_an_idle_scheduler(self) -> None:
+        manager, svc = _manager(markers={0: _FakeMarker((1.0, 2.0, 3.0))})
+        manager.restart(OscTransmittersConfig(transmitters=[_row(enabled=False)]))
+        _start_asleep(manager)
+        try:
+            manager.restart(OscTransmittersConfig(transmitters=[_row()]))
+            assert _sent_within(svc)
+        finally:
+            manager.stop()
+
+    def test_stop_ends_an_idle_scheduler(self) -> None:
+        manager, _svc = _manager()
+        _start_asleep(manager)
+        assert manager.stop() is True
+
+    def test_a_stop_that_lands_mid_iteration_ends_an_idle_scheduler(self) -> None:
+        manager, _svc = _manager()
+
+        class _StopBeforeClear(threading.Event):
+            def clear(self) -> None:
+                # stop() sets both events after the loop's last stop check.
+                manager._stop.set()
+                self.set()
+                super().clear()
+
+        manager._wake = _StopBeforeClear()
+        thread = threading.Thread(target=manager._loop, daemon=True)
+        thread.start()
+        thread.join(2.0)
+        try:
+            assert not thread.is_alive()
+        finally:
+            threading.Event.set(manager._wake)
+
+
+# ---------------------------------------------------------------------------
+# Stream timing
+# ---------------------------------------------------------------------------
+
+
+def _run_sends(
+    manager: OscTransmitterManager, svc: _FakeOscService, sends: int, send_s: Callable[[int], float]
+) -> list[tuple[float, float]]:
+    """Run the scheduler on a simulated clock until ``sends`` sends; send ``n`` takes ``send_s(n)``.
+
+    Returns each send's (start, end) on that clock.
+    """
+    clock = {"now": 100.0}
+    spans: list[tuple[float, float]] = []
+    send = svc.send
+
+    def timed_send(*args: Any, **kwargs: Any) -> bool:
+        began = clock["now"]
+        clock["now"] += send_s(len(spans))
+        spans.append((began, clock["now"]))
+        if len(spans) >= sends:
+            manager._stop.set()
+        return send(*args, **kwargs)
+
+    class _Clocked(threading.Event):
+        def wait(self, timeout: float | None = None) -> bool:
+            clock["now"] += timeout or 0.0
+            if clock["now"] > 160.0:
+                raise AssertionError("a simulated minute passed without the expected sends")
+            return self.is_set()
+
+    class _NeverIdle(threading.Event):
+        def wait(self, timeout: float | None = None) -> bool:
+            raise AssertionError("the scheduler went idle with a Stream row enabled")
+
+    svc.send = timed_send  # type: ignore[method-assign]
+    manager._clock = lambda: clock["now"]
+    manager._stop, manager._wake = _Clocked(), _NeverIdle()
+    manager._loop()
+    return spans
+
+
+def _idle_gaps(spans: list[tuple[float, float]]) -> list[float]:
+    """The time between each send's end and the next send's start."""
+    return [nxt[0] - prev[1] for prev, nxt in zip(spans, spans[1:], strict=False)]
+
+
+class TestStreamTiming:
+    def _streaming(self, *rows: OscTransmitterConfig) -> tuple[OscTransmitterManager, _FakeOscService]:
+        manager, svc = _manager(markers={0: _FakeMarker((1.0, 2.0, 3.0))})
+        manager.restart(OscTransmittersConfig(transmitters=list(rows)))
+        return manager, svc
+
+    def test_a_beat_s_own_work_does_not_slow_the_beats(self) -> None:
+        manager, svc = self._streaming(_row())
+        spans = _run_sends(manager, svc, 61, lambda _n: 0.005)
+        # Sixty beats of 5 ms work each still take one second.
+        assert spans[60][0] - spans[0][0] == pytest.approx(1.0)
+
+    def test_beats_a_stall_missed_are_skipped_not_sent_in_a_burst(self) -> None:
+        manager, svc = self._streaming(_row())
+        spans = _run_sends(manager, svc, 12, lambda n: 0.1 if n == 3 else 0.0)
+        assert _idle_gaps(spans) == pytest.approx([_TICK_INTERVAL_S] * 11)
+
+    def test_a_beat_less_than_one_interval_late_is_caught_up(self) -> None:
+        manager, svc = self._streaming(_row())
+        spans = _run_sends(manager, svc, 12, lambda n: 1.5 * _TICK_INTERVAL_S if n == 3 else 0.0)
+        assert spans[11][0] - spans[0][0] == pytest.approx(11 * _TICK_INTERVAL_S)
+
+    def test_a_scheduler_whose_beats_overrun_still_sleeps_between_them(self) -> None:
+        manager, svc = self._streaming(_row())
+        spans = _run_sends(manager, svc, 12, lambda _n: 2.5 * _TICK_INTERVAL_S)
+        assert _idle_gaps(spans) == pytest.approx([_TICK_INTERVAL_S] * 11)
+
+    def test_a_row_keeps_its_count_when_its_message_is_edited(self) -> None:
+        manager, svc = self._streaming(_row(id="slow", address="/slow", rate_hz=1))
+        for _ in range(30):
+            manager._tick_once()
+        manager.restart(OscTransmittersConfig(transmitters=[_row(id="slow", address="/edited", rate_hz=1)]))
+        for _ in range(30):
+            manager._tick_once()
+        assert len(svc.calls) == 1
+        manager._tick_once()
+        assert len(svc.calls) == 2
+
+    def test_a_row_enabled_mid_count_sends_on_the_next_beat(self) -> None:
+        other = _row(id="other", address="/other")
+        manager, svc = self._streaming(other)
+        for _ in range(7):
+            manager._tick_once()
+        manager.restart(OscTransmittersConfig(transmitters=[other, _row(id="slow", address="/slow", rate_hz=1)]))
+        sent = []
+        for _ in range(61):
+            before = len([c for c in svc.calls if c[0] == "/slow"])
+            manager._tick_once()
+            sent.append(len([c for c in svc.calls if c[0] == "/slow"]) - before)
+        assert sent[0] == 1 and sent[60] == 1 and sum(sent) == 2
+
+    def test_a_row_enabled_again_sends_on_the_next_beat(self) -> None:
+        slow = _row(id="slow", address="/slow", rate_hz=1)
+        manager, svc = self._streaming(slow, _row(id="other", address="/other"))
+        for _ in range(5):
+            manager._tick_once()
+        manager.restart(
+            OscTransmittersConfig(
+                transmitters=[
+                    _row(id="slow", address="/slow", rate_hz=1, enabled=False),
+                    _row(id="other", address="/other"),
+                ]
+            )
+        )
+        manager._tick_once()
+        manager.restart(OscTransmittersConfig(transmitters=[slow, _row(id="other", address="/other")]))
+        before = len([c for c in svc.calls if c[0] == "/slow"])
+        manager._tick_once()
+        assert len([c for c in svc.calls if c[0] == "/slow"]) == before + 1
+
+    def test_a_row_given_another_rate_sends_on_the_next_beat(self) -> None:
+        manager, svc = self._streaming(_row(id="slow", address="/slow", rate_hz=1))
+        for _ in range(5):
+            manager._tick_once()
+        manager.restart(OscTransmittersConfig(transmitters=[_row(id="slow", address="/slow", rate_hz=5)]))
+        manager._tick_once()
+        assert len(svc.calls) == 2

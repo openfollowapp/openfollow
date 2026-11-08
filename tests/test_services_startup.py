@@ -10,16 +10,29 @@ from __future__ import annotations
 import errno
 import os
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
+from conftest import send_psn_tracker
 
 import openfollow.privilege.broker as broker_module
 import openfollow.services as services_module
 from openfollow.configuration import AppConfig
 from openfollow.net_egress import Egress
+from openfollow.network.adapter import ApplyResult, NetworkAdapter
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("every_feature_on")]
+
+
+class _ReadOnlyAdapter(NetworkAdapter):
+    """A backend the tests below give only the reads they need."""
+
+    def apply_ipv4(self, iface, config):
+        return ApplyResult(ok=False)
+
+    def renew_lease(self, iface):
+        return ApplyResult(ok=False)
 
 
 class _FakeWindow:
@@ -232,7 +245,7 @@ def test_network_state_provider_returns_none_when_no_adapter(monkeypatch) -> Non
 def test_network_state_provider_returns_empty_when_no_interfaces(monkeypatch) -> None:
     services = _build_services_with_psutil_backend(monkeypatch)
 
-    class _FakeAdapter:
+    class _FakeAdapter(_ReadOnlyAdapter):
         backend_name = "fake"
 
         def list_interfaces(self):
@@ -260,7 +273,7 @@ def test_network_state_provider_returns_full_state(monkeypatch) -> None:
         NetworkState,
     )
 
-    class _FakeAdapter:
+    class _FakeAdapter(_ReadOnlyAdapter):
         backend_name = "fake-dhcpcd"
 
         def list_interfaces(self):
@@ -310,7 +323,7 @@ def test_network_state_provider_filters_loopback(monkeypatch) -> None:
         NetworkState,
     )
 
-    class _FakeAdapter:
+    class _FakeAdapter(_ReadOnlyAdapter):
         backend_name = "fake"
 
         def list_interfaces(self):
@@ -341,7 +354,7 @@ def test_network_state_provider_returns_empty_when_only_loopback(monkeypatch) ->
     services = _build_services_with_psutil_backend(monkeypatch)
     from openfollow.network.adapter import NetworkInterface
 
-    class _FakeAdapter:
+    class _FakeAdapter(_ReadOnlyAdapter):
         backend_name = "fake"
 
         def list_interfaces(self):
@@ -362,7 +375,7 @@ def test_network_state_provider_when_get_state_returns_none(monkeypatch) -> None
     services = _build_services_with_psutil_backend(monkeypatch)
     from openfollow.network.adapter import NetworkInterface
 
-    class _FakeAdapter:
+    class _FakeAdapter(_ReadOnlyAdapter):
         backend_name = "fake-nm"
 
         def list_interfaces(self):
@@ -625,7 +638,7 @@ def test_prompter_short_circuits_when_web_commands_missing(monkeypatch) -> None:
     assert services._privilege_broker._prompter is None
 
 
-# _format_lease_remaining (web-facing helper)
+# format_lease_remaining: the web card's and the Operator Screen's lease
 class TestFormatLeaseRemaining:
     """Compact human label for DHCP lease seconds-remaining. Covers
     every branch – the NM lease bug surfaced as "29664461 min" in the
@@ -633,51 +646,51 @@ class TestFormatLeaseRemaining:
     epoch by 60. The helper is the single source of truth now."""
 
     def test_none_returns_none(self) -> None:
-        from openfollow.services import _format_lease_remaining
+        from openfollow.network.adapter import format_lease_remaining
 
-        assert _format_lease_remaining(None) is None
+        assert format_lease_remaining(None) is None
 
     def test_zero_renders_as_seconds(self) -> None:
         """Clamped lease shows 0s so the operator sees the lease is
         actively expiring rather than a stale display."""
-        from openfollow.services import _format_lease_remaining
+        from openfollow.network.adapter import format_lease_remaining
 
-        assert _format_lease_remaining(0) == "0 s"
+        assert format_lease_remaining(0) == "0 s"
 
     def test_under_a_minute_renders_seconds(self) -> None:
-        from openfollow.services import _format_lease_remaining
+        from openfollow.network.adapter import format_lease_remaining
 
-        assert _format_lease_remaining(45) == "45 s"
+        assert format_lease_remaining(45) == "45 s"
 
     def test_under_an_hour_renders_minutes(self) -> None:
-        from openfollow.services import _format_lease_remaining
+        from openfollow.network.adapter import format_lease_remaining
 
-        assert _format_lease_remaining(3 * 60) == "3 min"
-        assert _format_lease_remaining(59 * 60) == "59 min"
+        assert format_lease_remaining(3 * 60) == "3 min"
+        assert format_lease_remaining(59 * 60) == "59 min"
 
     def test_under_a_day_renders_hours_and_minutes(self) -> None:
-        from openfollow.services import _format_lease_remaining
+        from openfollow.network.adapter import format_lease_remaining
 
-        assert _format_lease_remaining(2 * 3600 + 13 * 60) == "2h 13m"
+        assert format_lease_remaining(2 * 3600 + 13 * 60) == "2h 13m"
         # Zero-pad the minute slot so columns align in operator-facing UIs.
-        assert _format_lease_remaining(5 * 3600 + 7 * 60) == "5h 07m"
+        assert format_lease_remaining(5 * 3600 + 7 * 60) == "5h 07m"
 
     def test_multi_day_renders_days_and_hours(self) -> None:
-        from openfollow.services import _format_lease_remaining
+        from openfollow.network.adapter import format_lease_remaining
 
-        assert _format_lease_remaining(3 * 86400 + 4 * 3600) == "3d 04h"
+        assert format_lease_remaining(3 * 86400 + 4 * 3600) == "3d 04h"
 
     def test_negative_input_clamps_to_zero(self) -> None:
         """Belt-and-braces: even if a caller passes a negative value
         (the NM adapter clamps to 0 on its side, but other future
         adapters might not), the helper still produces a clean label."""
-        from openfollow.services import _format_lease_remaining
+        from openfollow.network.adapter import format_lease_remaining
 
-        assert _format_lease_remaining(-100) == "0 s"
+        assert format_lease_remaining(-100) == "0 s"
 
 
 # Web network write providers / handlers (services layer)
-class _FakeWritableAdapter:
+class _FakeWritableAdapter(NetworkAdapter):
     """Minimal writable NetworkAdapter stand-in for network handlers."""
 
     backend_name = "fake"
@@ -1126,7 +1139,7 @@ def test_network_interfaces_provider_lists_every_interface(monkeypatch) -> None:
     replaced it, so every adapter carries its own address and method."""
     services = _build_services_with_psutil_backend(monkeypatch)
 
-    class _FakeAdapter:
+    class _FakeAdapter(_ReadOnlyAdapter):
         backend_name = "fake"
 
         def list_interfaces(self):
@@ -1156,7 +1169,7 @@ def test_network_interfaces_provider_carries_router_dns_and_lease(monkeypatch) -
     lease, so dropping them here would cost a second backend read per row."""
     services = _build_services_with_psutil_backend(monkeypatch)
 
-    class _FakeAdapter:
+    class _FakeAdapter(_ReadOnlyAdapter):
         backend_name = "fake"
 
         def list_interfaces(self):
@@ -1195,7 +1208,7 @@ def test_network_interfaces_provider_defaults_the_detail_when_state_is_unreadabl
     list, and the row still has to carry every key the editor renders."""
     services = _build_services_with_psutil_backend(monkeypatch)
 
-    class _FakeAdapter:
+    class _FakeAdapter(_ReadOnlyAdapter):
         backend_name = "fake"
 
         def list_interfaces(self):
@@ -1217,7 +1230,7 @@ def test_network_interfaces_provider_defaults_the_detail_when_state_is_unreadabl
 def test_network_interfaces_provider_skips_loopback(monkeypatch) -> None:
     services = _build_services_with_psutil_backend(monkeypatch)
 
-    class _FakeAdapter:
+    class _FakeAdapter(_ReadOnlyAdapter):
         backend_name = "fake"
 
         def list_interfaces(self):
@@ -1238,7 +1251,7 @@ def test_network_interfaces_provider_carries_the_device_type(monkeypatch) -> Non
     VLAN profile still names it."""
     services = _build_services_with_psutil_backend(monkeypatch)
 
-    class _FakeAdapter:
+    class _FakeAdapter(_ReadOnlyAdapter):
         backend_name = "fake"
 
         def list_interfaces(self):
@@ -1260,7 +1273,7 @@ def test_network_interfaces_provider_reports_an_addressless_interface(monkeypatc
     is exactly what the operator needs to see."""
     services = _build_services_with_psutil_backend(monkeypatch)
 
-    class _FakeAdapter:
+    class _FakeAdapter(_ReadOnlyAdapter):
         backend_name = "fake"
 
         def list_interfaces(self):
@@ -1293,7 +1306,7 @@ def test_network_interfaces_provider_degrades_one_failing_row(monkeypatch) -> No
     must degrade that row, not drop the whole list."""
     services = _build_services_with_psutil_backend(monkeypatch)
 
-    class _FakeAdapter:
+    class _FakeAdapter(_ReadOnlyAdapter):
         backend_name = "fake"
 
         def list_interfaces(self):
@@ -1311,6 +1324,212 @@ def test_network_interfaces_provider_degrades_one_failing_row(monkeypatch) -> No
     rows = {r["name"]: r for r in services._network_interfaces_provider()}
     assert rows["eth0"]["address"] == ""
     assert rows["eth1"]["address"] == "10.0.0.9"
+
+
+# --------------------------------------------------------------------------- #
+# One backend reading serves the web UI's network sections
+# --------------------------------------------------------------------------- #
+
+
+class _CountingAdapter(_ReadOnlyAdapter):
+    """Each reading writes its own number into every interface's address."""
+
+    backend_name = "fake-nm"
+
+    def __init__(self) -> None:
+        self.reads = 0
+        self.during_read: list = []  # run inside the next read, once each
+
+    def list_interfaces(self):
+        return []
+
+    def get_state(self, iface):
+        return None
+
+    def supports_vlans(self) -> bool:
+        return True
+
+    def read_network(self):
+        from openfollow.network.adapter import (
+            Ipv4Config,
+            Ipv4Method,
+            NetworkInterface,
+            NetworkReading,
+            NetworkState,
+            VlanInterface,
+        )
+
+        self.reads += 1
+        n = self.reads
+        while self.during_read:
+            self.during_read.pop()()
+        eth0 = NetworkInterface("eth0", None, "ethernet", is_up=True)
+        eth1 = NetworkInterface("eth1", None, "ethernet", is_up=True)
+        return NetworkReading(
+            (eth0, eth1),
+            {
+                "eth0": NetworkState(eth0, Ipv4Config(Ipv4Method.DHCP, f"192.0.2.{n}", 24), None),
+                "eth1": NetworkState(eth1, Ipv4Config(Ipv4Method.DHCP, f"198.51.100.{n}", 24), None),
+            },
+            (VlanInterface(f"eth0.{n}", "eth0", n),),
+        )
+
+
+@pytest.fixture
+def counted(monkeypatch):
+    """A reading never ages out unless a test says so, so no assertion rests on the clock."""
+    monkeypatch.setattr(services_module, "_NETWORK_READING_MAX_AGE_S", float("inf"))
+    services = _build_services_with_psutil_backend(monkeypatch)
+    adapter = _CountingAdapter()
+    services._network_adapter = adapter
+    return services, adapter
+
+
+def test_the_network_sections_share_one_reading(counted) -> None:
+    services, adapter = counted
+    assert services._network_config_provider()["address"] == "192.0.2.1"
+    assert services._network_state_provider()["address"] == "192.0.2.1"
+    assert services._network_vlan_provider()["vlans"] == [{"name": "eth0.1", "parent": "eth0", "vlan_id": 1}]
+    assert adapter.reads == 1
+
+
+def test_a_reading_past_its_age_is_taken_again(counted, monkeypatch) -> None:
+    services, adapter = counted
+    monkeypatch.setattr(services_module, "_NETWORK_READING_MAX_AGE_S", 0.0)
+    services._network_config_provider()
+    assert services._network_config_provider()["address"] == "192.0.2.2"
+
+
+def test_a_slow_read_is_shared_for_its_whole_age_after_it_completes(counted, monkeypatch) -> None:
+    services, adapter = counted
+    monkeypatch.setattr(services_module, "_NETWORK_READING_MAX_AGE_S", 1.0)
+    clock = [100.0]
+    # The services module's own reference only; the time module stays real everywhere else.
+    monkeypatch.setattr(services_module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    adapter.during_read.append(lambda: clock.__setitem__(0, 101.5))
+    services._network_config_provider()
+    clock[0] = 102.4
+    services._network_config_provider()
+    assert adapter.reads == 1
+    clock[0] = 102.6
+    services._network_config_provider()
+    assert adapter.reads == 2
+
+
+def test_the_interface_list_shares_the_reading_too(counted) -> None:
+    services, adapter = counted
+    assert services._network_config_provider()["address"] == "192.0.2.1"
+    assert [r["address"] for r in services._network_interfaces_provider()] == ["192.0.2.1", "198.51.100.1"]
+    assert adapter.reads == 1
+
+
+def test_a_vlan_list_that_cannot_be_read_keeps_the_vlan_controls(counted) -> None:
+    """A failed read is not evidence the backend lost its VLAN support."""
+    services, adapter = counted
+
+    def _read_network():
+        raise RuntimeError("nmcli wedged")
+
+    adapter.read_network = _read_network
+    assert services._network_vlan_provider() == {"supported": True, "vlans": []}
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda s: s._handle_network_apply("eth0", _dhcp()),
+        lambda s: s._handle_network_renew("eth0"),
+        lambda s: s._handle_network_vlan_create("eth0", 10),
+        lambda s: s._handle_network_vlan_delete("eth0.10"),
+    ],
+)
+def test_a_change_from_the_web_ui_is_read_back_at_once(counted, change) -> None:
+    services, _adapter = counted
+    services._network_config_provider()
+    change(services)
+    assert services._network_config_provider()["address"] == "192.0.2.2"
+
+
+def test_a_change_that_raises_still_drops_the_reading(counted) -> None:
+    services, adapter = counted
+
+    def _apply(iface, config):
+        raise RuntimeError("nmcli wedged")
+
+    adapter.apply_ipv4 = _apply
+    services._network_config_provider()
+    with pytest.raises(RuntimeError):
+        services._handle_network_apply("eth0", _dhcp())
+    assert services._network_config_provider()["address"] == "192.0.2.2"
+
+
+def test_a_read_under_way_when_a_change_lands_is_not_kept(counted) -> None:
+    """Its reading may predate the change, so the next render reads again."""
+    services, adapter = counted
+    adapter.during_read.append(services._forget_network_reading)
+    services._network_config_provider()
+    assert services._network_config_provider()["address"] == "192.0.2.2"
+    services._network_config_provider()
+    assert adapter.reads == 2
+
+
+def test_a_read_that_started_first_does_not_replace_a_newer_one(counted) -> None:
+    """A Scan that finishes before a slower read begun earlier keeps its reading."""
+    services, adapter = counted
+    adapter.during_read.append(services._read_network)
+    services._network_config_provider()
+    assert services._network_config_provider()["address"] == "192.0.2.2"
+    assert adapter.reads == 2
+
+
+def test_one_card_render_reads_the_backend_once(counted, monkeypatch, tmp_path) -> None:
+    """Every section of the card comes from one reading; a render inside its age shares it, and Scan takes a new one."""
+    import urllib.request
+
+    import openfollow.web.discovery as discovery_module
+    from openfollow.web.server import ConfigWebServer
+    from tests._ports import live_on_free_port
+
+    for attr in ("BeaconSender", "BeaconReceiver"):
+        monkeypatch.setattr(getattr(discovery_module, attr), "start", lambda self: None)
+        monkeypatch.setattr(getattr(discovery_module, attr), "stop", lambda self: None)
+    services, adapter = counted
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("controlled_marker_ids = [1]\n", encoding="utf-8")
+
+    def _server(port: int) -> ConfigWebServer:
+        return ConfigWebServer(
+            config_path=str(config_path),
+            host="127.0.0.1",
+            port=port,
+            system_name="TestSystem",
+            network_config_provider=services._network_config_provider,
+            network_interfaces_provider=services._network_interfaces_provider,
+            network_vlan_provider=services._network_vlan_provider,
+            network_rescan_handler=services._forget_network_reading,
+        )
+
+    with live_on_free_port(_server) as (_srv, base):
+
+        def _render(path: str) -> str:
+            with urllib.request.urlopen(f"{base}{path}", timeout=5) as response:
+                return response.read().decode()
+
+        first = _render("/section/network/status")
+        assert adapter.reads == 1
+        _render("/section/network/status")
+        assert adapter.reads == 1
+        scanned = _render("/section/network/status?scan=1")
+        assert adapter.reads == 2
+    assert "192.0.2.1" in first and "198.51.100.1" in first
+    assert "192.0.2.2" in scanned and "198.51.100.2" in scanned
+    assert "192.0.2.1" not in scanned
+
+
+def _dhcp():
+    from openfollow.network.adapter import Ipv4Config, Ipv4Method
+
+    return Ipv4Config(method=Ipv4Method.DHCP)
 
 
 # --------------------------------------------------------------------------- #
@@ -1534,6 +1753,7 @@ def test_a_routing_change_restages_the_egress_table(monkeypatch) -> None:
 )
 def test_a_zone_test_send_to_a_down_interface_says_so(monkeypatch, labels, named) -> None:
     services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._config.network_mode = "advanced"
     services._app._config.interface_labels = labels
     _fake_ifaces(monkeypatch, {})
     service = _RecordingOscService()
@@ -1621,42 +1841,202 @@ def test_osc_input_plane_follows_its_own_and_the_station_interface(monkeypatch) 
     assert resolved["OSC input"] == ("192.168.1.5", "station", "eth0")
 
 
-@pytest.mark.parametrize(
-    ("label", "setup"),
-    [
-        ("nothing pinned", lambda cfg: None),
-        (
-            "no multicast group",
-            lambda cfg: (setattr(cfg, "psn_source_iface", "eth0"), setattr(cfg.osc, "multicast_group", "")),
-        ),
-        ("osc disabled", lambda cfg: (setattr(cfg, "psn_source_iface", "eth0"), setattr(cfg.osc, "enabled", False))),
-    ],
-)
-def test_osc_input_is_only_a_plane_when_a_pin_governs_something(monkeypatch, label, setup) -> None:
-    """Three ways there is nothing to follow. Unpinned the membership is the
-    routing table's to choose; with no group the pin governs nothing; switched
-    off it is not broken. Any of them alerting would put a fault on the HUD for
-    a station behaving exactly as configured."""
-    services = _build_services_with_psutil_backend(monkeypatch)
-    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-    setup(services._app._config)
-    assert _osc_plane(services, _RecordingOscService()).enabled() is False
-
-
-def test_osc_input_is_not_a_plane_while_the_listener_is_down(monkeypatch) -> None:
-    """A listener that never bound (port in use) has no socket to move a
-    membership on. Following it would call apply once a second forever, with no
-    backoff, because the failure never surfaces to the observer."""
+def test_switched_off_osc_input_is_not_followed(monkeypatch) -> None:
     services = _build_services_with_psutil_backend(monkeypatch)
     _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
     services._app._config.psn_source_iface = "eth0"
-    assert _osc_plane(services, _RecordingOscService(port=None)).enabled() is False
+    services._app._config.osc.enabled = False
+    assert _osc_plane(services, _RecordingOscService()).enabled() is False
+
+
+_NO_PIN_GOVERNS = pytest.mark.parametrize(
+    "setup",
+    [
+        pytest.param(lambda cfg: None, id="nothing pinned"),
+        pytest.param(
+            lambda cfg: (setattr(cfg, "psn_source_iface", "eth0"), setattr(cfg.osc, "multicast_group", "")),
+            id="no multicast group",
+        ),
+    ],
+)
+
+
+@_NO_PIN_GOVERNS
+def test_osc_input_with_no_pin_to_follow_follows_its_listener(monkeypatch, setup) -> None:
+    """The membership is the routing table's, or there is none: the plane is the
+    wildcard listener, running or not, and never an interface outage."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    setup(services._app._config)
+    service = _RecordingOscService()
+    plane = _osc_plane(services, service)
+
+    assert plane.enabled() is True
+    assert plane.resolve() == ("0.0.0.0", "primary", "")
+    assert plane.current() == "0.0.0.0"
+    service.port = None
+    assert plane.current() is None
+
+
+def test_osc_input_with_no_pin_to_follow_never_reads_as_down(monkeypatch) -> None:
+    """A station with no address at all still holds its wildcard listener."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {})
+    assert _osc_plane(services, _RecordingOscService()).resolve() == ("0.0.0.0", "primary", "")
+
+
+class _ResumingInput:
+    """Stands in for ``InputManager`` on the OSC plane: ``resume_osc`` binds the
+    listener, with no membership yet, or raises like a port that is taken."""
+
+    def __init__(self, service: _RecordingOscService, error: OSError | None = None) -> None:
+        self.service = service
+        self.error = error
+        self.resumes = 0
+
+    def resume_osc(self) -> None:
+        self.resumes += 1
+        if self.error is not None:
+            raise self.error
+        self.service.port = 8765
+        self.service.iface = None
+
+
+def _osc_plane_with_listener_down(monkeypatch, error: OSError | None = None):
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
+    services._app._config.osc.listen_iface = "eth1"
+    service = _RecordingOscService(port=None)
+    service.iface = None
+    manager = _ResumingInput(service, error)
+    services._app._input_manager = manager
+    return _osc_plane(services, service), service, manager
+
+
+def test_osc_input_plane_restarts_a_listener_that_is_down(monkeypatch) -> None:
+    plane, service, manager = _osc_plane_with_listener_down(monkeypatch)
+
+    plane.apply("10.0.0.9")
+
+    assert manager.resumes == 1
+    assert plane.current() == "10.0.0.9"
+
+
+def test_osc_input_plane_raises_while_its_listener_cannot_bind(monkeypatch) -> None:
+    plane, service, _manager = _osc_plane_with_listener_down(monkeypatch, OSError(98, "Address already in use"))
+
+    with pytest.raises(OSError, match="Address already in use"):
+        plane.apply("10.0.0.9")
+    assert service.listener_status()["port"] is None
+
+
+def test_osc_input_plane_restarts_its_listener_without_a_membership_while_down(monkeypatch) -> None:
+    """Fails closed on the group only: unicast and broadcast still arrive."""
+    plane, service, manager = _osc_plane_with_listener_down(monkeypatch)
+
+    plane.suspend()
+
+    assert manager.resumes == 1
+    assert service.listener_status()["port"] == 8765
+    assert plane.current() is None
+
+
+def test_osc_input_plane_leaves_a_running_listener_to_the_membership_move(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth1": "10.0.0.9"})
+    services._app._config.osc.listen_iface = "eth1"
+    service = _RecordingOscService()
+    manager = _ResumingInput(service)
+    services._app._input_manager = manager
+    plane = _osc_plane(services, service)
+
+    plane.apply("10.0.0.9")
+    plane.suspend()
+
+    assert manager.resumes == 0
+
+
+def test_osc_input_that_cannot_bind_is_reported_and_retried_with_the_backoff(monkeypatch) -> None:
+    """The failed restart is a failing row until the port frees up, then OSC
+    input is back with its membership, with no OSC save in between."""
+    from openfollow.runtime.network_observer import NetworkPlaneObserver
+
+    plane, service, manager = _osc_plane_with_listener_down(monkeypatch, OSError(98, "Address already in use"))
+    now = [0.0]
+    observer = NetworkPlaneObserver(planes=[plane], clock=lambda: now[0])
+
+    observer.poll()
+    assert observer.alerts() == ["OSC input: eth1 – [Errno 98] Address already in use"]
+    now[0] += 1.0
+    observer.poll()
+    assert manager.resumes == 1, "retried inside the backoff"
+
+    manager.error = None
+    now[0] += 120.0
+    observer.poll()
+    assert manager.resumes == 2
+    assert observer.alerts() == []
+    assert service.listener_status()["multicast_joined"] is True
+
+
+def _unpinned_osc_plane(monkeypatch, setup, error: OSError | None = None):
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    setup(services._app._config)
+    service = _RecordingOscService(port=None)
+    manager = _ResumingInput(service, error)
+    services._app._input_manager = manager
+    return _osc_plane(services, service), service, manager
+
+
+@_NO_PIN_GOVERNS
+def test_osc_input_with_no_pin_to_follow_that_cannot_bind_is_reported_and_retried(monkeypatch, setup) -> None:
+    """No interface to name, so the row carries the reason alone. The listener
+    comes back without a membership move: the plane pins none."""
+    from openfollow.runtime.network_observer import NetworkPlaneObserver
+
+    plane, service, manager = _unpinned_osc_plane(monkeypatch, setup, OSError(98, "Address already in use"))
+    now = [0.0]
+    observer = NetworkPlaneObserver(planes=[plane], clock=lambda: now[0])
+
+    observer.poll()
+    assert observer.alerts() == ["OSC input: [Errno 98] Address already in use"]
+    (status,) = observer.snapshot()
+    assert (status.state, status.bound) == ("failing", None)
+    now[0] += 1.0
+    observer.poll()
+    assert manager.resumes == 1, "retried inside the backoff"
+
+    manager.error = None
+    now[0] += 120.0
+    observer.poll()
+    assert manager.resumes == 2
+    assert observer.alerts() == []
+    assert observer.snapshot()[0].state == "ok"
+    assert service.calls == []
+
+
+@_NO_PIN_GOVERNS
+def test_a_running_osc_listener_with_no_pin_to_follow_is_left_alone(monkeypatch, setup) -> None:
+    from openfollow.runtime.network_observer import NetworkPlaneObserver
+
+    plane, service, manager = _unpinned_osc_plane(monkeypatch, setup)
+    service.port = 8765
+    now = [0.0]
+    observer = NetworkPlaneObserver(planes=[plane], clock=lambda: now[0])
+
+    for _ in range(3):
+        observer.poll()
+        now[0] += 1.0
+
+    assert (manager.resumes, service.calls, observer.alerts()) == (0, [], [])
 
 
 def test_osc_input_plane_reports_the_live_membership_not_the_pin(monkeypatch) -> None:
     """``current`` drives the observer's "already correct" short-circuit. Read
     from config it would report an interface the socket never subscribed on."""
     services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._config.osc.listen_iface = "eth1"
     service = _RecordingOscService()
     plane = _osc_plane(services, service)
 
@@ -1798,6 +2178,74 @@ def test_suspending_psn_stops_both_directions(monkeypatch) -> None:
     psn = next(p for p in services._build_network_planes() if p.label == "PSN")
     psn.suspend()
     assert (server.stopped, receiver.stopped) == (1, 1)
+
+
+# Generous, so a scheduler stall cannot flake it: the join a stop that does not
+# wake the receive thread falls back on is stretched far past it instead.
+_MAIN_LOOP_BUDGET_S = 5.0
+
+
+def _running_psn_receiver(sockets, monkeypatch) -> object:
+    """A started receiver whose thread has handled a packet and is back in its read."""
+    from openfollow.psn.receiver import PsnReceiver, _RobustReceiver
+
+    monkeypatch.setattr(_RobustReceiver, "_JOIN_TIMEOUT_S", 30.0)
+    receiver = PsnReceiver(source_ip="127.0.0.1")
+    receiver.start()
+    send_psn_tracker(sockets[-1].getsockname(), 7)
+    deadline = time.monotonic() + 2.0
+    while receiver.get_marker(7) is None:
+        assert time.monotonic() < deadline, "the receiver never handled its first packet"
+        time.sleep(0.005)
+    return receiver
+
+
+def test_the_observer_suspends_psn_without_holding_up_the_main_loop(monkeypatch, psn_loopback_sockets) -> None:
+    """The observer runs on the GTK main loop, which also runs the frame clock:
+    a suspend that waited out the receiver's read froze every output."""
+    from openfollow.runtime.network_observer import DOWN_POLLS_BEFORE_SUSPEND, NetworkPlaneObserver
+
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._config.psn_source_iface = "eth0"
+    _fake_ifaces(monkeypatch, {})
+    receiver = _running_psn_receiver(psn_loopback_sockets, monkeypatch)
+    services._app._server = None
+    services._app._psn_receiver = receiver
+    now = [0.0]
+    observer = NetworkPlaneObserver(
+        planes=[p for p in services._build_network_planes() if p.label == "PSN"],
+        clock=lambda: now[0],
+    )
+    try:
+        for _ in range(DOWN_POLLS_BEFORE_SUSPEND - 1):
+            observer.poll(force=True)
+        assert receiver.bound_source_ip() == "127.0.0.1"
+
+        start = time.monotonic()
+        observer.poll(force=True)
+        assert time.monotonic() - start < _MAIN_LOOP_BUDGET_S
+        assert receiver.bound_source_ip() is None
+    finally:
+        receiver.stop()
+
+
+def test_a_station_interface_change_rebinds_psn_input_promptly(monkeypatch, psn_loopback_sockets) -> None:
+    """Saving the station interface rebinds the running receiver on the main loop."""
+    services = _build_services_with_psutil_backend(monkeypatch)
+    receiver = _running_psn_receiver(psn_loopback_sockets, monkeypatch)
+    services._app._server = None
+    services._app._psn_receiver = receiver
+    try:
+        start = time.monotonic()
+        services.apply_psn_source_ip_change("127.0.0.1")
+        assert time.monotonic() - start < _MAIN_LOOP_BUDGET_S
+        send_psn_tracker(psn_loopback_sockets[-1].getsockname(), 8)
+        deadline = time.monotonic() + 2.0
+        while receiver.get_marker(8) is None:
+            assert time.monotonic() < deadline, "the rebound receiver never heard its new socket"
+            time.sleep(0.005)
+    finally:
+        receiver.stop()
 
 
 def test_station_followers_are_repointed_without_a_web_request(monkeypatch) -> None:
@@ -1980,6 +2428,94 @@ def test_applying_psn_routes_through_the_rebind_orchestrator(monkeypatch) -> Non
     assert applied == ["10.0.0.9"]
 
 
+class _PsnSide:
+    """A PSN server or receiver as the PSN plane sees and rebinds it."""
+
+    def __init__(self, bound: str | None, *, enabled: bool = True, bind_ok: bool = True) -> None:
+        self.bound = bound
+        self.enabled = enabled
+        self.bind_ok = bind_ok
+        # Built with the station address whether or not it bound, like the real ones.
+        self._source_ip = "192.168.1.5"
+        self._source_iface = "eth0"
+        self._mcast_ip = "236.10.10.10"
+        self.rebinds: list[str] = []
+
+    def bound_source_ip(self) -> str | None:
+        return self.bound
+
+    def rebind(self, source_ip: str, **_kwargs: object) -> None:
+        self.rebinds.append(source_ip)
+        self.bound = None
+        if not self.bind_ok:
+            raise OSError(f"PSN receiver failed to bind to source_ip={source_ip!r}")
+        self.bound = self._source_ip = source_ip
+
+    def stop(self) -> None:
+        self.bound = None
+
+
+def _psn_observer(monkeypatch, server: _PsnSide | None, receiver: _PsnSide | None):
+    from openfollow.runtime.network_observer import NetworkPlaneObserver
+
+    services = _build_services_with_psutil_backend(monkeypatch)
+    _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+    services._app._config.psn_source_iface = "eth0"
+    services._app._server = server
+    services._app._psn_receiver = receiver
+    now = [0.0]
+    planes = [p for p in services._build_network_planes() if p.label == "PSN"]
+    return NetworkPlaneObserver(planes=planes, clock=lambda: now[0]), now
+
+
+def test_a_psn_receiver_that_never_bound_is_reported_and_retried(monkeypatch) -> None:
+    """The PSN plane covers its input: a receiver that failed to bind at startup
+    beside a running output used to read ``ok`` and never be started again."""
+    server = _PsnSide("192.168.1.5")
+    receiver = _PsnSide(None, bind_ok=False)
+    observer, now = _psn_observer(monkeypatch, server, receiver)
+
+    observer.poll()
+    assert observer.alerts() == ["PSN: eth0 – PSN receiver failed to bind to source_ip='192.168.1.5'"]
+    assert observer.snapshot()[0].state == "failing"
+    assert server.bound == "192.168.1.5", "a receiver failure stopped the output"
+    attempts = len(receiver.rebinds)
+    now[0] += 1.0
+    observer.poll()
+    assert len(receiver.rebinds) == attempts, "retried inside the backoff"
+
+    receiver.bind_ok = True
+    now[0] += 120.0
+    observer.poll()
+    assert observer.alerts() == []
+    assert receiver.bound == "192.168.1.5"
+
+
+def test_psn_input_switched_off_leaves_the_plane_whole(monkeypatch) -> None:
+    server = _PsnSide("192.168.1.5")
+    receiver = _PsnSide(None, enabled=False)
+    observer, _now = _psn_observer(monkeypatch, server, receiver)
+
+    observer.poll()
+
+    assert observer.alerts() == []
+    assert (server.rebinds, receiver.rebinds) == ([], [])
+
+
+def test_psn_input_without_an_output_is_left_bound(monkeypatch) -> None:
+    """PSN output that failed to start leaves the receiver as the whole plane:
+    a bound one is not torn down and rebound once a second."""
+    receiver = _PsnSide("192.168.1.5")
+    observer, now = _psn_observer(monkeypatch, None, receiver)
+
+    observer.poll()
+    now[0] += 1.0
+    observer.poll()
+
+    assert receiver.rebinds == []
+    assert observer.snapshot()[0].state == "ok"
+
+
 def test_suspending_psn_tolerates_a_service_that_never_started(monkeypatch) -> None:
     services = _build_services_with_psutil_backend(monkeypatch)
     services._app._server = None
@@ -2134,6 +2670,7 @@ def test_plane_current_reports_the_live_binding(monkeypatch) -> None:
             return "192.168.1.5"
 
     services._app._server = _Server()
+    services._app._psn_receiver = None
     services._app._otp_server = None
     planes = {p.label: p for p in services._build_network_planes()}
     assert planes["PSN"].current() == "192.168.1.5"
@@ -2462,6 +2999,7 @@ def test_a_blank_video_pin_is_followed_through_the_station(monkeypatch) -> None:
 
 def test_a_video_pin_outage_names_the_interface_by_label(monkeypatch) -> None:
     services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._config.network_mode = "advanced"
     cfg = services._app._config
     cfg.video_source_type = "srt"
     cfg.video_input_iface = "eth1"
@@ -2644,6 +3182,7 @@ def test_an_outage_alert_names_the_adapter_by_its_label(monkeypatch) -> None:
     """The station's own labels name the interface on the HUD, and an adapter
     that is gone reads as not connected rather than down."""
     services = _build_services_with_psutil_backend(monkeypatch)
+    services._app._config.network_mode = "advanced"
     _fake_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
     services._app._config.psn_source_iface = "eth0"
     services._app._config.otp_output.enabled = True
@@ -3000,6 +3539,31 @@ def fqdn_services(monkeypatch):
     return services, hosts
 
 
+@pytest.mark.parametrize("raises", [False, True])
+def test_the_reconnect_for_a_new_station_fqdn_is_read_back_at_once(fqdn_services, monkeypatch, raises) -> None:
+    """Every interface reconnects, so a reading from before it no longer describes them."""
+    from openfollow.network.adapter import ApplyResult
+
+    services, _hosts = fqdn_services
+    monkeypatch.setattr(services_module, "_NETWORK_READING_MAX_AGE_S", float("inf"))
+    counting = _CountingAdapter()
+    services._network_adapter = counting
+    services._network_config_provider()
+
+    def _set_dhcp_fqdn(fqdn, *, reconnect=True):
+        if raises:
+            raise RuntimeError("nmcli wedged")
+        return ApplyResult(ok=True, message="Applied.")
+
+    counting.set_dhcp_fqdn = _set_dhcp_fqdn
+    if raises:
+        with pytest.raises(RuntimeError):
+            services._apply_station_fqdn("of-1.stage.example.com", services._fqdn_generation)
+    else:
+        services.apply_station_fqdn_change("of-1.stage.example.com").join(timeout=5)
+    assert services._network_config_provider()["address"] == "192.0.2.2"
+
+
 def test_a_new_station_fqdn_reaches_etc_hosts_and_dhcp(fqdn_services) -> None:
     services, hosts = fqdn_services
     adapter = services._network_adapter = _FqdnAdapter()
@@ -3192,9 +3756,9 @@ def test_what_dhcp_could_not_do_is_reported_for_the_configured_name_only(fqdn_se
     assert services.station_fqdn_problems() == ()
 
 
-def test_the_screens_lock_is_the_one_the_web_apply_holds(monkeypatch) -> None:
-    """The Operator Screen takes ``network_op_lock``; it only serialises anything if the web's
-    apply holds that same lock while it changes the host."""
+def test_a_web_change_holds_the_lock_the_operator_screen_takes(monkeypatch) -> None:
+    """The Operator Screen changes the network inside ``network_change``, so it and a
+    web apply exclude each other only if both hold the same lock."""
     from openfollow.network.adapter import ApplyResult, Ipv4Config, Ipv4Method
 
     services = _build_services_with_psutil_backend(monkeypatch)
@@ -3205,12 +3769,23 @@ def test_the_screens_lock_is_the_one_the_web_apply_holds(monkeypatch) -> None:
             return True
 
         def apply_ipv4(self, iface, config):
-            held.append(services.network_op_lock.locked())
+            held.append(services._network_op_lock.locked())
             return ApplyResult(ok=True)
 
     services._network_adapter = _Adapter()
     services._handle_network_apply("eth0", Ipv4Config(method=Ipv4Method.DHCP))
-    assert held == [True]
+    with services.network_change():
+        held.append(services._network_op_lock.locked())
+    assert held == [True, True]
+    assert not services._network_op_lock.locked()
+
+
+def test_a_change_from_the_operator_screen_is_read_back_at_once(counted) -> None:
+    services, _adapter = counted
+    services._network_config_provider()
+    with services.network_change():
+        pass
+    assert services._network_config_provider()["address"] == "192.0.2.2"
 
 
 @pytest.mark.parametrize(

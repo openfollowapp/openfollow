@@ -9,8 +9,11 @@
         <h3 class="group-title">OTP Network</h3>
         <div class="row">
             <div class="field checkbox-field">
-                <label>Enabled</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="enabled" {{'checked' if config.otp_output.enabled else ''}}></div>
+                <label for="otp-output-enabled">OTP output</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="otp-output-enabled" name="enabled" {{'checked' if config.otp_output.enabled else ''}}>
+                    <label for="otp-output-enabled">Send marker positions over OTP</label>
+                </div>
             </div>
             <div class="field">
                 <label>System Number</label>
@@ -45,6 +48,7 @@
                        aria-describedby="otp-output-priority-error" aria-invalid="false">
                 <span id="otp-output-priority-error" class="field-error"></span>
             </div>
+            % if config.network_mode == 'advanced':
             <div class="field">
                 <label>Source Interface</label>
                 %# Read-only pointer – the pin is edited centrally in
@@ -56,6 +60,7 @@
                        onclick="goToSection('general', 'interface-assignment'); return false;">Change in General &rsaquo; Network Interface Assignment</a>
                 </div>
             </div>
+            % end
         </div>
     </div>
 

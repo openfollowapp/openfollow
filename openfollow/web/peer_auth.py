@@ -63,9 +63,9 @@ def _canonical_message(
     stands in for the raw body so the verifier can compare without
     re-reading a potentially large request stream.
 
-    ``path`` must include the query string when present (e.g.,
-    ``"/api/config/import?skip_restart=1"``) – the query is semantically
-    part of the operation being authorized and must therefore be signed.
+    ``path`` must include the query string when present – the query is
+    semantically part of the operation being authorized and must therefore
+    be signed.
     """
     body_hash = hashlib.sha256(body).hexdigest()
     return f"{method.upper()}\n{path}\n{body_hash}\n{timestamp}".encode()

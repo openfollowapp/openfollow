@@ -1,4 +1,4 @@
-<form id="rttrpm-output-section" class="section experimental-feature {{'saved' if defined('saved') and saved else ''}}" data-fold-key="rttrpm_output" data-help="rttrpm_output"
+<form id="rttrpm-output-section" data-feature="rttrpm" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="rttrpm_output" data-help="rttrpm_output"
       hx-post="/section/rttrpm_output" hx-target="#rttrpm-output-section" hx-swap="outerHTML" hx-trigger="submit">
     <div class="section-head">
         <h2>RTTrPM Output <span class="badge-experimental">Experimental</span></h2>
@@ -9,8 +9,11 @@
         <h3 class="group-title">RTTrPM Network</h3>
         <div class="row">
             <div class="field checkbox-field">
-                <label>Enabled</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="enabled" {{'checked' if config.rttrpm_output.enabled else ''}}></div>
+                <label for="rttrpm-output-enabled">RTTrPM output</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="rttrpm-output-enabled" name="enabled" {{'checked' if config.rttrpm_output.enabled else ''}}>
+                    <label for="rttrpm-output-enabled">Send marker positions over RTTrPM</label>
+                </div>
             </div>
             <div class="field">
                 <label>Destination Host</label>
@@ -46,6 +49,7 @@
                 <span id="rttrpm-output-context-error" class="field-error"></span>
                 <span class="field-note">User-defined context value (0–4294967295)</span>
             </div>
+            % if config.network_mode == 'advanced':
             <div class="field">
                 <label>Source Interface</label>
                 %# Read-only pointer – the pin is edited centrally in
@@ -57,6 +61,7 @@
                        onclick="goToSection('general', 'interface-assignment'); return false;">Change in General &rsaquo; Network Interface Assignment</a>
                 </div>
             </div>
+            % end
         </div>
     </div>
 

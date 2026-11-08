@@ -87,10 +87,10 @@
         </span>
     </div>
     <div class="field">
-        <label>Modifiers</label>
-        <div class="checkbox-group">
+        <label id="osc-{{row.id}}-trigger-modifiers">Modifiers</label>
+        <div class="checkbox-group" role="group" aria-labelledby="osc-{{row.id}}-trigger-modifiers">
             % for m in valid_modifiers:
-                <label class="inline-checkbox"><input type="checkbox" name="trigger.modifiers" value="{{m}}" {{'checked' if m in current_mods else ''}}> {{pretty_label(m)}}</label>
+                <label class="inline-checkbox" for="osc-{{row.id}}-trigger-mod-{{m}}"><input type="checkbox" id="osc-{{row.id}}-trigger-mod-{{m}}" name="trigger.modifiers" value="{{m}}" {{'checked' if m in current_mods else ''}}> {{pretty_label(m)}}</label>
             % end
         </div>
     </div>

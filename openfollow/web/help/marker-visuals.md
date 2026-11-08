@@ -18,9 +18,9 @@ Cone-style settings.
 - **Base Diameter** – width of the ring on the stage plane, in metres. Default: `0.6`.
 - **Top Diameter** – width of the ring at the marker's Z, in metres. Default: `0.3`. Equal diameters give a cylinder; `0` gives a point.
 - **Line Thickness (px)** – line weight in pixels (1–10). Default: `2`.
-- **Filled** – when checked the cone's silhouette is filled in the marker's colour; when unchecked it is a wireframe. Default: on.
+- **Cone fill** – when checked the cone's silhouette is filled in the marker's colour; when unchecked it is a wireframe. Default: on.
 - **Fill Opacity (0–1)** – `0` is fully transparent; `1` is fully opaque; in-between values let the stage image show through. Default: `0.4`.
-- **Shaded** – when checked the filled side is lit from the left and darkens toward the right, so the cone reads as a solid; when unchecked the fill is flat. Default: on.
+- **Shading** – when checked the filled side is lit from the left and darkens toward the right, so the cone reads as a solid; when unchecked the fill is flat. Default: on.
 
 ## Body
 
@@ -30,7 +30,7 @@ You drive the marker in 2D: a **ground position** on the stage plane. The ball i
 
 The ball is the primary visual: a semi-transparent sphere at the marker's 3D position.
 
-- **Show Ball** – enable or disable the ball. When unchecked the ball is hidden; all other elements (crosshair, Z line, ground circle) remain active independently.
+- **Ball** – enable or disable the ball. When unchecked the ball is hidden; all other elements (crosshair, Z line, ground circle) remain active independently.
 - **Ball Size** – radius of the ball in metres. Because it is sized in world units it scales with perspective, like a real object on stage. Default: `0.15`.
 - **Opacity (0–1)** – `0` is fully transparent; `1` is fully opaque; in-between values let the stage image show through. Default: `0.3`.
 
@@ -40,7 +40,7 @@ Crosshair-style settings.
 
 A 2D cross pinned to the marker's projected screen position – the precise aiming point for centring on a specific target.
 
-- **Show Crosshair** – enable or disable the crosshair.
+- **Crosshair** – enable or disable the crosshair.
 - **Crosshair Size** – arm length of the cross, in metres. Default: `0.3`.
 - **Crosshair Thickness (px)** – line weight in pixels (1–10). Default: `2`.
 - **Crosshair Color** – click the swatch to open the picker and choose a colour for the crosshair lines. The palette is greyscale tones so the crosshair stays legible over any stage image. Default: white (`#ffffff`).
@@ -62,13 +62,13 @@ Crosshair-style settings.
 
 A circle on the stage plane at the marker's ground position – the point you are steering.
 
-- **Ground Circle** – enable or disable the ground circle.
+- **Ground circle** – enable or disable the ground circle.
 - **Circle Size** – radius of the circle in metres. Default: `0.3`.
-- **Filled** – when checked the circle is a solid disc; when unchecked it is an outline ring.
+- **Circle fill** – when checked the circle is a solid disc; when unchecked it is an outline ring.
 
 ## Z Display
 
-**Z from Stage Level** – when checked, the Z readout shown near the marker displays Z relative to the stage plane rather than absolute world Z. Most operators prefer this.
+**Z readout** – which height the marker card shows. **Show Z relative to the Reference Point** shows Z as it is sent; **Show Z relative to the grid** subtracts the grid's **Z Offset**, so a marker on the stage floor reads 0. Most operators prefer the grid.
 
 ## Saving
 

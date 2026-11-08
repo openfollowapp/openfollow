@@ -364,30 +364,42 @@ def test_receiver_eviction_sweep_is_throttled(monkeypatch) -> None:
 
 
 class TestBoundedStop:
-    """pypsn's own stop() does a plain join() with no timeout while run() is
-    blocked in recvfrom. Closing the fd does not reliably wake a thread already
-    parked there, so the join waits out the socket timeout - and this is now
-    called from housekeeping on the GTK thread, where it stalls the render
-    loop and marker motion."""
+    """Stopping wakes the receive thread through its gate rather than waiting
+    out a read, and the join stays bounded so a callback that hangs cannot
+    hold up the main loop either."""
 
-    def _receiver(self, *, alive: bool, sock=None):
+    class _Gate:
+        def __init__(self) -> None:
+            self.stopped = False
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    def _receiver(self, *, alive: bool, sock=None, started: bool = True):
         from openfollow.psn.receiver import _RobustReceiver
 
         rx = _RobustReceiver.__new__(_RobustReceiver)
-        rx.running = True
         rx.socket = sock
+        rx._gate = self._Gate() if started else None
         rx.joins = []
         rx.join = lambda timeout=None: rx.joins.append(timeout)  # type: ignore[method-assign]
         rx.is_alive = lambda: alive  # type: ignore[method-assign]
         return rx
 
-    def test_join_is_bounded(self) -> None:
+    def test_the_gate_is_stopped_and_the_join_is_bounded(self) -> None:
         from openfollow.psn.receiver import _RobustReceiver
 
         rx = self._receiver(alive=False)
+        gate = rx._gate
         rx.stop()
-        assert rx.running is False
+        assert gate.stopped is True
         assert rx.joins == [_RobustReceiver._JOIN_TIMEOUT_S]
+
+    def test_a_receiver_never_started_is_not_joined(self) -> None:
+        """Joining a thread that never started raises."""
+        rx = self._receiver(alive=False, started=False)
+        rx.stop()
+        assert rx.joins == []
 
     def test_socket_is_closed_and_a_close_error_is_swallowed(self) -> None:
         class _Sock:

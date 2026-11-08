@@ -3,12 +3,10 @@
         <h2>Station Network</h2>
     </div>
     %# Only the peer rows poll/swap (innerHTML) – the section shell stays put so
-    %# the fold state + Refresh action don't flicker every 5s. The trigger gate
-    %# reads ``is-collapsed`` off the enclosing section (not ``this``) so a
-    %# collapsed section still skips the poll.
+    %# the fold state + Refresh action don't flicker every 5s.
     <div class="peers-list" id="overview-peers"
          hx-get="/section/overview"
-         hx-trigger="every 5s [!this.closest('.section').classList.contains('is-collapsed')]"
+         hx-trigger="every 5s [pollShown(this)], poll-shown[pollShown(this)] from:body"
          hx-swap="innerHTML">
         % include('partials/overview_peers.tpl', local=local, peers=peers, station_down=get('station_down', False))
     </div>

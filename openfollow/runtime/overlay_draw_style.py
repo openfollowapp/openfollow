@@ -35,6 +35,15 @@ SUPPORT_DASH = (5.0, 4.0)
 # + every HUD panel). Marker cards paint their own opaque colour-coded chrome.
 CARD_BG_ALPHA = 0.9
 
+# Paths: scene geometry, not status. Grey while free, white while a marker is locked on.
+COLOR_PATH = (0.75, 0.75, 0.75, 0.45)  # (RGBA)
+COLOR_PATH_LOCKED = (1.0, 1.0, 1.0, 1.0)  # (RGBA)
+PATH_LINE_WIDTH = 2.0
+PATH_LOCKED_LINE_WIDTH = 3.0
+PATH_POINT_RADIUS = 3.5
+PATH_ARROW_LENGTH = 14.0
+PATH_ARROW_WIDTH = 12.0
+
 # Status indicators
 COLOR_OK = (0.361, 0.788, 0.549)  # #5cc98c (RGB, green, online)
 # The HUD's warning red. Status rows, failure panels and a missing controller's

@@ -115,6 +115,11 @@ def get_iface_for_ip(ip: str) -> str:
     return ""
 
 
+def auto_station_iface() -> str:
+    """The interface an Automatic station interface resolves to now, or "" when none does."""
+    return get_iface_for_ip(get_primary_local_ipv4(default=""))
+
+
 def list_iface_ipv4() -> list[tuple[str, str]]:
     """Return [(iface_name, ipv4)] for every non-loopback IPv4, sorted by name."""
     out: list[tuple[str, str]] = []
@@ -249,6 +254,11 @@ def resolve_multicast_iface(pin: str, station_iface: str = "") -> tuple[str, Res
 
 
 WEB_BIND_ALL = "0.0.0.0"
+
+
+def serves_every_interface(bind_host: str) -> bool:
+    """True when a web listener bound to ``bind_host`` answers on every interface."""
+    return not bind_host or bind_host == WEB_BIND_ALL
 
 
 def resolve_web_bind(web_bind: str, web_bind_iface: str) -> tuple[str, ResolveStatus]:

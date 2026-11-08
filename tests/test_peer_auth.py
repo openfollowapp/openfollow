@@ -122,7 +122,7 @@ def test_verify_includes_query_string() -> None:
     # Paths differing only by query string produce different signatures –
     # the query is semantically part of the authorized operation.
     body = b"{}"
-    ts, sig = peer_auth.sign("pin", "POST", "/api/x?skip_restart=1", body)
+    ts, sig = peer_auth.sign("pin", "POST", "/api/x?mode=1", body)
 
     assert (
         peer_auth.verify(
@@ -140,7 +140,7 @@ def test_verify_includes_query_string() -> None:
         peer_auth.verify(
             "pin",
             "POST",
-            "/api/x?skip_restart=1",
+            "/api/x?mode=1",
             body,
             str(ts),
             sig,

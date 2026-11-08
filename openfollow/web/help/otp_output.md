@@ -6,13 +6,13 @@ Sends tracked marker positions as ANSI E1.59 Object Transform Protocol (OTP) mul
 
 ## OTP Network
 
-- **Enabled** – master toggle for the OTP transmitter. Off by default; no packets are sent while unchecked.
+- **OTP output** – master toggle for the OTP transmitter. Off by default; no packets are sent while unchecked.
 - **System Number** – OTP system identifier, 1 – 200. It also determines the multicast addresses packets are sent to (see **Multicast addresses**); change it to move OTP traffic onto a different multicast group. Default: `1`.
 - **Multicast addresses** – read-only display of the two addresses derived automatically from System Number, per ANSI E1.59 Table 15-19. **Transform** carries the position data (e.g. `239.159.1.1` for System Number 1); **Advertisement** carries discovery packets (`239.159.2.1`). Adjust System Number to change the group.
 - **UDP Port** – port the transmitter binds to and sends from, 1–65535. Default: `5568`.
 - **Priority** – OTP priority value sent in each packet, 0 – 200. When multiple OTP sources are present, receivers use priority to resolve conflicts – higher values win. Default: `100`.
-- **Source Interface** – read-only here; it reports which interface OTP multicast currently leaves from. Set it under **General → Network Interface Assignment**, where every protocol's interface is chosen in one place. `Follows station default interface` (the default) is right on a single-adapter station; on a host with both Ethernet and Wi-Fi, pin it to the adapter on the lighting network so packets reach the right subnet. A pinned interface that's down stops OTP rather than moving it to another one; it resumes when the interface returns.
+- **Source Interface** – read-only here; it reports which interface OTP multicast currently leaves from. Set it under **General → Network Interface Assignment**, where every protocol's interface is chosen in one place. In Simple network mode OTP follows the station interface and this row is not shown. `Follows station default interface` (the default) is right on a single-adapter station; on a host with both Ethernet and Wi-Fi, pin it to the adapter on the lighting network so packets reach the right subnet. A pinned interface that's down stops OTP rather than moving it to another one; it resumes when the interface returns.
 
 ## Saving
 
-- **Save** – writes the current settings to disk and applies them live. OTP output starts or restarts immediately after saving if **Enabled** is checked.
+- **Save** – writes the current settings to disk and applies them live. OTP output starts or restarts immediately after saving if **OTP output** is on.

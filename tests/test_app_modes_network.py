@@ -7,6 +7,7 @@ editing, and the apply/renew worker lifecycle (generation-guarded drain)."""
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +19,7 @@ from openfollow.network.adapter import (
     Ipv4Config,
     Ipv4Method,
     LeaseInfo,
+    NetworkAdapter,
     NetworkInterface,
     NetworkState,
 )
@@ -26,7 +28,7 @@ from openfollow.runtime import ipv4_digit_grid
 pytestmark = pytest.mark.unit
 
 
-class _FakeAdapter:
+class _FakeAdapter(NetworkAdapter):
     backend_name = "fake"
 
     def __init__(self, writable: bool = True) -> None:
@@ -141,8 +143,17 @@ def _make_app(adapter: _FakeAdapter | None = None) -> SimpleNamespace:
     app._get_config_mtime = _get_config_mtime
     app._web_server = _FakeWebServer()
     app._restart_requests = 0
+    app._updating = False
+
+    def _restart_unless_updating() -> bool:
+        if app._updating:
+            return False
+        app._restart_requests += 1
+        return True
+
     app._web_commands = SimpleNamespace(
-        request_restart=lambda: setattr(app, "_restart_requests", app._restart_requests + 1)
+        request_restart=lambda: setattr(app, "_restart_requests", app._restart_requests + 1),
+        request_restart_unless_updating=_restart_unless_updating,
     )
     app._advisory_refreshes = 0
 
@@ -708,6 +719,29 @@ class TestRefreshPiNetworkEdgeCases:
 
         assert app._pi_network_pending_config.method == Ipv4Method.DHCP
 
+    def test_every_interface_comes_from_one_reading(self) -> None:
+        """The backend's whole reading, never one read per interface."""
+        adapter = _FakeAdapter()
+        adapter.method = Ipv4Method.STATIC
+        reading = adapter.read_network()
+        readings: list[int] = []
+
+        def _read_network():
+            readings.append(1)
+            return reading
+
+        def _per_interface(*_args):
+            raise AssertionError("read per interface")
+
+        adapter.read_network = _read_network
+        adapter.list_interfaces = adapter.get_state = _per_interface
+        app = _make_app(adapter)
+        anm._refresh_pi_network(app)
+        assert readings == [1]
+        assert [i.name for i in app._pi_network_interfaces] == ["eth0", "wlan0"]
+        assert app._pi_network_methods == {"eth0": "Static", "wlan0": "Static"}
+        assert app._pi_network_state_cache is reading.states["eth0"]
+
 
 class TestPiNetworkMove:
     def test_move_with_empty_rows_is_no_op(self) -> None:
@@ -900,14 +934,15 @@ class TestFieldEditAllFields:
         anm.enter_pi_network_field_edit(app, "router")
         assert app._pi_network_field_value == "10.0.0.1"
 
-    def test_dns_field_seed_empty_when_missing(self) -> None:
+    def test_a_missing_dns_server_opens_on_digits_to_edit(self) -> None:
         from openfollow.network.adapter import Ipv4Config, Ipv4Method
 
         app = _make_app()
         anm.enter_pi_network(app)
         app._pi_network_pending_config = Ipv4Config(method=Ipv4Method.DHCP, dns=())
         anm.enter_pi_network_field_edit(app, "dns_2")
-        assert app._pi_network_field_value == ""
+        assert app._pi_network_field_value == anm._ROUTER_SEED
+        assert app._pi_network_field_seeded is True
 
     def test_field_edit_no_pending_config_resets_value(self) -> None:
         app = _make_app()
@@ -1794,11 +1829,37 @@ class TestTheScreenCallsOutWhatBreaksReachability:
         assert all(r["kind"] not in {"choice", "text", "action"} for r in _rows_by_kind(app, "notice"))
 
 
+class TestASlowReadLeavesNoOtherInterfacesValues:
+    def test_apply_during_an_unanswered_read_says_it_is_still_reading(self, monkeypatch) -> None:
+        app = _make_app()
+        anm.enter_pi_network(app)
+        _open_iface(app, "eth0")
+        gate = _stall_reads(monkeypatch)
+        anm._refresh_pi_network_bounded(app)
+        gate.set()
+        anm._apply_pi_network(app)
+        assert app._pi_network_banner == "Still reading the interface. Try again in a moment."
+
+    def test_opening_an_interface_whose_read_overruns_offers_nothing_of_the_last_one(self, monkeypatch) -> None:
+        app = _make_app()
+        anm.enter_pi_network(app)
+        _open_iface(app, "eth0")
+        assert app._pi_network_pending_config is not None
+        anm._close_pi_network_iface(app)
+        gate = _stall_reads(monkeypatch)
+        _open_iface(app, "wlan0")
+        gate.set()
+        assert app._pi_network_pending_config is None
+        assert app._pi_network_state_cache is None
+
+
 class TestServeOnAllInterfacesIsTheLockoutEscape:
     def test_it_clears_the_pin_and_asks_for_a_restart(self, monkeypatch) -> None:
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
         saved: list[object] = []
-        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: saved.append(app) or True)
+        monkeypatch.setattr(
+            "openfollow.runtime.app_modes._persist_config", lambda app, *names, **_kw: saved.append(names) or True
+        )
         app = _make_app()
         app._config.web_bind_iface = "eth0"
         anm.enter_pi_network(app)
@@ -1806,8 +1867,29 @@ class TestServeOnAllInterfacesIsTheLockoutEscape:
         _confirm_key(app, "web_unpin")
 
         assert app._config.web_bind_iface == ""
-        assert saved, "the cleared pin was never written to disk"
+        assert saved == [("web_bind", "web_bind_iface")], "the cleared pins were not written to disk"
         assert app._restart_requests == 1
+
+    def test_a_pin_already_cleared_but_still_held_restarts(self, monkeypatch) -> None:
+        """Saved clear, but the listener keeps the pin it started on until a restart."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        app._config.web_bind = ""
+        app._web_server = _FakeWebServer(bind_host="192.168.1.5")
+        anm.enter_pi_network(app)
+        _confirm_key(app, "web_unpin")
+        assert app._restart_requests == 1
+        assert app._pi_network_banner_level == "info"
+
+    def test_a_pin_already_cleared_waits_for_a_running_update(self, monkeypatch) -> None:
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        app._updating = True
+        app._web_server = _FakeWebServer(bind_host="192.168.1.5")
+        anm.enter_pi_network(app)
+        _confirm_key(app, "web_unpin")
+        assert app._restart_requests == 0
+        assert app._pi_network_banner == "An update is running, so OpenFollow was not restarted."
 
     def test_it_is_offered_only_while_the_ui_is_pinned(self, monkeypatch) -> None:
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
@@ -1820,7 +1902,7 @@ class TestServeOnAllInterfacesIsTheLockoutEscape:
         addressing this build cannot manage is exactly where a lockout would
         otherwise be permanent."""
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: True)
+        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app, *names, **_kw: True)
         app = _make_app(_FakeAdapter(writable=False))
         app._config.web_bind_iface = "eth0"
         anm.enter_pi_network(app)
@@ -1833,7 +1915,7 @@ class TestServeOnAllInterfacesIsTheLockoutEscape:
         """Restarting on an unwritten change would reboot the station into the
         same lockout and look like the escape simply did not work."""
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: False)
+        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app, *names, **_kw: False)
         app = _make_app()
         app._config.web_bind_iface = "eth0"
         anm.enter_pi_network(app)
@@ -1843,6 +1925,21 @@ class TestServeOnAllInterfacesIsTheLockoutEscape:
         assert app._config.web_bind_iface == "eth0"
         assert app._restart_requests == 0
         assert "still pinned" in app._pi_network_banner
+
+    def test_it_works_on_a_config_file_that_no_longer_parses(self, monkeypatch, tmp_path) -> None:
+        """A hand edit that broke the file must not block the way back in."""
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app()
+        app._config = AppConfig(network_mode="advanced", web_bind_iface="eth0", psn_system_name="Stage Left")
+        app._config_path = str(tmp_path / "config.toml")
+        (tmp_path / "config.toml").write_text("web_bind_iface = [unclosed", encoding="utf-8")
+        anm.enter_pi_network(app)
+
+        _confirm_key(app, "web_unpin")
+
+        saved = load_config(app._config_path, strict=True)
+        assert (saved.web_bind_iface, saved.psn_system_name) == ("", "Stage Left")
+        assert app._restart_requests == 1
 
 
 class TestTheStationFqdn:
@@ -1974,7 +2071,7 @@ class TestNetworkActionsShareTheStationsLock:
 
         adapter.apply_ipv4 = _apply  # type: ignore[method-assign]
         app = _make_app(adapter)
-        app._runtime_services.network_op_lock = lock
+        app._runtime_services.network_change = lambda: lock
         anm.enter_pi_network(app)
 
         _confirm_key(app, "dhcp")
@@ -2143,7 +2240,9 @@ class TestDefensivePathsOnTheReachabilityScreen:
         """The row is only offered while pinned, so reaching this means the
         pin was cleared since it was rendered - the work is already done."""
         saved: list[object] = []
-        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: saved.append(app) or True)
+        monkeypatch.setattr(
+            "openfollow.runtime.app_modes._persist_config", lambda app, *names, **_kw: saved.append(names) or True
+        )
         app = _make_app()
         anm.enter_pi_network(app)
 
@@ -2236,7 +2335,7 @@ class TestTheScreenReportsTheLiveBindNotThePin:
         """Clearing only the interface pin would leave this station exactly
         as unreachable while reporting the escape succeeded."""
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: True)
+        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app, *names, **_kw: True)
         app = _make_app()
         app._config.web_bind = "192.168.1.5"
         app._web_server = _FakeWebServer(bind_host="192.168.1.5")
@@ -2249,7 +2348,7 @@ class TestTheScreenReportsTheLiveBindNotThePin:
 
     def test_a_failed_save_restores_both_pins(self, monkeypatch) -> None:
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: False)
+        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app, *names, **_kw: False)
         app = _make_app()
         app._config.web_bind = "192.168.1.5"
         app._config.web_bind_iface = "eth0"
@@ -2294,7 +2393,7 @@ class TestTheCursorSurvivesRowsAppearingAndDisappearing:
         """The escape removes its own row. Landing on the next action down
         means a second Enter tap reconfigures the interface."""
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: True)
+        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app, *names, **_kw: True)
         app = _make_app()
         app._config.web_bind_iface = "eth0"
         app._web_server = _FakeWebServer(bind_host="192.168.1.5")
@@ -2751,7 +2850,7 @@ class TestTheResultLineCarriesItsLevel:
     @pytest.mark.parametrize(("saved", "level"), [(True, "info"), (False, "error")])
     def test_the_unpin_escape(self, monkeypatch, saved: bool, level: str) -> None:
         _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
-        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app: saved)
+        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda app, *names, **_kw: saved)
         app = _make_app()
         app._config.web_bind_iface = "eth0"
         app._web_server = _FakeWebServer(bind_host="192.168.1.5")
@@ -2931,3 +3030,631 @@ class TestAdaptersByLabel:
         app = self._labelled({})
         _open_iface(app, "wlan0")
         assert "Adapter" not in [r["label"] for r in anm.build_pi_network_rows(app)]
+
+
+# --------------------------------------------------------------------------- #
+# Simple network mode: one screen for the station interface
+# --------------------------------------------------------------------------- #
+
+
+def _simple_app(monkeypatch, tmp_path, *, station: str = "", auto: str = "eth0", adapter=None) -> SimpleNamespace:
+    from openfollow.configuration import AppConfig, save_config
+
+    monkeypatch.setattr(anm, "auto_station_iface", lambda: auto)
+
+    def _addresses(app_: SimpleNamespace) -> list[tuple[str, str]]:
+        # Like the real one: the kernel's addresses, for the interfaces the backend lists.
+        app_._pi_network_addr_cache = {"eth0": "192.168.1.50"}
+        listed = [str(i.name) for i in getattr(app_, "_pi_network_interfaces", [])]
+        return [(name, app_._pi_network_addr_cache.get(name, "")) for name in listed]
+
+    monkeypatch.setattr(anm, "_iface_addresses", _addresses)
+    app = _make_app(adapter)
+    app._config.network_mode = "simple"
+    app._config.psn_source_iface = station
+    app._config.station_fqdn = ""
+    app._config.interface_labels = {"eth0": "Show LAN"}
+    app._config_path = str(tmp_path / "config.toml")
+    save_config(AppConfig(psn_source_iface=station), app._config_path)
+    app._reloads = 0
+    # Polled once a second like the real check, and just polled.
+    app._last_config_check = 1e9
+
+    app._reload_applies = True
+
+    def _check_config_reload() -> None:
+        from openfollow.configuration import load_config
+
+        if app._last_config_check < 1.0:
+            app._reloads += 1
+            if app._reload_applies:
+                app._config.psn_source_iface = load_config(app._config_path).psn_source_iface
+
+    app._check_config_reload = _check_config_reload
+    anm.enter_pi_network(app)
+    return app
+
+
+def _stall_reads(monkeypatch) -> threading.Event:
+    """Every network read blocks until the returned event is set, and the screen waits for none."""
+    gate = threading.Event()
+    real = anm._read_pi_network
+
+    def _slow(app):
+        gate.wait(5)
+        return real(app)
+
+    monkeypatch.setattr(anm, "_read_pi_network", _slow)
+    monkeypatch.setattr(anm, "_ENTRY_READ_BUDGET_S", 0.0)
+    return gate
+
+
+def _keys(app: SimpleNamespace) -> list[str]:
+    return [str(row.get("key")) for row in anm.build_pi_network_rows(app) if row.get("key")]
+
+
+def _row(app: SimpleNamespace, key: str) -> dict:
+    return next(row for row in anm.build_pi_network_rows(app) if row.get("key") == key)
+
+
+class TestTheSimpleScreen:
+    def test_it_is_one_screen_for_the_station_interface(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        assert _keys(app) == [
+            "web_host",
+            "interface",
+            "method",
+            "address",
+            "prefix",
+            "router",
+            "lease",
+            "dns_1",
+            "dns_2",
+            "dns_3",
+            "apply",
+            "renew",
+        ]
+
+    def test_automatic_names_what_it_resolved_to(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        assert _row(app, "interface")["value"] == "Automatic (Show LAN (eth0))"
+        assert app._pi_network_active_iface == "eth0"
+
+    def test_automatic_that_resolves_nowhere_says_only_automatic(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path, auto="")
+        assert _row(app, "interface")["value"] == "Automatic"
+
+    def test_a_pinned_interface_the_backend_does_not_manage_is_not_called_unplugged(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        app = _simple_app(monkeypatch, tmp_path, station="br0")
+
+        def _addresses(app_: SimpleNamespace) -> list[tuple[str, str]]:
+            # The kernel has br0 up; the network backend does not list it.
+            app_._pi_network_addr_cache = {"eth0": "192.168.1.50", "br0": "198.51.100.2"}
+            return [("eth0", "192.168.1.50"), ("wlan0", "")]
+
+        monkeypatch.setattr(anm, "_iface_addresses", _addresses)
+        app._config.interface_labels = {"br0": "Bridge"}
+        labels = [row.get("label") for row in anm.build_pi_network_rows(app)]
+        assert "Bridge (br0)'s addressing is not managed here." in labels
+        assert "Bridge (br0) is not connected." not in labels
+        assert "apply" not in _keys(app)
+
+    def test_a_station_interface_that_is_gone_edits_nothing_in_its_place(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path, station="eth9")
+        assert app._pi_network_active_iface == "eth9"
+        assert _row(app, "interface")["value"] == "eth9"
+        app._config.interface_labels = {"eth9": "Old"}
+        assert any(row.get("label") == "Old (eth9) is not connected." for row in anm.build_pi_network_rows(app))
+        assert _row(app, "method")["kind"] == "display"
+        assert "apply" not in _keys(app) and "renew" not in _keys(app)
+
+    def test_automatic_with_nothing_resolved_never_edits_a_leftover_interface(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path, auto="")
+        app._pi_network_active_iface = "wlan0"
+        anm._refresh_pi_network(app)
+        assert app._pi_network_active_iface == "eth0"
+
+    def test_a_web_ui_served_at_one_address_says_so(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        app._web_server = _FakeWebServer(bind_host="192.168.1.50")
+        labels = [row.get("label") for row in anm.build_pi_network_rows(app) if row.get("kind") == "notice"]
+        assert "Web UI is served only at 192.168.1.50" in labels
+
+    def test_the_ipv4_heading_names_the_interface_it_edits(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path, auto="")
+        headers = [row.get("label") for row in anm.build_pi_network_rows(app) if row.get("kind") == "header"]
+        assert "IPv4 \u2013 Show LAN (eth0)" in headers
+
+    def test_an_empty_reading_leaves_nothing_of_an_earlier_visit(self, monkeypatch, tmp_path) -> None:
+        adapter = _FakeAdapter()
+        app = _simple_app(monkeypatch, tmp_path, adapter=adapter)
+        assert app._pi_network_active_iface == "eth0"
+        anm.exit_pi_network(app)
+        adapter._interfaces = []
+        anm.enter_pi_network(app)
+        labels = [row.get("label") for row in anm.build_pi_network_rows(app)]
+        assert "This station has no network interface." in labels
+        assert "IPv4" in labels
+
+    def test_a_reentry_read_that_overruns_leaves_nothing_to_apply(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        anm.exit_pi_network(app)
+        gate = _stall_reads(monkeypatch)
+        anm.enter_pi_network(app)
+        gate.set()
+        assert app._pi_network_pending_config is None
+        assert "apply" not in _keys(app)
+        # Still being read: no notice claims the interface is gone or changed, and nothing of the last one shows.
+        notices = [row for row in anm.build_pi_network_rows(app) if row.get("kind") == "notice"]
+        assert notices == []
+        assert _row(app, "interface")["pill"] == ""
+        assert "IPv4" in [row.get("label") for row in anm.build_pi_network_rows(app)]
+        assert app._pi_network_banner == "Querying network status…"
+
+    def test_a_slow_first_read_is_not_reported_as_no_interface(self, monkeypatch, tmp_path) -> None:
+        gate = threading.Event()
+        monkeypatch.setattr(anm, "_ENTRY_READ_BUDGET_S", 0.0)
+        real = anm._read_pi_network
+        monkeypatch.setattr(anm, "_read_pi_network", lambda app: (gate.wait(5), real(app))[1])
+        app = _simple_app(monkeypatch, tmp_path)
+        gate.set()
+        labels = [row.get("label") for row in anm.build_pi_network_rows(app)]
+        assert "This station has no network interface." not in labels
+        assert "apply" not in _keys(app)
+
+    def test_a_lease_with_more_servers_than_shown_still_applies(self, monkeypatch, tmp_path) -> None:
+        adapter = _FakeAdapter()
+        four = ("192.0.2.1", "192.0.2.2", "192.0.2.3", "192.0.2.4")
+        real = adapter.get_state
+
+        def _four_servers(iface: str):
+            state = real(iface)
+            return replace(state, ipv4=replace(state.ipv4, dns=four), lease=replace(state.lease, dns=four))
+
+        adapter.get_state = _four_servers  # type: ignore[method-assign]
+        app = _simple_app(monkeypatch, tmp_path, adapter=adapter)
+        assert app._pi_network_pending_config.dns == four[:3]
+        _confirm_key(app, "apply")
+        app._pi_network_worker.join(timeout=5)
+        # Still the lease's own: none pinned.
+        assert adapter.apply_calls[0][1].dns == ()
+
+    def test_without_a_network_backend_the_traffic_interface_is_still_named(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        app._runtime_services.network_adapter = None
+        anm.exit_pi_network(app)
+        anm.enter_pi_network(app)
+        labels = [row.get("label") for row in anm.build_pi_network_rows(app)]
+        assert "This station has no network interface." not in labels
+        assert _row(app, "interface")["value"] == "Automatic (Show LAN (eth0))"
+        assert "This station's addressing cannot be changed from here." in labels
+        _confirm_key(app, "interface")
+        assert "pick:eth0" in _keys(app)
+
+    def test_a_station_with_no_interface_says_so(self, monkeypatch, tmp_path) -> None:
+        adapter = _FakeAdapter()
+        adapter._interfaces = []
+        app = _simple_app(monkeypatch, tmp_path, adapter=adapter)
+        assert any(
+            row.get("label") == "This station has no network interface." for row in anm.build_pi_network_rows(app)
+        )
+
+    def test_a_named_interface_is_the_one_loaded(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path, station="wlan0")
+        assert _row(app, "interface")["value"] == "wlan0"
+        assert app._pi_network_active_iface == "wlan0"
+        assert _row(app, "interface")["pill"] == "no address"
+
+    def test_a_labelled_interface_is_named_by_its_label(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path, station="eth0")
+        assert _row(app, "interface")["value"] == "Show LAN (eth0)"
+        _confirm_key(app, "interface")
+        labels = [row.get("label") for row in anm.build_pi_network_rows(app)]
+        assert labels[2:] == ["Show LAN (eth0)", "wlan0"]
+
+    def test_the_lease_reads_as_the_web_card_shows_it(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        state = app._pi_network_state_cache
+        app._pi_network_state_cache = replace(state, lease=replace(state.lease, lease_seconds_remaining=12494 * 60))
+        assert _row(app, "lease")["value"] == "8d 16h"
+
+    def test_the_cursor_opens_on_the_interface(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        assert anm.build_pi_network_rows(app)[app._pi_network_index]["key"] == "interface"
+
+    def test_a_read_only_host_offers_no_change(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path, adapter=_FakeAdapter(writable=False))
+        assert _row(app, "method")["kind"] == "display"
+        assert _row(app, "dns_1")["kind"] == "display"
+        assert "apply" not in _keys(app)
+        assert any(row.get("kind") == "notice" for row in anm.build_pi_network_rows(app))
+
+    def test_a_web_bind_address_keeps_the_lockout_escape(self, monkeypatch, tmp_path) -> None:
+        monkeypatch.setattr("openfollow.runtime.app_modes._persist_config", lambda _app, *_names, **_kw: True)
+        app = _simple_app(monkeypatch, tmp_path)
+        assert "web_unpin" not in _keys(app)
+        app._config.web_bind = "192.168.1.50"
+        app._web_server = _FakeWebServer(bind_host="192.168.1.50")
+        _confirm_key(app, "web_unpin")
+        assert app._config.web_bind == ""
+        assert app._restart_requests == 1
+
+    @pytest.mark.parametrize(("method", "pill"), [(Ipv4Method.DHCP, "fallback"), (Ipv4Method.STATIC, "link-local")])
+    def test_a_link_local_address_is_called_out(self, monkeypatch, tmp_path, method, pill) -> None:
+        adapter = _FakeAdapter()
+        adapter.method = method
+        app = _simple_app(monkeypatch, tmp_path, adapter=adapter)
+        monkeypatch.setattr(anm, "_iface_addresses", lambda _app: [("eth0", "169.254.7.7")])
+        assert (_row(app, "interface")["pill"], _row(app, "interface")["pill_level"]) == (pill, "error")
+        notices = [row for row in anm.build_pi_network_rows(app) if row.get("kind") == "notice"]
+        assert str(notices[0]["label"]).startswith("Show LAN (eth0) has the link-local address 169.254.7.7.")
+
+    def test_dhcp_name_problems_and_a_missing_host_are_shown_as_they_are(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        monkeypatch.setattr(anm, "_web_ui_host", lambda _app: "")
+        monkeypatch.setattr(anm, "_fqdn_problems", lambda _app: ["wlan0 does not send it"])
+        rows = anm.build_pi_network_rows(app)
+        assert "web_host" not in _keys(app)
+        assert rows[1]["label"] == "DHCP: wlan0 does not send it"
+
+    def test_an_fqdn_can_be_removed_here(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        app._config.station_fqdn = "of-1.stage.example.com"
+        assert _row(app, "fqdn_remove")["label"] == "Remove FQDN (interrupts network traffic)"
+
+
+class TestTheSimpleInterfacePicker:
+    def test_it_lists_automatic_then_every_interface(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        _confirm_key(app, "interface")
+        assert _keys(app) == ["pick:", "pick:eth0", "pick:wlan0"]
+        assert _row(app, "pick:")["pill"] == "current"
+        assert _row(app, "pick:")["value"] == "now Show LAN (eth0) – 192.168.1.50"
+        assert anm.build_pi_network_rows(app)[app._pi_network_index]["key"] == "pick:"
+
+    def test_a_pinned_interface_that_is_gone_is_still_listed_as_current(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path, station="eth9")
+        _confirm_key(app, "interface")
+        assert _row(app, "pick:eth9")["pill"] == "current"
+
+    def test_choosing_an_interface_saves_it_and_applies_it_now(self, monkeypatch, tmp_path) -> None:
+        from openfollow.configuration import load_config
+
+        app = _simple_app(monkeypatch, tmp_path)
+        _confirm_key(app, "interface")
+        _confirm_key(app, "pick:wlan0")
+        assert load_config(app._config_path).psn_source_iface == "wlan0"
+        assert app._reloads == 1
+        assert app._config.psn_source_iface == "wlan0"
+        assert app._pi_network_active_iface == "wlan0"
+        assert app._pi_network_picker == ""
+        # wlan0 has no address: every plane fails closed, so this is no success.
+        assert app._pi_network_banner_level == "caution"
+        assert "no address" in app._pi_network_banner
+        assert anm.build_pi_network_rows(app)[app._pi_network_index]["key"] == "interface"
+
+    def test_a_pick_the_reload_did_not_apply_is_not_reported_as_done(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        app._reload_applies = False
+        _confirm_key(app, "interface")
+        _confirm_key(app, "pick:wlan0")
+        assert app._pi_network_banner_level == "caution"
+        # Still read for eth0, so nothing on the screen edits wlan0 with eth0's values.
+        assert app._pi_network_active_iface == "eth0"
+
+    def test_a_read_that_overruns_leaves_nothing_to_apply(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        gate = _stall_reads(monkeypatch)
+        _confirm_key(app, "interface")
+        _confirm_key(app, "pick:wlan0")
+        gate.set()
+        assert app._pi_network_pending_config is None
+        assert "apply" not in _keys(app)
+
+    def test_a_change_made_elsewhere_while_open_locks_the_fields(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        app._config.psn_source_iface = "wlan0"
+        labels = [row.get("label") for row in anm.build_pi_network_rows(app)]
+        assert "The network settings changed. Close and reopen this screen." in labels
+        assert "apply" not in _keys(app)
+
+    def test_choosing_an_interface_with_an_address_reports_success(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        _confirm_key(app, "interface")
+        _confirm_key(app, "pick:eth0")
+        assert app._pi_network_banner_level == "success"
+        assert app._pi_network_banner == "All traffic now uses Show LAN (eth0)."
+
+    def test_the_automatic_row_names_where_traffic_would_go_while_pinned(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path, station="wlan0")
+        _confirm_key(app, "interface")
+        assert _row(app, "pick:")["value"] == "now Show LAN (eth0) \u2013 192.168.1.50"
+
+    def test_choosing_automatic_clears_the_pin(self, monkeypatch, tmp_path) -> None:
+        from openfollow.configuration import load_config
+
+        app = _simple_app(monkeypatch, tmp_path, station="eth0")
+        _confirm_key(app, "interface")
+        _confirm_key(app, "pick:")
+        assert load_config(app._config_path).psn_source_iface == ""
+
+    def test_choosing_the_current_one_writes_nothing(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path, station="eth0")
+        _confirm_key(app, "interface")
+        _confirm_key(app, "pick:eth0")
+        assert app._reloads == 0
+
+    def test_a_missing_config_file_is_never_replaced_by_defaults(self, monkeypatch, tmp_path) -> None:
+        import os
+
+        app = _simple_app(monkeypatch, tmp_path)
+        os.remove(app._config_path)
+        _confirm_key(app, "interface")
+        _confirm_key(app, "pick:wlan0")
+        assert not os.path.exists(app._config_path)
+        assert app._reloads == 0
+        assert app._pi_network_banner_level == "error"
+
+    def test_a_config_file_that_vanished_after_a_check_is_never_replaced_by_defaults(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        import os
+
+        app = _simple_app(monkeypatch, tmp_path)
+        os.remove(app._config_path)
+        monkeypatch.setattr(os.path, "exists", lambda _p: True)
+        _confirm_key(app, "interface")
+        _confirm_key(app, "pick:wlan0")
+        monkeypatch.undo()
+        assert not os.path.exists(app._config_path)
+        assert app._pi_network_banner_level == "error"
+
+    @pytest.mark.parametrize(
+        ("content", "why"),
+        [
+            (b"", "The settings file is empty. Restart OpenFollow to start again with default settings"),
+            (b"grid = 5\n", "The settings file could not be read. Import a settings file to replace it"),
+        ],
+        ids=["empty", "not-a-config"],
+    )
+    def test_a_save_refused_by_the_settings_file_says_why(self, monkeypatch, tmp_path, content, why) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        with open(app._config_path, "wb") as f:
+            f.write(content)
+        _confirm_key(app, "interface")
+        _confirm_key(app, "pick:wlan0")
+        assert app._pi_network_banner == f"Could not save - the interface is unchanged. {why}, then pick it again."
+        assert app._pi_network_banner_level == "error"
+
+    def test_a_failed_save_says_so_and_moves_nothing(self, monkeypatch, tmp_path) -> None:
+        import openfollow.configuration as configuration
+
+        app = _simple_app(monkeypatch, tmp_path)
+
+        def _fail(*_args, **_kwargs):
+            raise OSError("read-only file system")
+
+        monkeypatch.setattr(configuration, "save_config", _fail)
+        _confirm_key(app, "interface")
+        _confirm_key(app, "pick:wlan0")
+        assert app._reloads == 0
+        assert app._pi_network_banner_level == "error"
+
+    def test_cancel_closes_the_picker_before_the_screen(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        _confirm_key(app, "interface")
+        anm.handle_pi_network_key(app, "Escape")
+        assert app._pi_network_active is True
+        assert anm.build_pi_network_rows(app)[app._pi_network_index]["key"] == "interface"
+        anm.handle_pi_network_key(app, "Escape")
+        assert app._pi_network_active is False
+
+
+class TestTheSimpleMethodAndDns:
+    def test_static_makes_every_address_field_editable(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        assert _row(app, "address")["kind"] == "display"
+        _confirm_key(app, "method")
+        _confirm_key(app, "method:static")
+        assert [_row(app, key)["kind"] for key in ("address", "prefix", "router")] == ["text"] * 3
+        # Still on DHCP until applied: its lease and Renew stay.
+        assert "renew" in _keys(app) and "lease" in _keys(app)
+
+    def test_a_static_interface_offers_no_renew_whatever_is_picked(self, monkeypatch, tmp_path) -> None:
+        adapter = _FakeAdapter()
+        adapter.method = Ipv4Method.STATIC
+        app = _simple_app(monkeypatch, tmp_path, adapter=adapter)
+        _confirm_key(app, "method")
+        _confirm_key(app, "method:dhcp")
+        assert "renew" not in _keys(app) and "lease" not in _keys(app)
+
+    def test_an_automatic_interface_this_screen_does_not_manage_is_not_edited(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path, auto="docker0")
+        assert app._pi_network_active_iface == "docker0"
+        labels = [row.get("label") for row in anm.build_pi_network_rows(app)]
+        assert "docker0's addressing is not managed here." in labels
+        assert "apply" not in _keys(app)
+
+    def test_dhcp_with_a_manual_address_owns_only_the_address(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        _confirm_key(app, "method")
+        _confirm_key(app, "method:dhcp_manual")
+        assert [_row(app, key)["kind"] for key in ("address", "prefix", "router")] == ["text", "display", "display"]
+        assert app._pi_network_pending_config.prefix is None
+
+    def test_back_to_dhcp_drops_the_address_and_keeps_dns(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        _confirm_key(app, "method")
+        _confirm_key(app, "method:static")
+        _confirm_key(app, "method")
+        _confirm_key(app, "method:dhcp")
+        pending = app._pi_network_pending_config
+        assert (pending.method, pending.address, pending.dns) == (Ipv4Method.DHCP, None, ("8.8.8.8",))
+
+    def test_an_unknown_method_changes_nothing(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        before = app._pi_network_pending_config
+        anm._pick_method(app, "pppoe")
+        assert app._pi_network_pending_config == before
+
+    @pytest.mark.parametrize(
+        ("field", "typed", "expected"),
+        [
+            ("dns_1", "192.0.2.53", ("192.0.2.53",)),
+            ("dns_2", "192.0.2.53", ("8.8.8.8", "192.0.2.53")),
+            # An apply refuses an empty server, so none is left between two.
+            ("dns_3", "192.0.2.53", ("8.8.8.8", "192.0.2.53")),
+            ("dns_1", "", ()),
+            ("dns_1", "0.0.0.0", ()),
+        ],
+    )
+    def test_a_dns_server_is_edited_in_place(self, monkeypatch, tmp_path, field, typed, expected) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        _confirm_key(app, field)
+        assert app._pi_network_field_edit_active
+        app._pi_network_field_value = typed
+        app._pi_network_field_seeded = False
+        anm.confirm_pi_network_field_edit(app)
+        assert app._pi_network_pending_config.dns == expected
+
+    def test_typing_the_read_servers_back_undoes_the_edit(self, monkeypatch, tmp_path) -> None:
+        adapter = _FakeAdapter()
+        app = _simple_app(monkeypatch, tmp_path, adapter=adapter)
+        for typed in ("192.0.2.53", "8.8.8.8"):
+            _confirm_key(app, "dns_1")
+            app._pi_network_field_value = typed
+            app._pi_network_field_seeded = False
+            anm.confirm_pi_network_field_edit(app)
+        _confirm_key(app, "apply")
+        app._pi_network_worker.join(timeout=5)
+        assert adapter.apply_calls[0][1].dns == ()
+
+    @pytest.mark.parametrize("field", ["dns_1", "dns_2"])
+    def test_confirming_a_dns_server_unchanged_edits_nothing(self, monkeypatch, tmp_path, field) -> None:
+        adapter = _FakeAdapter()
+        app = _simple_app(monkeypatch, tmp_path, adapter=adapter)
+        _confirm_key(app, field)
+        anm.confirm_pi_network_field_edit(app)
+        _confirm_key(app, "apply")
+        app._pi_network_worker.join(timeout=5)
+        # Still the lease's own servers, so none are pinned.
+        assert adapter.apply_calls[0][1].dns == ()
+
+    def test_static_to_dhcp_keeps_servers_typed_here(self, monkeypatch, tmp_path) -> None:
+        adapter = _FakeAdapter()
+        adapter.method = Ipv4Method.STATIC
+        app = _simple_app(monkeypatch, tmp_path, adapter=adapter)
+        _confirm_key(app, "dns_1")
+        app._pi_network_field_value = "192.0.2.53"
+        app._pi_network_field_seeded = False
+        anm.confirm_pi_network_field_edit(app)
+        _confirm_key(app, "method")
+        _confirm_key(app, "method:dhcp")
+        assert app._pi_network_pending_config.dns == ("192.0.2.53",)
+
+    @pytest.mark.parametrize("picked", ["method:dhcp", "method:dhcp_manual"])
+    def test_static_to_dhcp_leaves_the_static_dns_behind(self, monkeypatch, tmp_path, picked) -> None:
+        adapter = _FakeAdapter()
+        adapter.method = Ipv4Method.STATIC
+        app = _simple_app(monkeypatch, tmp_path, adapter=adapter)
+        _confirm_key(app, "method")
+        _confirm_key(app, picked)
+        assert app._pi_network_pending_config.dns == ()
+        assert _row(app, "dns_1")["value"] == ""
+
+    def test_an_empty_dns_slot_opens_on_digits_to_edit(self, monkeypatch, tmp_path) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        _confirm_key(app, "dns_2")
+        assert app._pi_network_field_seeded is True
+        anm.confirm_pi_network_field_edit(app)
+        assert app._pi_network_pending_config.dns == ("8.8.8.8",)
+
+    @pytest.mark.parametrize("typed", ["999.1.1.1", "dns", "1.2.3"])
+    def test_an_invalid_dns_server_is_refused(self, monkeypatch, tmp_path, typed) -> None:
+        app = _simple_app(monkeypatch, tmp_path)
+        _confirm_key(app, "dns_1")
+        app._pi_network_field_value = typed
+        app._pi_network_field_seeded = False
+        anm.confirm_pi_network_field_edit(app)
+        assert app._pi_network_field_edit_active
+        assert app._pi_network_banner == "Invalid DNS server address."
+        assert app._pi_network_pending_config.dns == ("8.8.8.8",)
+
+    def test_a_dhcp_apply_keeps_manual_dns_that_is_not_the_leases(self, monkeypatch, tmp_path) -> None:
+        adapter = _FakeAdapter()
+        app = _simple_app(monkeypatch, tmp_path, adapter=adapter)
+        app._pi_network_pending_config = replace(app._pi_network_pending_config, dns=("192.0.2.53",))
+        _confirm_key(app, "apply")
+        app._pi_network_worker.join(timeout=5)
+        assert adapter.apply_calls[0][1].dns == ("192.0.2.53",)
+
+    @pytest.mark.parametrize("picked", ["method:dhcp", "method:dhcp_manual"])
+    def test_a_dhcp_apply_pins_no_dns_the_operator_did_not_edit(self, monkeypatch, tmp_path, picked) -> None:
+        adapter = _FakeAdapter()
+        app = _simple_app(monkeypatch, tmp_path, adapter=adapter)
+        _confirm_key(app, "method")
+        _confirm_key(app, picked)
+        _confirm_key(app, "apply")
+        app._pi_network_worker.join(timeout=5)
+        assert adapter.apply_calls[0][1].dns == ()
+
+    @pytest.mark.parametrize("method", [Ipv4Method.STATIC, Ipv4Method.DHCP_WITH_MANUAL_ADDRESS])
+    def test_an_apply_with_a_manual_address_keeps_the_dns_shown(self, monkeypatch, tmp_path, method) -> None:
+        """A manual address on NetworkManager is a manual profile: no lease, so its DNS is the operator's."""
+        adapter = _FakeAdapter()
+        adapter.method = method
+        app = _simple_app(monkeypatch, tmp_path, adapter=adapter)
+        app._pi_network_state_cache = replace(app._pi_network_state_cache, lease=None)
+        _confirm_key(app, "apply")
+        app._pi_network_worker.join(timeout=5)
+        assert adapter.apply_calls[0][1].dns == ("8.8.8.8",)
+
+    def test_apply_writes_the_station_interface_with_its_dns(self, monkeypatch, tmp_path) -> None:
+        adapter = _FakeAdapter()
+        app = _simple_app(monkeypatch, tmp_path, adapter=adapter)
+        _confirm_key(app, "dns_2")
+        app._pi_network_field_value = "192.0.2.53"
+        app._pi_network_field_seeded = False
+        anm.confirm_pi_network_field_edit(app)
+        _confirm_key(app, "apply")
+        app._pi_network_worker.join(timeout=5)
+        assert adapter.apply_calls[0][0] == "eth0"
+        assert adapter.apply_calls[0][1].dns == ("8.8.8.8", "192.0.2.53")
+
+    def test_renew_renews_the_station_interface(self, monkeypatch, tmp_path) -> None:
+        adapter = _FakeAdapter()
+        app = _simple_app(monkeypatch, tmp_path, adapter=adapter)
+        _confirm_key(app, "renew")
+        app._pi_network_worker.join(timeout=5)
+        assert adapter.renew_calls == ["eth0"]
+
+
+class TestTheSimpleScreenTitles:
+    @pytest.mark.parametrize(
+        ("picker", "title"), [("", "Network"), ("interface", "Interface"), ("method", "Configure IPv4")]
+    )
+    def test_each_screen_names_itself(self, monkeypatch, tmp_path, picker, title) -> None:
+        from openfollow.runtime.overlay_state import OverlayState
+        from openfollow.runtime.services_marker_visuals import _populate_pi_network_overlay
+
+        app = _simple_app(monkeypatch, tmp_path)
+        app._pi_network_picker = picker
+        state = OverlayState()
+        _populate_pi_network_overlay(app, state)
+        assert state.pi_network.title == title
+        assert state.pi_network.subtitle
+
+    def test_advanced_keeps_its_interface_title(self) -> None:
+        from openfollow.runtime.overlay_state import OverlayState
+        from openfollow.runtime.services_marker_visuals import _populate_pi_network_overlay
+
+        app = _make_app()
+        app._config.network_mode = "advanced"
+        anm.enter_pi_network(app)
+        _open_iface(app, "eth0")
+        state = OverlayState()
+        _populate_pi_network_overlay(app, state)
+        assert state.pi_network.title == "Network Interface: eth0"
+        assert state.pi_network.subtitle == ""

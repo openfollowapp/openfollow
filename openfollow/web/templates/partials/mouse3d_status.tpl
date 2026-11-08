@@ -5,7 +5,7 @@
 % from openfollow.input.mouse3d_status import none_connected, status_key, status_notices
 <div id="mouse3d-status"
      hx-get="/section/mouse3d/status?key={{status_key(mouse3d_status)}}"
-     hx-trigger="every 1s [!this.closest('.section').classList.contains('is-collapsed') && this.closest('.tab-content').classList.contains('active')]"
+     hx-trigger="every 1s [pollShown(this)], poll-shown[pollShown(this)] from:body"
      hx-target="this" hx-swap="outerHTML">
 % for n in status_notices(mouse3d_status):
 % if n.level == 'error':

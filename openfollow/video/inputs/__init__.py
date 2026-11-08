@@ -51,7 +51,7 @@ def _discover_inputs() -> None:
                 cls.__name__,
             )
             continue
-        _registry[cls.input_id] = cls  # type: ignore[type-abstract]
+        _registry[cls.input_id] = cls
         logger.info("Registered video input: %s (%s)", cls.input_id, cls.display_name)
 
 

@@ -472,6 +472,20 @@ class TestCollectDetectionPositionsLensDistortion:
         # the detection-pin path (and the bowed zone overlay).
         assert undist > raw
 
+    def test_takes_the_lens_centre_off_the_foot_point(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        services._person_detector = _FakeDetector([_FakeDet(0.6, 0.5, 0.8, 0.7, track_id=3)])
+        services._app._video_receiver = _FakeReceiver()
+        services._app._config.camera.lens_cx, services._app._config.camera.lens_cy = 0.05, -0.02
+        recorded = _spy_detection_unproject(monkeypatch)
+
+        services._collect_detection_positions()
+        half_diag = 0.5 * np.hypot(1920.0, 1080.0)
+        # A lens centre alone shifts the picture: the pinhole foot is the foot less the centre's offset.
+        assert recorded["screen"][0, 0] == pytest.approx(0.7 * 1920 - 0.05 * half_diag)
+        assert recorded["screen"][0, 1] == pytest.approx(0.7 * 1080 + 0.02 * half_diag)
+
 
 # --------------------------------------------------------------------------- #
 # _get_zone_states_snapshot + _get_marker_positions_snapshot
@@ -579,6 +593,7 @@ class TestZoneTestSend:
     def test_a_test_send_that_never_left_is_not_a_success(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, egress: Any, error: str
     ) -> None:
+        services._app._config.network_mode = "advanced"
         from openfollow.configuration import OscDestinationConfig
 
         _seed_zone(services)

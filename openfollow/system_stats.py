@@ -1,16 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""System statistics collector for CPU, RAM, and temperature.
+"""System statistics collector for CPU, RAM, temperature and power.
 
 Cross-platform: CPU and RAM work everywhere via psutil.
-Temperature is only available on Raspberry Pi (reads thermal zone file).
+Temperature, under-voltage and throttling are only available on a Raspberry Pi.
 """
 
 from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import psutil
@@ -20,6 +20,7 @@ from openfollow.net_utils import (
     get_local_ipv4_addresses,
     get_primary_local_ipv4,
 )
+from openfollow.power_health import PowerMonitor, PowerState, PowerWarningHold
 
 # Literal IP or callable for lazy resolution (callable needed before wait_for_source_ip).
 PreferredIpProvider = str | Callable[[], str]
@@ -38,6 +39,9 @@ class SystemStats:
     temperature: float | None = None  # Celsius, None if unavailable
     ip_address: str = "N/A"  # Local IPv4 address
     iface_name: str = ""  # Interface holding ip_address; empty if offline/loopback.
+    power: PowerState = field(default_factory=PowerState)
+    # The Operator Screen's power warning, held past the last active reading; "" when none.
+    power_warning: str = ""
 
 
 class SystemStatsCollector:
@@ -51,6 +55,8 @@ class SystemStatsCollector:
         self,
         update_interval: float = 1.0,
         preferred_ip: PreferredIpProvider = "",
+        power: PowerMonitor | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         """Initialize the collector.
 
@@ -67,9 +73,16 @@ class SystemStatsCollector:
                 ``wait_for_source_ip``, so a literal captured then is
                 often empty / wrong and the HUD would lag the real
                 bind for the rest of the session.
+            power: Reads under-voltage and throttling; ``None`` reports them
+                as not available.
+            clock: Monotonic seconds, for the rate limit and the power
+                warning's hold.
         """
         self._update_interval = update_interval
         self._preferred_ip = preferred_ip
+        self._power = power
+        self._clock = clock if clock is not None else time.monotonic
+        self._power_hold = PowerWarningHold()
         self._last_update: float = 0.0
         self._stats = SystemStats()
         self._temp_available: bool | None = None  # None = not yet checked
@@ -92,13 +105,18 @@ class SystemStatsCollector:
         """Get the most recent statistics snapshot."""
         return self._stats
 
+    def stop(self) -> None:
+        """Stop the power monitor's thread."""
+        if self._power is not None:
+            self._power.stop()
+
     def update(self) -> SystemStats:
         """Update statistics if enough time has passed.
 
         Returns:
             Current statistics snapshot.
         """
-        now = time.monotonic()
+        now = self._clock()
         if now - self._last_update < self._update_interval:
             return self._stats
 
@@ -124,12 +142,16 @@ class SystemStatsCollector:
         # Reverse-lookup iface name for display; refresh every tick.
         iface = get_iface_for_ip(ip)
 
+        power = self._power.read(now) if self._power is not None else PowerState()
+
         self._stats = SystemStats(
             cpu_percent=cpu,
             ram_percent=ram,
             temperature=temp,
             ip_address=ip,
             iface_name=iface,
+            power=power,
+            power_warning=self._power_hold.update(power, now),
         )
         return self._stats
 

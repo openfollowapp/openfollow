@@ -263,3 +263,44 @@ class TestChildMain:
     def test_wrong_arguments_exit_with_usage(self, argv: list[str], capsys: pytest.CaptureFixture[str]) -> None:
         assert coreml_compile.main(argv) == 2
         assert "usage" in capsys.readouterr().err
+
+
+class TestDetectionHelpers:
+    @staticmethod
+    def _cfg(tmp_path: Path, storage: str | None = None) -> Any:
+        from openfollow.configuration import DetectionConfig
+
+        _model(tmp_path)
+        return DetectionConfig(enabled=True, model="yolo26n.onnx", storage_path=storage or str(tmp_path))
+
+    def test_host_without_coreml_needs_no_compile(self, tmp_path: Path) -> None:
+        cfg = self._cfg(tmp_path)
+        assert coreml_compile.detection_compile_needed(cfg) is False
+        assert coreml_compile.precompile_detection(cfg, lambda: False) is True
+
+    def test_coreml_host_compiles_the_resolved_model(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _install_ort(monkeypatch)
+        cfg = self._cfg(tmp_path)
+        seen: list[tuple[str, Path]] = []
+        monkeypatch.setattr(coreml_compile, "precompile", lambda m, c, _cancel: seen.append((m, c)) or True)
+
+        assert coreml_compile.detection_compile_needed(cfg) is True
+        assert coreml_compile.precompile_detection(cfg, lambda: False) is True
+        assert seen == [(str(tmp_path / "models" / "yolo26n.onnx"), tmp_path / "cache")]
+
+    def test_unusable_storage_is_left_to_the_detector(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _install_ort(monkeypatch)
+        cfg = self._cfg(tmp_path, storage="relative/path")
+        assert coreml_compile.detection_compile_needed(cfg) is False
+        assert coreml_compile.precompile_detection(cfg, lambda: False) is True
+
+
+@pytest.mark.parametrize("busy", [False, True])
+def test_wait_idle(busy: bool) -> None:
+    if busy:
+        coreml_compile._compile_lock.acquire()
+    try:
+        assert coreml_compile.wait_idle(0.01) is not busy
+    finally:
+        if busy:
+            coreml_compile._compile_lock.release()

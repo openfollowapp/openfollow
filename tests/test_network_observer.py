@@ -41,6 +41,8 @@ class _Recorder:
         self.applied: list[str] = []
         self.suspends = 0
         self.is_enabled = True
+        # False while part of the plane is not up beside what ``bound`` holds.
+        self.whole = True
         self.apply_error: Exception | None = None
         self.current_error: Exception | None = None
         self.suspend_error: Exception | None = None
@@ -65,6 +67,7 @@ class _Recorder:
             raise self.apply_error
         self.applied.append(address)
         self.bound = address
+        self.whole = True
 
     def suspend(self) -> None:
         if self.suspend_error is not None:
@@ -74,6 +77,9 @@ class _Recorder:
 
     def enabled(self) -> bool:
         return self.is_enabled
+
+    def complete(self) -> bool:
+        return self.whole
 
     def go_down(self) -> None:
         self.address, self.status = "", "down"
@@ -89,6 +95,7 @@ class _Recorder:
             apply=self.apply,
             suspend=self.suspend,
             enabled=self.enabled,
+            complete=self.complete,
         )
 
 
@@ -754,6 +761,45 @@ class TestAChangingSetOfPlanes:
         obs.poll(force=True)
         assert rec.applied[-1] == "192.168.1.6"
         assert obs.alerts() == []
+
+
+class TestAPartlyBoundPlane:
+    """A plane bound at the right address with one of its parts not up (PSN
+    input that never bound beside a running output) is not running: it used to
+    read ``ok``, raise nothing and never be tried again."""
+
+    def _half_up(self) -> _Recorder:
+        rec = _Recorder()
+        rec.bound = "192.168.1.5"
+        rec.whole = False
+        return rec
+
+    def test_it_is_rebound(self) -> None:
+        rec = self._half_up()
+        obs, _clk = _observer(rec)
+        obs.poll()
+        assert rec.applied == ["192.168.1.5"]
+
+    def test_a_failed_rebind_reads_as_failing(self) -> None:
+        rec = self._half_up()
+        rec.apply_error = OSError("receiver bind failed")
+        obs, _clk = _observer(rec)
+        obs.poll()
+        assert obs.alerts() == ["plane0: eth0 – receiver bind failed"]
+        assert obs.snapshot()[0].state == "failing"
+
+    def test_a_failed_rebind_is_retried_with_the_backoff(self) -> None:
+        rec = self._half_up()
+        rec.apply_error = OSError("receiver bind failed")
+        obs, clk = _observer(rec)
+        _poll_n(obs, clk, 2)  # the failure, then a poll inside its backoff
+        assert rec.apply_attempts == 1
+        rec.apply_error = None
+        clk.advance(120.0)
+        obs.poll()
+        assert rec.apply_attempts == 2
+        assert obs.alerts() == []
+        assert obs.snapshot()[0].state == "ok"
 
 
 class TestSnapshot:

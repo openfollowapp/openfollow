@@ -1,0 +1,20 @@
+# The camera and grid stage_default.svg was drawn with, written by scripts/gen_stage_svg.py.
+
+[camera]
+pos_x = 0.0
+pos_y = -11.0
+pos_z = 6.0
+pitch = -22.0
+yaw = 0.0
+roll = 0.0
+fov = 60.0
+lens_k1 = 0.0
+lens_k2 = 0.0
+
+[grid]
+width = 10.0
+depth = 6.0
+spacing = 1.0
+x_offset = 0.0
+y_offset = 3.0
+z_offset = 0.0

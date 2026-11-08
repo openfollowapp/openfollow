@@ -16,8 +16,11 @@
     <div class="group">
         <div class="row">
             <div class="field checkbox-field">
-                <label>Show Grid</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="visible" {{'checked' if config.grid.visible else ''}}></div>
+                <label for="grid-visible">Grid</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="grid-visible" name="visible" {{'checked' if config.grid.visible else ''}}>
+                    <label for="grid-visible">Show the grid on the Operator Screen</label>
+                </div>
             </div>
         </div>
     </div>
@@ -147,8 +150,11 @@
         <h3 class="group-title">Origin Marker</h3>
         <div class="row">
             <div class="field checkbox-field">
-                <label>Show Origin</label>
-                <div class="checkbox-wrap"><input type="checkbox" name="origin_visible" {{'checked' if config.grid.origin_visible else ''}}></div>
+                <label for="grid-origin-visible">Origin</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="grid-origin-visible" name="origin_visible" {{'checked' if config.grid.origin_visible else ''}}>
+                    <label for="grid-origin-visible">Show the origin cross</label>
+                </div>
             </div>
             <div class="field">
                 <label for="grid-origin-length">Length ({{_len}})</label>

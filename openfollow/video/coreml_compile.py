@@ -23,6 +23,10 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from openfollow.configuration import DetectionConfig
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +85,41 @@ def precompile(model_path: str, cache_root: Path, cancelled: Callable[[], bool])
         return _run_child(model_path, cache_root, cancelled)
     finally:
         _compile_lock.release()
+
+
+def _detection_target(cfg: DetectionConfig) -> tuple[str, Path] | None:
+    """The model file and cache root ``cfg`` builds from, or ``None`` when the
+    storage is unusable (the detector build reports it)."""
+    from openfollow.video.detection import PersonDetector, detection_cache_dir
+
+    try:
+        return PersonDetector.resolve_model_file(cfg), detection_cache_dir(cfg.storage_path)
+    except (OSError, ValueError):
+        return None
+
+
+def detection_compile_needed(cfg: DetectionConfig) -> bool:
+    """Whether building a detector for ``cfg`` would compile its model in-process."""
+    if not coreml_available():
+        return False
+    target = _detection_target(cfg)
+    return target is not None and compile_needed(*target)
+
+
+def precompile_detection(cfg: DetectionConfig, cancelled: Callable[[], bool]) -> bool:
+    """``precompile`` for the model a detector built from ``cfg`` loads."""
+    if not coreml_available():
+        return True
+    target = _detection_target(cfg)
+    return target is None or precompile(*target, cancelled)
+
+
+def wait_idle(timeout_s: float) -> bool:
+    """Wait for a running compile to end; a cancelled one kills its child within a poll."""
+    if not _compile_lock.acquire(timeout=timeout_s):
+        return False
+    _compile_lock.release()
+    return True
 
 
 def _run_child(model_path: str, cache_root: Path, cancelled: Callable[[], bool]) -> bool:

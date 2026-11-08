@@ -96,6 +96,26 @@ def _device_path(device_index: int) -> str | None:
     return os.fsdecode(raw) if raw else None
 
 
+def _device_name(device_index: int) -> str | None:
+    """Name SDL lists ``device_index`` under, read without opening it."""
+    fn = _sdl_device_fn("SDL_JoystickNameForIndex", ctypes.c_char_p)
+    if fn is None:
+        return None
+    raw = fn(device_index)
+    return raw.decode("utf-8", errors="replace") if raw else None
+
+
+# Linux hid-input names each HID application collection "<device> <collection>";
+# these hold only system, media and radio keys, yet SDL can list one as a joystick.
+_CONTROL_KEYS_COLLECTIONS = ("System Control", "Consumer Control", "Wireless Radio Control")
+
+
+def _is_control_keys(name: str | None) -> bool:
+    """Whether SDL's ``name`` is a keyboard's system, media or radio keys."""
+    name = (name or "").strip()
+    return any(name == suffix or name.endswith(f" {suffix}") for suffix in _CONTROL_KEYS_COLLECTIONS)
+
+
 # 3Dconnexion pucks as (vendor, product), kept out of SDL's joystick API: the
 # 3D Mouse subsystem drives them, and SDL would otherwise bind one as a gamepad.
 # SDL's blacklist takes exact pairs only, and Logitech's 0x046d also covers its
@@ -353,6 +373,9 @@ class GamepadUpdate:
     prev_marker_pressed: bool = False  # Cycle to previous controlled marker
     settings_open_pressed: bool = False  # btn_settings edge – open Settings menu
     clear_messages_pressed: bool = False  # btn_clear_messages edge
+    # Pads whose Pathfinder button went down, routed per pad like resets.
+    pathfinder_presses: set[int] = field(default_factory=set)
+    toggle_paths_pressed: bool = False
 
 
 class GamepadHandler:
@@ -418,6 +441,9 @@ class GamepadHandler:
         # hotplug re-detect doesn't re-warn on every cycle. Cleared in
         # ``apply_config`` when the calibration identity changes.
         self._calibration_warned: set[str] = set()
+        # Control-keys devices already logged, by device node (it survives an
+        # SDL re-init, an instance id does not), else by instance id.
+        self._not_gamepads: set[str | int | None] = set()
         # Threading: the main loop is the only writer, and every reader that
         # combines maps (get_controller_info, the HUD, the button wizard) runs
         # there too. Off the main loop each reader takes one map: the OSC thread
@@ -426,9 +452,8 @@ class GamepadHandler:
         # place, so a single-map reader always holds a complete one.
         self._capabilities_lock = threading.Lock()
 
-        # pygame.init() requires video subsystem; it also initializes SDL audio/mixer
-        # which OpenFollow doesn't use. On Linux, SDL audio opens the default ALSA
-        # device and floods the log. Point SDL audio at the dummy driver before init.
+        # Only the subsystems pads need start below; the dummy audio driver keeps a
+        # pygame.init() elsewhere from opening the default ALSA device.
         os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
         # The video subsystem is what pygame's event API needs, not joystick
         # init, and SDL's real backend pumps the same run loop GTK drives.
@@ -443,8 +468,9 @@ class GamepadHandler:
         # SDL's own SIGINT/SIGTERM handler turns a stop into a quit event nothing
         # reads, until the GLib main loop takes the signals over.
         os.environ.setdefault("SDL_NO_SIGNAL_HANDLERS", "1")
-        if not pygame.get_init():
-            pygame.init()
+        # Not pygame.init(): it starts SDL's timer and, through the mixer, audio, each a thread.
+        if not pygame.display.get_init():
+            pygame.display.init()
         if not getattr(pygame, "IS_CE", False):
             logger.warning(
                 "Gamepad input is running on classic pygame %s (SDL %s), not pygame-ce: "
@@ -504,6 +530,8 @@ class GamepadHandler:
         self._btn_toggle_zones_id = _resolve(cfg.btn_toggle_zones, -1)
         # Clear operator-message cards; default unbound.
         self._btn_clear_messages_id = _resolve(cfg.btn_clear_messages, BUTTON_ID_UNBOUND)
+        self._btn_pathfinder_id = _resolve(cfg.btn_pathfinder, BUTTON_ID_UNBOUND)
+        self._btn_toggle_paths_id = _resolve(cfg.btn_toggle_paths, BUTTON_ID_UNBOUND)
         # Unified menu confirm/cancel – shared by source / interface
         # selection and the Settings menu.
         self._btn_menu_confirm_id = _resolve(cfg.btn_menu_confirm, CONTROLLER_BUTTON_A)
@@ -682,7 +710,10 @@ class GamepadHandler:
             logger.error("Error detecting controllers: %s", e)
 
     def _open_device(self, device_index: int, *, held: Mapping[int, object]) -> _OpenedDevice | None:
-        """Open one SDL device without registering it; ``None`` if it is in ``held`` or fails.
+        """Open one SDL device without registering it.
+
+        ``None`` for a device in ``held``, one that fails to open, and one that
+        is not a gamepad (a 3Dconnexion puck or a keyboard's control keys).
 
         The key is the SDL instance id: it stays the same for as long as the
         device is attached, so state never has to follow a renumbering. Callers
@@ -693,6 +724,13 @@ class GamepadHandler:
         """
         if _is_spacemouse(device_index):
             logger.debug("Device %s is a 3Dconnexion puck; the 3D Mouse drives it", device_index)
+            return None
+        name = _device_name(device_index)
+        if _is_control_keys(name):
+            seen = _device_path(device_index) or _device_instance_id(device_index)
+            if seen not in self._not_gamepads:
+                self._not_gamepads.add(seen)
+                logger.info("Not opening %r as a gamepad: it carries system, media or radio keys", name)
             return None
         pygame_joy: Any = None
         ctrl_obj: ControllerProtocol | None = None
@@ -820,6 +858,7 @@ class GamepadHandler:
                 return
             old_count = len(self.joysticks)
             listed = {i: _device_instance_id(i) for i in range(pygame.joystick.get_count())}
+            self._not_gamepads &= {_device_path(i) or iid for i, iid in listed.items()}
             for key in [k for k in self.joysticks if k not in listed.values()]:
                 self._close_device(key)
             opened = []
@@ -1543,6 +1582,10 @@ class GamepadHandler:
                 # _get_button reads LT/RT as triggers and unbound as released.
                 if self._detect_button_edge(controller_idx, self._btn_clear_messages_id):
                     result.clear_messages_pressed = True
+                if self._detect_button_edge(controller_idx, self._btn_pathfinder_id):
+                    result.pathfinder_presses.add(controller_idx)
+                if self._detect_button_edge(controller_idx, self._btn_toggle_paths_id):
+                    result.toggle_paths_pressed = True
                 # Multi-pad: suppress DPAD next/prev to avoid rotating shared
                 # _selected_id. Gamepad-scoped inner guard; the authoritative
                 # cross-device gate is InputManager.marker_cycle_active (which
@@ -1780,6 +1823,8 @@ class GamepadHandler:
             self._btn_toggle_help_id,
             self._btn_toggle_zones_id,
             self._btn_clear_messages_id,
+            self._btn_pathfinder_id,
+            self._btn_toggle_paths_id,
             self._btn_next_marker_id,
             self._btn_prev_marker_id,
             self._btn_settings_id,
@@ -1868,5 +1913,5 @@ class GamepadHandler:
         # arms are the normal teardown the rest of the suite exercises.
         if pygame.joystick.get_init():  # pragma: no branch
             pygame.joystick.quit()
-        if pygame.get_init():  # pragma: no branch
-            pygame.quit()
+        if pygame.display.get_init():  # pragma: no branch
+            pygame.display.quit()

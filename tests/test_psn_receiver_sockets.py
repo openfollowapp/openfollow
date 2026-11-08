@@ -7,10 +7,10 @@ Covers the gaps left open by the ``_on_packet`` parsing suite:
 * ``_RobustReceiver.run`` – the upstream ``pypsn.Receiver.run`` prints
   socket errors to stdout and runs ``parse_psn_packet``/``callback``
   outside the try/except, so bad packets crashed the thread.  Our
-  subclass wraps all three failure modes (``socket.timeout``,
-  ``OSError`` with / without ``running``, generic ``Exception``) plus
-  the parse/callback error path.  Drive the loop with a fake socket so
-  every branch fires under a bounded iteration count.
+  subclass wraps all three failure modes (a readiness with no datagram,
+  ``OSError`` before / after stop, generic ``Exception``) plus the
+  parse/callback error path.  Drive the loop with a fake socket and gate
+  so every branch fires under a bounded iteration count.
 * ``PsnReceiver.start`` – constructs the receiver and recovers gracefully
   from an ``OSError`` on socket bind (common in CI where multicast is
   blocked).  Tests both the happy path and the logged-error branch.
@@ -19,6 +19,7 @@ Covers the gaps left open by the ``_on_packet`` parsing suite:
 
 from __future__ import annotations
 
+import socket
 from dataclasses import dataclass
 from typing import Any
 
@@ -75,12 +76,29 @@ class _ScriptedSocket:
         self.recv_calls += 1
         if not self._script:
             # Deterministic stop – the loop should already have exited
-            # via ``self.running = False`` by now.
+            # on its stopped gate by now.
             raise StopIteration("script exhausted")
         item = self._script.pop(0)
         if isinstance(item, Exception):
             raise item
         return item, ("127.0.0.1", 56565)
+
+
+class _ScriptedGate:
+    """Stands in for ``ReceiveGate``: reports the socket readable until stopped."""
+
+    def __init__(self) -> None:
+        self.stopped = False
+        self.closed = False
+
+    def wait(self) -> bool:
+        return not self.stopped
+
+    def stop(self) -> None:
+        self.stopped = True
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def _make_robust_receiver(
@@ -93,12 +111,14 @@ def _make_robust_receiver(
 
     ``pypsn.Receiver.__init__`` binds a real multicast socket; bypass it
     via ``object.__new__`` and populate the fields ``run()`` actually
-    reads (``socket``, ``running``, ``callback``).
+    reads (``socket``, ``_gate``, ``callback``). A test ends the loop by
+    stopping the gate.
     """
     instance = object.__new__(_RobustReceiver)
     instance.socket = socket_obj
-    instance.running = True
+    instance._gate = _ScriptedGate() if socket_obj is not None else None
     instance.callback = callback or (lambda _data, _sender: None)
+    instance._own_source = lambda: None
     return instance
 
 
@@ -117,9 +137,17 @@ class TestRobustReceiverSocketNone:
         # beyond not raising.
         r.run()
 
+    def test_no_socket_starts_no_thread_and_stops_cleanly(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """pypsn's ``get_socket`` returns None on a platform it cannot join on."""
+        monkeypatch.setattr(receiver_module.pypsn, "get_socket", lambda *_args: None)
+        r = _RobustReceiver(callback=lambda *_: None, ip_addr="10.0.0.5", mcast_port=56565)
+        r.start()
+        assert r.ident is None
+        r.stop()  # joining a thread that never started would raise
 
-class TestRobustReceiverTimeoutContinues:
-    def test_timeout_does_not_break_the_loop(
+
+class TestRobustReceiverReadinessWithoutData:
+    def test_an_empty_read_does_not_break_the_loop(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -128,13 +156,13 @@ class TestRobustReceiverTimeoutContinues:
 
         sock = _ScriptedSocket(
             [
-                TimeoutError("no data"),
+                BlockingIOError("no datagram after all"),
                 b"\x00\x01\x02",  # real payload on the second attempt
             ]
         )
         r = _make_robust_receiver(
             socket_obj=sock,
-            callback=lambda data, _sender: (calls.append(data), setattr(r, "running", False))[0],
+            callback=lambda data, _sender: (calls.append(data), r._gate.stop())[0],
         )
         r.run()
         assert sock.recv_calls == 2
@@ -153,7 +181,7 @@ class TestRobustReceiverTimeoutContinues:
         sock = _ScriptedSocket([b"\x00"])
         r = _make_robust_receiver(
             socket_obj=sock,
-            callback=lambda _data, sender: (senders.append(sender), setattr(r, "running", False))[0],
+            callback=lambda _data, sender: (senders.append(sender), r._gate.stop())[0],
         )
         r.run()
         assert senders == ["127.0.0.1"]
@@ -177,7 +205,7 @@ class TestRobustReceiverOSError:
         )
         calls: list[Any] = []
         r = _make_robust_receiver(socket_obj=sock)
-        r.callback = lambda data, _sender: (calls.append(data), setattr(r, "running", False))[0]
+        r.callback = lambda data, _sender: (calls.append(data), r._gate.stop())[0]
 
         with caplog.at_level("DEBUG", logger="openfollow.psn.receiver"):
             r.run()
@@ -185,35 +213,28 @@ class TestRobustReceiverOSError:
         assert calls == [b"\x00"]
         assert any("PSN recv socket error" in rec.message for rec in caplog.records if rec.levelname == "DEBUG")
 
-    def test_oserror_after_stop_breaks_the_loop(
+    def test_a_read_failing_after_stop_ends_the_loop_and_closes_the_gate(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """When ``stop()`` closes the socket, the next ``recvfrom``
-        raises OSError.  Inside the handler ``if not self.running: break``
-        – otherwise the loop would spin on a closed fd burning CPU.
-        Simulate the race where ``stop()`` flips ``running`` between
-        ``recvfrom`` and the handler.
-        """
+        """``stop()`` closes the socket, so the read in flight fails; the loop
+        must end on the stopped gate rather than spin on a closed fd."""
         monkeypatch.setattr(receiver_module.pypsn, "parse_psn_packet", lambda data: data)
 
-        # First recvfrom raises OSError.  ``running`` is still True when
-        # the ``while`` condition is evaluated, so the loop body runs
-        # once; the socket then flips ``running`` to False on the way
-        # into OSError so the handler hits the break path at line 33.
-        raise_then_stop_sock = type(
-            "_StopOnEnter",
-            (),
-            {
-                "calls": 0,
-                "recvfrom": lambda self, _n: (
-                    setattr(r, "running", False),
-                    (_ for _ in ()).throw(OSError(9, "Bad file descriptor")),
-                )[-1],
-            },
-        )()
-        r = _make_robust_receiver(socket_obj=raise_then_stop_sock)
-        r.run()  # break path – must terminate without looping
+        class _ClosedUnderRead:
+            calls = 0
+
+            def recvfrom(self, _n: int) -> Any:
+                self.calls += 1
+                r._gate.stop()
+                raise OSError(9, "Bad file descriptor")
+
+        sock = _ClosedUnderRead()
+        r = _make_robust_receiver(socket_obj=sock)
+        gate = r._gate
+        r.run()
+        assert sock.calls == 1
+        assert gate.closed is True
 
 
 class TestRobustReceiverUnexpectedException:
@@ -235,7 +256,7 @@ class TestRobustReceiverUnexpectedException:
         )
         calls: list[Any] = []
         r = _make_robust_receiver(socket_obj=sock)
-        r.callback = lambda data, _sender: (calls.append(data), setattr(r, "running", False))[0]
+        r.callback = lambda data, _sender: (calls.append(data), r._gate.stop())[0]
 
         with caplog.at_level("DEBUG", logger="openfollow.psn.receiver"):
             r.run()
@@ -263,7 +284,7 @@ class TestRobustReceiverParseAndCallbackErrors:
         def _stop_after_two(_data: bytes) -> Any:
             iters["n"] += 1
             if iters["n"] >= 2:
-                r.running = False
+                r._gate.stop()
             raise ValueError("bad header")
 
         monkeypatch.setattr(receiver_module.pypsn, "parse_psn_packet", _stop_after_two)
@@ -287,7 +308,7 @@ class TestRobustReceiverParseAndCallbackErrors:
             if call_count["n"] == 1:
                 raise RuntimeError("downstream exploded")
             # Second call signals success and exits the loop.
-            r.running = False
+            r._gate.stop()
 
         sock = _ScriptedSocket([b"\x00", b"\x01"])
         r = _make_robust_receiver(socket_obj=sock, callback=_flaky)
@@ -310,7 +331,9 @@ class _FakeRecvThread:
     construct_raises: OSError | None = None
     instances: list[_FakeRecvThread] = []
 
-    def __init__(self, *, callback: Any, ip_addr: str, mcast_port: int, iface: str = "") -> None:
+    def __init__(
+        self, *, callback: Any, ip_addr: str, mcast_port: int, iface: str = "", own_source: Any = None
+    ) -> None:
         if _FakeRecvThread.construct_raises is not None:
             raise _FakeRecvThread.construct_raises
         self.callback = callback
@@ -375,10 +398,44 @@ class TestPsnReceiverStart:
         assert any("PSN receiver socket failed" in rec.message for rec in caplog.records if rec.levelname == "ERROR")
 
 
+class TestPsnReceiverEnabled:
+    """The PSN input feature: a receiver that is not enabled never binds, on any path."""
+
+    def test_a_disabled_receiver_never_binds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(receiver_module, "_RobustReceiver", _FakeRecvThread)
+        recv = PsnReceiver(source_ip="192.0.2.5", enabled=False)
+        recv.start()
+        recv.rebind("192.0.2.6", source_iface="eth1")
+        assert _FakeRecvThread.instances == []
+        assert recv.bound_source_ip() is None
+        assert (recv._source_ip, recv._source_iface) == ("192.0.2.6", "eth1")
+
+    def test_disabling_stops_it_and_forgets_every_marker(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(receiver_module, "_RobustReceiver", _FakeRecvThread)
+        recv = PsnReceiver(source_ip="192.0.2.5")
+        recv.start()
+        recv._markers[7] = object()  # type: ignore[assignment]
+        recv._last_seen[7] = 1.0
+        recv.set_enabled(False)
+        assert _FakeRecvThread.instances[0].stopped is True
+        assert recv.bound_source_ip() is None
+        assert recv.get_marker(7) is None
+        assert recv.is_marker_online(7) is False
+        assert recv.enabled is False
+
+    def test_enabling_again_lets_a_rebind_bind(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(receiver_module, "_RobustReceiver", _FakeRecvThread)
+        recv = PsnReceiver(source_ip="192.0.2.5", enabled=False)
+        recv.set_enabled(True)
+        recv.rebind("192.0.2.5")
+        assert recv.bound_source_ip() == "192.0.2.5"
+
+
 class _RecordingRecvSocket:
     """A receive socket that records what a pinned ``_RobustReceiver`` does to it."""
 
-    def __init__(self, *_args: Any) -> None:
+    def __init__(self, *args: Any) -> None:
+        self.args = args
         self.options: list[tuple[int, int, int]] = []
         self.bound: tuple[str, int] | None = None
         self.timeout: float | None = None
@@ -425,9 +482,11 @@ class TestPinnedReceiveSocket:
         receiver = _RobustReceiver(callback=lambda *_: None, ip_addr="169.254.7.7", mcast_port=56565, iface="eth1")
         (sock,) = sockets
         assert receiver.socket is sock
+        assert sock.args == (socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        # Every station on the group shares the PSN port.
+        assert sock.options == [(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)]
         assert sock.bound == ("236.10.10.10", 56565)
         assert joins == [(sock, "236.10.10.10", "169.254.7.7", "eth1")]
-        assert sock.timeout == 2
 
     def test_a_refused_join_closes_the_socket_and_raises(
         self, monkeypatch: pytest.MonkeyPatch, sockets: list[_RecordingRecvSocket]
@@ -455,8 +514,8 @@ class TestPinnedReceiveSocket:
             return theirs
 
         monkeypatch.setattr(pypsn, "get_socket", _get_socket)
-        receiver = _RobustReceiver(callback=lambda *_: None, ip_addr="10.0.0.5", mcast_port=56565)
-        assert opened == [("10.0.0.5", 56565)]
+        receiver = _RobustReceiver(callback=lambda *_: None, ip_addr="10.0.0.5", mcast_port=56999)
+        assert opened == [("10.0.0.5", 56999)]
         assert receiver.socket is theirs
         assert sockets == []
 
@@ -511,6 +570,39 @@ class TestPsnReceiverRebind:
         # ``_source_ip`` reflects the new value so a subsequent rebind to
         # the same IP would still be a real change against the prior cfg.
         assert recv._source_ip == "192.168.1.5"
+
+
+class TestStoppedGenerationIsDropped:
+    """A receive thread that outlives its stop must not land what it read."""
+
+    def _packet(self, tracker_id: int) -> _FakeDataPacket:
+        return _FakeDataPacket([_PacketTracker(tracker_id, _Vec(1.0, 2.0, 3.0), _Vec(0.0, 0.0, 0.0))])
+
+    def test_a_packet_from_a_stopped_thread_is_dropped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(receiver_module, "_RobustReceiver", _FakeRecvThread)
+        monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
+        recv = PsnReceiver()
+        recv.start()
+        late = _FakeRecvThread.instances[0].callback
+        recv.stop()
+
+        late(self._packet(5), "10.0.0.1")
+
+        assert recv.get_marker(5) is None
+
+    def test_after_a_rebind_only_the_new_thread_is_heard(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(receiver_module, "_RobustReceiver", _FakeRecvThread)
+        monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
+        recv = PsnReceiver(source_ip="10.0.0.5")
+        recv.start()
+        recv.rebind("10.0.0.6")
+        old, new = (fake.callback for fake in _FakeRecvThread.instances)
+
+        old(self._packet(5), "10.0.0.1")
+        new(self._packet(6), "10.0.0.1")
+
+        assert recv.get_marker(5) is None
+        assert recv.get_marker(6) is not None
 
 
 # --------------------------------------------------------------------------- #
@@ -625,3 +717,129 @@ class TestSetIgnoreIds:
         marker = recv.get_marker(7)
         assert marker is not None
         assert marker.pos == pytest.approx((1.0, 2.0, 3.0))
+
+
+# --------------------------------------------------------------------------- #
+# _RobustReceiver – this station's own output
+# --------------------------------------------------------------------------- #
+
+
+class _AddressedSocket:
+    """``recvfrom`` returns each scripted ``(data, (address, port))`` in turn."""
+
+    def __init__(self, script: list[tuple[bytes, tuple[str, int]]]) -> None:
+        self._script = list(script)
+
+    def recvfrom(self, _size: int) -> tuple[bytes, tuple[str, int]]:
+        return self._script.pop(0)
+
+    def settimeout(self, _timeout: float) -> None:
+        pass
+
+
+_OWN = ("192.0.2.10", 50000)
+_PEER = ("198.51.100.1", 56565)
+
+
+class TestOwnOutputIsNotDecoded:
+    def _run(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        script: list[tuple[bytes, tuple[str, int]]],
+        own: Any,
+        on_packet: Any = None,
+    ) -> list[bytes]:
+        """Feed ``script`` then a last packet from a peer; return what was decoded."""
+        decoded: list[bytes] = []
+        monkeypatch.setattr(receiver_module.pypsn, "parse_psn_packet", lambda data: decoded.append(data) or data)
+
+        def callback(data: bytes, _sender: str) -> None:
+            if on_packet is not None:
+                on_packet(data)
+            if data == b"last":
+                r._gate.stop()
+
+        r = _make_robust_receiver(socket_obj=_AddressedSocket([*script, (b"last", _PEER)]), callback=callback)
+        r._own_source = own
+        r.run()
+        return decoded
+
+    @pytest.mark.parametrize(
+        ("sender", "is_decoded"),
+        [(_OWN, False), (("192.0.2.10", 50001), True), (("192.0.2.11", 50000), True)],
+        ids=["own-address-and-port", "own-address-other-port", "other-address-own-port"],
+    )
+    def test_only_this_station_s_own_packets_are_dropped(
+        self, monkeypatch: pytest.MonkeyPatch, sender: tuple[str, int], is_decoded: bool
+    ) -> None:
+        decoded = self._run(monkeypatch, [(b"probe", sender)], lambda: _OWN)
+        assert decoded == ([b"probe", b"last"] if is_decoded else [b"last"])
+
+    def test_without_an_own_output_every_packet_is_decoded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert self._run(monkeypatch, [(b"probe", _OWN)], lambda: None) == [b"probe", b"last"]
+
+    def test_a_rebuilt_output_socket_is_followed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        new = ("192.0.2.10", 50002)
+        current = {"own": _OWN}
+
+        def rebuild(data: bytes) -> None:
+            if data == b"rebuild":
+                current["own"] = new
+
+        script = [(b"old-before", _OWN), (b"rebuild", _PEER), (b"old-after", _OWN), (b"new", new)]
+        decoded = self._run(monkeypatch, script, lambda: current["own"], rebuild)
+        assert decoded == [b"rebuild", b"old-after", b"last"]
+
+
+class _ReadsThenStops(_ScriptedGate):
+    """Reports the socket readable ``reads`` times, then stops."""
+
+    def __init__(self, reads: int) -> None:
+        super().__init__()
+        self._reads = reads
+
+    def wait(self) -> bool:
+        self._reads -= 1
+        return self._reads >= 0
+
+
+class TestPsnReceiverHandsOwnSourceToItsReceiveThread:
+    @pytest.mark.parametrize("iface", ["", "eth1"], ids=["unpinned", "pinned"])
+    def test_its_station_s_own_packets_are_dropped(self, monkeypatch: pytest.MonkeyPatch, iface: str) -> None:
+        sock = _AddressedSocket([(b"own", _OWN), (b"peer", _PEER)])
+        monkeypatch.setattr(receiver_module.pypsn, "get_socket", lambda *_args: sock)
+        monkeypatch.setattr(receiver_module, "_pinned_socket", lambda *_args: sock)
+        started: list[_RobustReceiver] = []
+        monkeypatch.setattr(_RobustReceiver, "start", lambda self: started.append(self))
+        decoded: list[bytes] = []
+        monkeypatch.setattr(receiver_module.pypsn, "parse_psn_packet", lambda data: decoded.append(data) or data)
+
+        PsnReceiver(source_ip="10.0.0.5", source_iface=iface, own_source=lambda: _OWN).start()
+        (thread,) = started
+        thread._gate = _ReadsThenStops(2)
+        thread.run()
+        assert decoded == [b"peer"]
+
+    def test_a_departed_peer_is_forgotten_while_only_its_own_packets_arrive(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock = {"now": 0.0}
+        monkeypatch.setattr(receiver_module.time, "monotonic", lambda: clock["now"])
+        monkeypatch.setattr(receiver_module.pypsn, "PsnDataPacket", _FakeDataPacket)
+        packets = {b"peer": _FakeDataPacket([_PacketTracker(7, _Vec(1.0, 2.0, 3.0), _Vec(0.0, 0.0, 0.0))])}
+        monkeypatch.setattr(receiver_module.pypsn, "parse_psn_packet", packets.__getitem__)
+        sock = _AddressedSocket([(b"peer", _PEER), (b"own", _OWN)])
+        monkeypatch.setattr(receiver_module.pypsn, "get_socket", lambda *_args: sock)
+        started: list[_RobustReceiver] = []
+        monkeypatch.setattr(_RobustReceiver, "start", lambda self: started.append(self))
+
+        recv = PsnReceiver(source_ip="10.0.0.5", own_source=lambda: _OWN)
+        recv.start()
+        (thread,) = started
+        thread._gate = _ReadsThenStops(1)
+        thread.run()
+        assert recv.get_marker(7) is not None
+        clock["now"] = 100.0  # past the TTL; from here on only this station's own output arrives
+        thread._gate = _ReadsThenStops(1)
+        thread.run()
+        assert recv.get_marker(7) is None

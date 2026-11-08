@@ -585,7 +585,9 @@ class TestStartWiresThePacketHandler:
         captured: list[object] = []
 
         class _StubRecvThread:
-            def __init__(self, *, callback: object, ip_addr: str, mcast_port: int, iface: str = "") -> None:
+            def __init__(
+                self, *, callback: object, ip_addr: str, mcast_port: int, iface: str = "", own_source: object = None
+            ) -> None:
                 captured.append(callback)
                 self.daemon = False
 

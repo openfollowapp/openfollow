@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import sys
 import time
+from pathlib import Path
 
 from openfollow import OpenFollowApp
 from openfollow.logging_setup import setup_logging
@@ -18,11 +19,12 @@ _MAX_RESTARTS = 5
 _RESTART_WINDOW = 300  # seconds
 
 
-def main() -> None:
+def main(*, log_file: Path | None = None) -> None:
+    """Run the app, restarting it after a crash. ``log_file`` replaces stderr for the log."""
     config_path = sys.argv[1] if len(sys.argv) > 1 else "config.toml"
 
     # Configure logging with in-memory ring fallback for diagnostics.
-    log_ring = setup_logging(level=logging.INFO)
+    log_ring = setup_logging(level=logging.INFO, log_file=log_file)
 
     restart_times: list[float] = []
 

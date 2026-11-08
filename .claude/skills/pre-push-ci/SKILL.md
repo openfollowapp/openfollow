@@ -20,6 +20,11 @@ dev Mac masks. When no Pi is reachable it falls back to
 running `make ci` locally. **It must pass before every `git push`.** No
 exceptions for "trivial" changes.
 
+The one exception is a docs-only push: when every changed file is Markdown
+outside `openfollow/` (README, SECURITY.md, CLAUDE.md, `docs/`,
+`.claude/skills/`), skip the gate. Help `.md` files under `openfollow/` ship
+with the app and are read by tests, so a change to one still runs the gate.
+
 ## Run it
 
 ```bash
@@ -28,13 +33,30 @@ make ci-remote   # Pi if reachable, else local
 
 It rsyncs the working tree onto the Pi, runs `make ci` in the Pi's poetry env,
 then restores the Pi to its pre-run commit. Device-local files (`config.toml`,
-detection `models/`) are excluded from the sync. Overrides in
+detection `models/`) are excluded from the sync. An interrupted gate (Ctrl-C, a
+dropped connection) stops its own run on the Pi before restoring, and a gate
+refuses to start while an earlier one is still running there ("an earlier gate
+is still running"). Overrides in
 `scripts/ci-remote.sh`: `OPENFOLLOW_CI_HOSTS` (default
 `192.168.178.66 192.168.178.59`), `OPENFOLLOW_CI_USER`, `OPENFOLLOW_CI_DIR`,
 `OPENFOLLOW_CI_FORCE=1` (overwrite a dirty Pi), `OPENFOLLOW_CI_LOCAL=1` (force
-local). The Pi path needs passwordless SSH; without it the probe fails and the
+local), `OPENFOLLOW_CI_PERF`, `OPENFOLLOW_CI_PERF_BASE` (below). The Pi path needs passwordless SSH; without it the probe fails and the
 gate runs locally instead. `make ci` remains the underlying job – what runs on
 the Pi, or locally as the fallback.
+
+When the change (uncommitted files included) touches the Operator Screen
+drawing paths (`video/overlay.py`, `video/hud_render.py`, `runtime/overlay_*.py`,
+`scene/solver.py` / `ground_grid.py` / `camera.py`, `zones/geometry.py`,
+`window.py`, the bench scenes or the bench itself), `ci-remote` follows a green
+`make ci` with a comparison of its own (`make perf-ab PERF_BASE=<dir>` is the
+same step by hand): the bench scenes drawn with this tree's renderer and with
+the merge-base's (against `origin/main`), rounds alternating, about a
+minute on a Pi 5. It fails the gate when a scene is more than 15 % slower
+("Operator Screen drawing is more than 15 % slower") or when the comparison
+cannot run. `OPENFOLLOW_CI_PERF=0` / `=1` turns it off / on whatever changed;
+`OPENFOLLOW_CI_PERF_BASE` names another ref than `origin/main`. A slower scene
+is a real result, not a flake: find what got slower with
+`scripts/hw_validation/hud_bench.py --split`.
 
 ## Interpreting failures
 
@@ -54,8 +76,8 @@ OpenFollow runs on isolated show LANs with no WAN. The app – including the web
 
 - No CDN-loaded JS/CSS/fonts. Bundle assets under `openfollow/web/static/` and
   reference via the `/assets/<filename:path>` route.
-- No outbound HTTP from server-side code at runtime. The gated `git pull` update
-  flow is the only sanctioned exception.
+- No outbound HTTP from server-side code at runtime, except the four exceptions
+  listed in `CLAUDE.md` "Offline runtime".
 - No silent "online fallback". Ask: *does this still work after I unplug the WAN
   cable?* If no, it's broken.
 
@@ -65,8 +87,8 @@ OpenFollow runs on isolated show LANs with no WAN. The app – including the web
   user explicitly directed otherwise).
 - **Docs gate:** if the change touched a control, config field, route, keybind,
   or documented behaviour, update the matching docs in the same change –
-  `openfollow/web/help/<section>.md`, the relevant `docs/` file, and/or the
-  `CLAUDE.md` tables. A behaviour change with stale docs is incomplete.
+  `openfollow/web/help/<section>.md`, the matching `docs/architecture/` guide,
+  and/or another `docs/` file. A behaviour change with stale docs is incomplete.
 
 **Done when:** `make ci-remote` exits 0 (on the Pi when reachable, else locally)
 and the docs reflect the change.

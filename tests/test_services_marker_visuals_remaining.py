@@ -30,16 +30,17 @@ import pypsn
 import pytest
 
 from openfollow.configuration import AppConfig
+from openfollow.marker_catalog.control_conflicts import ControlConflict
 from openfollow.psn.marker import Marker
 from openfollow.psn.receiver import PsnReceiver
 from openfollow.runtime.marker_velocity import _MAX_REPORTED_SPEED_MPS
 from openfollow.runtime.overlay_draw_hud import draw_marker_card
+from openfollow.runtime.overlay_draw_style import COLOR_BG_BASE, COLOR_WARNING_FILL
 from openfollow.runtime.overlay_layout import PictureGeometry
-from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
+from openfollow.runtime.overlay_state import OverlayState
 from openfollow.runtime.overlay_status_badge import draw_status_badge
 from openfollow.runtime.services_detection_pin import get_or_create_manual_marker
 from openfollow.runtime.services_marker_visuals import build_marker_visual_state
-from openfollow.runtime_metrics import OverlayStatePool
 from openfollow.video.failure import VideoFailure
 from tests._fake_cairo import FakeCairo, FakeRenderer
 
@@ -173,11 +174,6 @@ class _FakeCamera:
         return self._cfg
 
 
-@pytest.fixture
-def pool() -> OverlayStatePool:
-    return OverlayStatePool(pool_size=3)
-
-
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
@@ -204,11 +200,13 @@ def _build_app(
         _psn_receiver=_FakePsnReceiver(receiver_markers or {}, online or {}),
         _input_manager=input_manager,
         _video_receiver=_FakeVideoReceiver(),
+        _canvas=None,
         _camera=_FakeCamera(),
         _button_detection=button_detection,
         _settings_menu_active=settings_menu_active,
         _settings_menu_index=0,
         _settings_menu_banner="",
+        _settings_menu_banner_action="",
         _source_type_selection_active=False,
         _available_source_types=[],
         _selected_source_type_index=0,
@@ -234,22 +232,22 @@ def _build_app(
 
 def _build(
     app: SimpleNamespace,
-    pool: OverlayStatePool,
     *,
     system_stats: Any = None,
     person_detector: Any = None,
     dt: float = _FRAME_DT,
     network_alerts: list[str] | None = None,
+    control_conflicts: tuple[ControlConflict, ...] = (),
 ) -> OverlayState:
     # Controller badge is stamped from InputManager.get_controller_info.
     return build_marker_visual_state(
         app,
-        overlay_state_pool=pool,
         system_stats=system_stats,
         person_detector=person_detector,
         cam_params_buffer=np.zeros(7, dtype=np.float64),
         dt=dt,
         network_alerts=network_alerts,
+        control_conflicts=control_conflicts,
     )
 
 
@@ -259,15 +257,15 @@ def _build(
 
 
 class TestSystemStatsFlow:
-    def test_system_stats_none_leaves_defaults(self, pool: OverlayStatePool) -> None:
+    def test_system_stats_none_leaves_defaults(self) -> None:
         app = _build_app()
-        state = _build(app, pool, system_stats=None)
+        state = _build(app, system_stats=None)
         assert state.cpu_percent == 0.0
         assert state.ram_percent == 0.0
         assert state.temperature is None
         assert state.ip_text == ""
 
-    def test_port_80_is_omitted_from_ip_text(self, pool: OverlayStatePool) -> None:
+    def test_port_80_is_omitted_from_ip_text(self) -> None:
         app = _build_app()
         stats = SimpleNamespace(
             cpu_percent=40.1,
@@ -275,15 +273,16 @@ class TestSystemStatsFlow:
             temperature=58.0,
             ip_address="10.0.0.7",
             iface_name="",
+            power_warning="",
         )
         collector = SimpleNamespace(update=lambda: stats)
-        state = _build(app, pool, system_stats=collector)
+        state = _build(app, system_stats=collector)
         assert state.cpu_percent == pytest.approx(40.1)
         assert state.ram_percent == pytest.approx(66.5)
         assert state.temperature == pytest.approx(58.0)
         assert state.ip_text == "10.0.0.7"
 
-    def test_non_default_configured_port_is_shown(self, pool: OverlayStatePool) -> None:
+    def test_non_default_configured_port_is_shown(self) -> None:
         from dataclasses import replace
 
         app = _build_app()
@@ -294,12 +293,13 @@ class TestSystemStatsFlow:
             temperature=None,
             ip_address="10.0.0.7",
             iface_name="",
+            power_warning="",
         )
         collector = SimpleNamespace(update=lambda: stats)
-        state = _build(app, pool, system_stats=collector)
+        state = _build(app, system_stats=collector)
         assert state.ip_text == "10.0.0.7:9000"
 
-    def test_web_server_display_port_overrides_config(self, pool: OverlayStatePool) -> None:
+    def test_web_server_display_port_overrides_config(self) -> None:
         app = _build_app()
         app._web_server = SimpleNamespace(display_port=8080)
         stats = SimpleNamespace(
@@ -308,12 +308,13 @@ class TestSystemStatsFlow:
             temperature=None,
             ip_address="10.0.0.7",
             iface_name="",
+            power_warning="",
         )
         collector = SimpleNamespace(update=lambda: stats)
-        state = _build(app, pool, system_stats=collector)
+        state = _build(app, system_stats=collector)
         assert state.ip_text == "10.0.0.7:8080"
 
-    def test_unknown_ip_skips_port_suffix(self, pool: OverlayStatePool) -> None:
+    def test_unknown_ip_skips_port_suffix(self) -> None:
         app = _build_app()
         stats = SimpleNamespace(
             cpu_percent=0.0,
@@ -321,12 +322,13 @@ class TestSystemStatsFlow:
             temperature=None,
             ip_address="N/A",
             iface_name="",
+            power_warning="",
         )
         collector = SimpleNamespace(update=lambda: stats)
-        state = _build(app, pool, system_stats=collector)
+        state = _build(app, system_stats=collector)
         assert state.ip_text == "N/A"
 
-    def test_iface_name_appended_in_parens(self, pool: OverlayStatePool) -> None:
+    def test_iface_name_appended_in_parens(self) -> None:
         """HUD shows IP address with interface name for multi-homed hosts."""
         app = _build_app()
         stats = SimpleNamespace(
@@ -335,12 +337,13 @@ class TestSystemStatsFlow:
             temperature=None,
             ip_address="192.168.178.61",
             iface_name="eth0",
+            power_warning="",
         )
         collector = SimpleNamespace(update=lambda: stats)
-        state = _build(app, pool, system_stats=collector)
+        state = _build(app, system_stats=collector)
         assert state.ip_text == "192.168.178.61 (eth0)"
 
-    def test_iface_name_with_non_default_port(self, pool: OverlayStatePool) -> None:
+    def test_iface_name_with_non_default_port(self) -> None:
         """The iface suffix follows the ``ip:port`` block so the
         whole composed value reads naturally."""
         from dataclasses import replace
@@ -353,9 +356,10 @@ class TestSystemStatsFlow:
             temperature=None,
             ip_address="10.0.0.7",
             iface_name="wlan0",
+            power_warning="",
         )
         collector = SimpleNamespace(update=lambda: stats)
-        state = _build(app, pool, system_stats=collector)
+        state = _build(app, system_stats=collector)
         assert state.ip_text == "10.0.0.7:9000 (wlan0)"
 
     @pytest.mark.parametrize(
@@ -364,7 +368,6 @@ class TestSystemStatsFlow:
     )
     def test_link_local_address_is_flagged_as_a_fallback(
         self,
-        pool: OverlayStatePool,
         ip: str,
         expected: bool,
     ) -> None:
@@ -377,9 +380,10 @@ class TestSystemStatsFlow:
             temperature=None,
             ip_address=ip,
             iface_name="eth0",
+            power_warning="",
         )
         collector = SimpleNamespace(update=lambda: stats)
-        state = _build(app, pool, system_stats=collector)
+        state = _build(app, system_stats=collector)
         assert state.ip_is_fallback is expected
 
 
@@ -388,32 +392,32 @@ class TestNetworkAlerts:
     the field left the whole suite green while the one surface an operator has
     during an outage silently went empty."""
 
-    def test_alerts_reach_the_overlay_state(self, pool: OverlayStatePool) -> None:
+    def test_alerts_reach_the_overlay_state(self) -> None:
         app = _build_app()
-        state = _build(app, pool, network_alerts=["PSN: eth0.10 is down"])
+        state = _build(app, network_alerts=["PSN: eth0.10 is down"])
         assert state.network_alerts == ["PSN: eth0.10 is down"]
 
-    def test_no_alerts_leaves_the_field_empty(self, pool: OverlayStatePool) -> None:
+    def test_no_alerts_leaves_the_field_empty(self) -> None:
         app = _build_app()
-        assert _build(app, pool).network_alerts == []
+        assert _build(app).network_alerts == []
 
-    def test_each_outage_is_an_error_row_top_right(self, pool: OverlayStatePool) -> None:
+    def test_each_outage_is_an_error_row_top_right(self) -> None:
         app = _build_app()
-        state = _build(app, pool, network_alerts=["PSN: eth0.10 is down", "OSC output: eth1 is down"])
+        state = _build(app, network_alerts=["PSN: eth0.10 is down", "OSC output: eth1 is down"])
         assert state.status_flags == [
             ("network_down_0", "PSN: eth0.10 is down", "error"),
             ("network_down_1", "OSC output: eth1 is down", "error"),
         ]
 
-    def test_no_outage_adds_no_row(self, pool: OverlayStatePool) -> None:
-        assert _build(_build_app(), pool).status_flags == []
+    def test_no_outage_adds_no_row(self) -> None:
+        assert _build(_build_app()).status_flags == []
 
-    def test_the_state_owns_its_copy(self, pool: OverlayStatePool) -> None:
+    def test_the_state_owns_its_copy(self) -> None:
         """The observer rebuilds its list each poll; the overlay must not hold
         a reference that mutates under the renderer mid-frame."""
         app = _build_app()
         alerts = ["PSN: eth0 is down"]
-        state = _build(app, pool, network_alerts=alerts)
+        state = _build(app, network_alerts=alerts)
         alerts.append("OTP output: eth1 is down")
         assert state.network_alerts == ["PSN: eth0 is down"]
 
@@ -421,7 +425,6 @@ class TestNetworkAlerts:
 class TestHostnameRow:
     def test_hostname_is_the_running_name_not_the_station_slug(
         self,
-        pool: OverlayStatePool,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """When the rename was skipped, advertising the desired slug would
@@ -431,12 +434,11 @@ class TestHostnameRow:
         monkeypatch.setattr(device_repair, "current_hostname", lambda: "raspberrypi")
         app = _build_app()
         app._config = replace(app._config, psn_system_name="Noble Bear")
-        state = _build(app, pool)
+        state = _build(app)
         assert state.hostname_text == "raspberrypi.local"
 
     def test_hostname_carries_a_non_default_port(
         self,
-        pool: OverlayStatePool,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """On a fallback bind the UI is not on port 80, so a bare name would
@@ -446,13 +448,12 @@ class TestHostnameRow:
         monkeypatch.setattr(device_repair, "current_hostname", lambda: "raspberrypi")
         app = _build_app()
         app._config = replace(app._config, web_port=8080)
-        state = _build(app, pool)
+        state = _build(app)
         assert state.hostname_text == "raspberrypi.local:8080"
 
     @pytest.mark.parametrize(("port", "shown"), [(80, ""), (8080, ":8080")])
     def test_the_station_fqdn_replaces_the_local_name(
         self,
-        pool: OverlayStatePool,
         monkeypatch: pytest.MonkeyPatch,
         port: int,
         shown: str,
@@ -464,14 +465,10 @@ class TestHostnameRow:
         monkeypatch.setattr(device_repair, "current_hostname", lambda: "localhost")
         app = _build_app()
         app._config = replace(app._config, web_port=port, station_fqdn="of-1.stage.example.com")
-        state = _build(app, pool)
+        state = _build(app)
         assert state.hostname_text == "of-1.stage.example.com" + shown
 
-    def test_a_mac_shows_the_name_bonjour_publishes(
-        self,
-        pool: OverlayStatePool,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    def test_a_mac_shows_the_name_bonjour_publishes(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The kernel name a DHCP server gave a Mac is not what Bonjour answers on."""
         from types import SimpleNamespace
 
@@ -486,13 +483,12 @@ class TestHostnameRow:
         mdns_host.set_reader(mdns_host.LocalHostNameReader(platform="darwin", run=_scutil, thread_factory=InlineThread))
         app = _build_app()
         app._config = replace(app._config, web_port=8080)
-        state = _build(app, pool)
+        state = _build(app)
         assert state.hostname_text == "Studio-Mac.local:8080"
 
     @pytest.mark.parametrize("name", ["", "localhost"])
     def test_unusable_hostname_yields_no_row(
         self,
-        pool: OverlayStatePool,
         monkeypatch: pytest.MonkeyPatch,
         name: str,
     ) -> None:
@@ -500,7 +496,7 @@ class TestHostnameRow:
 
         monkeypatch.setattr(device_repair, "current_hostname", lambda: name)
         app = _build_app()
-        state = _build(app, pool)
+        state = _build(app)
         assert state.hostname_text == ""
 
 
@@ -510,35 +506,35 @@ class TestHostnameRow:
 
 
 class TestVideoAndMenuState:
-    def test_video_fields_mirror_receiver(self, pool: OverlayStatePool) -> None:
+    def test_video_fields_mirror_receiver(self) -> None:
         app = _build_app()
-        state = _build(app, pool)
+        state = _build(app)
         assert state.video_connected is True
         assert state.source_label == "NDI://CAM"
         # The picker draws what each source is called, never its stored key.
         assert state.discovered_sources == ["CAM1", "CAM2"]
         assert state.source_selection_title == "SELECT NDI"
 
-    def test_settings_menu_inactive_clears_items(self, pool: OverlayStatePool) -> None:
+    def test_settings_menu_inactive_clears_items(self) -> None:
         app = _build_app(settings_menu_active=False)
-        state = _build(app, pool)
+        state = _build(app)
         assert state.settings_items == []
         assert state.settings_items_enabled == []
         assert state.settings_selected_index == 0
 
-    def test_about_active_syncs_to_overlay_state(self, pool: OverlayStatePool) -> None:
+    def test_about_active_syncs_to_overlay_state(self) -> None:
         """_about_active state is mirrored to overlay for draw pass."""
         app = _build_app()
         app._about_active = True
-        assert _build(app, pool).about_active is True
+        assert _build(app).about_active is True
         app._about_active = False
-        assert _build(app, pool).about_active is False
+        assert _build(app).about_active is False
 
     @pytest.mark.parametrize(
         ("listed", "empty"),
         [(True, "No USB storage device found. Plug one in."), (False, "Looking for USB storage devices")],
     )
-    def test_drive_picker_rows_sync_to_overlay_state(self, pool: OverlayStatePool, listed: bool, empty: str) -> None:
+    def test_drive_picker_rows_sync_to_overlay_state(self, listed: bool, empty: str) -> None:
         from openfollow.runtime.removable_media import Media
 
         media = [
@@ -550,7 +546,7 @@ class TestVideoAndMenuState:
         app._media_picker_title = "SAVE DIAGNOSTICS"
         app._media_picker_selected = ""
         app._media_watch = SimpleNamespace(snapshot=lambda: (media, listed))
-        state = _build(app, pool)
+        state = _build(app)
         assert (state.media_picker_active, state.media_picker_title) == (True, "SAVE DIAGNOSTICS")
         assert state.media_picker_items == [
             "WD · APFS · 2.0 TB (APFS can't be written)",
@@ -559,11 +555,11 @@ class TestVideoAndMenuState:
         assert (state.media_picker_index, state.media_picker_empty) == (1, empty)
         assert state.media_picker_enabled == [False, True]
         app._media_picker_active = False
-        state = _build(app, pool)
+        state = _build(app)
         assert (state.media_picker_active, state.media_picker_items, state.media_picker_index) == (False, [], -1)
         assert state.media_picker_enabled == []
 
-    def test_export_screen_lines_sync_to_overlay_state(self, pool: OverlayStatePool) -> None:
+    def test_export_screen_lines_sync_to_overlay_state(self) -> None:
         from openfollow.runtime.diagnostics_export import WRITING, ExportStatus
 
         app = _build_app()
@@ -571,14 +567,14 @@ class TestVideoAndMenuState:
         app._runtime_services.diagnostics_export = SimpleNamespace(
             status=lambda: ExportStatus(WRITING, "hud", "SanDisk Ultra", generation=1)
         )
-        state = _build(app, pool)
+        state = _build(app)
         assert state.media_export_active is True
         assert state.media_export_lines == ("Writing to SanDisk Ultra", "The export continues in the background.", None)
         app._runtime_services.diagnostics_export = None
-        state = _build(app, pool)
+        state = _build(app)
         assert (state.media_export_active, state.media_export_lines) == (False, ("", "", None))
 
-    def test_settings_menu_active_builds_items(self, pool: OverlayStatePool, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_settings_menu_active_builds_items(self, monkeypatch: pytest.MonkeyPatch) -> None:
         app = _build_app(settings_menu_active=True)
         app._settings_menu_index = 2
 
@@ -594,17 +590,16 @@ class TestVideoAndMenuState:
                 [True, False, True],
             ),
         )
-        state = _build(app, pool)
+        state = _build(app)
         assert state.settings_items == ["Option A", "Option B", "Option C"]
         assert state.settings_items_enabled == [True, False, True]
         assert state.settings_items_disabled_reasons == ["", "Linux only", ""]
         assert state.settings_selected_index == 2
 
-    def test_settings_menu_banner_passes_through_to_state(
-        self, pool: OverlayStatePool, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_settings_menu_banner_passes_through_to_state(self, monkeypatch: pytest.MonkeyPatch) -> None:
         app = _build_app(settings_menu_active=True)
         app._settings_menu_banner = "Configured IP unavailable."
+        app._settings_menu_banner_action = "Pick another interface."
 
         from openfollow.runtime import app_modes
 
@@ -613,25 +608,27 @@ class TestVideoAndMenuState:
             "build_settings_menu_items",
             lambda a: (["X"], [True], [""], [False]),
         )
-        state = _build(app, pool)
+        state = _build(app)
         assert state.settings_menu_banner == "Configured IP unavailable."
+        assert state.settings_menu_banner_action == "Pick another interface."
 
-    def test_settings_menu_inactive_clears_banner(self, pool: OverlayStatePool) -> None:
+    def test_settings_menu_inactive_clears_banner(self) -> None:
         app = _build_app(settings_menu_active=False)
         app._settings_menu_banner = "stale"
-        state = _build(app, pool)
+        app._settings_menu_banner_action = "stale step"
+        state = _build(app)
         assert state.settings_menu_banner == ""
+        assert state.settings_menu_banner_action == ""
 
     def test_url_editor_passes_through_to_state(
         self,
-        pool: OverlayStatePool,
     ) -> None:
         app = _build_app()
         app._url_editor_active = True
         app._url_editor_field_label = "RTSP URL"
         app._url_editor_value = "rtsp://1.2.3.4"
         app._url_editor_banner = "RTSP needs URL."
-        state = _build(app, pool)
+        state = _build(app)
         assert state.url_editor_active is True
         assert state.url_editor_field_label == "RTSP URL"
         assert state.url_editor_value == "rtsp://1.2.3.4"
@@ -639,14 +636,13 @@ class TestVideoAndMenuState:
 
     def test_url_editor_inactive_clears_state(
         self,
-        pool: OverlayStatePool,
     ) -> None:
         app = _build_app()
         app._url_editor_active = False
         app._url_editor_field_label = "stale"
         app._url_editor_value = "stale"
         app._url_editor_banner = "stale"
-        state = _build(app, pool)
+        state = _build(app)
         assert state.url_editor_active is False
         assert state.url_editor_field_label == ""
         assert state.url_editor_value == ""
@@ -654,14 +650,13 @@ class TestVideoAndMenuState:
 
     def test_field_choice_picker_passes_through_to_state(
         self,
-        pool: OverlayStatePool,
     ) -> None:
         app = _build_app()
         app._field_choice_active = True
         app._field_choice_field_label = "Pattern"
         app._field_choice_items = ["50% Grey", "Stage Scene"]
         app._field_choice_selected_index = 1
-        state = _build(app, pool)
+        state = _build(app)
         assert state.field_choice_active is True
         assert state.field_choice_title == "Pattern"
         assert state.field_choice_items == ["50% Grey", "Stage Scene"]
@@ -669,7 +664,6 @@ class TestVideoAndMenuState:
 
     def test_source_type_selection_passes_through_to_state(
         self,
-        pool: OverlayStatePool,
     ) -> None:
         app = _build_app()
         app._source_type_selection_active = True
@@ -679,7 +673,7 @@ class TestVideoAndMenuState:
             ("testpattern", "Test Pattern"),
         ]
         app._selected_source_type_index = 1
-        state = _build(app, pool)
+        state = _build(app)
         assert state.source_type_selection_active is True
         assert state.available_source_types == [
             ("ndi", "NDI"),
@@ -695,55 +689,68 @@ class TestVideoAndMenuState:
 
 
 class TestMarkerPopulation:
-    def test_controlled_marker_pulled_from_server(self, pool: OverlayStatePool) -> None:
+    def test_controlled_marker_pulled_from_server(self) -> None:
         app = _build_app(
             controlled=[1],
             viewer=[1],
             server_markers={1: _FakeMarker(1, pos=(1.0, 2.0, 3.0))},
         )
-        state = _build(app, pool)
+        state = _build(app)
         assert [t.marker_id for t in state.markers] == [1]
         t0 = state.markers[0]
         assert (t0.x, t0.y, t0.z) == (1.0, 2.0, 3.0)
         assert t0.online is True  # controlled is always online
 
-    def test_viewer_only_marker_pulled_from_receiver(self, pool: OverlayStatePool) -> None:
+    def test_viewer_only_marker_pulled_from_receiver(self) -> None:
         app = _build_app(
             controlled=[],
             viewer=[5],
             receiver_markers={5: _FakeMarker(5, pos=(3.0, 4.0, 5.0))},
             online={5: True},
         )
-        state = _build(app, pool)
+        state = _build(app)
         assert [t.marker_id for t in state.markers] == [5]
         assert state.markers[0].online is True
 
-    def test_offline_viewer_marker_marked_offline(self, pool: OverlayStatePool) -> None:
+    def test_offline_viewer_marker_marked_offline(self) -> None:
         app = _build_app(
             viewer=[5],
             receiver_markers={5: _FakeMarker(5)},
             online={5: False},
         )
-        state = _build(app, pool)
+        state = _build(app)
         assert state.markers[0].online is False
 
-    def test_missing_marker_is_silently_dropped(self, pool: OverlayStatePool) -> None:
+    def test_missing_marker_is_silently_dropped(self) -> None:
         app = _build_app(controlled=[1], viewer=[1])  # no server marker
-        state = _build(app, pool)
+        state = _build(app)
         assert state.markers == []
 
-    def test_pool_spillover_allocates_new_marker_data(self, pool: OverlayStatePool) -> None:
-        """More viewers than ``_marker_pool`` capacity → spill-over
-        path constructs fresh ``MarkerOverlayData`` instances."""
-        # OverlayState has _MAX_MARKERS = 16; create 17 viewers.
-        ids = list(range(17))
-        markers = {i: _FakeMarker(i) for i in ids}
-        app = _build_app(viewer=ids, receiver_markers=markers)
-        state = _build(app, pool)
-        assert len(state.markers) == 17
-        # All are MarkerOverlayData; the 17th must not be the same object
-        # as any pool entry.
-        assert all(isinstance(t, MarkerOverlayData) for t in state.markers)
+    def test_each_card_carries_its_catalog_name_colour_size_and_marker_fader(self) -> None:
+        app = _build_app(viewer=[1, 2], receiver_markers={1: _FakeMarker(1), 2: _FakeMarker(2)})
+        app._config = replace(app._config, marker=replace(app._config.marker, ball_size=0.4))
+        app._marker_catalog = SimpleNamespace(get=lambda mid: SimpleNamespace(name=f"Lead {mid}", color=f"#00000{mid}"))
+        app._runtime_services._virtual_faders = SimpleNamespace(fader_count=0, marker_fader_value=lambda mid: mid / 10)
+        state = _build(app)
+        assert [(t.name, t.color, t.radius, t.marker_fader) for t in state.markers] == [
+            ("Lead 1", "#000001", 0.4, 0.1),
+            ("Lead 2", "#000002", 0.4, 0.2),
+        ]
+
+    def test_a_state_handed_over_is_never_changed_by_later_frames(self) -> None:
+        """The HUD render thread may still be drawing a state while several later frames build."""
+        markers = {1: _FakeMarker(1)}
+        app = _build_app(viewer=[1], receiver_markers=markers)
+        first = _build(app)
+        drawn = [(t.marker_id, t.x, t.y) for t in first.markers]
+        later = []
+        # A slow picture spans several frames, all built while it is drawn.
+        for step in range(5):
+            markers[1].pos = (4.0 + step, 5.0, 0.0)
+            app._viewer_ids = [] if step % 2 else [1]
+            later.append(_build(app))
+        assert all(state is not first for state in later)
+        assert [(t.marker_id, t.x, t.y) for t in first.markers] == drawn
 
 
 # --------------------------------------------------------------------------- #
@@ -752,7 +759,7 @@ class TestMarkerPopulation:
 
 
 class TestSpeedDerivation:
-    def test_controlled_with_gamepad_speed_uses_it(self, pool: OverlayStatePool) -> None:
+    def test_controlled_with_gamepad_speed_uses_it(self) -> None:
         mgr = _FakeInputManager(marker_speeds={1: 7.5})
         app = _build_app(
             controlled=[1],
@@ -760,13 +767,13 @@ class TestSpeedDerivation:
             server_markers={1: _FakeMarker(1)},
             input_manager=mgr,
         )
-        state = _build(app, pool)
+        state = _build(app)
         assert state.markers[0].speed == pytest.approx(7.5)
         # The gamepad-scaled setting is a card value only. The wire carries the
         # marker's velocity, which is zero while it stands still.
         assert app._server._markers[1].set_speed_calls == [_ZERO]
 
-    def test_controlled_without_gamepad_speed_falls_back_to_move_speed(self, pool: OverlayStatePool) -> None:
+    def test_controlled_without_gamepad_speed_falls_back_to_move_speed(self) -> None:
         """The card shows the move-speed setting; the wire must not. A still
         marker publishing its setting reads as a constant +x velocity to any
         receiver that dead-reckons between packets."""
@@ -775,12 +782,12 @@ class TestSpeedDerivation:
             viewer=[1],
             server_markers={1: _FakeMarker(1)},
         )  # no input manager
-        state = _build(app, pool)
+        state = _build(app)
         # default MarkerConfig.move_speed == 2.0
         assert state.markers[0].speed == pytest.approx(2.0)
         assert app._server._markers[1].set_speed_calls == [_ZERO]
 
-    def test_controlled_without_gamepad_uses_per_marker_speed_when_set(self, pool: OverlayStatePool) -> None:
+    def test_controlled_without_gamepad_uses_per_marker_speed_when_set(self) -> None:
         """Per-marker speed override is used when no controller is attached."""
         app = _build_app(
             controlled=[1],
@@ -788,11 +795,11 @@ class TestSpeedDerivation:
             server_markers={1: _FakeMarker(1)},
         )
         app._config.marker_move_speeds = {1: 5.5}
-        state = _build(app, pool)
+        state = _build(app)
         assert state.markers[0].speed == pytest.approx(5.5)
         assert app._server._markers[1].set_speed_calls == [_ZERO]
 
-    def test_controlled_marker_absent_from_viewer_ids_still_gets_its_speed_write(self, pool: OverlayStatePool) -> None:
+    def test_controlled_marker_absent_from_viewer_ids_still_gets_its_speed_write(self) -> None:
         """``controlled_marker_ids`` and ``viewer_marker_ids`` are edited
         independently, and PSN broadcasts every controlled marker. The write is
         what stamps the tracker's PSN timestamp, so a marker this station drives
@@ -802,12 +809,12 @@ class TestSpeedDerivation:
             viewer=[],
             server_markers={1: _FakeMarker(1)},
         )
-        state = _build(app, pool)
+        state = _build(app)
 
         assert state.markers == []  # not viewed: no card
         assert app._server._markers[1].set_speed_calls == [_ZERO]
 
-    def test_speed_write_happens_once_per_frame_for_a_viewed_controlled_marker(self, pool: OverlayStatePool) -> None:
+    def test_speed_write_happens_once_per_frame_for_a_viewed_controlled_marker(self) -> None:
         """Moving the write out of the viewer loop must not double-stamp a
         marker that is both controlled and viewed."""
         app = _build_app(
@@ -815,12 +822,11 @@ class TestSpeedDerivation:
             viewer=[1],
             server_markers={1: _FakeMarker(1)},
         )
-        _build(app, pool)
+        _build(app)
         assert app._server._markers[1].set_speed_calls == [_ZERO]
 
     def test_a_stationary_controlled_marker_is_still_rewritten_every_frame(
         self,
-        pool: OverlayStatePool,
     ) -> None:
         """The write is the marker's freshness stamp, and every output protocol
         reads that stamp to decide whether the position on the wire is still
@@ -835,30 +841,28 @@ class TestSpeedDerivation:
             server_markers={1: _FakeMarker(1)},
         )
         for _ in range(3):
-            _build(app, pool)
+            _build(app)
         assert app._server._markers[1].set_speed_calls == [_ZERO] * 3
 
-    def test_unregistered_controlled_marker_is_skipped(self, pool: OverlayStatePool) -> None:
+    def test_unregistered_controlled_marker_is_skipped(self) -> None:
         """A controlled id the server has not registered yet (mid hot-reload)
         must not raise on the frame path."""
         app = _build_app(controlled=[1, 2], viewer=[], server_markers={1: _FakeMarker(1)})
-        _build(app, pool)
+        _build(app)
         assert app._server._markers[1].set_speed_calls == [_ZERO]
 
-    def test_viewer_without_gamepad_speed_uses_marker_velocity_norm(self, pool: OverlayStatePool) -> None:
+    def test_viewer_without_gamepad_speed_uses_marker_velocity_norm(self) -> None:
         # Velocity (3, 4, 0) → ‖v‖ = 5.
         app = _build_app(
             viewer=[9],
             receiver_markers={9: _FakeMarker(9, speed=(3.0, 4.0, 0.0))},
         )
-        state = _build(app, pool)
+        state = _build(app)
         assert state.markers[0].speed == pytest.approx(5.0)
 
     @pytest.mark.parametrize("axis", [0, 1, 2])
     @pytest.mark.parametrize("velocity", [1.5, -0.4])
-    def test_moving_controlled_marker_broadcasts_velocity_on_the_moved_axis(
-        self, pool: OverlayStatePool, axis: int, velocity: float
-    ) -> None:
+    def test_moving_controlled_marker_broadcasts_velocity_on_the_moved_axis(self, axis: int, velocity: float) -> None:
         """The wire carries how the marker actually moves: signed, on the axis
         it moves along, zero on the others."""
         marker = _FakeMarker(1)
@@ -867,12 +871,12 @@ class TestSpeedDerivation:
             pos = list(marker.pos)
             pos[axis] += velocity * _FRAME_DT
             marker.set_pos(pos[0], pos[1], pos[2])
-            _build(app, pool)
+            _build(app)
         expected = [0.0, 0.0, 0.0]
         expected[axis] = velocity
         assert marker.set_speed_calls[-1] == pytest.approx(tuple(expected), abs=1e-6)
 
-    def test_controlled_card_keeps_the_move_speed_while_the_wire_carries_velocity(self, pool: OverlayStatePool) -> None:
+    def test_controlled_card_keeps_the_move_speed_while_the_wire_carries_velocity(self) -> None:
         """The card is the operator's speed-setting readout (what R / T and the
         bumpers adjust); the wire is the marker's motion. They are different
         quantities and stay that way."""
@@ -881,11 +885,11 @@ class TestSpeedDerivation:
         for _ in range(60):
             x, y, z = marker.pos
             marker.set_pos(x + 0.4 * _FRAME_DT, y, z)
-            state = _build(app, pool)
+            state = _build(app)
         assert state.markers[0].speed == pytest.approx(2.0)
         assert marker.set_speed_calls[-1] == pytest.approx((0.4, 0.0, 0.0), abs=1e-6)
 
-    def test_first_frame_of_a_newly_controlled_marker_writes_zero(self, pool: OverlayStatePool) -> None:
+    def test_first_frame_of_a_newly_controlled_marker_writes_zero(self) -> None:
         """No reference position yet: the seed frame reports zero rather than
         treating the marker's position as a displacement from the origin. The
         marker starts one slow frame's travel from the origin, so a reference
@@ -893,17 +897,17 @@ class TestSpeedDerivation:
         no clamp or deadband would flatten back to zero."""
         marker = _FakeMarker(1, pos=(0.6 * _FRAME_DT, 0.0, 0.0))
         app = _build_app(controlled=[1], viewer=[1], server_markers={1: marker})
-        _build(app, pool)
+        _build(app)
         assert marker.set_speed_calls == [_ZERO]
 
-    def test_velocity_state_is_pruned_when_a_marker_leaves_the_controlled_set(self, pool: OverlayStatePool) -> None:
+    def test_velocity_state_is_pruned_when_a_marker_leaves_the_controlled_set(self) -> None:
         m1, m2 = _FakeMarker(1), _FakeMarker(2)
         app = _build_app(controlled=[1, 2], viewer=[], server_markers={1: m1, 2: m2})
-        _build(app, pool)
+        _build(app)
         assert set(app._marker_velocity_states) == {1, 2}
 
         app._controlled_ids = [1]
-        _build(app, pool)
+        _build(app)
         assert set(app._marker_velocity_states) == {1}
 
         # Re-added a little way from where it left: the estimate restarts at
@@ -911,35 +915,35 @@ class TestSpeedDerivation:
         # old reference.
         m2.set_pos(0.1, 0.0, 0.0)
         app._controlled_ids = [1, 2]
-        _build(app, pool)
+        _build(app)
         assert m2.set_speed_calls[-1] == _ZERO
 
-    def test_repositioned_marker_writes_a_bounded_velocity_not_a_spike(self, pool: OverlayStatePool) -> None:
+    def test_repositioned_marker_writes_a_bounded_velocity_not_a_spike(self) -> None:
         """A reset / OSC snap moves the marker metres in one frame. As a rate
         that is hundreds of m/s, which a dead-reckoning console would
         extrapolate; the wire never carries more than the ceiling."""
         marker = _FakeMarker(1)
         app = _build_app(controlled=[1], viewer=[1], server_markers={1: marker})
-        _build(app, pool)
+        _build(app)
         marker.set_pos(5.0, 0.0, 0.0)
-        _build(app, pool)
+        _build(app)
         assert marker.set_speed_calls[-1][0] == pytest.approx(0.3 * _MAX_REPORTED_SPEED_MPS)
 
-    def test_a_drag_faster_than_the_ceiling_is_not_reported_as_standing_still(self, pool: OverlayStatePool) -> None:
+    def test_a_drag_faster_than_the_ceiling_is_not_reported_as_standing_still(self) -> None:
         """A grabbed marker follows the cursor with no glide by default, so an
         ordinary flick moves it far faster than the ceiling. Publishing zero
         there would be the same bug in the other direction: a marker the
         operator can see moving, reported as parked."""
         marker = _FakeMarker(1)
         app = _build_app(controlled=[1], viewer=[1], server_markers={1: marker})
-        _build(app, pool)
+        _build(app)
         for _ in range(60):
             x, y, z = marker.pos
             marker.set_pos(x + 35.0 * _FRAME_DT, y, z)
-            _build(app, pool)
+            _build(app)
         assert marker.set_speed_calls[-1][0] == pytest.approx(_MAX_REPORTED_SPEED_MPS, abs=1e-6)
 
-    def test_frame_dt_reaches_the_estimate(self, pool: OverlayStatePool) -> None:
+    def test_frame_dt_reaches_the_estimate(self) -> None:
         """Half a second of the same motion sampled at 60 and at 30 fps lands on
         the same wire velocity: fails if ``dt`` is not threaded through or the
         alpha is not rescaled for it."""
@@ -947,11 +951,11 @@ class TestSpeedDerivation:
         def run(dt: float, frames: int) -> tuple[float, float, float]:
             marker = _FakeMarker(1)
             app = _build_app(controlled=[1], viewer=[1], server_markers={1: marker})
-            _build(app, pool, dt=dt)
+            _build(app, dt=dt)
             for _ in range(frames):
                 x, y, z = marker.pos
                 marker.set_pos(x, y + 1.0 * dt, z)
-                _build(app, pool, dt=dt)
+                _build(app, dt=dt)
             return marker.set_speed_calls[-1]
 
         fast = run(1.0 / 60.0, 30)
@@ -963,14 +967,14 @@ class TestSpeedDerivation:
 class TestSpeedRoundTrip:
     """Sender motion → real PSN wire format → real receiver → viewer card."""
 
-    def test_sender_motion_shows_as_that_speed_on_the_viewer_card(self, pool: OverlayStatePool) -> None:
+    def test_sender_motion_shows_as_that_speed_on_the_viewer_card(self) -> None:
         # Sender: a real Marker this station controls, moving upstage at 1.5 m/s.
         sender_marker = Marker(1, "S")
         sender = _build_app(controlled=[1], viewer=[1], server_markers={1: sender_marker})
         for _ in range(90):
             x, y, z = sender_marker.pos
             sender_marker.set_pos(x, y + 1.5 * _FRAME_DT, z)
-            _build(sender, pool)
+            _build(sender)
 
         # Wire: encode what PsnServer would send and parse it as a peer would.
         info = pypsn.PsnInfo(timestamp=0, version_high=2, version_low=0, frame_id=0, packet_count=1)
@@ -984,7 +988,7 @@ class TestSpeedRoundTrip:
 
         # Viewer: the card on the peer station reads the received velocity.
         viewer = _build_app(viewer=[1], receiver_markers={1: received}, online={1: True})
-        state = _build(viewer, pool)
+        state = _build(viewer)
         assert state.markers[0].speed == pytest.approx(1.5, abs=1e-3)
         cr = FakeCairo()
         draw_marker_card(
@@ -1007,21 +1011,20 @@ class TestSpeedRoundTrip:
 
 
 class TestExternalStateSnapshots:
-    def test_camera_params_are_copied_from_app_camera(self, pool: OverlayStatePool) -> None:
+    def test_camera_params_are_copied_from_app_camera(self) -> None:
         app = _build_app()
-        state = _build(app, pool)
+        state = _build(app)
         # Pos_x=0, Pos_y=-6, Pos_z=2.5 from _FakeCamera defaults.
         np.testing.assert_allclose(
             state.camera_params,
             [0.0, -6.0, 2.5, -15.0, 0.0, 0.0, 60.0],
         )
 
-    def test_camera_params_are_defensive_copy(self, pool: OverlayStatePool) -> None:
+    def test_camera_params_are_defensive_copy(self) -> None:
         buf = np.zeros(7, dtype=np.float64)
         app = _build_app()
         state = build_marker_visual_state(
             app,
-            overlay_state_pool=pool,
             system_stats=None,
             person_detector=None,
             cam_params_buffer=buf,
@@ -1030,11 +1033,11 @@ class TestExternalStateSnapshots:
         buf[0] = 999.0  # mutate the scratch buffer
         assert state.camera_params[0] != 999.0
 
-    def test_detector_populates_detection_fields(self, pool: OverlayStatePool) -> None:
+    def test_detector_populates_detection_fields(self) -> None:
         app = _build_app()
         dets = [object(), object()]
         detector = SimpleNamespace(detections=dets)
-        state = _build(app, pool, person_detector=detector)
+        state = _build(app, person_detector=detector)
         assert state.detections is dets
         # Defaults come from DetectionConfig.
         assert state.detection_show_boxes is True
@@ -1042,21 +1045,21 @@ class TestExternalStateSnapshots:
         assert state.detection_box_color == "#808080"
         assert state.detection_box_thickness == 2
 
-    def test_no_detector_leaves_detection_defaults(self, pool: OverlayStatePool) -> None:
+    def test_no_detector_leaves_detection_defaults(self) -> None:
         app = _build_app()
-        state = _build(app, pool, person_detector=None)
+        state = _build(app, person_detector=None)
         assert state.detections == []
 
-    def test_button_detection_is_snapshotted(self, pool: OverlayStatePool) -> None:
+    def test_button_detection_is_snapshotted(self) -> None:
         sentinel = object()
         bd = SimpleNamespace(get_state=lambda: sentinel)
         app = _build_app(button_detection=bd)
-        state = _build(app, pool)
+        state = _build(app)
         assert state.button_detection is sentinel
 
-    def test_no_button_detection_sets_field_to_none(self, pool: OverlayStatePool) -> None:
+    def test_no_button_detection_sets_field_to_none(self) -> None:
         app = _build_app(button_detection=None)
-        state = _build(app, pool)
+        state = _build(app)
         assert state.button_detection is None
 
 
@@ -1066,19 +1069,19 @@ class TestExternalStateSnapshots:
 
 
 class TestInputFlags:
-    def test_no_input_manager_flags_all_false(self, pool: OverlayStatePool) -> None:
+    def test_no_input_manager_flags_all_false(self) -> None:
         app = _build_app(input_manager=None)
-        state = _build(app, pool)
+        state = _build(app)
         assert state.keyboard_connected is False
         assert state.controller_connected is False
 
-    def test_keyboard_connected_reflects_manager_and_config(self, pool: OverlayStatePool) -> None:
+    def test_keyboard_connected_reflects_manager_and_config(self) -> None:
         mgr = _FakeInputManager(keyboard_connected=True)
         app = _build_app(input_manager=mgr)
-        state = _build(app, pool)
+        state = _build(app)
         assert state.keyboard_connected is True
 
-    def test_controller_connected_requires_connected_backend(self, pool: OverlayStatePool) -> None:
+    def test_controller_connected_requires_connected_backend(self) -> None:
         mgr = _FakeInputManager(
             controller_info=[
                 {
@@ -1092,10 +1095,10 @@ class TestInputFlags:
             ]
         )
         app = _build_app(input_manager=mgr)
-        state = _build(app, pool)
+        state = _build(app)
         assert state.controller_connected is True
 
-    def test_controller_disconnected_reports_false(self, pool: OverlayStatePool) -> None:
+    def test_controller_disconnected_reports_false(self) -> None:
         mgr = _FakeInputManager(
             controller_info=[
                 {
@@ -1109,10 +1112,10 @@ class TestInputFlags:
             ]
         )
         app = _build_app(input_manager=mgr)
-        state = _build(app, pool)
+        state = _build(app)
         assert state.controller_connected is False
 
-    def test_3d_mouse_alone_does_not_report_controller_connected(self, pool: OverlayStatePool) -> None:
+    def test_3d_mouse_alone_does_not_report_controller_connected(self) -> None:
         # A connected 3D mouse is a unified controller (it gets a card badge) but
         # has its own help section; it must NOT light the gamepad help/status,
         # which advertises L-Stick / DPAD / bumper controls a puck doesn't have.
@@ -1130,10 +1133,10 @@ class TestInputFlags:
         )
         app = _build_app(input_manager=mgr)
         app._config.controller.enabled = True
-        state = _build(app, pool)
+        state = _build(app)
         assert state.controller_connected is False
 
-    def test_gamepad_alongside_3d_mouse_still_reports_connected(self, pool: OverlayStatePool) -> None:
+    def test_gamepad_alongside_3d_mouse_still_reports_connected(self) -> None:
         mgr = _FakeInputManager(
             controller_info=[
                 {
@@ -1156,18 +1159,18 @@ class TestInputFlags:
         )
         app = _build_app(input_manager=mgr)
         app._config.controller.enabled = True
-        state = _build(app, pool)
+        state = _build(app)
         assert state.controller_connected is True
 
 
 class TestMouse3dHelpBindings:
     """The HUD help overlay surfaces the 3D mouse axis / button map."""
 
-    def test_populated_when_enabled_and_connected(self, pool: OverlayStatePool) -> None:
+    def test_populated_when_enabled_and_connected(self) -> None:
         mgr = _FakeInputManager(mouse3d_connected=True)
         app = _build_app(input_manager=mgr)
         app._config.mouse3d.enabled = True
-        state = _build(app, pool)
+        state = _build(app)
         assert state.mouse3d_connected is True
         # Axis map mirrors the per-axis targets from config (tuned defaults).
         assert state.mouse3d_axis_map["pan_x"] == "x"
@@ -1176,24 +1179,24 @@ class TestMouse3dHelpBindings:
         assert state.mouse3d_buttons["next_marker"] == 0
         assert state.mouse3d_buttons["prev_marker"] == 1
 
-    def test_off_when_feature_disabled(self, pool: OverlayStatePool) -> None:
+    def test_off_when_feature_disabled(self) -> None:
         mgr = _FakeInputManager(mouse3d_connected=True)
         app = _build_app(input_manager=mgr)
         app._config.mouse3d.enabled = False
-        state = _build(app, pool)
+        state = _build(app)
         assert state.mouse3d_connected is False
 
-    def test_off_when_device_disconnected(self, pool: OverlayStatePool) -> None:
+    def test_off_when_device_disconnected(self) -> None:
         mgr = _FakeInputManager(mouse3d_connected=False)
         app = _build_app(input_manager=mgr)
         app._config.mouse3d.enabled = True
-        state = _build(app, pool)
+        state = _build(app)
         assert state.mouse3d_connected is False
 
-    def test_off_without_input_manager(self, pool: OverlayStatePool) -> None:
+    def test_off_without_input_manager(self) -> None:
         app = _build_app(input_manager=None)
         app._config.mouse3d.enabled = True
-        state = _build(app, pool)
+        state = _build(app)
         assert state.mouse3d_connected is False
 
 
@@ -1205,7 +1208,7 @@ class TestMouse3dHelpBindings:
 
 
 class TestControllerBindingOnMarkerCard:
-    def test_marker_card_gets_controller_idx_when_pad_bound(self, pool: OverlayStatePool) -> None:
+    def test_marker_card_gets_controller_idx_when_pad_bound(self) -> None:
         app = _build_app(
             controlled=[1],
             viewer=[1],
@@ -1223,12 +1226,12 @@ class TestControllerBindingOnMarkerCard:
                 ]
             ),
         )
-        state = _build(app, pool)
+        state = _build(app)
         assert state.markers[0].controller_idx == 0
         assert state.markers[0].controller_connected is True
         assert state.markers[0].is_controlled is True
 
-    def test_marker_card_disconnected_pad_marks_connected_false(self, pool: OverlayStatePool) -> None:
+    def test_marker_card_disconnected_pad_marks_connected_false(self) -> None:
         app = _build_app(
             controlled=[1],
             viewer=[1],
@@ -1246,32 +1249,32 @@ class TestControllerBindingOnMarkerCard:
                 ]
             ),
         )
-        state = _build(app, pool)
+        state = _build(app)
         assert state.markers[0].controller_idx == 0
         assert state.markers[0].controller_connected is False
 
-    def test_marker_without_pad_has_none_controller_idx(self, pool: OverlayStatePool) -> None:
+    def test_marker_without_pad_has_none_controller_idx(self) -> None:
         app = _build_app(
             controlled=[1],
             viewer=[1],
             server_markers={1: _FakeMarker(1)},
         )
-        state = _build(app, pool)
+        state = _build(app)
         assert state.markers[0].controller_idx is None
         assert state.markers[0].controller_connected is False
         assert state.markers[0].is_controlled is True
 
-    def test_viewer_only_marker_has_is_controlled_false(self, pool: OverlayStatePool) -> None:
+    def test_viewer_only_marker_has_is_controlled_false(self) -> None:
         # Marker 9 is in viewer_marker_ids but NOT in controlled_marker_ids.
         app = _build_app(
             viewer=[9],
             receiver_markers={9: _FakeMarker(9, speed=(0.0, 0.0, 0.0))},
         )
-        state = _build(app, pool)
+        state = _build(app)
         assert state.markers[0].is_controlled is False
         assert state.markers[0].controller_idx is None
 
-    def test_unbound_controller_indices_collected(self, pool: OverlayStatePool) -> None:
+    def test_unbound_controller_indices_collected(self) -> None:
         app = _build_app(
             controlled=[1],
             viewer=[1],
@@ -1297,10 +1300,10 @@ class TestControllerBindingOnMarkerCard:
                 ]
             ),
         )
-        state = _build(app, pool)
+        state = _build(app)
         assert state.unbound_controller_indices == [2]
 
-    def test_disconnected_unbound_controller_is_dropped(self, pool: OverlayStatePool) -> None:
+    def test_disconnected_unbound_controller_is_dropped(self) -> None:
         """A pad that's both disconnected AND unbound carries no actionable
         information (operator can't see it nor route it) – drop it from
         the Settings menu list."""
@@ -1318,14 +1321,14 @@ class TestControllerBindingOnMarkerCard:
                 ]
             ),
         )
-        state = _build(app, pool)
+        state = _build(app)
         assert state.unbound_controller_indices == []
 
 
 class TestControllerTextAndHelp:
-    def test_hud_help_flag_propagates(self, pool: OverlayStatePool) -> None:
+    def test_hud_help_flag_propagates(self) -> None:
         app = _build_app(show_hud_help=False)
-        state = _build(app, pool)
+        state = _build(app)
         assert state.show_hud_help is False
 
 
@@ -1366,7 +1369,6 @@ class TestVirtualFaderStack:
 
     def test_no_runtime_services_leaves_empty(
         self,
-        pool: OverlayStatePool,
     ) -> None:
         """Boot / mid-restart windows have no runtime services
         attached. The default state field is empty and the renderer
@@ -1375,21 +1377,19 @@ class TestVirtualFaderStack:
         # ``_build_app`` already sets ``_runtime_services`` to a
         # namespace without ``_virtual_faders`` – the helper's
         # getattr guard treats a missing attribute as "no bus".
-        state = _build(app, pool)
+        state = _build(app)
         assert state.virtual_faders_display == []
 
     def test_no_bus_attached_leaves_empty(
         self,
-        pool: OverlayStatePool,
     ) -> None:
         app = _build_app()
         app._runtime_services = SimpleNamespace(_virtual_faders=None)
-        state = _build(app, pool)
+        state = _build(app)
         assert state.virtual_faders_display == []
 
     def test_only_show_on_display_faders_appear(
         self,
-        pool: OverlayStatePool,
     ) -> None:
         app = _build_app()
         bus = _FakeVirtualFaderBus(
@@ -1415,7 +1415,7 @@ class TestVirtualFaderStack:
             ]
         )
         app._runtime_services = SimpleNamespace(_virtual_faders=bus)
-        state = _build(app, pool)
+        state = _build(app)
         # Two entries: Master (index 1) + Aux (index 3). The
         # show-off middle fader is excluded.
         assert len(state.virtual_faders_display) == 2
@@ -1434,7 +1434,6 @@ class TestVirtualFaderStack:
 
     def test_pool_reuse_clears_stale_entries(
         self,
-        pool: OverlayStatePool,
     ) -> None:
         app = _build_app()
         bus_with = _FakeVirtualFaderBus(
@@ -1448,11 +1447,11 @@ class TestVirtualFaderStack:
             ]
         )
         app._runtime_services = SimpleNamespace(_virtual_faders=bus_with)
-        state = _build(app, pool)
+        state = _build(app)
         assert len(state.virtual_faders_display) == 1
         # Rebuild with no bus – the same pool slot gets reset.
         app._runtime_services = SimpleNamespace(_virtual_faders=None)
-        state = _build(app, pool)
+        state = _build(app)
         assert state.virtual_faders_display == []
 
 
@@ -1470,18 +1469,16 @@ class TestStatusFlagsSnapshot:
 
     def test_no_runtime_services_leaves_empty(
         self,
-        pool: OverlayStatePool,
     ) -> None:
         app = _build_app()
         # Default ``_runtime_services`` SimpleNamespace has no
         # ``_status_flags`` attribute – the helper's getattr guard
         # treats that as "no flags".
-        state = _build(app, pool)
+        state = _build(app)
         assert state.status_flags == []
 
     def test_truthy_entries_surface_in_order(
         self,
-        pool: OverlayStatePool,
     ) -> None:
         app = _build_app()
         # ``dict`` preserves insertion order; Python 3.7+ guarantees
@@ -1490,7 +1487,7 @@ class TestStatusFlagsSnapshot:
         flags["midi_unavailable"] = "MIDI backend error"
         flags["midi_patch_missing"] = "Patch missing: Workspace 1"
         app._runtime_services = SimpleNamespace(_status_flags=flags)
-        state = _build(app, pool)
+        state = _build(app)
         assert state.status_flags == [
             ("midi_unavailable", "MIDI backend error", "error"),
             ("midi_patch_missing", "Patch missing: Workspace 1", "error"),
@@ -1498,7 +1495,6 @@ class TestStatusFlagsSnapshot:
 
     def test_none_values_filtered_out(
         self,
-        pool: OverlayStatePool,
     ) -> None:
         app = _build_app()
         flags: dict[str, str | None] = {
@@ -1507,14 +1503,13 @@ class TestStatusFlagsSnapshot:
             "spurious": "",  # also falsy
         }
         app._runtime_services = SimpleNamespace(_status_flags=flags)
-        state = _build(app, pool)
+        state = _build(app)
         assert state.status_flags == [
             ("midi_patch_missing", "Patch missing", "error"),
         ]
 
     def test_severity_tuple_value_maps_to_info(
         self,
-        pool: OverlayStatePool,
     ) -> None:
         """A subsystem can write a ``(severity, message)`` tuple to pick the
         badge styling; a plain string keeps the back-compat ``"error"``."""
@@ -1527,15 +1522,14 @@ class TestStatusFlagsSnapshot:
             "cleared": ("info", ""),
         }
         app._runtime_services = SimpleNamespace(_status_flags=flags)
-        state = _build(app, pool)
+        state = _build(app)
         assert state.status_flags == [
-            ("update_available", "Update available", "info"),
             ("midi_unavailable", "Backend down", "error"),
+            ("update_available", "Update available", "info"),
         ]
 
     def test_malformed_tuple_value_degrades_without_raising(
         self,
-        pool: OverlayStatePool,
     ) -> None:
         """The ``(severity, message)`` contract is 2-arity, but the build
         runs on the per-frame path – an off-spec tuple (wrong length) must
@@ -1552,14 +1546,30 @@ class TestStatusFlagsSnapshot:
             "empty": (),
         }
         app._runtime_services = SimpleNamespace(_status_flags=flags)
-        state = _build(app, pool)
+        state = _build(app)
         assert state.status_flags == [
             ("long", "Three parts", "info"),
         ]
 
+    def test_faults_come_before_notices_whoever_raised_them(
+        self,
+    ) -> None:
+        """The badge folds rows past its first few into "+N more"; a held
+        notice must never push a fault there."""
+        app = _build_app()
+        flags: dict[str, object] = {
+            "pushed_settings": ("info", "Settings pushed from Stage Left"),
+            "diagnostics_export": ("success", "Diagnostics saved to SanDisk Ultra"),
+            "late_caution": ("caution", "Caution"),
+            "midi_unavailable": "Backend down",
+        }
+        app._runtime_services = SimpleNamespace(_status_flags=flags)
+        state = _build(app)
+        assert [row[2] for row in state.status_flags] == ["error", "caution", "info", "success"]
+        assert state.status_flags[0] == ("midi_unavailable", "Backend down", "error")
+
     def test_a_message_that_is_not_text_is_drawn_as_its_text(
         self,
-        pool: OverlayStatePool,
     ) -> None:
         """Cairo measures and draws only text; any other value raised inside
         the draw callback and took the whole HUD down to "Overlay Error"."""
@@ -1570,11 +1580,11 @@ class TestStatusFlagsSnapshot:
             "bare": 7,
         }
         app._runtime_services = SimpleNamespace(_status_flags=flags)
-        state = _build(app, pool)
+        state = _build(app)
         assert state.status_flags == [
+            ("bare", "7", "error"),
             ("count", "5", "info"),
             ("listed", "['oops']", "info"),
-            ("bare", "7", "error"),
         ]
         cr = FakeCairo()
         draw_status_badge(FakeRenderer(state=state), cr, state, 1920, 1080)
@@ -1582,17 +1592,16 @@ class TestStatusFlagsSnapshot:
 
     def test_pool_reuse_clears_stale_flags(
         self,
-        pool: OverlayStatePool,
     ) -> None:
         app = _build_app()
         flags1: dict[str, str | None] = {"midi_unavailable": "boom"}
         app._runtime_services = SimpleNamespace(_status_flags=flags1)
-        state = _build(app, pool)
+        state = _build(app)
         assert len(state.status_flags) == 1
         # Subsystems cleared the flag – the next build must NOT see
         # the previous frame's entry.
         app._runtime_services = SimpleNamespace(_status_flags={})
-        state = _build(app, pool)
+        state = _build(app)
         assert state.status_flags == []
 
 
@@ -1612,24 +1621,24 @@ class TestMultiControllerMarkerCycle:
     """Marker next/prev cycling is hidden when ≥2 controllers (gamepads +
     3D mice, the unified slot space) are connected."""
 
-    def test_single_controller_enables_cycle(self, pool: OverlayStatePool) -> None:
+    def test_single_controller_enables_cycle(self) -> None:
         app = _build_app(input_manager=_FakeInputManager(controller_info=[_controller_entry(0)]))
-        state = _build(app, pool)
+        state = _build(app)
         assert state.marker_cycle_enabled is True
         # The bindings stay in the label dicts; only the help row is gated.
         assert "next_marker" in state.button_labels
         assert "prev_marker" in state.button_labels
 
-    def test_two_gamepads_disable_cycle(self, pool: OverlayStatePool) -> None:
+    def test_two_gamepads_disable_cycle(self) -> None:
         app = _build_app(
             input_manager=_FakeInputManager(
                 controller_info=[_controller_entry(0), _controller_entry(1)],
             )
         )
-        state = _build(app, pool)
+        state = _build(app)
         assert state.marker_cycle_enabled is False
 
-    def test_gamepad_plus_3d_mouse_disables_cycle(self, pool: OverlayStatePool) -> None:
+    def test_gamepad_plus_3d_mouse_disables_cycle(self) -> None:
         """A 3D mouse paired with a gamepad is two unified controllers, so
         cycling is suppressed for both – the cross-type case."""
         app = _build_app(
@@ -1640,14 +1649,14 @@ class TestMultiControllerMarkerCycle:
                 ],
             )
         )
-        state = _build(app, pool)
+        state = _build(app)
         assert state.marker_cycle_enabled is False
 
-    def test_no_input_manager_enables_cycle(self, pool: OverlayStatePool) -> None:
+    def test_no_input_manager_enables_cycle(self) -> None:
         """No input manager (early startup) keeps cycling enabled – zero
         controllers behaves like a single controller (``<= 1``)."""
         app = _build_app(input_manager=None)
-        state = _build(app, pool)
+        state = _build(app)
         assert state.marker_cycle_enabled is True
 
 
@@ -1680,13 +1689,13 @@ def _attach_store(app: SimpleNamespace, store: Any, catalog: Any = None) -> None
 
 
 class TestOperatorMessageViews:
-    def test_no_store_leaves_empty(self, pool: OverlayStatePool) -> None:
+    def test_no_store_leaves_empty(self) -> None:
         app = _build_app()
-        state = _build(app, pool)
+        state = _build(app)
         assert state.operator_messages == []
         assert state.operator_message_overflow == 0
 
-    def test_broadcast_and_keyed_populate_newest_first(self, pool: OverlayStatePool) -> None:
+    def test_broadcast_and_keyed_populate_newest_first(self) -> None:
         from openfollow.operator_messages import OperatorMessageStore
 
         app = _build_app(controlled=[3])
@@ -1695,7 +1704,7 @@ class TestOperatorMessageViews:
         store.add("forM3", info="detail", marker_id=3, duration_s=0.0)
         _attach_store(app, store, _FakeCatalog({3: ("Spot 3", "#0652dd")}))
 
-        state = _build(app, pool)
+        state = _build(app)
         views = state.operator_messages
         assert [v.message for v in views] == ["forM3", "bcast"]  # newest-first
         keyed, bcast = views
@@ -1707,7 +1716,7 @@ class TestOperatorMessageViews:
         assert state.operator_message_position == "bottom"
         assert state.operator_message_overflow == 0
 
-    def test_keyed_without_catalog_entry_uses_palette_fallback(self, pool: OverlayStatePool) -> None:
+    def test_keyed_without_catalog_entry_uses_palette_fallback(self) -> None:
         from openfollow.operator_messages import OperatorMessageStore
 
         app = _build_app(controlled=[5])
@@ -1715,12 +1724,12 @@ class TestOperatorMessageViews:
         store.add("x", marker_id=5)
         _attach_store(app, store, _FakeCatalog({}))  # no entry for 5
 
-        state = _build(app, pool)
+        state = _build(app)
         view = state.operator_messages[0]
         assert view.marker_name == ""  # → renderer paints "M5"
         assert view.marker_color.startswith("#")  # palette fallback colour
 
-    def test_expired_filtered_forever_kept(self, pool: OverlayStatePool) -> None:
+    def test_expired_filtered_forever_kept(self) -> None:
         from openfollow.operator_messages import OperatorMessageStore
 
         app = _build_app()
@@ -1732,11 +1741,11 @@ class TestOperatorMessageViews:
         store.add("kept", marker_id=0, duration_s=0.0)
         _attach_store(app, store)
 
-        state = _build(app, pool)
+        state = _build(app)
         assert [v.message for v in state.operator_messages] == ["kept"]
         assert all(v.is_forever for v in state.operator_messages)
 
-    def test_max_visible_caps_with_overflow(self, pool: OverlayStatePool) -> None:
+    def test_max_visible_caps_with_overflow(self) -> None:
         from openfollow.operator_messages import OperatorMessageStore
 
         app = _build_app()  # default max_visible = 5
@@ -1745,13 +1754,13 @@ class TestOperatorMessageViews:
             store.add(f"m{i}", marker_id=0, duration_s=0.0)
         _attach_store(app, store)
 
-        state = _build(app, pool)
+        state = _build(app)
         assert len(state.operator_messages) == 5
         assert state.operator_message_overflow == 2
         # Newest five kept.
         assert [v.message for v in state.operator_messages] == ["m6", "m5", "m4", "m3", "m2"]
 
-    def test_position_from_config(self, pool: OverlayStatePool) -> None:
+    def test_position_from_config(self) -> None:
         from openfollow.operator_messages import OperatorMessageStore
 
         app = _build_app()
@@ -1760,10 +1769,10 @@ class TestOperatorMessageViews:
         store.add("x", marker_id=0)
         _attach_store(app, store)
 
-        state = _build(app, pool)
+        state = _build(app)
         assert state.operator_message_position == "top"
 
-    def test_disabled_section_renders_no_views(self, pool: OverlayStatePool) -> None:
+    def test_disabled_section_renders_no_views(self) -> None:
         from openfollow.operator_messages import OperatorMessageStore
 
         app = _build_app()
@@ -1772,7 +1781,7 @@ class TestOperatorMessageViews:
         _attach_store(app, store)
         app._config.operator_messages.enabled = False  # flip back off after attach
 
-        state = _build(app, pool)
+        state = _build(app)
         assert state.operator_messages == []
 
 
@@ -1794,9 +1803,9 @@ class TestAssistGhostOverlay:
         anchor.set_pos(*anchor_pos)
         return app
 
-    def test_solid_marker_at_anchor_ghost_at_broadcast_when_assist_active(self, pool: OverlayStatePool) -> None:
+    def test_solid_marker_at_anchor_ghost_at_broadcast_when_assist_active(self) -> None:
         app = self._assist_app((7.0, 8.0, 0.0))
-        state = _build(app, pool)
+        state = _build(app)
 
         normals = [m for m in state.markers if not m.is_assist_ghost]
         ghosts = [m for m in state.markers if m.is_assist_ghost]
@@ -1811,16 +1820,16 @@ class TestAssistGhostOverlay:
         assert not ghosts[0].is_controlled
         assert (ghosts[0].x, ghosts[0].y) == (2.0, 3.0)
 
-    def test_no_ghost_entry_when_assist_inactive(self, pool: OverlayStatePool) -> None:
+    def test_no_ghost_entry_when_assist_inactive(self) -> None:
         app = _build_app(
             controlled=[1],
             viewer=[1],
             server_markers={1: _FakeMarker(1, pos=(2.0, 3.0, 0.0))},
         )  # default AppConfig detection is disabled → assist inactive
-        state = _build(app, pool)
+        state = _build(app)
         assert all(not m.is_assist_ghost for m in state.markers)
 
-    def test_ghost_at_broadcast_position_when_anchor_unseeded(self, pool: OverlayStatePool) -> None:
+    def test_ghost_at_broadcast_position_when_anchor_unseeded(self) -> None:
         # Assist resolves a pinned id but the anchor isn't seeded yet (the
         # overlay built before the first pin update). The AI-output ghost still
         # renders at the broadcast position; the solid marker coincides with it
@@ -1833,7 +1842,7 @@ class TestAssistGhostOverlay:
         app._config.detection.enabled = True
         app._config.detection.pin_mode = "assist"
         app._assist_manual.clear()  # assist active, but no anchor seeded yet
-        state = _build(app, pool)
+        state = _build(app)
 
         ghosts = [m for m in state.markers if m.is_assist_ghost]
         normals = [m for m in state.markers if not m.is_assist_ghost]
@@ -1843,7 +1852,7 @@ class TestAssistGhostOverlay:
         assert len(normals) == 1
         assert (normals[0].x, normals[0].y) == (2.0, 3.0)
 
-    def test_every_controlled_marker_gets_its_own_ghost_and_anchor(self, pool: OverlayStatePool) -> None:
+    def test_every_controlled_marker_gets_its_own_ghost_and_anchor(self) -> None:
         # Assist refines *every* controlled marker: each one yields a dim ghost
         # at its broadcast position and moves its solid card to its own anchor.
         app = _build_app(
@@ -1859,7 +1868,7 @@ class TestAssistGhostOverlay:
         get_or_create_manual_marker(app, 1).set_pos(10.0, 11.0, 0.0)
         get_or_create_manual_marker(app, 2).set_pos(20.0, 21.0, 0.0)
 
-        state = _build(app, pool)
+        state = _build(app)
 
         ghosts = {m.marker_id: m for m in state.markers if m.is_assist_ghost}
         normals = {m.marker_id: m for m in state.markers if not m.is_assist_ghost}
@@ -1888,38 +1897,38 @@ class TestAttachedDetectionBox:
             app._marker_catalog = catalog
         return app
 
-    def test_attached_track_maps_to_marker_colour(self, pool: OverlayStatePool) -> None:
+    def test_attached_track_maps_to_marker_colour(self) -> None:
         # The pin state for marker 1 says track 4 is attached → the dict maps
         # track 4 to marker 1's catalog colour.
         app = self._app(_FakeCatalog({1: ("Spot 1", "#0652dd")}))
         app._detection_pin_states[1] = SimpleNamespace(attached_track_id=4, attached_marker_id=1)
         detector = SimpleNamespace(detections=[])
-        state = _build(app, pool, person_detector=detector)
+        state = _build(app, person_detector=detector)
         assert state.detection_attached_colors == {4: "#0652dd"}
 
-    def test_two_attached_tracks_map_to_two_marker_colours(self, pool: OverlayStatePool) -> None:
+    def test_two_attached_tracks_map_to_two_marker_colours(self) -> None:
         # Assist drives every controlled marker, so several boxes can be
         # attached at once – each painted in its own marker's colour.
         app = self._app(_FakeCatalog({1: ("Spot 1", "#0652dd"), 2: ("Spot 2", "#ff0000")}))
         app._detection_pin_states[1] = SimpleNamespace(attached_track_id=4, attached_marker_id=1)
         app._detection_pin_states[2] = SimpleNamespace(attached_track_id=7, attached_marker_id=2)
         detector = SimpleNamespace(detections=[])
-        state = _build(app, pool, person_detector=detector)
+        state = _build(app, person_detector=detector)
         assert state.detection_attached_colors == {4: "#0652dd", 7: "#ff0000"}
 
-    def test_no_attachment_leaves_empty_map(self, pool: OverlayStatePool) -> None:
+    def test_no_attachment_leaves_empty_map(self) -> None:
         app = self._app()  # no pin states recorded
         detector = SimpleNamespace(detections=[])
-        state = _build(app, pool, person_detector=detector)
+        state = _build(app, person_detector=detector)
         assert state.detection_attached_colors == {}
 
-    def test_pin_state_without_attachment_is_skipped(self, pool: OverlayStatePool) -> None:
+    def test_pin_state_without_attachment_is_skipped(self) -> None:
         app = self._app()
         # A pin state with no live attachment (gliding home / replace miss)
         # contributes no entry.
         app._detection_pin_states[1] = SimpleNamespace(attached_track_id=None, attached_marker_id=None)
         detector = SimpleNamespace(detections=[])
-        state = _build(app, pool, person_detector=detector)
+        state = _build(app, person_detector=detector)
         assert state.detection_attached_colors == {}
 
 
@@ -1940,16 +1949,16 @@ class TestMissingControllerSurfaces:
         info.update(overrides)
         return info
 
-    def test_a_missing_controller_gets_a_status_row(self, pool: OverlayStatePool) -> None:
+    def test_a_missing_controller_gets_a_status_row(self) -> None:
         app = _build_app(
             controlled=[5],
             server_markers={5: _FakeMarker(5)},
             input_manager=_FakeInputManager(controller_info=[self._slot(state="missing", connected=False)]),
         )
-        state = _build(app, pool)
+        state = _build(app)
         assert ("controller_missing_0", "C1 missing · marker 5 · GameSir-G7 SE", "error") in state.status_flags
 
-    def test_a_network_outage_row_comes_before_missing_controllers(self, pool: OverlayStatePool) -> None:
+    def test_a_network_outage_row_comes_before_missing_controllers(self) -> None:
         """Rows past the badge's visible few collapse into "+N more"; lost stage
         data must not be the one hidden there."""
         app = _build_app(
@@ -1957,44 +1966,44 @@ class TestMissingControllerSurfaces:
             server_markers={5: _FakeMarker(5)},
             input_manager=_FakeInputManager(controller_info=[self._slot(state="missing", connected=False)]),
         )
-        state = _build(app, pool, network_alerts=["PSN: eth0.10 is down", "OTP output: eth0.20 is down"])
+        state = _build(app, network_alerts=["PSN: eth0.10 is down", "OTP output: eth0.20 is down"])
         assert [key for key, _message, _level in state.status_flags] == [
             "network_down_0",
             "network_down_1",
             "controller_missing_0",
         ]
 
-    def test_a_missing_row_leaves_out_what_it_does_not_know(self, pool: OverlayStatePool) -> None:
+    def test_a_missing_row_leaves_out_what_it_does_not_know(self) -> None:
         missing = self._slot(controller_index=2, state="missing", connected=False, marker_id=None, name="")
         app = _build_app(input_manager=_FakeInputManager(controller_info=[missing]))
-        state = _build(app, pool)
+        state = _build(app)
         assert ("controller_missing_2", "C3 missing", "error") in state.status_flags
 
     @pytest.mark.parametrize("slot_state", ["connected", "reserved"])
-    def test_only_a_missing_controller_raises_a_row(self, pool: OverlayStatePool, slot_state: str) -> None:
+    def test_only_a_missing_controller_raises_a_row(self, slot_state: str) -> None:
         slot = self._slot(state=slot_state, connected=slot_state == "connected")
         app = _build_app(controlled=[5], input_manager=_FakeInputManager(controller_info=[slot]))
-        state = _build(app, pool)
+        state = _build(app)
         assert not any(key.startswith("controller_missing") for key, _msg, _sev in state.status_flags)
 
-    def test_identify_lights_only_the_chosen_card(self, pool: OverlayStatePool) -> None:
+    def test_identify_lights_only_the_chosen_card(self) -> None:
         app = _build_app(
             controlled=[1, 2],
             viewer=[1, 2],
             server_markers={1: _FakeMarker(1), 2: _FakeMarker(2)},
             input_manager=_FakeInputManager(flash_marker=2),
         )
-        state = _build(app, pool)
+        state = _build(app)
         assert {m.marker_id: m.identify_flash for m in state.markers} == {1: False, 2: True}
 
-    def test_no_identify_lights_no_card(self, pool: OverlayStatePool) -> None:
+    def test_no_identify_lights_no_card(self) -> None:
         app = _build_app(
             controlled=[1],
             viewer=[1],
             server_markers={1: _FakeMarker(1)},
             input_manager=_FakeInputManager(),
         )
-        state = _build(app, pool)
+        state = _build(app)
         assert state.markers[0].identify_flash is False
 
 
@@ -2003,45 +2012,165 @@ class TestMissingControllerSurfaces:
 # --------------------------------------------------------------------------- #
 
 
-class TestPictureGeometryFlow:
-    """The HUD letterboxes the scene by the picture the sink shows, read off
-    the receiver every frame."""
+class TestSceneViewFlow:
+    """The frame loop boxes the scene by the picture the sink shows, on the
+    Operator Screen's canvas, every frame."""
 
-    def test_overlay_state_carries_the_picture_size(self, pool: OverlayStatePool) -> None:
+    @staticmethod
+    def _app(picture: PictureGeometry, canvas: tuple[int, int] = (1920, 1080)) -> SimpleNamespace:
         app = _build_app()
-        app._video_receiver.picture_geometry = PictureGeometry(1024, 768)
-        assert _build(app, pool).picture_size == (1024, 768)
+        app._canvas = SimpleNamespace(get_canvas_size=lambda: canvas)
+        app._video_receiver.picture_geometry = picture
+        return app
 
-    def test_overlay_state_carries_the_pixel_aspect_ratio(self, pool: OverlayStatePool) -> None:
-        app = _build_app()
-        app._video_receiver.picture_geometry = PictureGeometry(704, 576, (12, 11))
-        state = _build(app, pool)
-        assert state.picture_par == (12, 11)
+    def test_a_4_3_picture_is_pillarboxed_on_a_16_9_canvas(self) -> None:
+        state = _build(self._app(PictureGeometry(1024, 768)))
+        assert state.scene_view == ((240, 0, 1440, 1080), 1.0)
+
+    def test_the_pixel_aspect_ratio_stretches_the_scene(self) -> None:
+        state = _build(self._app(PictureGeometry(704, 576, (12, 11))))
+        assert tuple(state.scene_view.rect) == (240, 0, 1440, 1080)
         assert state.pixel_aspect == pytest.approx(12 / 11)
 
-    def test_a_reconnect_keeps_the_box_of_the_picture_still_shown(self, pool: OverlayStatePool) -> None:
-        # A reconnect forgets the source's resolution, but gtksink keeps the
+    def test_a_reconnect_keeps_the_box_of_the_picture_still_shown(self) -> None:
+        # A reconnect forgets the source's resolution, but the sink keeps the
         # last frame up in its box until new caps arrive.
-        app = _build_app()
+        app = self._app(PictureGeometry(1024, 768))
         app._video_receiver.resolution = (0, 0)
-        app._video_receiver.picture_geometry = PictureGeometry(1024, 768)
-        assert _build(app, pool).picture_size == (1024, 768)
+        assert tuple(_build(app).scene_view.rect) == (240, 0, 1440, 1080)
 
-    def test_before_any_picture_the_scene_fills_the_canvas(self, pool: OverlayStatePool) -> None:
-        app = _build_app()
-        app._video_receiver.picture_geometry = PictureGeometry()
-        state = _build(app, pool)
-        assert state.picture_size == (0, 0)
-        assert state.picture_par == (1, 1)
+    def test_before_any_picture_the_scene_fills_the_canvas(self) -> None:
+        state = _build(self._app(PictureGeometry()))
+        assert state.scene_view == ((0, 0, 1920, 1080), 1.0)
 
-    def test_a_changed_shape_replaces_the_pooled_value(self) -> None:
-        pool = OverlayStatePool(pool_size=1)
-        app = _build_app()
-        app._video_receiver.picture_geometry = PictureGeometry(704, 576, (12, 11))
-        first = _build(app, pool)
-        pool.release(first)
-        app._video_receiver.picture_geometry = PictureGeometry(1024, 768)
-        second = _build(app, pool)
-        assert second is first
-        assert second.picture_size == (1024, 768)
-        assert second.picture_par == (1, 1)
+    def test_each_frame_reads_the_canvas_it_is_drawn_on(self) -> None:
+        canvas = [(1920, 1080)]
+        app = self._app(PictureGeometry(1920, 1080))
+        app._canvas = SimpleNamespace(get_canvas_size=lambda: canvas[0])
+        assert tuple(_build(app).scene_view.rect) == (0, 0, 1920, 1080)
+        canvas[0] = (1000, 1000)
+        assert tuple(_build(app).scene_view.rect) == (0, 219, 1000, 562)
+
+    def test_an_unreadable_canvas_draws_no_scene(self) -> None:
+        def _raise() -> tuple[int, int]:
+            raise RuntimeError("no allocation")
+
+        app = self._app(PictureGeometry(1920, 1080))
+        app._canvas = SimpleNamespace(get_canvas_size=_raise)
+        rect = _build(app).scene_view.rect
+        assert rect.width == 0 and rect.height == 0
+
+
+class TestControlConflictSurfaces:
+    """Markers another station controls too: one red status row for all of them, and each card red."""
+
+    @staticmethod
+    def _app(controlled: list[int], names: dict[int, str] | None = None) -> SimpleNamespace:
+        app = _build_app(
+            controlled=controlled,
+            viewer=controlled,
+            server_markers={mid: _FakeMarker(mid) for mid in controlled},
+            input_manager=_FakeInputManager(),
+        )
+        if names is not None:
+            entries = {mid: SimpleNamespace(name=name, color="#ff0000") for mid, name in names.items()}
+            app._marker_catalog = SimpleNamespace(get=entries.get)
+        return app
+
+    @staticmethod
+    def _conflicts(*marker_ids: int, this_station: bool = True) -> tuple[ControlConflict, ...]:
+        return tuple(
+            ControlConflict(marker_id=mid, stations=("Stage Left",), this_station=this_station) for mid in marker_ids
+        )
+
+    @staticmethod
+    def _conflict_rows(state: OverlayState) -> list[tuple[str, str, str]]:
+        return [row for row in state.status_flags if row[0].startswith("control_conflict")]
+
+    def test_one_marker_reads_its_id_and_catalog_name(self) -> None:
+        state = _build(self._app([3], {3: "Lead"}), control_conflicts=self._conflicts(3))
+        assert self._conflict_rows(state) == [("control_conflict", "Control conflict: Marker 3 (Lead)", "error")]
+        cr = FakeCairo()
+        draw_status_badge(FakeRenderer(state=state), cr, state, 1920, 1080)
+        assert "Control conflict: Marker 3 (Lead)" in " ".join(cr.show_text_strings())
+
+    @pytest.mark.parametrize(
+        "names",
+        [
+            pytest.param(None, id="no-catalog"),
+            pytest.param({}, id="no-entry"),
+            pytest.param({3: ""}, id="empty-name"),
+            pytest.param({3: "   "}, id="blank-name"),
+        ],
+    )
+    def test_one_marker_without_a_catalog_name_reads_its_id(self, names: dict[int, str] | None) -> None:
+        state = _build(self._app([3], names), control_conflicts=self._conflicts(3))
+        assert self._conflict_rows(state) == [("control_conflict", "Control conflict: Marker 3", "error")]
+
+    @pytest.mark.parametrize(
+        ("marker_ids", "row"),
+        [
+            pytest.param((5, 3, 4), "Control conflict: Markers 3, 4, 5", id="adjacent"),
+            # A set of these iterates 9, 3, 12, so only a sort puts them in order.
+            pytest.param((12, 3, 9), "Control conflict: Markers 3, 9, 12", id="set-order-differs"),
+        ],
+    )
+    def test_several_markers_share_one_row_in_ascending_order(self, marker_ids: tuple[int, ...], row: str) -> None:
+        names = {mid: f"Lead {mid}" for mid in marker_ids}
+        state = _build(self._app(sorted(marker_ids), names), control_conflicts=self._conflicts(*marker_ids))
+        assert self._conflict_rows(state) == [("control_conflict", row, "error")]
+
+    @pytest.mark.parametrize(
+        ("marker_ids", "row"),
+        [
+            pytest.param([1, 2, 3, 4, 5, 6], "Control conflict: Markers 1, 2, 3, 4, 5, 6", id="fits-exactly"),
+            pytest.param([1, 2, 3, 4, 5, 6, 7], "Control conflict: Markers 1, 2, 3, 4, 5, …", id="one-too-many"),
+            pytest.param(list(range(10, 21)), "Control conflict: Markers 10, 11, 12, …", id="two-digit-ids"),
+            pytest.param([1, 2, 3, 4, 5, 60000], "Control conflict: Markers 1, 2, 3, 4, 5, …", id="long-last-id"),
+            pytest.param([10000, 20000, 30000], "Control conflict: Markers 10000, 20000, …", id="five-digit-ids"),
+        ],
+    )
+    def test_a_long_list_is_cut_to_the_badge_width(self, marker_ids: list[int], row: str) -> None:
+        state = _build(self._app(marker_ids), control_conflicts=self._conflicts(*marker_ids))
+        assert self._conflict_rows(state) == [("control_conflict", row, "error")]
+
+    def test_a_conflict_between_two_other_stations_raises_no_row_here(self) -> None:
+        state = _build(self._app([3], {3: "Lead"}), control_conflicts=self._conflicts(3, this_station=False))
+        assert state.status_flags == []
+        assert state.markers[0].control_conflict is False
+
+    def test_only_this_stations_conflicts_are_listed(self) -> None:
+        conflicts = (*self._conflicts(3), *self._conflicts(4, this_station=False))
+        state = _build(self._app([3, 4], {3: "Lead"}), control_conflicts=conflicts)
+        assert self._conflict_rows(state) == [("control_conflict", "Control conflict: Marker 3 (Lead)", "error")]
+
+    def test_the_card_of_every_conflicting_marker_turns_red(self) -> None:
+        state = _build(self._app([3, 4, 5]), control_conflicts=self._conflicts(3, 4))
+        fills: dict[int, bool] = {}
+        for marker in state.markers:
+            cr = FakeCairo()
+            draw_marker_card(FakeRenderer(state=state), cr, x=0, y=0, w=180, h=64, t=marker, selected=False)
+            fills[marker.marker_id] = ("rgba", *COLOR_WARNING_FILL) in cr.calls
+            assert (("rgb", *COLOR_BG_BASE) in cr.calls) is not fills[marker.marker_id]
+        assert fills == {3: True, 4: True, 5: False}
+
+    def test_the_conflict_row_comes_after_network_outages_and_before_missing_controllers(self) -> None:
+        missing = {
+            "controller_index": 0,
+            "name": "",
+            "state": "missing",
+            "connected": False,
+            "marker_id": 3,
+            "effective_speed": 1.0,
+            "backend": "joystick",
+        }
+        app = self._app([3, 4])
+        app._input_manager = _FakeInputManager(controller_info=[missing])
+        app._runtime_services = SimpleNamespace(_status_flags={"midi_unavailable": ("info", "MIDI off")})
+        state = _build(app, network_alerts=["PSN: eth0 is down"], control_conflicts=self._conflicts(3, 4))
+        assert [key for key, _message, _level in state.status_flags] == [
+            "network_down_0",
+            "control_conflict",
+            "controller_missing_0",
+            "midi_unavailable",
+        ]

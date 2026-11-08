@@ -19,6 +19,7 @@ import pytest
 
 import openfollow.web.discovery as discovery_module
 from openfollow.configuration import (
+    CameraConfig,
     TriggerZoneConfig,
     load_config,
     save_config,
@@ -452,6 +453,53 @@ class TestSaveCameraGrid:
         assert entry.template.payload["camera"]["pos_x"] == 1.5
         assert entry.template.payload["grid"]["width"] == 12.0
 
+    def test_the_ground_grid_goes_with_the_camera_and_grid(self, live_server) -> None:
+        _, base, cfg_path = live_server
+        cfg = load_config(cfg_path)
+        cfg.ground_grid.vertices = [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0]]
+        cfg.ground_grid.z_offset = -1.2
+        save_config(cfg, cfg_path)
+        status, body = _post_json(base, "/api/templates/camera_grid/save", {"name": "Pit Rig"})
+        assert status == 200
+        from openfollow.templates.loader import find_template
+
+        entry = find_template(_templates_root(cfg_path), json.loads(body)["filename"])
+        assert entry is not None and entry.template is not None
+        assert entry.template.payload["ground_grid"]["z_offset"] == -1.2
+        assert entry.template.payload["ground_grid"]["vertices"] == [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0]]
+
+    def test_the_calibration_travels_with_the_camera(self, live_server) -> None:
+        _, base, cfg_path = live_server
+        marks = [
+            {"id": 1, "kind": "known", "x": 5.0, "y": 0.0, "z": 0.0, "pin": [0.81, 0.94]},
+            {"id": 2, "kind": "known", "x": -5.0, "y": 0.0, "z": 0.0, "pin": []},
+            {
+                "id": 3,
+                "kind": "triangulated",
+                "from_a": 1,
+                "from_b": 2,
+                "distance_a": 18.5,
+                "distance_b": 19.25,
+                "z": 0.5,
+                "pin": [0.4, 0.2],
+            },
+        ]
+        cfg = load_config(cfg_path)
+        cfg.camera = CameraConfig(calibration_mode="advanced", calibration_marks=marks, calibration_height=9.8)  # type: ignore[arg-type]
+        expected = cfg.camera.calibration_marks
+        save_config(cfg, cfg_path)
+        status, body = _post_json(base, "/api/templates/camera_grid/save", {"name": "Far Field"})
+        assert status == 200
+        filename = json.loads(body)["filename"]
+        cfg = load_config(cfg_path)
+        cfg.camera.calibration_mode, cfg.camera.calibration_marks, cfg.camera.calibration_height = "simple", [], None
+        save_config(cfg, cfg_path)
+        status, _ = _post_empty(base, f"/api/templates/{filename}/apply?confirm=1")
+        assert status == 200
+        applied = load_config(cfg_path).camera
+        assert (applied.calibration_mode, applied.calibration_marks) == ("advanced", expected)
+        assert applied.calibration_height == 9.8
+
 
 class TestSaveZones:
     def test_reads_current_zones_section_from_config(self, live_server) -> None:
@@ -784,6 +832,44 @@ class TestApplyCameraGrid:
         cfg = load_config(cfg_path)
         assert cfg.camera.pos_x == 2.5
         assert cfg.grid.width == 20.0
+
+    def test_a_template_carrying_former_camera_settings_applies(self, live_server) -> None:
+        _, base, cfg_path = live_server
+        write_user_template(
+            _templates_root(cfg_path),
+            "camera_grid",
+            "Saved Earlier",
+            {"camera": {"pos_x": 2.5, "sensor_width_mm": 6.17, "focal_length_mm": 4.0}, "grid": {"width": 20.0}},
+        )
+        status, _ = _post_empty(base, "/api/templates/camera_grid.saved-earlier.oftemplate/apply?confirm=1")
+        assert status == 200
+        cfg = load_config(cfg_path)
+        assert (cfg.camera.pos_x, cfg.grid.width) == (2.5, 20.0)
+        written = Path(cfg_path).read_text(encoding="utf-8")
+        assert "sensor_width_mm" not in written and "focal_length_mm" not in written
+
+    def test_a_template_with_a_ground_grid_replaces_this_station_s(self, live_server) -> None:
+        _, base, cfg_path = live_server
+        write_user_template(
+            _templates_root(cfg_path),
+            "camera_grid",
+            "Pit",
+            {"camera": {}, "grid": {}, "ground_grid": {"z_offset": -0.8, "vertices": [[0, 0], [1, 0], [1, 1]]}},
+        )
+        status, _ = _post_empty(base, "/api/templates/camera_grid.pit.oftemplate/apply?confirm=1")
+        assert status == 200
+        gg = load_config(cfg_path).ground_grid
+        assert (gg.z_offset, gg.vertices) == (-0.8, [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]])
+
+    def test_a_template_without_one_leaves_this_station_s_ground_grid(self, live_server) -> None:
+        _, base, cfg_path = live_server
+        cfg = load_config(cfg_path)
+        cfg.ground_grid.vertices = [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0]]
+        save_config(cfg, cfg_path)
+        write_user_template(_templates_root(cfg_path), "camera_grid", "Old", {"camera": {}, "grid": {}})
+        status, _ = _post_empty(base, "/api/templates/camera_grid.old.oftemplate/apply?confirm=1")
+        assert status == 200
+        assert load_config(cfg_path).ground_grid.vertices == [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0]]
 
     def test_partial_camera_only_template_rejected_at_write_time(
         self,
@@ -1528,3 +1614,64 @@ def test_removing_a_zone_vertex_is_a_danger_button() -> None:
         Path(__file__).resolve().parent.parent / "openfollow" / "web" / "templates" / "partials" / "zone_editor.tpl"
     )
     assert """<button type="button" class="danger" data-vertex-delete=""" in zone_editor.read_text(encoding="utf-8")
+
+
+class TestSavePaths:
+    def test_saves_the_paths_and_slide_time_without_active_flags(self, live_server) -> None:
+        from openfollow.configuration import PathConfig, PathPointConfig
+
+        _, base, cfg_path = live_server
+        cfg = load_config(cfg_path)
+        cfg.paths.slide_time = 1.5
+        cfg.paths.paths.append(PathConfig(name="cross", active=True, points=[PathPointConfig(1, 2, 0)]))
+        save_config(cfg, cfg_path)
+        status, body = _post_json(base, "/api/templates/paths/save", {"name": "Stage Crosses"})
+        assert status == 200
+        from openfollow.templates.loader import find_template
+
+        entry = find_template(_templates_root(cfg_path), json.loads(body)["filename"])
+        assert entry is not None and entry.template is not None
+        assert entry.template.payload["slide_time"] == 1.5
+        assert [p["name"] for p in entry.template.payload["paths"]] == ["cross"]
+        assert "active" not in entry.template.payload["paths"][0]
+        assert entry.template.payload["paths"][0]["points"][0]["y"] == 2.0
+
+
+class TestApplyPaths:
+    def _template(self, cfg_path: str) -> None:
+        write_user_template(
+            _templates_root(cfg_path),
+            "paths",
+            "Crosses",
+            {
+                "show_paths": False,
+                "slide_time": 2.0,
+                "paths": [{"name": "cross", "points": [{"x": 5}]}, {"name": "new"}],
+            },
+        )
+
+    def test_replaces_the_paths_keeping_this_station_s_active_flags(self, live_server) -> None:
+        from openfollow.configuration import PathConfig
+
+        _, base, cfg_path = live_server
+        cfg = load_config(cfg_path)
+        cfg.paths.paths = [PathConfig(name="Cross", active=True), PathConfig(name="old", active=True)]
+        save_config(cfg, cfg_path)
+        self._template(cfg_path)
+        status, body = _post_empty(base, "/api/templates/paths.crosses.oftemplate/apply?confirm=1")
+        assert status == 200
+        assert json.loads(body)["ok"] is True
+        out = load_config(cfg_path).paths
+        assert [(p.name, p.active) for p in out.paths] == [("cross", True), ("new", False)]
+        assert out.paths[0].points[0].x == 5.0
+        assert out.slide_time == 2.0
+        # Whether this station draws paths is its own, whatever the file says.
+        assert out.show_paths is True
+
+    def test_requires_confirm(self, live_server) -> None:
+        _, base, cfg_path = live_server
+        self._template(cfg_path)
+        status, body = _post_empty(base, "/api/templates/paths.crosses.oftemplate/apply")
+        assert status == 400
+        assert "?confirm=1" in json.loads(body)["error"]
+        assert load_config(cfg_path).paths.paths == []

@@ -20,9 +20,6 @@ WorkingDirectory=/home/pi/openfollow
 # Ensure XDG_RUNTIME_DIR exists before Cage starts (created by user@1000.service with linger)
 ExecStartPre=/bin/bash -c 'until [ -d /run/user/1000 ]; do sleep 0.5; done'
 
-# Wait for USB devices to be fully enumerated (gamepad may not be ready immediately)
-ExecStartPre=/bin/sleep 2
-
 # Run on HDMI display via Cage (Wayland kiosk compositor)
 ExecStart=/usr/bin/cage -- /home/pi/.local/bin/poetry run python -m openfollow.main
 

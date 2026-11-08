@@ -15,7 +15,9 @@ exits cleanly. This guards every Cage launcher against reintroducing the
 from __future__ import annotations
 
 import inspect
+import os
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -103,3 +105,111 @@ def test_kanshi_launcher_tears_down_on_app_exit(rel: str) -> None:
         # (and a clean exit isn't reported as failure when kanshi already died).
         assert "rc=$?" in cmd, f"{rel}: capture the app exit status before kill:\n  {cmd}"
         assert "exit $rc" in cmd, f"{rel}: re-emit the app exit code after killing kanshi:\n  {cmd}"
+
+
+# --- the keyboard layout the packaged session starts Cage with ----------------
+
+_SESSION = "packaging/debian/session.sh"
+_HELPER = "/usr/share/openfollow/keyboard-layout"
+_RUNTIME_DIR = '"/run/user/$(id -u)"'
+_LAYOUT_ENV = (
+    "XKB_DEFAULT_LAYOUT",
+    "XKB_DEFAULT_VARIANT",
+    "XKB_DEFAULT_MODEL",
+    "XKB_DEFAULT_OPTIONS",
+    "OPENFOLLOW_KEYBOARD_SOURCE",
+)
+
+
+def _run_session(tmp_path: Path, helper: str | None) -> dict[str, str]:
+    """Run the packaged launcher with a stub Cage and a stub layout helper.
+
+    ``helper`` is the stub's shell body; ``None`` leaves no helper at all.
+    Returns the layout variables Cage was started with.
+    """
+    text = (_repo_root() / _SESSION).read_text()
+    for literal in ("/usr/bin/cage", _HELPER, _RUNTIME_DIR):
+        assert literal in text, f"session.sh no longer names {literal}"
+    seen = tmp_path / "cage-env"
+    cage = tmp_path / "cage"
+    cage.write_text(f'#!/bin/sh\nenv > "{seen}"\n')
+    cage.chmod(0o755)
+    helper_path = tmp_path / "keyboard-layout"
+    if helper is not None:
+        helper_path.write_text("#!/bin/sh\n" + helper)
+        helper_path.chmod(0o755)
+    script = tmp_path / "session.sh"
+    script.write_text(
+        text.replace("/usr/bin/cage", str(cage))
+        .replace(_HELPER, str(helper_path))
+        .replace(_RUNTIME_DIR, f'"{tmp_path}"')
+    )
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+    subprocess.run(["sh", str(script)], cwd=tmp_path, env=env, check=True, timeout=10)
+    lines = seen.read_text().splitlines()
+    return {k: v for k, _, v in (line.partition("=") for line in lines) if k in _LAYOUT_ENV}
+
+
+def _helper_printing(*lines: str) -> str:
+    return "".join(f"printf '%s\\n' '{line}'\n" for line in lines)
+
+
+def test_the_session_starts_cage_in_the_stations_layout(tmp_path: Path) -> None:
+    helper = _helper_printing("layout=de", "variant=nodeadkeys", "source=config", "model=", "options=")
+    assert _run_session(tmp_path, helper) == {
+        "XKB_DEFAULT_LAYOUT": "de",
+        "XKB_DEFAULT_VARIANT": "nodeadkeys",
+        "OPENFOLLOW_KEYBOARD_SOURCE": "config",
+    }
+
+
+@pytest.mark.parametrize(("layout", "source"), [("gb", "system"), ("de", "config"), ("us", "default")])
+def test_the_session_passes_the_system_keyboard_through(tmp_path: Path, layout: str, source: str) -> None:
+    helper = _helper_printing(
+        f"layout={layout}", "variant=", f"source={source}", "model=pc105", "options=grp:alt_shift_toggle,ctrl:nocaps"
+    )
+    assert _run_session(tmp_path, helper) == {
+        "XKB_DEFAULT_LAYOUT": layout,
+        "XKB_DEFAULT_MODEL": "pc105",
+        "XKB_DEFAULT_OPTIONS": "grp:alt_shift_toggle,ctrl:nocaps",
+        "OPENFOLLOW_KEYBOARD_SOURCE": source,
+    }
+
+
+def test_the_session_asks_the_helper_about_the_apps_own_config(tmp_path: Path) -> None:
+    """The app reads ``config.toml`` from the working directory; the helper must read the same file."""
+    helper = 'printf "layout=us\\nsource=default\\n"; [ "$1 $2" = "env config.toml" ] || exit 1\n'
+    assert _run_session(tmp_path, helper)["XKB_DEFAULT_LAYOUT"] == "us"
+
+
+@pytest.mark.parametrize(
+    "helper",
+    [
+        None,  # not installed
+        "exit 1\n",  # failed
+        _helper_printing("variant=nodeadkeys", "source=config"),  # no layout
+        _helper_printing("layout=de"),  # no source
+    ],
+)
+def test_without_an_answer_the_session_exports_nothing_about_the_layout(tmp_path: Path, helper: str | None) -> None:
+    """Cage then starts in its own default, and the web UI hides a setting that could not take effect."""
+    assert _run_session(tmp_path, helper) == {}
+
+
+def test_the_session_never_evaluates_what_the_helper_prints(tmp_path: Path) -> None:
+    marker = tmp_path / "pwned"
+    helper = _helper_printing(
+        f"layout=de$(touch {marker})",
+        f"variant=`touch {marker}`",
+        "source=config;id",
+        "model=pc105 x",
+        f"options=a;touch {marker}",
+        f"XKB_DEFAULT_LAYOUT=$(touch {marker})",
+    )
+    assert _run_session(tmp_path, helper) == {}
+    assert not marker.exists()
+
+
+def test_the_session_ignores_a_bad_value_but_keeps_the_good_ones(tmp_path: Path) -> None:
+    helper = _helper_printing("layout=de", "variant=no dead", "source=config", "options=a b")
+    assert _run_session(tmp_path, helper) == {"XKB_DEFAULT_LAYOUT": "de", "OPENFOLLOW_KEYBOARD_SOURCE": "config"}

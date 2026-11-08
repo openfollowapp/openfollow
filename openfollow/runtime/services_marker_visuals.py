@@ -7,26 +7,39 @@ from __future__ import annotations
 import math
 import re
 import time
+from collections.abc import Sequence
 from typing import Any
 
 import numpy.typing as npt
 
-from openfollow.configuration import MOUSE3D_AXES, MOUSE3D_BUTTON_FIELDS, GridConfig
+from openfollow.configuration import (
+    MOUSE3D_AXES,
+    MOUSE3D_BUTTON_FIELDS,
+    GridConfig,
+    effective_lens,
+    feature_on,
+    is_simple_mode,
+)
+from openfollow.input.touch_remote import STATUS_FLAG as REMOTE_FLAG
+from openfollow.input.touch_remote import status_row as remote_row
+from openfollow.marker_catalog.control_conflicts import ControlConflict
 from openfollow.network.validate import is_link_local
 from openfollow.palette import AUTO_PICK_ORDER as _PALETTE_AUTO_PICK_ORDER
 from openfollow.runtime.marker_velocity import MarkerVelocityState, estimate_marker_velocity
+from openfollow.runtime.overlay_draw_style import STATUS_LEVELS, status_level
 from openfollow.runtime.overlay_state import (
     MarkerOverlayData,
     OperatorMessageView,
     OverlayState,
     VirtualFaderDisplayData,
 )
+from openfollow.runtime.paths_runtime import RECORDING_FLAG, recording_row
 from openfollow.runtime.services_detection_pin import is_assist_controlled
 from openfollow.runtime.state_maps import get_or_create, prune_to_keep
-from openfollow.runtime_metrics import OverlayStatePool
 from openfollow.station_fqdn import web_ui_host
 from openfollow.units import UnitSystem
 from openfollow.video.failure import SourceKind, VideoFailure, failure_action, failure_chip, failure_sentence
+from openfollow.window import operator_scene_view
 
 
 def _receiver_kind(video_receiver: Any) -> SourceKind:
@@ -54,6 +67,13 @@ _HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 # ``GridConfig.__post_init__`` still fall back to whatever the dataclass
 # currently declares – no silent desync if GridConfig defaults change later.
 _GRID_DEFAULTS = GridConfig()
+
+# One status row for all the markers this station and another one both control.
+CONTROL_CONFLICT_ROW = "Control conflict: Marker {marker}"
+CONTROL_CONFLICT_NAMED_ROW = "Control conflict: Marker {marker} ({name})"
+CONTROL_CONFLICT_LIST_ROW = "Control conflict: Markers {markers}"
+# Characters of an id list row that fit one line of the badge in its bold UI font; more ids end in "…".
+CONTROL_CONFLICT_ROW_MAX_CHARS = 42
 
 
 def _soft_int(value: Any, default: int, *, lo: int | None = None) -> int:
@@ -190,6 +210,23 @@ def _resolve_marker_name(app: Any, marker_id: int) -> str:
     return str(entry.name)
 
 
+def _control_conflict_row(app: Any, marker_ids: Sequence[int]) -> str:
+    """The row for *marker_ids*, ascending: one marker with its catalog name, or the ids cut to fit."""
+    if len(marker_ids) == 1:
+        name = _resolve_marker_name(app, marker_ids[0]).strip()
+        if name:
+            return CONTROL_CONFLICT_NAMED_ROW.format(marker=marker_ids[0], name=name)
+        return CONTROL_CONFLICT_ROW.format(marker=marker_ids[0])
+    shown = [str(marker_ids[0])]
+    for index, marker_id in enumerate(marker_ids[1:], start=2):
+        tail = ", …" if index < len(marker_ids) else ""
+        row = CONTROL_CONFLICT_LIST_ROW.format(markers=", ".join([*shown, str(marker_id)]) + tail)
+        if len(row) > CONTROL_CONFLICT_ROW_MAX_CHARS:
+            return CONTROL_CONFLICT_LIST_ROW.format(markers=", ".join(shown) + ", …")
+        shown.append(str(marker_id))
+    return CONTROL_CONFLICT_LIST_ROW.format(markers=", ".join(shown))
+
+
 def sync_marker_config(state: OverlayState, cfg: Any) -> None:
     """Copy marker visual config fields into the overlay state."""
     tc = cfg.marker
@@ -255,6 +292,23 @@ def sync_grid_config(state: OverlayState, cfg: Any) -> None:
     state.origin_thickness = _soft_int(g.origin_thickness, d.origin_thickness, lo=1)
 
 
+def sync_ground_grid_config(state: OverlayState, cfg: Any) -> None:
+    """Copy the ground grid into the overlay state: ``enabled`` drops markers inside it onto its height
+    and ``visible`` draws it, each on its own; neither without the Ground grid feature or three corners."""
+    # getattr: a shim config without the section draws no ground grid.
+    gg = getattr(cfg, "ground_grid", None)
+    if gg is None:
+        state.ground_grid_vertices = []
+        state.ground_grid_z = 0.0
+        state.ground_grid_active = state.ground_grid_visible = False
+        return
+    state.ground_grid_vertices = [(float(v[0]), float(v[1])) for v in gg.vertices]
+    state.ground_grid_z = _soft_float(gg.z_offset, 0.0)
+    usable = feature_on(cfg, "ground_grid") and len(state.ground_grid_vertices) >= 3
+    state.ground_grid_active = usable and _soft_bool(gg.enabled, False)
+    state.ground_grid_visible = usable and _soft_bool(gg.visible, True)
+
+
 def sync_ui_config(state: OverlayState, cfg: Any) -> None:
     """Copy the UI display unit system into the overlay state.
 
@@ -303,10 +357,17 @@ def _populate_media_overlay(app: Any, state: OverlayState) -> None:
     )
 
 
+# Simple network mode's screens, by which picker is open: (title, subtitle).
+_SIMPLE_NETWORK_TITLES = {
+    "": ("Network", "The interface that carries this station's traffic."),
+    "interface": ("Interface", "Every function moves to the one chosen."),
+    "method": ("Configure IPv4", "How the interface gets its address."),
+}
+
+
 def _populate_pi_network_overlay(app: Any, state: OverlayState) -> None:
     """Snapshot the Network screens for draw-pass consumption."""
     target = state.pi_network
-    target.reset()
     target.screen_active = bool(getattr(app, "_pi_network_active", False))
     if target.screen_active:
         from openfollow.runtime.app_modes_network import build_pi_network_rows
@@ -315,7 +376,10 @@ def _populate_pi_network_overlay(app: Any, state: OverlayState) -> None:
         target.selected_index = int(getattr(app, "_pi_network_index", 0))
         target.active_iface = str(getattr(app, "_pi_network_active_iface", ""))
         target.open_iface = str(getattr(app, "_pi_network_open_iface", ""))
-        if target.open_iface:
+        simple_title = _SIMPLE_NETWORK_TITLES.get(str(getattr(app, "_pi_network_picker", "") or ""))
+        if is_simple_mode(getattr(app, "_config", None)) and simple_title:
+            target.title, target.subtitle = simple_title
+        elif target.open_iface:
             from openfollow.net_adapters import display_name
 
             labels = getattr(getattr(app, "_config", None), "interface_labels", None) or {}
@@ -346,6 +410,20 @@ def _populate_pi_network_overlay(app: Any, state: OverlayState) -> None:
         )
 
 
+def _populate_path_overlay(state: OverlayState, cfg: Any, app: Any) -> None:
+    """Copy the paths to draw into the overlay state; nothing while paths are off or hidden."""
+    engine = getattr(app, "_paths", None)
+    state.show_paths = engine is not None and engine.enabled and bool(cfg.paths.show_paths)
+    if engine is None or not state.show_paths:
+        state.path_lines = []
+        state.path_arrows = []
+        return
+    state.path_arrows = engine.switch_arrows()
+    state.path_lines = [
+        (d.curve, [(e.at, e.inside, e.releases) for e in d.ends], d.locked) for d in engine.drawings(cfg.paths)
+    ]
+
+
 def _populate_zone_overlay(state: OverlayState, cfg: Any, app: Any) -> None:
     """Copy zone polygons + occupancy into the overlay state."""
     tz = cfg.trigger_zones
@@ -353,7 +431,7 @@ def _populate_zone_overlay(state: OverlayState, cfg: Any, app: Any) -> None:
     # arms the trigger engine, the latter controls visualisation. The overlay
     # hotkey only flips ``show_overlay``, so gating rendering on ``enabled``
     # would make the hotkey a silent no-op whenever triggers are off.
-    state.show_zones = bool(tz.show_overlay)
+    state.show_zones = bool(tz.show_overlay) and feature_on(cfg, "zones")
     state.zone_z_offset = float(cfg.grid.z_offset)
     if not state.show_zones:
         state.zone_polygons = []
@@ -383,12 +461,11 @@ def build_initial_overlay_state(cfg: Any) -> OverlayState:
     """Create the initial disconnected overlay state from config."""
     state = OverlayState()
     sync_grid_config(state, cfg)
+    sync_ground_grid_config(state, cfg)
     sync_marker_config(state, cfg)
     sync_ui_config(state, cfg)
 
     state.video_connected = False
-    state.picture_size = (0, 0)
-    state.picture_par = (1, 1)
     state.source_label = ""
     state.reconnect_attempt = 0
     state.error_message = ""
@@ -410,20 +487,21 @@ def build_initial_overlay_state(cfg: Any) -> OverlayState:
 def build_marker_visual_state(
     app: Any,
     *,
-    overlay_state_pool: OverlayStatePool,
     system_stats: Any,
     person_detector: Any,
     cam_params_buffer: npt.NDArray[Any],
     dt: float,
     network_alerts: list[str] | None = None,
+    control_conflicts: Sequence[ControlConflict] = (),
 ) -> OverlayState:
-    """Build a complete OverlayState snapshot for atomic renderer swap.
+    """Build a new OverlayState for the renderer; it is never changed once handed over.
 
     ``dt`` is the real seconds elapsed since the previous animate frame - not
     the clamped motion step - because it divides a displacement into a rate for
     the velocity each controlled marker broadcasts.
     """
     controlled_set = set(app._controlled_ids)
+    conflict_ids = sorted({conflict.marker_id for conflict in control_conflicts if conflict.this_station})
     marker_speeds = app._input_manager.get_marker_gamepad_speeds() if app._input_manager is not None else {}
 
     # Every controlled marker is broadcast on PSN, so every controlled marker
@@ -460,7 +538,7 @@ def build_marker_visual_state(
     # The card an Identify has lit this frame, if any.
     flash_marker = app._input_manager.identify_flash_marker() if app._input_manager is not None else None
 
-    state = overlay_state_pool.acquire()
+    state = OverlayState()
 
     # The actually-bound port from the running web server so the HUD reflects
     # reachability, not just configuration. Falls back to the configured port
@@ -468,8 +546,10 @@ def build_marker_visual_state(
     web_server = getattr(app, "_web_server", None)
     web_port = web_server.display_port if web_server is not None else app._config.web_port
 
+    power_warning = ""
     if system_stats is not None:
         stats = system_stats.update()
+        power_warning = stats.power_warning
         state.cpu_percent = stats.cpu_percent
         state.ram_percent = stats.ram_percent
         state.temperature = stats.temperature
@@ -507,20 +587,17 @@ def build_marker_visual_state(
     status = status_marker.snapshot()
     state.video_source_type = app._config.video_source_type
     state.video_connected = status.is_connected
-    # What the sink shows, not ``resolution``: a reconnect clears that while
-    # the last frame stays up in its box.
-    picture = video_receiver.picture_geometry
-    state.picture_size = (picture.width, picture.height)
-    state.picture_par = picture.par
+    state.scene_view = operator_scene_view(app)
     state.source_label = video_receiver.source_name
     state.reconnect_attempt = status.reconnect_attempt
     state.error_message = status.error_message
+    simple = is_simple_mode(app._config)
     # UNKNOWN contributes no sentence anywhere: it would sit beside the
     # element's own wording and contradict it.
     state.video_failure_action = (
         ""
         if status.failure is VideoFailure.NONE
-        else failure_action(status.failure, kind=_receiver_kind(video_receiver))
+        else failure_action(status.failure, kind=_receiver_kind(video_receiver), simple=simple)
     )
     state.video_failure_text = (
         ""
@@ -532,6 +609,7 @@ def build_marker_visual_state(
             status.failure,
             where=status.source_name,
             kind=_receiver_kind(video_receiver),
+            simple=simple,
         )
     )
     state.source_selection_active = video_receiver.source_selection_active
@@ -570,6 +648,7 @@ def build_marker_visual_state(
         state.settings_items_submenu = submenu
         state.settings_selected_index = app._settings_menu_index
         state.settings_menu_banner = app._settings_menu_banner
+        state.settings_menu_banner_action = app._settings_menu_banner_action
     else:
         state.settings_items = []
         state.settings_items_enabled = []
@@ -577,6 +656,7 @@ def build_marker_visual_state(
         state.settings_items_submenu = []
         state.settings_selected_index = 0
         state.settings_menu_banner = ""
+        state.settings_menu_banner_action = ""
 
     state.about_active = getattr(app, "_about_active", False)
     _populate_media_overlay(app, state)
@@ -584,8 +664,6 @@ def build_marker_visual_state(
     _populate_pi_network_overlay(app, state)
 
     cfg = app._config
-    pool = state._marker_pool
-    marker_idx = 0
     # Marker-fader bus for the per-marker fader value shown on each card.
     # Same ``getattr`` boot / mid-restart guard as the fader-stack build
     # below; ``None`` → no marker-fader value on any card this frame.
@@ -660,24 +738,8 @@ def build_marker_visual_state(
             if anchor is not None:
                 px, py, pz = anchor.pos
 
-        if marker_idx < len(pool):
-            td = pool[marker_idx]
-            td.marker_id = marker_id
-            td.x = px
-            td.y = py
-            td.z = pz
-            td.color = color
-            td.radius = cfg.marker.ball_size
-            td.speed = speed
-            td.online = online
-            td.controller_idx = ctrl_idx
-            td.controller_connected = ctrl_conn
-            td.identify_flash = marker_id == flash_marker
-            td.is_controlled = is_controlled
-            td.name = name
-            td.marker_fader = marker_fader
-        else:
-            td = MarkerOverlayData(
+        state.markers.append(
+            MarkerOverlayData(
                 marker_id=marker_id,
                 x=px,
                 y=py,
@@ -690,11 +752,11 @@ def build_marker_visual_state(
                 controller_connected=ctrl_conn,
                 identify_flash=marker_id == flash_marker,
                 is_controlled=is_controlled,
+                control_conflict=marker_id in conflict_ids,
                 name=name,
                 marker_fader=marker_fader,
             )
-        state.markers.append(td)
-        marker_idx += 1
+        )
 
     # The dim AI-output ghosts are scene-only (no card, filtered in the HUD loop);
     # each marks where one marker's AI-corrected output is actually broadcast while
@@ -710,16 +772,15 @@ def build_marker_visual_state(
     cam_params_buffer[5] = cam_cfg.roll
     cam_params_buffer[6] = cam_cfg.fov
     state.camera_params = cam_params_buffer.copy()
-    # Lens-distortion coefficients live on the app config (the Camera object is
-    # pinhole and doesn't carry them); read them straight from the live config so
-    # slider edits hot-reload onto the HUD.
-    state.lens_k1 = cfg.camera.lens_k1
-    state.lens_k2 = cfg.camera.lens_k2
+    # The lens lives on the app config (the Camera object is pinhole and doesn't
+    # carry it); read it straight from the live config so edits hot-reload onto the HUD.
+    state.lens_k1, state.lens_k2, state.lens_cx, state.lens_cy = effective_lens(cfg)
 
     state.selected_id = app._selected_id
 
     sync_marker_config(state, cfg)
     sync_grid_config(state, cfg)
+    sync_ground_grid_config(state, cfg)
     sync_ui_config(state, cfg)
 
     if person_detector is not None:
@@ -751,6 +812,9 @@ def build_marker_visual_state(
     # and 3D mouse help so neither promises a no-op control. Read the same
     # predicate the action gate uses so the help and the action can't drift.
     state.marker_cycle_enabled = app._input_manager is None or app._input_manager.marker_cycle_active()
+    # While paths are off their bindings do nothing, so help names none.
+    paths_engine = getattr(app, "_paths", None)
+    paths_on = paths_engine is not None and paths_engine.enabled
     state.button_labels = {
         "reset": cc.btn_reset,
         "toggle_help": cc.btn_toggle_help,
@@ -765,6 +829,8 @@ def build_marker_visual_state(
         "menu_confirm": cc.btn_menu_confirm,
         "menu_cancel": cc.btn_menu_cancel,
         "move_xy_stick": cc.move_xy_stick,
+        "pathfinder": cc.btn_pathfinder if paths_on else "",
+        "toggle_paths": cc.btn_toggle_paths if paths_on else "",
     }
     state.keyboard_labels = {
         "move_layout": cc.key_move_layout,
@@ -778,9 +844,12 @@ def build_marker_visual_state(
         "next_marker": cc.key_next_marker,
         "prev_marker": cc.key_prev_marker,
         "settings": cc.key_settings,
+        "pathfinder": cc.key_pathfinder if paths_on else "",
+        "toggle_paths": cc.key_toggle_paths if paths_on else "",
     }
 
     _populate_zone_overlay(state, cfg, app)
+    _populate_path_overlay(state, cfg, app)
 
     # Only a gamepad lights the gamepad help section / status: a 3D mouse is a
     # unified controller (it gets a card badge) but has its own help section, so
@@ -814,7 +883,11 @@ def build_marker_visual_state(
     )
     if state.mouse3d_connected:
         state.mouse3d_axis_map = {axis: getattr(m3d_cfg, f"map_{axis}") for axis in MOUSE3D_AXES}
-        state.mouse3d_buttons = {name[4:]: getattr(m3d_cfg, name) for name in MOUSE3D_BUTTON_FIELDS}
+        state.mouse3d_buttons = {
+            name[4:]: getattr(m3d_cfg, name)
+            for name in MOUSE3D_BUTTON_FIELDS
+            if paths_on or name not in ("btn_pathfinder", "btn_toggle_paths")
+        }
     else:
         state.mouse3d_axis_map = {}
         state.mouse3d_buttons = {}
@@ -855,6 +928,9 @@ def build_marker_visual_state(
             if status.failure not in (VideoFailure.NONE, VideoFailure.NOT_CONFIGURED)
             else None
         )
+        flags_dict[RECORDING_FLAG] = recording_row(app) if paths_on else None
+        flags_dict[REMOTE_FLAG] = remote_row(app)
+        flags_dict["power"] = ("error", power_warning) if power_warning else None
     if flags_dict:
         # ``dict`` insertion order preserves the order subsystems
         # registered their slots; surface flags in that order so
@@ -893,6 +969,10 @@ def build_marker_visual_state(
     for i, alert in enumerate(state.network_alerts):
         state.status_flags.append((f"network_down_{i}", alert, "error"))
 
+    # Every output carries a controlled marker, so another station's sends make it jump at every receiver.
+    if conflict_ids:
+        state.status_flags.append(("control_conflict", _control_conflict_row(app, conflict_ids), "error"))
+
     # One row per missing controller, so it is seen even for a marker with no card.
     for info in controller_info:
         if info.get("state") != "missing":
@@ -903,6 +983,10 @@ def build_marker_visual_state(
         if info.get("name"):
             parts.append(str(info["name"]))
         state.status_flags.append((f"controller_missing_{info['controller_index']}", " · ".join(parts), "error"))
+
+    # Gravest first, each level in the order above: the badge shows a few rows
+    # and folds the rest into "+N more", which must never hide a fault behind a notice.
+    state.status_flags.sort(key=lambda row: STATUS_LEVELS.index(status_level(row[2])))
 
     # Snapshot the store (newest-first), resolve marker name/color for keyed
     # cards, compute each countdown against one frame clock, and cap to

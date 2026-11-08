@@ -32,6 +32,7 @@ from openfollow.privilege.device_repair import (
     apply_mask_getty,
     current_hostname,
     ensure_loopback_hosts_line,
+    full_hostname,
     probe_all_boot_delay_disabled,
     probe_hardware_groups,
     probe_journal_group,
@@ -1168,6 +1169,19 @@ def test_current_hostname_returns_short_form() -> None:
     result = current_hostname()
     assert isinstance(result, str)
     assert "." not in result
+
+
+def test_full_hostname_keeps_the_domain_and_survives_an_oserror(monkeypatch) -> None:
+    monkeypatch.setattr("openfollow.privilege.device_repair.socket.gethostname", lambda: "box.example.lan")
+    assert full_hostname() == "box.example.lan"
+    assert current_hostname() == "box"
+
+    def boom() -> str:
+        raise OSError("no hostname")
+
+    monkeypatch.setattr("openfollow.privilege.device_repair.socket.gethostname", boom)
+    assert full_hostname() == ""
+    assert current_hostname() == ""
 
 
 class TestSyncRunningHostnameHosts:

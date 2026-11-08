@@ -148,8 +148,7 @@ _MAC_KEY_CODES: dict[str, int] = {
     # macOS Command key (Carbon ``kVK_Command`` / ``kVK_RightCommand``).
     # Without these, the ``Meta`` branch of
     # :data:`KeyboardHandler._MODIFIER_KEY_TO_NAME` never reports as
-    # held on macOS, and Cmd-modified hotkeys (plus the existing
-    # Ctrl/Cmd+S handler) silently fail. Both sides of the keyboard
+    # held on macOS, and Cmd-modified hotkeys silently fail. Both sides of the keyboard
     # are mapped so the right-variant fallback in
     # :meth:`MacOSKeyboardPoller.is_key_pressed` can pick up either.
     "Meta": 0x37,
@@ -467,6 +466,8 @@ class KeyboardHandler:
         "key_next_marker",
         "key_prev_marker",
         "key_clear_messages",
+        "key_pathfinder",
+        "key_toggle_paths",
     )
 
     # Map physical modifier keys to the canonical names used by

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Render the Media Gallery's Festival default: a festival stage seen from a camera on the front truss.
 
 The camera hangs on the front truss over the barrier and looks steeply down onto the stage under

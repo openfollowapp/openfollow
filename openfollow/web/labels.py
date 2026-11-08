@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Human-friendly labels for raw enum tokens shown in the web UI."""
 
 from __future__ import annotations
@@ -52,15 +54,15 @@ FEATURE_LABELS: dict[str, FeatureLabel] = {
         "Locks a marker to a drawn path, so a stick moves it along the path.",
         "every marker on a path is let go.",
     ),
-    "ground_grid": FeatureLabel(
-        "Ground grid",
-        "Lets markers follow raised floor areas such as risers and stairs.",
-        "markers no longer follow raised floor areas.",
-    ),
     "touch_remote": FeatureLabel(
         "Touch remote",
         "Drives a marker from a tablet or phone in the web UI.",
         "every touch remote lets go of its marker, and its launcher disappears.",
+    ),
+    "zone_heights": FeatureLabel(
+        "Zone heights",
+        "Draws a zone at a height above the stage, and can raise a marker's Z while it is inside.",
+        "zones are drawn on the stage floor again and markers keep their own height.",
     ),
 }
 

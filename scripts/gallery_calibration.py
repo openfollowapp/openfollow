@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Write a Media Gallery default's calibration next to its picture: the camera and grid it was drawn with.
 
 The file holds ``[camera]`` and ``[grid]`` in ``config.toml`` form and takes the picture's name

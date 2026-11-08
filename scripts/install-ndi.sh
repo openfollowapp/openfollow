@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 # Install NDI® support: the NDI® SDK runtime (libndi) plus the GStreamer
 # ``ndisrc`` plugin built from source. Automates the manual procedure at
 # https://openfollow.app/docs/ndi-install.html – everything except the SDK

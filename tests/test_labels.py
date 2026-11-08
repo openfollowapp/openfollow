@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Tests for the web UI label helper.
 
 ``pretty_label`` turns raw enum tokens (snake_case / ALL_CAPS) into
@@ -81,7 +83,7 @@ class TestVideoSignalLabel:
     @pytest.mark.parametrize("failure", ["", "teleported_away", "UNREACHABLE"])
     def test_an_unrecognised_token_degrades_instead_of_raising(self, failure: str) -> None:
         """This renders a live provider's dict. A payload from a newer build
-        must not take the Statistics page down."""
+        must not take the Status & Diagnostics page down."""
         assert video_signal_label(False, failure) == "Disconnected"
 
 

@@ -6,6 +6,8 @@ openfollow/              # Single unified package
 ├── main.py              # CLI entry point
 ├── app.py               # Main application class + event loop
 ├── configuration.py     # Config model, TOML I/O, hot-reload logic
+├── config_restore.py    # Lists and reads back the station's own settings backups for a web restore
+├── restore_hold.py      # What a restore holds until its restart: no write lands over a restored part
 ├── services.py          # Runtime service orchestration
 ├── system_stats.py      # Runtime system stats collector
 ├── runtime_metrics.py   # Frame metrics
@@ -21,6 +23,7 @@ openfollow/              # Single unified package
 │   └── engine.py        # Locked markers: pull, slide, switch, record
 ├── lens_model.py        # The division lens model's validity rule and pull-back (stdlib-only; config, web and solver read it)
 ├── keyboard_layout.py   # Kiosk session keyboard layout resolver (stdlib-only; also the .deb helper)
+├── button_names.py      # Gamepad button names and symbols per pad family (stdlib-only; HUD and web read it)
 ├── window.py            # GTK native sink window wrapper
 ├── macos_quit.py        # macOS: answers the quit Apple Event (Dock, logout, restart, shutdown)
 ├── psn/                 # PSN protocol subpackage
@@ -30,10 +33,10 @@ openfollow/              # Single unified package
 │   └── receiver.py      # PSN listener
 ├── scene/               # Camera model + calibration math
 │   ├── camera.py
-│   ├── ground_grid.py   # Grid lines clipped to the ground-grid polygon (HUD + web)
 │   ├── solver.py        # Projection, homography, DLT camera solve + the division-model overlay warp about the lens centre, both ways
 │   ├── calibration_points.py # The Setup Wizard's camera solve from known and triangulated marks
 │   ├── lens_fit.py      # k1 / k2 from traced straight lines (the Setup Wizard's Lens step)
+│   ├── opencv_lens.py   # An OpenCV calibration file read and the lens model fitted to it
 │   ├── edge_snap.py     # Snap a traced line's points onto a brightness edge
 │   └── edge_chains.py   # Edge suggestions: line-like edges found in a scaled snapshot
 ├── video/               # Video pipeline + overlay
@@ -58,7 +61,7 @@ openfollow/              # Single unified package
     ├── discovery.py
     ├── peer_auth.py     # HMAC-signed peer request auth (no PIN on the wire)
     ├── lens_calibrations.py # Lens calibrations saved on this station, one JSON file each
-    ├── static/js/       # polygon-plan.js (top-down plan), picture-view.js (camera picture), ...
+    ├── static/js/       # polygon-plan.js (top-down plan), picture-view.js (camera picture), camera-model.js (projection), picture-polygon.js (corners on the picture), ...
     └── templates/
 ```
 
@@ -80,7 +83,6 @@ from openfollow.services import AppRuntimeServices
 - Web API → `web/routes.py`
 - Camera/calibration → `scene/camera.py`, `scene/solver.py`, `scene/calibration_points.py` (calibration is the web `/wizard`)
 - Paths → `paths/`, `runtime/paths_runtime.py`, `osc/paths.py`, `runtime/overlay_draw_paths.py`
-- Ground grid → `scene/ground_grid.py`, `runtime/overlay_draw_scene.py` (`floor_z_at`, `draw_ground_grid`, `GridCache`)
 
 **Coordinates (PSN):** X=stage left, Y=upstage, Z=up
 

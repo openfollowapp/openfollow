@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Stopping or rebinding a running receiver returns at once.
 
 The network observer and the config dispatcher stop and rebind receivers on

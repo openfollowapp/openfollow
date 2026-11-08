@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Invariant: the Ansible Poetry install stays runtime-only by default.
 
 Consumer Pis must not pull the dev/CI group (ruff, pytest, mypy, bandit,

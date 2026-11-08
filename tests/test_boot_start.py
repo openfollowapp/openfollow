@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """The session starts once the network is online: the splash is stopped after its minimum time, and no unit sleeps
 a fixed time before the session."""
 

@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Mutation-audit kills for :mod:`openfollow.configuration`.
 
 High-value mutation kills targeting ``openfollow/configuration.py``:
@@ -93,6 +95,7 @@ class _DummyApp:
         self._web_server = None  # skips the web-server system-name update
         self._controlled_ids = list(cfg.controlled_marker_ids)
         self._viewer_ids = list(cfg.viewer_marker_ids)
+        self._selected_id = self._controlled_ids[0] if self._controlled_ids else None
         self._camera = None
         self._input_manager = None
         # ``controlled_marker_ids`` live-update is gated on both of

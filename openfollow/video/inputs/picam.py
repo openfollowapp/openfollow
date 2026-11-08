@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Raspberry Pi CSI/MIPI camera input plugin via libcamerasrc.
 
 Builds a ``libcamerasrc`` raw-video pipeline and discovers connected cameras
@@ -62,6 +64,7 @@ class PiCamInput(VideoInputBase):
     input_id = "picam"
     display_name = "Pi Camera"
     source_element_name = "libcamerasrc"
+    frame_meter_element_name = "post_queue"
     source_kind = SourceKind.LOCAL
 
     # -- Declarations ---------------------------------------------------------

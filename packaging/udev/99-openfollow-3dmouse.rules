@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 #
 # Grant the OpenFollow service user (member of the plugdev group) access to a
 # 3D Mouse (3Dconnexion 6DOF) HID device. On Debian, hidraw nodes are

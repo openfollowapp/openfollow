@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 OpenFollow Project
+// Copyright (C) 2026 Michel Honold and Paul Hermann
 //
 // A small DOM for running a template's script in node: markup, selectors, events,
 // focus, timers and fetch, each moved by the test. Only what the scripts under test use.
@@ -172,7 +173,7 @@ El.prototype.contains = function (n) {
     return false;
 };
 
-// -- selectors: compounds of tag, #id, .class and [attr], [attr=v], [attr^=v], [attr$=v], [attr*=v],
+// -- selectors: compounds of tag, #id, .class, :checked and [attr], [attr=v], [attr^=v], [attr$=v], [attr*=v],
 // joined by descendant spaces, in comma-separated groups.
 function parseCompound(text) {
     var parts = [], m, rest = text;
@@ -180,6 +181,7 @@ function parseCompound(text) {
     while (rest) {
         if ((m = /^#([\w-]+)/.exec(rest))) parts.push({ attr: 'id', op: '=', value: m[1] });
         else if ((m = /^\.([\w-]+)/.exec(rest))) parts.push({ cls: m[1] });
+        else if ((m = /^:checked/.exec(rest))) parts.push({ checked: true });
         else if ((m = /^\[([\w-]+)(?:([\^$*]?=)(?:"([^"]*)"|'([^']*)'|([^\]]*)))?\]/.exec(rest))) {
             parts.push({ attr: m[1], op: m[2] || '', value: m[3] !== undefined ? m[3] : m[4] !== undefined ? m[4] : m[5] });
         } else throw new Error('the fake DOM cannot read the selector ' + text);
@@ -195,6 +197,7 @@ function matchesCompound(el, parts) {
     return parts.every(function (p) {
         if (p.tag) return p.tag === '*' || el.tagName.toLowerCase() === p.tag;
         if (p.cls) return el.classList.contains(p.cls);
+        if (p.checked) return !!el.checked;
         var v = el.getAttribute(p.attr);
         if (v === null) return false;
         if (p.op === '=') return v === p.value;
@@ -421,7 +424,16 @@ globalThis.fetch = function (url, opts) {
     // The station answers when asked; a held answer only arrives later.
     var out = station(req);
     return new Promise(function (resolve, reject) {
+        // An aborted request rejects at once and its answer, when it comes, is dropped.
+        var aborted = false;
+        if (opts.signal) {
+            opts.signal.addEventListener('abort', function () {
+                aborted = true;
+                reject(new DOMException('The operation was aborted.', 'AbortError'));
+            });
+        }
         var answer = function () {
+            if (aborted) return;
             if (out === 'unreachable') reject(new TypeError('Failed to fetch'));
             else {
                 var res = respond(out.status || 200, out.body, out.headers);

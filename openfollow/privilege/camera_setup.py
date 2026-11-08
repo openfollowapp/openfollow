@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Name the Pi camera in the boot configuration, starting it now where the kernel allows."""
 
 from __future__ import annotations

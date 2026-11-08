@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
 """Concurrency + lifecycle coverage for :mod:`openfollow.video.preview`.
 
 Complements :mod:`tests.test_video_preview` (init state, start/stop

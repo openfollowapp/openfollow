@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Central input coordinator that manages all input sources."""
 
 from __future__ import annotations
@@ -7,19 +9,35 @@ from __future__ import annotations
 import logging
 import math
 import time
+from collections.abc import Sequence
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from openfollow.configuration import _apply_with_fallback, feature_gated, feature_on, save_config_fields
+from openfollow.configuration import (
+    SlotMarkerConfig,
+    SlotPinConfig,
+    _apply_with_fallback,
+    feature_gated,
+    feature_on,
+    park_changes_applied,
+    parked_within,
+    save_config_fields,
+    save_park_changes,
+)
 from openfollow.input.control_frame import ControlFrame
 from openfollow.input.controller_identity import port_label, usb_host_paths
 from openfollow.input.controller_slots import (
     CONNECTED,
+    EMPTY,
+    MISSING,
     NOTE_CANNOT_IDENTIFY,
     RESERVED,
     ControllerSlotTable,
     LiveController,
     SlotEntry,
+    SlotPin,
+    pick_marker,
+    slot_markers,
     slot_ref,
 )
 from openfollow.input.events import InputEventBus
@@ -27,12 +45,25 @@ from openfollow.input.gamepad import GamepadHandler, GamepadUpdate
 from openfollow.input.keyboard import KeyboardHandler
 from openfollow.input.mouse import MouseHandler
 from openfollow.input.mouse3d import MOUSE3D_NAME, Mouse3DManager, Mouse3DUpdate
+from openfollow.input.parking import is_parked, set_parked
+from openfollow.input.slot_pin_capture import (
+    CANCELLED,
+    NO_PORT,
+    NO_SLOT,
+    PINNED,
+    PRESSED,
+    TIMED_OUT,
+    TIMEOUT,
+    CaptureResult,
+    PinCapture,
+)
 from openfollow.input.touch_remote import MAX_REACH_M, RESET, holds, snap_z, stick_velocity
 from openfollow.logging_setup import ThrottledExceptionLogger
 from openfollow.net_utils import plane_source_iface
 from openfollow.osc.input import OscMarkerAdapter
 from openfollow.osc.operator_message import OperatorMessageOscAdapter
 from openfollow.osc.paths import PathOscAdapter
+from openfollow.restore_hold import HeldForRestartError
 from openfollow.runtime import paths_runtime
 from openfollow.runtime.services_detection_pin import (
     get_or_create_manual_marker,
@@ -49,8 +80,21 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def _table_pins(pins: Sequence[SlotPinConfig]) -> dict[int, SlotPin]:
+    """The configuration's 1-based pins as the slot table's 0-based ones."""
+    return {pin.slot - 1: SlotPin(key=pin.key, kind=pin.kind, label=pin.label) for pin in pins}
+
+
+def _occupied(slots: Sequence[SlotEntry]) -> int:
+    """Slots that hold or held a controller: empty slots below a pin don't count."""
+    return sum(1 for slot in slots if slot.state != EMPTY)
+
+
 # How long Identify flashes the marker card on the Operator Screen.
 _IDENTIFY_FLASH_S = 3.0
+# How long /api/stats reports how the latest Pin here ended.
+_PIN_RESULT_SHOWN_S = 10.0
 
 # OSC writes to a marker this far apart count as a new stream, logged at INFO.
 _OSC_STREAM_GAP_S = 5.0
@@ -141,10 +185,13 @@ class InputManager:
         # Which slot each controller holds for the session; refreshed on the
         # main loop only, read from any thread via ``_controller_slots``.
         self._clock = time.monotonic
-        self._slot_table = ControllerSlotTable()
+        self._slot_table = ControllerSlotTable(pins=_table_pins(app._config.controller.slot_pins))
         self._usb_hosts = usb_host_paths()
         # (slot index, clock time it started) of the latest Identify.
         self._identify_flash: tuple[int, float] | None = None
+        # The armed Pin here, and how the latest one ended with its clock time.
+        self._pin_capture: PinCapture | None = None
+        self._pin_result: tuple[CaptureResult, float] | None = None
         # Clock time of each marker's latest OSC position write.
         self._osc_last_write: dict[int, float] = {}
         # Where each remote-held marker glides to, and for which session, until it lands or is steered.
@@ -243,7 +290,7 @@ class InputManager:
 
     def pathfinder(self, marker_id: int | None, *, remote: bool = False) -> None:
         """A Pathfinder press for ``marker_id``: the keyboard's selected marker, a controller's own, or the remote's."""
-        if not remote and holds(self.app, marker_id):
+        if not remote and (holds(self.app, marker_id) or is_parked(self.app, marker_id)):
             return
         marker = self._get_marker(marker_id) if marker_id is not None else None
         if marker_id is not None and marker is not None and self._paths() is not None:
@@ -290,13 +337,19 @@ class InputManager:
         return self._slot_table.slots
 
     def _controller_marker_id(self, unified_idx: int | None, slots: tuple[SlotEntry, ...] | None = None) -> int | None:
-        """Resolve the marker a unified controller index drives.
+        """The marker a unified controller index moves: its slot's marker, ``None`` while that is parked."""
+        marker_id = self._slot_marker_id(unified_idx, slots)
+        return None if is_parked(self.app, marker_id) else marker_id
 
-        Exactly one slot (a lone controller) and a marker selected: route to
+    def _slot_marker_id(self, unified_idx: int | None, slots: tuple[SlotEntry, ...] | None = None) -> int | None:
+        """Resolve the marker a unified controller index holds, parked or not.
+
+        Exactly one slot (a lone controller; empty slots below a pin don't count) and a marker selected: route to
         ``app._selected_id`` so next/prev cycling switches what the operator
-        moves. Otherwise the fixed slot ``app._controlled_ids[unified_idx]``, so
-        per-operator assignments stay stable while a controller is missing too.
-        ``None`` for a reserved slot, an index out of range, or no marker.
+        moves. Otherwise the slot's own marker: the one picked for it, else its
+        place among the controlled markers no slot picked, so per-operator
+        assignments stay stable while a controller is missing too.
+        ``None`` for a reserved or empty slot, an index out of range, or no marker.
 
         Pass ``slots`` to reuse a single per-frame snapshot.
         """
@@ -304,14 +357,42 @@ class InputManager:
             return None
         if slots is None:
             slots = self._controller_slots()
-        if not 0 <= unified_idx < len(slots) or slots[unified_idx].state == RESERVED:
+        if not 0 <= unified_idx < len(slots) or slots[unified_idx].state in (RESERVED, EMPTY):
             return None
-        if len(slots) == 1 and self.app._selected_id is not None:
+        if _occupied(slots) == 1 and self.app._selected_id is not None:
             return self.app._selected_id
-        controlled = self.app._controlled_ids
-        if unified_idx < len(controlled):
-            return controlled[unified_idx]
-        return None
+        return slot_markers(len(slots), self.app._controlled_ids, self._marker_picks())[unified_idx]
+
+    def _marker_picks(self) -> dict[int, int]:
+        """The configuration's 1-based marker picks as 0-based slot -> marker."""
+        return {pick.slot - 1: pick.marker for pick in self.app._config.controller.slot_markers}
+
+    def pick_slot_marker(self, unified_idx: int, marker_id: int) -> bool:
+        """Give a slot one of the controlled markers; the slot that drove it takes this slot's old one. Main loop only.
+
+        Updates ``app._config.controller.slot_markers``; saving it is the caller's. False on a reserved or
+        empty slot, a station with one slot (it follows the selection), or a marker this station does not control.
+        """
+        slots = self._controller_slots()
+        if not 0 <= unified_idx < len(slots) or slots[unified_idx].state not in (CONNECTED, MISSING):
+            return False
+        if _occupied(slots) == 1:
+            return False
+        picks = pick_marker(len(slots), self.app._controlled_ids, self._marker_picks(), unified_idx, marker_id)
+        if picks is None:
+            return False
+        self.app._config.controller.slot_markers = [
+            SlotMarkerConfig(slot=index + 1, marker=marker) for index, marker in sorted(picks.items())
+        ]
+        logger.info("Controller slots: C%d drives marker %d; %s", unified_idx + 1, marker_id, self._describe_markers())
+        return True
+
+    def _describe_markers(self) -> str:
+        slots = self._controller_slots()
+        return ", ".join(
+            f"C{index + 1} {'-' if marker is None else marker}"
+            for index, marker in enumerate(slot_markers(len(slots), self.app._controlled_ids, self._marker_picks()))
+        )
 
     @staticmethod
     def _unified_idx(kind: str, local_id: int, slots: tuple[SlotEntry, ...]) -> int | None:
@@ -348,13 +429,14 @@ class InputManager:
         """
         if slots is None:
             slots = self._controller_slots()
-        return len(slots) <= 1
+        return _occupied(slots) <= 1
 
     def controller_marker_id(self, controller_idx: int) -> int | None:
         """Public seam for the OSC ``:cN`` reference. ``controller_idx`` is the
         0-based unified index (``:c1`` -> 0), spanning 3D mice + gamepads.
+        A parked slot marker still resolves: the slot idles, its marker still sends.
         """
-        return self._controller_marker_id(controller_idx)
+        return self._slot_marker_id(controller_idx)
 
     def update(self, dt: float) -> GamepadUpdate:
         """
@@ -366,6 +448,13 @@ class InputManager:
         Returns:
             GamepadUpdate with movement results and button signals.
         """
+        # OSC park commands first, so every input this frame routes around them.
+        if self.osc_handler is not None:
+            try:
+                self._apply_osc_parks(self.osc_handler.flush_parks())
+            except Exception:
+                self._osc_apply_err_log.log()
+
         # Keep controller hotplug and LED policy alive even when there are no
         # controlled markers. Movement application remains gated below.
         gamepad_result = self.gamepad_handler.update(dt)
@@ -434,6 +523,7 @@ class InputManager:
                 and self.app._selected_id is not None
                 and self.app._config.controller.keyboard_enabled
                 and not holds(self.app, self.app._selected_id)
+                and not is_parked(self.app, self.app._selected_id)
             ):
                 marker = self._get_marker(self.app._selected_id)
                 if marker:
@@ -495,6 +585,23 @@ class InputManager:
                     self._osc_apply_err_log.log()
 
         return gamepad_result
+
+    def _apply_osc_parks(self, parks: dict[int, bool]) -> None:
+        """Park or unpark controlled markers from OSC, live and in the file; others are ignored."""
+        parks = {mid: on for mid, on in parks.items() if mid in self.app._controlled_ids}
+        if not parks:
+            return
+        parked = parked_within(
+            self.app._controlled_ids, park_changes_applied(self.app._config.parked_marker_ids, parks)
+        )
+        if parked != self.app._config.parked_marker_ids:
+            self.app._config.parked_marker_ids = parked
+            set_parked(self.app, parked)
+        # The file, not the running config, is the base: a web park may not have reached this thread yet.
+        try:
+            save_park_changes(self.app._config, self.app._config_path, parks)
+        except Exception:
+            logger.exception("Failed to save the parked markers.")
 
     def _apply_osc_position(self, marker_id: int, axes: dict[str, float], paths: PathEngine | None) -> None:
         if marker_id not in self.app._controlled_ids or holds(self.app, marker_id):
@@ -651,6 +758,8 @@ class InputManager:
             return
         try:
             save_config_fields(app._config, app._config_path, ("detection.enabled",))
+        except HeldForRestartError:
+            logger.info("Person detection switched off, not saved: OpenFollow is restarting after a restore.")
         except Exception:
             logger.exception("Failed to save person detection switched off.")
         logger.warning("The touch remote took a marker: person detection is switched off.")
@@ -722,8 +831,11 @@ class InputManager:
 
         ``controller_index`` is the 0-based unified index (rendered 1-based).
         ``state`` is ``connected``, ``missing`` (its device left; the slot keeps
-        its marker) or ``reserved`` (forgotten: drives nothing). ``marker_id``
-        mirrors the routing, so the badge sits where movement goes.
+        its marker), ``reserved`` (forgotten: drives nothing) or ``empty`` (kept
+        free below a pin; drives nothing). ``pinned`` slots belong to the socket
+        named by ``port_key``. ``marker_id`` mirrors the routing, so the badge
+        sits where movement goes; ``parked`` says the slot idles because that
+        marker is parked.
         ``seconds_since_input`` is ``None`` until the device has been used.
         ``notes`` says what the controller can't do (``NOTE_*``); a missing slot
         keeps its last controller's.
@@ -738,16 +850,23 @@ class InputManager:
         slots = self._controller_slots()
         out: list[dict[str, Any]] = []
         for unified_idx, slot in enumerate(slots):
-            marker_id = self._controller_marker_id(unified_idx, slots)
+            marker_id = self._slot_marker_id(unified_idx, slots)
+            parked = is_parked(self.app, marker_id)
             live = slot.state == CONNECTED
             used = last_input.get((slot.kind, slot.local_id)) if live and slot.local_id is not None else None
             if slot.kind == "gamepad":
                 pad = gamepad_info.get(slot.local_id, {}) if slot.local_id is not None else {}
                 backend = str(pad.get("backend", ""))
-                speed = float(pad.get("effective_speed", 0.0)) if live else 0.0
-            else:
+                # The pad's own reading follows its routing, which a parked slot has none of.
+                if live and parked:
+                    speed = self.app.get_marker_move_speed(marker_id)
+                else:
+                    speed = float(pad.get("effective_speed", 0.0)) if live else 0.0
+            elif slot.kind == "mouse3d":
                 backend = "mouse3d"
                 speed = self.app.get_marker_move_speed(marker_id) if live and marker_id is not None else 0.0
+            else:
+                backend, speed = "", 0.0
             item: dict[str, Any] = {
                 "controller_index": unified_idx,
                 "name": slot.name,
@@ -755,10 +874,14 @@ class InputManager:
                 "state": slot.state,
                 "connected": live,
                 "marker_id": marker_id,
+                "parked": parked,
                 "effective_speed": speed,
                 "backend": backend,
                 "port_key": slot.key,
                 "port_label": port_label(slot.key, self._usb_hosts),
+                "pinned": slot.pinned,
+                # One slot follows the selection: it drives whichever marker is selected.
+                "all_markers": _occupied(slots) == 1 and slot.state not in (RESERVED, EMPTY),
                 "slot_ref": slot_ref(slot),
                 "seconds_since_input": None if used is None else max(0.0, now - used),
                 "notes": list(slot.notes),
@@ -774,6 +897,126 @@ class InputManager:
         """What the slot at ``unified_idx`` holds now, to check a queued action against."""
         slots = self._controller_slots()
         return slot_ref(slots[unified_idx]) if 0 <= unified_idx < len(slots) else None
+
+    def pin_slot(self, unified_idx: int, kind: str, local_id: int) -> bool:
+        """Pin the socket of controller ``(kind, local_id)`` to a slot, moving it there. Main loop only."""
+        if not self._slot_table.pin(unified_idx, kind, local_id):
+            return False
+        key = self._slot_table.slots[unified_idx].key
+        logger.info(
+            "Controller slots: C%d pinned to %s; %s",
+            unified_idx + 1,
+            port_label(key, self._usb_hosts),
+            self._describe_slots(),
+        )
+        return True
+
+    @property
+    def pin_capture_active(self) -> bool:
+        return self._pin_capture is not None
+
+    def start_pin_capture(self, unified_idx: int) -> bool:
+        """Arm Pin here: the next button pressed on any controller pins its socket to the slot. Main loop only.
+
+        While armed, :meth:`update` must not run; :meth:`poll_pin_capture` reads the controllers instead.
+        """
+        if self._pin_capture is not None or not 0 <= unified_idx < len(self._controller_slots()):
+            return False
+        self._pin_capture = PinCapture(unified_idx, now=self._clock(), pad_held=self._held_pad_inputs())
+        # A puck press latched before the capture armed is not the answer.
+        self._take_puck_presses()
+        self._pin_result = None
+        logger.info("Controller slots: waiting for a button press to pin C%d.", unified_idx + 1)
+        return True
+
+    def poll_pin_capture(self) -> CaptureResult | None:
+        """Advance the armed capture; how it ended, on the frame it ends. Main loop only."""
+        capture = self._pin_capture
+        if capture is None:
+            return None
+        # A controller plugged in while waiting takes a slot, so pressing it pins it.
+        self._refresh_slots()
+        step = capture.step(
+            self._clock(),
+            self._held_pad_inputs(),
+            self._take_puck_presses(),
+            self.mouse3d_manager.held_buttons() if self.app._config.mouse3d.enabled else {},
+        )
+        if step == TIMED_OUT:
+            return self._end_pin_capture(CaptureResult(capture.slot, TIMEOUT))
+        if step != PRESSED or capture.pressed is None:
+            return None
+        return self._end_pin_capture(self._pin_pressed(capture.slot, *capture.pressed))
+
+    def cancel_pin_capture(self) -> CaptureResult | None:
+        """End the armed capture without pinning; ``None`` when none is armed. Main loop only."""
+        capture = self._pin_capture
+        return None if capture is None else self._end_pin_capture(CaptureResult(capture.slot, CANCELLED))
+
+    def pin_capture_status(self) -> dict[str, Any]:
+        """The armed capture's slot and seconds left, and how the latest one ended while it is recent."""
+        now = self._clock()
+        capture = self._pin_capture
+        result = self._pin_result
+        recent = result is not None and now - result[1] < _PIN_RESULT_SHOWN_S
+        return {
+            "slot": None if capture is None else capture.slot,
+            "seconds_left": 0.0 if capture is None else capture.seconds_left(now),
+            "result": (
+                {"slot": result[0].slot, "outcome": result[0].outcome, "detail": result[0].detail}
+                if result is not None and recent
+                else None
+            ),
+        }
+
+    def _held_pad_inputs(self) -> dict[int, frozenset[int]]:
+        return self.gamepad_handler.held_inputs() if self.app._config.controller.enabled else {}
+
+    def _take_puck_presses(self) -> dict[int, set[int]]:
+        return self.mouse3d_manager.take_presses() if self.app._config.mouse3d.enabled else {}
+
+    def _pin_pressed(self, index: int, kind: str, local_id: int) -> CaptureResult:
+        slot = next(
+            (s for s in self._controller_slots() if s.state == CONNECTED and (s.kind, s.local_id) == (kind, local_id)),
+            None,
+        )
+        if slot is None:
+            return CaptureResult(index, NO_SLOT)
+        if slot.key is None:
+            return CaptureResult(index, NO_PORT, slot.name)
+        self.pin_slot(index, kind, local_id)
+        return CaptureResult(index, PINNED, port_label(slot.key, self._usb_hosts))
+
+    def _end_pin_capture(self, result: CaptureResult) -> CaptureResult:
+        self._pin_capture = None
+        # The press that ended it, or any made while waiting, must not fire an action now.
+        self.gamepad_handler.resync_edges()
+        self.mouse3d_manager.take_presses()
+        self._pin_result = (result, self._clock())
+        if result.outcome != PINNED:
+            logger.info("Controller slots: pinning C%d ended without a pin (%s).", result.slot + 1, result.outcome)
+        return result
+
+    def unpin_slot(self, unified_idx: int) -> bool:
+        """Drop a slot's pin; nothing moves. Main loop only."""
+        unpinned = self._slot_table.unpin(unified_idx)
+        if unpinned:
+            logger.info("Controller slots: C%d unpinned; %s", unified_idx + 1, self._describe_slots())
+        return unpinned
+
+    def slot_pins(self) -> list[SlotPinConfig]:
+        """The table's pins as the configuration stores them, by slot."""
+        return [
+            SlotPinConfig(slot=index + 1, key=pin.key, kind=pin.kind, label=pin.label)
+            for index, pin in sorted(self._slot_table.pins.items())
+        ]
+
+    def apply_slot_pins(self, pins: Sequence[SlotPinConfig]) -> None:
+        """Take the configuration's pins, moving controllers to them. Main loop only."""
+        before = self._slot_table.slots
+        self._slot_table.set_pins(_table_pins(pins))
+        if self._slot_table.slots != before:
+            logger.info("Controller slots: pins changed; %s", self._describe_slots())
 
     def forget_slot(self, unified_idx: int) -> bool:
         """Silence a missing slot; it keeps its place. Main loop only."""
@@ -807,7 +1050,7 @@ class InputManager:
         elapsed = self._clock() - flash[1]
         if elapsed >= _IDENTIFY_FLASH_S or int(elapsed * 4) % 2:
             return None
-        return self._controller_marker_id(flash[0])
+        return self._slot_marker_id(flash[0])
 
     def get_marker_gamepad_speeds(self) -> dict[int, float]:
         """
@@ -826,6 +1069,10 @@ class InputManager:
     def is_keyboard_connected(self) -> bool:
         """Return whether keyboard guidance should be shown in the overlay."""
         return self.keyboard_handler.is_connected()
+
+    def keyboard_status(self) -> dict[str, Any]:
+        """The keyboard poller kind and its device count, for ``/api/stats``."""
+        return self.keyboard_handler.status()
 
     def restart_osc(
         self,

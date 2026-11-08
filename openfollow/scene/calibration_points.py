@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """The Setup Wizard's camera solve from marks: known points with a typed position, and triangulated points
 measured by their distances to two other marks plus their height.
 
@@ -48,6 +49,7 @@ SCOUT_ITERATIONS = 25
 FIT_ITERATIONS = 300
 # Two measured circles may miss each other by this much and still be one point: the noise of two distances.
 MEET_TOLERANCE = 3.0 * math.sqrt(2.0) * DISTANCE_SIGMA
+FLOOR_GROUP_M = 0.05  # m: marks whose heights agree this closely suggest one floor
 # Four pinned known marks within this of one height, every triangle of them at least this large, seed the solve.
 _LEVEL_M = 0.01
 _MIN_TRIANGLE_M2 = 0.05
@@ -598,6 +600,21 @@ def plausibility(
         if fit.distance_error is not None and fit.distance_error > FLAG_DISTANCE_M:
             out.append({"kind": "distance", "id": fit.id, "m": fit.distance_error})
     return out
+
+
+def suggested_floor(marks: Sequence[Mark]) -> tuple[float, tuple[int, ...]] | None:
+    """The floor the marks suggest: the mean height of the largest group whose heights lie within
+    FLOOR_GROUP_M of each other, and the group's ids. Overlapping groups of that size are one floor
+    measured loosely: the tightest, then the lowest, stands for it. None when no two agree or two
+    separate groups are the same size."""
+    ordered = sorted(marks, key=lambda m: m.z)
+    groups = [[m for m in ordered[i:] if m.z - low.z <= FLOOR_GROUP_M + 1e-9] for i, low in enumerate(ordered)]
+    size = max((len(g) for g in groups), default=0)
+    largest = [g for g in groups if len(g) == size]
+    if size < 2 or any(not {m.id for m in a} & {m.id for m in b} for a in largest for b in largest):
+        return None
+    best = min(largest, key=lambda g: (g[-1].z - g[0].z, g[0].z))
+    return round(sum(m.z for m in best) / size, 3), tuple(m.id for m in best)
 
 
 def pin_errors(cam: CameraConfig, width: float, height: float) -> dict[int, float]:

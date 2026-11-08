@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Tests for ``build_marker_visual_state`` – the big per-frame overlay
 snapshot builder.
 
@@ -29,6 +31,8 @@ import numpy as np
 import pypsn
 import pytest
 
+from openfollow import platform_support
+from openfollow.button_names import ButtonNameStyle
 from openfollow.configuration import AppConfig
 from openfollow.marker_catalog.control_conflicts import ControlConflict
 from openfollow.psn.marker import Marker
@@ -64,7 +68,13 @@ class _FakeMarker:
         self.marker_id = marker_id
         self.pos = pos
         self.speed = speed
+        self.lift = 0.0
         self.set_speed_calls: list[tuple[float, float, float]] = []
+
+    @property
+    def sent_pos(self) -> tuple[float, float, float]:
+        x, y, z = self.pos
+        return (x, y, z + self.lift)
 
     def set_pos(self, x: float, y: float, z: float) -> None:
         self.pos = (x, y, z)
@@ -1068,6 +1078,28 @@ class TestExternalStateSnapshots:
 # --------------------------------------------------------------------------- #
 
 
+class TestButtonNameStyle:
+    @pytest.mark.parametrize(
+        ("configured", "style"),
+        [
+            ("standard", ButtonNameStyle.STANDARD),
+            ("xbox", ButtonNameStyle.XBOX),
+            ("playstation", ButtonNameStyle.PLAYSTATION),
+            ("nintendo", ButtonNameStyle.NINTENDO),
+        ],
+    )
+    def test_the_hud_names_buttons_in_the_configured_style(self, configured: str, style: ButtonNameStyle) -> None:
+        app = _build_app()
+        app._config.controller.button_name_style = configured
+        assert _build(app).button_name_style is style
+
+    def test_a_saved_change_reaches_the_next_frame(self) -> None:
+        app = _build_app()
+        assert _build(app).button_name_style is ButtonNameStyle.STANDARD
+        app._config.controller.button_name_style = "playstation"
+        assert _build(app).button_name_style is ButtonNameStyle.PLAYSTATION
+
+
 class TestInputFlags:
     def test_no_input_manager_flags_all_false(self) -> None:
         app = _build_app(input_manager=None)
@@ -1274,7 +1306,11 @@ class TestControllerBindingOnMarkerCard:
         assert state.markers[0].is_controlled is False
         assert state.markers[0].controller_idx is None
 
-    def test_unbound_controller_indices_collected(self) -> None:
+    @pytest.mark.parametrize(
+        ("slot_kind", "kind"), [("gamepad", "gamepad"), ("mouse3d", "mouse3d"), ("joystick", "gamepad")]
+    )
+    def test_unbound_controllers_collected_with_their_kind(self, slot_kind: str, kind: str) -> None:
+        """A 3D mouse with no marker is as unbound as a gamepad, named by its slot kind; any other kind is a gamepad."""
         app = _build_app(
             controlled=[1],
             viewer=[1],
@@ -1295,13 +1331,13 @@ class TestControllerBindingOnMarkerCard:
                         "name": "Y",
                         "controller_index": 2,
                         "effective_speed": 1.0,
-                        "backend": "pygame",
+                        "kind": slot_kind,
                     },
                 ]
             ),
         )
         state = _build(app)
-        assert state.unbound_controller_indices == [2]
+        assert state.unbound_controllers == [(2, kind)]
 
     def test_disconnected_unbound_controller_is_dropped(self) -> None:
         """A pad that's both disconnected AND unbound carries no actionable
@@ -1322,7 +1358,7 @@ class TestControllerBindingOnMarkerCard:
             ),
         )
         state = _build(app)
-        assert state.unbound_controller_indices == []
+        assert state.unbound_controllers == []
 
 
 class TestControllerTextAndHelp:
@@ -1716,6 +1752,20 @@ class TestOperatorMessageViews:
         assert state.operator_message_position == "bottom"
         assert state.operator_message_overflow == 0
 
+    def test_switched_off_messages_still_show_the_apps_own_prompts(self) -> None:
+        from openfollow.operator_messages import OperatorMessageStore
+
+        app = _build_app()
+        store = OperatorMessageStore(clock=lambda: 0.0)
+        store.add("from OSC")
+        store.add("Press a button on the controller for C2", from_app=True)
+        _attach_store(app, store)
+        app._config.operator_messages.enabled = False
+
+        state = _build(app)
+        assert [v.message for v in state.operator_messages] == ["Press a button on the controller for C2"]
+        assert state.operator_message_overflow == 0
+
     def test_keyed_without_catalog_entry_uses_palette_fallback(self) -> None:
         from openfollow.operator_messages import OperatorMessageStore
 
@@ -1785,9 +1835,122 @@ class TestOperatorMessageViews:
         assert state.operator_messages == []
 
 
+class TestLatencyWarningCard:
+    """While a Measure dialog shows its warnings, the Operator Screen shows one operator-message card of its own."""
+
+    def _app(self, clock: list[float]) -> tuple[SimpleNamespace, Any]:
+        from openfollow.runtime.latency_warning import LatencyWarning
+
+        app = _build_app()
+        warning = LatencyWarning(clock=lambda: clock[0])
+        app._web_commands = SimpleNamespace(latency_warning=warning)
+        return app, warning
+
+    def test_the_card_shows_with_operator_messages_switched_off(self) -> None:
+        from openfollow.operator_messages import OperatorMessageStore
+        from openfollow.runtime import latency_warning as lw
+
+        clock = [100.0]
+        app, warning = self._app(clock)
+        store = OperatorMessageStore(clock=lambda: 0.0)
+        store.add("osc", marker_id=0, duration_s=0.0)
+        _attach_store(app, store)
+        app._config.operator_messages.enabled = False
+        app._config.operator_messages.position = "top"
+        app._config.operator_messages.scale = 1.5
+        warning.renew(warning.token())
+
+        state = _build(app)
+        (card,) = state.operator_messages
+        assert (card.message, card.info) == (lw.MESSAGE, lw.INFO)
+        assert card.marker_id == 0 and card.is_forever
+        assert (card.headline, card.headline_level) == (lw.HEADLINE, "caution")
+        assert (state.operator_message_position, state.operator_message_scale) == ("top", 1.5)
+
+    def test_the_card_is_one_more_beside_the_osc_messages(self) -> None:
+        from openfollow.operator_messages import OperatorMessageStore
+        from openfollow.runtime import latency_warning as lw
+
+        clock = [100.0]
+        app, warning = self._app(clock)
+        store = OperatorMessageStore(clock=lambda: 0.0)
+        for i in range(7):
+            store.add(f"m{i}", marker_id=0, duration_s=0.0)
+        _attach_store(app, store)
+        warning.renew(warning.token())
+
+        state = _build(app)
+        assert [v.message for v in state.operator_messages] == [lw.MESSAGE, "m6", "m5", "m4", "m3", "m2"]
+        assert state.operator_message_overflow == 2
+
+    def test_the_card_goes_once_no_dialog_renewed_it_for_a_few_seconds(self) -> None:
+        from openfollow.runtime import latency_warning as lw
+
+        clock = [100.0]
+        app, warning = self._app(clock)
+        token = warning.token()
+        warning.renew(token)
+        clock[0] += lw.STALE_S
+        warning.renew(token)
+        clock[0] += lw.STALE_S
+        assert len(_build(app).operator_messages) == 1
+        clock[0] += 0.5
+        assert _build(app).operator_messages == []
+
+    def test_the_operator_screen_draws_the_card_without_a_countdown(self) -> None:
+        from openfollow.runtime import latency_warning as lw
+        from openfollow.runtime.overlay_draw_messages import draw_operator_messages
+
+        app, warning = self._app([100.0])
+        warning.renew(warning.token())
+        state = _build(app)
+        cr = FakeCairo()
+        draw_operator_messages(FakeRenderer(state=state), cr, state, 1280, 720)
+        assert cr.find_texts(lw.MESSAGE)
+        assert cr.find_texts("The Operator Screen will flash black and white.")
+        assert cr.rects == []
+
+
 # --------------------------------------------------------------------------- #
 # Detection assist-mode AI-output ghost
 # --------------------------------------------------------------------------- #
+
+
+class TestZoneLiftOnTheScreen:
+    """A zone's lift is drawn where it is sent: the card's Z, the floor elements, the broadcast velocity."""
+
+    def test_a_lifted_marker_is_drawn_at_its_sent_z(self) -> None:
+        marker = _FakeMarker(1, pos=(1.0, 2.0, 1.25))
+        marker.lift = 0.5
+        state = _build(_build_app(controlled=[1], viewer=[1], server_markers={1: marker}))
+        drawn = state.markers[0]
+        assert (drawn.x, drawn.y, drawn.z, drawn.lift) == (1.0, 2.0, 1.75, 0.5)
+        assert marker.pos == (1.0, 2.0, 1.25)
+
+    def test_a_received_marker_is_drawn_unlifted(self) -> None:
+        received = _FakeMarker(2, pos=(1.0, 2.0, 1.25))
+        state = _build(_build_app(viewer=[2], receiver_markers={2: received}))
+        assert (state.markers[0].z, state.markers[0].lift) == (1.25, 0.0)
+
+    def test_the_assist_anchor_and_its_ghost_are_both_lifted(self) -> None:
+        marker = _FakeMarker(1, pos=(2.0, 3.0, 0.0))
+        marker.lift = 0.4
+        app = _build_app(controlled=[1], viewer=[1], server_markers={1: marker})
+        app._config.detection.enabled = True
+        app._config.detection.pin_mode = "assist"
+        get_or_create_manual_marker(app, 1).set_pos(7.0, 8.0, 1.0)
+        state = _build(app)
+        drawn = {m.is_assist_ghost: m for m in state.markers}
+        assert (drawn[False].z, drawn[False].lift) == (pytest.approx(1.4), 0.4)
+        assert (drawn[True].z, drawn[True].lift) == (pytest.approx(0.4), 0.4)
+
+    def test_a_lift_easing_in_moves_the_broadcast_velocity(self) -> None:
+        marker = _FakeMarker(1, pos=(1.0, 2.0, 1.0))
+        app = _build_app(controlled=[1], viewer=[1], server_markers={1: marker})
+        for _ in range(60):
+            marker.lift += 0.3 * _FRAME_DT
+            _build(app)
+        assert marker.set_speed_calls[-1] == pytest.approx((0.0, 0.0, 0.3), abs=1e-6)
 
 
 class TestAssistGhostOverlay:
@@ -2174,3 +2337,51 @@ class TestControlConflictSurfaces:
             "controller_missing_0",
             "midi_unavailable",
         ]
+
+
+class TestUnsupportedPlatform:
+    """The warning's two Operator Screen surfaces: the corner row and the Settings menu's box."""
+
+    _ROW = "Unsupported platform: macOS. Errors are expected. Never use this setup in a show!"
+
+    @pytest.fixture(autouse=True)
+    def _on_macos(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(platform_support, "current", lambda: platform_support.PlatformSupport(False, "macOS"))
+
+    @staticmethod
+    def _menu(app: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> OverlayState:
+        from openfollow.runtime import app_modes
+
+        monkeypatch.setattr(app_modes, "build_settings_menu_items", lambda a: (["X"], [True], [""], [False]))
+        return _build(app)
+
+    def test_the_row_is_the_last_error_and_comes_before_a_caution(self) -> None:
+        app = _build_app()
+        app._runtime_services = SimpleNamespace(_status_flags={"midi_unavailable": ("caution", "MIDI off")})
+        state = _build(app, network_alerts=["PSN: eth0 is down"])
+        assert state.status_flags == [
+            ("network_down_0", "PSN: eth0 is down", "error"),
+            ("platform", self._ROW, "error"),
+            ("midi_unavailable", "MIDI off", "caution"),
+        ]
+
+    def test_developer_mode_hides_the_row(self) -> None:
+        app = _build_app()
+        app._config.ui.developer_mode = True
+        assert _build(app).status_flags == []
+
+    def test_a_supported_platform_adds_no_row(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(platform_support, "current", lambda: platform_support.PlatformSupport(True, "Debian 13"))
+        assert _build(_build_app()).status_flags == []
+
+    def test_the_settings_menu_carries_the_title(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        state = self._menu(_build_app(settings_menu_active=True), monkeypatch)
+        assert state.settings_platform_warning == "Unsupported platform: macOS"
+
+    def test_developer_mode_hides_the_settings_box(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        app = _build_app(settings_menu_active=True)
+        app._config.ui.developer_mode = True
+        assert self._menu(app, monkeypatch).settings_platform_warning == ""
+
+    def test_a_closed_menu_carries_no_title(self) -> None:
+        assert _build(_build_app()).settings_platform_warning == ""

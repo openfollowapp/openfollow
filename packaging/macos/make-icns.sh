@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 #
 # Render the app icon (.icns) from the bundled SVG. Generated at build time so
 # no binary blob lives in the repo. Requires rsvg-convert (brew install librsvg)

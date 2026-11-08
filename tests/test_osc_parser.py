@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
 """Unit tests for :mod:`openfollow.osc.parser`.
 
 Covers quote-aware tokenisation, the inverse ``join_osc_message``

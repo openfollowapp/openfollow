@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
 """Assert every operator-message functionality from a receiver JSON dump::
 
     python3 scripts/hw_validation/analyze_results.py /tmp/of_validate_out.json

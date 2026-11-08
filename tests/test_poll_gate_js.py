@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """The web UI's poll gate, run in node: a poll asks only while its section is in view."""
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from tests._template_source import function_body
+from tests._template_source import base_functions
 
 pytestmark = [pytest.mark.unit, pytest.mark.skipif(shutil.which("node") is None, reason="needs node")]
 
@@ -103,10 +104,10 @@ def test_an_announce_before_htmx_loads_is_a_no_op() -> None:
 # base.tpl: a tab switch and an unfold bring their polls up to date at once
 # ---------------------------------------------------------------------------
 
-_BASE = Path(__file__).parents[1] / "openfollow" / "web" / "templates" / "base.tpl"
 _TAB_MARKUP = (
     '<button class="tab-btn" data-tab="overview">O</button><button class="tab-btn" data-tab="input">I</button>'
-    '<div class="tab-content" id="tab-overview"></div>'
+    '<div class="tab-content" id="tab-overview"><div class="section" data-help="status">'
+    '<div class="section-head"><h2>Status</h2></div></div></div>'
     '<div class="tab-content" id="tab-input"><div class="section" data-fold-key="slots" data-fold-default="collapsed">'
     '<div class="section-head"><h2>Slots</h2></div><div id="slots"></div></div></div>'
 )
@@ -114,12 +115,7 @@ _PAGE_FUNCTIONS = ("switchTab", "goToSection", "initTabs", "setSectionCollapsed"
 
 
 def _page_script() -> str:
-    text = _BASE.read_text(encoding="utf-8")
-    parts = []
-    for name in _PAGE_FUNCTIONS:
-        start = text.index(f"function {name}(")
-        parts.append(text[start : text.index("{", start)] + "{" + function_body(text, name) + "}")
-    return "\n".join(parts)
+    return base_functions(*_PAGE_FUNCTIONS)
 
 
 def _run_page(steps: str) -> object:
@@ -130,7 +126,7 @@ def _run_page(steps: str) -> object:
             "var announced = 0; function announcePollsShown() { announced++; }",
             "function closeHelp() {} function readStorage() { return null; } function writeStorage() {}",
             "function getSectionFoldStorageKey(key) { return key; } function requestAnimationFrame() {}",
-            "var location = {pathname: '/'};",
+            "var location = {pathname: '/', search: '', hash: ''};",
             _page_script(),
             "initTabs(); initializeSectionFolding(document);",
             "var toggle = document.querySelector('.section-toggle');",
@@ -161,3 +157,14 @@ def test_a_cross_tab_link_announces_once() -> None:
 
 def test_unfolding_a_section_announces_and_folding_it_does_not() -> None:
     assert _run_page("toggle.click(); out.push(announced); toggle.click(); out.push(announced);") == [1, 1]
+
+
+def test_a_section_without_a_fold_key_gets_its_help_and_no_toggle() -> None:
+    steps = (
+        "var only = document.querySelector('#tab-overview .section');"
+        "out.push(only.querySelectorAll('.section-help-btn').length, only.querySelectorAll('.section-toggle').length);"
+        "out.push(only.classList.contains('is-collapsed'));"
+        "initializeSectionFolding(document);"
+        "out.push(only.querySelectorAll('.section-help-btn').length);"
+    )
+    assert _run_page(steps) == [1, 0, False, 1]

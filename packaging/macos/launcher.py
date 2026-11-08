@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Entry point baked into the macOS .app bundle.
 
 A single frozen binary serves three roles, dispatched on argv / env so the GUI,

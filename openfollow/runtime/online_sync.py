@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Background worker: on startup and on IP change, if the LAN has internet,
 sync the system clock (NTP) and check GitHub for a newer release.
 

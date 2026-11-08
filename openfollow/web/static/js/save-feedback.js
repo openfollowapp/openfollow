@@ -6,8 +6,11 @@
  * station observed and one next step. The line stays until the next edit in
  * that form or the next save from it.
  *
- * HTMX saves (any non-GET request) are handled here on ``document``. A
- * script-driven save calls ``window.OpenFollow.saveError``:
+ * HTMX saves (any non-GET request) are handled here on ``document``. An
+ * action that saves nothing names its lead on the control or an ancestor
+ * (``data-error-lead="Not started."``), and its unanswered advice ends "try
+ * again". A background request nobody acts on is marked ``data-error-quiet``
+ * and reports nothing. A script-driven save calls ``window.OpenFollow.saveError``:
  *
  *   show(box, info, lead, near) ring ``box``; write ``info`` after ``near``
  *                              (default: the box's last actions row)
@@ -15,7 +18,8 @@
  *   origin()                   the section last clicked outside a dialog
  *   fromResponse(res)          -> Promise<info> for a failed fetch Response
  *   fromText(status, text)     -> info for a body already read
- *   UNREACHABLE                info for a request that got no answer
+ *   UNREACHABLE                info for a save that got no answer
+ *   UNREACHABLE_ACTION         the same for an action that saves nothing ("then try again")
  *   peerFailure(peers, notDone, again)
  *                              -> info naming the stations a broadcast did not
  *                              reach, each with the reason it gave
@@ -31,6 +35,11 @@
     var UNREACHABLE = {
         error: 'The station did not answer.',
         action: 'Check that it is switched on and on this network, then save again.',
+        href: '',
+    };
+    var UNREACHABLE_ACTION = {
+        error: UNREACHABLE.error,
+        action: 'Check that it is switched on and on this network, then try again.',
         href: '',
     };
     var BOX_SELECTOR = 'form.section, .save-flash, .section, .modal-card, [role="dialog"]';
@@ -129,8 +138,15 @@
         return elt.closest(BOX_SELECTOR) || elt.closest('form');
     }
 
+    function leadFor(elt) {
+        var host = elt && elt.closest ? elt.closest('[data-error-lead]') : null;
+        return host ? host.getAttribute('data-error-lead') : undefined;
+    }
+
     function isSave(evt) {
         var cfg = evt.detail && evt.detail.requestConfig;
+        var elt = evt.detail && evt.detail.elt;
+        if (elt && elt.closest && elt.closest('[data-error-quiet]')) return false;
         return !!(cfg && cfg.verb && String(cfg.verb).toLowerCase() !== 'get');
     }
 
@@ -146,10 +162,12 @@
     document.addEventListener('htmx:responseError', function (evt) {
         if (!isSave(evt)) return;
         var xhr = evt.detail.xhr;
-        show(boxFor(evt.detail.elt), fromText(xhr.status, xhr.responseText));
+        show(boxFor(evt.detail.elt), fromText(xhr.status, xhr.responseText), leadFor(evt.detail.elt));
     });
     document.addEventListener('htmx:sendError', function (evt) {
-        if (isSave(evt)) show(boxFor(evt.detail.elt), UNREACHABLE);
+        if (!isSave(evt)) return;
+        var lead = leadFor(evt.detail.elt);
+        show(boxFor(evt.detail.elt), lead === undefined ? UNREACHABLE : UNREACHABLE_ACTION, lead);
     });
 
     window.OpenFollow = window.OpenFollow || {};
@@ -162,5 +180,6 @@
         fromText: fromText,
         peerFailure: peerFailure,
         UNREACHABLE: UNREACHABLE,
+        UNREACHABLE_ACTION: UNREACHABLE_ACTION,
     };
 })();

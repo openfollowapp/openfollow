@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Time the Operator Screen's drawing on the bench scenes, or compare two checkouts.
 
 Each scene (``tests/_hud_scenes.py``) is a run of frames with moving markers,
@@ -15,13 +16,15 @@ scene only warms the caches::
     # where the time goes, per drawing pass
     poetry run python scripts/hw_validation/hud_bench.py --scenes full --split
 
-    # this checkout against another one (e.g. ``git archive <base> openfollow``
-    # unpacked into /tmp/of-base); rounds alternate between the two
+    # this checkout against another one (e.g. ``git archive <base> openfollow
+    # tests/_hud_scenes.py`` unpacked into /tmp/of-base); rounds alternate between the two
     poetry run python scripts/hw_validation/hud_bench.py --compare /tmp/of-base
 
-Each side runs in a worker process of its own, with the renderer from its
-checkout and the scenes from this one, so both draw the same frames, less any
-scene field the other checkout lacks (the report names those).
+Each side runs in a worker process of its own, with the renderer and the scenes
+of its own checkout, so a change to the scenes' data never hands a renderer data
+it cannot read. A checkout without ``tests/_hud_scenes.py`` draws this one's, less
+any scene field it lacks (the report names those). The report says when the two
+checkouts' scenes differ, and a scene only this checkout has is timed here alone.
 
 Exit ``0`` = done (with ``--compare``: no scene more than ``--max-slowdown``
 slower), ``1`` = a scene is slower than that, ``2`` = a side could not run or
@@ -141,14 +144,14 @@ def worker(
 ) -> int:
     """Answer ``{"scene", "frames", "split"}`` lines with ``{"ms", "split", "errors", "dropped"}`` lines.
 
-    The renderer comes from ``package_root``.
+    The renderer and the scenes come from ``package_root``; a scene it lacks is answered ``{"missing": true}``.
     """
     sys.path.insert(0, str(package_root))
     import cairo
 
     from openfollow.video.overlay import CairoOverlayRenderer
 
-    scenes = load_scenes()
+    scenes = load_scenes(package_root)
     # The renderer logs a failed frame and carries on; a failed frame is fast, so it must not be timed.
     errors = _DrawErrors()
     overlay_logger = logging.getLogger("openfollow.video.overlay")
@@ -159,6 +162,10 @@ def worker(
     try:
         for line in stdin:
             request = json.loads(line)
+            if request["scene"] not in scenes.SCENES:
+                stdout.write(json.dumps({"missing": True}) + "\n")
+                stdout.flush()
+                continue
             key = (request["scene"], int(request["frames"]))
             if key not in built:
                 # DROPPED collects across builds; each scene reports only its own.
@@ -219,6 +226,8 @@ class Worker:
             raise RuntimeError(f"the worker for {self.root} stopped")
         try:
             reply = json.loads(line)
+            if reply == {"missing": True}:
+                return dict(reply)
             float(reply["ms"])
         except (ValueError, TypeError, KeyError) as exc:
             raise RuntimeError(f"the worker for {self.root} answered {line.strip()!r}") from exc
@@ -243,6 +252,8 @@ class SceneResult:
     split: dict[str, float] = field(default_factory=dict)
     # Scene fields the other checkout lacks, so its frames hold less than this one's.
     base_lacks: list[str] = field(default_factory=list)
+    # The other checkout's scenes have no scene of this name: timed here only.
+    base_missing: bool = False
 
     @property
     def head(self) -> float:
@@ -275,9 +286,12 @@ def measure(
     for scene in scenes:
         result = SceneResult(scene)
         sides = [(head, result.head_ms)] + ([(base, result.base_ms)] if base is not None else [])
-        for side, _ in sides:
+        for side, _ in list(sides):
             warm = _run(side, scene, frames)
-            if side is base:
+            if side is base and warm.get("missing"):
+                result.base_missing = True
+                sides = sides[:1]
+            elif side is base:
                 result.base_lacks = list(warm.get("dropped", []))
         for r in range(rounds):
             # Alternate which side goes first, so a load change hits both alike.
@@ -298,7 +312,9 @@ def verdict(results: Sequence[SceneResult], max_slowdown: float) -> int:
 def report(results: Sequence[SceneResult], max_slowdown: float) -> list[str]:
     lines = []
     for r in results:
-        if r.slowdown is None:
+        if r.base_missing:
+            lines.append(f"{r.scene:14} {r.head:7.2f} ms/picture  base has no such scene")
+        elif r.slowdown is None:
             lines.append(f"{r.scene:14} {r.head:7.2f} ms/picture")
         else:
             flag = "  SLOWER" if r.slowdown > max_slowdown else ""
@@ -323,9 +339,25 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def load_scenes() -> Any:
-    """``tests/_hud_scenes.py`` as a module, with ``openfollow`` from whatever is first on ``sys.path``."""
-    spec = importlib.util.spec_from_file_location("_hud_scenes", SCENES_FILE)
+def scenes_file(root: Path) -> Path:
+    """The scenes a checkout draws: its own ``tests/_hud_scenes.py``, else this checkout's."""
+    own = root / "tests" / "_hud_scenes.py"
+    return own if own.is_file() else SCENES_FILE
+
+
+def scenes_note(base: Path) -> str:
+    """What the report says about the base's scenes, or nothing when they are this checkout's."""
+    own = scenes_file(base)
+    if own == SCENES_FILE:
+        return "the base has no scenes of its own and draws this checkout's"
+    if own.read_bytes() != SCENES_FILE.read_bytes():
+        return "the base draws its own scenes, which differ from this checkout's"
+    return ""
+
+
+def load_scenes(root: Path = REPO) -> Any:
+    """``root``'s scenes (``scenes_file``) as a module, with ``openfollow`` from whatever is first on ``sys.path``."""
+    spec = importlib.util.spec_from_file_location("_hud_scenes", scenes_file(root))
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules["_hud_scenes"] = module
@@ -387,6 +419,9 @@ def main(argv: Sequence[str] | None = None, make_worker: Callable[[Path], Any] =
             )
     else:
         print("\n".join(report(results, args.max_slowdown)))
+        note = scenes_note(args.compare) if args.compare is not None else ""
+        if note:
+            print(note)
     return verdict(results, args.max_slowdown)
 
 

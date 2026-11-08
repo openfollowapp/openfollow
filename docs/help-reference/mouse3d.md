@@ -1,0 +1,76 @@
+# 3D Mouse Input
+
+Steer the selected marker with a 6DOF "3D Mouse" – a spring-centred puck you push, pull, lift and twist. Off by default; turn it on with **Steer markers with a 3D Mouse**.
+
+**A controller in its own right.** A 3D Mouse counts alongside gamepads in one shared numbering, ordered by the USB socket each is plugged into (see Controller Slots), so its bound marker carries a controller badge (`C1`, `C2`, …) on the Operator Screen. A 3Dconnexion puck is never treated as a gamepad, even where the operating system offers it as a game controller: it only drives a marker through this section.
+
+- **On its own** it drives whichever marker is currently selected, the same as the keyboard and the on-screen mouse; use the marker-cycle buttons (below) to change which marker it steers.
+- **Alongside other controllers** it's pinned to its own marker by its USB socket, the way two gamepads each keep their own marker, so two operators don't fight over one selection. The marker-cycle buttons go quiet in this mode, since each controller already owns a marker.
+
+**The light.** A puck with a light keeps it on while OpenFollow has the puck open and can use it, and turns it off when the 3D Mouse is switched off here or the station stops. A puck that stays dark while the 3D Mouse is enabled is not being read.
+
+## Status
+
+A box at the top of this section appears only when something keeps a 3D Mouse from working. When the 3D Mouse is off, or every connected unit works, the top stays empty; Controller Slots lists the units in use and the marker each one drives.
+
+- **No 3D Mouse connected** – OpenFollow is looking and has found none. This is the normal state with nothing plugged in; a unit plugged in later, or unplugged and plugged back in, is picked up on its own.
+- **Support is not installed** or **could not start** – the software OpenFollow reads a 3D Mouse through is missing or broken on this station, so no unit can be read, whatever is plugged in.
+- **Not supported by this version of OpenFollow** – the unit is a 3D Mouse, but this version has no profile for the model, so it can't read its axes and buttons. Nothing in the station's setup causes this.
+- **Not allowed to open it** – the unit was found, but the station's device permissions keep OpenFollow from reading it.
+- **Could not be opened** – the unit was found, but opening it failed for another reason.
+- **Not supported on macOS** – this version of OpenFollow can't read a 3D Mouse on a Mac, so it doesn't look for one. The settings here still save, and travel with a config export to other stations.
+
+Each box names the unit by its product name and USB ID (`vendor:product`), the same ID the diagnostics bundle lists.
+
+## Axis mapping
+
+The puck senses six motions. Each gets its own row in the form, named for the gesture you make – the same push / pull / tilt / twist motions shown in the 3Dconnexion manual. The config-file key is in parentheses.
+
+| | Motion | Sends to (default) |
+|---|---|---|
+| ![Cap pushed left and right](/assets/help/mouse3d-pan-x.svg) | **Push left / right** (`pan_x`) | Move X |
+| ![Cap pushed forward and back](/assets/help/mouse3d-pan-y.svg) | **Push forward / back** (`pan_y`) | Move Y |
+| ![Cap pulled up and pushed down](/assets/help/mouse3d-lift.svg) | **Pull up / push down** (`lift`) | Move Z (height) |
+| ![Cap tilted forward and back](/assets/help/mouse3d-pitch.svg) | **Tilt forward / back** (`pitch`) | off |
+| ![Cap twisted](/assets/help/mouse3d-yaw.svg) | **Twist / spin** (`yaw`) | Speed |
+| ![Cap tilted left and right](/assets/help/mouse3d-roll.svg) | **Tilt left / right** (`roll`) | off |
+
+Each row has four controls:
+
+**Target** – where that motion sends its movement:
+
+- **x / y / z** – move the marker along that stage axis (X = stage left/right, Y = upstage/downstage, Z = height).
+- **speed** – instead of moving the marker, the axis ramps the marker's move-speed while held: push one way to speed up, the other to slow down. Useful for trimming speed on the fly without reaching for a key.
+- **fader** – drives the controlled marker's fader (0–1) while held: push one way to raise it, the other to lower. Same integrator the gamepad's marker-fader stick uses, so the fader-speed setting (under Gamepad) sets how fast full deflection travels.
+- **none** – ignore the axis.
+
+The defaults are in the table above (push drives x / y / z with the up/down motion geared down for gentler height, twist ramps the move-speed, the two tilts are off). Re-point any motion at any target – e.g. send twist to z if you'd rather twist for height.
+
+**Sensitivity** – a per-axis multiplier (0–10). `1` means full deflection moves at the marker's configured move-speed; `2` doubles it; values below `1` make that axis finer. Set it per axis so, say, height is gentler than lateral movement.
+
+**Deadzone** (0–1) – a per-axis dead band near centre: deflection below it is ignored so the marker doesn't creep when your hand rests on the puck. Set it per axis – e.g. a larger deadzone on a twitchy rotation axis than on the translations. Raise an axis's deadzone if the marker drifts at rest on it.
+
+**Direction** – **Normal** or **Inverted** for that axis.
+
+> To make the puck follow the camera's view, set **Control frame** under Markers & Zones → Marker Movement rather than inverting axes here. It turns left/right and forward/back together for the 3D Mouse, keyboard and gamepad at once, so every device on the station agrees. Per-axis **Direction** here is for the puck's own feel, and stacks on top of it.
+
+## Response curve
+
+**Response curve** – shapes how deflection maps to speed, shared across all axes:
+
+- **linear** – direct 1:1.
+- **logarithmic** – fine control near centre, fast at the edges.
+- **quadratic** – even finer near centre.
+- **s-law** – smooth ease-in and ease-out.
+
+## Buttons
+
+Every action binds to a device button by its **index** (a whole number). Leave a binding **blank** to unbind it. Button counts vary by model – a compact unit has two, larger ones have many.
+
+Each button drives one action. Typing or detecting an index another action already uses moves it: the field you changed says in blue where it came from, and the field it left empties and turns red, since that action does nothing until it gets a button again. Once the button moves on, the red field only names the button it lost. The notes clear on **Save**.
+
+**Detect** – click a binding's **Detect** button, then press the button on the device; the field fills in automatically. It works whether or not the feature is enabled, as long as the device is connected.
+
+Bindable actions: **Reset marker** (return the marker to its default position), **Next / Previous marker** (cycle the selected marker, when this is the only controller – see above), **Speed up / Speed down** (step the move-speed), **Toggle help**, **Toggle zones**, and, as experimental features, **Pathfinder** (lock the marker onto the nearest active path, or release it; moving it past an end of the path that releases it lets it go too) and **Toggle paths**. The Settings menu has no 3D-mouse binding: it needs a keyboard (or gamepad) to open and navigate.
+
+**Save** – store the settings. Changes apply immediately, with no restart, but are lost on restart unless you save.

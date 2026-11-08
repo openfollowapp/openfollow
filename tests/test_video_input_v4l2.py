@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Tests for the V4L2 video input plugin."""
 
 from __future__ import annotations
@@ -30,7 +32,10 @@ from openfollow.video.inputs.v4l2 import (
     _UnlistedModes,
     _usb_link_budget,
 )
+from openfollow.video.receiver import _caps_dimensions
+from openfollow.video.source_limits import FrameMeter, limits_row, limits_snapshot
 from tests._fake_gst import FakeElement, FakePipeline, make_fake_gst
+from tests._real_gst import real_gst
 
 pytestmark = pytest.mark.unit
 
@@ -842,9 +847,10 @@ class TestV4l2Pipeline:
         for name in ("post_queue", "videoscale", "videorate", "convert"):
             assert pipeline.get_by_name(name) is not None
 
-    def test_source_is_unconstrained_links_to_queue(self) -> None:
+    def test_source_is_unconstrained_links_to_queue(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # No caps pinned on the source – it links straight to the queue so it
         # negotiates the device's native resolution.
+        monkeypatch.setattr(v4l2_module, "_read_capture_modes", lambda path: None)
         pipeline = _build_v4l2({"v4l2_render_resolution": "1080p"})
         src = pipeline.get_by_name("v4l2src")
         assert [e.name for e in src.links] == ["post_queue"]
@@ -858,6 +864,15 @@ class TestV4l2Pipeline:
         assert "width=" not in caps
         assert "height=" not in caps
         assert "framerate=(fraction)30/1" in caps
+
+    @pytest.mark.parametrize(("render", "pinned"), [("1080p", True), ("720p", True), ("native", False)])
+    def test_a_fixed_render_size_pins_square_pixels(
+        self, render: str, pinned: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(v4l2_module, "_read_capture_modes", lambda path: None)
+        caps = _build_v4l2({"v4l2_render_resolution": render}).get_by_name("capsfilter").properties["caps"]
+        # Scaled to a size, a mode of another shape keeps its shape in bars; native has no scaler to do it.
+        assert ("pixel-aspect-ratio=(fraction)1/1" in caps.to_string()) is pinned
 
     def test_missing_v4l2src_raises(self) -> None:
         fake = make_fake_gst(missing_elements={"v4l2src"})
@@ -965,6 +980,40 @@ class TestV4l2PinnedMode:
             "capsfilter",
             "convert",
         ]
+
+    @pytest.mark.parametrize(
+        ("table", "expected"),
+        [
+            # A capture card fed 1080p59.94: listed only at its incoming signal.
+            ({"YUYV": {(1920, 1080): [(1001, 60000)]}}, "Video 60 fps > 30 fps"),
+            # A camera listing nothing smaller than 4K.
+            ({"MJPG": {(3840, 2160): [(1, 30)]}}, "Video 3840×2160 > Full HD"),
+        ],
+        ids=["capture-card-60", "4k-only"],
+    )
+    def test_a_mode_past_the_settings_is_what_the_source_limits_measure(self, camera, table, expected) -> None:
+        """Render resolution 1080p at FPS 30 cannot clear this: the step names the camera too."""
+        camera(table, USB3)
+        pipeline = _build_v4l2({"v4l2_render_resolution": "1080p", "v4l2_framerate": 30})
+        metered = pipeline.get_by_name(V4l2Input.frame_meter_element_name)
+        src_caps = pipeline.get_by_name("src_caps")
+        # The mode reaches the meter before anything scales it or drops frames to the settings.
+        assert src_caps.links == [metered]
+        assert "videorate" in self._chain(pipeline)[self._chain(pipeline).index(metered.name) :]
+
+        mode = src_caps.properties["caps"].to_string()
+        width, height = _caps_dimensions(mode)
+        rate = Fraction(mode.split("framerate=(fraction)")[1])
+        now = [1000.0]
+        meter = FrameMeter(clock=lambda: now[0])
+        meter.note_caps(width, height)
+        for i in range(int(rate * 15)):
+            now[0] = 1000.0 + i / float(rate)
+            meter.note_frame()
+        assert limits_row(meter.reading) == expected
+        assert limits_snapshot(meter.reading, V4l2Input.source_kind)["action"].startswith(
+            "Set the camera, or the signal into the capture card, to 1920×1080 at 30 fps or less"
+        )
 
     def test_no_mode_to_choose_leaves_the_source_open(self, camera) -> None:
         camera(CAPTURE_CARD, USB2)
@@ -1222,3 +1271,48 @@ class TestV4l2Label:
         )
         assert "/dev/video42" in label
         assert "720p@15" in label
+
+
+# --------------------------------------------------------------------------- #
+# Frames on a real GStreamer pipeline
+# --------------------------------------------------------------------------- #
+
+
+def _chain_after_queue(pipeline: FakePipeline) -> list[FakeElement]:
+    """The elements the plugin links from the queue on, in order."""
+    chain, elem = [], pipeline.get_by_name("post_queue")
+    while elem.links:
+        elem = elem.links[0]
+        chain.append(elem)
+    return chain
+
+
+def test_a_four_three_camera_at_a_fixed_render_size_is_pillarboxed(monkeypatch: pytest.MonkeyPatch) -> None:
+    gst = real_gst()
+    # No mode list, so no host camera decides the chain.
+    monkeypatch.setattr(v4l2_module, "_read_capture_modes", lambda path: None)
+    built = _chain_after_queue(_build_v4l2({"v4l2_render_resolution": "1080p", "v4l2_framerate": 30}))
+    assert [e.name for e in built] == ["videoscale", "videorate", "capsfilter", "convert"]
+    assert built[0].properties.get("add-borders") is True
+    caps = built[2].properties["caps"].to_string()
+    # The plugin's chain as checked above, with its own caps, fed by a camera mode of 640x480 square pixels.
+    pipeline = gst.parse_launch(
+        "videotestsrc pattern=white num-buffers=1 ! video/x-raw,width=640,height=480,framerate=30/1"
+        f" ! videoscale add-borders=true ! videorate ! {caps} ! videoconvert"
+        " ! video/x-raw,format=GRAY8 ! appsink name=frames sync=false"
+    )
+    sink = pipeline.get_by_name("frames")
+    pipeline.set_state(gst.State.PLAYING)
+    try:
+        sample = sink.emit("try-pull-sample", 10 * gst.SECOND)
+        assert sample is not None, "no frame within 10 s"
+        structure = sample.get_caps().get_structure(0)
+        buffer = sample.get_buffer()
+        frame = buffer.extract_dup(0, buffer.get_size())
+    finally:
+        pipeline.set_state(gst.State.NULL)
+    assert (structure.get_value("width"), structure.get_value("height")) == (1920, 1080)
+    assert structure.get_fraction("pixel-aspect-ratio")[1:] == (1, 1)
+    middle = frame[540 * 1920 : 541 * 1920]
+    lit = [x for x, value in enumerate(middle) if value > 128]
+    assert lit and abs(lit[0] - 240) <= 2 and abs(lit[-1] - 1679) <= 2

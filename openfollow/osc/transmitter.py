@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Flexible OSC transmitter runtime.
 
 Operators define a list of OSC transmitter rows in
@@ -1248,7 +1250,7 @@ class OscTransmitterManager:
         if marker is None:
             return None
         try:
-            return marker.pos
+            return marker.sent_pos
         except Exception:  # pragma: no cover - defensive
             return None
 
@@ -1378,7 +1380,7 @@ class OscTransmitterManager:
                 )
             else:
                 try:
-                    pos = marker.pos
+                    pos = marker.sent_pos
                 except Exception:  # pragma: no cover - defensive
                     logger.debug(
                         "OSC transmitter: marker %d position read raised",
@@ -1519,7 +1521,7 @@ class OscTransmitterManager:
         # Ahead of the on-change gate, so "unchanged" can't hide the fault.
         egress = self._egress_provider(dest) if self._egress_provider is not None else None
         if egress is not None and egress.down:
-            plan.ring_buffer.record_skipped(error=f"interface {egress.iface} is down", address=result.address)
+            plan.ring_buffer.record_skipped(error=egress.reason(egress.iface), address=result.address)
             return
         # On-change gate: skip the send when the row's default marker
         # hasn't moved by ``min_change_m`` along any axis since the last

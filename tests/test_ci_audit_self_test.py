@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """The gating audit job runs on a PR that edits it, without a CVE blocking that PR.
 
 The audit is kept off pull requests so a newly disclosed CVE cannot block

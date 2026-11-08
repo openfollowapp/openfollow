@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Shared pytest fixtures and collection hooks.
 
 Registers Hypothesis profiles (``dev`` / ``ci``), keeps each test hermetic by
@@ -10,6 +12,7 @@ vanish from both ``-m unit`` and ``-m "integration or smoke"`` selections.
 
 import os
 import socket
+import sys
 import warnings
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -122,6 +125,21 @@ def _no_host_bonjour_name() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _no_shared_port_binds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test probes the host's own addresses for a shared web port: every test
+    sees a kernel that refuses such a bind itself, as Linux does; a test that
+    cares installs macOS's semantics with ``tests._port_sharing``."""
+    monkeypatch.setattr("openfollow.net_utils.BINDS_SHARE_PORTS", False)
+
+
+@pytest.fixture(autouse=True)
+def _no_loopback_interface(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test sees a host that does not offer loopback as an interface, as Linux;
+    a test about macOS's offer sets ``LOOPBACK_OFFERED`` itself."""
+    monkeypatch.setattr("openfollow.net_utils.LOOPBACK_OFFERED", False)
+
+
+@pytest.fixture(autouse=True)
 def _no_host_adapters(tmp_path: Path) -> Iterator[None]:
     """No test may describe the host's own network adapters.
 
@@ -165,9 +183,28 @@ def _no_host_keyboard(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.
 
 
 @pytest.fixture(autouse=True)
+def _no_host_input_devices(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
+    """No test may open the host's evdev devices, read its sysfs or compile its xkb keymap; one that cares
+    installs fakes."""
+    from openfollow.input import keyboard
+
+    monkeypatch.setitem(sys.modules, "evdev", None)
+    monkeypatch.setitem(sys.modules, "xkbcommon", None)
+    monkeypatch.setattr(keyboard, "_SYSFS_INPUT_DIR", str(tmp_path_factory.getbasetemp() / "no-sysfs"))
+
+
+@pytest.fixture(autouse=True)
 def _no_host_camera_modes(monkeypatch: pytest.MonkeyPatch) -> None:
     """No test may read the mode list of a camera on the host; one that cares installs its own."""
     monkeypatch.setattr("openfollow.video.inputs.v4l2._read_capture_modes", lambda device: None)
+
+
+@pytest.fixture(autouse=True)
+def _supported_platform(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test may depend on the host's platform; one that cares sets ``platform_support.current`` itself."""
+    from openfollow import platform_support
+
+    monkeypatch.setattr(platform_support, "current", lambda: platform_support.PlatformSupport(True, "Raspberry Pi 5"))
 
 
 @pytest.fixture(autouse=True)
@@ -186,7 +223,7 @@ def _no_host_cgroup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _no_real_midi_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+def _no_real_midi_backend(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
     """Force the MIDI backend absent by default in every test.
 
     ``mido`` / ``python-rtmidi`` are base deps, so
@@ -209,6 +246,8 @@ def _no_real_midi_backend(monkeypatch: pytest.MonkeyPatch) -> None:
         "ImportError: no MIDI backend (test default)",
         raising=False,
     )
+    # Nor read the serial number of a sound card on the host.
+    monkeypatch.setattr("openfollow.input.midi._SYSFS", tmp_path_factory.getbasetemp() / "no-sysfs", raising=False)
 
 
 @pytest.fixture

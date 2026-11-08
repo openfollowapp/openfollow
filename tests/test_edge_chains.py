@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Edge suggestions on synthetic frames: long smooth edges are offered, rims, corners and repeats are not."""
 
 from __future__ import annotations

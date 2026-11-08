@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """On-device mode/overlay state machine: input routing, Settings menu, source
 selection, interface picker, source-type switcher, URL editor, field-choice
 picker, embedded browser, button-detection wizard, and startup video banner.
@@ -17,12 +19,17 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from openfollow.configuration import config_file_problem, config_problem_words, is_simple_mode, save_config_fields
+from openfollow.input.keyboard import text_entry_owns_input
+from openfollow.input.parking import is_parked, select
+from openfollow.input.slot_pin_capture import CAPTURE_TIMEOUT_S, PINNED
 from openfollow.input.touch_remote import holds
+from openfollow.restore_hold import is_held
 from openfollow.runtime import paths_runtime
 from openfollow.video.failure import SourceKind, VideoFailure, failure_action, failure_sentence
 
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp
+    from openfollow.input.input_manager import InputManager
 
 logger = logging.getLogger(__name__)
 
@@ -61,17 +68,18 @@ def keyboard_owned(app: OpenFollowApp) -> bool:
     canvas = getattr(app, "_canvas", None)
     if canvas is not None and not getattr(canvas, "has_keyboard_focus", True):
         return False
-    return not (
-        getattr(app, "_url_editor_active", False)
-        or getattr(app, "_pi_network_field_edit_active", False)
-        or getattr(app, "_browser_active", False)
-    )
+    return not text_entry_owns_input(app)
 
 
-def _polled_already(app: OpenFollowApp, key: str) -> bool:
+def _polled_already(app: OpenFollowApp, event: dict[str, Any], key: str) -> bool:
     """True for a GTK key-down whose press the polled keyboard already acted on."""
     manager = app._input_manager
-    return manager is not None and not manager.keyboard_handler.take_text_key(key)
+    if manager is None:
+        return False
+    handler = manager.keyboard_handler
+    late = handler.is_late_echo(event)
+    # Always offered: on macOS a press the text field takes is then not the Operator Screen's.
+    return not handler.take_text_key(key) or late
 
 
 def close_all_screens(app: OpenFollowApp) -> None:
@@ -153,8 +161,9 @@ def process_input(app: OpenFollowApp, dt: float) -> None:
     # instead of drifting the marker. Reads are defensive so partial test apps
     # don't trip; the clear runs only on the modal->marker-control transition,
     # where ``_input_manager`` is guaranteed present. Mirrors the early-return
-    # guards below – keep in sync when adding a modal. (A key-up dropped during
-    # continuous control is out of scope; that awaits the planned evdev poller.)
+    # guards below – keep in sync when adding a modal. (On the GTK fallback a
+    # key-up dropped during continuous control is not recovered here; the
+    # hardware pollers read held keys directly.)
     modal_active = on_screen_mode_active(app)
     if modal_active:
         app._marker_control_suspended = True
@@ -169,6 +178,12 @@ def process_input(app: OpenFollowApp, dt: float) -> None:
     # otherwise swallow the press.
     if modal_active and _settings_button_closes(app, app._input_manager.keyboard_handler.keys):
         close_all_screens(app)
+        return
+
+    # Pin here takes every controller for up to its timeout; nothing moves a marker meanwhile.
+    if getattr(app._input_manager, "pin_capture_active", False):
+        app._marker_control_suspended = True
+        process_slot_pin_capture(app, app._input_manager)
         return
 
     # Button detection wizard takes exclusive control of input.
@@ -647,8 +662,9 @@ def normalize_key(key: str) -> str:
 
 
 def cycle_marker(app: OpenFollowApp, direction: int) -> None:
-    """Cycle controlled marker selection by *direction* (+1 next, -1 prev)."""
-    if not app._controlled_ids:
+    """Cycle controlled marker selection by *direction* (+1 next, -1 prev), stepping over parked markers."""
+    ids = app._controlled_ids
+    if not ids:
         return
     selected = app._selected_id
     if selected is None:
@@ -660,11 +676,15 @@ def cycle_marker(app: OpenFollowApp, direction: int) -> None:
         idx = -1 if direction > 0 else 0
     else:
         try:
-            idx = app._controlled_ids.index(selected)
+            idx = ids.index(selected)
         except ValueError:
             idx = -1 if direction > 0 else 0
     step = 1 if direction > 0 else -1
-    app._selected_id = app._controlled_ids[(idx + step) % len(app._controlled_ids)]
+    for k in range(1, len(ids) + 1):
+        candidate = ids[(idx + step * k) % len(ids)]
+        if not is_parked(app, candidate):
+            select(app, candidate)
+            return
 
 
 def adjust_move_speed(
@@ -854,7 +874,7 @@ def handle_key_press(app: OpenFollowApp, key: str) -> None:
     elif cc.key_prev_marker and key == cc.key_prev_marker:
         cycle_marker(app, -1)
     elif cc.key_reset and key == cc.key_reset and app._selected_id is not None and app._server is not None:
-        if holds(app, app._selected_id):
+        if holds(app, app._selected_id) or is_parked(app, app._selected_id):
             return
         marker = app._server.get_marker(app._selected_id)
         # pragma: no branch – _selected_id is set only when its marker
@@ -887,38 +907,22 @@ def on_key_down(app: OpenFollowApp, event: dict[str, Any]) -> None:
     """
     key = app._normalize_key(event.get("key", ""))
 
-    # URL editor / browser overlays own input exclusively. Skip the
-    # forward to ``keyboard_handler.on_key_down`` so the polled-key
-    # tracker doesn't latch keys as "pressed" while the overlay is
-    # up – otherwise the matching ``on_key_up`` (also gated below) is
-    # the only way they'd clear, and a release that lands after the
-    # overlay closes leaves the key flagged pressed and can fire app
-    # shortcuts on the next polled tick.
-    if app._url_editor_active:
-        # URL editor needs every printable key and Backspace, neither
-        # of which flow through the polled discrete-key path
-        # (``KeyboardHandler.POLLED_KEYS`` covers letters / arrows /
-        # Tab / Enter / Escape but not digits / punctuation /
-        # Backspace). Route everything to ``handle_url_editor_key``
-        # and skip the digit-as-marker shortcut below so typing "1"
-        # goes into the URL buffer instead of picking marker 0.
-        if not _polled_already(app, key):
+    # A text screen owns input: never forward to the poller, which would latch keys its key_up can't clear.
+    if text_entry_owns_input(app):
+        if _polled_already(app, event, key):
+            # A hardware poller already acted on this press, such as the one
+            # that opened the screen; its GTK event arrived late. The window keeps it from the WebView.
+            event["late_echo"] = True
+            return
+        # The editors take digits, punctuation and Backspace (not in ``POLLED_KEYS``)
+        # from GTK, and the digit-as-marker shortcut below never fires under them.
+        if app._url_editor_active:
             handle_url_editor_key(app, key)
-        return
+        elif getattr(app, "_pi_network_field_edit_active", False):
+            from openfollow.runtime.app_modes_network import handle_pi_network_field_edit_key
 
-    # Pi network field editor: same constraint as the URL editor – it
-    # accepts the top-row digits, '.' and Backspace, none of which flow
-    # through the polled discrete-key path. ``POLLED_KEYS`` polls a-z, the
-    # modifiers, Space, the arrows, Tab/Enter/Escape and the numpad – but not
-    # the top number/punctuation row or Backspace. Route GTK key events
-    # straight to the field handler and skip the digit-as-marker shortcut
-    # below so typing an IP octet edits the buffer instead of reselecting a
-    # marker.
-    if getattr(app, "_pi_network_field_edit_active", False):
-        from openfollow.runtime.app_modes_network import handle_pi_network_field_edit_key
-
-        if not _polled_already(app, key):
             handle_pi_network_field_edit_key(app, key)
+        # The browser overlay's WebView interprets its keys itself (and intercepts Esc).
         return
 
     # Field-choice picker also owns input exclusively. ArrowUp/Down/
@@ -926,13 +930,6 @@ def on_key_down(app: OpenFollowApp, event: dict[str, Any]) -> None:
     # here keeps the digit-marker shortcut from firing while the
     # operator is choosing a value.
     if app._field_choice_active:
-        return
-
-    # Browser overlay: the WebView's own ``key-press-event`` handler
-    # interprets keys for the rendered page and intercepts Esc to
-    # dismiss. Skip the digit-marker shortcut below so typing into a
-    # form field can't fire a side-effect on the underlying app.
-    if app._browser_active:
         return
 
     if app._input_manager is not None:
@@ -948,22 +945,20 @@ def on_key_down(app: OpenFollowApp, event: dict[str, Any]) -> None:
 
     if len(key) == 1 and key.isdigit() and key != "0":
         idx = int(key) - 1
-        if idx < len(app._controlled_ids):
-            app._selected_id = app._controlled_ids[idx]
+        if idx < len(app._controlled_ids) and not is_parked(app, app._controlled_ids[idx]):
+            select(app, app._controlled_ids[idx])
 
 
 def on_key_up(app: OpenFollowApp, event: dict[str, Any]) -> None:
+    if app._input_manager is not None:
+        # A released key is no longer the echo of a press a hardware poller acted on.
+        app._input_manager.keyboard_handler.end_echo(event)
     # Symmetric with ``on_key_down``: while an exclusive overlay owns
     # input, the polled-key tracker stays frozen so a release that
     # arrives after the overlay closes can't clear a key it never saw
     # pressed (which would otherwise underflow ``keys`` or strand a
     # different key as latched-pressed).
-    if (
-        app._url_editor_active
-        or app._browser_active
-        or app._field_choice_active
-        or getattr(app, "_pi_network_field_edit_active", False)
-    ):
+    if text_entry_owns_input(app) or app._field_choice_active:
         return
     if app._input_manager is not None:
         app._input_manager.keyboard_handler.on_key_up(event)
@@ -1205,6 +1200,8 @@ def confirm_source_type_selection(app: OpenFollowApp) -> None:
 
 def _unsaved_reason(app: OpenFollowApp, again: str) -> tuple[str, str]:
     """What is wrong with the settings file (``""`` if it reads), and the step before the operator tries *again*."""
+    if is_held(app._config_path):
+        return "OpenFollow is restarting after a restore.", f"Once it is back, {again}."
     problem = config_file_problem(app._config_path)
     if problem is None:
         return "", f"Check the station's storage, then {again}."
@@ -1831,7 +1828,8 @@ def _exclusive_mode_active(app: OpenFollowApp) -> bool:
     if receiver is not None and receiver.source_selection_active:
         return True
     return bool(
-        getattr(app, "_button_detection", None) is not None
+        getattr(getattr(app, "_input_manager", None), "pin_capture_active", False)
+        or getattr(app, "_button_detection", None) is not None
         or getattr(app, "_settings_menu_active", False)
         or getattr(app, "_about_active", False)
         or getattr(app, "_media_picker_active", False)
@@ -1935,3 +1933,64 @@ def exit_button_detection(app: OpenFollowApp) -> None:
         app._button_detection = None
         if app._web_server is not None:
             app._web_server.set_button_detection_active(False)
+
+
+# ---------------------------------------------------------------------------
+# Pin here (Controller Slots)
+# ---------------------------------------------------------------------------
+
+
+def enter_slot_pin_capture(app: OpenFollowApp, index: int) -> bool:
+    """Arm Pin here for slot ``index`` and prompt for the press on the Operator Screen."""
+    manager = app._input_manager
+    # The web request is queued blindly; a screen that owns input keeps it.
+    if manager is None or _exclusive_mode_active(app):
+        logger.warning("Pin here for C%d ignored – another mode is active.", index + 1)
+        return False
+    if not manager.start_pin_capture(index):
+        return False
+    app._slot_pin_prompt = app._runtime_services._operator_message_store.add(
+        f"Press a button on the controller for C{index + 1}",
+        duration_s=CAPTURE_TIMEOUT_S,
+        from_app=True,
+    )
+    return True
+
+
+def process_slot_pin_capture(app: OpenFollowApp, manager: InputManager) -> None:
+    """Advance an armed Pin here; Escape cancels. Saves the pins once one is made."""
+    if "Escape" in manager.keyboard_handler.keys:
+        result = manager.cancel_pin_capture()
+    else:
+        result = manager.poll_pin_capture()
+    if result is not None:
+        _end_slot_pin_capture(app, result.outcome == PINNED)
+
+
+def exit_slot_pin_capture(app: OpenFollowApp) -> None:
+    """Cancel an armed Pin here, from the web's Cancel."""
+    manager = app._input_manager
+    if manager is not None and manager.cancel_pin_capture() is not None:
+        _end_slot_pin_capture(app, False)
+
+
+def save_slot_pins(app: OpenFollowApp) -> bool:
+    """Write the slot table's pins to config.toml, and to the running config so the reload sees no change."""
+    manager = app._input_manager
+    if manager is None:
+        return False
+    app._config.controller.slot_pins = manager.slot_pins()
+    return _persist_config(app, "controller.slot_pins")
+
+
+def save_slot_markers(app: OpenFollowApp) -> bool:
+    """Write the running config's marker picks to config.toml."""
+    return _persist_config(app, "controller.slot_markers")
+
+
+def _end_slot_pin_capture(app: OpenFollowApp, pinned: bool) -> None:
+    if app._slot_pin_prompt is not None:
+        app._runtime_services._operator_message_store.remove(app._slot_pin_prompt)
+        app._slot_pin_prompt = None
+    if pinned:
+        save_slot_pins(app)

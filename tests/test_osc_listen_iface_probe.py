@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Checks for scripts/hw_validation/osc_listen_iface_probe.py: the verdict comes
 from the configured pin, never from the kernel state the probe is checking."""
 

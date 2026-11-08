@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """HUD and modal draw passes for the Cairo overlay renderer.
 
 Draws the marker cards, info panels, system stats, virtual faders, and every
@@ -10,22 +12,31 @@ from __future__ import annotations
 
 import math
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, cast
 
 import cairo
 
+from openfollow.button_names import hud_label
+from openfollow.platform_support import STEP
+from openfollow.runtime import overlay_button_symbols as symbols
 from openfollow.runtime.overlay_draw_style import (
     CHEVRON_SIZE,
     COLOR_ACCENT,
     COLOR_ACCENT_SOFT,
     COLOR_BG_BASE,
+    COLOR_BORDER,
     COLOR_BORDER_SOFT,
+    COLOR_INFO_BORDER,
+    COLOR_INFO_FILL,
+    COLOR_KEYCAP_BORDER,
+    COLOR_KEYCAP_FILL,
     COLOR_OK,
     COLOR_SUPPORT_BORDER,
     COLOR_TEXT,
     COLOR_TEXT_MUTED,
     COLOR_WARNING_FILL,
+    KEYCAP_RADIUS,
     MODAL_RADIUS,
     PANEL_RADIUS,
     ROW_RADIUS,
@@ -38,14 +49,17 @@ from openfollow.runtime.overlay_draw_style import (
     draw_level_sign,
     draw_rounded_rect,
     draw_success_sign,
-    draw_warning_sign,
     parse_hex,
     speed_color,
     status_level,
 )
 from openfollow.runtime.overlay_layers import cut, keep_fill
 from openfollow.runtime.overlay_layout import (
+    HELP_ROW_H,
+    HELP_SECTION_GAP,
+    HELP_TITLE_H,
     INFO_PANEL_ROW_H,
+    HelpLine,
     HelpSections,
     bottom_left_info_panel_layout,
     build_help_sections,
@@ -91,6 +105,7 @@ def _help_sections_for(
         tuple(sorted((state.mouse3d_axis_map or {}).items())),
         tuple(sorted((state.mouse3d_buttons or {}).items())),
         state.marker_cycle_enabled,
+        state.button_name_style,
     )
     cached = renderer._help_sections_cache
     if cached is not None and cached[0] == key:
@@ -108,29 +123,78 @@ def _help_sections_for(
         mouse3d_axis_map=state.mouse3d_axis_map,
         mouse3d_buttons=state.mouse3d_buttons,
         marker_cycle_enabled=state.marker_cycle_enabled,
+        button_name_style=state.button_name_style,
     )
     renderer._help_sections_cache = (key, result)
     return result
 
 
 _HELP_FONT = 10.0
-_HELP_BULLET = "• "
+_KEYCAP_FONT = 8.5
+_KEYCAP_H = 12.0
+_KEYCAP_PAD = 4.0
+_KEYCAP_MIN_TEXT_W = 9.0
+_KEYCAP_GAP = 2.0
+# Between an action and its key caps.
+_HELP_KEYS_GAP = 8.0
 
 
-def _wrapped_help(renderer: Any, cr: Any, width: float, sections: HelpSections) -> list[tuple[str, list[list[str]]]]:
-    """Each line wrapped after its bullet to *width*: a help line is never cut."""
-    renderer._set_ui_font(cr, _HELP_FONT)
-    text_w = width - cr.text_extents(_HELP_BULLET).x_advance
-    return [
-        (title, [_wrap_error_message(renderer, cr, line, text_w, _HELP_FONT, bold=False) for line in lines])
-        for title, lines in sections
-    ]
+def _keycap_width(cr: Any, key: str) -> float:
+    return max(_KEYCAP_MIN_TEXT_W, symbols.text_advance(cr, key, _KEYCAP_FONT)) + 2.0 * _KEYCAP_PAD
+
+
+def keycaps_width(renderer: Any, cr: Any, keys: Sequence[str]) -> float:
+    """Width :func:`draw_keycaps` takes for *keys*."""
+    renderer._set_ui_font(cr, _KEYCAP_FONT, bold=True)
+    return sum(_keycap_width(cr, key) for key in keys) + _KEYCAP_GAP * max(0, len(keys) - 1)
+
+
+def draw_keycaps(renderer: Any, cr: Any, keys: Sequence[str], x: float, baseline: float) -> float:
+    """Each key in its own box, left edge at *x*, centred on a 10 px text line at *baseline*; returns the right edge."""
+    renderer._set_ui_font(cr, _KEYCAP_FONT, bold=True)
+    top = baseline - 9.5
+    for i, key in enumerate(keys):
+        if i:
+            x += _KEYCAP_GAP
+        cap_w = _keycap_width(cr, key)
+        draw_rounded_rect(cr, x + 0.5, top + 0.5, cap_w - 1.0, _KEYCAP_H - 1.0, KEYCAP_RADIUS)
+        cr.set_source_rgba(*COLOR_KEYCAP_FILL)
+        cr.fill_preserve()
+        cr.set_source_rgba(*COLOR_KEYCAP_BORDER)
+        cr.set_line_width(1.0)
+        cr.stroke()
+        cr.set_source_rgb(*COLOR_TEXT)
+        text_w = symbols.text_advance(cr, key, _KEYCAP_FONT)
+        symbols.show_text(cr, key, x + (cap_w - text_w) / 2.0, top + 9.0, _KEYCAP_FONT)
+        x += cap_w
+    return x
+
+
+def _wrapped_help(
+    renderer: Any, cr: Any, width: float, sections: HelpSections
+) -> list[tuple[str, list[tuple[HelpLine, float, list[str]]]]]:
+    """Each line's action wrapped beside its key caps: a help line is never cut."""
+
+    def measure(text: str) -> float:
+        return symbols.text_advance(cr, text, _HELP_FONT)
+
+    wrapped = []
+    for title, lines in sections:
+        rows = []
+        for line in lines:
+            caps_w = keycaps_width(renderer, cr, line.keys)
+            renderer._set_ui_font(cr, _HELP_FONT)
+            text_w = width - caps_w - _HELP_KEYS_GAP
+            parts = _wrap_error_message(renderer, cr, line.action, text_w, _HELP_FONT, bold=False, measure=measure)
+            rows.append((line, caps_w, parts))
+        wrapped.append((title, rows))
+    return wrapped
 
 
 def help_block_height(renderer: Any, cr: Any, width: float, sections: HelpSections) -> float:
     """The height :func:`draw_help_block` takes for *sections* at *width*."""
     wrapped = _wrapped_help(renderer, cr, width, sections)
-    return help_sections_height([(title, [part for parts in lines for part in parts]) for title, lines in wrapped])
+    return help_sections_height([(title, [p for _, _, parts in rows for p in parts]) for title, rows in wrapped])
 
 
 def draw_help_block(
@@ -141,27 +205,26 @@ def draw_help_block(
     width: float,
     sections: HelpSections,
 ) -> None:
+    """Section titles, then each action with its key caps at the right edge."""
     wrapped = _wrapped_help(renderer, cr, width, sections)
-    indent = cr.text_extents(_HELP_BULLET).x_advance
     y_cursor = y
-    for idx, (title, lines) in enumerate(wrapped):
+    for idx, (title, rows) in enumerate(wrapped):
         renderer._set_ui_font(cr, 10.5, bold=True)
         cr.set_source_rgb(*COLOR_ACCENT)
         cr.move_to(x, y_cursor)
         cr.show_text(title.upper())
-        y_cursor += 13.0
+        y_cursor += HELP_TITLE_H
 
-        renderer._set_ui_font(cr, _HELP_FONT)
-        cr.set_source_rgb(*COLOR_TEXT)
-        for parts in lines:
-            # A wrapped line continues under its own text, not under the bullet.
-            for i, part in enumerate(parts):
-                cr.move_to(x + indent if i else x, y_cursor)
-                cr.show_text(part if i else f"{_HELP_BULLET}{part}")
-                y_cursor += 14.0
+        for line, caps_w, parts in rows:
+            draw_keycaps(renderer, cr, line.keys, x + width - caps_w, y_cursor)
+            renderer._set_ui_font(cr, _HELP_FONT)
+            cr.set_source_rgb(*COLOR_TEXT)
+            for part in parts:
+                symbols.show_text(cr, part, x, y_cursor, _HELP_FONT)
+                y_cursor += HELP_ROW_H
 
         if idx < len(wrapped) - 1:
-            y_cursor += 8.0
+            y_cursor += HELP_SECTION_GAP
 
 
 def draw_modal_scrim(cr: Any, w: int, h: int, alpha: float = 0.62) -> None:
@@ -672,7 +735,7 @@ def draw_url_editor_overlay(
 
 
 def draw_settings_menu(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
-    """Render Settings menu modal with info card and error box."""
+    """Render Settings menu modal with the station card, then the error box and the unbound-controllers box."""
     labels = list(state.settings_items)
     enabled = list(state.settings_items_enabled)
     reasons = list(state.settings_items_disabled_reasons)
@@ -685,7 +748,7 @@ def draw_settings_menu(renderer: Any, cr: Any, state: OverlayState, w: int, h: i
         else:
             items.append(f"{label} ({reason or 'unavailable'})")
 
-    # Modal shell; recovery context (banner/error_message) in red-bordered box below for prominence.
+    # Modal shell; notice boxes (the error, then unbound controllers) below the station card.
     panel_w = panel_width(w)
     panel_h = screen_height(h)
     panel_x, panel_y, panel_w, panel_h = draw_modal_shell(
@@ -719,15 +782,23 @@ def draw_settings_menu(renderer: Any, cr: Any, state: OverlayState, w: int, h: i
     # brings its own next step; the video's goes only under the video failure.
     error_text = state.settings_menu_banner or state.video_failure_text or state.error_message
     if error_text:
-        cursor_y = _draw_settings_error_box(
+        cursor_y = _draw_settings_notice_box(
             renderer,
             cr,
+            "error",
             error_text,
             state.settings_menu_banner_action if state.settings_menu_banner else state.video_failure_action,
             content_x,
             cursor_y,
             content_w,
         )
+    if state.settings_platform_warning:
+        cursor_y = _draw_settings_notice_box(
+            renderer, cr, "error", state.settings_platform_warning, STEP, content_x, cursor_y, content_w
+        )
+    unbound_text = _unbound_controllers_text(state.unbound_controllers)
+    if unbound_text:
+        cursor_y = _draw_settings_notice_box(renderer, cr, "info", unbound_text, "", content_x, cursor_y, content_w)
 
     # The list takes the height its rows need, not everything left over, so the
     # documentation pointer below it is on screen rather than under the panel.
@@ -833,11 +904,6 @@ def _draw_settings_info_card(
     # The card is wider than the bottom-left panel, so the source string gets
     # a longer budget here.
     rows = build_info_panel_rows(state, source_max_len=64)
-    # Surface unbound controller pads so operators can spot stray input.
-    # 1-based to match the marker-card badge + OSC ``:cN``.
-    if state.unbound_controller_indices:
-        joined = ", ".join(f"Ctrl{i + 1}" for i in state.unbound_controller_indices)
-        rows.append(("Unbound controllers:", joined))
     row_h = 20.0
     card_h = row_h * len(rows) + 14.0
     draw_panel_background(renderer, cr, x, y, w, card_h, radius=PANEL_RADIUS)
@@ -858,23 +924,48 @@ def _draw_settings_info_card(
     return y + card_h + 10.0
 
 
-def _draw_settings_error_box(
+# Singular and plural name of each controller kind.
+_CONTROLLER_KIND_NAMES = {"gamepad": ("Gamepad", "Gamepads"), "mouse3d": ("3D Mouse", "3D Mice")}
+
+
+def _unbound_controllers_text(controllers: list[tuple[int, str]]) -> str:
+    """The Settings info line for connected controllers that drive no marker; empty when there are none.
+
+    One group per kind, in order of first appearance, each slot 1-based as the
+    marker-card badge and OSC ``:cN``: "Gamepads C2, C4 and 3D Mouse C3".
+    """
+    if not controllers:
+        return ""
+    groups: dict[str, list[int]] = {}
+    for index, kind in controllers:
+        groups.setdefault(kind, []).append(index)
+    named = []
+    for kind, indices in groups.items():
+        singular, plural = _CONTROLLER_KIND_NAMES[kind]
+        slots = ", ".join(f"C{i + 1}" for i in indices)
+        named.append(f"{singular if len(indices) == 1 else plural} {slots}")
+    if len(controllers) == 1:
+        return f"{named[0]} is connected but drives no marker."
+    return f"{' and '.join(named)} are connected but drive no marker."
+
+
+def _draw_settings_notice_box(
     renderer: Any,
     cr: Any,
+    level: str,
     message: str,
     action: str,
     x: float,
     y: float,
     w: float,
 ) -> float:
-    """Render the red-bordered failure box for the Settings modal.
+    """Render a Settings modal notice box in *level*'s fill and border, led by its sign.
 
-    Two weights, matching the web UI's ``.notice.error`` and its
-    ``.notice-sub``: what the station saw carries the emphasis, the step to try
-    sits under it, lighter. The text keeps the HUD's normal colours; the box
-    carries the red.
+    Two weights, matching the web UI's ``.notice`` and its ``.notice-sub``:
+    what the station saw carries the emphasis, the step to try sits under it,
+    lighter. The text keeps the HUD's normal colours; the box carries the level.
     """
-    label = "ERROR"
+    label = level.upper()
     pad = 12.0
     title_size = 11.0
     body_size = 13.0
@@ -894,9 +985,9 @@ def _draw_settings_error_box(
         body_h += 4.0
     card_h = pad * 2 + title_size + 6.0 + body_h
 
-    draw_level_box(cr, "error", x, y, w, card_h, radius=PANEL_RADIUS, line_width=2.0)
+    draw_level_box(cr, level, x, y, w, card_h, radius=PANEL_RADIUS, line_width=2.0)
 
-    draw_warning_sign(cr, x + pad + sign_size / 2, y + pad + sign_size / 2, size=sign_size)
+    draw_level_sign(cr, level, x + pad + sign_size / 2, y + pad + sign_size / 2, size=sign_size)
 
     renderer._set_ui_font(cr, title_size, bold=True)
     cr.set_source_rgba(*COLOR_TEXT_MUTED)
@@ -929,13 +1020,15 @@ def _wrap_error_message(
     max_w: float,
     font_size: float,
     bold: bool = True,
+    measure: Callable[[str], float] | None = None,
 ) -> list[str]:
     """Greedy word-wrap respecting ``max_w`` at the given font size and weight.
 
-    ``bold`` must match the render weight (bold glyphs are wider). Returns at
-    least one line.
+    ``bold`` must match the render weight (bold glyphs are wider); ``measure``
+    replaces the plain text width (button symbols). Returns at least one line.
     """
     renderer._set_ui_font(cr, font_size, bold=bold)
+    width = measure or (lambda text: cr.text_extents(text).width)
     if not message:
         return [""]
     words = message.split()
@@ -944,13 +1037,13 @@ def _wrap_error_message(
 
     # Hard-wrap single tokens wider than max_w to prevent overflow.
     def _split_long(token: str) -> list[str]:
-        if cr.text_extents(token).width <= max_w:
+        if width(token) <= max_w:
             return [token]
         chunks: list[str] = []
         buf = ""
         for ch in token:
             candidate = buf + ch
-            if cr.text_extents(candidate).width <= max_w:
+            if width(candidate) <= max_w:
                 buf = candidate
             else:
                 if buf:
@@ -969,7 +1062,7 @@ def _wrap_error_message(
                 continue
             sep = "" if i > 0 else " "
             candidate = f"{current}{sep}{piece}"
-            if cr.text_extents(candidate).width <= max_w:
+            if width(candidate) <= max_w:
                 current = candidate
             else:
                 lines.append(current)
@@ -1143,72 +1236,107 @@ def draw_about_overlay(renderer: Any, cr: Any, state: OverlayState, w: int, h: i
     draw_about_screen(renderer, cr, state, w, h)
 
 
-_CORNER_ICON_X = _CORNER_ICON_Y = 10.0
-_CORNER_ICON_SIZE = 24.0
+_HELP_X = _HELP_Y = 10.0
+_HELP_PAD = 12.0
+_HELP_LOGO_W = 140.0
+# The wordmark's viewBox aspect (694.06 x 189.96).
+_HELP_LOGO_H = _HELP_LOGO_W * 189.96 / 694.06
+# Logo padding above and below, plus the 1 px rule under it.
+_HELP_HEADER_H = 10.0 + _HELP_LOGO_H + 10.0 + 1.0
+_HUD_HELP_W = 220.0
 # The menu list's lines run longer than the HUD's.
 _MENU_HELP_W = 260.0
 _MENU_HELP_GAP = 8.0
+_CHIP_H = 30.0
+_CHIP_ICON = 20.0
+
+
+def _draw_help_logo(renderer: Any, cr: Any, x: float, y: float) -> None:
+    if getattr(renderer, "_logo_handle", None) is not None:
+        renderer._draw_logo(cr, x, y, _HELP_LOGO_W)
+        return
+    renderer._set_ui_font(cr, 22.0, bold=True)
+    cr.set_source_rgb(*COLOR_ACCENT)
+    cr.move_to(x, y + _HELP_LOGO_H * 0.75)
+    cr.show_text("OpenFollow")
 
 
 def _draw_corner_help(renderer: Any, cr: Any, sections: HelpSections, panel_w: float) -> None:
-    """A help panel under the icon in the top-left corner; nothing when *sections* is empty."""
-    help_h = help_block_height(renderer, cr, panel_w - 24.0, sections)
+    """The help panel in the top-left corner, the logo over the key list; nothing when *sections* is empty."""
+    inner_w = panel_w - 2.0 * _HELP_PAD
+    help_h = help_block_height(renderer, cr, inner_w, sections)
     if help_h <= 0:
         return
-    panel_x = 10.0
-    panel_y = _CORNER_ICON_Y + _CORNER_ICON_SIZE + 4.0
-    draw_panel_background(renderer, cr, panel_x, panel_y, panel_w, help_h + 20.0, radius=PANEL_RADIUS)
-    draw_help_block(renderer, cr, panel_x + 12.0, panel_y + 18.0, panel_w - 24.0, sections)
+    x, y = _HELP_X, _HELP_Y
+    draw_panel_background(renderer, cr, x, y, panel_w, _HELP_HEADER_H + help_h + 20.0, radius=PANEL_RADIUS)
+    _draw_help_logo(renderer, cr, x + _HELP_PAD, y + 10.0)
+    cr.set_source_rgba(*COLOR_BORDER)
+    cr.rectangle(x, y + _HELP_HEADER_H - 1.0, panel_w, 1.0)
+    cr.fill()
+    draw_help_block(renderer, cr, x + _HELP_PAD, y + _HELP_HEADER_H + 18.0, inner_w, sections)
 
 
-def _draw_corner_icon(renderer: Any, cr: Any, w: int, h: int) -> None:
-    renderer._panel_cache.draw(
-        cr,
-        "icon",
-        None,
-        lambda ctx: renderer._draw_icon(ctx, _CORNER_ICON_X, _CORNER_ICON_Y, _CORNER_ICON_SIZE),
-        w,
-        h,
-    )
+def _draw_help_chip(renderer: Any, cr: Any, keys: tuple[str, ...]) -> None:
+    """The closed help: the icon, then "Show help" and its keys; the icon alone when nothing is bound."""
+    x, y = _HELP_X, _HELP_Y
+    baseline = y + _CHIP_H / 2.0 + 3.5
+    label_x = x + 6.0 + _CHIP_ICON + 7.0
+    renderer._set_ui_font(cr, _HELP_FONT)
+    sep_w = cr.text_extents(" / ").x_advance
+    label = "Show help " if keys else ""
+    content_w = cr.text_extents(label).x_advance + sum(keycaps_width(renderer, cr, (k,)) for k in keys)
+    content_w += sep_w * max(0, len(keys) - 1)
+    chip_w = label_x - x + content_w + 10.0 if keys else 6.0 + _CHIP_ICON + 6.0
+    draw_panel_background(renderer, cr, x, y, chip_w, _CHIP_H, radius=PANEL_RADIUS)
+    renderer._draw_icon(cr, x + 6.0, y + (_CHIP_H - _CHIP_ICON) / 2.0, _CHIP_ICON)
+    if not keys:
+        return
+    renderer._set_ui_font(cr, _HELP_FONT)
+    cr.set_source_rgb(*COLOR_TEXT)
+    cr.move_to(label_x, baseline)
+    cr.show_text(label)
+    cursor = label_x + cr.text_extents(label).x_advance
+    for i, key in enumerate(keys):
+        if i:
+            renderer._set_ui_font(cr, _HELP_FONT)
+            cr.set_source_rgb(*COLOR_TEXT)
+            cr.move_to(cursor, baseline)
+            cr.show_text(" / ")
+            cursor += sep_w
+        cursor = draw_keycaps(renderer, cr, (key,), cursor, baseline)
 
 
 def _draw_kept_corner_help(renderer: Any, cr: Any, sections: HelpSections, panel_w: float, w: int, h: int) -> None:
-    key = (tuple((title, tuple(lines)) for title, lines in sections), panel_w)
+    key = ("panel", tuple((title, tuple(lines)) for title, lines in sections), panel_w)
     renderer._panel_cache.draw(cr, "help", key, lambda ctx: _draw_corner_help(renderer, ctx, sections, panel_w), w, h)
+
+
+def _help_toggle_keys(state: OverlayState) -> tuple[str, ...]:
+    help_key = key_label(state.keyboard_labels.get("toggle_help") or "h", fallback="")
+    help_btn = friendly_button_label(state.button_labels.get("toggle_help") or "Y", state.button_name_style)
+    return tuple(p for p in (help_key, help_btn) if p)
 
 
 def draw_menu_help(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
     """The menus' one key list, in the HUD help's corner, while any menu screen is open."""
-    _draw_corner_icon(renderer, cr, w, h)
     # Clear of the centred menu, which starts nearer the edge on a narrower window.
     menu_x = (w - panel_width(w)) / 2.0
-    panel_w = min(_MENU_HELP_W, menu_x - 10.0 - _MENU_HELP_GAP)
+    panel_w = min(_MENU_HELP_W, menu_x - _HELP_X - _MENU_HELP_GAP)
     _draw_kept_corner_help(renderer, cr, _help_sections_for(renderer, "menus", state), panel_w, w, h)
 
 
 def draw_hud(renderer: Any, cr: Any, state: OverlayState, w: int, h: int) -> None:
-    # Controller badges render per-marker card; unbound pads in Settings menu.
+    # Controller badges render per-marker card; unbound controllers in the Settings info box.
     panels = renderer._panel_cache
     info_key = (tuple(build_info_panel_rows(state)), info_panel_in_error(state))
     panels.draw(cr, "info", info_key, lambda ctx: draw_bottom_left_info_panel(renderer, ctx, state, w, h), w, h)
 
-    icon_size = _CORNER_ICON_SIZE
-    icon_x, icon_y = _CORNER_ICON_X, _CORNER_ICON_Y
-    _draw_corner_icon(renderer, cr, w, h)
-
-    if state.show_hud_help:
-        sections = _help_sections_for(renderer, "normal", state)
-        _draw_kept_corner_help(renderer, cr, sections, max(160.0, min(220.0, w - 20.0)), w, h)
+    sections = _help_sections_for(renderer, "normal", state) if state.show_hud_help else []
+    if sections:
+        _draw_kept_corner_help(renderer, cr, sections, max(160.0, min(_HUD_HELP_W, w - 20.0)), w, h)
     else:
-        renderer._set_ui_font(cr, 9)
-        cr.set_source_rgba(*COLOR_TEXT_MUTED)
-        help_key = key_label(state.keyboard_labels.get("toggle_help") or "h", fallback="")
-        help_btn = friendly_button_label(state.button_labels.get("toggle_help") or "Y")
-        parts = [p for p in (help_key, help_btn) if p]
-        if parts:
-            hint = f"{' / '.join(parts)}: help"
-            cr.move_to(icon_x + icon_size + 4.0, icon_y + icon_size * 0.7)
-            cr.show_text(hint)
+        keys = _help_toggle_keys(state)
+        panels.draw(cr, "help", ("chip", keys), lambda ctx: _draw_help_chip(renderer, ctx, keys), w, h)
 
     stats_text = build_system_stats_text(state.cpu_percent, state.ram_percent, state.temperature)
     panels.draw(cr, "stats", stats_text, lambda ctx: draw_system_stats(renderer, ctx, state, w), w, h)
@@ -1385,6 +1513,28 @@ _CARD_BORDER_W_SELECTED = 4.0
 _CARD_GROUP_MARGIN = 4.0
 
 
+# Side of the square P badge on a parked marker's card.
+_PARK_BADGE_SIZE = 12.0
+
+
+def _draw_park_badge(renderer: Any, cr: Any, left: float, top: float) -> float:
+    """The info-level P badge of a parked marker; returns its right edge."""
+    size = _PARK_BADGE_SIZE
+    cr.set_source_rgba(*COLOR_INFO_FILL)
+    draw_rounded_rect(cr, left, top, size, size, ROW_RADIUS)
+    cr.fill()
+    cr.set_source_rgb(*COLOR_INFO_BORDER)
+    cr.set_line_width(1.0)
+    draw_rounded_rect(cr, left + 0.5, top + 0.5, size - 1.0, size - 1.0, ROW_RADIUS)
+    cr.stroke()
+    renderer._set_ui_font(cr, 9, bold=True)
+    cr.set_source_rgb(*COLOR_TEXT)
+    ext = cr.text_extents("P")
+    cr.move_to(left + (size - ext.width) / 2 - ext.x_bearing, top + (size + ext.height) / 2)
+    cr.show_text("P")
+    return left + size
+
+
 def draw_marker_card(
     renderer: Any,
     cr: Any,
@@ -1469,6 +1619,8 @@ def draw_marker_card(
             cr.move_to(x + 8, y + 14)
             cr.show_text(badge)
             badge_right = x + 8 + cr.text_extents(badge).width
+        if t.is_controlled and t.parked:
+            badge_right = _draw_park_badge(renderer, cr, badge_right + 4 if badge_right is not None else x + 8, y + 5)
 
         if selected:
             cr.set_source_rgb(*COLOR_ACCENT)
@@ -1654,40 +1806,6 @@ def draw_virtual_fader_card(
     cr.show_text(value_text)
 
 
-_BUTTON_DISPLAY_NAMES: dict[str, str] = {
-    "A": "A",
-    "B": "B",
-    "X": "X",
-    "Y": "Y",
-    "LB": "Left Bumper",
-    "RB": "Right Bumper",
-    "LT": "Left Trigger",
-    "RT": "Right Trigger",
-    "BACK": "Back / Select",
-    "START": "Start / Menu",
-    "DPAD_UP": "D-Pad Up",
-    "DPAD_DOWN": "D-Pad Down",
-    "DPAD_LEFT": "D-Pad Left",
-    "DPAD_RIGHT": "D-Pad Right",
-}
-
-_BUTTON_SHORT_NAMES: dict[str, str] = {
-    "A": "A",
-    "B": "B",
-    "X": "X",
-    "Y": "Y",
-    "LB": "LB",
-    "RB": "RB",
-    "LT": "LT",
-    "RT": "RT",
-    "BACK": "Back",
-    "START": "Start",
-    "DPAD_UP": "D-Up",
-    "DPAD_DOWN": "D-Down",
-    "DPAD_LEFT": "D-Left",
-    "DPAD_RIGHT": "D-Right",
-}
-
 _HAT_RESULT_NAMES: dict[int, str] = {
     -1: "hat Up",
     -2: "hat Down",
@@ -1742,13 +1860,18 @@ def draw_button_detection_overlay(renderer: Any, cr: Any, state: OverlayState, w
         cr.show_text(prompt_text)
         cursor_y += 10.0
 
-        display_name = _BUTTON_DISPLAY_NAMES.get(bd.current_label, bd.current_label)
-        renderer._set_ui_font(cr, 42 if h >= 720 else 32, bold=True)
+        display_name = hud_label(bd.current_label, state.button_name_style, short=False)
+        size = 42.0 if h >= 720 else 32.0
+        renderer._set_ui_font(cr, size, bold=True)
+        name_w = symbols.text_advance(cr, display_name, size)
+        if name_w > content_w:
+            size *= content_w / name_w
+            renderer._set_ui_font(cr, size, bold=True)
+            name_w = symbols.text_advance(cr, display_name, size)
+        cap_h = cr.text_extents("H").height
         cr.set_source_rgb(*COLOR_ACCENT)
-        ext = cr.text_extents(display_name)
-        cr.move_to(panel_x + (panel_w - ext.width) / 2.0 - ext.x_bearing, cursor_y + ext.height)
-        cr.show_text(display_name)
-        cursor_y += ext.height + 24.0
+        symbols.show_text(cr, display_name, panel_x + (panel_w - name_w) / 2.0, cursor_y + cap_h, size)
+        cursor_y += cap_h + 24.0
     else:
         renderer._set_ui_font(cr, 18, bold=True)
         done_text = "Detection Complete!"
@@ -1794,11 +1917,10 @@ def draw_button_detection_overlay(renderer: Any, cr: Any, state: OverlayState, w
             x = content_x + col * col_w
             y = cursor_y + row * row_h
 
-            short_name = _BUTTON_SHORT_NAMES.get(label, label)
             renderer._set_ui_font(cr, 10, bold=True)
+            short_name = hud_label(label, state.button_name_style)
             cr.set_source_rgb(*COLOR_TEXT)
-            cr.move_to(x, y)
-            cr.show_text(short_name)
+            symbols.show_text(cr, short_name, x, y, 10.0)
 
             renderer._set_ui_font(cr, 10)
             cr.set_source_rgba(*COLOR_TEXT_MUTED)

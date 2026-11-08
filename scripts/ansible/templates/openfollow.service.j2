@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 # systemd unit template: run the OpenFollow kiosk under Cage after a real network address is up.
 [Unit]
 Description=OpenFollow (live video stage-tracking + 3D overlay)
@@ -59,6 +61,7 @@ Environment=WLR_RENDERER=gles2
 Environment=WLR_DRM_DEVICES={{ wlr_drm_devices }}
 {% endif %}
 Environment=GDK_BACKEND=wayland
+Environment=OPENFOLLOW_KIOSK=1
 Environment=GST_PLUGIN_FEATURE_RANK=v4l2slh264dec:257,v4l2slh265dec:257,v4l2h264dec:257,v4l2h265dec:257,openh264dec:1
 StandardOutput=journal
 StandardError=journal

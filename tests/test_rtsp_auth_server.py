@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Checks for scripts/hw_validation/rtsp_auth_server.py.
 
 The bench tool that makes the RTSP credential path testable at all - no camera
@@ -23,6 +24,8 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
+
+from tests._real_gst import real_gst
 
 pytestmark = pytest.mark.unit
 
@@ -508,18 +511,6 @@ class TestListEncoders:
         assert f" {marked[0]} " in _launch(server)
 
 
-def _real_gst() -> Any:
-    try:
-        import gi
-
-        gi.require_version("Gst", "1.0")
-        from gi.repository import Gst
-    except (ImportError, ValueError):
-        pytest.skip("PyGObject / GStreamer is not importable")
-    Gst.init(None)
-    return Gst
-
-
 def _installed_preferred(gst: Any) -> list[str]:
     names = [name for name in srv._ENCODER_PREFERENCE if gst.ElementFactory.find(name) is not None]
     if not names:
@@ -531,11 +522,11 @@ class TestRealGStreamer:
     """What an element actually has comes from the registry, not the fakes."""
 
     def test_installed_preferred_encoders_are_recognised_as_h264(self) -> None:
-        gst = _real_gst()
+        gst = real_gst()
         assert set(_installed_preferred(gst)) <= set(srv.h264_encoders(gst))
 
     def test_elements_that_do_not_output_h264_are_not_offered(self) -> None:
-        gst = _real_gst()
+        gst = real_gst()
         others = ("jpegenc", "vp8enc", "x265enc", "avdec_h264", "openh264dec")
         installed = {name for name in others if gst.ElementFactory.find(name) is not None}
         if not installed:
@@ -543,7 +534,7 @@ class TestRealGStreamer:
         assert not installed & set(srv.h264_encoders(gst))
 
     def test_each_preferred_encoder_gets_a_keyframe_interval_it_accepts(self) -> None:
-        gst = _real_gst()
+        gst = real_gst()
         for name in _installed_preferred(gst):
             settings = srv.probe_encoder(gst, name, 25)
             assert settings is not None, f"{name} could not be created"

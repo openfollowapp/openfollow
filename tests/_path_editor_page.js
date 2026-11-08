@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 OpenFollow Project
+// Copyright (C) 2026 Michel Honold and Paul Hermann
 //
 // The page around the Path Editor in tests/test_paths_editor_js.py: what base.tpl gives
 // every partial script, a scripted station behind /api/paths, and helpers for the steps.

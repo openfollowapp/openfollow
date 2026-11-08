@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """The Features list against a live ``ConfigWebServer``: the Station Settings
 Save (``/section/general``) saves the list and writes nothing else, the list is
 never section-broadcast, imports and pushes carry it (an older
@@ -119,8 +120,6 @@ class TestSave:
         cfg.ui.shown_features = list(FEATURE_KEYS)
         cfg.detection.enabled = True
         cfg.rttrpm_output.enabled = True
-        cfg.ground_grid.enabled = True
-        cfg.ground_grid.vertices = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]
         cfg.touch_remote.enabled = True
         cfg.paths.paths = [PathConfig(name="cross", active=True)]
         save_config(cfg, server.config_path)
@@ -129,7 +128,7 @@ class TestSave:
 
         out = load_config(server.config_path)
         assert out.ui.shown_features == ["paths"]
-        assert (out.detection.enabled, out.rttrpm_output.enabled, out.ground_grid.enabled) == (True, True, True)
+        assert (out.detection.enabled, out.rttrpm_output.enabled) == (True, True)
         assert out.touch_remote.enabled is True
         assert [(p.name, p.active) for p in out.paths.paths] == [("cross", True)]
 

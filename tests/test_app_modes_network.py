@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Tests for ``openfollow.runtime.app_modes_network``: the on-screen Pi
 network settings screen – interface and method pickers, IPv4 field
 editing, and the apply/renew worker lifecycle (generation-guarded drain)."""
@@ -22,6 +24,7 @@ from openfollow.network.adapter import (
     NetworkAdapter,
     NetworkInterface,
     NetworkState,
+    SavedInterface,
 )
 from openfollow.runtime import ipv4_digit_grid
 
@@ -2983,6 +2986,41 @@ class TestAdaptersByLabel:
             anm._pi_network_move(app, 1)
             assert rows[app._pi_network_index].get("key") != "absent:enx00e04c68a1f2"
 
+    def test_an_unplugged_adapter_with_saved_settings_is_listed_labelled_or_not(self) -> None:
+        """The same adapters the web card keeps: each VLAN under its parent, a static one with its address."""
+
+        class _Saved(_FakeAdapter):
+            def read_network(self):
+                return replace(
+                    super().read_network(),
+                    saved=(
+                        SavedInterface("enx0011223344.2", Ipv4Config(Ipv4Method.DHCP), "enx001122334455", 2),
+                        SavedInterface("enx001122334455", Ipv4Config(Ipv4Method.STATIC, "192.0.2.5", 24)),
+                    ),
+                )
+
+        app = _make_app(_Saved())
+        app._config.interface_labels = {"enx001122334455": "Lighting", "enx00e04c68a1f2": "Spare"}
+        anm.enter_pi_network(app)
+        rows = anm.build_pi_network_rows(app)
+        absent = [
+            (r["key"], r["label"], r["value"], r["pill"]) for r in rows if str(r.get("key")).startswith("absent:")
+        ]
+        assert absent == [
+            ("absent:enx001122334455", "Lighting (enx001122334455)", "192.0.2.5", "not connected"),
+            ("absent:enx0011223344.2", "enx0011223344.2", "", "not connected"),
+            ("absent:enx00e04c68a1f2", "Spare (enx00e04c68a1f2)", "", "not connected"),
+        ]
+
+    def test_a_saved_interface_that_is_present_is_not_listed_twice(self) -> None:
+        class _Saved(_FakeAdapter):
+            def read_network(self):
+                return replace(super().read_network(), saved=(SavedInterface("eth0", Ipv4Config(Ipv4Method.DHCP)),))
+
+        app = _make_app(_Saved())
+        anm.enter_pi_network(app)
+        assert "absent:eth0" not in [r.get("key") for r in anm.build_pi_network_rows(app)]
+
     def test_an_interface_screen_names_its_adapter(self, tmp_path) -> None:
         from openfollow import net_adapters
 
@@ -3415,7 +3453,10 @@ class TestTheSimpleInterfacePicker:
         ("content", "why"),
         [
             (b"", "The settings file is empty. Restart OpenFollow to start again with default settings"),
-            (b"grid = 5\n", "The settings file could not be read. Import a settings file to replace it"),
+            (
+                b"grid = 5\n",
+                "The settings file could not be read. Import a settings file or restore a backup to replace it",
+            ),
         ],
         ids=["empty", "not-a-config"],
     )
@@ -3658,3 +3699,24 @@ class TestTheSimpleScreenTitles:
         _populate_pi_network_overlay(app, state)
         assert state.pi_network.title == "Network Interface: eth0"
         assert state.pi_network.subtitle == ""
+
+
+@pytest.mark.parametrize("offered", [True, False], ids=["mac", "elsewhere"])
+def test_the_operator_screen_offers_loopback_on_a_mac_only(monkeypatch, tmp_path, offered) -> None:
+    import openfollow.net_utils as net_utils
+
+    monkeypatch.setattr(net_utils, "LOOPBACK_OFFERED", offered)
+    app = _simple_app(monkeypatch, tmp_path)
+
+    def _addresses(app_):  # noqa: ANN001
+        app_._pi_network_addr_cache = {"eth0": "192.168.1.50", "lo0": "127.0.0.1"}
+        return [("eth0", "192.168.1.50")]
+
+    monkeypatch.setattr(anm, "_iface_addresses", _addresses)
+    app._pi_network_picker = "interface"
+    rows = [r for r in anm.build_pi_network_rows(app) if r.get("kind") == "choice"]
+    loopback = [r for r in rows if str(r.get("key", "")).endswith("lo0")]
+    if offered:
+        assert [(r["label"], r["value"]) for r in loopback] == [("Loopback (lo0)", "127.0.0.1")]
+    else:
+        assert loopback == []

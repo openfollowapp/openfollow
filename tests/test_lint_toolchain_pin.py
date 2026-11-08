@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """The ruff and bandit the pre-commit hooks run must be the ones ``make`` runs.
 
 A ``ruff-pre-commit`` or ``bandit`` hook fetched from its own repo carries a
@@ -21,11 +22,11 @@ So these hooks run out of the poetry env instead and there is only one pin.
 from __future__ import annotations
 
 import re
+import tomllib
 from pathlib import Path
 from typing import Any
 
 import pytest
-import tomllib
 import yaml
 
 pytestmark = pytest.mark.unit

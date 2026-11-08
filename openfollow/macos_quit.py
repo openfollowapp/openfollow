@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """macOS: answer the quit Apple Event the Dock, logout, restart and shutdown send.
 
 Under a bare ``Gtk.main()`` nothing calls ``-[NSApplication finishLaunching]``,

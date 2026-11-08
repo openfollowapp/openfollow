@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Tests for config dataclass validation, TOML round-trip, and runtime hot-reload."""
 
 from __future__ import annotations
@@ -7,13 +9,13 @@ from __future__ import annotations
 import logging
 import os
 import re
+import tomllib
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import tomllib
 
 from openfollow.configuration import (
     CALIBRATION_SOURCE_MAX_LEN,
@@ -35,6 +37,8 @@ from openfollow.configuration import (
     OscConfig,
     OtpOutputConfig,
     RttrpmOutputConfig,
+    SlotMarkerConfig,
+    SlotPinConfig,
     TouchRemoteConfig,
     TriggerZonesConfig,
     _apply_with_fallback,
@@ -206,9 +210,13 @@ class _DummyGamepadHandler:
 class _DummyMouseHandler:
     def __init__(self) -> None:
         self.deactivate_calls = 0
+        self.kept: list[int] = []
 
     def deactivate(self) -> None:
         self.deactivate_calls += 1
+
+    def keep_grab(self, marker_id: int) -> None:
+        self.kept.append(marker_id)
 
 
 class _DummyInputManager:
@@ -220,6 +228,10 @@ class _DummyInputManager:
         self.osc_listen_ifaces: list[str] = []
         self.operator_message_restarts = 0
         self.mouse3d_restarts: list[Mouse3DConfig] = []
+        self.slot_pin_applies: list[list[SlotPinConfig]] = []
+
+    def apply_slot_pins(self, pins: list[SlotPinConfig]) -> None:
+        self.slot_pin_applies.append(list(pins))
 
     def restart_mouse3d(self, config: Mouse3DConfig) -> None:
         self.mouse3d_restarts.append(config)
@@ -561,6 +573,27 @@ def test_example_config_seeds_the_default_features_and_names_the_experimental_on
         start -= 1
     named = re.findall(r'"([a-z_0-9]+)"', "\n".join(lines[start:end]))
     assert sorted(named) == sorted(EXPERIMENTAL_FEATURES)
+
+
+@pytest.mark.parametrize(("section", "defaults"), [("controller", ControllerConfig()), ("mouse3d", Mouse3DConfig())])
+def test_example_config_seeds_the_input_defaults(section: str, defaults: object) -> None:
+    """A first boot, a config missing the keys and Restore defaults must drive the pad alike."""
+    from pathlib import Path
+
+    example_path = Path(__file__).resolve().parents[1] / "config.example.toml"
+    example = tomllib.loads(example_path.read_text(encoding="utf-8"))[section]
+    differing = {
+        name: (value, getattr(defaults, name))
+        for name, value in example.items()
+        if hasattr(defaults, name) and value != getattr(defaults, name)
+    }
+    assert differing == {}
+
+
+def test_a_controller_section_missing_the_stick_and_deadzone_loads_the_defaults(temp_config_path) -> None:
+    temp_config_path.write_text("[controller]\nenabled = true\n", encoding="utf-8")
+    controller = load_config(str(temp_config_path)).controller
+    assert (controller.move_xy_stick, controller.deadzone) == ("right", 0.05)
 
 
 @pytest.mark.parametrize(("section", "defaults"), [("controller", ControllerConfig()), ("mouse3d", Mouse3DConfig())])
@@ -1360,7 +1393,10 @@ def test_an_unreadable_file_is_replaced_by_an_import(temp_config_path) -> None:
 
     problem = config_file_problem(str(temp_config_path))
     assert problem is not None
-    assert config_problem_words(problem) == ("could not be read", "Import a settings file to replace it")
+    assert config_problem_words(problem) == (
+        "could not be read",
+        "Import a settings file or restore a backup to replace it",
+    )
 
 
 @pytest.mark.parametrize(
@@ -1510,6 +1546,13 @@ def test_controller_deadzone_is_clamped(input_deadzone: float, expected: float) 
     assert config.deadzone == expected
 
 
+@pytest.mark.parametrize(
+    ("bad", "expected"), [("abc", 0.05), (None, 0.05), (float("nan"), 0.05), (True, 1.0), ("0.2", 0.2)]
+)
+def test_controller_wrongly_typed_deadzone_falls_back_to_the_default(bad: object, expected: float) -> None:
+    assert ControllerConfig(deadzone=bad).deadzone == expected  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize("layout", ["wasd", "ijkl", "numpad"])
 def test_controller_accepts_all_movement_layouts(layout: str) -> None:
     config = ControllerConfig(key_move_layout=layout)
@@ -1519,6 +1562,161 @@ def test_controller_accepts_all_movement_layouts(layout: str) -> None:
 def test_controller_invalid_movement_layout_falls_back_to_wasd() -> None:
     config = ControllerConfig(key_move_layout="dvorak")
     assert config.key_move_layout == "wasd"
+
+
+_PIN = {"slot": 2, "key": "usb:platform/xhci-hcd.1:1.4", "kind": "gamepad", "label": "Xbox Pad"}
+
+
+def test_controller_slot_pins_default_to_none() -> None:
+    assert ControllerConfig().slot_pins == []
+
+
+def test_controller_slot_pin_entries_become_pins() -> None:
+    config = ControllerConfig(slot_pins=[_PIN, {**_PIN, "slot": 3, "key": "bt:aa:bb", "kind": "mouse3d"}])
+    assert config.slot_pins == [
+        SlotPinConfig(slot=2, key="usb:platform/xhci-hcd.1:1.4", kind="gamepad", label="Xbox Pad"),
+        SlotPinConfig(slot=3, key="bt:aa:bb", kind="mouse3d", label="Xbox Pad"),
+    ]
+
+
+@pytest.mark.parametrize("raw", ["usb:x:1", None, 3, {"slot": 2}, True])
+def test_controller_slot_pins_that_are_not_a_list_are_none(raw: object) -> None:
+    assert ControllerConfig(slot_pins=raw).slot_pins == []  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("entry", ["usb:x:1", None, 3, ["slot", 2], True])
+def test_controller_slot_pin_entries_of_the_wrong_type_are_dropped(entry: object) -> None:
+    assert ControllerConfig(slot_pins=[entry, _PIN]).slot_pins == [SlotPinConfig(**_PIN)]
+
+
+@pytest.mark.parametrize("slot", [0, -1, 17, 2.0, "2", True, None])
+def test_controller_slot_pins_outside_the_slots_are_dropped(slot: object) -> None:
+    assert ControllerConfig(slot_pins=[{**_PIN, "slot": slot}]).slot_pins == []
+
+
+@pytest.mark.parametrize("key", ["", "usb:", "bt:", "eth0", "USB:x:1", None, 5])
+def test_controller_slot_pins_naming_no_socket_are_dropped(key: object) -> None:
+    assert ControllerConfig(slot_pins=[{**_PIN, "key": key}]).slot_pins == []
+
+
+@pytest.mark.parametrize("kind", ["keyboard", "", None, "Gamepad"])
+def test_controller_slot_pins_of_an_unknown_kind_are_dropped(kind: object) -> None:
+    assert ControllerConfig(slot_pins=[{**_PIN, "kind": kind}]).slot_pins == []
+
+
+@pytest.mark.parametrize(
+    "second",
+    [{**_PIN, "key": "usb:platform/xhci-hcd.1:1.5"}, {**_PIN, "slot": 3}],
+    ids=["same slot", "same socket"],
+)
+def test_controller_slot_pins_named_twice_keep_the_first(second: dict[str, object]) -> None:
+    assert ControllerConfig(slot_pins=[_PIN, second]).slot_pins == [SlotPinConfig(**_PIN)]
+
+
+@pytest.mark.parametrize(
+    ("label", "kept"),
+    [
+        ("Xbox\x1b[31m Pad\u202e", "Xbox[31m Pad"),
+        ("  Pad  ", "Pad"),
+        ("x" * 200, "x" * 128),
+        (None, ""),
+        (7, ""),
+    ],
+)
+def test_controller_slot_pin_labels_are_cleaned(label: object, kept: str) -> None:
+    assert ControllerConfig(slot_pins=[{**_PIN, "label": label}]).slot_pins[0].label == kept
+
+
+def test_controller_slot_pins_survive_a_hand_edited_config(tmp_path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "[controller]\n"
+        "slot_pins = [\n"
+        '    { slot = 2, key = "usb:platform/xhci-hcd.1:1.4", kind = "gamepad", label = "Xbox Pad" },\n'
+        '    { slot = 99, key = "usb:platform/xhci-hcd.1:1.5", kind = "gamepad" },\n'
+        '    "not a pin",\n'
+        "]\n",
+        encoding="utf-8",
+    )
+    assert load_config(str(path)).controller.slot_pins == [SlotPinConfig(**_PIN)]
+
+
+def test_controller_slot_pins_round_trip_through_the_config_file(tmp_path) -> None:
+    path = str(tmp_path / "config.toml")
+    cfg = AppConfig()
+    cfg.controller = ControllerConfig(slot_pins=[_PIN])
+    save_config(cfg, path)
+    assert load_config(path).controller.slot_pins == [SlotPinConfig(**_PIN)]
+
+
+def test_controller_slot_markers_default_to_none() -> None:
+    assert ControllerConfig().slot_markers == []
+
+
+def test_controller_slot_marker_entries_become_picks_in_slot_order() -> None:
+    cfg = ControllerConfig(slot_markers=[{"slot": 3, "marker": 0}, SlotMarkerConfig(slot=1, marker=7)])
+    assert cfg.slot_markers == [SlotMarkerConfig(slot=1, marker=7), SlotMarkerConfig(slot=3, marker=0)]
+
+
+@pytest.mark.parametrize("raw", [None, "slot 1", {"slot": 1, "marker": 2}, 3])
+def test_controller_slot_markers_that_are_not_a_list_are_none(raw: object) -> None:
+    assert ControllerConfig(slot_markers=raw).slot_markers == []
+
+
+@pytest.mark.parametrize("entry", [None, "1=2", 4, [1, 2], {"marker": 2}, {"slot": 1}])
+def test_controller_slot_marker_entries_of_the_wrong_shape_are_dropped(entry: object) -> None:
+    assert ControllerConfig(slot_markers=[entry]).slot_markers == []
+
+
+@pytest.mark.parametrize("slot", [0, 17, -1, "2", 2.0, True, None])
+def test_controller_slot_markers_outside_the_slots_are_dropped(slot: object) -> None:
+    assert ControllerConfig(slot_markers=[{"slot": slot, "marker": 2}]).slot_markers == []
+
+
+@pytest.mark.parametrize("marker", [-1, "2", 2.5, True, None])
+def test_controller_slot_markers_naming_no_marker_id_are_dropped(marker: object) -> None:
+    assert ControllerConfig(slot_markers=[{"slot": 1, "marker": marker}]).slot_markers == []
+
+
+@pytest.mark.parametrize("second", [{"slot": 1, "marker": 3}, {"slot": 2, "marker": 2}])
+def test_controller_slot_markers_named_twice_keep_the_first(second: dict[str, object]) -> None:
+    cfg = ControllerConfig(slot_markers=[{"slot": 1, "marker": 2}, second])
+    assert cfg.slot_markers == [SlotMarkerConfig(slot=1, marker=2)]
+
+
+def test_several_slots_can_be_left_without_a_marker() -> None:
+    cfg = ControllerConfig(slot_markers=[{"slot": 1, "marker": 0}, {"slot": 2, "marker": 0}])
+    assert [pick.slot for pick in cfg.slot_markers] == [1, 2]
+
+
+def test_controller_slot_markers_round_trip_through_the_config_file(tmp_path) -> None:
+    path = str(tmp_path / "config.toml")
+    cfg = AppConfig(controlled_marker_ids=[2, 5])
+    cfg.controller = ControllerConfig(slot_markers=[{"slot": 1, "marker": 5}, {"slot": 2, "marker": 0}])
+    save_config(cfg, path)
+    assert load_config(path).controller.slot_markers == [
+        SlotMarkerConfig(slot=1, marker=5),
+        SlotMarkerConfig(slot=2, marker=0),
+    ]
+
+
+def test_a_pick_for_a_marker_no_longer_controlled_is_dropped_on_load(tmp_path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "controlled_marker_ids = [2, 5]\n"
+        "[controller]\n"
+        "slot_markers = [\n"
+        "    { slot = 1, marker = 5 },\n"
+        "    { slot = 2, marker = 9 },\n"
+        "    { slot = 3, marker = 0 },\n"
+        '    "not a pick",\n'
+        "]\n",
+        encoding="utf-8",
+    )
+    assert load_config(str(path)).controller.slot_markers == [
+        SlotMarkerConfig(slot=1, marker=5),
+        SlotMarkerConfig(slot=3, marker=0),
+    ]
 
 
 def test_controller_keyboard_layout_defaults_to_the_system_layout() -> None:
@@ -1943,6 +2141,18 @@ def test_apply_runtime_ui_unit_system_propagates_to_config() -> None:
     assert app._web_commands.restart_requested is False
 
 
+def test_apply_runtime_button_name_style_applies_live() -> None:
+    """The HUD and the web read the style off ``app._config`` every frame / render."""
+    app = _DummyApp(AppConfig())
+    new_config = AppConfig()
+    new_config.controller.button_name_style = "xbox"
+
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._config.controller.button_name_style == "xbox"
+    assert app._web_commands.restart_requested is False
+
+
 def test_apply_runtime_ui_shown_features_propagates_to_config() -> None:
     """The Features list is read off ``app._config``, so a change applies live without a restart."""
     app = _DummyApp(AppConfig())
@@ -2027,6 +2237,23 @@ class TestFeatureGatesHotReload:
         )
         assert [cfg.enabled for cfg in engine.reloads] == [False, True]
         assert app._config.trigger_zones.enabled is True
+
+    def test_a_zone_height_edit_reaches_the_lift_live(self) -> None:
+        from openfollow.configuration import TriggerZoneConfig
+        from openfollow.zones.heights import raising_zones
+
+        def _zones(z: float) -> TriggerZonesConfig:
+            square = [[0, 0], [1, 0], [1, 1]]
+            return TriggerZonesConfig(zones=[TriggerZoneConfig(vertices=square, z_offset=z, raise_markers=True)])
+
+        app = _DummyApp(_with_features(AppConfig(trigger_zones=_zones(0.5)), "zones", "zone_heights"))
+        apply_runtime_config_changes(
+            app, _with_features(AppConfig(trigger_zones=_zones(1.25)), "zones", "zone_heights")
+        )
+        assert [zone.z_offset for zone in raising_zones(app._config)] == [1.25]
+        apply_runtime_config_changes(app, _with_features(AppConfig(trigger_zones=_zones(1.25)), "zones"))
+        assert raising_zones(app._config) == []
+        assert app._config.trigger_zones.zones[0].z_offset == 1.25
 
     def test_midi_entry_off_closes_every_patch_and_keeps_them(self) -> None:
         patch = MidiPatch(id=1, alias="Fader box")
@@ -3247,7 +3474,7 @@ def test_a_switch_that_could_not_be_saved_is_saved_by_switching_again_once_the_f
     assert banners == [
         (
             "RTSP is live but could not be saved. The settings file could not be read.",
-            "Import a settings file to replace it, then switch again.",
+            "Import a settings file or restore a backup to replace it, then switch again.",
         )
     ]
 
@@ -3307,6 +3534,143 @@ def test_apply_runtime_rewires_controlled_marker_ids() -> None:
     assert app._selected_id == 2
     assert app._psn_receiver.ignore_ids == {2}
     assert app._viewer_ids == [2]
+
+
+@pytest.mark.parametrize("raw", ["abc", None, True, 5, 2.0, {"2": True}, (2,)])
+def test_parked_marker_ids_of_the_wrong_type_read_as_none(raw: object) -> None:
+    assert AppConfig(controlled_marker_ids=[1, 2], parked_marker_ids=raw).parked_marker_ids == []  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ([2, "1", True, None, 2.5, 0, -1, 1], [2, 1]),
+        ([1, 1, 2, 1], [1, 2]),
+        ([3, 2], [2]),
+        ([], []),
+    ],
+)
+def test_parked_marker_ids_keep_controlled_int_ids_once(raw: list[object], expected: list[int]) -> None:
+    assert AppConfig(controlled_marker_ids=[1, 2], parked_marker_ids=raw).parked_marker_ids == expected  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("controlled", ["1,2", None, [True, "2"]])
+def test_parked_marker_ids_with_no_usable_controlled_list_read_as_none(controlled: object) -> None:
+    assert AppConfig(controlled_marker_ids=controlled, parked_marker_ids=[1, 2]).parked_marker_ids == []  # type: ignore[arg-type]
+
+
+def test_a_hand_edited_parked_list_loads_as_a_subset_of_the_controlled_markers(temp_config_path) -> None:
+    temp_config_path.write_text('controlled_marker_ids = [3, 5]\nparked_marker_ids = [5, 7, "3", 5]\n')
+    assert load_config(str(temp_config_path)).parked_marker_ids == [5]
+
+
+def test_parked_markers_survive_a_save_and_a_restart(temp_config_path) -> None:
+    save_config(AppConfig(controlled_marker_ids=[3, 5], parked_marker_ids=[5]), str(temp_config_path))
+    assert load_config(str(temp_config_path)).parked_marker_ids == [5]
+
+
+@pytest.mark.parametrize(
+    ("parked", "changes", "expected"),
+    [
+        ([1, 2], {3: True}, [1, 2, 3]),
+        ([1, 2], {1: False}, [2]),
+        ([1, 2], {2: True, 3: False}, [1, 2]),
+        ([], {}, []),
+    ],
+)
+def test_park_changes_apply_to_the_parked_list(
+    parked: list[int], changes: dict[int, bool], expected: list[int]
+) -> None:
+    from openfollow.configuration import park_changes_applied
+
+    assert park_changes_applied(parked, changes) == expected
+
+
+def test_save_park_changes_builds_on_the_file_and_its_controlled_set(temp_config_path) -> None:
+    from openfollow.configuration import save_park_changes
+
+    save_config(AppConfig(controlled_marker_ids=[1, 2], parked_marker_ids=[1]), str(temp_config_path))
+    stale = AppConfig(controlled_marker_ids=[1, 2, 3])
+    assert save_park_changes(stale, str(temp_config_path), {2: True, 3: True}) is True
+    # Read as written: a load would apply the subset rule again and hide a write that skipped it.
+    assert tomllib.loads(temp_config_path.read_text(encoding="utf-8"))["parked_marker_ids"] == [1, 2]
+    assert save_park_changes(stale, str(temp_config_path), {2: True}) is False
+
+
+def test_save_park_changes_writes_a_missing_file_from_the_running_config(temp_config_path) -> None:
+    from openfollow.configuration import save_park_changes
+
+    running = AppConfig(controlled_marker_ids=[1, 2])
+    assert save_park_changes(running, str(temp_config_path), {2: True}) is True
+    assert load_config(str(temp_config_path)).parked_marker_ids == [2]
+    assert running.parked_marker_ids == []
+
+
+def test_save_park_changes_leaves_an_unreadable_file_alone(temp_config_path) -> None:
+    from openfollow.configuration import ConfigFileUnreadableError, save_park_changes
+
+    temp_config_path.write_text("not [[ toml", encoding="utf-8")
+    with pytest.raises(ConfigFileUnreadableError):
+        save_park_changes(AppConfig(controlled_marker_ids=[1]), str(temp_config_path), {1: True})
+    assert temp_config_path.read_text(encoding="utf-8") == "not [[ toml"
+
+
+def test_apply_runtime_parks_live_and_moves_the_selection() -> None:
+    app = _DummyApp(AppConfig(controlled_marker_ids=[1, 2, 3], viewer_marker_ids=[1, 2, 3]))
+    apply_runtime_config_changes(
+        app, AppConfig(controlled_marker_ids=[1, 2, 3], viewer_marker_ids=[1, 2, 3], parked_marker_ids=[1])
+    )
+    assert app._parked_ids == {1}
+    assert app._config.parked_marker_ids == [1]
+    assert app._selected_id == 2
+    # A mouse dragging the marker that parks stays on it.
+    assert app._input_manager.mouse_handler.kept == [1]
+    assert app._web_commands.restart_requested is False
+
+
+def test_a_failed_park_apply_reverts_the_config_and_the_rest_still_applies(monkeypatch) -> None:
+    import openfollow.input.parking as parking_module
+
+    def _boom(_app: object, _parked: list[int]) -> None:
+        raise RuntimeError("park failed")
+
+    monkeypatch.setattr(parking_module, "set_parked", _boom)
+    app = _DummyApp(AppConfig(controlled_marker_ids=[1, 2], viewer_marker_ids=[1, 2]))
+    new_config = AppConfig(controlled_marker_ids=[1, 2], viewer_marker_ids=[1, 2], parked_marker_ids=[2])
+    new_config.controller.deadzone = 0.3
+    apply_runtime_config_changes(app, new_config)
+    assert app._config.parked_marker_ids == []
+    assert app._config.controller.deadzone == 0.3
+
+
+def test_apply_runtime_unparks_live() -> None:
+    app = _DummyApp(AppConfig(controlled_marker_ids=[1, 2], viewer_marker_ids=[1, 2], parked_marker_ids=[2]))
+    app._parked_ids = frozenset({2})
+    apply_runtime_config_changes(app, AppConfig(controlled_marker_ids=[1, 2], viewer_marker_ids=[1, 2]))
+    assert app._parked_ids == frozenset()
+    assert app._config.parked_marker_ids == []
+
+
+def test_apply_runtime_drops_the_park_of_a_marker_no_longer_controlled() -> None:
+    app = _DummyApp(AppConfig(controlled_marker_ids=[1, 2], viewer_marker_ids=[1, 2], parked_marker_ids=[2]))
+    app._parked_ids = frozenset({2})
+    new_config = AppConfig(controlled_marker_ids=[1], viewer_marker_ids=[1])
+    new_config.parked_marker_ids = [2]  # as a reload that skipped normalisation would carry it
+    apply_runtime_config_changes(app, new_config)
+    assert app._parked_ids == frozenset()
+    assert app._config.parked_marker_ids == []
+
+
+def test_apply_runtime_keeps_the_selection_off_a_parked_marker_when_the_selected_one_leaves() -> None:
+    app = _DummyApp(AppConfig(controlled_marker_ids=[1, 2, 3], viewer_marker_ids=[1, 2, 3], parked_marker_ids=[2]))
+    app._parked_ids = frozenset({2})
+    app._selected_id = 1
+    apply_runtime_config_changes(
+        app, AppConfig(controlled_marker_ids=[2, 3], viewer_marker_ids=[2, 3], parked_marker_ids=[2])
+    )
+    assert app._selected_id == 3
+    # The selected marker left the controlled set; nothing parked under it, so a following pin keeps following.
+    assert getattr(app, "_pin_waits_for_selection", False) is False
 
 
 def test_apply_runtime_seeds_a_live_added_marker_with_the_default_position() -> None:
@@ -4716,54 +5080,6 @@ def test_otp_output_config_rejects_non_string_source_iface() -> None:
     assert cfg.source_iface == ""
 
 
-def test_load_config_migrates_the_former_marker_key_names(temp_config_path) -> None:
-    """A pre-rename config carries the marker's Z-line settings under their former
-    names. Both carry over, so an operator who turned the line off or thickened it
-    keeps that instead of silently reverting to the default when ``_filter_known``
-    drops them."""
-    temp_config_path.write_text("[marker]\ndrop_line = false\ndrop_line_thickness = 7\n", encoding="utf-8")
-
-    cfg = load_config(str(temp_config_path))
-
-    assert cfg.marker.z_line is False
-    assert cfg.marker.z_line_thickness == 7
-
-
-def test_load_config_prefers_the_current_marker_key_over_the_legacy_one(temp_config_path) -> None:
-    """With both spellings present the current one wins, so a former name left
-    behind in a hand-edited file cannot override a deliberate ``z_line``."""
-    temp_config_path.write_text(
-        "[marker]\ndrop_line = false\nz_line = true\ndrop_line_thickness = 7\nz_line_thickness = 3\n",
-        encoding="utf-8",
-    )
-
-    cfg = load_config(str(temp_config_path))
-
-    assert cfg.marker.z_line is True
-    assert cfg.marker.z_line_thickness == 3
-
-
-def test_load_config_warns_once_per_legacy_marker_key(temp_config_path, caplog, monkeypatch) -> None:
-    """``load_config`` runs on every hot-reload, so the rename warning is emitted
-    once per key rather than once per reload.
-
-    ``monkeypatch`` both isolates the shared warn-once set and restores it, so this
-    test cannot leave the keys suppressed for whatever runs next in the process.
-    """
-    import openfollow.configuration as configuration
-
-    monkeypatch.setattr(configuration, "_DEPRECATED_WARNED", set())
-    temp_config_path.write_text("[marker]\ndrop_line = false\ndrop_line_thickness = 7\n", encoding="utf-8")
-
-    with caplog.at_level("WARNING"):
-        load_config(str(temp_config_path))
-        load_config(str(temp_config_path))
-
-    renamed = [r for r in caplog.records if "has been renamed" in r.getMessage()]
-    assert len(renamed) == 2
-    assert {"drop_line", "drop_line_thickness"} == {r.args[0] for r in renamed}
-
-
 @pytest.mark.parametrize("flag", ["true", '"on"'])
 def test_load_config_reads_the_control_direction_flip_as_heading_180(temp_config_path, flag) -> None:  # noqa: ANN001
     """The flip was a camera looking downstage, which is a 180-degree heading."""
@@ -4971,6 +5287,20 @@ def test_trigger_zone_triggered_by_drops_invalid_entries() -> None:
     assert zone.triggered_by == [0, 1, 2]
 
 
+@pytest.mark.parametrize(("raw", "expected"), [(True, True), (False, False), ("false", False), ("true", True)])
+def test_trigger_zones_config_keeps_a_valid_highlight_occupied(raw: object, expected: bool) -> None:
+    assert TriggerZonesConfig(highlight_occupied=raw).highlight_occupied is expected  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("raw", [None, "abc", 0, "", [], 1.5])
+def test_trigger_zones_config_falls_back_on_a_wrong_type_highlight_occupied(raw: object) -> None:
+    assert TriggerZonesConfig(highlight_occupied=raw).highlight_occupied is True  # type: ignore[arg-type]
+
+
+def test_trigger_zones_highlight_occupied_defaults_on() -> None:
+    assert TriggerZonesConfig().highlight_occupied is True
+
+
 def test_trigger_zones_config_snaps_eval_fps_to_valid_choice(caplog) -> None:
     from openfollow.configuration import TriggerZonesConfig
 
@@ -5038,6 +5368,118 @@ def test_trigger_zones_config_preserves_already_built_instances() -> None:
     zone = TriggerZoneConfig(name="pre-built")
     zones = TriggerZonesConfig(zones=[zone])
     assert zones.zones[0] is zone
+
+
+# ---------------------------------------------------------------------------
+# TriggerZoneConfig zone heights: z_offset, raise_markers, height_transition_s
+# ---------------------------------------------------------------------------
+
+
+def test_zone_heights_default_to_a_floor_zone_that_raises_nothing() -> None:
+    from openfollow.configuration import TriggerZoneConfig
+
+    zone = TriggerZoneConfig()
+    assert (zone.z_offset, zone.raise_markers, zone.height_transition_s) == (0.0, False, 0.3)
+
+
+@pytest.mark.parametrize(("raw", "want"), [(0.4, 0.4), ("1.25", 1.25), (-2, -2.0), (20, 20.0), (-10, -10.0)])
+def test_zone_z_offset_accepts_heights_in_range(raw: object, want: float) -> None:
+    from openfollow.configuration import TriggerZoneConfig
+
+    assert TriggerZoneConfig(z_offset=raw).z_offset == want
+
+
+@pytest.mark.parametrize(("raw", "want"), [(20.5, 20.0), (1e9, 20.0), (-10.5, -10.0), (-1e9, -10.0)])
+def test_zone_z_offset_clamps_out_of_range(raw: float, want: float) -> None:
+    from openfollow.configuration import TriggerZoneConfig
+
+    assert TriggerZoneConfig(z_offset=raw).z_offset == want
+
+
+@pytest.mark.parametrize("bad", [None, "abc", True, False, [1.0], float("nan"), float("inf"), "inf"])
+def test_zone_z_offset_wrong_type_falls_back_to_the_floor(bad: object) -> None:
+    from openfollow.configuration import TriggerZoneConfig
+
+    assert TriggerZoneConfig(z_offset=bad).z_offset == 0.0
+
+
+@pytest.mark.parametrize(("raw", "want"), [(True, True), (False, False), ("true", True), ("off", False)])
+def test_zone_raise_markers_accepts_bool_forms(raw: object, want: bool) -> None:
+    from openfollow.configuration import TriggerZoneConfig
+
+    assert TriggerZoneConfig(raise_markers=raw).raise_markers is want
+
+
+@pytest.mark.parametrize("bad", [None, 1, "abc", 0.5, [True]])
+def test_zone_raise_markers_wrong_type_stays_off(bad: object) -> None:
+    from openfollow.configuration import TriggerZoneConfig
+
+    assert TriggerZoneConfig(raise_markers=bad).raise_markers is False
+
+
+@pytest.mark.parametrize(("raw", "want"), [(0, 0.0), ("1.5", 1.5), (10, 10.0), (0.05, 0.05)])
+def test_zone_height_transition_accepts_seconds_in_range(raw: object, want: float) -> None:
+    from openfollow.configuration import TriggerZoneConfig
+
+    assert TriggerZoneConfig(height_transition_s=raw).height_transition_s == want
+
+
+@pytest.mark.parametrize(("raw", "want"), [(-0.1, 0.0), (-5, 0.0), (10.5, 10.0), (1e9, 10.0)])
+def test_zone_height_transition_clamps_out_of_range(raw: float, want: float) -> None:
+    from openfollow.configuration import TriggerZoneConfig
+
+    assert TriggerZoneConfig(height_transition_s=raw).height_transition_s == want
+
+
+@pytest.mark.parametrize("bad", [None, "abc", True, False, {}, float("nan"), "-inf"])
+def test_zone_height_transition_wrong_type_falls_back_to_the_default(bad: object) -> None:
+    from openfollow.configuration import TriggerZoneConfig
+
+    assert TriggerZoneConfig(height_transition_s=bad).height_transition_s == 0.3
+
+
+def test_zone_heights_survive_a_hand_edited_config(temp_config_path) -> None:
+    temp_config_path.write_text(
+        "[[trigger_zones.zones]]\n"
+        'name = "Riser"\n'
+        "z_offset = 99\n"
+        'raise_markers = "yes"\n'
+        'height_transition_s = "abc"\n'
+        "[[trigger_zones.zones]]\n"
+        'name = "Pit"\n'
+        "z_offset = -1.5\n"
+        "height_transition_s = 2\n",
+        encoding="utf-8",
+    )
+    riser, pit = load_config(str(temp_config_path)).trigger_zones.zones
+    assert (riser.z_offset, riser.raise_markers, riser.height_transition_s) == (20.0, True, 0.3)
+    assert (pit.z_offset, pit.raise_markers, pit.height_transition_s) == (-1.5, False, 2.0)
+
+
+def test_zone_heights_round_trip_through_the_config_file(temp_config_path) -> None:
+    from openfollow.configuration import TriggerZoneConfig
+
+    cfg = AppConfig()
+    cfg.trigger_zones.zones = [
+        TriggerZoneConfig(name="Riser", z_offset=0.6, raise_markers=True, height_transition_s=1.2)
+    ]
+    save_config(cfg, str(temp_config_path))
+    zone = load_config(str(temp_config_path)).trigger_zones.zones[0]
+    assert (zone.z_offset, zone.raise_markers, zone.height_transition_s) == (0.6, True, 1.2)
+
+
+def test_a_config_from_before_zone_heights_loads_floor_zones(temp_config_path) -> None:
+    temp_config_path.write_text('[[trigger_zones.zones]]\nname = "Old"\n', encoding="utf-8")
+    zone = load_config(str(temp_config_path)).trigger_zones.zones[0]
+    assert (zone.z_offset, zone.raise_markers, zone.height_transition_s) == (0.0, False, 0.3)
+
+
+def test_zone_heights_is_an_experimental_feature_off_on_a_new_station() -> None:
+    from openfollow.configuration import DEFAULT_SHOWN_FEATURES, EXPERIMENTAL_FEATURES, OFFERED_FEATURES
+
+    assert "zone_heights" in EXPERIMENTAL_FEATURES
+    assert "zone_heights" in OFFERED_FEATURES
+    assert "zone_heights" not in DEFAULT_SHOWN_FEATURES
 
 
 # ---------------------------------------------------------------------------
@@ -5155,11 +5597,45 @@ def test_controller_accepts_valid_curves(curve: str) -> None:
     assert cfg.curve == curve
 
 
-def test_controller_invalid_move_xy_stick_falls_back_to_left(caplog) -> None:
+def test_controller_button_names_default_to_standard() -> None:
+    assert ControllerConfig().button_name_style == "standard"
+
+
+@pytest.mark.parametrize("style", ["standard", "xbox", "playstation", "nintendo"])
+def test_controller_accepts_every_button_name_style(style: str) -> None:
+    assert ControllerConfig(button_name_style=style).button_name_style == style
+
+
+@pytest.mark.parametrize("style", ["ps5", "Xbox", "PLAYSTATION", " nintendo", "", "unknown"])
+def test_controller_unknown_button_name_style_falls_back_to_standard(style: str) -> None:
+    assert ControllerConfig(button_name_style=style).button_name_style == "standard"
+
+
+@pytest.mark.parametrize("style", [None, True, 1, 2.5, ["xbox"], {"xbox": 1}])
+def test_controller_wrongly_typed_button_name_style_falls_back_to_standard(style: object) -> None:
+    assert ControllerConfig(button_name_style=style).button_name_style == "standard"  # type: ignore[arg-type]
+
+
+def test_a_hand_edited_button_name_style_survives_a_load(temp_config_path) -> None:
+    temp_config_path.write_text('[controller]\nbutton_name_style = "playstation"\n', encoding="utf-8")
+    assert load_config(str(temp_config_path)).controller.button_name_style == "playstation"
+
+
+def test_a_bad_hand_edited_button_name_style_loads_as_standard(temp_config_path) -> None:
+    temp_config_path.write_text("[controller]\nbutton_name_style = 7\n", encoding="utf-8")
+    assert load_config(str(temp_config_path)).controller.button_name_style == "standard"
+
+
+@pytest.mark.parametrize("stick", ["middle", "LEFT", None, 7, True])
+def test_controller_invalid_move_xy_stick_falls_back_to_right(caplog, stick: object) -> None:
     with caplog.at_level("WARNING", logger="openfollow.configuration"):
-        cfg = ControllerConfig(move_xy_stick="middle")
-    assert cfg.move_xy_stick == "left"
+        cfg = ControllerConfig(move_xy_stick=stick)  # type: ignore[arg-type]
+    assert cfg.move_xy_stick == "right"
     assert any("Invalid move_xy_stick" in r.message for r in caplog.records)
+
+
+def test_controller_accepts_left_stick() -> None:
+    assert ControllerConfig(move_xy_stick="left").move_xy_stick == "left"
 
 
 def test_controller_accepts_right_stick() -> None:
@@ -5331,6 +5807,7 @@ def test_controller_migrates_legacy_vf1_keys_on_load() -> None:
 
     toml = textwrap.dedent("""
         [controller]
+        move_xy_stick = "left"
         vf1_stick = "right_y"
         vf1_max_speed_s = 2.5
     """)
@@ -5832,7 +6309,7 @@ def test_marker_name_for_runtime_pulls_from_catalog() -> None:
     reload diff path uses it; otherwise falls back to ``Marker <id>``."""
     import types
 
-    from openfollow.configuration import _marker_name_for_runtime
+    from openfollow.configuration import marker_name_for_runtime
     from openfollow.marker_catalog.catalog import MarkerCatalog
 
     catalog = MarkerCatalog()
@@ -5840,11 +6317,11 @@ def test_marker_name_for_runtime_pulls_from_catalog() -> None:
     catalog.upsert(6, "", "#00ff00", updated_at=1.0)  # name empty → fallback
 
     app = types.SimpleNamespace(_marker_catalog=catalog)
-    assert _marker_name_for_runtime(app, 5) == "Operator Name"
+    assert marker_name_for_runtime(app, 5) == "Operator Name"
     # Empty name in catalog falls back to default label.
-    assert _marker_name_for_runtime(app, 6) == "Marker 6"
+    assert marker_name_for_runtime(app, 6) == "Marker 6"
     # Missing entry falls back too.
-    assert _marker_name_for_runtime(app, 99) == "Marker 99"
+    assert marker_name_for_runtime(app, 99) == "Marker 99"
 
 
 def test_marker_name_for_runtime_without_catalog_uses_fallback() -> None:
@@ -5853,10 +6330,10 @@ def test_marker_name_for_runtime_without_catalog_uses_fallback() -> None:
     we fall back to ``Marker <id>``."""
     import types
 
-    from openfollow.configuration import _marker_name_for_runtime
+    from openfollow.configuration import marker_name_for_runtime
 
     app = types.SimpleNamespace()  # no _marker_catalog attribute
-    assert _marker_name_for_runtime(app, 3) == "Marker 3"
+    assert marker_name_for_runtime(app, 3) == "Marker 3"
 
 
 def test_load_config_strips_bool_and_non_int_marker_ids(tmp_path) -> None:
@@ -5962,13 +6439,28 @@ def test_apply_runtime_filters_invalid_ids_defense_in_depth() -> None:
 
 def test_apply_runtime_replays_controller_config_through_gamepad_handler() -> None:
     app = _app_with()
-    new_ctrl = ControllerConfig(deadzone=0.42)  # different from default 0.15
+    new_ctrl = ControllerConfig(deadzone=0.42)  # different from default 0.05
     new_config = AppConfig(controller=new_ctrl)
 
     apply_runtime_config_changes(app, new_config)
 
     assert app._input_manager.gamepad_handler.apply_called is True
     assert app._config.controller == new_ctrl
+
+
+def test_apply_runtime_moves_controllers_to_hand_edited_pins() -> None:
+    app = _app_with(controller=ControllerConfig())
+    pins = [SlotPinConfig(slot=2, key="usb:platform/xhci-hcd.1:1.4", label="Pad")]
+    apply_runtime_config_changes(app, AppConfig(controller=ControllerConfig(slot_pins=pins)))
+    assert app._input_manager.slot_pin_applies == [pins]
+    assert app._config.controller.slot_pins == pins
+
+
+def test_apply_runtime_leaves_the_pins_alone_on_another_controller_edit() -> None:
+    pins = [SlotPinConfig(slot=2, key="usb:platform/xhci-hcd.1:1.4", label="Pad")]
+    app = _app_with(controller=ControllerConfig(slot_pins=list(pins)))
+    apply_runtime_config_changes(app, AppConfig(controller=ControllerConfig(slot_pins=list(pins), deadzone=0.3)))
+    assert app._input_manager.slot_pin_applies == []
 
 
 def test_apply_runtime_disarms_mouse_when_mouse_enabled_toggled_off() -> None:
@@ -6322,6 +6814,39 @@ def test_apply_runtime_applies_detection_change_live_when_already_enabled() -> N
     assert app._config.detection == new_det
     assert app._runtime_services.detection_changes == [new_det]
     assert app._web_commands.restart_requested is False
+
+
+@pytest.mark.parametrize(
+    ("change", "waits"),
+    [
+        ({"enabled": False}, False),
+        ({"pin_mode": "assist"}, False),
+        ({"pin_marker_id": 4}, False),
+        ({"confidence": 0.85}, True),
+    ],
+    ids=["tracking-off", "tracking-mode", "follow-marker", "other-field"],
+)
+def test_a_new_tracking_mode_or_follow_marker_stops_the_pin_waiting(change: dict, waits: bool) -> None:
+    current = DetectionConfig(enabled=True, pin_mode="replace", pin_marker_id=-1, confidence=0.40)
+    app = _app_with(detection=current)
+    app._pin_waits_for_selection = True
+    new_config = AppConfig(detection=replace(current, **change))
+
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._pin_waits_for_selection is waits
+
+
+def test_switching_the_detection_feature_stops_the_pin_waiting() -> None:
+    current = DetectionConfig(enabled=True, pin_mode="replace", pin_marker_id=-1)
+    app = _app_with(detection=current)
+    app._pin_waits_for_selection = True
+    new_config = AppConfig(detection=current)
+    new_config.ui.shown_features = [*new_config.ui.shown_features, "detection"]
+
+    apply_runtime_config_changes(app, new_config)
+
+    assert app._pin_waits_for_selection is False
 
 
 def test_apply_runtime_applies_detection_disable_live() -> None:
@@ -8193,9 +8718,13 @@ class TestMidiPatch:
 
     def test_identifier_mirrors_subsystem_key(self) -> None:
         from openfollow.configuration import MidiPatch
+        from openfollow.input.midi import DiscoveredDevice
 
-        # Serial wins when present; else port|product; else empty.
-        assert MidiPatch(id=1, serial="ABC").identifier == "serial:ABC"
+        # Serial plus port when a serial is known; else port|product; else empty.
+        assert MidiPatch(id=1, serial="ABC").identifier == "serial:ABC|"
+        patch = MidiPatch(id=1, serial="ABC", port_name="MIDI Mix")
+        device = DiscoveredDevice(serial="ABC", port_name="MIDI Mix", product="MIDI Mix")
+        assert patch.identifier == device.identifier == "serial:ABC|MIDI Mix"
         assert MidiPatch(id=1, port_name="MIDI Mix", product="Mix").identifier == "port:MIDI Mix|Mix"
         assert MidiPatch(id=1).identifier == ""
 
@@ -8612,7 +9141,7 @@ class TestUiConfig:
         save_config(loaded, str(temp_config_path))
         assert "show_experimental_features" not in temp_config_path.read_text()
 
-    @pytest.mark.parametrize("features_on", [["zones", "detection", "paths"], ["detection", "paths", "ground_grid"]])
+    @pytest.mark.parametrize("features_on", [["zones", "detection", "paths"], ["detection", "paths", "touch_remote"]])
     def test_feature_on_reads_the_list(self, features_on) -> None:  # noqa: ANN001
         from openfollow.configuration import AppConfig, UiConfig, feature_on
 
@@ -9194,135 +9723,6 @@ class TestPathsHotReload:
         changed.grid.width = 12.0
         apply_runtime_config_changes(app, changed)
         assert app._paths.is_locked(1)
-
-
-# ---------------------------------------------------------------------------
-# GroundGridConfig
-# ---------------------------------------------------------------------------
-
-
-def test_ground_grid_defaults_are_inactive() -> None:
-    from openfollow.configuration import GroundGridConfig
-
-    gg = GroundGridConfig()
-    assert (gg.enabled, gg.visible, gg.z_offset, gg.vertices) == (False, True, 0.0, [])
-    assert gg.active is False
-
-
-@pytest.mark.parametrize("bad", [None, "abc", 3, [1, 2]])
-def test_ground_grid_flags_reject_wrong_type(bad: object) -> None:
-    from openfollow.configuration import GroundGridConfig
-
-    gg = GroundGridConfig(enabled=bad, visible=bad)
-    assert (gg.enabled, gg.visible) == (False, True)
-
-
-@pytest.mark.parametrize(("value", "expected"), [("true", True), ("false", False), (True, True)])
-def test_ground_grid_flags_accept_bool_forms(value: object, expected: bool) -> None:
-    from openfollow.configuration import GroundGridConfig
-
-    assert GroundGridConfig(enabled=value).enabled is expected
-
-
-@pytest.mark.parametrize(("value", "expected"), [(-1.5, -1.5), ("0.6", 0.6), (2, 2.0)])
-def test_ground_grid_z_offset_keeps_finite_numbers(value: object, expected: float) -> None:
-    from openfollow.configuration import GroundGridConfig
-
-    assert GroundGridConfig(z_offset=value).z_offset == pytest.approx(expected)
-
-
-@pytest.mark.parametrize("bad", [None, "abc", True, float("nan"), float("inf"), [1.0]])
-def test_ground_grid_z_offset_rejects_wrong_type_to_default(bad: object) -> None:
-    from openfollow.configuration import GroundGridConfig
-
-    assert GroundGridConfig(z_offset=bad).z_offset == 0.0
-
-
-@pytest.mark.parametrize("bad", [None, "abc", True, 5, {"x": 1}])
-def test_ground_grid_vertices_reject_non_list(bad: object) -> None:
-    from openfollow.configuration import GroundGridConfig
-
-    assert GroundGridConfig(vertices=bad).vertices == []
-
-
-def test_ground_grid_vertices_keep_only_finite_pairs() -> None:
-    from openfollow.configuration import GroundGridConfig
-
-    gg = GroundGridConfig(
-        vertices=[
-            [0, 0],
-            ["1", "2.5"],
-            ["bad", 1],
-            [3],
-            "xy",
-            [True, 1],
-            [float("nan"), 1],
-            [4, float("inf")],
-            (5, 6, 7),
-        ]
-    )
-    assert gg.vertices == [[0.0, 0.0], [1.0, 2.5], [5.0, 6.0]]
-
-
-def test_ground_grid_vertices_are_capped() -> None:
-    from openfollow.configuration import GROUND_GRID_MAX_VERTICES, GroundGridConfig
-
-    gg = GroundGridConfig(vertices=[[float(i), 0.0] for i in range(GROUND_GRID_MAX_VERTICES + 10)])
-    assert len(gg.vertices) == GROUND_GRID_MAX_VERTICES
-    assert gg.vertices[-1] == [float(GROUND_GRID_MAX_VERTICES - 1), 0.0]
-
-
-@pytest.mark.parametrize(
-    ("enabled", "vertices", "active"),
-    [
-        (True, [[0, 0], [1, 0], [1, 1]], True),
-        (True, [[0, 0], [1, 0]], False),
-        (False, [[0, 0], [1, 0], [1, 1]], False),
-        (True, [[0, 0], [1, 0], ["x", 1]], False),
-    ],
-)
-def test_ground_grid_active_needs_enabled_and_three_corners(enabled: bool, vertices: list, active: bool) -> None:
-    from openfollow.configuration import GroundGridConfig
-
-    assert GroundGridConfig(enabled=enabled, vertices=vertices).active is active
-
-
-def test_ground_grid_round_trips_through_toml(tmp_path) -> None:
-    from openfollow.configuration import load_config, save_config
-
-    cfg = AppConfig()
-    cfg.ground_grid.enabled = True
-    cfg.ground_grid.visible = False
-    cfg.ground_grid.z_offset = -1.2
-    cfg.ground_grid.vertices = [[0.0, 0.0], [2.0, 0.0], [2.0, 1.5]]
-    path = tmp_path / "config.toml"
-    save_config(cfg, str(path))
-
-    loaded = load_config(str(path))
-    assert loaded.ground_grid == cfg.ground_grid
-
-
-def test_ground_grid_hand_edited_toml_is_normalised(tmp_path) -> None:
-    from openfollow.configuration import load_config
-
-    path = tmp_path / "config.toml"
-    path.write_text('[ground_grid]\nenabled = "yes"\nz_offset = "low"\nvertices = [[0, 0], ["a", 1], [1, 0], [1, 1]]\n')
-    gg = load_config(str(path)).ground_grid
-    assert gg.enabled is True
-    assert gg.z_offset == 0.0
-    assert gg.vertices == [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]
-
-
-def test_apply_runtime_ground_grid_swaps_live() -> None:
-    app = _DummyApp(AppConfig())
-    new_config = AppConfig()
-    new_config.ground_grid.enabled = True
-    new_config.ground_grid.vertices = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]
-
-    apply_runtime_config_changes(app, new_config)
-
-    assert app._config.ground_grid == new_config.ground_grid
-    assert app._web_commands.restart_requested is False
 
 
 @pytest.mark.parametrize("bad", [None, 7, True])
@@ -9914,7 +10314,7 @@ def test_a_hand_edited_calibration_height_is_read_through_load_config(tmp_path, 
 # CameraConfig's calibration record: the lens rating, time and video source of the Setup Wizard's save
 
 
-@pytest.mark.parametrize("rating", ["excellent", "good", "fair", "poor", "user_input", "loaded", ""])
+@pytest.mark.parametrize("rating", ["excellent", "good", "fair", "poor", "user_input", "loaded", "opencv", ""])
 def test_a_calibration_lens_rating_on_the_list_is_kept(rating: str) -> None:
     assert CameraConfig(calibration_lens_rating=rating).calibration_lens_rating == rating
 
@@ -9922,8 +10322,8 @@ def test_a_calibration_lens_rating_on_the_list_is_kept(rating: str) -> None:
 # A fit rated Not usable is never applied, so no saved lens carries that rating.
 @pytest.mark.parametrize(
     "raw",
-    ["Good", "okay", "medium", "low", "not_usable", " good"],
-    ids=["case", "okay", "medium", "low", "not usable", "pad"],
+    ["Good", "okay", "medium", "low", "not_usable", " good", "OpenCV"],
+    ids=["case", "okay", "medium", "low", "not usable", "pad", "opencv case"],
 )
 def test_a_calibration_lens_rating_off_the_list_reads_as_none(raw: str) -> None:
     assert CameraConfig(calibration_lens_rating=raw).calibration_lens_rating == ""
@@ -10088,3 +10488,60 @@ def test_a_stored_calibration_points_feature_is_dropped_as_unknown(temp_config_p
     assert load_config(str(temp_config_path)).ui.shown_features == ["paths"]
     assert "calibration_points" not in FEATURE_KEYS
     assert "calibration_points" not in EXPERIMENTAL_FEATURES
+
+
+def _app_on_a_real_psn_server(controlled: list[int]) -> _DummyApp:
+    """A live-apply app whose outputs are a real PsnServer reading a real catalog."""
+    from openfollow.configuration import marker_name_for_runtime
+    from openfollow.marker_catalog import MarkerCatalog
+    from openfollow.psn.server import PsnServer
+
+    app = _app_with(controlled_marker_ids=controlled, viewer_marker_ids=controlled)
+    app._marker_catalog = MarkerCatalog()
+    app._server = PsnServer(mcast_ip=None, name_of=lambda i: marker_name_for_runtime(app, i))
+    for marker_id in controlled:
+        app._server.add_marker(marker_id, f"Marker {marker_id}")
+    return app
+
+
+def test_a_rename_saved_while_a_marker_is_added_reaches_its_output() -> None:
+    """The web thread can save a rename after the live apply read the old name but before it
+    adds the marker: the rename finds no marker, so the add must not take the stale name."""
+    app = _app_on_a_real_psn_server([1])
+    app._marker_catalog.upsert(2, "Lead", "#ff0000")
+    real_add = app._server.add_marker
+
+    def _rename_then_add(marker_id, name):  # noqa: ANN001
+        # What the rename route does once its save landed: the catalog, then the outputs.
+        app._marker_catalog.upsert(marker_id, "Spot", "#ff0000")
+        app._server.rename_markers([marker_id])
+        return real_add(marker_id, name)
+
+    app._server.add_marker = _rename_then_add  # type: ignore[method-assign]
+    apply_runtime_config_changes(app, AppConfig(controlled_marker_ids=[1, 2], viewer_marker_ids=[1, 2]))
+    assert app._server.get_marker(2).name == "Spot"
+
+
+def test_a_rolled_back_marker_is_sent_by_otp_and_rttrpm_too() -> None:
+    """The rollback re-adds fresh Marker objects; the mirrors must hold those, or renames miss them."""
+    from openfollow.otp.server import OtpServer
+    from openfollow.rttrpm.server import RttrpmServer
+
+    app = _app_on_a_real_psn_server([1, 2])
+    app._otp_server = OtpServer()
+    app._rttrpm_server = RttrpmServer(host="192.0.2.30")
+    for marker_id in (1, 2):
+        app._otp_server.register_marker(app._server.get_marker(marker_id))
+        app._rttrpm_server.register_marker(app._server.get_marker(marker_id))
+    real_add = app._server.add_marker
+
+    def _failing_add(marker_id, name):  # noqa: ANN001
+        if marker_id == 3:
+            raise RuntimeError("PSN add failed")
+        return real_add(marker_id, name)
+
+    app._server.add_marker = _failing_add  # type: ignore[method-assign]
+    assert apply_runtime_config_changes(app, AppConfig(controlled_marker_ids=[1, 3], viewer_marker_ids=[1, 3])) is False
+    for mirror in (app._otp_server, app._rttrpm_server):
+        assert mirror.get_marker(2) is app._server.get_marker(2)
+        assert mirror.get_marker(3) is None

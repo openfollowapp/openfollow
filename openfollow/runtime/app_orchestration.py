@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Main GTK loop, the display-independent frame clock, housekeeping timer, and
 config-file hot-reload polling for ``OpenFollowApp``."""
 
@@ -18,6 +20,7 @@ from openfollow.configuration import (
 )
 from openfollow.macos_quit import install_quit_handler
 from openfollow.psn.marker import MARKER_STALE_AFTER_S
+from openfollow.restore_hold import HeldForRestartError
 from openfollow.runtime.app_modes import keyboard_owned
 
 if TYPE_CHECKING:
@@ -122,6 +125,7 @@ def housekeeping(app: OpenFollowApp) -> bool:
         app._check_button_detection_request,
         app._check_controller_slot_actions,
         app._check_camera_setup_requests,
+        app._check_latency_requests,
         app._check_marker_speeds_persist,
         app._check_frame_loop_stall,
         app._observe_network_planes,
@@ -199,7 +203,7 @@ def animate(app: OpenFollowApp) -> None:
 
     svc.update_video()
     svc.apply_detection_pin(dt)
-    svc.update_zone_triggers()
+    svc.update_zone_triggers(dt)
     svc.update_marker_visuals(elapsed)
 
     frame_time = time.perf_counter() - frame_start
@@ -280,6 +284,9 @@ def check_marker_speeds_persist(app: OpenFollowApp) -> None:
 
     try:
         save_config_fields(app._config, app._config_path, ["marker_move_speeds"])
+    except HeldForRestartError:
+        logger.info("Per-marker move speeds not saved: OpenFollow is restarting after a restore.")
+        return
     except Exception:
         logger.exception("Failed to persist per-marker move speeds.")
         # Back off to the settle cadence so a persistent failure (e.g. a full

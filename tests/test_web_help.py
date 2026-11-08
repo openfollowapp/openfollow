@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Tests for the inline help system: ``render_help_markdown`` renderer with
 raw-HTML escaping, ``data-help`` section markup with a backing-doc packaging
 guard, and the ``/help/<id>.html`` route (slug allow-list, 404s, content type).
@@ -15,7 +17,8 @@ import pytest
 from bottle import template
 
 import openfollow.web.discovery as discovery_module
-from openfollow.configuration import AppConfig
+from openfollow.button_names import STYLE_TITLES, SYMBOL_SHAPES, ButtonNameStyle, button_label, button_symbol
+from openfollow.configuration import AppConfig, ControllerConfig
 from openfollow.web import server as _server_module  # noqa: F401 – registers tpl path
 from openfollow.web._md import render_help_markdown
 from openfollow.web.routes import _WEB_HELP_DIR
@@ -32,6 +35,11 @@ _TEMPLATES_DIR = _WEB_HELP_DIR.parent / "templates"
 
 class TestRenderHelpMarkdown:
     pytestmark = pytest.mark.unit
+
+    def test_a_button_symbols_alt_text_is_escaped_once(self) -> None:
+        html = render_help_markdown("![A & B](button:cross)")
+        assert '<span class="visually-hidden">A &amp; B</span>' in html
+        assert "&amp;amp;" not in html
 
     def test_renders_heading(self) -> None:
         assert "<h1>" in render_help_markdown("# Camera")
@@ -75,6 +83,70 @@ class TestRenderHelpMarkdown:
     def test_a_link_within_the_station_stays_in_the_page(self, md: str) -> None:
         [anchor] = re.findall(r"<a [^>]*>", render_help_markdown(md))
         assert "target=" not in anchor
+
+
+class TestHelpSections:
+    """A ``###`` heading opens a section the drawer shows closed."""
+
+    pytestmark = pytest.mark.unit
+
+    def test_the_heading_and_first_paragraph_are_the_row(self) -> None:
+        html = render_help_markdown("### RTSP\n\nIP cameras.\n\n- **URL** – the address")
+        assert html.startswith(
+            '<details class="help-more"><summary><b>RTSP</b><span>IP cameras.</span></summary>'
+            '<div class="help-more-content"><ul>'
+        )
+        assert "<details open" not in html
+
+    @pytest.mark.parametrize(
+        "body",
+        ["- a list first", "| A |\n| - |\n| 1 |", "A paragraph\n- running into a list", "> a quote"],
+        ids=["list", "table", "paragraph-and-list", "quote"],
+    )
+    def test_a_section_not_opening_with_one_paragraph_has_no_summary(self, body: str) -> None:
+        html = render_help_markdown(f"### Title\n\n{body}")
+        assert '<summary><b>Title</b></summary><div class="help-more-content">' in html
+
+    @pytest.mark.parametrize("heading", ["# Next", "## Next", "### Next"])
+    def test_a_section_ends_at_the_next_heading(self, heading: str) -> None:
+        html = render_help_markdown(f"### First\n\nOne.\n\n- inside\n\n{heading}\n\nafter")
+        first = html.split("</details>", 1)
+        assert "inside" in first[0] and "after" not in first[0]
+        assert "after" in first[1]
+
+    def test_a_fourth_level_heading_stays_inside(self) -> None:
+        html = render_help_markdown("### First\n\n#### Sub\n\ntext")
+        assert html.count("<details") == 1 and "<h4>Sub</h4>" in html.split("</details>")[0]
+
+    def test_a_heading_inside_a_code_block_opens_nothing(self) -> None:
+        html = render_help_markdown("```\n### not a section\n```")
+        assert "<details" not in html and "### not a section" in html
+
+    def test_text_before_and_after_keeps_its_markup(self) -> None:
+        html = render_help_markdown("# Doc\n\nIntro.\n\n### S\n\nx\n\n## After\n\nend")
+        assert html.startswith("<h1>Doc</h1>\n<p>Intro.</p>")
+        assert html.endswith("<h2>After</h2>\n<p>end</p>\n")
+
+    def test_title_and_summary_are_escaped(self) -> None:
+        html = render_help_markdown("### <b>x</b>\n\n<script>alert(1)</script>\n\nbody")
+        assert "<script>" not in html and "<b>x</b>" not in html
+        assert "&lt;script&gt;" in html and "&lt;b&gt;x&lt;/b&gt;" in html
+
+    def test_a_title_markdown_reads_as_a_list_is_kept_as_written(self) -> None:
+        assert "<summary><b>1. &lt;Lens&gt;</b>" in render_help_markdown("### 1. <Lens>\n\n- a")
+
+
+class TestHelpDocLength:
+    """A drawer is read only while it is short: what shows with every section closed stays under 3000 characters."""
+
+    pytestmark = pytest.mark.unit
+
+    @pytest.mark.parametrize("doc", sorted(_WEB_HELP_DIR.glob("*.md")), ids=lambda p: p.stem)
+    def test_the_closed_drawer_is_under_3000_characters(self, doc) -> None:
+        html = render_help_markdown(doc.read_text(encoding="utf-8"))
+        closed = re.sub(r'<div class="help-more-content">.*?</div></details>', "</details>", html, flags=re.S)
+        text = re.sub(r"<[^>]+>", "", closed)
+        assert len(text) < 3000, len(text)
 
 
 # ---------------------------------------------------------------------------
@@ -162,11 +234,65 @@ class TestHelpDocImageAssets:
         offenders: dict[str, list[str]] = {}
         for doc in sorted(_WEB_HELP_DIR.glob("*.md")):
             for src in self._IMG_RE.findall(doc.read_text(encoding="utf-8")):
-                if not src.startswith("/assets/"):
+                if src.startswith("button:"):
+                    # A gamepad button symbol, drawn inline: no asset to fetch.
+                    if src.removeprefix("button:") not in SYMBOL_SHAPES:
+                        offenders.setdefault(doc.name, []).append(f"unknown symbol: {src}")
+                elif not src.startswith("/assets/"):
                     offenders.setdefault(doc.name, []).append(f"non-local: {src}")
                 elif not (_WEB_STATIC_DIR / src[len("/assets/") :]).is_file():
                     offenders.setdefault(doc.name, []).append(f"missing: {src}")
         assert not offenders, f"help image refs must be bundled under web/static: {offenders}"
+
+
+class TestGamepadDrawings:
+    """The Gamepad drawer's drawings label the default bindings by each family's printed names."""
+
+    pytestmark = pytest.mark.unit
+
+    _ACTIONS = {
+        "btn_move_z_down": "Lower the marker (Z−)",
+        "btn_move_z_up": "Raise the marker (Z+)",
+        "btn_speed_down": "Slower",
+        "btn_speed_up": "Faster",
+        "btn_settings": "Settings menu",
+        "btn_toggle_help": "Show the key list",
+        "btn_reset": "Reset the marker",
+        "btn_menu_confirm": "Confirm in a menu",
+        "btn_menu_cancel": "Cancel in a menu",
+    }
+
+    @staticmethod
+    def _labels(svg: str) -> dict[str, str]:
+        """Each bold button name with the action line drawn under it."""
+        texts = re.findall(r'<text [^>]*font-weight="(\d+)"[^>]*>([^<]*)</text>', svg)
+        return {
+            name: action
+            for (weight, name), (next_weight, action) in zip(texts, texts[1:], strict=False)
+            if weight == "700" and next_weight == "400"
+        }
+
+    @pytest.mark.parametrize(
+        ("drawing", "style"),
+        [("gamepad-xbox.svg", ButtonNameStyle.XBOX), ("gamepad-playstation.svg", ButtonNameStyle.PLAYSTATION)],
+    )
+    def test_each_default_binding_is_labelled_with_its_action(self, drawing: str, style: ButtonNameStyle) -> None:
+        from openfollow.web.routes import _WEB_STATIC_DIR
+
+        defaults = ControllerConfig()
+        labels = self._labels((_WEB_STATIC_DIR / "help" / drawing).read_text(encoding="utf-8"))
+        expected = {button_label(getattr(defaults, field), style): action for field, action in self._ACTIONS.items()}
+        unused = "left" if defaults.move_xy_stick == "right" else "right"
+        expected[f"{defaults.move_xy_stick.capitalize()} stick"] = "Move the marker on stage"
+        expected[f"{unused.capitalize()} stick"] = "(not used)"
+        assert (defaults.btn_prev_marker, defaults.btn_next_marker) == ("DPAD_LEFT", "DPAD_RIGHT")
+        expected["D-pad left / right"] = "Previous / next marker"
+        assert labels == expected
+
+    def test_the_gamepad_drawer_shows_both_drawings(self) -> None:
+        html = render_help_markdown((_WEB_HELP_DIR / "gamepad.md").read_text(encoding="utf-8"))
+        assert '<img src="/assets/help/gamepad-xbox.svg"' in html
+        assert '<img src="/assets/help/gamepad-playstation.svg"' in html
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +328,44 @@ def live_server(tmp_path, monkeypatch):
         yield base
 
 
+class TestGamepadButtonNameTable:
+    """The drawer's reference table says what each Button Names choice shows."""
+
+    pytestmark = pytest.mark.unit
+
+    _ROWS = ("A", "B", "X", "Y", "LB", "RB", "LT", "RT", "BACK", "START")
+    _STYLES = (ButtonNameStyle.STANDARD, ButtonNameStyle.XBOX, ButtonNameStyle.PLAYSTATION, ButtonNameStyle.NINTENDO)
+
+    @staticmethod
+    def _cells() -> list[list[str]]:
+        text = (_WEB_HELP_DIR / "gamepad.md").read_text(encoding="utf-8")
+        section = text.split("## Button Names", 1)[1].split("\n## ", 1)[0]
+        rows = [line for line in section.splitlines() if line.startswith("|")]
+        return [[c.strip() for c in r.strip("|").split("|")] for r in rows]
+
+    def test_the_columns_are_the_four_choices(self) -> None:
+        assert self._cells()[0] == [STYLE_TITLES[style] for style in self._STYLES]
+
+    @pytest.mark.parametrize("row", range(10))
+    @pytest.mark.parametrize("column", range(4))
+    def test_each_cell_names_the_button_as_that_choice_shows_it(self, row: int, column: int) -> None:
+        cell = self._cells()[row + 2][column]
+        button, style = self._ROWS[row], self._STYLES[column]
+        word = button_label(button, style, short=style is not ButtonNameStyle.STANDARD)
+        symbol = button_symbol(button, style)
+        if symbol is not None:
+            assert cell == f"![](button:{symbol}) {word}"
+        elif (
+            spelled := button_label(button, style, short=style is not ButtonNameStyle.STANDARD, spelled=True)
+        ) != word:
+            # Nintendo's marks, spelled as the web shows them.
+            assert cell == f"{spelled} ({word})"
+        elif style is ButtonNameStyle.STANDARD and button_label(button, style) != word:
+            assert cell == f"{word} ({button_label(button, style)})"
+        else:
+            assert cell == word
+
+
 class TestHelpRoute:
     pytestmark = pytest.mark.integration
 
@@ -211,11 +375,26 @@ class TestHelpRoute:
         assert "text/html" in ctype
         assert "<h1>Camera &amp; Lens Calibration</h1>" in body
 
+    def test_the_gamepad_doc_draws_button_symbols_inline(self, live_server) -> None:
+        status, body, _ = _get(live_server, "/help/gamepad.html")
+        assert status == 200
+        names = body.split("<h2>Button Names</h2>", 1)[1].split("<h2>", 1)[0]
+        assert names.count('<svg class="btn-symbol-icon"') == 6
+        assert '<td><span class="btn-symbol"><svg' in names
+        assert "</svg></span> Cross</td>" in names
+        assert "<img" not in names
+
     def test_underscore_id_doc(self, live_server) -> None:
         # Slug allow-list permits underscores (e.g. video_source).
         status, body, ctype = _get(live_server, "/help/video_source.html")
         assert status == 200
         assert "text/html" in ctype
+
+    def test_the_video_source_doc_folds_each_source_type(self, live_server) -> None:
+        status, body, _ = _get(live_server, "/help/video_source.html")
+        assert status == 200
+        for name in ("RTSP", "SRT", "RTP", "USB Camera", "Pi Camera", "Media Gallery"):
+            assert f'<details class="help-more"><summary><b>{name}</b><span>' in body
 
     def test_missing_doc_404(self, live_server) -> None:
         status, _, _ = _get(live_server, "/help/doesnotexist.html")

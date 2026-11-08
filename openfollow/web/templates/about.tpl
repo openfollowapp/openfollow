@@ -1,4 +1,4 @@
-% rebase('base.tpl')
+% rebase('base.tpl', platform_warning_inline=True)
 %# Single About page with tabs (main-UI tab-bar mechanism). third_party_html /
 %# written_offer_html are mistune output (escape=True) – safe to inject unescaped.
 % from openfollow import __commit__, __version__
@@ -25,6 +25,7 @@
     <button type="button" class="tab-btn" data-tab="about-third-party">Third-party notices</button>
     <button type="button" class="tab-btn" data-tab="about-written-offer">Written offer</button>
 </div>
+% include('partials/platform_warning.tpl', platform_warning=get('platform_warning'))
 
 <div class="tab-content active" id="tab-about-info">
     <div class="section">

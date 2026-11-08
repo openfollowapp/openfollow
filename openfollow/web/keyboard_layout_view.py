@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """The Keyboard Layout row of the Keyboard Input section.
 
 Shown only where the packaged kiosk session resolved the layout, which it marks

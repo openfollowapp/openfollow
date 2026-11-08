@@ -1,16 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""The Configuration section's import: one control, one question, and a
+# Copyright (C) 2026 Michel Honold and Paul Hermann
+"""The Configuration Backup & Import section's import: one control, one question, and a
 confirmation that outlives the reload it ends in."""
 
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 from bottle import template
 
-from openfollow.web import server as _server_module  # noqa: F401  (registers the template path)
+from openfollow.web import server as _server_module  # registers the template path
 from tests._template_source import function_body
 
 pytestmark = pytest.mark.unit
@@ -21,8 +23,8 @@ def _page() -> str:
 
 
 def _group(page: str, title: str) -> str:
-    start = page.index(f'<h3 class="group-title">{title}</h3>')
-    return page[start : page.index('<div class="group">', start)]
+    start = page.index(f'<h3 class="stat-panel-title">{title}</h3>')
+    return page[start : page.index("</section>", start)]
 
 
 class TestImportControl:
@@ -139,7 +141,86 @@ class TestBackupOutcome:
         assert "toastAfterReload('Imported ' + name);" in after
 
     def test_a_restore_without_a_backup_is_confirmed_in_caution_after_the_restart(self) -> None:
-        body = function_body(_page(), "restoreDefaults")
+        page = _page()
+        assert (
+            "_sendRestarting('/api/config/reset', {method: 'POST'}, _restoreFailed, 'Restored defaults.',"
+            in function_body(page, "restoreDefaults")
+        )
+        assert "}, _backupFailed, 'Restored the backup.'," in function_body(page, "restoreBackup")
+        body = function_body(page, "_sendRestarting")
         checked = body.index("if (result.backup_error) {")
-        noted = body.index("toastOnNextLoad('Restored defaults. ' + NO_BACKUP_MADE, 'caution');")
-        assert checked < noted < body.index("openfollowAwaitRestart(")
+        noted = body.index("toastOnNextLoad(done + ' ' + NO_BACKUP_MADE, 'caution');")
+        assert checked < noted < body.rindex("openfollowAwaitRestart(")
+
+
+class TestBackupsGroup:
+    def test_the_group_comes_last_and_is_filled_from_the_station(self) -> None:
+        page = _page()
+        markup = page[: page.index("<script>")]
+        group = markup[markup.index('id="backups-heading">Backups on this station</h3>') :]
+        assert '<div id="backups-list"></div>' in group
+        assert "<p" not in group
+        assert page.rstrip().endswith("loadBackups();\n</script>")
+
+    def test_the_row_button_is_small_and_not_red(self) -> None:
+        body = function_body(_page(), "_backupRow")
+        assert "button.className = 'btn-secondary small';" in body
+        assert "danger" not in body
+
+    def test_the_restore_question_takes_the_danger_button(self) -> None:
+        body = function_body(_page(), "restoreBackup")
+        question = body[body.index("modalConfirm({") : body.index("});")]
+        assert "confirmLabel: 'Restore and Restart'," in question
+        assert "danger: true," in question
+
+    def test_a_newer_backup_reads_muted_with_its_reason_in_caution_text(self) -> None:
+        base = _BASE_TPL.read_text(encoding="utf-8")
+        assert ".backups-table tr.backup-newer td:not(.row-actions) { color: var(--muted); }" in base
+        assert ".backup-note { display: block; color: var(--caution-text);" in base
+
+
+_BASE_TPL = Path(_server_module.__file__).parent / "templates" / "base.tpl"
+
+
+def _columns_block(page: str) -> str:
+    """The box grid's element, matched to its closing tag."""
+    start = page.index('<div class="stats-columns cfg-columns">')
+    depth = 0
+    for match in re.finditer(r"<(/?)div\b", page[start:]):
+        depth += -1 if match.group(1) else 1
+        if depth == 0:
+            return page[start : start + match.end()]
+    raise AssertionError("the box grid is not closed")
+
+
+class TestLayout:
+    def test_the_heading_names_backup_and_import(self) -> None:
+        assert "<h2>Configuration Backup &amp; Import</h2>" in _page()
+
+    def test_export_import_and_restore_defaults_are_three_boxes_side_by_side(self) -> None:
+        columns = _columns_block(_page())
+        titles = re.findall(
+            r'<section class="stat-panel">\s*<div class="stat-panel-head">\s*<h3 class="stat-panel-title">([^<]+)</h3>',
+            columns,
+        )
+        assert titles == ["Export", "Import", "Restore Defaults"]
+        for actions in ("export-actions", "import-actions", "restore-actions"):
+            assert f'id="{actions}"' in columns
+
+    def test_the_backups_run_full_width_below_the_boxes(self) -> None:
+        page = _page()
+        columns = _columns_block(page)
+        assert "backups" not in columns
+        assert page.index('id="backups-heading"') > page.index(columns) + len(columns)
+
+    def test_the_boxes_share_the_status_grid_and_keep_their_own_height(self) -> None:
+        css = _BASE_TPL.read_text(encoding="utf-8")
+        # The grid side by side where three fit, fewer per row where they do not (a phone, the help drawer open).
+        grid = re.search(r"\n \.stats-columns \{([^}]*)\}", css)
+        # Never wider than the space a phone leaves, or the tab scrolls sideways.
+        assert grid and "grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));" in grid.group(1)
+        assert re.search(r"\n \.cfg-columns \{ align-items: start;", css)
+
+    def test_a_long_file_name_wraps_inside_its_box(self) -> None:
+        css = _BASE_TPL.read_text(encoding="utf-8")
+        assert " .cfg-columns .actions button { max-width: 100%; overflow-wrap: anywhere; }" in css

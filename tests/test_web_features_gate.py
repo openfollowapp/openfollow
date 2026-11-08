@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Static parity guard for the Features list gate.
 
 Each section a feature owns carries ``data-feature="<key>"``; experimental
@@ -43,7 +44,6 @@ _GATED_ROOTS = [
     ("partials/zone_editor.tpl", 'id="zone-editor-section"', "zones"),
     ("partials/paths.tpl", 'id="paths-section"', "paths"),
     ("partials/path_editor.tpl", 'id="path-editor-section"', "paths"),
-    ("partials/ground_grid.tpl", 'id="ground-grid-section"', "ground_grid"),
     ("partials/touch_remote.tpl", 'id="touch-remote-section"', "touch_remote"),
     ("partials/midi_fader_detail.tpl", "mf-source-row", "midi"),
 ]

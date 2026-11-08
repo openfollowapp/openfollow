@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """RTP video input plugin (multicast/unicast) with auto-detected codec support."""
 
 from __future__ import annotations
@@ -70,6 +72,7 @@ class RtpInput(VideoInputBase):
     input_id = "rtp"
     display_name = "RTP"
     source_element_name = "udpsrc"
+    frame_meter_element_name = "post_queue"
     source_kind = SourceKind.LISTENER
     pins_interface = True
 

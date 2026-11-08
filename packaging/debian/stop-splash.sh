@@ -1,6 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 # Stops the boot splash so DRM is free for Cage, once it has been up $1 seconds
 # (default 1.5) since its unit started. On a boot the network takes longer than
 # that, so it stops at once; a restart of openfollow.service starts the splash

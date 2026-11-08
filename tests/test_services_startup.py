@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Integration tests for ``AppRuntimeServices`` construction and startup wiring:
 GStreamer-availability guard, canvas/fullscreen setup, network-adapter selection
 and state providers, privilege-broker wiring, and the network apply/renew handlers.
@@ -8,6 +10,7 @@ and state providers, privilege-broker wiring, and the network apply/renew handle
 from __future__ import annotations
 
 import errno
+import logging
 import os
 import threading
 import time
@@ -105,7 +108,22 @@ def test_runtime_services_exit_when_gstreamer_is_unavailable(monkeypatch) -> Non
         services_module.AppRuntimeServices(_DummyApp())
 
 
-def test_init_canvas_enters_fullscreen_on_raspberry_pi(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("is_pi", "kiosk", "fullscreen"),
+    [
+        (True, None, True),
+        (False, "1", True),
+        (False, None, False),
+        (False, "0", False),
+        (False, "", False),
+    ],
+    ids=["pi", "kiosk-session", "desktop", "kiosk-off", "kiosk-empty"],
+)
+def test_init_canvas_goes_fullscreen_on_a_pi_or_under_the_kiosk_session(
+    monkeypatch, is_pi: bool, kiosk: str | None, fullscreen: bool
+) -> None:
+    """Under the kiosk session the window is fullscreen on any host, so it has
+    no title bar and no close button that would end the session."""
     monkeypatch.setattr(services_module, "gst_runtime_available", lambda: True)
     monkeypatch.setattr(services_module, "GtkNativeSinkWindow", _FakeWindow)
     monkeypatch.setattr(
@@ -116,37 +134,19 @@ def test_init_canvas_enters_fullscreen_on_raspberry_pi(monkeypatch) -> None:
     monkeypatch.setattr(
         services_module.AppRuntimeServices,
         "_is_raspberry_pi",
-        staticmethod(lambda: True),
+        staticmethod(lambda: is_pi),
     )
+    if kiosk is None:
+        monkeypatch.delenv(services_module.KIOSK_ENV, raising=False)
+    else:
+        monkeypatch.setenv(services_module.KIOSK_ENV, kiosk)
 
     app = _DummyApp()
     services = services_module.AppRuntimeServices(app)
     services.init_canvas()
 
     assert isinstance(app._canvas, _FakeWindow)
-    assert app._canvas.fullscreen_called is True
-
-
-def test_init_canvas_stays_windowed_off_raspberry_pi(monkeypatch) -> None:
-    monkeypatch.setattr(services_module, "gst_runtime_available", lambda: True)
-    monkeypatch.setattr(services_module, "GtkNativeSinkWindow", _FakeWindow)
-    monkeypatch.setattr(
-        services_module.AppRuntimeServices,
-        "_setup_gc_tuning",
-        staticmethod(lambda: None),
-    )
-    monkeypatch.setattr(
-        services_module.AppRuntimeServices,
-        "_is_raspberry_pi",
-        staticmethod(lambda: False),
-    )
-
-    app = _DummyApp()
-    services = services_module.AppRuntimeServices(app)
-    services.init_canvas()
-
-    assert isinstance(app._canvas, _FakeWindow)
-    assert app._canvas.fullscreen_called is False
+    assert app._canvas.fullscreen_called is fullscreen
 
 
 def _init_canvas_with_mouse(monkeypatch, *, mouse_enabled: bool) -> _FakeWindow:
@@ -703,6 +703,7 @@ class _FakeWritableAdapter(NetworkAdapter):
         self.vlans: list = []
         self.vlans_created: list = []
         self.vlans_deleted: list = []
+        self.forgotten: list = []
         self.vlan_support = True
         self.vlan_list_raises = False
 
@@ -745,6 +746,12 @@ class _FakeWritableAdapter(NetworkAdapter):
         from openfollow.network.adapter import ApplyResult
 
         self.vlans_deleted.append(name)
+        return ApplyResult(ok=True)
+
+    def forget_interface(self, name):
+        from openfollow.network.adapter import ApplyResult
+
+        self.forgotten.append(name)
         return ApplyResult(ok=True)
 
 
@@ -1441,6 +1448,7 @@ def test_a_vlan_list_that_cannot_be_read_keeps_the_vlan_controls(counted) -> Non
         lambda s: s._handle_network_renew("eth0"),
         lambda s: s._handle_network_vlan_create("eth0", 10),
         lambda s: s._handle_network_vlan_delete("eth0.10"),
+        lambda s: s._handle_network_forget("enx001122334455"),
     ],
 )
 def test_a_change_from_the_web_ui_is_read_back_at_once(counted, change) -> None:
@@ -3842,3 +3850,91 @@ def test_a_removal_brought_in_line_at_startup_is_named_as_one(fqdn_services, cap
     with caplog.at_level("INFO", logger="openfollow.services"):
         services.reconcile_station_fqdn("").join(timeout=5)
     assert "Station FQDN removal brought in line with DHCP" in caplog.text
+
+
+def test_each_saved_interface_is_listed_as_the_card_shows_it(monkeypatch) -> None:
+    from openfollow.network.adapter import (
+        Ipv4Config,
+        Ipv4Method,
+        NetworkReading,
+        SavedInterface,
+    )
+
+    services = _build_services_with_psutil_backend(monkeypatch)
+    fake = _FakeWritableAdapter([_iface()], None)
+    fake.read_network = lambda: NetworkReading(
+        saved=(
+            SavedInterface(
+                "enx001122334455", Ipv4Config(Ipv4Method.STATIC, "192.0.2.5", 24, "192.0.2.1", ("192.0.2.53",))
+            ),
+            SavedInterface("enx001122334455.2", Ipv4Config(Ipv4Method.DHCP), "enx001122334455", 2),
+        )
+    )
+    services._network_adapter = fake
+    assert services._network_saved_provider() == [
+        {
+            "name": "enx001122334455",
+            "kind": None,
+            "address": "192.0.2.5",
+            "prefix": 24,
+            "subnet_mask": "255.255.255.0",
+            "method": "static",
+            "router": "192.0.2.1",
+            "dns": ["192.0.2.53"],
+            "lease_display": None,
+            "vlan_parent": "",
+            "vlan_id": None,
+        },
+        {
+            "name": "enx001122334455.2",
+            "kind": "vlan",
+            "address": "",
+            "prefix": None,
+            "subnet_mask": "",
+            "method": "dhcp",
+            "router": "",
+            "dns": [],
+            "lease_display": None,
+            "vlan_parent": "enx001122334455",
+            "vlan_id": 2,
+        },
+    ]
+
+
+def test_no_adapter_lists_no_saved_interfaces(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._network_adapter = None
+    assert services._network_saved_provider() == []
+
+
+def test_forget_calls_the_adapter(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    fake = _FakeWritableAdapter([_iface()], None)
+    services._network_adapter = fake
+    assert services._handle_network_forget("enx001122334455").ok is True
+    assert fake.forgotten == ["enx001122334455"]
+
+
+def test_forget_refused_on_a_read_only_host(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    result = services._handle_network_forget("enx001122334455")
+    assert result.ok is False and "Read-only" in result.message
+
+
+def test_forget_refused_without_adapter(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._network_adapter = None
+    result = services._handle_network_forget("enx001122334455")
+    assert result.ok is False and "No network adapter" in result.message
+
+
+@pytest.mark.parametrize("supported", [False, True], ids=["unsupported", "supported"])
+def test_startup_logs_an_unsupported_platform_once(monkeypatch, caplog, supported: bool) -> None:
+    from openfollow import platform_support
+
+    monkeypatch.setattr(platform_support, "current", lambda: platform_support.PlatformSupport(supported, "Windows"))
+    monkeypatch.setattr(services_module.AppRuntimeServices, "_is_raspberry_pi", staticmethod(lambda: False))
+    with caplog.at_level(logging.WARNING, logger=services_module.__name__):
+        services_module.AppRuntimeServices(_DummyApp())
+    warned = [r.getMessage() for r in caplog.records if "Unsupported platform" in r.getMessage()]
+    assert warned == ([] if supported else [f"Unsupported platform: Windows. {platform_support.STEP}"])

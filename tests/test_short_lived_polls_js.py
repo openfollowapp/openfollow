@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Script polls the operator started, run in node on the fake DOM: they ask nothing while the
 browser tab is hidden, keep their timer, and ask again on the first tick once it is shown."""
 

@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Configuration model, TOML I/O, and runtime hot-reload for OpenFollow."""
 
 from __future__ import annotations
@@ -15,20 +17,23 @@ import re
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Iterable
+import tomllib
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol
 
 import tomli_w
-import tomllib
 
 from openfollow.binding_conflicts import BindingMove, settle_duplicates
+from openfollow.button_names import BUTTON_NAME_STYLES
 from openfollow.keyboard_layout import LAYOUT_RE as XKB_LAYOUT_RE
 from openfollow.keyboard_layout import VARIANT_RE as XKB_VARIANT_RE
 from openfollow.lens_model import C_BOUND, pull_back_to_valid
 from openfollow.net_adapters import normalize_labels
+from openfollow.network.adapter import LOOPBACK_NAMES
+from openfollow.restore_hold import unless_held
 from openfollow.station_fqdn import normalize_fqdn
 from openfollow.text_hygiene import CONTROL_CHARS_RE
 from openfollow.units import UnitSystem
@@ -341,6 +346,40 @@ def _coerce_optional_int(
     return out
 
 
+def _normalize_slot_pins(raw: object) -> list[SlotPinConfig]:
+    """Valid pins only, the first one winning a slot or a socket named twice."""
+    pins: list[SlotPinConfig] = []
+    if not isinstance(raw, list):
+        return pins
+    taken_slots: set[int] = set()
+    taken_keys: set[str] = set()
+    for entry in raw:
+        pin = SlotPinConfig.coerce(entry)
+        if pin is None or pin.slot in taken_slots or pin.key in taken_keys:
+            continue
+        taken_slots.add(pin.slot)
+        taken_keys.add(pin.key)
+        pins.append(pin)
+    return pins
+
+
+def _normalize_slot_markers(raw: object) -> list[SlotMarkerConfig]:
+    """Valid picks only, by slot; the first one wins a slot or a marker named twice."""
+    picks: list[SlotMarkerConfig] = []
+    if not isinstance(raw, list):
+        return picks
+    taken_slots: set[int] = set()
+    taken_markers: set[int] = set()
+    for entry in raw:
+        pick = SlotMarkerConfig.coerce(entry)
+        if pick is None or pick.slot in taken_slots or (pick.marker and pick.marker in taken_markers):
+            continue
+        taken_slots.add(pick.slot)
+        taken_markers.add(pick.marker)
+        picks.append(pick)
+    return sorted(picks, key=lambda pick: pick.slot)
+
+
 def _coerce_str(value: Any, default: str) -> str:
     """Return ``value`` when it's a real string, else ``default``.
 
@@ -387,7 +426,7 @@ def _coerce_bool(value: Any, default: bool) -> bool:
 CALIBRATION_CORNERS = ("DSL", "DSR", "USR", "USL")
 CALIBRATION_MODES = ("simple", "advanced")
 # The Setup Wizard's verdict on the lens it saved with a calibration.
-CALIBRATION_LENS_RATINGS = ("excellent", "good", "fair", "poor", "user_input", "loaded")
+CALIBRATION_LENS_RATINGS = ("excellent", "good", "fair", "poor", "user_input", "loaded", "opencv")
 CALIBRATION_SOURCE_MAX_LEN = 200
 MARK_KINDS = ("known", "triangulated")
 MAX_CALIBRATION_MARKS = 12
@@ -731,7 +770,7 @@ class GridConfig:
         self.origin_thickness = _coerce_int(self.origin_thickness, 3, lo=1, hi=20)
 
 
-def _coerce_xy_vertices(value: Any, *, max_count: int | None = None) -> list[list[float]]:
+def _coerce_xy_vertices(value: Any) -> list[list[float]]:
     """Keep finite ``[x, y]`` pairs from *value*; anything else is dropped.
 
     Non-finite coordinates are dropped too: they make every point-in-polygon
@@ -749,35 +788,7 @@ def _coerce_xy_vertices(value: Any, *, max_count: int | None = None) -> list[lis
             continue
         if math.isfinite(x) and math.isfinite(y):
             cleaned.append([x, y])
-    return cleaned[:max_count] if max_count is not None else cleaned
-
-
-# Upper bound on ground-grid polygon corners.
-GROUND_GRID_MAX_VERTICES = 64
-
-
-@dataclass
-class GroundGridConfig:
-    """A second floor: one polygon at its own absolute Z (experimental).
-
-    Active only when ``enabled`` and the polygon has at least three corners; a
-    marker inside it in XY gets its floor elements drawn at ``z_offset``.
-    """
-
-    enabled: bool = False
-    visible: bool = True
-    z_offset: float = 0.0
-    vertices: list[list[float]] = field(default_factory=list)
-
-    def __post_init__(self) -> None:
-        self.enabled = _coerce_bool(self.enabled, False)
-        self.visible = _coerce_bool(self.visible, True)
-        self.z_offset = 0.0 if isinstance(self.z_offset, bool) else _coerce_float(self.z_offset, 0.0)
-        self.vertices = _coerce_xy_vertices(self.vertices, max_count=GROUND_GRID_MAX_VERTICES)
-
-    @property
-    def active(self) -> bool:
-        return self.enabled and len(self.vertices) >= 3
+    return cleaned
 
 
 # Operator Screen marker glyph; each style reads only its own fields.
@@ -1083,6 +1094,12 @@ VALID_TRIGGER_SOURCES = ("markers", "detection", "both")
 VALID_ZONE_EVAL_FPS = (1, 5, 10, 15, 30, 60)
 
 
+# Bounds of a zone's height above the stage plane, and of its height transition.
+ZONE_Z_OFFSET_MIN = -10.0
+ZONE_Z_OFFSET_MAX = 20.0
+ZONE_HEIGHT_TRANSITION_MAX_S = 10.0
+
+
 @dataclass
 class TriggerZoneConfig:
     """A single polygonal trigger zone in world coordinates."""
@@ -1103,8 +1120,23 @@ class TriggerZoneConfig:
     # selected → the zone emits nothing.
     destination_id: str = ""
     enabled: bool = True
+    # Zone heights: metres above the stage plane (the main grid's ``z_offset``).
+    z_offset: float = 0.0
+    raise_markers: bool = False
+    height_transition_s: float = 0.3
 
     def __post_init__(self) -> None:
+        self.z_offset = (
+            0.0
+            if isinstance(self.z_offset, bool)
+            else _coerce_float(self.z_offset, 0.0, lo=ZONE_Z_OFFSET_MIN, hi=ZONE_Z_OFFSET_MAX)
+        )
+        self.raise_markers = _coerce_bool(self.raise_markers, False)
+        self.height_transition_s = (
+            0.3
+            if isinstance(self.height_transition_s, bool)
+            else _coerce_float(self.height_transition_s, 0.3, lo=0.0, hi=ZONE_HEIGHT_TRANSITION_MAX_S)
+        )
         if self.trigger_source not in VALID_TRIGGER_SOURCES:
             logger.warning(
                 "Invalid zone trigger_source %r, falling back to 'markers'",
@@ -1135,6 +1167,8 @@ class TriggerZonesConfig:
 
     enabled: bool = False
     show_overlay: bool = True
+    # Draw a zone stronger on the Operator Screen while a marker or detection is inside.
+    highlight_occupied: bool = True
     eval_fps: int = 10
     debounce_ms: int = 200
     hysteresis: float = 0.05  # metres – inward polygon offset for exit threshold
@@ -1154,6 +1188,7 @@ class TriggerZonesConfig:
         # survive. Upper bounds mirror ``openfollow/web/validation.py``.
         self.debounce_ms = _coerce_int(self.debounce_ms, 200, lo=0, hi=60000)
         self.hysteresis = _coerce_float(self.hysteresis, 0.05, lo=0.0, hi=10.0)
+        self.highlight_occupied = _coerce_bool(self.highlight_occupied, True)
         # Drop non-object zone entries instead of keeping them verbatim: a
         # hand-edited inline TOML array (``zones = ["evil"]``) or a crafted
         # payload would otherwise persist a bare str/int that the zone engine
@@ -1328,16 +1363,15 @@ class MidiPatch:
 
     @property
     def identifier(self) -> str:
-        """Stable device key matching ``_DiscoveredDevice.identifier`` in
-        the MIDI subsystem – ``serial:<serial>`` when a serial is known,
-        else ``port:<port_name>|<product>``. Empty when no device is bound
-        (a fresh patch). Used by the Device dropdown to mark the selected
-        option and to preserve a binding whose device is currently
-        disconnected (the row re-submits this same key)."""
+        """Stable device key matching ``DiscoveredDevice.identifier`` in
+        the MIDI subsystem – ``serial:<serial>|<port_name>`` when a serial is
+        known, else ``port:<port_name>|<product>``. Empty when no device is bound
+        (a fresh patch). The value a disconnected binding's option re-submits,
+        so a save keeps it."""
         if not (self.serial or self.port_name or self.product):
             return ""
         if self.serial:
-            return f"serial:{self.serial}"
+            return f"serial:{self.serial}|{self.port_name}"
         return f"port:{self.port_name}|{self.product}"
 
 
@@ -2292,6 +2326,70 @@ CONTROLLER_BINDING_FIELDS = (
     "marker_fader_stick",
 )
 
+# Controller slots a USB socket can be pinned to (C1..C16).
+SLOT_PIN_MAX = 16
+SLOT_PIN_KINDS = ("gamepad", "mouse3d")
+# The two socket key forms ``input.controller_identity.resolve_key`` produces.
+_SLOT_PIN_KEY_PREFIXES = ("usb:", "bt:")
+_SLOT_PIN_LABEL_MAX = 128
+
+
+@dataclass
+class SlotPinConfig:
+    """A USB socket pinned to a controller slot.
+
+    ``key`` is the socket, and whatever is plugged into it takes the slot.
+    ``kind`` and ``label`` record what was pinned, shown while the socket is empty.
+    """
+
+    slot: int = 1  # 1-based: C1 is slot 1
+    key: str = ""
+    kind: str = "gamepad"
+    label: str = ""
+
+    @classmethod
+    def coerce(cls, raw: object) -> SlotPinConfig | None:
+        """A pin from a hand-edited or imported entry, or ``None`` when it names no usable pin."""
+        if isinstance(raw, SlotPinConfig):
+            raw = asdict(raw)
+        if not isinstance(raw, dict):
+            return None
+        slot = raw.get("slot")
+        key = raw.get("key")
+        kind = raw.get("kind")
+        label = raw.get("label", "")
+        if isinstance(slot, bool) or not isinstance(slot, int) or not 1 <= slot <= SLOT_PIN_MAX:
+            return None
+        if kind not in SLOT_PIN_KINDS:
+            return None
+        if not isinstance(key, str) or not key.startswith(_SLOT_PIN_KEY_PREFIXES) or key in _SLOT_PIN_KEY_PREFIXES:
+            return None
+        label = CONTROL_CHARS_RE.sub("", label).strip()[:_SLOT_PIN_LABEL_MAX] if isinstance(label, str) else ""
+        return cls(slot=slot, key=key, kind=kind, label=label)
+
+
+@dataclass
+class SlotMarkerConfig:
+    """The marker a controller slot drives, picked by the operator; ``marker`` 0 is none."""
+
+    slot: int = 1  # 1-based: C1 is slot 1
+    marker: int = 0
+
+    @classmethod
+    def coerce(cls, raw: object) -> SlotMarkerConfig | None:
+        """A pick from a hand-edited or imported entry, or ``None`` when it names no usable pick."""
+        if isinstance(raw, SlotMarkerConfig):
+            raw = asdict(raw)
+        if not isinstance(raw, dict):
+            return None
+        slot = raw.get("slot")
+        marker = raw.get("marker")
+        if isinstance(slot, bool) or not isinstance(slot, int) or not 1 <= slot <= SLOT_PIN_MAX:
+            return None
+        if isinstance(marker, bool) or not isinstance(marker, int) or marker < 0:
+            return None
+        return cls(slot=slot, marker=marker)
+
 
 @dataclass
 class ControllerConfig:
@@ -2315,9 +2413,11 @@ class ControllerConfig:
     mouse_wheel_z_step: float = 0.1
     # Double right-click resets the controlled marker to the default position.
     mouse_double_click_reset: bool = True
-    deadzone: float = 0.15
+    deadzone: float = 0.05
     invert_y: bool = False
     curve: str = "logarithmic"
+    # Which pad family's printed names buttons are shown by (button_names.py).
+    button_name_style: str = "standard"
     # Normal mode button mappings
     btn_reset: str = "X"
     btn_toggle_help: str = "Y"
@@ -2339,7 +2439,7 @@ class ControllerConfig:
     btn_toggle_zones: str = ""
     btn_toggle_paths: str = ""
     btn_pathfinder: str = ""
-    move_xy_stick: str = "left"
+    move_xy_stick: str = "right"
     # Marker-fader integrator: which stick Y-axis (if any) drives the fader of
     # the currently-controlled marker. The bus integrates
     # ``deflection × dt × (1 / marker_fader_max_speed_s)`` per tick; the
@@ -2403,12 +2503,18 @@ class ControllerConfig:
     key_clear_messages: str = ""
     key_pathfinder: str = ""
     key_toggle_paths: str = ""
+    # USB sockets pinned to slots. Device-local: they name this station's sockets.
+    slot_pins: list[SlotPinConfig] = field(default_factory=list)
+    # Markers picked per slot. Device-local, like the pins.
+    slot_markers: list[SlotMarkerConfig] = field(default_factory=list)
     # xkb layout / variant the kiosk session starts with; blank = the system's.
     keyboard_layout: str = ""
     keyboard_variant: str = ""
 
     def __post_init__(self) -> None:
         """Validate configuration values."""
+        self.slot_pins = _normalize_slot_pins(self.slot_pins)
+        self.slot_markers = _normalize_slot_markers(self.slot_markers)
         self.keyboard_layout = _coerce_name(self.keyboard_layout, XKB_LAYOUT_RE)
         self.keyboard_variant = _coerce_name(self.keyboard_variant, XKB_VARIANT_RE) if self.keyboard_layout else ""
         # Mouse steering refinements – coerce so a hand-edited / imported TOML
@@ -2420,24 +2526,24 @@ class ControllerConfig:
         self.mouse_wheel_z_enabled = _coerce_bool(self.mouse_wheel_z_enabled, True)
         self.mouse_wheel_invert = _coerce_bool(self.mouse_wheel_invert, False)
         self.mouse_double_click_reset = _coerce_bool(self.mouse_double_click_reset, True)
-        if not 0.0 <= self.deadzone <= 1.0:
-            logger.warning(
-                "Invalid controller deadzone %s, clamping to [0.0, 1.0]",
-                self.deadzone,
-            )
-            self.deadzone = max(0.0, min(1.0, self.deadzone))
+        deadzone = _coerce_float(self.deadzone, _field_default(self, "deadzone"))
+        if not 0.0 <= deadzone <= 1.0:
+            logger.warning("Invalid controller deadzone %s, clamping to [0.0, 1.0]", deadzone)
+        self.deadzone = max(0.0, min(1.0, deadzone))
         if self.curve not in VALID_CURVES:
             logger.warning(
                 "Invalid controller curve %r, falling back to 'logarithmic'",
                 self.curve,
             )
             self.curve = "logarithmic"
+        self.button_name_style = _coerce_choice(self.button_name_style, BUTTON_NAME_STYLES, "standard")
         if self.move_xy_stick not in VALID_STICKS:
             logger.warning(
-                "Invalid move_xy_stick %r, falling back to 'left'",
+                "Invalid move_xy_stick %r, falling back to %r",
                 self.move_xy_stick,
+                _field_default(self, "move_xy_stick"),
             )
-            self.move_xy_stick = "left"
+            self.move_xy_stick = _field_default(self, "move_xy_stick")
         # Snap an unknown stick choice to "" (disable) rather than a working
         # default, so a typo can't route to a stick the operator didn't pick.
         self.marker_fader_stick = _coerce_choice(
@@ -2768,11 +2874,11 @@ FEATURE_KEYS: tuple[str, ...] = (
     "detection",
     "rttrpm",
     "paths",
-    "ground_grid",
     "touch_remote",
+    "zone_heights",
 )
 EXPERIMENTAL_FEATURES: frozenset[str] = frozenset(
-    {"lens_suggestions", "detection", "rttrpm", "paths", "ground_grid", "touch_remote"}
+    {"lens_suggestions", "detection", "rttrpm", "paths", "touch_remote", "zone_heights"}
 )
 DEFAULT_SHOWN_FEATURES: tuple[str, ...] = tuple(key for key in FEATURE_KEYS if key not in EXPERIMENTAL_FEATURES)
 # Gated like any feature but not offered: no Features row, no web route turns one on.
@@ -2808,10 +2914,7 @@ class _Switched(Protocol):
     enabled: bool
 
 
-_SwitchedT = TypeVar("_SwitchedT", bound=_Switched)
-
-
-def feature_gated(section: _SwitchedT, cfg: Any, key: str) -> _SwitchedT:
+def feature_gated[SwitchedT: _Switched](section: SwitchedT, cfg: Any, key: str) -> SwitchedT:
     """``section`` as its subsystem runs it: switched off (``enabled``) while feature ``key`` is off."""
     if not section.enabled or feature_on(cfg, key):
         return section
@@ -2840,7 +2943,7 @@ class UiConfig:
 
     # Features that are on; every subsystem gated by one asks ``feature_on``.
     shown_features: list[str] = field(default_factory=lambda: list(DEFAULT_SHOWN_FEATURES))
-    # Config-only: shows the developer's views in the web UI (the Lens step's edge view).
+    # Config-only: shows the developer's views (the Lens step's edge view) and hides the unsupported-platform warning.
     developer_mode: bool = False
 
     def __post_init__(self) -> None:
@@ -3030,6 +3133,8 @@ class AppConfig:
     # the default selection is empty (operator picks via the catalog UI).
     controlled_marker_ids: list[int] = field(default_factory=list)
     viewer_marker_ids: list[int] = field(default_factory=list)
+    # Controlled markers no relative input moves; they keep transmitting.
+    parked_marker_ids: list[int] = field(default_factory=list)
     # Per-marker move-speed overrides; ``MarkerConfig.move_speed`` is the
     # fallback for a marker with no entry.
     marker_move_speeds: dict[int, float] = field(default_factory=dict)
@@ -3048,7 +3153,6 @@ class AppConfig:
     # Sub-configs
     camera: CameraConfig = field(default_factory=CameraConfig)
     grid: GridConfig = field(default_factory=GridConfig)
-    ground_grid: GroundGridConfig = field(default_factory=GroundGridConfig)
     marker: MarkerConfig = field(default_factory=MarkerConfig)
     controller: ControllerConfig = field(default_factory=ControllerConfig)
     mouse3d: Mouse3DConfig = field(default_factory=Mouse3DConfig)
@@ -3090,6 +3194,9 @@ class AppConfig:
         if not isinstance(self.web_bind_iface, str):
             self.web_bind_iface = ""
         self.web_bind_iface = self.web_bind_iface.strip()
+        # Bound to loopback the web UI would serve this machine alone: no browser on the LAN could fix it.
+        if self.web_bind_iface in LOOPBACK_NAMES:
+            self.web_bind_iface = ""
         if not isinstance(self.video_input_iface, str):
             self.video_input_iface = ""
         self.video_input_iface = self.video_input_iface.strip()
@@ -3144,6 +3251,7 @@ class AppConfig:
         self.avf_device_name = clean_avf_device_name(self.avf_device_name)
         self.avf_device_index = _coerce_int(self.avf_device_index, -1, lo=-1)
         self.normalise_startup_settings()
+        self.parked_marker_ids = parked_within(self.controlled_marker_ids, self.parked_marker_ids)
         # TOML produces ``dict[str, Any]``; the runtime contract is
         # ``dict[int, float]`` keyed by marker_id. Drop pairs with a non-int
         # key or non-finite/negative value.
@@ -3211,7 +3319,6 @@ def without_former_camera_keys(camera: dict[str, Any]) -> dict[str, Any]:
 _SUB_CONFIG_MAP: dict[str, type] = {
     "camera": CameraConfig,
     "grid": GridConfig,
-    "ground_grid": GroundGridConfig,
     "marker": MarkerConfig,
     "controller": ControllerConfig,
     "mouse3d": Mouse3DConfig,
@@ -3361,6 +3468,21 @@ def marker_id_list(raw: Any, *, path: str, field_name: str) -> list[int]:
     return kept
 
 
+def parked_within(controlled: Any, parked: Any) -> list[int]:
+    """The parked markers as kept: marker ids of *controlled*, each once, in first-seen order.
+
+    Anything but a list reads as ``[]``, and so does a *controlled* that is not one.
+    """
+    if not isinstance(parked, list) or not isinstance(controlled, list):
+        return []
+    allowed = {mid for mid in controlled if isinstance(mid, int) and not isinstance(mid, bool) and mid >= 1}
+    kept: list[int] = []
+    for mid in parked:
+        if isinstance(mid, int) and not isinstance(mid, bool) and mid in allowed and mid not in kept:
+            kept.append(mid)
+    return kept
+
+
 def viewed_with_controlled(controlled: list[int], viewer: list[int]) -> list[int]:
     """The viewed markers with every controlled one added: a marker this station controls is always
     one it views, so it keeps its HUD card and counts in the trigger zones."""
@@ -3484,6 +3606,15 @@ def _config_from_data(path: str, data: dict[str, Any]) -> AppConfig:
         _LOGGED_UNVIEWED.add((path, tuple(_unviewed)))
         logger.info("%s: controlled markers %s are now viewed too; a controlled marker always is", path, _unviewed)
     data["viewer_marker_ids"] = viewed_with_controlled(data["controlled_marker_ids"], data["viewer_marker_ids"])
+    # A slot's pick naming a marker this station no longer controls is dropped: that slot falls back.
+    _ctrl_raw = data.get("controller")
+    if isinstance(_ctrl_raw, dict) and isinstance(_ctrl_raw.get("slot_markers"), list):
+        _controlled = set(data["controlled_marker_ids"])
+        _ctrl_raw["slot_markers"] = [
+            entry
+            for entry in _ctrl_raw["slot_markers"]
+            if isinstance(entry, dict) and (entry.get("marker") == 0 or entry.get("marker") in _controlled)
+        ]
 
     # Back-compat: map the old ``vf1_*`` keys onto their ``marker_fader_*``
     # successors (only when the new key is absent) BEFORE ``_filter_known``
@@ -3497,8 +3628,8 @@ def _config_from_data(path: str, data: dict[str, Any]) -> AppConfig:
             if _old in _ctrl and _new not in _ctrl:
                 _ctrl[_new] = _ctrl[_old]
 
-    # Back-compat: read the marker's Z-line settings under their former names
-    # BEFORE ``_filter_known`` drops them, so an existing config keeps them.
+    # Back-compat: read ``invert_control_direction`` as the control frame
+    # BEFORE ``_filter_known`` drops it, so an existing config keeps it.
     _marker = data.get("marker")
     if isinstance(_marker, dict):
         apply_renamed_marker_keys(_marker)
@@ -3556,24 +3687,14 @@ def load_config_for_save(path: str, *, missing: Callable[[], AppConfig] | None =
 _DEPRECATED_WARNED: set[str] = set()
 
 
-_RENAMED_MARKER_KEYS: tuple[tuple[str, str], ...] = (
-    ("drop_line", "z_line"),
-    ("drop_line_thickness", "z_line_thickness"),
-)
-
-
 def apply_renamed_marker_keys(marker_data: dict[str, Any]) -> None:
-    """Read the marker's settings under their former names, in place.
+    """Read ``invert_control_direction`` as the control frame, in place.
 
-    Every route into a marker section goes through here - config file, JSON
-    config API, peer broadcast - so a station still sending the former names
-    during a rolling upgrade is understood rather than accepted and silently
-    discarded. The current name wins wherever both appear.
+    Every route into a marker section goes through here - config file, web
+    form, JSON config API, import, peer broadcast - so a station still sending
+    ``invert_control_direction`` during a rolling upgrade is understood rather
+    than accepted and silently discarded. A ``control_frame`` beside it wins.
     """
-    for old, new in _RENAMED_MARKER_KEYS:
-        if old in marker_data and new not in marker_data:
-            marker_data[new] = marker_data[old]
-            _warn_renamed_marker_key(old, new)
     # invert_control_direction is stage axes, or when true the heading of a camera looking downstage.
     if "invert_control_direction" in marker_data:
         inverted = _coerce_bool(marker_data.pop("invert_control_direction"), False)
@@ -3737,7 +3858,7 @@ def config_problem_kind(error: ConfigFileUnreadableError) -> str:
 _PROBLEM_WORDS = {
     "empty-restorable": ("is empty", "Restart OpenFollow to restore the settings from the latest backup copy"),
     "empty": ("is empty", "Restart OpenFollow to start again with default settings"),
-    "unreadable": ("could not be read", "Import a settings file to replace it"),
+    "unreadable": ("could not be read", "Import a settings file or restore a backup to replace it"),
 }
 
 
@@ -3757,13 +3878,31 @@ def config_file_health(path: str) -> str:
     return f"{state}; {backup}"
 
 
+def _prepare_save(config: AppConfig, path: str, *, replace_unreadable: bool) -> bytes:
+    """The bytes *config* saves as, once *path* is checked and snapshotted to ``.bak``."""
+    try:
+        whole = _read_whole(path)
+    except ConfigFileUnreadableError:
+        if not replace_unreadable:
+            raise
+        whole = None
+    if whole is not None:
+        backup_path = Path(path).with_name(Path(path).name + ".bak")
+        try:
+            _replace_file(backup_path, whole[0])
+        except OSError:
+            # The save itself is fine; the cause is what a missing .bak is later diagnosed from.
+            logger.warning("Could not write config backup %s; continuing", backup_path, exc_info=True)
+    return tomli_w.dumps(config_to_toml_dict(config)).encode("utf-8")
+
+
 def save_config(config: AppConfig, path: str = "config.toml", *, replace_unreadable: bool = False) -> None:
     """Serialize the full config to a TOML file, overwriting existing content.
 
     A file that is there but empty or unreadable is left alone and raises
     ``ConfigFileUnreadableError``, unless *replace_unreadable*: the config
     written was not read from it. Replacing one takes no snapshot, so the last
-    good ``.bak`` stays.
+    good ``.bak`` stays. A file a restore holds raises ``HeldForRestartError``.
 
     Durable, atomic write: content is streamed to a temp file in the same
     directory, ``fsync``-ed, ``os.replace``-d into place, then the parent
@@ -3773,23 +3912,22 @@ def save_config(config: AppConfig, path: str = "config.toml", *, replace_unreada
     (a failure is logged and swallowed); ``load_config`` recovers from it when
     the primary is missing or unreadable.
     """
-    try:
-        whole = _read_whole(path)
-    except ConfigFileUnreadableError:
-        if not replace_unreadable:
-            raise
-        whole = None
-    current = None if whole is None else whole[0]
-    data = tomli_w.dumps(config_to_toml_dict(config)).encode("utf-8")
-    target = Path(path)
-    if current is not None:
-        backup_path = target.with_name(target.name + ".bak")
-        try:
-            _replace_file(backup_path, current)
-        except OSError:
-            # The save itself is fine; the cause is what a missing .bak is later diagnosed from.
-            logger.warning("Could not write config backup %s; continuing", backup_path, exc_info=True)
-    _replace_file(target, data)
+    with unless_held(path):
+        _replace_file(Path(path), _prepare_save(config, path, replace_unreadable=replace_unreadable))
+
+
+def stage_config(config: AppConfig, path: str, staged: Path, *, replace_unreadable: bool = False) -> None:
+    """Write *config* to *staged*, synced, as :func:`save_config` would save *path*; the caller renames it in.
+
+    The same checks and ``.bak`` snapshot as a save, for a restore that puts
+    every part in place together.
+    """
+    with unless_held(path):
+        data = _prepare_save(config, path, replace_unreadable=replace_unreadable)
+        with open(staged, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
 
 
 def save_config_change(path: str, running: AppConfig, change: Callable[[AppConfig], None]) -> None:
@@ -3843,6 +3981,30 @@ def save_config_fields(
         save_config(on_disk, path)
 
 
+def park_changes_applied(parked: list[int], changes: Mapping[int, bool]) -> list[int]:
+    """*parked* with each marker in *changes* parked (``True``) or unparked (``False``), order kept."""
+    kept = [mid for mid in parked if changes.get(mid, True)]
+    return kept + [mid for mid, on in changes.items() if on and mid not in kept]
+
+
+def save_park_changes(config: AppConfig, path: str, changes: Mapping[int, bool]) -> bool:
+    """Apply *changes* to the parked markers of the file at *path* in one read-modify-write under the lock.
+
+    The file's parked and controlled sets are the base, so a park another writer saved since *config*
+    was read survives. A missing file is written from a copy of *config* with the changes applied; an
+    empty or unreadable one raises. Returns whether the file was written.
+    """
+    with config_write_lock:
+        on_disk = read_config_whole(path)
+        target = copy.deepcopy(config) if on_disk is None else on_disk
+        parked = parked_within(target.controlled_marker_ids, park_changes_applied(target.parked_marker_ids, changes))
+        if on_disk is not None and parked == on_disk.parked_marker_ids:
+            return False
+        target.parked_marker_ids = parked
+        save_config(target, path)
+        return True
+
+
 # ---------------------------------------------------------------------------
 # Runtime Hot-Reload
 # ---------------------------------------------------------------------------
@@ -3879,13 +4041,8 @@ def _apply_with_fallback(
     return True
 
 
-def _marker_name_for_runtime(app: OpenFollowApp, marker_id: int) -> str:
-    """Pick a name for ``add_marker`` from the catalog, with a fallback.
-
-    Mirrors :func:`openfollow.services.init_markers`. Kept here so the
-    live-reload diff path doesn't need to import services to format
-    the label.
-    """
+def marker_name_for_runtime(app: OpenFollowApp, marker_id: int) -> str:
+    """The name a marker carries in the outputs: its catalog name, else ``Marker <id>``."""
     catalog = getattr(app, "_marker_catalog", None)
     if catalog is not None:
         entry = catalog.get(marker_id)
@@ -4197,9 +4354,6 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
     if new_config.grid != app._config.grid:
         app._config.grid = new_config.grid
 
-    if new_config.ground_grid != app._config.ground_grid:
-        app._config.ground_grid = new_config.ground_grid
-
     if new_config.camera != app._config.camera:
         app._camera = Camera.from_config(new_config.camera)
         app._config.camera = new_config.camera
@@ -4232,7 +4386,8 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
     if new_config.network != app._config.network:
         app._config.network = new_config.network
 
-    if new_config.controlled_marker_ids != app._config.controlled_marker_ids:
+    controlled_changed = new_config.controlled_marker_ids != app._config.controlled_marker_ids
+    if controlled_changed:
         # Defense-in-depth: filter ``< 1`` ids again (this path can bypass
         # ``load_config``'s filter via programmatic apply). ``Marker.__init__``
         # raises for id < 1 and id 0 is the reserved "ignored" wire value.
@@ -4252,9 +4407,6 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
             new_ids = set(filtered_controlled)
             to_remove = sorted(old_ids - new_ids)
             to_add = sorted(new_ids - old_ids)
-            # Capture old names up front so a rollback re-registers removed
-            # markers with their original label.
-            old_names = {marker_id: _marker_name_for_runtime(app, marker_id) for marker_id in to_remove}
             # Seed the same default position startup registration uses: an
             # unseeded marker broadcasts (0, 0, 0) and, having never taken a
             # data write, reports itself invalid on the PSN wire.
@@ -4265,7 +4417,7 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
                 for marker_id in to_remove:
                     server.remove_marker(marker_id)
                 for marker_id in to_add:
-                    server.add_marker(marker_id, _marker_name_for_runtime(app, marker_id)).set_pos(*default_pos)
+                    server.add_marker(marker_id, marker_name_for_runtime(app, marker_id)).set_pos(*default_pos)
 
                 # Mirror marker changes to OTP output if active
                 if app._otp_server is not None:
@@ -4298,7 +4450,9 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
                 # controlled_ids list and is only updated to a new value
                 # when removed; integration tests cover the True arm.
                 if app._selected_id not in new_ids:  # pragma: no branch
-                    app._selected_id = app._controlled_ids[0] if app._controlled_ids else None
+                    from openfollow.input.parking import is_parked
+
+                    app._selected_id = next((m for m in app._controlled_ids if not is_parked(app, m)), None)
                 receiver.set_ignore_ids(new_ids)
                 app._config.controlled_marker_ids = filtered_controlled
 
@@ -4308,10 +4462,17 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
                 # controlled ids / config; the next pass recomputes the same
                 # diff (and re-mirrors OTP/RTTrPM). Best-effort –
                 # ``_apply_with_fallback`` logs if this itself raises.
+                # The re-added markers are new objects; OTP and RTTrPM must send these, not the ones they held.
+                mirrors = [m for m in (app._otp_server, app._rttrpm_server) if m is not None]
                 for marker_id in to_add:
                     server.remove_marker(marker_id)
+                    for mirror in mirrors:
+                        mirror.unregister_marker(marker_id)
                 for marker_id in to_remove:
-                    server.add_marker(marker_id, old_names[marker_id]).set_pos(*default_pos)
+                    marker = server.add_marker(marker_id, marker_name_for_runtime(app, marker_id))
+                    marker.set_pos(*default_pos)
+                    for mirror in mirrors:
+                        mirror.register_marker(marker)
 
             _apply("controlled_marker_ids", _apply_controlled, on_failure=_restore_controlled)
         else:
@@ -4336,8 +4497,22 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
         app._viewer_ids = list(filtered_viewer)
         app._config.viewer_marker_ids = filtered_viewer
 
+    # Against the committed controlled set, which may also have moved the selection onto a parked marker.
+    parked = parked_within(app._config.controlled_marker_ids, new_config.parked_marker_ids)
+    if controlled_changed or parked != app._config.parked_marker_ids:
+        from openfollow.input.parking import set_parked
+
+        old_parked = app._config.parked_marker_ids
+        app._config.parked_marker_ids = parked
+        _apply(
+            "parked_marker_ids",
+            lambda: set_parked(app, parked),
+            on_failure=lambda: setattr(app._config, "parked_marker_ids", old_parked),
+        )
+
     if new_config.controller != app._config.controller:
         mouse_was_enabled = app._config.controller.mouse_enabled
+        pins_changed = new_config.controller.slot_pins != app._config.controller.slot_pins
         app._config.controller = new_config.controller
         # pragma: no branch – controller live-reload only fires while
         # the app is running, so ``_input_manager`` is always
@@ -4351,6 +4526,8 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
             # the first pointer event after it's re-enabled.
             if mouse_was_enabled and not new_config.controller.mouse_enabled:
                 app._input_manager.mouse_handler.deactivate()
+            if pins_changed:
+                app._input_manager.apply_slot_pins(new_config.controller.slot_pins)
         # Reflect a mouse_enabled toggle in the live pointer visibility:
         # turning mouse input off hides the cursor immediately, turning it
         # on brings the arrow back. Idempotent on the window side, so an
@@ -4472,6 +4649,13 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
 
     if new_config.detection != app._config.detection or _flipped("detection"):
         old_detection = app._config.detection
+        # A new tracking mode or Follow marker is a fresh start for the pin: it no longer waits for a selection.
+        if _flipped("detection") or (old_detection.enabled, old_detection.pin_mode, old_detection.pin_marker_id) != (
+            new_config.detection.enabled,
+            new_config.detection.pin_mode,
+            new_config.detection.pin_marker_id,
+        ):
+            app._pin_waits_for_selection = False
         # What the detector runs: off while the Person detection feature is off.
         new_detection = feature_gated(new_config.detection, app._config, "detection")
         new_enabled = new_detection.enabled

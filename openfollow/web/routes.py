@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Bottle routes for configuration web UI: HTML pages, JSON API, config helpers."""
 
 from __future__ import annotations
@@ -7,6 +9,7 @@ from __future__ import annotations
 import base64
 import binascii
 import collections
+import contextlib
 import copy
 import functools
 import hashlib
@@ -27,12 +30,12 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Mapping, MutableSequence, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, MutableSequence, Sequence
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
+from typing import TYPE_CHECKING, Any, NoReturn
 from urllib.parse import quote, urlsplit
 
 from bottle import Bottle, HTTPResponse, abort, request, response, static_file, template
@@ -51,12 +54,13 @@ if TYPE_CHECKING:
     from openfollow.web.discovery import PeerInfo
     from openfollow.web.server import ConfigWebServer
 
+from openfollow import config_restore, platform_support, restore_hold
+from openfollow.button_names import ButtonNameStyle, name_style
 from openfollow.configuration import (
     CALIBRATION_CORNERS,
     CALIBRATION_MODES,
     CONTROLLER_BINDING_FIELDS,
     DEFAULT_UPDATE_SERVICE_NAME,
-    GROUND_GRID_MAX_VERTICES,
     MARK_KINDS,
     MARK_REACH_M,
     MARKER_TOKEN_ALL,
@@ -94,13 +98,17 @@ from openfollow.configuration import (
     load_config_for_save,
     marker_id_list,
     migrate_ui_keys,
+    park_changes_applied,
+    parked_within,
     path_name_from,
     plane_pin_key,
     plane_pins,
     reconcile_simple_corners,
     save_config,
+    stage_config,
     viewed_with_controlled,
 )
+from openfollow.input.midi import bound_identifiers
 from openfollow.input.mouse3d_status import status_key
 from openfollow.lens_model import pull_back_to_valid
 from openfollow.logging_setup import active_log_file
@@ -108,6 +116,7 @@ from openfollow.logging_setup import active_log_file
 # Module-level so handler closures resolve ``save_catalog`` from this
 # namespace at call time (tests monkeypatch it for persist-failure paths).
 from openfollow.marker_catalog import derive_station_name, save_catalog
+from openfollow.net_egress import LOOPBACK_ONLY
 from openfollow.net_utils import (
     HOST_RESOLVER,
     IPV4_RESOLVER,
@@ -118,6 +127,7 @@ from openfollow.net_utils import (
 from openfollow.network.adapter import (
     LOOPBACK_NAMES,
     VLAN_UNSUPPORTED_MESSAGE,
+    ApplyResult,
     Ipv4Config,
     Ipv4Method,
 )
@@ -135,6 +145,7 @@ from openfollow.palette import AUTO_PICK_ORDER
 from openfollow.privilege import settings_backup
 from openfollow.privilege.camera_config import AUTOMATIC
 from openfollow.runtime.diagnostics_export import WEB, ExportStatus, status_lines
+from openfollow.runtime.latency_probe import MEDIA_GALLERY, LatencyFailure
 from openfollow.scene.edge_snap import LumaBand, NearEdge
 from openfollow.station_fqdn import canonical_host, fqdn_problem, mdns_name
 from openfollow.templates import (
@@ -162,12 +173,13 @@ from openfollow.templates.writer import (
 from openfollow.units import UnitSystem, parse_length, parse_speed
 from openfollow.web import diagnostics, lens_calibrations, peer_auth
 from openfollow.web._md import render_help_markdown
-from openfollow.web.bindings import check_binding, osc_row_overlap, osc_trigger_overlap
+from openfollow.web.bindings import CONTROLLER_SECTIONS, check_binding, osc_row_overlap, osc_trigger_overlap
+from openfollow.web.button_icons import button_html
 from openfollow.web.config_cache import ParsedConfigCache
 from openfollow.web.discovery import clean_peer_name
 from openfollow.web.keyboard_layout_view import build_keyboard_layout_view, station_catalog, variant_options
-from openfollow.web.labels import video_error_token
-from openfollow.web.live_alerts import statistics_alerts
+from openfollow.web.latency_view import latency_dialog_view, latency_row_view, latency_unavailable
+from openfollow.web.live_alerts import diagnostics_alerts
 from openfollow.web.login_throttle import LoginThrottle
 from openfollow.web.whats_new import load_backup_note, load_whats_new
 
@@ -257,7 +269,6 @@ VALID_SECTIONS = {
     "video_source",
     "camera",
     "grid",
-    "ground_grid",
     "movement",
     "marker",
     "controller",
@@ -376,7 +387,6 @@ _SECTION_CONFIG_ATTRS = {
     "camera": "camera",
     "paths": "paths",
     "grid": "grid",
-    "ground_grid": "ground_grid",
     "movement": "marker",
     "marker": "marker",
     "controller": "controller",
@@ -547,14 +557,19 @@ def _redirect(location: str) -> NoReturn:
     raise HTTPResponse(status=303, headers={"Location": location})
 
 
+def _platform_context(cfg: AppConfig) -> dict[str, Any]:
+    """The unsupported-platform box every page shows between its navigation and its panels."""
+    return {"platform_warning": platform_support.current() if platform_support.warning_shown(cfg) else None}
+
+
 def _page_host_context(cfg: AppConfig) -> dict[str, Any]:
-    """base.tpl's banner for a page opened through a name its saves will be refused on."""
+    """base.tpl's boxes: a page opened through a name its saves will be refused on, an unsupported platform."""
     raw = (request.get_header("Host") or "").strip()
     try:
         host = urlsplit(f"//{raw}").hostname if raw else None
     except ValueError:
         host = None
-    return {"host_refusal": _host_refusal(host, cfg.station_fqdn)}
+    return {"host_refusal": _host_refusal(host, cfg.station_fqdn), **_platform_context(cfg)}
 
 
 def _is_navigation() -> bool:
@@ -568,12 +583,14 @@ def _is_navigation() -> bool:
 
 
 def _cancel_button_label(cfg: AppConfig) -> str:
-    """Return the gamepad button label bound to cancel, for the footer hint.
+    """Return the gamepad button bound to cancel, as HTML for the footer hint.
 
-    Mirrors ``controller.btn_menu_cancel`` (default ``"B"``); falls back to
-    ``"Cancel"`` when the binding is cleared so the hint stays non-empty.
+    Names ``controller.btn_menu_cancel`` (default ``"B"``) in the station's
+    button names; falls back to ``"Cancel"`` when the binding is cleared so the
+    hint stays non-empty.
     """
-    return (cfg.controller.btn_menu_cancel or "").strip() or "Cancel"
+    button = (cfg.controller.btn_menu_cancel or "").strip()
+    return button_html(button, name_style(cfg.controller.button_name_style), short=True) if button else "Cancel"
 
 
 def _get_detection_missing_deps(config: AppConfig | None = None) -> list[str]:
@@ -995,14 +1012,24 @@ def _build_input_template_data(cfg: AppConfig, video_stats: Mapping[str, Any] | 
     for iid, cls in sorted(registry.items()):
         values = cls.get_config_field_values(cfg)
         input_html_fragments[iid] = cls.web_ui_html(values)
-    video = dict(video_stats or {})
     return {
         "available_inputs": available_inputs,
         "input_html_fragments": input_html_fragments,
+        **_video_box_data(video_stats),
+    }
+
+
+def _video_box_data(video_stats: Mapping[str, Any] | None) -> dict[str, str]:
+    """What the Video Source boxes show, from ``/api/stats``'s ``video`` section."""
+    video = dict(video_stats or {})
+    limits = video.get("limits") or {}
+    return {
         "video_failure": video.get("failure") or "none",
         "video_failure_text": video.get("failure_text") or "",
         "video_error_message": video.get("error_message") or "",
         "video_failure_action": video.get("failure_action") or "",
+        "video_limits_text": str(limits.get("text") or ""),
+        "video_limits_action": str(limits.get("action") or ""),
     }
 
 
@@ -1161,8 +1188,13 @@ _DEVICE_LOCAL_FIELDS_BY_SECTION: dict[str, frozenset[str]] = {
     "paths": frozenset({"show_paths"}),
     # Whether this station takes remote driving from a browser at all.
     "touch_remote": frozenset({"enabled"}),
-    # The keyboard plugged into this station, in every section that writes the controller config.
-    **{section: _KEYBOARD_LAYOUT_FIELDS for section, attr in _SECTION_CONFIG_ATTRS.items() if attr == "controller"},
+    # The keyboard, pads, USB sockets and slot picks of this station, in every section that writes the
+    # controller config. Button names describe its pads, like the pad map: a file import restores them.
+    **{
+        section: _KEYBOARD_LAYOUT_FIELDS | {"button_name_style", "slot_pins", "slot_markers"}
+        for section, attr in _SECTION_CONFIG_ATTRS.items()
+        if attr == "controller"
+    },
 }
 
 # Sections that are device-local as a whole. Every row of the Network Interface
@@ -1363,7 +1395,7 @@ def _osc_membership_address(
 # an error chip, since the picker beside it already names the interface.
 ADDRESS_NOT_CONNECTED = "Not connected"
 ADDRESS_INTERFACE_DOWN = "Interface down"
-_OUTAGE_ADDRESSES = frozenset({ADDRESS_NOT_CONNECTED, ADDRESS_INTERFACE_DOWN})
+_OUTAGE_ADDRESSES = frozenset({ADDRESS_NOT_CONNECTED, ADDRESS_INTERFACE_DOWN, LOOPBACK_ONLY})
 
 
 @dataclass(frozen=True)
@@ -1372,13 +1404,16 @@ class _PanelNames:
 
     labels: Mapping[str, str]
     present: frozenset[str]
+    # This machine's own addresses, for the loopback check.
+    station_addresses: frozenset[str] = frozenset()
 
 
 def _iface_who(name: str, labels: Mapping[str, str]) -> str:
     """How a picker names an interface: its label, else the name and which adapter it is."""
     from openfollow.net_adapters import describe, display_name
+    from openfollow.net_utils import offered_loopback
 
-    if name in labels:
+    if name in labels or offered_loopback(name):
         return display_name(name, labels)
     where = describe(name).where(labels)
     return f"{name} · {where}" if where else name
@@ -1450,15 +1485,18 @@ def _egress_address(
     wait_s: float | None,
     names: _PanelNames,
     unrouted: str = "Per routing table",
+    sends: bool = True,
 ) -> str:
     """The address cell for a row that sends to *host*, looked up by the resolver its output uses;
     *unrouted* when there is no host and no pin."""
-    from openfollow.net_egress import is_loopback_host
+    from openfollow.net_egress import is_loopback_host, strands
     from openfollow.net_utils import plane_source_iface
 
     if host and is_loopback_host(host):
         return "Loopback"
-    if plane_source_iface(pin, station_iface):
+    if iface := plane_source_iface(pin, station_iface):
+        if sends and strands(iface, host, names.station_addresses) is not None:
+            return LOOPBACK_ONLY
         return _plane_address(pin, station_iface, names)
     # Nothing pinned anywhere: show where the Pi sends it now, not that it chooses.
     return _route_pick(host, resolver, wait_s, names.labels) if host else unrouted
@@ -1498,6 +1536,15 @@ def _video_input_row(cfg: AppConfig, wait_s: float | None, names: _PanelNames) -
         return {**row, "key": "video_input_iface", "address": address, "editable": True, "blank": "all"}
     address = _egress_address(pin, target, "", resolver=HOST_RESOLVER, wait_s=wait_s, names=names)
     return {**row, "key": "video_input_iface", "address": address, "editable": True}
+
+
+def _prefetch_video_source(cfg: AppConfig) -> None:
+    """Start the lookup the saved video source's pin check reads, before the file watcher applies the save."""
+    from openfollow.video.inputs import get_input_class
+
+    input_cls = get_input_class(cfg.video_source_type)
+    if input_cls is not None:
+        input_cls.prefetch(input_cls.runtime_config(cfg))
 
 
 _PLANE_PIN_LABELS = {key: label for key, _owner, _name, label in PLANE_PIN_FIELDS}
@@ -1555,7 +1602,7 @@ def build_interface_assignment_rows(cfg: AppConfig, web_bind: tuple[str, str] | 
     from openfollow.net_adapters import display_name
     from openfollow.net_utils import present_interfaces
 
-    names = _PanelNames(cfg.interface_labels, present_interfaces())
+    names = _PanelNames(cfg.interface_labels, present_interfaces(), frozenset(get_local_ipv4_addresses()))
     # Built once to start every lookup, then for real: each lookup waits from
     # when it started, so the render waits once for all of them.
     _interface_assignment_rows(cfg, web_bind, None, names)
@@ -1577,19 +1624,17 @@ def _interface_assignment_rows(
     def _addr(pin: str) -> str:
         return _plane_address(pin, station, names)
 
-    def _sender(pin: str, host: str, *, tcp: bool = False) -> str:
+    def _sender(pin: str, host: str, *, tcp: bool = False, sends: bool = True) -> str:
         # Each looked up the way its socket is: UDP from IPv4 sockets, TCP over both families.
         resolver = HOST_RESOLVER if tcp else IPV4_RESOLVER
-        return _egress_address(pin, host, station, resolver=resolver, wait_s=wait_s, names=names)
-
-    station_addresses = frozenset(get_local_ipv4_addresses())
+        return _egress_address(pin, host, station, resolver=resolver, wait_s=wait_s, names=names, sends=sends)
 
     def _osc_sender(dest: OscDestinationConfig) -> str:
         from openfollow.net_egress import is_loopback_host
         from openfollow.osc.egress import reaches_station
 
         # Never pinned, as the sender decides it: the kernel delivers it on this station.
-        if not is_loopback_host(dest.host) and reaches_station(dest.host, station_addresses):
+        if not is_loopback_host(dest.host) and reaches_station(dest.host, names.station_addresses):
             return "This station"
         return _sender(dest.source_iface, dest.host, tcp=dest.protocol == "tcp")
 
@@ -1633,7 +1678,8 @@ def _interface_assignment_rows(
             "key": "rttrpm_output.source_iface",
             "label": "RTTrPM output",
             "value": cfg.rttrpm_output.source_iface,
-            "address": _sender(cfg.rttrpm_output.source_iface, cfg.rttrpm_output.host),
+            # A switched-off output sends nowhere, so its host cannot strand it.
+            "address": _sender(cfg.rttrpm_output.source_iface, cfg.rttrpm_output.host, sends=cfg.rttrpm_output.enabled),
             "editable": True,
             "blank": "station",
             "feature": "rttrpm",
@@ -1678,6 +1724,7 @@ def _interface_assignment_rows(
             "address": resolved[0] if cfg.web_bind else _web_bind_address(cfg, resolved),
             "editable": not cfg.web_bind,
             "blank": "all",
+            "no_loopback": True,
             "note": f"Fixed to {cfg.web_bind} by web_bind in config.toml" if cfg.web_bind else "",
         },
     ]
@@ -1880,8 +1927,6 @@ def _apply_section(cfg: AppConfig, section: str, data: Mapping[str, Any]) -> boo
         cfg.mouse3d.__post_init__()
     elif section == "grid":
         cfg.grid.__post_init__()
-    elif section == "ground_grid":
-        cfg.ground_grid.__post_init__()
     elif section == "camera":
         cfg.camera.__post_init__()
     elif section in ("marker", "movement"):
@@ -1915,6 +1960,11 @@ def _as_float(value: Any, default: float) -> float:
         return float(value)
     except (TypeError, ValueError, OverflowError):
         return default
+
+
+def _as_number(value: Any, default: float) -> float:
+    """``_as_float`` refusing a bool: ``true`` in a JSON body is no length or time."""
+    return default if isinstance(value, bool) else _as_float(value, default)
 
 
 def _coerce_timer(value: Any, default: float) -> float:
@@ -1992,12 +2042,12 @@ _SECTION_LENGTH_FIELDS: dict[str, frozenset[str]] = {
             "max_height",
         }
     ),
-    "ground_grid": frozenset({"z_offset"}),
     "marker": frozenset(
         {"ball_size", "crosshair_size", "ground_circle_size", "cone_base_diameter", "cone_top_diameter"}
     ),
     "movement": frozenset({"default_pos_x", "default_pos_y", "default_pos_z"}),
     "trigger_zones": frozenset({"hysteresis"}),
+    "zone": frozenset({"z_offset"}),
 }
 _SECTION_SPEED_FIELDS: dict[str, frozenset[str]] = {
     "movement": frozenset({"min_speed", "max_speed", "move_speed"}),
@@ -2225,16 +2275,6 @@ def _as_ip_list(value: Any, default: list[str]) -> list[str]:
 _FieldParser = Callable[[Any, Any], Any]
 
 
-def _as_vertices(value: Any, current: list[list[float]]) -> list[list[float]]:
-    """A corner list as a list or as its JSON text (a form field); else *current*."""
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except ValueError:
-            return current
-    return _parse_vertices(value, current)
-
-
 _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
     "camera": {
         "pos_x": _as_float,
@@ -2272,12 +2312,6 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "origin_visible": _as_bool,
         "origin_length": _as_float,
         "origin_thickness": _as_int,
-    },
-    "ground_grid": {
-        "enabled": _as_bool,
-        "visible": _as_bool,
-        "z_offset": _as_float,
-        "vertices": _as_vertices,
     },
     "movement": {
         "min_speed": _as_float,
@@ -2325,6 +2359,7 @@ _SECTION_FIELD_PARSERS: dict[str, dict[str, _FieldParser]] = {
         "deadzone": _as_float,
         "invert_y": _as_bool,
         "curve": _as_str,
+        "button_name_style": _as_str,
         "btn_reset": _as_str,
         "btn_toggle_help": _as_str,
         "btn_speed_down": _as_str,
@@ -2435,6 +2470,7 @@ _SECTION_FIELD_PARSERS["mouse3d"] = _mouse3d_parsers
 _TRIGGER_ZONES_FIELD_PARSERS: dict[str, _FieldParser] = {
     "enabled": _as_bool,
     "show_overlay": _as_bool,
+    "highlight_occupied": _as_bool,
     "eval_fps": _as_int,
     "debounce_ms": _as_int,
     "hysteresis": _as_float,
@@ -2457,6 +2493,9 @@ _ZONE_FIELD_PARSERS: dict[str, _FieldParser] = {
     "osc_address_final_exit": _as_str,
     "destination_id": _as_str,
     "enabled": _as_bool,
+    "z_offset": _as_number,
+    "raise_markers": _as_bool,
+    "height_transition_s": _as_number,
 }
 
 
@@ -2779,6 +2818,10 @@ def _controller_slots_view(server: ConfigWebServer) -> dict[str, Any]:
             )
         items.append(item)
     controllers["items"] = items
+    controllers["marker_choices"] = [
+        {"id": int(mid), "label": _catalog_marker_label(int(mid), catalog)}
+        for mid in controllers.get("marker_choices") or []
+    ]
     return controllers
 
 
@@ -2943,6 +2986,11 @@ def _midi_patches_for_form(cfg: AppConfig) -> list[dict[str, Any]]:
     it's named. The dropdown's value is the patch id; ``0`` is "any patch".
     """
     return [{"id": patch.id, "label": patch.label} for patch in cfg.midi.patches if patch.id >= 1]
+
+
+def _midi_device_context(cfg: AppConfig, devices: list[dict[str, Any]]) -> dict[str, Any]:
+    """The connected devices and, per patch id, the one its Device dropdown selects."""
+    return {"discovered_devices": devices, "bound_devices": bound_identifiers(cfg.midi.patches, devices)}
 
 
 def _osc_binding_form_sources(cfg: AppConfig) -> dict[str, Any]:
@@ -3289,6 +3337,9 @@ def _config_dict_redacted(cfg: AppConfig) -> dict[str, Any]:
     # has no such adapter it reads as a pin that is down, which drops the OSC
     # multicast membership there until somebody finds the setting.
     d["osc"].pop("listen_iface", None)
+    # This box's USB sockets and slots: on a peer they would rearrange its controllers.
+    d["controller"].pop("slot_pins", None)
+    d["controller"].pop("slot_markers", None)
     d["rttrpm_output"].pop("source_iface", None)
     d["touch_remote"].pop("enabled", None)
     # Set for this station's GPU and driver: on another station it would hide a working GL display.
@@ -3317,10 +3368,7 @@ def _strip_broadcast_excluded(data: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in data.items() if k not in _BROADCAST_EXCLUDED_SECTIONS}
 
 
-_T = TypeVar("_T")
-
-
-def _find_by_id(items: Sequence[_T], item_id: str) -> tuple[int, _T] | None:
+def _find_by_id[T](items: Sequence[T], item_id: str) -> tuple[int, T] | None:
     """Index-and-item lookup by ``.id`` for the id-keyed config lists (OSC
     transmitters, OSC destinations). ``None`` when nothing matches, so a route
     can 404 on stale UI state (a row deleted in another tab) without crashing.
@@ -3364,6 +3412,8 @@ _DEVICE_IDENTITY_FIELDS: tuple[str, ...] = (
     "markers_catalog_path",
     "testpattern_selected_media",
     "detection.storage_path",
+    "controller.slot_pins",
+    "controller.slot_markers",
     # Set for this station's GPU and driver.
     "display.operator_screen",
 )
@@ -3376,11 +3426,11 @@ def _device_field_owner(cfg: AppConfig, path: str) -> tuple[Any, str]:
 
 
 def capture_device_identity(cfg: AppConfig) -> dict[str, Any]:
-    """Snapshot the device-identity fields of *cfg*."""
+    """Snapshot the device-identity fields of *cfg*, as copies the snapshot owns."""
     out: dict[str, Any] = {}
     for path in _DEVICE_IDENTITY_FIELDS:
         owner, name = _device_field_owner(cfg, path)
-        out[path] = getattr(owner, name)
+        out[path] = copy.deepcopy(getattr(owner, name))
     return out
 
 
@@ -3389,6 +3439,15 @@ def restore_device_identity(cfg: AppConfig, snapshot: Mapping[str, Any]) -> None
     for path, value in snapshot.items():
         owner, name = _device_field_owner(cfg, path)
         setattr(owner, name, value)
+
+
+def restored_from_backup(restored: AppConfig, current: AppConfig) -> AppConfig:
+    """*restored* with this station's identity, name and network access kept from *current*."""
+    restore_device_identity(restored, capture_device_identity(current))
+    restored.psn_system_name = current.psn_system_name
+    # The kept mode decides: a Simple station never takes a pin back from its past.
+    enforce_network_mode(restored)
+    return restored
 
 
 def reset_config_to_defaults(current_cfg: AppConfig) -> AppConfig:
@@ -3463,7 +3522,13 @@ def _backup_before(config_path: str, kind: str, named_by: AppConfig | None = Non
 # as a config.toml load does: no section form the import goes through applies them.
 _FILE_IMPORT_FIELDS: dict[str, tuple[str, ...]] = {
     "detection": ("masks", "masks_enabled"),
-    "controller": ("button_raw_indices", "swap_triggers", "mapped_controller_name", "mapped_controller_guid"),
+    "controller": (
+        "button_raw_indices",
+        "swap_triggers",
+        "mapped_controller_name",
+        "mapped_controller_guid",
+        "button_name_style",
+    ),
     "midi": ("patches",),
     "virtual_faders": ("faders",),
     "ui": ("developer_mode",),
@@ -3483,10 +3548,11 @@ def _apply_file_import_data(cfg: AppConfig, data: dict[str, Any]) -> None:
     draws paths, and the settings read at startup (network backend, update and
     time sync).
     """
-    for name in ("controlled_marker_ids", "viewer_marker_ids"):
+    for name in ("controlled_marker_ids", "viewer_marker_ids", "parked_marker_ids"):
         if name in data:
             setattr(cfg, name, marker_id_list(data[name], path="imported settings", field_name=name))
     cfg.viewer_marker_ids = viewed_with_controlled(cfg.controlled_marker_ids, cfg.viewer_marker_ids)
+    cfg.parked_marker_ids = parked_within(cfg.controlled_marker_ids, cfg.parked_marker_ids)
 
     from openfollow.video.inputs import get_registry
 
@@ -3533,7 +3599,6 @@ def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any], *, pushed: 
     for section in (
         "grid",
         "camera",
-        "ground_grid",
         "controller",
         "osc",
         "otp_output",
@@ -3786,6 +3851,24 @@ def _json_point(value: Any, name: str) -> list[float]:
     return [_json_number(value[0], name), _json_number(value[1], name)]
 
 
+def _parse_lens_opencv_body(data: Any) -> tuple[str, float, float, tuple[int, int] | None]:
+    """Validate a ``/api/wizard/lens/opencv`` body; raises for the endpoint's 400."""
+    from openfollow.scene.opencv_lens import MAX_SIDE
+
+    if not isinstance(data, dict):
+        raise TypeError("body must be an object")
+    text = data["xml"]
+    if not isinstance(text, str):
+        raise TypeError("xml must be text")
+    img_w, img_h = _json_canvas(data)
+    if "calibration_width" not in data and "calibration_height" not in data:
+        return text, img_w, img_h, None
+    sides = [_json_int(data[key], key) for key in ("calibration_width", "calibration_height")]
+    if not all(0 < side <= MAX_SIDE for side in sides):
+        raise ValueError(f"The calibrated picture size must be two whole numbers from 1 to {MAX_SIDE}.")
+    return text, img_w, img_h, (sides[0], sides[1])
+
+
 def _json_canvas(data: dict[str, Any]) -> tuple[float, float]:
     img_w = _json_number(data["image_width"], "image_width")
     img_h = _json_number(data["image_height"], "image_height")
@@ -4006,6 +4089,41 @@ def _export_status(status: ExportStatus) -> dict[str, Any]:
 
 
 _UPDATE_RUNNING = "An update is running."
+_BACKUPS_UNREADABLE = "The backups on this station could not be read."
+_RESTORED_PART_WORDS = {
+    config_restore.CATALOG: "the marker catalog",
+    config_restore.TEMPLATES: "the saved templates",
+    config_restore.LENSES: "the lens calibrations",
+}
+
+
+_ANOTHER_RESTORE = ("Another restore is running.", "Restore again once the station is back.")
+# Serialises restores from their recovery to their commit.
+_RESTORE_LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def _one_restore() -> Iterator[bool]:
+    """Whether this request is the only restore under way; held for its ``with`` block."""
+    if not _RESTORE_LOCK.acquire(blocking=False):
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        _RESTORE_LOCK.release()
+
+
+def _sentence(words: str) -> str:
+    return words[:1].upper() + words[1:]
+
+
+def _and(words: Iterable[str]) -> str:
+    """``a``, ``a and b``, ``a, b and c``."""
+    listed = list(words)
+    return ", ".join(listed[:-1]) + (" and " if len(listed) > 1 else "") + listed[-1]
+
+
 _RESTART_AFTER_UPDATE = "Restart once it has finished."
 
 
@@ -4016,10 +4134,19 @@ def _update_refused(server: Any) -> str:
     return "An update is already running. Please wait for it to finish."
 
 
-def _save_failed(status: int, error: str, action: str = "", **detail: str) -> HTTPResponse:
+# A latency warning session's token, as ``secrets.token_urlsafe(16)`` makes it.
+_LATENCY_WARNING_TOKEN = re.compile(r"[A-Za-z0-9_-]{16,64}")
+
+
+def _save_failed(status: int, error: str, action: str = "", **detail: Any) -> HTTPResponse:
     """A refused or failed save, in the ``{error, action}`` shape the save-feedback line reads."""
     body = json.dumps({"error": error, "action": action, **detail})
     return HTTPResponse(body=body, status=status, headers={"Content-Type": "application/json"})
+
+
+def _restore_not_written(name: str, error: OSError) -> HTTPResponse:
+    logger.warning("Settings backup %s not restored: %s", name, error)
+    return _save_failed(500, "The settings could not be written.", "Details in Logs.")
 
 
 def build_diagnostics_bundle(server: ConfigWebServer, cfg: AppConfig | None = None) -> tuple[str, str]:
@@ -4060,7 +4187,7 @@ def build_diagnostics_bundle(server: ConfigWebServer, cfg: AppConfig | None = No
     # Best-effort on-disk copy. Failure (read-only fs, no perms)
     # logs but does not break the download – operators on locked-
     # down deployments still get the bundle through the browser.
-    written_at = datetime.now(timezone.utc)
+    written_at = datetime.now(UTC)
     diagnostics.write_bundle_to_disk(
         text,
         system_name=server.system_name,
@@ -4222,29 +4349,24 @@ def _config_to_toml(cfg: AppConfig) -> str:
     return tomli_w.dumps(config_to_toml_dict(cfg))
 
 
-def _build_diagnostics_cards(
-    server: ConfigWebServer,
-    cfg: AppConfig,
-) -> dict[str, Any]:
-    """Build the inline summary cards. Separate from the bundle collector
-    because the cards are HTMX-polled every 5 s and don't need the
+def _build_diagnostics_cards(server: ConfigWebServer) -> dict[str, Any]:
+    """The web port, uptime and discovery figures for the live boxes. Separate from the
+    bundle collector because the boxes poll every second and don't need the
     heavyweight sections (USB enumeration, full TOML render)."""
     sender = server.beacon_sender
     receiver = server.beacon_receiver
     peers = server.get_peers()
 
     cards: dict[str, Any] = {
-        "web_port_configured": cfg.web_port,
+        # Against the port this process tried first: a saved change waits for a restart, not a fallback.
+        "web_port_configured": server.port,
         "web_port_display": server.display_port,
-        "web_port_match": cfg.web_port == server.display_port,
+        "web_port_match": server.port == server.display_port,
         "uptime_human": _format_uptime(server.process_uptime_s),
-        "sender_status": "running" if sender.is_alive else "stopped",
-        "sender_chip": _alive_chip(sender.is_alive, sender.consecutive_errors),
+        "network_chip": _network_chip(sender.is_alive, receiver.is_alive, sender.consecutive_errors),
         "sender_last_send": _monotonic_age(sender.last_send_ts),
         "sender_errors": sender.consecutive_errors,
         "sender_send_count": sender.send_count,
-        "receiver_status": "running" if receiver.is_alive else "stopped",
-        "receiver_chip": _alive_chip(receiver.is_alive, 0),
         "receiver_last_recv": _monotonic_age(receiver.last_recv_ts),
         "receiver_packet_count": receiver.packets_received,
         "peer_count": len(peers),
@@ -4252,12 +4374,15 @@ def _build_diagnostics_cards(
     return cards
 
 
-def _alive_chip(is_alive: bool, errors: int) -> str:
-    """Map a thread's alive flag + error counter to a chip class.
-    Stopped → off; alive with errors → warn; alive + clean → ok."""
-    if not is_alive:
-        return "off"
-    return "warn" if errors > 0 else "ok"
+def _network_chip(sender_alive: bool, receiver_alive: bool, send_errors: int) -> tuple[str, str]:
+    """Station network discovery's chip class and word: the worse of the beacon sender and receiver."""
+    if not sender_alive and not receiver_alive:
+        return "off", "Stopped"
+    if not sender_alive:
+        return "off", "Sender stopped"
+    if not receiver_alive:
+        return "off", "Receiver stopped"
+    return ("warn", "Send errors") if send_errors > 0 else ("ok", "Running")
 
 
 def _format_uptime(seconds: float) -> str:
@@ -4368,12 +4493,13 @@ def _is_private_peer_ip(ip: str) -> bool:
 
 
 # Outbound peer connections may only target a plausible OpenFollow web port.
-# A homogeneous fleet serves on the same configured ``web_port``; the two
-# conventional HTTP ports cover mixed defaults. The beacon-advertised port is
+# A homogeneous fleet serves on the same configured ``web_port``; port 80 and
+# the fallback ports a station serves when its own is taken (``server.
+# _FALLBACK_PORTS``) cover mixed defaults. The beacon-advertised port is
 # otherwise attacker-controlled (any 1..65535) – a port-only SSRF that would
 # steer the probe/broadcast helpers (and any signed config body) at an
 # arbitrary service on the beaconing private host.
-_DEFAULT_PEER_PORTS: frozenset[int] = frozenset({80, 8080})
+_DEFAULT_PEER_PORTS: frozenset[int] = frozenset({80, 8080, 2010})
 
 
 def _is_allowed_peer_port(port: int, expected_port: int) -> bool:
@@ -4410,7 +4536,7 @@ def _push_path(path: str, sender: str) -> str:
 _PEER_SETTINGS_FILE: dict[object, str] = {
     "empty-restorable": "its settings file is empty; restart it to restore the settings from its latest backup copy",
     "empty": "its settings file is empty; restart it to start again with default settings",
-    "unreadable": "its settings file could not be read; import a settings file there to replace it",
+    "unreadable": "its settings file could not be read; import a settings file or restore a backup there to replace it",
 }
 
 
@@ -4751,6 +4877,7 @@ def _register_marker_catalog_routes(
                         "station_name": cfg.psn_system_name,
                         "controlled_ids": list(cfg.controlled_marker_ids),
                         "viewer_ids": list(cfg.viewer_marker_ids),
+                        "parked_ids": list(cfg.parked_marker_ids),
                     },
                 }
             )
@@ -4778,6 +4905,7 @@ def _register_marker_catalog_routes(
                     "station_name": cfg.psn_system_name,
                     "controlled_ids": list(cfg.controlled_marker_ids),
                     "viewer_ids": list(cfg.viewer_marker_ids),
+                    "parked_ids": list(cfg.parked_marker_ids),
                 },
                 "next_free_id": catalog.next_free_id(),
             }
@@ -4836,12 +4964,19 @@ def _register_marker_catalog_routes(
                 # equality is the exact check we want.
                 if catalog.get_any(marker_id) is entry:
                     catalog.restore_entry(marker_id, prev)
+                if isinstance(exc, restore_hold.HeldForRestartError):
+                    raise  # a restore's restart: the route plugin answers it
                 logger.exception("Failed to persist catalog: %s", exc)
                 response.status = 500
                 return json.dumps({"error": "could not persist catalog"})
         sync = server.get_marker_catalog_sync()
         if sync is not None:
             sync.request_delta([marker_id])
+        # The rename is saved and sent to peers whatever the running outputs make of it.
+        try:
+            server.apply_marker_renames([marker_id])
+        except Exception:
+            logger.exception("Marker %d renamed, but the running outputs did not take the new name", marker_id)
         return json.dumps({"success": True, "entry": _catalog_entry_json(entry)})
 
     @app.delete("/api/markers/catalog/<marker_id:int>")
@@ -4893,6 +5028,8 @@ def _register_marker_catalog_routes(
                 # clobber that peer's newer state.
                 if catalog.get_any(marker_id) is tomb:
                     catalog.restore_entry(marker_id, prev)
+                if isinstance(exc, restore_hold.HeldForRestartError):
+                    raise  # a restore's restart: the route plugin answers it
                 logger.exception("Failed to persist catalog: %s", exc)
                 response.status = 500
                 return json.dumps({"error": "could not persist catalog"})
@@ -4911,6 +5048,7 @@ def _register_marker_catalog_routes(
                 if new_controlled != fresh.controlled_marker_ids or new_viewer != fresh.viewer_marker_ids:
                     fresh.controlled_marker_ids = new_controlled
                     fresh.viewer_marker_ids = new_viewer
+                    fresh.parked_marker_ids = parked_within(new_controlled, fresh.parked_marker_ids)
                     save_config(fresh, server.config_path)
             except OSError:
                 logger.exception(
@@ -4967,9 +5105,25 @@ def _register_marker_catalog_routes(
                 out.append(v)
             return out
 
+        def _park_changes() -> dict[int, bool] | None:
+            # Only the rows whose P was clicked: a park set elsewhere (OSC) since the page read it must survive.
+            raw = data.get("park", {})
+            if not isinstance(raw, dict):
+                return None
+            changes: dict[int, bool] = {}
+            for key, value in raw.items():
+                if not isinstance(key, str) or not key.isdecimal() or not isinstance(value, bool):
+                    return None
+                mid = int(key)
+                if mid < 1 or catalog.get(mid) is None:
+                    return None
+                changes[mid] = value
+            return changes
+
         controlled = _coerce("controlled_ids")
         viewer = _coerce("viewer_ids")
-        if controlled is None or viewer is None:
+        park = _park_changes()
+        if controlled is None or viewer is None or park is None:
             response.status = 400
             return json.dumps({"error": "invalid id list"})
 
@@ -4984,6 +5138,10 @@ def _register_marker_catalog_routes(
             cfg.controlled_marker_ids = _keep_order(cfg.controlled_marker_ids, controlled)
             cfg.viewer_marker_ids = viewed_with_controlled(
                 cfg.controlled_marker_ids, _keep_order(cfg.viewer_marker_ids, viewer)
+            )
+            # Only a controlled marker can be parked: leaving View & Control clears it.
+            cfg.parked_marker_ids = parked_within(
+                cfg.controlled_marker_ids, park_changes_applied(cfg.parked_marker_ids, park)
             )
             save_config(cfg, server.config_path)
         return json.dumps({"success": True})
@@ -5139,6 +5297,8 @@ def _register_gallery_routes(app: Bottle, server: ConfigWebServer) -> None:
             media_store.save_upload(Path(staged))
         except MediaStoreError as exc:
             return _render_gallery_grid(server, error=exc.message, action=exc.action)
+        except HTTPResponse:  # the station's own answer, e.g. 408 for a body that stopped arriving
+            raise
         except Exception:
             logger.exception("Media upload failed")
             return _render_gallery_grid(server, error="Upload failed.")
@@ -5194,6 +5354,14 @@ def _camera_view(cfg: AppConfig) -> tuple[Any, tuple[float, float, float, float]
     return camera_params(cfg.camera), effective_lens(cfg)
 
 
+def _camera_for_client(cfg: AppConfig) -> dict[str, float]:
+    """The saved camera and its lens for a page that projects in the browser (``static/js/camera-model.js``)."""
+    c = cfg.camera
+    k1, k2, cx, cy = effective_lens(cfg)
+    pose = {"pos_x": c.pos_x, "pos_y": c.pos_y, "pos_z": c.pos_z, "pitch": c.pitch, "yaw": c.yaw, "roll": c.roll}
+    return {**pose, "fov": c.fov, "k1": k1, "k2": k2, "cx": cx, "cy": cy}
+
+
 # Chords per straight world segment when the lens bows it, as on the Operator Screen.
 _PICTURE_SUBDIVISIONS = 24
 # Upper bound on the world points one picture request projects once subdivided: 1666 points a request.
@@ -5245,8 +5413,8 @@ def _picture_size(data: Mapping[str, Any]) -> tuple[float, float]:
     return w, h
 
 
-def _world_polylines(raw: Any, dims: int) -> list[list[list[float]]]:
-    """A list of polylines of finite ``dims``-number points; ValueError otherwise."""
+def _world_polylines(raw: Any) -> list[list[list[float]]]:
+    """A list of polylines of finite ``[x, y, z]`` points; ValueError otherwise."""
     if not isinstance(raw, list):
         raise ValueError("polylines must be a list")
     out: list[list[list[float]]] = []
@@ -5256,12 +5424,12 @@ def _world_polylines(raw: Any, dims: int) -> list[list[list[float]]]:
             raise ValueError("each polyline must be a list of points")
         pts: list[list[float]] = []
         for pt in line:
-            if not isinstance(pt, list) or len(pt) != dims or any(isinstance(v, bool) for v in pt):
-                raise ValueError(f"each point must be {dims} numbers")
+            if not isinstance(pt, list) or len(pt) != 3 or any(isinstance(v, bool) for v in pt):
+                raise ValueError("each point must be 3 numbers")
             try:
                 vals = [float(v) for v in pt]
             except (TypeError, ValueError, OverflowError) as exc:
-                raise ValueError(f"each point must be {dims} numbers") from exc
+                raise ValueError("each point must be 3 numbers") from exc
             if not all(math.isfinite(v) for v in vals):
                 raise ValueError("points must be finite")
             pts.append(vals)
@@ -5276,8 +5444,6 @@ def _register_scene_routes(app: Bottle, server: ConfigWebServer) -> None:
     """Register the camera-picture routes the plan editors share: world to picture and back."""
     import numpy as np
 
-    from openfollow.runtime.overlay_draw_scene import _MAX_GRID_LINES_PER_AXIS
-    from openfollow.scene.ground_grid import grid_segments_in_polygon, main_grid_steps
     from openfollow.scene.solver import invert_overlay_distortion, unproject_to_plane
 
     def _body() -> dict[str, Any] | str:
@@ -5296,8 +5462,8 @@ def _register_scene_routes(app: Bottle, server: ConfigWebServer) -> None:
             return data
         try:
             w, h = _picture_size(data)
-            lines = _world_polylines(data.get("polylines", []), 3)
-            (points,) = _world_polylines([data.get("points", [])], 3)
+            lines = _world_polylines(data.get("polylines", []))
+            (points,) = _world_polylines([data.get("points", [])])
         except ValueError as exc:
             return _json_error(400, str(exc))
         cfg = _last_whole_config(server)
@@ -5331,40 +5497,6 @@ def _register_scene_routes(app: Bottle, server: ConfigWebServer) -> None:
         if not (np.isfinite(world[0]) and np.isfinite(world[1])):
             return _json_error(422, "That point of the picture does not reach the stage.")
         return json.dumps({"x": float(world[0]), "y": float(world[1]), "z": z})
-
-    @app.post("/api/ground_grid/view")
-    def ground_grid_view() -> Any:
-        """A ground-grid polygon at height ``z`` as the camera sees it: outline, corners and the clipped grid lines."""
-        response.content_type = "application/json"
-        data = _body()
-        if isinstance(data, str):
-            return data
-        try:
-            w, h = _picture_size(data)
-            (verts,) = _world_polylines([data.get("vertices")], 2)
-            if isinstance(data.get("z"), bool):
-                raise ValueError("z must be a number")
-            z = float(data["z"])
-            if not math.isfinite(z):
-                raise ValueError("z must be finite")
-        except (KeyError, TypeError, ValueError, OverflowError):
-            return _json_error(400, "vertices, z, w and h must be numbers")
-        cfg = _last_whole_config(server)
-        g = cfg.grid
-        verts = verts[:GROUND_GRID_MAX_VERTICES]
-        corners = [[*v, z] for v in verts]
-        step_x, step_y = main_grid_steps(g.width, g.depth, g.spacing, _MAX_GRID_LINES_PER_AXIS)
-        lines = grid_segments_in_polygon(
-            verts, g.x_offset - g.width / 2.0, g.y_offset - g.depth / 2.0, step_x, step_y, z, _MAX_GRID_LINES_PER_AXIS
-        )
-        outline = corners + corners[:1] if len(corners) >= 3 else []
-        return json.dumps(
-            {
-                "outline": _picture_polylines(cfg, w, h, [outline])[0],
-                "lines": _picture_polylines(cfg, w, h, [seg.tolist() for seg in lines]),
-                "corners": _picture_points(*_camera_view(cfg), w, h, corners),
-            }
-        )
 
 
 _REMOTE_API = "/api/remote"
@@ -5649,7 +5781,7 @@ def _register_path_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.get(_PATHS_API + "/marker/<marker_id:int>")
     def paths_marker_position(marker_id: int) -> Any:
-        """Where a marker is on the wire, for "Point from marker"."""
+        """Where a marker is, without a zone's lift, for "Point from marker"."""
         response.content_type = "application/json"
         position = server.get_marker_position(marker_id)
         if position is None:
@@ -5724,6 +5856,9 @@ def _refuse_over_unreadable_config(callback: Callable[..., Any]) -> Callable[...
             return _save_failed(
                 409, f"The settings file on this station {said}", f"{step}.", settings_file=config_problem_kind(error)
             )
+        except restore_hold.HeldForRestartError as error:
+            logger.warning("Not saved: %s", error)
+            return _save_failed(409, "OpenFollow is restarting.", "Save again once it is back.")
 
     return wrapper
 
@@ -5806,14 +5941,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     def _refused(refusal: HostRefusal) -> HTTPResponse:
         """The 403 for a change made through a refused name, in the shape its caller reads."""
-        # Closing with unread request data resets the connection, which can drop
-        # this answer before the browser reads it. Past the pre-auth cap, leave it.
-        try:
-            length = request.content_length
-        except ValueError:  # a malformed Content-Length: read nothing, still refuse
-            length = -1
-        if 0 < length <= peer_auth.MAX_SIGNED_BODY_SIZE:
-            request.body.read()
         if not _is_navigation():
             body = json.dumps({"error": refusal.message, "action": refusal.action, "href": refusal.href})
             return HTTPResponse(body=body, status=403, headers={"Content-Type": "application/json"})
@@ -5822,6 +5949,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             "host_refusal": refusal,
             "on_device": _is_on_device_request(),
             "cancel_button": _cancel_button_label(cfg),
+            **_platform_context(cfg),
         }
         if request.path == "/login":
             page = template("login", error=f"Not logged in. {refusal.message}", **page_context)
@@ -6024,9 +6152,22 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         data: dict[str, Any] = {
             "config": cfg,
             "saved": saved,
+            "latency": _latency_view(cfg),
         }
         data.update(_build_input_template_data(cfg, video))
         return template("partials/video_source", **data)
+
+    def _latency_view(cfg: AppConfig) -> dict[str, Any]:
+        """The Camera Latency row; hidden while the saved source is the Media Gallery."""
+        return latency_row_view(
+            server.get_runtime_stats(), gallery=cfg.video_source_type == MEDIA_GALLERY, now=time.time()
+        )
+
+    def _latency_dialog(*, before_start: bool) -> Any:
+        dialog = latency_dialog_view(server.get_latency_status(), before_start=before_start)
+        # The warnings renew the Operator Screen's card under this token while they show.
+        warning = server.latency_warning.token() if dialog["state"] == "intro" else ""
+        return template("partials/video_source_latency_dialog", dialog=dialog, warning=warning)
 
     def _load_config_for_edit() -> AppConfig:
         """Fresh disk load with the live per-marker move speeds overlaid.
@@ -6049,11 +6190,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         extra_fields: dict[str, Any] | None = None,
     ) -> AppConfig:
         form_data = dict(request.forms)
-        if section == "marker":
-            apply_renamed_marker_keys(form_data)
-        # Test ``form_data``, not ``request.forms``: a checkbox translated from
-        # its former name above is present here and nowhere else, and would
-        # otherwise be synthesised straight back to False.
         for field_name in bool_fields:
             form_data[field_name] = field_name in form_data
         if extra_fields:
@@ -6197,9 +6333,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # ``/section/detection`` or the dropdowns collapse to "(unavailable)"
         # fallbacks even when extras are installed.
         extras = _get_detection_extras_status()
-        # Diagnostics card data for the initial render (same shape the 5 s
-        # poll returns), so the section reads filled-in values immediately.
-        diag_cards = _build_diagnostics_cards(server, config)
+        # The live boxes' figures for the initial render (what the poll returns),
+        # so the section reads filled-in values immediately.
+        diag_cards = _build_diagnostics_cards(server)
         osc_user_templates, osc_system_templates = _osc_dropdown_templates()
         return template(
             "index",
@@ -6245,7 +6381,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # MIDI Devices table needs the live discovered-devices list so
             # it renders connected ports at first paint, not after the first
             # HTMX refresh.
-            midi_discovered_devices=server.midi_discovered_devices(),
+            midi_devices=_midi_device_context(config, server.midi_discovered_devices()),
             # Per-controlled-marker fader snapshot so the MIDI page's
             # read-only Marker Faders strips render populated at first paint.
             marker_fader_values=server.marker_fader_values(),
@@ -6260,21 +6396,20 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             on_device=_is_on_device_request(),
             cancel_button=_cancel_button_label(config),
             psn_source_advisory=server.get_psn_source_advisory(),
+            latency=_latency_view(config),
             **_build_input_template_data(config, server.get_runtime_stats().get("video")),
         )
 
     @app.get("/section/overview")
     def get_overview() -> Any:
-        """Get the station network overview partial.
-
-        Overview is strictly read-only peer discovery; the network-interface
+        """The Station Network rows: read-only peer discovery; the network-interface
         block lives on the General tab.
         """
         peers = server.get_peers()
         local = server.get_local_peer_info()
-        # Poll returns only the peer rows – the section shell is rendered once
-        # at page load (partials/overview) and never re-swapped, so it can't
-        # flicker. See partials/overview.tpl / overview_peers.tpl.
+        # Poll returns only the peer rows – the box around them is rendered once
+        # at page load (partials/diagnostics) and never re-swapped, so it can't
+        # flicker.
         return template(
             "partials/overview_peers",
             peers=peers,
@@ -6282,28 +6417,24 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             station_down=server.station_interface_down,
         )
 
-    @app.get("/section/statistics")
-    def get_statistics() -> Any:
-        """Get the live runtime statistics partial."""
-        return template("partials/statistics", stats=server.get_runtime_stats())
-
-    @app.get("/section/statistics/alerts")
-    def get_statistics_alerts() -> Any:
-        """The Live Statistics announcer; 204 while its text is unchanged."""
-        stats = server.get_runtime_stats()
-        if request.query.get("key") == statistics_alerts(stats).key():
-            return HTTPResponse(status=204)
-        return template("partials/statistics_alerts", stats=stats)
-
     @app.get("/section/controller_slots")
     def get_controller_slots() -> Any:
         """The Controller Slots table, from the main loop's latest stats snapshot."""
         return template("partials/controller_slots_table", controllers=_controller_slots_view(server))
 
-    @app.post("/section/controller_slots/<action:re:identify|forget>/<index:int>")
+    @app.post("/section/controller_slots/<action:re:identify|forget|pin|unpin|cancel-pin>/<index:int>")
     def controller_slot_action(action: str, index: int) -> Any:
-        """Queue Identify / Forget for one slot; the main loop, which owns the slots, runs it."""
+        """Queue an action for one slot; the main loop, which owns the slots, runs it."""
         server.request_slot_action(action, index, request.forms.get("ref", ""))
+        return template("partials/controller_slots_table", controllers=_controller_slots_view(server))
+
+    @app.post("/section/controller_slots/marker/<index:int>")
+    def controller_slot_marker(index: int) -> Any:
+        """Queue the marker picked for one slot; the main loop checks it is one this station controls."""
+        raw = request.forms.get("marker_id", "")
+        if not raw.isdigit():
+            return _save_failed(400, "The station received no marker.", "Pick one of the controlled markers.")
+        server.request_slot_marker(index, request.forms.get("ref", ""), int(raw))
         return template("partials/controller_slots_table", controllers=_controller_slots_view(server))
 
     @app.get("/section/video_source/failure")
@@ -6313,27 +6444,90 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         Only the box: re-swapping the Video Source form would discard whatever
         the operator is part-way through typing into the URL or password
         fields, which is precisely what they are there to do when it fails.
+        The Camera & Grid tab sends the Measure latency row's key too; between
+        runs a changed row rides along out of band.
         """
-        video = server.get_runtime_stats().get("video") or {}
-        failure_text = str(video.get("failure_text") or "")
-        error_message = str(video.get("error_message") or "")
-        # Keyed on what there is to show, not on whether a classification
-        # exists: several receiver paths publish an error with no verdict, and
-        # Statistics renders that raw text. Dropping it here would leave this
-        # box empty while the other said something.
-        if not (failure_text or error_message):
+        return _video_source_boxes() + _latency_row_if_changed(request.query.get("latency"))
+
+    def _video_source_boxes() -> str:
+        data = _video_box_data(server.get_runtime_stats().get("video"))
+        if not (data["video_failure_text"] or data["video_error_message"] or data["video_limits_text"]):
             return ""
-        action = str(video.get("failure_action") or "")
-        token = video_error_token(failure_text, error_message, action)
-        return template(
-            "partials/video_error_box",
-            failure_text=failure_text,
-            error_message=error_message,
-            action=action,
-            token=token,
-            scope="source",
-            live="status",
+        return str(
+            template(
+                "partials/video_source_boxes",
+                failure_text=data["video_failure_text"],
+                error_message=data["video_error_message"],
+                failure_action=data["video_failure_action"],
+                limits_text=data["video_limits_text"],
+                limits_action=data["video_limits_action"],
+            )
         )
+
+    def _latency_row_if_changed(seen: str | None) -> str:
+        """The Camera Latency row to swap in out of band, when its key differs from ``seen``."""
+        if seen is None:
+            return ""
+        view = _latency_view(_request_scoped_config())
+        if view["key"] == seen:
+            return ""
+        return str(template("partials/video_source_latency", latency=view, oob=True))
+
+    @app.get("/section/video_source/latency")
+    def get_video_source_latency() -> Any:
+        """The Camera Latency row, fetched again when the Measure dialog closes."""
+        return template("partials/video_source_latency", latency=_latency_view(_request_scoped_config()))
+
+    @app.get("/section/video_source/latency/dialog")
+    def get_video_source_latency_dialog() -> Any:
+        """The Measure dialog: its warnings, or a run going on; ``poll`` is a run's progress box asking again.
+
+        While the run lasts the progress box answers alone. Once it ended, the whole dialog in its
+        outcome replaces the dialog's body.
+        """
+        if request.query.get("poll") is None:
+            return _latency_dialog(before_start=True)
+        dialog = latency_dialog_view(server.get_latency_status(), before_start=False)
+        if dialog["state"] == "running":
+            return template("partials/video_source_latency_dialog", dialog=dialog, progress_only=True)
+        response.set_header("HX-Retarget", "#latency-dialog")
+        response.set_header("HX-Reswap", "outerHTML")
+        return _latency_dialog(before_start=False)
+
+    def _latency_warning_token(value: Any) -> str | None:
+        token = _as_str(value, "")
+        return token if _LATENCY_WARNING_TOKEN.fullmatch(token) else None
+
+    @app.post("/section/video_source/latency/warning")
+    def renew_latency_warning() -> Any:
+        """The Measure dialog shows its warnings: put the Operator Screen's card up, or keep it up."""
+        token = _latency_warning_token(request.forms.get("token"))
+        if token is None:
+            return HTTPResponse(status=400)
+        server.latency_warning.renew(token)
+        return HTTPResponse(status=204)
+
+    @app.post("/section/video_source/latency/warning/close")
+    def close_latency_warning() -> Any:
+        """The Measure dialog closed on its warnings: the card goes at once (a beacon, so no answer is read)."""
+        token = _latency_warning_token(request.query.get("token"))
+        if token is None:
+            return HTTPResponse(status=400)
+        server.latency_warning.close(token)
+        return HTTPResponse(status=204)
+
+    @app.post("/section/video_source/latency")
+    def start_video_source_latency() -> Any:
+        """Start a camera latency run and answer with the dialog measuring; 409 with the reason while one cannot run."""
+        refusal = latency_unavailable(server.get_runtime_stats())
+        if refusal is not None:
+            failure = LatencyFailure(refusal)
+            return _save_failed(409, failure.text, failure.action)
+        token = _latency_warning_token(request.forms.get("token"))
+        if token is not None:
+            server.latency_warning.close(token)
+        server.request_latency()
+        return _latency_dialog(before_start=False)
 
     @app.get("/section/general/network_state")
     def get_general_network_state() -> Any:
@@ -6357,6 +6551,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     # ----------------------------------------------------------------------
 
     _NETWORK_METHODS = ("dhcp", "dhcp_manual", "static")
+    _DHCP_MANUAL_ABSENT = (
+        "DHCP with manual address takes its subnet from a lease, and this interface has none yet. Use Static."
+    )
     _NETWORK_METHOD_LABELS = {
         "dhcp": "DHCP",
         "dhcp_manual": "DHCP + manual",
@@ -6453,6 +6650,16 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 }
                 for name in net["interfaces"]
             ]
+        present = {str(row.get("name", "")) for row in rows}
+        saved = [row for row in server.get_network_saved() if str(row.get("name", "")) not in present]
+        opened = next((row for row in saved if iface and row.get("name") == iface), None)
+        if opened is not None:
+            net.update(
+                active_interface=iface,
+                method=_network_method_value(str(opened.get("method", "dhcp"))),
+                **{key: opened.get(key) for key in ("address", "prefix", "subnet_mask", "router", "lease_display")},
+                dns=list(opened.get("dns", [])),
+            )
         # A VLAN row carries its tag so the operator can tell eth0.10 apart
         # from a physical NIC that happens to be named with a dot, and so the
         # delete control renders only where deleting is meaningful.
@@ -6499,6 +6706,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # Only what the backend lists as a VLAN: that is what Advanced can remove.
             vlan_names = set(vlan_ids) if net["supports_vlans"] else set()
             _narrow_to_station(net, mode_cfg.psn_source_iface, vlan_names, labels)
+        else:
+            net["iface_rows"] += _saved_rows(saved, labels)
         _add_adapter_fields(net, labels, label_result)
         if simple:
             # The card lists the station interface alone, so every other labelled adapter is absent from it.
@@ -6541,12 +6750,14 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         Returns the interface the station resolves to. ``station_names`` names each as the UI shows it.
         """
         from openfollow.net_adapters import display_name
-        from openfollow.net_utils import auto_station_iface
+        from openfollow.net_utils import auto_station_iface, offered_loopback_ifaces
 
         auto = auto_station_iface()
         net["station_iface"] = station
         net["station_auto"] = auto
         net["station_options"] = [(name, addr) for name, addr in options if name and name not in LOOPBACK_NAMES]
+        # The network backend never lists loopback; where the host offers it, it is offered here too.
+        net["station_options"] += offered_loopback_ifaces()
         if station and station not in [name for name, _addr in net["station_options"]]:
             net["station_options"].append((station, ""))
         named = {station, auto, *(name for name, _addr in net["station_options"])}
@@ -6556,12 +6767,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
     def _narrow_to_station(net: dict[str, Any], station: str, vlan_names: set[str], labels: Mapping[str, str]) -> None:
         """Simple: the card shows the station interface alone, and offers the picker that moves it."""
         from openfollow.net_adapters import display_name
+        from openfollow.net_utils import offered_loopback
 
         rows = net["iface_rows"]
         options = [(str(row.get("name", "")), str(row.get("address", ""))) for row in rows]
         resolved = _station_picker(net, station, options, labels)
         # Automatic with no address anywhere shows the first interface, as the Operator Screen edits it.
-        resolved = resolved or next((name for name, _addr in net["station_options"]), "")
+        resolved = resolved or next((name for name, _addr in net["station_options"] if not offered_loopback(name)), "")
         if resolved and resolved not in [name for name, _addr in options]:
             from openfollow.net_utils import get_iface_ipv4
 
@@ -6570,6 +6782,27 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         net["leftover_vlans"] = sorted(display_name(name, labels) for name in vlan_names if name and name != resolved)
         net["iface_rows"] = [row for row in rows if str(row.get("name", "")) == resolved]
         net["vlan_parents"] = []
+
+    def _saved_rows(saved: list[dict[str, Any]], labels: Mapping[str, str]) -> list[dict[str, Any]]:
+        """The adapters that are not plugged in but have saved settings, each VLAN under its parent."""
+        from openfollow.net_adapters import display_name
+
+        rows = []
+        for row in sorted(
+            saved, key=lambda r: (str(r.get("vlan_parent") or r.get("name", "")), r.get("vlan_id") or -1)
+        ):
+            name = str(row.get("name", ""))
+            rows.append(
+                {
+                    **row,
+                    "absent": True,
+                    "method_label": _NETWORK_METHOD_LABELS.get(str(row.get("method", "")), ""),
+                    "forget_vlans": [
+                        display_name(str(r.get("name", "")), labels) for r in saved if r.get("vlan_parent") == name
+                    ],
+                }
+            )
+        return rows
 
     def _add_adapter_fields(
         net: dict[str, Any], labels: Mapping[str, str], label_result: dict[str, str] | None
@@ -6581,6 +6814,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         names = [str(row.get("name", "")) for row in net["iface_rows"]]
         for row, name in zip(net["iface_rows"], names, strict=True):
             row.update(adapter_fields(name, labels))
+            if row.get("absent") and row.get("vlan_parent"):
+                row["vlan_on"] = display_name(str(row["vlan_parent"]), labels)
             if name and name == result.get("iface"):
                 row["label_error"] = result.get("error", "")
                 row["label_entered"] = result.get("entered", row["label"])
@@ -6591,7 +6826,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         ]
         net["display_names"] = {name: display_name(name, labels) for name in names}
 
-    def _resolve_network_iface(iface: str) -> tuple[str | None, str]:
+    def _resolve_network_iface(iface: str, *, saved_ok: bool = False) -> tuple[str | None, str]:
         """Validate the posted interface against the interfaces the backend reports.
 
         A privileged adapter write must never receive a raw/forged POST value.
@@ -6601,8 +6836,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         would rewrite and bounce the one the operator is connected over, and the
         page that posted it had simply gone stale behind an unplugged adapter.
 
+        With ``saved_ok`` an interface that is not present but has saved
+        settings resolves to itself: an apply only saves to it.
+
         Returns ``(iface, "")``, or ``(None, message)`` naming what to do.
         """
+        if saved_ok and iface and iface in _saved_names():
+            return (iface, "")
         cfg = server.get_network_config(iface or None)
         if not cfg or not cfg.get("interfaces"):
             return (None, "Network interface not available on this host.")
@@ -6614,6 +6854,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         if resolved is None:
             return (None, "Network interface not available on this host.")
         return (resolved, "")
+
+    def _saved_names() -> set[str]:
+        return {str(row.get("name", "")) for row in server.get_network_saved()} - {""}
 
     def _network_vlan_response(
         *,
@@ -6691,14 +6934,14 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         rows = server.get_network_interfaces() or []
         snapshot = server.get_network_config(None) or {}
         names = {str(row.get("name", "")) for row in rows} | {str(n) for n in snapshot.get("interfaces", [])}
-        return {name for name in names if name}
+        return {name for name in names if name} | _saved_names()
 
     def _card_in_progress() -> dict[str, Any]:
         """The unsaved edit row and Add VLAN form a label request carried, for its re-render."""
         forms = request.forms
         kept: dict[str, Any] = {}
         editing = (forms.get("editing_iface") or "").strip()
-        if editing and _resolve_network_iface(editing)[0] == editing:
+        if editing and _resolve_network_iface(editing, saved_ok=True)[0] == editing:
             _label_iface, method, fields = _parse_network_form()
             kept.update(
                 iface=editing, editable=True, overrides={"active_interface": editing, "method": method, **fields}
@@ -6746,10 +6989,37 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             save_config(cfg, server.config_path)
         return _label_card(cfg.interface_labels, {})
 
+    @app.post("/section/network/forget")
+    def network_forget() -> Any:
+        """Delete the saved settings of an adapter that is not plugged in, with the VLANs on it, and their labels."""
+        iface = (request.forms.get("iface") or "").strip()
+        # Read first: a settings file that does not read refuses the Forget before any profile is deleted.
+        _load_config_for_edit()
+        before = {str(row.get("name", "")): row for row in server.get_network_saved()}
+        if iface not in before:
+            # A stale row: plugged in again, or forgotten from another browser. Truncated as it is echoed.
+            result = ApplyResult(ok=False, message=f"{iface[:_IFNAME_MAX]} has no saved settings.")
+        else:
+            result = server.forget_network_interface(iface)
+        labels: dict[str, str] | None = None
+        if result.ok:
+            # What is still saved stays labelled: a VLAN profile the delete could not reach keeps its row.
+            left = _saved_names()
+            gone = {name for name, row in before.items() if iface in (name, row.get("vlan_parent"))} - left
+            with _config_write_lock:
+                cfg = _load_config_for_edit()
+                if gone & set(cfg.interface_labels):
+                    cfg.interface_labels = {n: label for n, label in cfg.interface_labels.items() if n not in gone}
+                    save_config(cfg, server.config_path)
+                labels = cfg.interface_labels
+        banner = {"kind": "ok" if result.ok else "error", "text": result.message}
+        net = _build_network_form_context(labels=labels, banner=banner, **_card_in_progress())
+        return template("partials/network", net=net)
+
     @app.post("/section/network/apply")
     def network_apply() -> Any:
         iface, method_value, fields = _parse_network_form()
-        resolved, resolve_error = _resolve_network_iface(iface)
+        resolved, resolve_error = _resolve_network_iface(iface, saved_ok=True)
         if resolved is None:
             return template(
                 "partials/network",
@@ -6760,6 +7030,17 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             )
         iface = resolved
         method = Ipv4Method(method_value)
+        if method == Ipv4Method.DHCP_WITH_MANUAL_ADDRESS and iface in _saved_names():
+            # The subnet and router come from the lease, and an adapter that is not plugged in has none.
+            return template(
+                "partials/network",
+                net=_build_network_form_context(
+                    iface=iface,
+                    overrides={"active_interface": iface, "method": method_value, **fields},
+                    editable=True,
+                    banner={"kind": "error", "text": _DHCP_MANUAL_ABSENT},
+                ),
+            )
         address = fields["address"] or None
         # Router + prefix are operator-controlled (and validated) ONLY for a
         # static config. For dhcp_manual they come from the DHCP lease, and
@@ -7091,10 +7372,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         return template("partials/network", net=_build_network_form_context())
 
     # ----------------------------------------------------------------------
-    # Diagnostics routes. Three endpoints, all PIN-gated through
-    # ``_check_auth``. ``/section/diagnostics`` is the inline summary cards;
-    # the two ``/api/diagnostics/...`` endpoints serve the on-demand
-    # bundle / peer probe. Provider wiring lives in
+    # Status & Diagnostics routes, all PIN-gated through ``_check_auth``.
+    # ``/section/diagnostics`` is the live boxes and ``/section/diagnostics/alerts``
+    # their announcer; the ``/api/diagnostics/...`` endpoints serve the
+    # on-demand bundle / peer probe. Provider wiring lives in
     # ``_build_diagnostics_providers`` so the closure captures the
     # request-scoped config without coupling the server class to the
     # diagnostics import surface.
@@ -7102,15 +7383,20 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
     @app.get("/section/diagnostics")
     def get_diagnostics() -> Any:
-        cfg = _request_scoped_config()
-        cards = _build_diagnostics_cards(server, cfg)
-        # Poll returns only the live cards – the section shell + tools are
-        # rendered once at page load (partials/diagnostics) and never
-        # re-swapped, so they can't flicker. See partials/diagnostics_cards.tpl.
+        """The live boxes only: the section shell and its tools render once (partials/diagnostics)."""
         return template(
             "partials/diagnostics_cards",
-            cards=cards,
+            stats=server.get_runtime_stats(),
+            cards=_build_diagnostics_cards(server),
         )
+
+    @app.get("/section/diagnostics/alerts")
+    def get_diagnostics_alerts() -> Any:
+        """The Status & Diagnostics announcer; 204 while its text is unchanged."""
+        stats = server.get_runtime_stats()
+        if request.query.get("key") == diagnostics_alerts(stats).key():
+            return HTTPResponse(status=204)
+        return template("partials/diagnostics_alerts", stats=stats)
 
     @app.get("/api/diagnostics/bundle")
     def api_diagnostics_bundle() -> Any:
@@ -7238,7 +7524,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             rows.append(
                 "<tr><td colspan='3'>"
                 "<span class='field-note'>No peers known yet – "
-                "wait for discovery or check beacon health above.</span>"
+                "wait for discovery or check Station network discovery above.</span>"
                 "</td></tr>"
             )
         rows.append("</tbody></table>")
@@ -7259,6 +7545,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             extra["psn_source_advisory"] = server.get_psn_source_advisory()
         elif name == "video_source":
             extra.update(_build_input_template_data(config, server.get_runtime_stats().get("video")))
+            extra["latency"] = _latency_view(config)
         elif name == "mouse3d":
             extra["mouse3d_status"] = _mouse3d_status_view(server)
         elif name in ("controller", "gamepad"):
@@ -7347,6 +7634,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         offers Restart OpenFollow.
         """
         cfg = _save_section_from_form("interface_assignment")
+        _prefetch_video_source(cfg)
         return _render_interface_assignment(cfg, saved=True)
 
     @app.post("/section/video_source")
@@ -7358,6 +7646,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             apply_section_data(cfg, "video_source", form_data)
             save_config(cfg, server.config_path)
 
+        _prefetch_video_source(cfg)
         return _render_video_source(cfg, saved=True)
 
     @app.post("/section/general")
@@ -7571,6 +7860,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     "downgrade": not _is_newer(version.replace("~", ""), openfollow.__version__),
                 }
             )
+        except HTTPResponse:  # the station's own answer, e.g. 408 for a body that stopped arriving
+            _discard_staged(staged_path)
+            raise
         except Exception as exc:  # validation / stream failure
             _discard_staged(staged_path)
             return json.dumps({"ok": False, "error": str(exc)})
@@ -7603,12 +7895,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Update grid settings."""
         cfg = _save_section_from_form("grid", bool_fields=("visible", "origin_visible"))
         return template("partials/grid", config=cfg, saved=True)
-
-    @app.post("/section/ground_grid")
-    def update_ground_grid() -> Any:
-        """Update the experimental ground grid, its polygon included."""
-        cfg = _save_section_from_form("ground_grid", bool_fields=("enabled", "visible"))
-        return template("partials/ground_grid", config=cfg, saved=True)
 
     @app.post("/section/movement")
     def update_movement() -> Any:
@@ -7782,7 +8068,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             config=cfg,
             saved=saved,
             selected_fader=selected_fader,
-            discovered_devices=server.midi_discovered_devices(),
+            **_midi_device_context(cfg, server.midi_discovered_devices()),
             midi_patches=_midi_patches_for_form(cfg),
             valid_fader_midi_types=VALID_FADER_MIDI_TYPES,
             marker_fader_values=server.marker_fader_values(),
@@ -8341,7 +8627,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Update global trigger-zone settings (zones CRUD handled separately)."""
         cfg = _save_section_from_form(
             "trigger_zones",
-            bool_fields=("enabled", "show_overlay"),
+            bool_fields=("enabled", "show_overlay", "highlight_occupied"),
         )
         return template("partials/trigger_zones", config=cfg, saved=True)
 
@@ -8894,6 +9180,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             row=row,
             kind=kind,
             binding_overlap=functools.partial(osc_trigger_overlap, cfg.controller),
+            button_name_style=cfg.controller.button_name_style,
             valid_rates=VALID_OSC_TRANSMITTER_RATES,
             valid_edges=VALID_TRIGGER_EDGES,
             valid_modifiers=VALID_TRIGGER_MODIFIERS,
@@ -9379,7 +9666,6 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 payload = {
                     "camera": asdict(cfg.camera),
                     "grid": asdict(cfg.grid),
-                    "ground_grid": asdict(cfg.ground_grid),
                 }
         elif template_type == "paths":
             with _config_write_lock:
@@ -9494,15 +9780,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             # The schema requires BOTH halves, so this apply path needs no
             # conditional checks – a partial template is rejected by the
             # loader and would have returned 404 / 400 above.
-            from openfollow.configuration import CameraConfig, GridConfig, GroundGridConfig, without_former_camera_keys
+            from openfollow.configuration import CameraConfig, GridConfig, without_former_camera_keys
 
             with _config_write_lock:
                 cfg = _config_for_save(server)
                 cfg.camera = CameraConfig(**without_former_camera_keys(tpl.payload["camera"]))
                 cfg.grid = GridConfig(**tpl.payload["grid"])
                 reconcile_simple_corners(cfg)
-                if "ground_grid" in tpl.payload:
-                    cfg.ground_grid = GroundGridConfig(**tpl.payload["ground_grid"])
                 save_config(cfg, server.config_path)
             return json.dumps({"ok": True})
         if tpl.type == "paths":
@@ -9773,7 +10057,11 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # A binding the edit clashes with: its input moves here (the page's
         # binding-steal.js applies the ``bindingChecked`` event), or, for the
         # marker-fader stick on the Move X/Y stick, an error.
-        binding = check_binding(section, field_name, request.query)
+        # The saved Button Names, as the selectors beside the note show them.
+        style = ButtonNameStyle.STANDARD
+        if section in CONTROLLER_SECTIONS:
+            style = name_style((cfg or _request_scoped_config()).controller.button_name_style)
+        binding = check_binding(section, field_name, request.query, style)
         if binding is not None:
             if binding.error:
                 return (
@@ -9782,10 +10070,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 )
             response.set_header("HX-Trigger", json.dumps(binding.event(field_name)))
             if binding.note:
-                return (
-                    f'<span class="field-note-msg" role="status" aria-live="polite">'
-                    f"{html_mod.escape(binding.note, quote=True)}</span>"
-                )
+                note_html = binding.note_html or html_mod.escape(binding.note, quote=True)
+                return f'<span class="field-note-msg" role="status" aria-live="polite">{note_html}</span>'
             return ""
         # An OSC trigger on a claimed input: a movement key is an error, an
         # input a gamepad or keyboard action also uses is a caution. OSC rows
@@ -9893,6 +10179,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         current = request.query.current if "current" in request.query else cfg.psn_source_iface
         blank_label = _BLANK_IFACE_LABELS.get(request.query.blank, _BLANK_IFACE_LABELS["auto"])
         ifaces = list_iface_ipv4()
+        if request.query.loopback == "0":
+            # The web UI's own pin, which never takes loopback (AppConfig drops it).
+            ifaces = [(name, ip) for name, ip in ifaces if name not in LOOPBACK_NAMES]
         options = [f'<option value="">{blank_label}</option>']
         names = {name for name, _ in ifaces}
         for name, ip in ifaces:
@@ -9920,7 +10209,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             {
                 "name": server.system_name,
                 "ip": server.local_ip,
-                "port": server.port,
+                "port": server.display_port,
                 "version": openfollow.__version__,
                 "instance": server.instance_id,
             }
@@ -10236,6 +10525,110 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             {"success": True, "needs_restart": True, "restarting": True, "instance": server.instance_id, **backup}
         )
 
+    @app.get("/api/config/backups")
+    def api_config_backups() -> Any:
+        """This station's settings backups, newest first: names, kinds, versions and times only."""
+        try:
+            rows = config_restore.list_backups(server.config_path, openfollow.__version__)
+        except config_restore.BackupsUnreadableError as exc:
+            logger.warning("Settings backups not listed: %s", exc)
+            return _save_failed(500, _BACKUPS_UNREADABLE, "Details in Logs.")
+        response.content_type = "application/json"
+        return json.dumps({"backups": [row.as_json() for row in rows]})
+
+    @app.post("/api/config/backups/restore")
+    def api_config_backups_restore() -> Any:
+        """Restore one of this station's own settings backups, keeping its identity, then restart.
+
+        The name is matched against the listing, never joined into a path. The
+        archive is read whole and checked before the backup of the current
+        settings is made, so a refused restore leaves nothing behind.
+        """
+        data = _load_json_body()
+        name = data.get("name") if isinstance(data, dict) else None
+        if not isinstance(name, str) or not name:
+            return _save_failed(400, "The request named no backup.")
+        # One at a time, recovery to commit: another's recovery would take this one's staged copies.
+        with _one_restore() as alone:
+            if not alone or restore_hold.is_held(server.config_path):
+                return _save_failed(409, *_ANOTHER_RESTORE)
+            after_update = "Restore the backup once it has finished."
+            if server.is_update_busy():
+                return _save_failed(409, _UPDATE_RUNNING, after_update)
+            base, replacing = _import_base(may_replace=True)
+            catalog_path = Path(_resolve_marker_catalog_path(server.config_path, base.markers_catalog_path))
+            # A committed one is finished only by a start, never under a running station: this one's failed.
+            if (Path(server.config_path).parent / config_restore.JOURNAL).exists():
+                return _save_failed(409, "An earlier restore could not be finished.", "Details in Logs.")
+            config_restore.recover_interrupted_restore(Path(server.config_path))
+            try:
+                found = config_restore.find_backup(server.config_path, name, openfollow.__version__)
+            except config_restore.BackupsUnreadableError as exc:
+                logger.warning("Settings backup not restored: %s", exc)
+                return _save_failed(500, _BACKUPS_UNREADABLE, "Details in Logs.")
+            if found is None:
+                return _save_failed(404, "This backup is no longer on the station.", "Reload the page.")
+            if found.newer:
+                return _save_failed(
+                    409,
+                    f"This backup was made by OpenFollow {config_restore.shown_version(found.version)}, which is "
+                    f"newer than this station ({config_restore.shown_version(openfollow.__version__)}).",
+                    "Update the station first.",
+                )
+            try:
+                contents = config_restore.read_backup(found.path)
+                restored = config_restore.load_backup_config(contents)
+            except config_restore.BackupDamagedError as exc:
+                logger.warning("Settings backup %s not restored: %s", found.name, exc)
+                return _save_failed(422, "This backup could not be read.", "Choose another one.")
+
+            backup = _backup_before(server.config_path, "restore", base if replacing else None)
+            try:
+                staged = config_restore.stage_restore(contents, catalog_path, Path(server.config_path))
+            except OSError as exc:
+                return _restore_not_written(found.name, exc)
+
+            not_restored: list[str] = []
+
+            def write_backup() -> None:
+                with _config_write_lock, restore_hold.GATE:
+                    current, replacing_now = _import_base(may_replace=True)
+                    stage_config(
+                        restored_from_backup(restored, current),
+                        server.config_path,
+                        staged.config_slot(),
+                        replace_unreadable=replacing_now,
+                    )
+                    # Renames only. Past the config every restored part is held, nothing raises and the
+                    # restart follows: a part that fails stays as it is.
+                    not_restored.extend(staged.commit())
+
+            try:
+                # Checked again with the write: an update queued during the backup leaves the settings as they are.
+                restarting = server.restart_after(write_backup)
+            except (ConfigFileUnreadableError, restore_hold.HeldForRestartError):
+                raise  # answered by the route plugin, as every other write
+            except OSError as exc:
+                return _restore_not_written(found.name, exc)
+            finally:
+                staged.discard()
+            if not restarting:
+                return _save_failed(409, _UPDATE_RUNNING, after_update)
+            restart = {"needs_restart": True, "restarting": True, "instance": server.instance_id, **backup}
+            if not_restored:
+                logger.warning(
+                    "Restored settings backup %s without %s; restarting", found.name, ", ".join(not_restored)
+                )
+                return _save_failed(
+                    500,
+                    f"{_sentence(_and(_RESTORED_PART_WORDS[part] for part in not_restored))} could not be written.",
+                    "OpenFollow is restarting with the rest of the backup.",
+                    **restart,
+                )
+            logger.info("Restored settings backup %s; restarting", found.name)
+            response.content_type = "application/json"
+            return json.dumps({"success": True, **restart})
+
     @app.post("/api/config/broadcast-all")
     def api_broadcast_all() -> Any:
         """Broadcast full config to all peers via their import endpoint."""
@@ -10432,6 +10825,9 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     "osc_address_final_exit": z.osc_address_final_exit,
                     "destination_id": z.destination_id,
                     "enabled": z.enabled,
+                    "z_offset": z.z_offset,
+                    "raise_markers": z.raise_markers,
+                    "height_transition_s": z.height_transition_s,
                     "is_occupied": occ,
                     "occupant_count": count,
                     "diagnostics": diag,
@@ -10442,6 +10838,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 "globals": {
                     "enabled": tz.enabled,
                     "show_overlay": tz.show_overlay,
+                    "highlight_occupied": tz.highlight_occupied,
                     "eval_fps": tz.eval_fps,
                     "debounce_ms": tz.debounce_ms,
                     "hysteresis": tz.hysteresis,
@@ -10454,6 +10851,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     "y_offset": cfg.grid.y_offset,
                     "z_offset": cfg.grid.z_offset,
                 },
+                "camera": _camera_for_client(cfg),
                 "zones": zones_out,
                 "markers": [{"id": marker_id, "x": x, "y": y} for marker_id, x, y in server.get_marker_positions()],
                 # Shared destinations travel with the poll so the editor's
@@ -10512,19 +10910,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 response.status = 404
                 return json.dumps({"error": "Zone index out of range"})
             src = zones[index]
-            clone = TriggerZoneConfig(
-                name=(src.name + " (copy)") if src.name else "(copy)",
-                vertices=[list(v) for v in src.vertices],
-                color=src.color,
-                trigger_source=src.trigger_source,
-                triggered_by=list(src.triggered_by),
-                osc_address_first_entry=src.osc_address_first_entry,
-                osc_address_additional_entry=src.osc_address_additional_entry,
-                osc_address_partial_exit=src.osc_address_partial_exit,
-                osc_address_final_exit=src.osc_address_final_exit,
-                destination_id=src.destination_id,
-                enabled=src.enabled,
-            )
+            clone = copy.deepcopy(src)
+            clone.name = (src.name + " (copy)") if src.name else "(copy)"
             zones.append(clone)
             save_config(cfg, server.config_path)
         return json.dumps({"success": True, "index": len(zones) - 1})
@@ -10738,7 +11125,13 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
 
         import numpy as np
 
-        from openfollow.scene.calibration_points import Mark, SolveSuperseded, plausibility, solve_marks
+        from openfollow.scene.calibration_points import (
+            Mark,
+            SolveSuperseded,
+            plausibility,
+            solve_marks,
+            suggested_floor,
+        )
         from openfollow.scene.solver import apply_overlay_distortion, invert_overlay_distortion
 
         need = []
@@ -10800,6 +11193,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             response.status = 422
             return json.dumps({"error": solved.error, "marks": answers})
         cam = solved.camera
+        floor = suggested_floor(solve_input) if mode == "advanced" else None
         return json.dumps(
             {
                 "camera": {
@@ -10815,6 +11209,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 "count": len(errors),
                 "largest_error": max(errors.values(), default=0.0),
                 "steep": solved.steep,
+                "floor": None if floor is None else {"z": floor[0], "ids": list(floor[1])},
                 "reasons": plausibility(
                     cam, solved.marks, errors, hint, mode == "advanced", floor_off=solved.floor_off
                 ),
@@ -10861,6 +11256,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                 width=width,
                 height=height,
             )
+        except restore_hold.HeldForRestartError:
+            raise  # a restore's restart: the route plugin answers it
         except OSError as exc:
             logger.warning("saving lens calibration failed: %s", exc)
             response.status = 500
@@ -10959,6 +11356,36 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             response.status = 400
             return json.dumps({"error": str(exc)})
         return json.dumps(fit_result_to_dict(result))
+
+    @app.post("/api/wizard/lens/opencv")
+    def api_wizard_lens_opencv() -> Any:
+        """Convert an OpenCV calibration file's lens for the snapshot; 422 says why the file gives none."""
+        response.content_type = "application/json"
+        data = _load_json_body()
+        if data is None:
+            return json.dumps({"error": "Invalid JSON"})
+        try:
+            text, img_w, img_h, size = _parse_lens_opencv_body(data)
+        except (KeyError, TypeError, ValueError) as exc:
+            response.status = 400
+            return json.dumps({"error": str(exc)})
+
+        from openfollow.scene.opencv_lens import (
+            OpenCvLensError,
+            OpenCvSizeUnknown,
+            fit_opencv_lens,
+            parse_opencv_calibration,
+        )
+
+        try:
+            cal = parse_opencv_calibration(text)
+            fit = fit_opencv_lens(cal, img_w, img_h, size)
+        except OpenCvSizeUnknown as exc:
+            response.status = 422
+            return json.dumps({"error": str(exc), "needs_size": True})
+        except OpenCvLensError as exc:
+            return _json_error(422, str(exc))
+        return json.dumps({**asdict(fit), "fisheye": cal.fisheye})
 
     # -- Marker catalog (shared id/name/color + per-station selection) ----
 

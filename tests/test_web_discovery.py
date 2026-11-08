@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Tests for ``openfollow.web.discovery``.
 
 Covers beacon packet encode/decode + validation, peer-table pruning and cap
@@ -401,6 +403,14 @@ def test_beacon_sender_update_name_mutates_packet() -> None:
     sender = BeaconSender(name="Old", web_port=80)
     sender.update_name("New")
     assert sender._packet.name == "New"
+
+
+def test_beacon_sender_update_web_port_changes_what_it_sends() -> None:
+    sender = BeaconSender(name="Node", web_port=80)
+    sender.update_web_port(8080)
+    packet = BeaconPacket.from_bytes(sender._packet.to_bytes())
+    assert packet is not None
+    assert packet.web_port == 8080
 
 
 def test_beacon_sender_double_start_is_noop(monkeypatch) -> None:

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Tests for :mod:`openfollow.macos_quit`: the answer to the quit Apple Event.
 
 The Apple Event Manager is replaced by a fake library, so nothing is installed

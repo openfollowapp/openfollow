@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Tests for :mod:`openfollow.runtime.marker_velocity`.
 
 The estimator behind the PSN speed field: a per-frame position delta in m/s,

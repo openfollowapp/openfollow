@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """One input, one action: settle bindings that share an input within a group.
 
 Stdlib-only so :mod:`openfollow.configuration` can import it at load time.
@@ -9,13 +10,10 @@ from __future__ import annotations
 
 from collections.abc import Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Generic, TypeVar
-
-V = TypeVar("V", bound=Hashable)
 
 
 @dataclass(frozen=True)
-class BindingMove(Generic[V]):
+class BindingMove[V: Hashable]:
     """``field`` gave ``value`` up to ``kept_by``."""
 
     field: str
@@ -23,7 +21,7 @@ class BindingMove(Generic[V]):
     value: V
 
 
-def settle_duplicates(
+def settle_duplicates[V: Hashable](
     values: Mapping[str, V],
     order: Sequence[str],
     *,

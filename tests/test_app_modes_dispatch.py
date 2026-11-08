@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Extended dispatch tests for ``openfollow.runtime.app_modes``.
 
 ``test_app_modes.py`` covers speed adjustment, normalize_key, Settings menu
@@ -1865,6 +1867,9 @@ def test_on_key_up_forwards_event_to_keyboard_handler() -> None:
         def on_key_up(self, event):
             captured.append(event)
 
+        def end_echo(self, event):
+            pass
+
     class _IM:
         keyboard_handler = _KB()
 
@@ -1895,6 +1900,9 @@ def test_on_key_up_skipped_while_url_editor_active() -> None:
         def on_key_up(self, event):
             captured.append(event)
 
+        def end_echo(self, event):
+            pass
+
     class _IM:
         keyboard_handler = _KB()
 
@@ -1914,6 +1922,9 @@ def test_on_key_up_skipped_while_browser_active() -> None:
     class _KB:
         def on_key_up(self, event):
             captured.append(event)
+
+        def end_echo(self, event):
+            pass
 
     class _IM:
         keyboard_handler = _KB()

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Report which 802.1Q tag (if any) a station's traffic leaves an interface with.
 
 Runs **on the device**, as root, with no dependencies – an OpenFollow station

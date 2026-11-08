@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Splits an output protocol's payload list across datagrams that fit the MTU.
 
 Every marker-carrying output (PSN, OTP, RTTrPM) grows its datagram with the
@@ -18,9 +19,6 @@ silently pushing the datagram over the limit.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from typing import TypeVar
-
-T = TypeVar("T")
 
 # A 1500-octet Ethernet MTU less the 20-octet IPv4 and 8-octet UDP headers.
 # This is the fragmentation threshold, which bites before any protocol's own
@@ -29,7 +27,7 @@ T = TypeVar("T")
 MAX_DATAGRAM_BYTES = 1472
 
 
-def chunk_to_datagrams(
+def chunk_to_datagrams[T](
     items: Sequence[T],
     encoded_size: Callable[[Sequence[T]], int],
     budget: int = MAX_DATAGRAM_BYTES,

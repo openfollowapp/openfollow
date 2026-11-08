@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Removable drives this station can save a file to: listing and writing.
 
 On Linux, drives come from ``lsblk``. One that something else mounted (a

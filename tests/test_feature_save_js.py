@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """feature-save.js, run in node on the fake DOM: the Features table applies on the Station Settings
 Save, a Save that switches a feature off asks first and names what stops, and the page flips its
 feature classes only once the save has gone through."""

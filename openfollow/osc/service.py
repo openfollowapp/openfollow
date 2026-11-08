@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Unified OSC service – single entry point for all OSC traffic.
 
 Outbound: a shared client cache keyed on ``(host, port, protocol, framing)``.
@@ -737,8 +739,10 @@ class OscService:
         group = multicast_group.strip()
         self.stop_listener()
         try:
+            # The IPv4 wildcard, spelled out: python-osc takes the socket family from the
+            # host, and macOS resolves "" to IPv6, where no IPv4 group can be joined.
             listener = _FilteredOSCUDPServer(
-                ("", port),
+                ("0.0.0.0", port),
                 self._dispatcher,
                 normalised_ips,
             )

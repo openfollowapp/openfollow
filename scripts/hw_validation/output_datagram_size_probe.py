@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Output datagram sizes vs the MTU – DUT-local, no companion.
 
 A UDP datagram larger than 1472 B (a 1500 B Ethernet MTU less the 20 B IPv4 and

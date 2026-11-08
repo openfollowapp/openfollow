@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """The Video Source section reports why the last attempt failed.
 
-The reason lived only on the Statistics panel and the HUD, so the page where
+The reason lived only on the Statistics box and the HUD, so the page where
 the fix gets typed was the one page that did not say what was wrong.
 """
 
@@ -120,7 +121,7 @@ class TestTheSaveResponseDoesNotNameTheOldSource:
         assert _NOTICE not in _render(saved=True, video_failure="none", video_failure_text="")
 
 
-class TestItIsTheSameBoxAsLiveStatistics:
+class TestItIsTheSameBoxAsStatusAndDiagnostics:
     """An operator opens Camera & Grid first when the picture is missing. A
     reduced banner there means the fuller one on another tab is the real
     answer, which is exactly the hunt this PR set out to remove.
@@ -137,9 +138,9 @@ class TestItIsTheSameBoxAsLiveStatistics:
         assert "Check the camera is powered and on this network." in body
         assert "Could not open resource" not in body
 
-    def test_its_element_id_does_not_collide_with_the_statistics_box(self) -> None:
+    def test_its_element_id_does_not_collide_with_the_status_box(self) -> None:
         """Both boxes render on the same page. A repeated id makes
-        ``hx-preserve`` resolve to whichever came first, so the Statistics poll
+        ``hx-preserve`` resolve to whichever came first, so the Status & Diagnostics poll
         moved this box's node out from under it once a second."""
         body = _render(
             video_failure="unreachable",
@@ -175,3 +176,49 @@ class TestTheBoxAppearsWithoutAReload:
         region = body[start : body.index("</div>", start)]
         for field in ('name="rtsp_url"', 'name="video_source_type"', 'name="rtsp_password"'):
             assert field not in region
+
+
+_LIMITS_TEXT = "Video arrives at 3840×2160, over Full HD (1920×1080)."
+_LIMITS_ACTION = "Set the camera or encoder to 1920×1080 at 30 fps or less."
+
+
+class TestASourceOverTheLimits:
+    """The section where the camera is set up says when it sends more than the station is sized for."""
+
+    def test_the_box_names_what_arrives_and_the_step(self) -> None:
+        body = _render(video_limits_text=_LIMITS_TEXT, video_limits_action=_LIMITS_ACTION)
+        assert body.count(_NOTICE) == 1
+        assert _LIMITS_TEXT in body
+        assert _LIMITS_ACTION in body
+        assert 'id="video-error-source-limits-' in body
+
+    def test_it_sits_inside_the_polled_region_above_the_form(self) -> None:
+        body = _render(video_limits_text=_LIMITS_TEXT, video_limits_action=_LIMITS_ACTION)
+        assert body.index('id="video-source-failure"') < body.index(_LIMITS_TEXT) < body.index("video-source-type")
+
+    def test_it_stands_beside_a_failure_box(self) -> None:
+        body = _render(
+            video_failure="stalled",
+            video_failure_text="Video stopped arriving.",
+            video_limits_text=_LIMITS_TEXT,
+            video_limits_action=_LIMITS_ACTION,
+        )
+        assert body.count(_NOTICE) == 2
+        assert body.index("Video stopped arriving.") < body.index(_LIMITS_TEXT)
+
+    def test_no_box_without_a_verdict(self) -> None:
+        assert _NOTICE not in _render(video_limits_text="", video_limits_action="")
+
+    def test_the_builder_reads_the_published_verdict(self) -> None:
+        from openfollow.web.routes import _build_input_template_data
+
+        stats = {"limits": {"exceeded": ["resolution_over_limit"], "text": _LIMITS_TEXT, "action": _LIMITS_ACTION}}
+        data = _build_input_template_data(AppConfig(), stats)
+        assert (data["video_limits_text"], data["video_limits_action"]) == (_LIMITS_TEXT, _LIMITS_ACTION)
+
+    @pytest.mark.parametrize("stats", [None, {}, {"limits": None}, {"limits": {"exceeded": [], "text": ""}}])
+    def test_the_builder_shows_nothing_without_one(self, stats: dict[str, object] | None) -> None:
+        from openfollow.web.routes import _build_input_template_data
+
+        data = _build_input_template_data(AppConfig(), stats)
+        assert (data["video_limits_text"], data["video_limits_action"]) == ("", "")

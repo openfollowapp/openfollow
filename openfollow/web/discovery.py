@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """UDP multicast beacon for peer discovery.
 
 ``BeaconSender`` / ``BeaconReceiver`` run daemon threads that emit and ingest
@@ -168,6 +170,10 @@ class BeaconSender:
     def update_name(self, name: str) -> None:
         """Update the beacon name (e.g., after config change)."""
         self._packet.name = name
+
+    def update_web_port(self, port: int) -> None:
+        """Advertise the port the web UI serves on."""
+        self._packet.web_port = port
 
     def update_iface_ip(self, iface_ip: str | None, iface: str = "") -> None:
         """Repoint the multicast send interface after a host IP change.

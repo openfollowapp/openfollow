@@ -1,44 +1,75 @@
-# Diagnostics
+# Status & Diagnostics
 
-Live runtime health for the web server and peer discovery. Use this section to spot a sick subsystem at a glance and to download or view the information needed for a support report.
+How this station is doing right now, and the file for a support report. The boxes refresh every second while in view, the station list every 5 seconds. Person Detection shows only while its feature is on.
 
-The section is inside the Overview tab and refreshes every five seconds while it is open and in view.
+### Station Network
 
-## Live summary cards
+Every OpenFollow station discovered on your LAN, this one and the others.
 
-Three cards across the top of the section. Each card shows a status chip and a small set of metrics.
+- **Status indicator** – a green dot is online; a red ring was seen before but is not reachable now. This station's row is blue and labelled *(this station)*.
+- **Station name** – the name set under General → Station Settings.
+- **Address** – the IP address and web port. Other stations' rows open their web interface in a new window; an offline one opens at its last known address.
 
-### Web server
+Discovery does not cross router hops or VLAN boundaries.
 
-- **Configured** – the web port set in your configuration.
-- **Serving on** – the port the server actually bound to. If port 80 was unavailable, OpenFollow falls back to a backup port (8080 or 2010) and this row shows which one is in use.
+### Video
+
+The active source. When it fails, a red box says what the station saw and what to try.
+
+- **Source** – the configured source.
+- **Signal** – `Connected` with a live feed, otherwise the failure the box names.
+- **Input resolution** / **Frame Rate (source)** – what the source delivers or advertises. `N/A` until it connects.
+- **Pipeline** – `Connecting`, `Reconnecting`, `Connected`, or `Disconnected` once retries have run out.
+
+A red box also appears when arriving video is over Full HD or 30 fps. It keeps playing, but the picture or markers may lag.
+
+### This Station
+
+The Raspberry Pi and the OpenFollow process on it.
+
+A red box means the Pi is short of power or slowed down now: **under voltage** (freezes, USB dropouts) or **CPU throttled** (too hot). An orange box means it happened since the last start and stays until restart.
+
+A red box names each output that is not reaching the network, as the Operator Screen's top-right rows do, with the next step: an interface with no address or an unplugged adapter (see Network Interface Assignment), or sends that keep failing while the interface is up. Each OSC destination in use has its own row. A row shows once failures last a second and clears once sends have kept going out for a second.
+
+On macOS, **macOS refuses this station's network sends** means OpenFollow is not allowed on the local network: nothing it sends gets out, and other stations drop out of its list. Turn OpenFollow on under System Settings → Privacy & Security → Local Network; output resumes within about ten seconds, without a restart.
+
+A red **Unsupported platform** box means OpenFollow is not developed for this hardware or operating system. Supported are a Raspberry Pi 5, CM5 or Pi 500, and on other hardware Debian 13 or a Debian derivative, each with a 64-bit OS and no desktop. Errors are expected anywhere else and no support is provided. The same warning shows on every page and on the Operator Screen.
+
+- **IP** – the address this station is reachable on.
+- **Web port** – the port this web UI is served on, and the one other stations are told. **Fallback** means the configured port was taken and a backup port (8080 or 2010) is used.
 - **Uptime** – how long the OpenFollow process has been running.
-- Status chip reads **OK** when the configured and serving ports match, and **fallback** when the server is on a backup port.
+- **Controllers** – gamepads and 3D Mice connected, and how many are missing; a red box names each one.
+- **CPU** / **RAM** – load in percent. CPU above roughly 80–90 % can cause frame drops or tracking lag.
+- **Temperature** – in °C. Above 80 °C may throttle the Pi.
+- **Output resolution** – the canvas the overlay is drawn on. When its shape differs from the video's, video and overlay share a box of the video's shape between black bars.
+- **Overlay redraw rate** – Operator Screen pictures per second. `0.0 fps` with no screen is normal.
+- **Frame clock** – `Running` is normal. `Stalled` (no run for over a second) freezes marker positions, input and detection; PSN, OTP, RTTrPM and OSC keep sending the last known position.
 
-### Beacon sender
+### Station network discovery
 
-Health of the outgoing peer-discovery beacon. If this card is unhealthy, other stations on the network won't see this one.
+How OpenFollow stations on the network find each other: each one sends a beacon and listens for the others'.
 
-- **Last sent** – timestamp of the most recent outgoing beacon.
-- **Errors** – failed sends and socket opens since beacons last kept going out. It returns to 0 only once sends have kept succeeding for a second, so a socket that takes one beacon and then fails again does not read as healthy.
-- **Sent count** – total beacons sent since the process started.
+The chip shows the worse of the two: **Running**; orange **Send errors**; red **Sender stopped** (other stations do not see this one), **Receiver stopped** (this station does not see the others) or **Stopped** (both).
 
-### Beacon receiver
+- **Stations seen** – the other OpenFollow stations currently known on the local network.
+- **Last sent** / **Last received** – the most recent beacon out and in.
+- **Send errors** – failed beacon sends and socket opens; back to 0 once beacons have kept going out for a second.
+- **Beacons sent** / **Beacons received** – since the process started.
 
-Health of the incoming peer-discovery listener. If this card is unhealthy, this station won't see other stations.
+### Person Detection
 
-- **Peers seen** – number of OpenFollow stations currently known on the local network.
-- **Last packet** – timestamp of the most recent received beacon.
-- **Packets total** – running count of packets the receiver has consumed since the process started.
+The chip: green **Running** (processing frames), blue **Idle** (enabled, waiting, e.g. for video), red **Unavailable** (packages missing, named in a red box), grey **Off** (switched off in its section).
 
-## Bundle & tools
+- **Tracked People** – people currently tracked.
+- **Inference (avg)** – milliseconds per detection pass. Higher means more load.
+- **Inference Rate** – detection passes per second.
+- **Detections (last)** – boxes from the last pass, before tracking or smoothing.
 
-Four actions sit below the cards.
+### Bundle & tools
 
-- **Download diagnostics bundle** – produces a single plain-text file and saves it in your browser, named `ofdiag-<station>-<UTC date and time>.txt` (for example `ofdiag-Stage_Left-20260928T101500Z.txt`); the station keeps a copy of its ten newest. It captures what the station is doing: the video signal and its last error, the frame clock, person detection and connected controllers; network interfaces and routes, where each interface's address came from, and which interface each network function is set to use beside the one it is using now; whether the station has internet, and when that was last checked; the configuration, with any values changed from the defaults listed separately; recent errors and a log tail, in the station's local time (the file's first lines name its zone), with repeated blocks folded to one copy and a count; which video inputs this station can offer and why any are missing; the detection models present on disk; the installed package version against the running one; and OS, hardware and dependency versions, including any power or USB faults the kernel has recorded. It also reports whether the camera's address is one this station can reach, which includes one brief connection attempt to it; no stream data is sent. On the macOS app the recent errors and the log tail come from its log file, `~/Library/Logs/OpenFollow/openfollow.log` (Console lists it under Log Reports), so they reach back past a restart or a crash. Credentials are always redacted: the web PIN, camera login and SRT passphrase become `***` (or `(empty)` where none is set), and any login inside a stream URL is stripped from the config and every log line.
+The support file, and actions on this station.
 
-- **Save to USB storage device** – opens a dialog that saves the same file to the top level of a USB stick or SD card reader attached to this station. It lists the attached devices, read again about once a second while it is open, so a device plugged in now appears. One that can't be written stays in the list, unavailable, with the reason: a format the station can't write (APFS or HFS+ on a Raspberry Pi), a device mounted read-only, or `needs Apply Permissions` where the station lacks the permission to mount it. A file already on the device is never overwritten: a name that is taken gets `-1`, `-2`. A device the station mounted itself is unmounted again before the save reports success, so it can be pulled straight away; one that something else mounted stays mounted. After **Save** the dialog shows what the save is doing, then what happened and one next step, as the Operator Screen does; closed while it runs, the save carries on, and the button shows it again. Only one save runs at a time, from here or from **Export Diagnostics File for Support** in the Operator Screen's Settings menu.
-
-- **Test peer connectivity** – probes every known station on its advertised port and displays a small results table. A green chip means the station responded with an HTTP status and a round-trip time; a red chip means it was unreachable, with a reason. If the table shows "No peers known yet", wait for discovery or check the **Beacon receiver** card above.
-
-- **Restart application** – restarts the OpenFollow process (not the operating system). A confirmation prompt appears first; the page reloads automatically once the station comes back. It is refused while a software update is running. Use this after changing a setting that requires a restart, such as the web port.
+- **Download diagnostics bundle** – one plain-text file, named `ofdiag-<station>-<UTC date and time>.txt`, with whether the platform is supported, the video signal, network, configuration, recent errors and a log tail, versions and power or USB faults. On the macOS app the errors and log tail come from `~/Library/Logs/OpenFollow/openfollow.log`, so they reach back past a restart. Credentials are always redacted. The station keeps its ten newest.
+- **Save to USB storage device** – the same file, to the top level of a USB stick or SD card reader on this station. A device that can't be written stays in the list, unavailable, with the reason. A file already on the device is never overwritten. A device the station mounted itself is unmounted again before the save reports success. One save runs at a time.
+- **Test peer connectivity** – probes every known station and shows a table: green with a round-trip time when it responded, red with a reason when it was unreachable.
+- **Restart application** – restarts the OpenFollow process, not the operating system, after a confirmation. The page reloads once the station is back. Refused while a software update is running.

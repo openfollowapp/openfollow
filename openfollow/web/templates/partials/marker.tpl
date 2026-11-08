@@ -290,7 +290,8 @@
 // Delete / selection checkboxes no longer churn 40× per minute.
 // The earlier ``isEditingTextInput`` blanket guard is replaced by a
 // per-cell focus check inside ``setIfChanged`` so a peer's rename
-// can land on row N while the operator is typing in row M.
+// can land on row N while the operator is typing in row M. A name or
+// colour the operator changed is held against the poll until Save lands.
 (function() {
     if (window.__markerCatalogInit) return;
     window.__markerCatalogInit = true;
@@ -355,6 +356,31 @@
     function setInputIfChanged(el, value) {
         if (document.activeElement === el) return;
         if (el.value !== value) el.value = value;
+    }
+
+    // ---- Unsaved edits. A field the operator changed stays held while it
+    // differs from the catalog's value: the poll leaves it alone, the field
+    // is outlined and the row's Unsaved chip shows.
+    const CATALOG_FIELDS = ['name', 'color'];
+
+    function fieldValue(tr, field) {
+        const el = tr.querySelector('[data-field="' + field + '"]');
+        return field === 'color' ? (el.dataset.value || '').toLowerCase() : el.value;
+    }
+
+    function storedValues(name, color) {
+        return {name: name || '', color: (color || '#000000').toLowerCase()};
+    }
+
+    function refreshUnsaved(tr) {
+        let any = false;
+        CATALOG_FIELDS.forEach(function(field) {
+            if (fieldValue(tr, field) === tr._stored[field]) tr._held[field] = false;
+            tr.querySelector('[data-field="' + field + '"]').classList.toggle('field-unsaved', tr._held[field]);
+            any = any || tr._held[field];
+        });
+        const chip = tr.querySelector('.unsaved-chip');
+        if (chip.hidden === any) chip.hidden = !any;
     }
 
     function setTextIfChanged(el, text) {
@@ -422,6 +448,18 @@
             '</div>';
     }
 
+    // Park: only a View & Control row can be parked; any other state clears it.
+    function parkToggle(markerId) {
+        return '<button type="button" class="park-toggle" data-park data-marker-id="' + markerId +
+            '" aria-pressed="false" aria-label="Park" disabled>P</button>';
+    }
+
+    function setPark(button, state, pressed) {
+        const parked = state === 'control' && pressed;
+        if (button.disabled !== (state !== 'control')) button.disabled = state !== 'control';
+        if (button.getAttribute('aria-pressed') !== String(parked)) button.setAttribute('aria-pressed', String(parked));
+    }
+
     function thisStationState(id, thisStation) {
         if (thisStation.controlled_ids.indexOf(id) !== -1) return 'control';
         return thisStation.viewer_ids.indexOf(id) !== -1 ? 'view' : 'hide';
@@ -438,10 +476,10 @@
 
     // ---- Selection POST (out-of-band write, same wire as before). ``extra``
     // adds a marker that has no catalog row yet: the add-row's choice.
-    function postSelection(root, row, extra) {
+    function postSelection(root, row, extra, park) {
         selectionPending++;
         selectionQueue = selectionQueue
-            .then(function() { return saveSelection(root, row, extra); })
+            .then(function() { return saveSelection(root, row, extra, park); })
             .catch(function() {})
             .then(function() {
                 selectionPending--;
@@ -450,7 +488,8 @@
     }
 
     // Reads the toggles when it is sent, so a queued save carries the latest selection.
-    function saveSelection(root, row, extra) {
+    // ``park`` is the one row whose P was clicked ({"<id>": true|false}); a park set elsewhere is never sent back.
+    function saveSelection(root, row, extra, park) {
         const controlled = [];
         const viewer = [];
         function add(id, state) {
@@ -465,7 +504,7 @@
         return fetch('/api/markers/selection', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({controlled_ids: controlled, viewer_ids: viewer})
+            body: JSON.stringify({controlled_ids: controlled, viewer_ids: viewer, park: park || {}})
         }).then(writeResult(table)).then(function(ok) {
             flashRow(row, ok);
             const flash = root.querySelector('#selection-saved-flash');
@@ -492,16 +531,37 @@
             '<td><button type="button" class="color-swatch-trigger" data-field="color" ' +
                 'data-color-picker="full" aria-label="Marker colour"></button></td>' +
             '<td class="cell-soft" data-cell="controlled-by"></td>' +
-            '<td data-cell="this-station">' + thisStationToggle('this-station-' + id, id) + '</td>' +
+            '<td data-cell="this-station">' + thisStationToggle('this-station-' + id, id) + parkToggle(id) + '</td>' +
             '<td class="row-actions">' +
+                '<span class="stat-chip info unsaved-chip" hidden>Unsaved</span>' +
                 '<button type="button" class="save-btn small" data-action="save">Save</button>' +
                 '<button type="button" class="danger small" data-action="delete">Delete</button>' +
             '</td>';
+        tr._held = {name: false, color: false};
+        tr._stored = storedValues('', '');
+        // Until then a poll begun before the save may still carry the old values.
+        tr._savedUntil = 0;
+        function edited(field) {
+            tr._held[field] = true;
+            refreshUnsaved(tr);
+        }
+        tr.querySelector('[data-field="name"]').addEventListener('input', function() { edited('name'); });
         window.OpenFollow.attachColorPicker(tr.querySelector('[data-field="color"]'), {
             mode: 'full',
+            onChange: function() { edited('color'); },
         });
+        const park = tr.querySelector('button[data-park]');
         tr.querySelectorAll('input[data-this-station]').forEach(function(radio) {
-            radio.addEventListener('change', function() { postSelection(root, tr); });
+            radio.addEventListener('change', function() {
+                setPark(park, radio.value, park.getAttribute('aria-pressed') === 'true');
+                postSelection(root, tr);
+            });
+        });
+        park.addEventListener('click', function() {
+            if (park.disabled) return;
+            const on = park.getAttribute('aria-pressed') !== 'true';
+            setPark(park, 'control', on);
+            postSelection(root, tr, null, {[id]: on});
         });
         tr.querySelector('[data-action="save"]').addEventListener('click', function() {
             const name = tr.querySelector('[data-field="name"]').value;
@@ -510,7 +570,14 @@
                 method: 'PUT',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({name: name, color: color})
-            }).then(writeResult(tr)).catch(writeUnreachable(tr));
+            }).then(writeResult(tr)).then(function(ok) {
+                if (ok) {
+                    tr._stored = storedValues(name, color);
+                    tr._savedUntil = Date.now() + 1600;
+                    refreshUnsaved(tr);
+                }
+                flashRow(tr, ok);
+            }).catch(writeUnreachable(tr));
         });
         tr.querySelector('[data-action="delete"]').addEventListener('click', async function() {
             const ok = await modalConfirm({
@@ -530,23 +597,35 @@
         const conflict = controlConflict(entry, conflicts);
         tr.classList.toggle('conflict', conflict);
         setTextIfChanged(tr.querySelector('[data-cell="id"]'), String(entry.id));
-        setInputIfChanged(tr.querySelector('[data-field="name"]'), entry.name || '');
-        setSwatchIfChanged(tr.querySelector('[data-field="color"]'), entry.color || '');
+        if (Date.now() >= tr._savedUntil) {
+            tr._stored = storedValues(entry.name, entry.color);
+            if (!tr._held.name) setInputIfChanged(tr.querySelector('[data-field="name"]'), entry.name || '');
+            if (!tr._held.color) setSwatchIfChanged(tr.querySelector('[data-field="color"]'), entry.color || '');
+        }
+        refreshUnsaved(tr);
         const ctrlHTML = controlledByLabel(entry, thisStation, peers) +
             (conflict ? ' <span class="stat-chip off conflict-flag">Conflict</span>' : '');
         setHTMLIfChanged(tr.querySelector('[data-cell="controlled-by"]'), ctrlHTML);
         // The poll never moves a toggle the operator is on, nor one a save hasn't settled; a new row syncs at once.
-        const toggle = tr.querySelector('[data-cell="this-station"] .seg-toggle');
+        const cell = tr.querySelector('[data-cell="this-station"]');
+        const toggle = cell.querySelector('.seg-toggle');
+        const park = cell.querySelector('button[data-park]');
         const settled = selectionPending === 0 && Date.now() >= selectionSettleUntil;
+        const state = thisStationState(entry.id, thisStation);
         if (!tr.dataset.synced || (settled && !toggle.contains(document.activeElement))) {
-            const state = thisStationState(entry.id, thisStation);
             toggle.querySelectorAll('input[data-this-station]').forEach(function(radio) {
                 if (radio.checked !== (radio.value === state)) radio.checked = radio.value === state;
             });
-            tr.dataset.synced = 'true';
         }
-        const label = 'This station: ' + (entry.name || ('Marker ' + entry.id));
+        // P follows the station even with focus on it: OSC parks and unparks too, and a click saves at once.
+        if (!tr.dataset.synced || settled) {
+            setPark(park, state, (thisStation.parked_ids || []).indexOf(entry.id) !== -1);
+        }
+        tr.dataset.synced = 'true';
+        const markerName = entry.name || ('Marker ' + entry.id);
+        const label = 'This station: ' + markerName;
         if (toggle.getAttribute('aria-label') !== label) toggle.setAttribute('aria-label', label);
+        if (park.getAttribute('aria-label') !== 'Park ' + markerName) park.setAttribute('aria-label', 'Park ' + markerName);
     }
 
     function createAddRow() {
@@ -717,7 +796,7 @@
         ensureSkeleton(root);
         const entries = data.entries || [];
         const thisStation = data.this_station ||
-            {station_name: '', controlled_ids: [], viewer_ids: []};
+            {station_name: '', controlled_ids: [], viewer_ids: [], parked_ids: []};
         const peers = data.peer_selections || [];
         const conflicts = data.marker_conflicts || [];
 
@@ -752,6 +831,16 @@
 <style>
 .marker-catalog-table { margin-top: 0.5rem; }
 .marker-catalog-table td[data-cell="this-station"] { white-space: nowrap; }
+/* Park: grey while off, the info line while on, inert unless the row is View & Control. */
+.marker-catalog-table .park-toggle {
+    display: inline-flex; align-items: center; justify-content: center; vertical-align: middle;
+    width: 1.6rem; height: 1.6rem; margin-left: 0.4rem; padding: 0;
+    border: 1px solid var(--border-soft); border-radius: 0.2rem;
+    background: rgba(0, 0, 0, 0.22); color: var(--muted);
+    font-size: inherit; font-weight: 700;
+}
+.marker-catalog-table .park-toggle[aria-pressed="true"] { background: var(--info-line); border-color: var(--info-line); color: var(--text); }
+.marker-catalog-table .park-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* A This Station save flashes its row's background, green or red, fading back to the row's own. */
 .marker-catalog-table tr.row-saved { animation: row-flash-green 0.8s ease-out; }
 .marker-catalog-table tr.row-failed { animation: row-flash-red 0.8s ease-out; }
@@ -780,6 +869,10 @@
     width: 100%;
     box-sizing: border-box;
 }
+/* An edit Save has not committed: the info chip by its Save, an info outline on each changed field. */
+.marker-catalog-table .unsaved-chip { margin-right: 0.4rem; vertical-align: 1px; }
+.marker-catalog-table .unsaved-chip[hidden] { display: none; }
+.marker-catalog-table .field-unsaved { outline: 1px solid var(--info-line); outline-offset: 1px; }
 .saved-flash {
     color: var(--success-text);
     font-weight: bold;

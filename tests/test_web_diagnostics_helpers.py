@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Unit tests for the small diagnostics helper functions in
 ``openfollow.web.routes``. The integration tests
 (``tests/test_web_diagnostics_routes.py``) exercise the routes
@@ -41,33 +43,6 @@ def test_monotonic_age_renders_seconds_for_recent_event() -> None:
     out = routes_module._monotonic_age(time.monotonic() - 0.05)
     assert out.endswith("s")
     assert out != "never"
-
-
-# ---------------------------------------------------------------------------
-# _alive_chip
-# ---------------------------------------------------------------------------
-
-
-def test_alive_chip_returns_off_when_thread_dead() -> None:
-    """Thread alive flag is False (post-``stop()``) – the chip class
-    must read ``off`` regardless of error count, because reporting
-    "warn / 3 errors" on a stopped thread would mislead the operator
-    into thinking it might recover on its own."""
-    assert routes_module._alive_chip(is_alive=False, errors=0) == "off"
-    assert routes_module._alive_chip(is_alive=False, errors=5) == "off"
-
-
-def test_alive_chip_returns_warn_when_alive_with_errors() -> None:
-    """Alive thread + non-zero ``consecutive_errors`` → ``warn``.
-    Tells the operator the thread is running but currently failing
-    its work – distinguishable from the ``off`` case where it isn't
-    running at all."""
-    assert routes_module._alive_chip(is_alive=True, errors=1) == "warn"
-    assert routes_module._alive_chip(is_alive=True, errors=99) == "warn"
-
-
-def test_alive_chip_returns_ok_when_alive_clean() -> None:
-    assert routes_module._alive_chip(is_alive=True, errors=0) == "ok"
 
 
 # ---------------------------------------------------------------------------

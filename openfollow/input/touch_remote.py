@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """The web UI's touch remote: browser sessions that hold and drive controlled markers.
 
 Web request threads write sessions here; the frame loop takes one :class:`RemoteFrame` per held

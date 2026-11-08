@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Reading the scripts inside templates, for tests that pin their order."""
 
 from __future__ import annotations
@@ -7,6 +8,16 @@ from __future__ import annotations
 from pathlib import Path
 
 _BASE = Path(__file__).parent.parent / "openfollow" / "web" / "templates" / "base.tpl"
+
+
+def base_functions(*names: str) -> str:
+    """The named ``function name(...) { ... }`` declarations from base.tpl's page script, in order."""
+    text = _BASE.read_text(encoding="utf-8")
+    parts = []
+    for name in names:
+        start = text.index(f"function {name}(")
+        parts.append(text[start : text.index("{", start)] + "{" + function_body(text, name) + "}")
+    return "\n".join(parts)
 
 
 def function_body(source: str, name: str) -> str:

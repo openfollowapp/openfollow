@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Tests for ``AppRuntimeServices`` runtime-stats plumbing.
 
 This covers:
@@ -31,6 +33,7 @@ from openfollow.marker_catalog.sync import PeerSelection
 from openfollow.power_health import PowerState
 from openfollow.services import AppRuntimeServices
 from openfollow.video.failure import ConnectionPhase, SourceKind, VideoFailure
+from openfollow.video.source_limits import OverLimit, SourceReading, limits_snapshot
 
 pytestmark = pytest.mark.unit
 
@@ -107,6 +110,7 @@ class _FakeReceiver:
         self.source_framerate = 59.94
         self.source_format = "I420"
         self.source_kind = SourceKind.REMOTE
+        self.source_limits: SourceReading | None = None
 
 
 class _FakeDetector:
@@ -142,12 +146,25 @@ class _FakeMouse3DManager:
 
 
 class _FakeInputManager:
-    def __init__(self, items: list[dict] | None = None, mouse3d: Mouse3DStatus | None = None) -> None:
+    def __init__(
+        self,
+        items: list[dict] | None = None,
+        mouse3d: Mouse3DStatus | None = None,
+        keyboard: dict[str, Any] | None = None,
+    ) -> None:
         self._items = items or []
         self.mouse3d_manager = _FakeMouse3DManager(mouse3d)
+        self._keyboard = keyboard or {"poller": "fallback", "devices": None}
+        self.pin_capture = {"slot": None, "seconds_left": 0.0, "result": None}
+
+    def pin_capture_status(self) -> dict:
+        return dict(self.pin_capture)
 
     def get_controller_info(self) -> list[dict]:
         return list(self._items)
+
+    def keyboard_status(self) -> dict[str, Any]:
+        return dict(self._keyboard)
 
 
 class _FakeCanvas:
@@ -198,19 +215,31 @@ class TestDefaultRuntimeStatsSnapshot:
             "controllers",
             "mouse3d",
             "network",
+            "keyboard",
             "playback",
             "tracking",
             "hud",
             "marker_conflicts",
+            "latency",
         }
         assert snap["marker_conflicts"] == []
         assert snap["network"] == {"alerts": [], "senders": []}
+        assert snap["keyboard"] == {"poller": None, "devices": None}
+        assert snap["latency"] is None
         assert snap["system"]["cpu_percent"] == 0.0
         assert snap["video"]["connected"] is False
         assert snap["controllers"]["items"] == []
         # Same shape as a published snapshot, so /api/stats never changes schema at startup.
-        assert snap["controllers"] == {"connected_count": 0, "missing_count": 0, "mapped_count": 0, "items": []}
+        assert snap["controllers"] == {
+            "connected_count": 0,
+            "missing_count": 0,
+            "mapped_count": 0,
+            "items": [],
+            "pin_capture": {"slot": None, "seconds_left": 0.0, "result": None},
+            "marker_choices": [],
+        }
         assert snap["video"]["source_format"] == ""
+        assert snap["video"]["limits"] == limits_snapshot(None)
         # Nothing scanned yet, so the 3D Mouse section claims neither a fault nor "none connected".
         assert snap["mouse3d"]["scanned"] is False
         assert snap["mouse3d"]["devices"] == []
@@ -218,6 +247,7 @@ class TestDefaultRuntimeStatsSnapshot:
         # Nothing read yet: not available, never healthy.
         assert snap["system"]["power"]["available"] is False
         assert snap["system"]["power"]["under_voltage"] is None
+        assert snap["system"]["platform"] == {"supported": True, "name": "Raspberry Pi 5", "warning": False}
 
     def test_reflects_video_source_type_from_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(services_module, "gst_runtime_available", lambda: True)
@@ -375,6 +405,26 @@ class TestPublishRuntimeStats:
         services.publish_runtime_stats(force=True)
         assert services.get_runtime_stats_snapshot()["mouse3d"] == status.to_dict()
 
+    def test_the_keyboard_poller_is_the_input_managers_own(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+        self._prime(services, input_manager=_FakeInputManager(keyboard={"poller": "evdev", "devices": 2}))
+        services.publish_runtime_stats(force=True)
+        assert services.get_runtime_stats_snapshot()["keyboard"] == {"poller": "evdev", "devices": 2}
+
+    def test_without_input_no_keyboard_poller_is_published(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+        self._prime(services)
+        services.publish_runtime_stats(force=True)
+        assert services.get_runtime_stats_snapshot()["keyboard"] == {"poller": None, "devices": None}
+
     @pytest.mark.parametrize("enabled", [True, False])
     def test_without_input_the_3d_mouse_reads_as_not_scanned(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, enabled: bool
@@ -459,6 +509,43 @@ class TestPublishRuntimeStats:
         assert video["failure"] == "unauthorized"
         assert video["failure_text"] == "CAM1 rejected the login."
         assert video["phase"] == "decoding"
+        # A receiver that has measured nothing publishes no verdict.
+        assert video["limits"]["exceeded"] == []
+
+    def test_a_source_over_the_limits_is_published_with_its_ids(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receiver = _FakeReceiver()
+        receiver.source_limits = SourceReading(3840, 2160, 59.94, (OverLimit.RESOLUTION, OverLimit.FRAME_RATE))
+        self._prime(services, receiver=receiver)
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+
+        services.publish_runtime_stats(force=True)
+        limits = services.get_runtime_stats_snapshot()["video"]["limits"]
+        assert limits["exceeded"] == ["resolution_over_limit", "frame_rate_over_limit"]
+        assert (limits["width"], limits["height"], limits["fps"]) == (3840, 2160, 59.94)
+        assert limits["text"] == "Video arrives at 3840×2160 and 60 fps, over Full HD (1920×1080) and 30 fps."
+        assert limits["action"] == "Set the camera or encoder to 1920×1080 at 30 fps or less."
+
+    def test_a_local_camera_over_the_limits_is_pointed_at_the_station_s_settings(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        receiver = _FakeReceiver()
+        receiver.source_kind = SourceKind.LOCAL
+        receiver.source_limits = SourceReading(3840, 2160, None, (OverLimit.RESOLUTION,))
+        self._prime(services, receiver=receiver)
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+
+        services.publish_runtime_stats(force=True)
+        limits = services.get_runtime_stats_snapshot()["video"]["limits"]
+        assert limits["action"] == (
+            "Set the camera, or the signal into the capture card, to 1920×1080 at 30 fps or less, "
+            "or lower the resolution and frame rate under Video Source."
+        )
 
     def test_receiver_absent_uses_default_video_shape(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
@@ -478,6 +565,7 @@ class TestPublishRuntimeStats:
         assert video["failure"] == "none"
         assert video["failure_text"] == ""
         assert video["phase"] == "starting"
+        assert video["limits"] == limits_snapshot(None)
 
     def test_controller_counts_aggregate_mapped_vs_connected(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
@@ -576,6 +664,51 @@ class TestPublishRuntimeStats:
         assert (puck["port_key"], reserved["port_key"]) == ("usb:platform/xhci-hcd.0:2", None)
         assert puck["slot_ref"] == "mouse3d|usb:platform/xhci-hcd.0:2|SpaceNavigator|connected"
         assert reserved["slot_ref"] == ""
+        assert (puck["pinned"], reserved["pinned"]) == (False, False)
+
+    def test_controller_slots_carry_their_pins_and_the_armed_pin_here(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mgr = _FakeInputManager(
+            [
+                {
+                    "controller_index": 0,
+                    "name": "GameSir",
+                    "kind": "gamepad",
+                    "state": "connected",
+                    "connected": True,
+                    "marker_id": 10,
+                    "effective_speed": 1.0,
+                    "backend": "joystick",
+                    "pinned": True,
+                }
+            ]
+        )
+        mgr.pin_capture = {"slot": 0, "seconds_left": 6.5, "result": None}
+        self._prime(services, input_manager=mgr)
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+
+        services.publish_runtime_stats(force=True)
+        c = services.get_runtime_stats_snapshot()["controllers"]
+        assert c["items"][0]["pinned"] is True
+        assert c["pin_capture"] == {"slot": 0, "seconds_left": 6.5, "result": None}
+
+    def test_controller_slots_offer_the_controlled_markers_to_pick(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        item = {"name": "Pad", "connected": True, "marker_id": None, "effective_speed": 0.0, "backend": "joystick"}
+        self._prime(services, input_manager=_FakeInputManager([{**item, "controller_index": 0, "all_markers": True}]))
+        services._app._controlled_ids = [4, 2]
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+
+        services.publish_runtime_stats(force=True)
+        c = services.get_runtime_stats_snapshot()["controllers"]
+        assert c["marker_choices"] == [4, 2]
+        assert c["items"][0]["all_markers"] is True
 
     def test_controller_items_publish_what_each_controller_cannot_do(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
@@ -595,6 +728,27 @@ class TestPublishRuntimeStats:
         services.publish_runtime_stats(force=True)
         items = services.get_runtime_stats_snapshot()["controllers"]["items"]
         assert [i["notes"] for i in items] == [["buttons_unrecognised", "cannot_identify"], []]
+
+    def test_controller_items_publish_whether_the_slot_marker_is_parked(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The Controller Slots table reads ``parked`` off this snapshot to show the P."""
+        item = {"name": "Pad", "connected": True, "effective_speed": 0.0, "backend": "joystick"}
+        mgr = _FakeInputManager(
+            [
+                {**item, "controller_index": 0, "marker_id": 3, "parked": True},
+                {**item, "controller_index": 1, "marker_id": 4, "parked": False},
+                {**item, "controller_index": 2, "marker_id": None},
+            ]
+        )
+        self._prime(services, input_manager=mgr)
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+
+        services.publish_runtime_stats(force=True)
+        items = services.get_runtime_stats_snapshot()["controllers"]["items"]
+        assert [i["parked"] for i in items] == [True, False, False]
 
     def test_detector_present_delegates_to_performance_stats(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
@@ -766,6 +920,25 @@ class TestPublishRuntimeStats:
             "under_voltage_since_boot": True,
             "throttled_since_boot": True,
         }
+
+    @pytest.mark.parametrize("developer_mode", [False, True], ids=["shown", "developer-mode"])
+    def test_the_platform_verdict_is_published_and_reaches_the_alert(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, developer_mode: bool
+    ) -> None:
+        from openfollow import platform_support
+        from openfollow.web.live_alerts import diagnostics_alerts
+
+        monkeypatch.setattr(platform_support, "current", lambda: platform_support.PlatformSupport(False, "Windows"))
+        services._app._config.ui.developer_mode = developer_mode
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+
+        services.publish_runtime_stats(force=True)
+        snap = services.get_runtime_stats_snapshot()
+        assert snap["system"]["platform"] == {"supported": False, "name": "Windows", "warning": not developer_mode}
+        expected = None if developer_mode else "Unsupported platform: Windows"
+        assert diagnostics_alerts(snap).platform == expected
 
     def test_system_stats_with_none_temperature(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch

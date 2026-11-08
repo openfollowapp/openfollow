@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Trusted-time fetch (SNTP) and system-clock set via the privilege broker.
 
 A Pi has no battery-backed RTC, so it boots with a stale clock (restored from

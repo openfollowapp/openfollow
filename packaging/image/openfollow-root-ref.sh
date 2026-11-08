@@ -1,6 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 #
 # Reference the root and boot filesystems by UUID instead of the image
 # layout's default /dev/disk/by-slot/* symlinks. Those symlinks are created by

@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Diagnostics bundle data and collectors for system-state snapshots.
 
 ``collect_bundle`` runs every section collector and packs the result into a
@@ -29,13 +31,13 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any
 
 import openfollow
-from openfollow import keyboard_layout
+from openfollow import keyboard_layout, platform_support
 from openfollow.logging_setup import RingBufferLogHandler, read_log_file
 from openfollow.net_utils import HOST_RESOLVER, read_ipv4_routes
 from openfollow.network.validate import is_link_local
@@ -49,7 +51,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_T = TypeVar("_T")
 
 # Cap each stat-style probe (os.stat / os.statvfs / psutil.disk_usage). These
 # block uninterruptibly in the kernel on a hung NFS/CIFS/USB mount, and
@@ -63,14 +64,14 @@ _STAT_PROBE_MAX_INFLIGHT = 16
 _stat_probe_sem = threading.BoundedSemaphore(_STAT_PROBE_MAX_INFLIGHT)
 
 
-def _bounded_probe(
-    fn: Callable[[], _T],
+def _bounded_probe[T](
+    fn: Callable[[], T],
     timeout_s: float,
-    timeout_value: _T,
+    timeout_value: T,
     *,
     pool: threading.BoundedSemaphore | None = None,
-    busy_value: _T | None = None,
-) -> _T:
+    busy_value: T | None = None,
+) -> T:
     """Run ``fn()`` on a daemon thread; return its result, or ``timeout_value``
     if it hasn't returned within ``timeout_s``.
 
@@ -85,7 +86,7 @@ def _bounded_probe(
         # Too many probes already orphaned on a hung mount – fail fast instead
         # of leaking yet another thread.
         return timeout_value if busy_value is None else busy_value
-    box: list[_T] = [timeout_value]
+    box: list[T] = [timeout_value]
     done = threading.Event()
 
     def _run() -> None:
@@ -177,7 +178,7 @@ class DiagnosticsProviders:
     iface_ip: Callable[[], str] | None = None
 
     # Live runtime telemetry - the same snapshot ``/api/stats`` and the
-    # Statistics page read. The bundle carried host, config and logs but
+    # Status & Diagnostics read. The bundle carried host, config and logs but
     # nothing about whether the app was *working*, so triage needed a second
     # artefact nobody thinks to attach.
     runtime_stats: Callable[[], dict[str, Any]] | None = None
@@ -335,7 +336,7 @@ def describe_file(path: Path) -> str:
         stat = path.stat()
     except OSError as exc:
         return f"[unavailable: {exc.strerror or exc}]"
-    when = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(timespec="seconds")
+    when = datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(timespec="seconds")
     return f"{stat.st_size} B, modified {when}"
 
 
@@ -459,6 +460,34 @@ def _fmt_resolution(res: Any) -> str:
     return f"{width}x{height}" if width > 0 and height > 0 else "- (no source frames yet)"
 
 
+def _fmt_source_limits(limits: Any) -> str:
+    """The verdict's stable ids (or ``within``), then what the arriving frames measured and the limit."""
+    if not isinstance(limits, dict):
+        return "-"
+    width, height = int(limits.get("width", 0) or 0), int(limits.get("height", 0) or 0)
+    if width <= 0 or height <= 0:
+        return "not measured (no source frames yet)"
+    fps = limits.get("fps")
+    rate = f"{float(fps):.1f} fps" if isinstance(fps, (int, float)) else "rate not measured yet"
+    verdict = ", ".join(str(cause) for cause in limits.get("exceeded") or ()) or "within"
+    return (
+        f"{verdict} (measured {width}x{height}, {rate}; limit {limits.get('max_long_side', '?')}x"
+        f"{limits.get('max_short_side', '?')} either orientation, {limits.get('max_fps', '?')} fps)"
+    )
+
+
+def _fmt_latency(latency: Any) -> str:
+    """The last successful camera latency run, or ``not measured``."""
+    if not isinstance(latency, dict):
+        return "not measured"
+    return (
+        f"{float(latency.get('median_ms', 0.0) or 0.0):.0f} ms median "
+        f"({float(latency.get('min_ms', 0.0) or 0.0):.0f} to {float(latency.get('max_ms', 0.0) or 0.0):.0f} ms), "
+        f"{int(latency.get('samples', 0) or 0)} samples, {_fmt_age(latency.get('age_s'))}, "
+        f"source {latency.get('source_type') or '?'}"
+    )
+
+
 def collect_runtime_state(p: DiagnosticsProviders) -> list[str]:
     """Video, frame loop, detection and controllers, from the live snapshot.
 
@@ -502,6 +531,8 @@ def collect_runtime_state(p: DiagnosticsProviders) -> list[str]:
     rows.append(f"    input resolution      {_fmt_resolution(video.get('resolution'))}")
     rows.append(f"    source framerate      {float(video.get('source_fps', 0.0) or 0.0):.1f} fps")
     rows.append(f"    source format         {video.get('source_format') or '-'}")
+    rows.append(f"    source limits         {_fmt_source_limits(video.get('limits'))}")
+    rows.append(f"    camera latency        {_fmt_latency(stats.get('latency'))}")
 
     playback = stats.get("playback") or {}
     stale_after = float(playback.get("stale_after_s", 0.0) or 0.0)
@@ -557,6 +588,12 @@ def collect_runtime_state(p: DiagnosticsProviders) -> list[str]:
             rows.append(f"         key {item['port_key']}")
         if item.get("notes"):
             rows.append(f"         notes {', '.join(item['notes'])}")
+    keyboard = stats.get("keyboard") or {}
+    devices = keyboard.get("devices")
+    rows.append(
+        f"  Keyboard poller:        {keyboard.get('poller') or '[not running]'}"
+        f"{'' if devices is None else f', {devices} keyboard(s)'}"
+    )
     conflicts = stats.get("marker_conflicts") or []
     rows.append(f"  Marker conflicts:       {len(conflicts) or '(none)'}")
     for conflict in conflicts:
@@ -2329,9 +2366,7 @@ def collect_system_health() -> list[str]:
 
     rows: list[str] = []
     bt = psutil.boot_time()
-    rows.append(
-        f"  boot time (UTC)              {datetime.fromtimestamp(bt, tz=timezone.utc).isoformat(timespec='seconds')}"
-    )
+    rows.append(f"  boot time (UTC)              {datetime.fromtimestamp(bt, tz=UTC).isoformat(timespec='seconds')}")
     rows.append(f"  uptime                       {(time.time() - bt) / 3600:.1f} h")
     rows.append(f"  throttling                   {_collect_throttle_state()}")
     # ``sensors_temperatures`` doesn't exist on macOS at all
@@ -3198,6 +3233,7 @@ class DiagnosticsBundle:
     log_times: str = ""
     app_version: str = ""
     platform_label: str = ""
+    support_label: str = ""
     host_label: str = ""
     service_status: str = ""
     redactions_applied: str = ""
@@ -3276,6 +3312,17 @@ def station_zone(
             name = ""
     name = name or local.tzname() or ""
     return f"{label} ({name})" if name else label
+
+
+def support_label(p: DiagnosticsProviders) -> str:
+    """The header's verdict on the platform, said even while developer mode hides the warning."""
+    support = platform_support.current()
+    if support.supported:
+        return f"supported ({support.name})"
+    label = f"{support.title}. {platform_support.STEP}"
+    stats = _safely_value(p.runtime_stats, "runtime_stats", {})[0] if p.runtime_stats else {}
+    shown = ((stats or {}).get("system") or {}).get("platform", {}).get("warning")
+    return label + " (warning hidden: developer mode)" if shown is False else label
 
 
 def collect_bundle(
@@ -3388,12 +3435,13 @@ def collect_bundle(
         "f_io": lambda: collect_recent_io(p),
         "g_permissions": lambda: collect_device_permissions(p),
     }
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     bundle = DiagnosticsBundle(
         generated_at=now.isoformat(timespec="seconds"),
         log_times=station_zone(now.astimezone()),
         app_version=openfollow.__version__,
         platform_label=_platform_label(),
+        support_label=support_label(p),
         host_label=f"{full_hostname()} ({platform.platform()})",
         service_status=("running" if p.web_port_configured is not None else "NOT RUNNING (sample)"),
         redactions_applied="web_pin=***, X-Auth-Signature stripped",
@@ -3420,6 +3468,7 @@ def format_bundle(bundle: DiagnosticsBundle) -> str:
         # tree does (E1's git rev needs a ``.git`` and is blank there).
         f"version: {bundle.app_version}",
         f"platform: {bundle.platform_label}",
+        f"support: {bundle.support_label}",
         f"generated: {bundle.generated_at}",
         f"log times: station time, {bundle.log_times}",
         f"host: {bundle.host_label}",
@@ -3495,7 +3544,7 @@ def write_bundle_to_disk(
     except OSError as exc:
         logger.warning("diagnostics: cannot create %s (%s)", root, exc)
         return None
-    fname = bundle_filename(system_name, ts or datetime.now(timezone.utc))
+    fname = bundle_filename(system_name, ts or datetime.now(UTC))
     path = root / fname
     try:
         path.write_text(text, encoding="utf-8")

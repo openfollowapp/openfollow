@@ -1,4 +1,4 @@
-% rebase('base.tpl')
+% rebase('base.tpl', platform_warning_inline=True)
 % from openfollow.units import UnitSystem, unit_suffix_length
 % _us = UnitSystem(config.ui.unit_system)
 % _imp = _us is UnitSystem.IMPERIAL
@@ -8,6 +8,7 @@
 % import json
 % from openfollow.configuration import MAX_CALIBRATION_MARKS
 % from openfollow.lens_model import C_BOUND
+% from openfollow.scene.opencv_lens import MAX_FILE_BYTES
 % _cam = config.camera
 % _lens_k1, _lens_k2, _lens_cx, _lens_cy = _cam.lens_k1, _cam.lens_k2, _cam.lens_cx, _cam.lens_cy
 % _suggest_on = config.ui.feature_on('lens_suggestions')
@@ -42,7 +43,7 @@
     display: flex;
     gap: 0.25rem;
     padding: 0.35rem;
-    border-radius: 1rem;
+    border-radius: 0.5rem;
     background: var(--surface);
     border: 1px solid var(--border-soft);
     overflow-x: auto;
@@ -55,7 +56,7 @@
     flex: 1;
     min-width: fit-content;
     padding: 0.45rem 0.7rem;
-    border-radius: 0.75rem;
+    border-radius: 0.375rem;
     border: 1px solid transparent;
     background: transparent;
     color: var(--muted);
@@ -68,7 +69,7 @@
   .wizard-step-btn:hover {
     color: var(--text);
     background: rgba(255,255,255,0.04);
-    transform: none; filter: none;
+    filter: none;
   }
   .wizard-step-btn.active {
     color: var(--accent);
@@ -111,7 +112,7 @@
     width: 100%;
     margin-bottom: 1rem;
     background: var(--bg-deep);
-    border-radius: 0.75rem;
+    border-radius: 0.375rem;
     border: 1px solid var(--border);
     overflow: hidden;
     transition: border-color 0.3s;
@@ -163,7 +164,7 @@
     gap: 0.5rem;
     margin-top: 0.72rem;
     padding: 0.84rem;
-    border-radius: 0.75rem;
+    border-radius: 0.375rem;
     background: var(--surface);
     border: 1px solid var(--border-soft);
   }
@@ -246,12 +247,12 @@
   .lens-bubble .lb-reject:hover .ring, .lens-bubble .lb-reject:focus-visible .ring { fill: var(--error-chip); }
   .lens-bubble button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   /* The app's buttons lift by 1 px on hover; these must not move in any state, in any browser. */
-  .lens-bubble button, .lens-bubble button:hover, .lens-bubble button:active, .lens-bubble button:focus, .lens-bubble button:focus-visible { transform: none !important; filter: none !important; transition: color 120ms ease; }
+  .lens-bubble button, .lens-bubble button:hover, .lens-bubble button:active, .lens-bubble button:focus, .lens-bubble button:focus-visible { filter: none !important; transition: color 120ms ease; }
   .lens-edges { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: none; pointer-events: none; }
   .lens-dev { margin-top: 0.72rem; }
   /* Graded meter (docs/STATUS_LANGUAGE.md): five segments, filled in the level's line colour. */
   .wizard-meter { display: inline-flex; gap: 3px; vertical-align: middle; }
-  .wizard-meter-seg { width: 14px; height: 8px; border-radius: 2px; background: var(--border-soft); }
+  .wizard-meter-seg { width: 14px; height: 8px; border-radius: 1px; background: var(--border-soft); }
   .wizard-meter[data-level="caution"] .wizard-meter-seg.filled { background: var(--caution-line); }
   .wizard-meter[data-level="info"] .wizard-meter-seg.filled { background: var(--info-line); }
   .wizard-meter[data-level="success"] .wizard-meter-seg.filled { background: var(--success-line); }
@@ -260,6 +261,10 @@
   .modal-body .tier-list { max-width: none; max-height: 16rem; overflow-y: auto; padding: 4px; margin: -4px; }
   .lens-dlg-title { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 0.2rem 0 0.45rem; }
   .lens-dlg-sep { height: 1px; background: var(--border-soft); margin: 1rem 0 0.8rem; }
+  #ll-file-opt { margin-bottom: 0.6rem; }
+  #ll-size { margin: 0.8rem 0 0; }
+  .ll-size-row { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+  .ll-size-row input { width: 6.5rem; }
   /* Camera Calibration: pins, the drawn rectangle, the origin and the distance lines. */
   .pin-handle { cursor: grab; pointer-events: all; outline: none; }
   .pin-handle:active { cursor: grabbing; }
@@ -298,6 +303,9 @@
   .corner-xyz { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--text); font-size: 0.88rem; }
   .caution-list { margin: 0.3rem 0 0; padding-left: 1.1rem; }
   .caution-text { color: var(--caution-text); }
+  /* Full strength in a tile, and dark ink on a checked tile's accent fill. */
+  .tier-option > span small.caution-text { opacity: 1; }
+  .tier-option input:checked + span .caution-text { color: inherit; }
   .mode-field { margin-bottom: 0.9rem; }
   .lens-current { margin: 0.9rem 0; }
   .lens-current-values { margin: 0.2rem 0 0.6rem; color: var(--muted); }
@@ -307,36 +315,38 @@
   .lens-current .tier-option > span { border-color: var(--btn-secondary-border); }
   .lens-current.asking .tier-option > span { background: var(--btn-primary-bg); color: var(--btn-ink-dark); border-color: var(--btn-primary-bg); }
   .axis-note { font-weight: 400; text-transform: none; letter-spacing: 0; }
+  #review-floor .field { max-width: 26rem; }
+  #review-floor-note { margin: 0.72rem 0 0; }
   #step-calib.mode-simple .only-advanced, #step-calib.mode-advanced .only-simple { display: none; }
   #wiz-hint, #lens-hint { margin: 0.2rem 0 0.9rem; }
   /* Simple: a step is greyed out and cannot be used until the step before it is done. */
   .step-locked { opacity: 0.4; filter: grayscale(0.6); transition: opacity 150ms; }
   @media (prefers-reduced-motion: reduce) { .step-locked { transition: none; } }
   /* The menu a click on the picture opens in Advanced. */
-  .pin-menu { position: absolute; z-index: 5; min-width: 13rem; max-width: 18rem; max-height: calc(100% - 16px); overflow-y: auto; overscroll-behavior: contain; padding: 0.35rem; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 0.6rem; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45); line-height: 1.3; }
+  .pin-menu { position: absolute; z-index: 5; min-width: 13rem; max-width: 18rem; max-height: calc(100% - 16px); overflow-y: auto; overscroll-behavior: contain; padding: 0.35rem; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 0.3rem; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45); line-height: 1.3; }
   .pin-menu:focus { outline: none; }
   .pin-menu-head { display: flex; align-items: center; justify-content: space-between; gap: 0.4rem; }
   .pin-menu-title { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); padding: 0.3rem 0.5rem; }
-  .pin-menu .pm-close { width: 1.7rem; height: 1.7rem; padding: 0; border-radius: 0.45rem; background: transparent; color: var(--muted); font-size: 1.1rem; line-height: 1; }
-  .pin-menu .pm-close:hover, .pin-menu .pm-close:focus-visible { background: var(--surface-strong); color: var(--text); outline: none; transform: none; }
-  .pin-menu .pm-item { display: flex; width: 100%; justify-content: space-between; align-items: center; gap: 0.6rem; padding: 0.4rem 0.5rem; border-radius: 0.45rem; background: transparent; color: var(--text); font-weight: 600; font-size: 0.86rem; text-align: left; }
-  .pin-menu .pm-item:hover, .pin-menu .pm-item:focus-visible { background: var(--surface-strong); outline: none; transform: none; }
+  .pin-menu .pm-close { width: 1.7rem; height: 1.7rem; padding: 0; border-radius: 0.225rem; background: transparent; color: var(--muted); font-size: 1.1rem; line-height: 1; }
+  .pin-menu .pm-close:hover, .pin-menu .pm-close:focus-visible { background: var(--surface-strong); color: var(--text); outline: none; }
+  .pin-menu .pm-item { display: flex; width: 100%; justify-content: space-between; align-items: center; gap: 0.6rem; padding: 0.4rem 0.5rem; border-radius: 0.225rem; background: transparent; color: var(--text); font-weight: 600; font-size: 0.86rem; text-align: left; }
+  .pin-menu .pm-item:hover, .pin-menu .pm-item:focus-visible { background: var(--surface-strong); outline: none; }
   .pin-menu .pm-item.danger { color: var(--error-text); }
   .pin-menu .kind { font-size: 0.72rem; font-weight: 500; color: var(--muted); }
   .pin-menu hr { border: 0; border-top: 1px solid var(--border-soft); margin: 0.3rem 0; }
   .pin-menu.form { width: 18rem; max-width: calc(100% - 16px); }
   /* On a picture under 480 x 360 CSS px: a panel under the picture, in full screen a sheet at the shell's bottom. */
   .pin-menu.as-panel { position: static; width: auto; min-width: 0; max-width: none; max-height: none; overflow: visible; margin-top: 0.5rem; box-shadow: none; }
-  .pin-menu.as-sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 7; max-height: 50%; overflow-y: auto; margin: 0; border-width: 1px 0 0; border-radius: 0.8rem 0.8rem 0 0; padding-bottom: calc(0.35rem + env(safe-area-inset-bottom)); }
+  .pin-menu.as-sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 7; max-height: 50%; overflow-y: auto; margin: 0; border-width: 1px 0 0; border-radius: 0.4rem 0.4rem 0 0; padding-bottom: calc(0.35rem + env(safe-area-inset-bottom)); }
   .pm-form { padding: 0 0.5rem 0.4rem; }
   .pm-form .field { min-width: 0; margin-bottom: 0.5rem; }
   .pm-form label { font-size: 0.66rem; }
-  .pm-form input, .pm-form select { padding: 0.42rem 0.6rem; font-size: 0.88rem; border-radius: 0.55rem; }
+  .pm-form input, .pm-form select { padding: 0.42rem 0.6rem; font-size: 0.88rem; border-radius: 0.275rem; }
   .pm-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
   .pm-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.2rem; }
   /* The full-screen picture with its one-line toolbar. */
-  .fs-btn { position: absolute; top: 8px; right: 8px; z-index: 4; width: 2.2rem; height: 2.2rem; padding: 0; display: flex; align-items: center; justify-content: center; border-radius: 0.5rem; background: color-mix(in srgb, var(--bg-deep) 72%, transparent); border: 1px solid var(--border); color: var(--text); }
-  .fs-btn:hover, .fs-btn:focus-visible { background: var(--bg-soft); border-color: var(--accent); transform: none; }
+  .fs-btn { position: absolute; top: 8px; right: 8px; z-index: 4; width: 2.2rem; height: 2.2rem; padding: 0; display: flex; align-items: center; justify-content: center; border-radius: 0.25rem; background: color-mix(in srgb, var(--bg-deep) 72%, transparent); border: 1px solid var(--border); color: var(--text); }
+  .fs-btn:hover, .fs-btn:focus-visible { background: var(--bg-soft); border-color: var(--accent); }
   .fs-btn svg { width: 1.15rem; height: 1.15rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
   .fs-shell { position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column; background: var(--bg-deep); }
   .fs-shell[hidden], .wizard-solved-params[hidden], .metric-echo[hidden], .tier-list[hidden], button[hidden] { display: none; }
@@ -349,7 +359,7 @@
   .fs-stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; }
   .fs-stage .wizard-preview-container { margin: 0; border: 0; border-radius: 0; flex: none; }
   .fs-stage .fs-btn { display: none; }
-  .fs-help { position: absolute; top: 3.2rem; right: 0.6rem; z-index: 6; width: min(24rem, calc(100% - 1.2rem)); max-height: calc(100% - 4rem); overflow-y: auto; padding: 0.4rem 0.9rem 0.8rem; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 0.6rem; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45); font-size: 0.86rem; line-height: 1.4; }
+  .fs-help { position: absolute; top: 3.2rem; right: 0.6rem; z-index: 6; width: min(24rem, calc(100% - 1.2rem)); max-height: calc(100% - 4rem); overflow-y: auto; padding: 0.4rem 0.9rem 0.8rem; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 0.3rem; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45); font-size: 0.86rem; line-height: 1.4; }
   .fs-help[hidden] { display: none; }
   .fs-help-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
   .fs-help-head h3 { margin: 0.35rem 0; font-size: 0.95rem; }
@@ -357,7 +367,7 @@
   .fs-help p strong { color: var(--text); }
   .fs-keys td { padding: 0.3rem 0; border-top: 1px solid var(--border-soft); border-bottom: 0; vertical-align: top; }
   .fs-keys td:first-child { white-space: nowrap; padding-right: 0.75rem; }
-  .fs-keys kbd { display: inline-block; min-width: 1.4rem; padding: 0 0.35rem; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 0.35rem; background: var(--bg-deep); font: inherit; font-size: 0.8rem; text-align: center; }
+  .fs-keys kbd { display: inline-block; min-width: 1.4rem; padding: 0 0.35rem; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 0.175rem; background: var(--bg-deep); font: inherit; font-size: 0.8rem; text-align: center; }
   /* A disclosure that is a group's whole content takes the group's own frame. */
   .group > .inline-advanced:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
   @media (max-width: 680px) {
@@ -366,8 +376,10 @@
   @media (max-width: 640px) { .fs-title, .fs-status { display: none; } }
 </style>
 
+% # Save and finish, Leave without saving and Back to Settings land on the main page's General tab.
+% _settings_url = '/?tab=general'
 <div class="wizard-header">
-  <a href="/">&larr; Back to Settings</a>
+  <a href="{{_settings_url}}">&larr; Back to Settings</a>
   <h2>Setup Wizard</h2>
 </div>
 
@@ -388,6 +400,7 @@
   <button type="button" class="wizard-step-btn" data-step="{{_i}}" onclick="wizardGo({{_i}})">{{_i + 1}}. {{_label}}</button>
 % end
 </nav>
+% include('partials/platform_warning.tpl', platform_warning=get('platform_warning'))
 
 %# The four-corner icon of the full-screen button on every picture.
 % _fs_icon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg>'
@@ -452,7 +465,7 @@
       <div class="tier-list" role="radiogroup" aria-labelledby="lens-current-q">
         <label class="tier-option"><input type="radio" name="lens_current" value="keep"><span><strong>Keep the current calibration</strong><small>Choose this if the camera, the lens and the zoom have not changed.</small></span></label>
         <label class="tier-option"><input type="radio" name="lens_current" value="clear"><span><strong>Clear it and measure the lens again</strong><small>Trace new lines to calibrate the lens.</small></span></label>
-        <label class="tier-option"><input type="radio" name="lens_current" value="load"><span><strong>Load another lens calibration</strong><small>Saved on this station or in a settings file.</small></span></label>
+        <label class="tier-option"><input type="radio" name="lens_current" value="load"><span><strong>Load another lens calibration</strong><small>Saved on this station, in a settings file or in an OpenCV calibration.</small></span></label>
       </div>
       <div id="lens-current-backup">
         <button type="button" class="secondary" style="margin-top:0.72rem;" onclick="lensSaveCurrent()">Save lens calibration&hellip;</button>
@@ -467,6 +480,10 @@
         <span id="lens-result-text"></span>
       </div>
       <div class="notice-sub" id="lens-result-hint"></div>
+    </div>
+    <div id="lens-loaded-save" hidden>
+      <button type="button" class="secondary" style="margin-top:0.72rem;" onclick="lensSaveDialog(null, 'lens-loaded-saved')">Save lens calibration&hellip;</button>
+      <div id="lens-loaded-saved" class="notice success" role="status" style="display:none;margin-top:0.72rem;"></div>
     </div>
     </div>
     <div id="lens-work">
@@ -781,6 +798,17 @@
     </div>
     <div class="group">
       <div class="group-title">Grid</div>
+      <div id="review-floor" hidden>
+        <div class="row">
+          <div class="field">
+            <label for="floor_h">Floor height (<span class="u-len">{{_len}}</span>) <span class="axis-note">(offset from point of origin)</span></label>
+            <input type="{{_len_type}}"{{!_len_step}} id="floor_h" data-len aria-describedby="floor-h-error" aria-invalid="false">
+            <small class="metric-echo" data-echo="floor_h" hidden></small>
+            <div id="floor-h-error" class="wizard-field-error" hidden></div>
+          </div>
+        </div>
+        <div id="review-floor-note" class="notice" role="status"></div>
+      </div>
       <div class="wizard-solved-params" id="review-grid-params"></div>
     </div>
 
@@ -857,6 +885,7 @@
   // The lens: Barrel / fisheye and Corner correction in their fields, the lens centre in S.lensCentre (half-diagonals
   // from the picture centre, x right, y down), shown in whole pixels of the snapshot. Mirrors openfollow.lens_model.
   var LENS_C_BOUND = {{C_BOUND}};
+  var LENS_FILE_MAX = {{MAX_FILE_BYTES}};
   // Smallest positive root of 1 + b s + a s^2, Infinity when none.
   function wizLensRoot(a, b) {
     if (a === 0) return b < 0 ? -1 / b : Infinity;
@@ -1174,7 +1203,8 @@
     cam: null, camPartial: false, height: null,
     solve: null, selPin: null, selCorner: null, pinMenu: null, pair: 0,
     lensTouched: false, lensLoaded: null, lensChoice: '',
-    lensCentre: [SAVED.lens[2], SAVED.lens[3]], lensCentreBad: false
+    lensCentre: [SAVED.lens[2], SAVED.lens[3]], lensCentreBad: false,
+    floor: '', floorTouched: false, floorFrom: null
   };
   var solveSeq = 0, solveTimer = null, solvePending = false;
 
@@ -1378,7 +1408,7 @@
     var behind = marks.filter(function(m) { return m.pin && !m.problem && res[m.id] && res[m.id].px == null; }).map(function(m) { return { kind: 'behind', id: m.id }; });
     var behindIds = {};
     behind.forEach(function(b) { behindIds[b.id] = true; });
-    return { marks: marks, cam: data.camera, steep: data.steep === true, positions: positions, res: res, worst: data.largest_error, pinned: sent, behind: behind.length, behindIds: behindIds,
+    return { marks: marks, cam: data.camera, steep: data.steep === true, floor: data.floor || null, positions: positions, res: res, worst: data.largest_error, pinned: sent, behind: behind.length, behindIds: behindIds,
       reasons: wordReasons((data.reasons || []).concat(behind), marks) };
   }
   function afterSolve(then) {
@@ -2177,9 +2207,9 @@
     lensHintLines = lines ? lensLinesHint() : null;
     if (lensPending) { h = 'Click the other end of the straight edge.'; sub = 'Esc cancels the line.'; }
     else if (lensHold && lensSelected && lensSelected.point != null) { h = 'Move the point exactly onto the edge.'; sub = 'Drag it, or use the arrow keys while the loupe shows the edge. Press Enter when it is in the right place.'; }
-    else if (open) { h = 'Check the suggested lines.'; sub = 'Confirm each of the lines that is straight in reality by pressing ✔. Reject the others, such as a curtain, a cloth or a cable, by pressing ✖. ' + open + ' left to check. Or load a saved lens calibration.'; }
-    else if (!lines && S.lensLoaded) { h = 'A saved lens calibration is loaded.'; sub = lensHasCurrent() ? 'Press Next, or choose Clear it and measure the lens again.' : 'Press Next, or draw straight lines to measure the lens again.'; }
-    else if (!lines) { h = 'Draw straight lines on the picture.'; sub = 'Click the start and the end of an edge that is straight in reality, such as a stage edge, a tape line or a truss. Then move its points exactly onto the edge. Or load a saved lens calibration.'; }
+    else if (open) { h = 'Check the suggested lines.'; sub = 'Confirm each of the lines that is straight in reality by pressing ✔. Reject the others, such as a curtain, a cloth or a cable, by pressing ✖. ' + open + ' left to check. Or load a lens calibration.'; }
+    else if (!lines && S.lensLoaded) { h = 'A lens calibration is loaded.'; sub = lensHasCurrent() ? 'Press Next, or choose Clear it and measure the lens again.' : 'Press Next, or draw straight lines to measure the lens again.'; }
+    else if (!lines) { h = 'Draw straight lines on the picture.'; sub = 'Click the start and the end of an edge that is straight in reality, such as a stage edge, a tape line or a truss. Then move its points exactly onto the edge. Or load a lens calibration.'; }
     else { h = lensHintLines[0]; sub = lensHintLines[1]; }
     // A started line keeps the box's height, so the picture stays put between the line's two taps.
     var box = $('lens-hint');
@@ -2317,7 +2347,7 @@
       var tuned = !lensSame(l, [ld.k1, ld.k2, ld.cx, ld.cy]);
       box.style.display = ''; box.className = 'notice'; meter.style.display = 'none';
       setLive($('lens-result-text'), esc('Loaded \u201c' + ld.name + '\u201d \u2013 barrel / fisheye ' + fmt(l[0], 3) + ', corner correction ' + fmt(l[1], 3) + lensCentreSuffix([l[2], l[3]])));
-      setLive($('lens-result-hint'), esc((tuned ? 'Changed by user input after loading. ' : '') + S.lensLoaded.src + '.'));
+      setLive($('lens-result-hint'), esc((tuned ? 'Changed by user input after loading. ' : '') + S.lensLoaded.src + '.' + (ld.kind === 'opencv' && !tuned ? ' ' + lensOpencvAccuracy(ld) : '')));
       return;
     }
     meter.style.display = '';
@@ -2727,6 +2757,8 @@
     }
     $('lens-notices').hidden = cur && S.lensChoice !== 'clear' && S.lensChoice !== 'load';
     $('lens-work').hidden = cur && S.lensChoice !== 'clear';
+    // With the picture's toolbar hidden, a calibration loaded from a file is saved from under its notices.
+    $('lens-loaded-save').hidden = !(cur && S.lensChoice === 'load' && S.lensLoaded && S.lensLoaded.fromFile);
     $('lens-next').hidden = ask;
   }
   function lensCurrentInit() {
@@ -2782,6 +2814,28 @@
     if (!wizLensIsValid(k1, k2, cx, cy)) return { error: 'With the lens values of this file, the overlay cannot follow the picture out to its corners.' };
     return { k1: k1, k2: k2, cx: cx, cy: cy };
   }
+  // How closely the converted lens follows the file: typical error, and the corners' when the file reaches them.
+  function lensOpencvAccuracy(c) {
+    var text = 'Typical error ' + fmt(c.rms_px, 1) + ' px';
+    if (c.corner_px !== null && c.corner_px !== undefined) return text + ', corners ' + fmt(c.corner_px, 1) + ' px.';
+    return text + '. The file describes ' + Math.floor(100 * c.coverage) + '% of the picture, not all its corners.';
+  }
+  // The station converts an OpenCV calibration for this snapshot: ``{ fit }``, ``{ needsSize }`` or ``{ error }``.
+  function lensFromOpencv(text, size) {
+    var saveError = window.OpenFollow.saveError;
+    if (!imageWidth || !imageHeight) return Promise.resolve({ error: 'An OpenCV calibration is converted for the picture. Load it once the picture is shown.' });
+    var body = { xml: text, image_width: imageWidth, image_height: imageHeight };
+    if (size) { body.calibration_width = size[0]; body.calibration_height = size[1]; }
+    return fetch('/api/wizard/lens/opencv', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(function(r) {
+      return r.text().then(function(text) {
+        var data = null;
+        try { data = JSON.parse(text); } catch (e) { /* the station's own text */ }
+        if (r.ok) return data && typeof data === 'object' ? { fit: data } : { error: saveError.UNREACHABLE.error };
+        if (data && data.needs_size) return { needsSize: true, error: data.error };
+        return { error: saveError.fromText(r.status, text).error };
+      }, function() { return { error: saveError.UNREACHABLE.error }; });
+    }, function() { return { error: saveError.UNREACHABLE.error }; });
+  }
   function lensOption(i, name, sub, checked, warn) {
     return '<label class="tier-option"><input type="radio" name="lens_src" value="' + i + '"' + (checked ? ' checked' : '') + '><span><strong>' + esc(name) + '</strong><small>' + esc(sub) + '</small>' +
       (warn ? '<small class="caution-text">' + esc(warn) + '</small>' : '') + '</span></label>';
@@ -2796,8 +2850,9 @@
     wizSetLensCentre([cx, cy]);
     wizShowLensLimit();
     S.lensTouched = true;
-    S.lensLoaded = { name: c.name, src: src, k1: Number(shown[0]), k2: Number(shown[1]), cx: cx, cy: cy };
-    $('lens-saved').style.display = 'none';
+    S.lensLoaded = { name: c.name, src: src, k1: Number(shown[0]), k2: Number(shown[1]), cx: cx, cy: cy, fromFile: !!c.file };
+    if (c.kind === 'opencv') Object.assign(S.lensLoaded, { kind: 'opencv', rms_px: c.rms_px, corner_px: c.corner_px, coverage: c.coverage });
+    $('lens-saved').style.display = 'none'; $('lens-loaded-saved').style.display = 'none';
     lensShowNotice('');
     renderLens(); renderLensResult(); onLensCoeffChanged();
   }
@@ -2816,17 +2871,21 @@
     return '<div class="notice error" id="lens-list-error" role="alert">The saved lens calibrations could not be read.' + (sub ? '<div class="notice-sub">' + esc(sub) + '</div>' : '') + '</div>';
   }
   window.lensLoadDialog = function(loaded) {
-    var fromFile = null, saved = [], failed = null;
+    // ``seq`` numbers every file choice and conversion; only the latest one's answer lands.
+    var fromFile = null, saved = [], failed = null, pendingXml = null, seq = 0;
     function render() {
       var lines = lensLines;
       return '<div id="ll-body"><div class="lens-dlg-title">Saved on this station</div>' +
         (failed !== null ? lensListFailed(failed, false) : saved.length ? '<div class="tier-list" role="radiogroup" aria-label="Saved lens calibrations">' + saved.map(function(c, i) { return lensOption(i, c.name, lensVals(c.k1, c.k2, c.cx, c.cy, imageWidth || c.width, imageHeight || c.height) + ' · ' + c.saved + (lensSized(c) ? ' · ' + lensSize(c.width, c.height) : ''), false, lensShapeWarning(c)); }).join('') + '</div>'
           : '<p>No lens calibrations are saved on this station.</p>') +
-        '<div class="lens-dlg-sep"></div><div class="lens-dlg-title">From a settings file</div>' +
-        '<p>Only the lens values of an exported <code>.ofsettings</code> file are loaded.</p>' +
+        '<div class="lens-dlg-sep"></div><div class="lens-dlg-title">From a file</div>' +
+        '<p>Only the lens values of an exported <code>.ofsettings</code> file or of an OpenCV calibration (<code>.xml</code>) are loaded.</p>' +
         '<div class="tier-list" id="ll-file-opt" hidden></div>' +
-        '<button type="button" class="secondary" id="ll-file-btn">Choose settings file&hellip;</button>' +
-        '<input type="file" id="ll-file" accept=".ofsettings,.openfollowsettings" hidden>' +
+        '<button type="button" class="secondary" id="ll-file-btn">Choose file&hellip;</button>' +
+        '<input type="file" id="ll-file" accept=".ofsettings,.openfollowsettings,.xml,.yml,.yaml" hidden>' +
+        '<div id="ll-size" hidden><div class="lens-dlg-title" id="ll-size-label">Calibrated picture size</div><p id="ll-size-note"></p>' +
+        '<div class="ll-size-row" role="group" aria-labelledby="ll-size-label" aria-describedby="ll-size-note"><input type="number" id="ll-size-w" min="1" step="1" aria-label="Calibrated width" aria-describedby="ll-size-note"> \u00d7 <input type="number" id="ll-size-h" min="1" step="1" aria-label="Calibrated height" aria-describedby="ll-size-note"> ' +
+        '<button type="button" class="secondary" id="ll-size-btn">Convert</button></div></div>' +
         '<div class="wizard-field-error" id="ll-file-error" role="alert" hidden></div>' +
         (lines.length ? '<p style="margin-top:0.8rem;">Loading removes the ' + lines.length + ' line' + (lines.length === 1 ? '' : 's') + ' on the picture.</p>' : '') + '</div>';
     }
@@ -2841,7 +2900,7 @@
             var c = v === 'file' ? fromFile : saved[+v];
             if (!c) return;
             closeModal();
-            lensApplyLoaded(c, v === 'file' ? 'From the settings file ' + c.file : 'Saved on this station on ' + c.saved);
+            lensApplyLoaded(c, v !== 'file' ? 'Saved on this station on ' + c.saved : c.kind === 'opencv' ? 'From the OpenCV calibration file ' + c.file : 'From the settings file ' + c.file);
             if (typeof loaded === 'function') loaded();
           } }
         ],
@@ -2849,21 +2908,63 @@
       var ok = $('modal-footer').lastChild;
       function sync() { ok.disabled = !document.querySelector('input[name="lens_src"]:checked'); }
       sync();
-      $('ll-body').onchange = function(e) {
+      var dialog = $('ll-body');
+      dialog.onchange = function(e) {
         if (e.target.id !== 'll-file') { sync(); return; }
         var f = e.target.files[0]; if (!f) return;
         var rd = new FileReader();
         rd.onload = function() {
-          var res = lensFromSettings(String(rd.result)), err = $('ll-file-error');
-          err.hidden = !res.error; err.textContent = res.error || '';
-          if (res.error) { e.target.value = ''; return; }
-          fromFile = { name: f.name.replace(/\.(ofsettings|openfollowsettings)$/i, ''), file: f.name, k1: res.k1, k2: res.k2, cx: res.cx, cy: res.cy };
-          var box = $('ll-file-opt'); box.hidden = false;
-          box.innerHTML = lensOption('file', f.name, lensVals(res.k1, res.k2, res.cx, res.cy, imageWidth, imageHeight), true);
-          $('ll-file-btn').textContent = 'Choose another file…';
-          sync();
+          var text = String(rd.result);
+          seq++; fromFile = null; pendingXml = null;
+          $('ll-file-opt').hidden = true; $('ll-file-opt').innerHTML = ''; $('ll-size').hidden = true; sync();
+          // An XML or YAML file is an OpenCV calibration, for the station; anything else a settings file.
+          // The station reads at most LENS_FILE_MAX bytes; a larger calibration is refused before it is sent.
+          if (/\.(xml|ya?ml)$/i.test(f.name) || /^\s*(<|%YAML)/.test(text)) {
+            if (f.size > LENS_FILE_MAX) show({ error: 'This file is too large for a lens calibration.' }, f.name, null);
+            else { pendingXml = { text: text, file: f.name }; convert(null); }
+          }
+          else show(lensFromSettings(text), f.name, null);
+          e.target.value = '';
         };
         rd.readAsText(f);
+      };
+      function show(res, file, opencv) {
+        var err = $('ll-file-error');
+        err.hidden = !res.error; err.textContent = res.error || '';
+        if (res.error) return;
+        fromFile = { name: file.replace(/\.(ofsettings|openfollowsettings|xml|ya?ml)$/i, ''), file: file, k1: res.k1, k2: res.k2, cx: res.cx, cy: res.cy };
+        if (opencv) Object.assign(fromFile, { kind: 'opencv', rms_px: res.rms_px, corner_px: res.corner_px, coverage: res.coverage });
+        var box = $('ll-file-opt'); box.hidden = false;
+        box.innerHTML = lensOption('file', file, lensVals(res.k1, res.k2, res.cx, res.cy, imageWidth, imageHeight) + (opencv ? ' · ' + lensOpencvAccuracy(res) : ''), true);
+        $('ll-file-btn').textContent = 'Choose another file…';
+        sync();
+      }
+      function convert(size) {
+        var mine = ++seq, file = pendingXml.file;
+        lensFromOpencv(pendingXml.text, size).then(function(got) {
+          if (mine !== seq || $('ll-body') !== dialog) return;
+          var asking = !!got.needsSize || (!!size && !!got.error);
+          $('ll-size').hidden = !asking;
+          // Asked only when no size was sent; the question is no error, so it stays with the fields.
+          if (got.needsSize) {
+            $('ll-size-note').textContent = got.error;
+            $('ll-size-w').value = imageWidth; $('ll-size-h').value = imageHeight;
+            var err = $('ll-file-error'); err.hidden = true; err.textContent = '';
+            // Focus brings the question to a screen reader, through the row's description.
+            $('ll-size-w').focus(); $('ll-size-w').select();
+            return;
+          }
+          show(got.fit ? got.fit : { error: got.error }, file, true);
+        });
+      }
+      $('ll-size-btn').onclick = function() {
+        var w = Number($('ll-size-w').value), h = Number($('ll-size-h').value);
+        if (!pendingXml) return;
+        if (!(Number.isInteger(w) && Number.isInteger(h) && w > 0 && h > 0)) { show({ error: 'Enter the calibrated picture size as two whole numbers.' }, pendingXml.file, true); return; }
+        convert([w, h]);
+      };
+      $('ll-size-w').onkeydown = $('ll-size-h').onkeydown = function(e) {
+        if (e.key === 'Enter') { e.preventDefault(); $('ll-size-btn').onclick(); }
       };
       $('ll-file-btn').onclick = function() { $('ll-file').click(); };
     }
@@ -2873,9 +2974,14 @@
   // could not be read says so, and that saving may replace a calibration of that name.
   // Under the question, Save backs up the camera's own calibration, whatever the fields show by then.
   window.lensSaveCurrent = function() { lensSaveDialog(SAVED.lens, 'lens-current-saved'); };
+  // A calibration loaded from a file, still as loaded, offers the file's name to save it under.
+  function lensSaveName() {
+    var ld = S.lensLoaded;
+    return ld && ld.fromFile && !lensLines.length && lensSame(wizLens(), [ld.k1, ld.k2, ld.cx, ld.cy]) ? ld.name.slice(0, 60) : '';
+  }
   window.lensSaveDialog = function(current, noteId) {
     if (!current && (!lensMeasured() || !wizLensValid())) return;
-    var l = current || wizLens(), saved = [], failed = null, saving = false;
+    var l = current || wizLens(), name = current ? '' : lensSaveName(), saved = [], failed = null, saving = false;
     function open() {
       openModal({
         title: 'Save Lens Calibration',
@@ -2905,6 +3011,7 @@
         ],
       });
       var ok = $('modal-footer').lastChild, inp = $('ls-name');
+      inp.value = name;
       function sync() {
         var n = inp.value.trim().toLowerCase();
         ok.disabled = !n || saving;
@@ -2982,7 +3089,7 @@
   }
   // A field showing an error echoes nothing: the value is not stored.
   function refreshEchoes() {
-    document.querySelectorAll('#wizard-step-calib [data-echo]').forEach(function(e) {
+    document.querySelectorAll('#wizard-step-calib [data-echo], #review-floor [data-echo]').forEach(function(e) {
       var el = $(e.dataset.echo), m = el ? len(el.value) : NaN;
       e.hidden = !WUNIT.isImperial() || isNaN(m) || el.getAttribute('aria-invalid') === 'true';
       if (!e.hidden) e.textContent = 'Stored: ' + WUNIT.metricEcho(m);
@@ -2991,7 +3098,7 @@
   function applyUnitMarkup() {
     var imp = WUNIT.isImperial();
     document.querySelectorAll('.u-len').forEach(function(el) { el.textContent = lenSuffix(); });
-    document.querySelectorAll('#wizard-step-calib input[data-len]').forEach(function(el) {
+    document.querySelectorAll('#wizard-step-calib input[data-len], #floor_h').forEach(function(el) {
       el.type = imp ? 'text' : 'number';
       if (imp) el.removeAttribute('step'); else el.step = '0.01';
       if (el.dataset.ph != null) el.placeholder = lenField(Number(el.dataset.ph));
@@ -3005,6 +3112,7 @@
     var height = len($('cam_height').value);
     var rect = {}; ['w', 'd', 'cx', 'cy', 'z'].forEach(function(k) { rect[k] = len(S.rect[k]); });
     var pts = S.points.map(function(p) { var o = {}; ['x', 'y', 'z', 'da', 'db'].forEach(function(k) { o[k] = p[k] == null ? NaN : len(p[k]); }); return o; });
+    var floor = len(S.floor);
     WUNIT.setSystem(sys);
     exactLen = {};
     // Retype the inputs first: a number input drops a ft / in value.
@@ -3013,6 +3121,7 @@
     if (!isNaN(height)) $('cam_height').value = lenField(height);
     ['w', 'd', 'cx', 'cy', 'z'].forEach(function(k) { if (!isNaN(rect[k])) { S.rect[k] = lenField(rect[k]); $('rect_' + k).value = S.rect[k]; } });
     S.points.forEach(function(p, i) { ['x', 'y', 'z', 'da', 'db'].forEach(function(k) { if (!isNaN(pts[i][k])) p[k] = lenField(pts[i][k]); }); });
+    if (!isNaN(floor)) { S.floor = lenField(floor); $('floor_h').value = S.floor; }
     refreshEchoes();
     readCam(); readHeight();
     renderCalibPanels(); solveSoon(); saveToSession();
@@ -3259,10 +3368,11 @@
     $('cal-height-ask').hidden = !(heightAsked && S.height == null);
     showLive($('cal-height-note'), S.height != null && esc('The camera height is fixed at ' + lenText(S.height, 2) + '.'), S.height != null);
   }
+  // Advanced's grid stands at the floor height once the camera is calculated, as Save and finish will write it.
   function calibGrid() {
-    var g = SAVED.grid;
+    var g = SAVED.grid, floor = S.mode === 'advanced' && S.solve && S.solve.cam ? floorState(S.solve).v : null;
     if (S.mode === 'simple' && !rectProblem()) return Object.assign({ spacing: g.spacing }, rectVals());
-    return { w: g.width, d: g.depth, cx: g.x_offset, cy: g.y_offset, z: g.z_offset, spacing: g.spacing };
+    return { w: g.width, d: g.depth, cx: g.x_offset, cy: g.y_offset, z: floor == null ? g.z_offset : floor, spacing: g.spacing };
   }
   function overlayUnit(svg) { var w = svg.getBoundingClientRect().width; return w > 0 && imageWidth ? imageWidth / w : 1; }
   function originPixel(solve) {
@@ -3664,6 +3774,7 @@
     $('simple-loc').addEventListener('change', function(e) { S.simpleLoc = e.target.value; clearCorners(); S.selPin = null; renderReq(); solveSoon(); saveToSession(); });
     ['cam_pos_x', 'cam_pos_y', 'cam_pos_z'].forEach(function(id) { $(id).addEventListener('input', camChanged); });
     $('cam_height').addEventListener('input', function() { readHeight(); renderCalibResult(); solveSoon(); saveToSession(); });
+    $('floor_h').addEventListener('input', function() { S.floor = $('floor_h').value; S.floorTouched = true; renderReview(); saveToSession(); });
     // An empty field the camera does not ask for goes once the focus leaves it; only the field's group is
     // drawn, as a rebuilt control would lose the focus Tab is moving to it.
     document.addEventListener('focusout', function(e) {
@@ -3839,7 +3950,8 @@
     $('btn-apply-finish').disabled = !ok || solvePending || applyBlocked(s) || marksIncomplete(s);
     showLive($('review-caution'), ok && s.reasons.length && cautionHtml(s), !!(ok && s.reasons.length));
     $('review-lens-note').hidden = !(ok && stationLensOnly());
-    var grid = calibGrid();
+    var floor = reviewFloor(s), grid = calibGrid(), moved = floorMoved(floor);
+    if (S.mode === 'advanced' && floor == null) $('btn-apply-finish').disabled = true;
     if (imageWidth) svg.setAttribute('viewBox', '0 0 ' + imageWidth + ' ' + imageHeight);
     $('review-grid').innerHTML = ok && imageWidth ? gridLines(s.cam, grid).map(function(l) { return '<polyline class="wizard-grid-line" points="' + poly(l) + '"/>'; }).join('') : '';
     $('review-pins').innerHTML = ok && imageWidth ? originMarkup(originPixel(s), u) + s.marks.map(function(m) {
@@ -3859,9 +3971,39 @@
     var pairs = pairsFor(s);
     $('review-dist-group').hidden = !pairs.length;
     $('review-dist-table').innerHTML = distTable(pairs, false);
-    $('review-grid-params').innerHTML = paramRows([['Width', lenText(grid.w, 2)], ['Depth', lenText(grid.d, 2)], ['Spacing', lenText(grid.spacing, 2)], ['X Offset', lenText(grid.cx, 2)], ['Y Offset', lenText(grid.cy, 2)], ['Z Offset', lenText(grid.z, 2)], ['Grid', S.mode === 'simple' ? 'From the rectangle' : 'Kept']]);
+    // Advanced shows the Z Offset as Floor height above.
+    $('review-grid-params').innerHTML = paramRows([['Width', lenText(grid.w, 2)], ['Depth', lenText(grid.d, 2)], ['Spacing', lenText(grid.spacing, 2)], ['X Offset', lenText(grid.cx, 2)], ['Y Offset', lenText(grid.cy, 2)]]
+      .concat(S.mode === 'simple' ? [['Z Offset', lenText(grid.z, 2)], ['Grid', 'From the rectangle']] : [['Grid', moved ? 'Kept, new Z Offset' : 'Kept']]));
     renderFsBar();
   }
+  // Advanced's floor height: the station's suggestion until one is typed. A typed height holds while the
+  // suggestion it was typed against stands, so new points suggest afresh. `v` is null while it cannot be saved.
+  function floorState(s) {
+    var f = s.floor, sug = f ? f.z : 0;
+    // Within 2 mm it is the same suggestion: a unit switch re-solves with heights rounded to the millimetre.
+    if (S.floorTouched && !(Math.abs(S.floorFrom - sug) <= 0.002)) S.floorTouched = false;
+    if (!S.floorTouched) { S.floor = lenField(sug); S.floorFrom = sug; }
+    var v = len(S.floor), problem = isNaN(v) ? 'Enter the height of the floor.'
+      : Math.abs(v) > MARK_REACH_M ? 'Enter a height within ' + lenRough(MARK_REACH_M) + ' of the point of origin.' : '';
+    return { v: problem ? null : v, problem: problem };
+  }
+  function reviewFloor(s) {
+    var on = S.mode === 'advanced' && !!s.cam, el = $('floor_h'), f = s.floor, names = {};
+    $('review-floor').hidden = !on;
+    if (!on) return null;
+    var st = floorState(s);
+    if (!S.floorTouched) el.value = S.floor;
+    el.setAttribute('aria-invalid', st.problem ? 'true' : 'false');
+    $('floor-h-error').textContent = st.problem;
+    $('floor-h-error').hidden = !st.problem;
+    s.marks.forEach(function(m) { names[m.id] = m.name; });
+    var sub = f ? 'The height that ' + andList(f.ids.map(function(id) { return names[id]; })) + ' share.' : 'Suggested: ' + lenText(0, 2) + '.';
+    if (floorMoved(st.v)) sub += ' The grid is at ' + lenText(SAVED.grid.z_offset, 2) + ' now.';
+    setLive($('review-floor-note'), esc(f ? 'Suggested: ' + lenText(f.z, 2) : 'No floor found from the points') + '<div class="notice-sub">' + esc(sub) + '</div>');
+    refreshEchoes();
+    return st.v;
+  }
+  function floorMoved(v) { return v != null && Math.abs(v - SAVED.grid.z_offset) > 5e-4; }
   // A kept calibration first; the rating while the pair is the fit's own, User input once typed over; a loaded calibration by its name; else whether values were typed.
   function reviewLensCoverage(l) {
     if (lensHasCurrent() && S.lensChoice === 'keep') return 'Current calibration, kept';
@@ -3884,7 +4026,7 @@
     if (lensHasCurrent() && S.lensChoice === 'keep') return SAVED.lens_rating;
     if (lensIsTheFits(l)) return LENS_RATING_RECORD[lensShownRating(lensFit)] || '';
     if (lensFit) return lensFitApplies(lensFit) || lensHandTuned() ? 'user_input' : lensFit.keptRating || '';
-    if (S.lensLoaded) return lensSame(l, [S.lensLoaded.k1, S.lensLoaded.k2, S.lensLoaded.cx, S.lensLoaded.cy]) ? 'loaded' : 'user_input';
+    if (S.lensLoaded) return lensSame(l, [S.lensLoaded.k1, S.lensLoaded.k2, S.lensLoaded.cx, S.lensLoaded.cy]) ? (S.lensLoaded.kind === 'opencv' ? 'opencv' : 'loaded') : 'user_input';
     if (S.lensTouched) return 'user_input';
     return lensMeasured() ? SAVED.lens_rating : '';
   }
@@ -3900,7 +4042,8 @@
     if (p.kind === 'centre') return { error: 'With this lens centre, the overlay cannot follow the picture out to its corners.', action: 'Set the lens centre closer to 0 in the Lens step before you finish.' };
     return { error: 'With these lens values, the overlay cannot follow the picture out to its corners.', action: 'Set one of the lens values closer to 0 in the Lens step before you finish.' };
   }
-  // Save and finish writes Simple's rectangle as the grid first: a grid write that moves the corners unpins the saved corners.
+  // Simple writes its rectangle as the grid before the camera: a grid write that moves the corners unpins the saved corners.
+  // Advanced writes its floor height after the camera, so a refused camera leaves the station's grid as it was.
   window.applyAndFinish = function() {
     var saveError = window.OpenFollow.saveError, reviewBox = document.querySelector('#wizard-step-review .section');
     var s = S.solve;
@@ -3920,16 +4063,23 @@
       calibration_mode: S.mode, calibration_marks: marks, calibration_height: S.height,
       calibration_lens_rating: lensRatingRecord(wizLens()), calibration_time: localIsoNow(),
       lens_k1: wizReadLensCoeff('wiz_lens_k1'), lens_k2: wizReadLensCoeff('wiz_lens_k2'), lens_cx: S.lensCentre[0], lens_cy: S.lensCentre[1] };
-    var g = calibGrid();
-    var gridWrite = S.mode === 'simple'
-      ? fetch('/api/config/grid', { method: 'POST', headers: headers, body: JSON.stringify({ width: g.w, depth: g.d, x_offset: g.cx, y_offset: g.cy, z_offset: g.z }) })
-      : Promise.resolve(null);
-    gridWrite.then(async function(grid) {
+    var g = calibGrid(), floor = S.mode === 'advanced' ? floorState(s).v : null;
+    if (S.mode === 'advanced' && floor == null) {
+      saveError.show(reviewBox, { error: 'The floor height is not a usable length.', action: 'Correct Floor height before you finish.' }, 'Not saved.');
+      return;
+    }
+    var writeGrid = function(body) { return fetch('/api/config/grid', { method: 'POST', headers: headers, body: JSON.stringify(body) }); };
+    var gridFirst = S.mode === 'simple' ? writeGrid({ width: g.w, depth: g.d, x_offset: g.cx, y_offset: g.cy, z_offset: g.z }) : Promise.resolve(null);
+    gridFirst.then(async function(grid) {
       if (grid && !grid.ok) { saveError.show(reviewBox, await saveError.fromResponse(grid), 'The grid settings were not saved.'); return; }
       var cam = await fetch('/api/config/camera', { method: 'POST', headers: headers, body: JSON.stringify(camera) });
       if (!cam.ok) { saveError.show(reviewBox, await saveError.fromResponse(cam), 'The camera settings were not saved.'); return; }
+      if (floorMoved(floor)) {
+        var floorWrite = await writeGrid({ z_offset: floor });
+        if (!floorWrite.ok) { saveError.show(reviewBox, await saveError.fromResponse(floorWrite), 'The floor height was not saved.'); return; }
+      }
       try { sessionStorage.removeItem(STORAGE_KEY); } catch (e) {}
-      window.location.href = '/';
+      window.location.href = {{!json.dumps(_settings_url)}};
     }).catch(function() { saveError.show(reviewBox, saveError.UNREACHABLE, 'Not saved.'); });
   };
   window.discardAndLeave = function() {
@@ -3941,7 +4091,7 @@
         { label: 'Leave without saving', kind: 'danger', onClick: function() {
           closeModal();
           try { sessionStorage.removeItem(STORAGE_KEY); } catch (e) {}
-          window.location.href = '/';
+          window.location.href = {{!json.dumps(_settings_url)}};
         } }
       ],
     });
@@ -4174,7 +4324,8 @@
         mode: S.mode, simpleLoc: S.simpleLoc, rect: S.rect, cornerPins: corners, cornerMoved: S.cornerMoved,
         points: S.points.map(function(p) { return Object.assign({}, p, { pin: keepPins ? p.pin : frac(p.pin) }); }), nextId: S.nextId,
         cam: ['x', 'y', 'z'].map(function(k) { return $('cam_pos_' + k).value; }), height: $('cam_height').value, units: WUNIT.isImperial() ? 'imperial' : 'metric',
-        lensTouched: S.lensTouched, lensLoaded: S.lensLoaded, lensChoice: S.lensChoice
+        lensTouched: S.lensTouched, lensLoaded: S.lensLoaded, lensChoice: S.lensChoice,
+        floor: S.floorTouched ? S.floor : null, floorFrom: S.floorFrom
       }));
     } catch (e) {}
   }
@@ -4201,7 +4352,12 @@
       if (pairOk(raw.lensCentre)) S.lensCentre = raw.lensCentre.slice();
       S.lensTouched = raw.lensTouched === true;
       if (['keep', 'clear', 'load'].indexOf(raw.lensChoice) >= 0 && lensHasCurrent()) S.lensChoice = raw.lensChoice;
-      if (raw.lensLoaded && typeof raw.lensLoaded.name === 'string' && [raw.lensLoaded.k1, raw.lensLoaded.k2, raw.lensLoaded.cx, raw.lensLoaded.cy].every(isFinite)) S.lensLoaded = raw.lensLoaded;
+      if (raw.lensLoaded && typeof raw.lensLoaded.name === 'string' && [raw.lensLoaded.k1, raw.lensLoaded.k2, raw.lensLoaded.cx, raw.lensLoaded.cy].every(isFinite)) {
+        S.lensLoaded = raw.lensLoaded;
+        var ld = S.lensLoaded;
+        ld.fromFile = ld.fromFile === true;
+        if (ld.kind === 'opencv' && !(typeof ld.rms_px === 'number' && isFinite(ld.rms_px) && typeof ld.coverage === 'number' && isFinite(ld.coverage) && (ld.corner_px === null || (typeof ld.corner_px === 'number' && isFinite(ld.corner_px))))) delete ld.kind;
+      }
       if (sameUnits && (raw.mode === 'simple' || raw.mode === 'advanced')) {
         S.mode = raw.mode;
         S.simpleLoc = CAM_PRESETS.some(function(p) { return p[0] === raw.simpleLoc; }) ? raw.simpleLoc : '';
@@ -4217,6 +4373,7 @@
         S.nextId = Math.max(isFinite(raw.nextId) ? raw.nextId : 1, 1 + Math.max.apply(null, [0].concat(S.points.map(function(p) { return p.id; }))));
         if (Array.isArray(raw.cam)) ['x', 'y', 'z'].forEach(function(k, i) { if (typeof raw.cam[i] === 'string') $('cam_pos_' + k).value = raw.cam[i]; });
         if (typeof raw.height === 'string') $('cam_height').value = raw.height;
+        if (typeof raw.floor === 'string' && typeof raw.floorFrom === 'number') { S.floor = raw.floor; S.floorFrom = raw.floorFrom; S.floorTouched = true; $('floor_h').value = raw.floor; }
       }
       if (typeof raw.stepKey === 'string' && WIZ[raw.stepKey] !== undefined) currentStep = WIZ[raw.stepKey];
       return true;

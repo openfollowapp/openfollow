@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Process-wide logging configuration with bounded in-memory ring buffer fallback.
 
 Records go to stderr (the journal on a Pi), or to a size-rotated log file (the

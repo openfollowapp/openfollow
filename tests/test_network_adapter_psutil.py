@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Tests for PsutilReadOnlyAdapter: interface/state reads, /proc route + resolv.conf DNS parsing, read-only apply."""
 
 from __future__ import annotations
@@ -387,3 +389,10 @@ def test_a_read_only_host_cannot_register_a_name_by_dhcp() -> None:
 
     result = PsutilReadOnlyAdapter().set_dhcp_fqdn("of-1.stage.example.com")
     assert (result.ok, result.message) == (False, DHCP_FQDN_UNSUPPORTED_MESSAGE)
+
+
+def test_forget_interface_is_unsupported() -> None:
+    from openfollow.network.adapter import FORGET_UNSUPPORTED_MESSAGE
+
+    result = PsutilReadOnlyAdapter().forget_interface("enx001122334455")
+    assert (result.ok, result.message) == (False, FORGET_UNSUPPORTED_MESSAGE)

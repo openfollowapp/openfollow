@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Place a traced line's points on the brightness edge the operator meant.
 
 The wizard sends a luma band along the traced chord, cut from the
@@ -233,7 +234,7 @@ class _Band:
     length: float
 
     def column(self, fraction: float) -> int:
-        cols = self.grad.shape[1]
+        cols = int(self.grad.shape[1])
         return min(max(int(round(fraction * self.length / self.step)), 0), cols - 1)
 
     def peak(self, profile: FloatArray, lo: int, hi: int) -> float | None:

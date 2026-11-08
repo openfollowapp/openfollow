@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """``config.toml`` parsed once per change for the web server's requests."""
 
 from __future__ import annotations
@@ -8,9 +9,8 @@ import os
 import pickle  # nosec B403 - only ever loads what it just dumped in this process
 import threading
 import time
-from collections.abc import Callable
-
 import tomllib
+from collections.abc import Callable
 
 from openfollow.configuration import AppConfig, load_config
 

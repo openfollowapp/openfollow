@@ -46,7 +46,7 @@
                     %# ``current`` is the saved value only on load. A later reload
                     %# (``refreshIfacePickers``) sends what the picker shows, so an
                     %# unsaved choice survives it.
-                    % _options_url = f"/network/interfaces/by_name?blank={row['blank']}"
+                    % _options_url = f"/network/interfaces/by_name?blank={row['blank']}" + ("&loopback=0" if row.get("no_loopback") else "")
                     <select name="{{row['key']}}" aria-label="{{row['label']}} interface"
                             data-options-url="{{_options_url}}"
                             hx-get="{{_options_url}}&current={{row['value']}}"

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """What the 3D Mouse subsystem observed, and the sentences that say it.
 
 One module owns the state names and the operator-facing text, so the web

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """System tests for the General tab's start-at-boot switch.
 
 Real HTTP against a live server. The host's systemd state is supplied by the

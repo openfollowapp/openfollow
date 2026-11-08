@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Overlay state containers shared across runtime and Cairo rendering."""
 
 from __future__ import annotations
@@ -9,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy.typing as npt
 
+from openfollow.button_names import ButtonNameStyle
 from openfollow.configuration import (
     _GRID_COLOR_DEFAULT,
     _GRID_THICKNESS_DEFAULT,
@@ -82,6 +85,8 @@ class MarkerOverlayData:
     # On/off phase of an Identify flash on this card, set per frame.
     identify_flash: bool = False
     is_controlled: bool = False
+    # Parked: no relative input moves it; the card carries a P badge.
+    parked: bool = False
     # Another station controls this marker too.
     control_conflict: bool = False
     # Per-controlled-marker gamepad fader value (0..1) or None.
@@ -90,6 +95,8 @@ class MarkerOverlayData:
     # crosshair + ground ring (no filled ball, no card) so it reads as secondary
     # to the solid marker the operator steers (the manual anchor).
     is_assist_ghost: bool = False
+    # A zone's lift, already in ``z``; the floor elements are drawn this much higher.
+    lift: float = 0.0
 
 
 @dataclass
@@ -109,7 +116,8 @@ class OperatorMessageView:
     ``marker_id == 0`` is a broadcast card (no marker chip). For keyed cards,
     ``marker_name`` is the resolved catalog name (empty falls back to ``M<id>``)
     and ``marker_color`` is its hex. ``remaining_fraction`` is ``1.0`` for a
-    forever message.
+    forever message. A station-made card carries a ``headline`` on a bar in its
+    ``headline_level``'s chip fill (a status level) in place of a marker's.
     """
 
     message: str
@@ -119,6 +127,8 @@ class OperatorMessageView:
     marker_color: str
     is_forever: bool
     remaining_fraction: float
+    headline: str = ""
+    headline_level: str = ""
 
 
 @dataclass
@@ -144,12 +154,6 @@ class OverlayState:
     grid_color: str = _GRID_COLOR_DEFAULT
     grid_thickness: int = _GRID_THICKNESS_DEFAULT
     grid_transparency: float = _GRID_TRANSPARENCY_DEFAULT
-    # Ground grid: a polygon floor at its own Z. ``ground_grid_active`` redirects
-    # the floor elements of markers inside it; ``ground_grid_visible`` draws it, on its own.
-    ground_grid_active: bool = False
-    ground_grid_visible: bool = False
-    ground_grid_z: float = 0.0
-    ground_grid_vertices: list[tuple[float, float]] = field(default_factory=list)
     # Marker visual config
     marker_style: str = "crosshair"
     cone_base_diameter: float = 0.6
@@ -181,8 +185,9 @@ class OverlayState:
     # HUD
     controller_connected: bool = False
     keyboard_connected: bool = False
-    # Indices of connected gamepads not bound to any marker; shown in Settings info card.
-    unbound_controller_indices: list[int] = field(default_factory=list)
+    # (index, kind) of connected controllers that drive no marker, kind "gamepad" or "mouse3d";
+    # shown in the Settings info box.
+    unbound_controllers: list[tuple[int, str]] = field(default_factory=list)
     mouse_enabled: bool = False
     mouse_double_click_reset: bool = True
     mouse_wheel_z_enabled: bool = True
@@ -201,7 +206,7 @@ class OverlayState:
     # The HUD is the only surface left when the interface that carries the
     # web UI is the one that went away.
     network_alerts: list[str] = field(default_factory=list)
-    show_hud_help: bool = True
+    show_hud_help: bool = False
     # System stats (CPU, RAM, temperature)
     cpu_percent: float = 0.0
     ram_percent: float = 0.0
@@ -255,6 +260,8 @@ class OverlayState:
     settings_selected_index: int = 0
     settings_menu_banner: str = ""
     settings_menu_banner_action: str = ""
+    # The unsupported platform's title; its box stands under the error box.
+    settings_platform_warning: str = ""
     # About / license screen – read-only, no extra payload.
     about_active: bool = False
     # Drive picker + diagnostics export screen.
@@ -282,8 +289,12 @@ class OverlayState:
     detection_attached_colors: dict[int, str] = field(default_factory=dict)
     # Button detection wizard
     button_detection: ButtonDetectionState | None = None
+    # The latency probe's screen level (0 black, 1 white) covering the whole canvas; None draws the HUD.
+    latency_flash: float | None = None
     # Configurable button labels for help overlay (action -> button name)
     button_labels: dict[str, str] = field(default_factory=dict)
+    # Pad family the station names buttons after (controller.button_name_style)
+    button_name_style: ButtonNameStyle = ButtonNameStyle.STANDARD
     # Configurable keyboard labels for help overlay (action -> key name)
     keyboard_labels: dict[str, str] = field(default_factory=dict)
     # 3D Mouse bindings for the help overlay: axis -> target, action -> button
@@ -311,8 +322,8 @@ class OverlayState:
     operator_message_scale: float = 1.0
     # Trigger zones
     show_zones: bool = False
-    # Each entry: (vertices_world_xy, color_hex, name, is_occupied, count)
-    zone_polygons: list[tuple[list[tuple[float, float]], str, str, bool, int]] = field(default_factory=list)
+    # Each entry: (vertices_world_xy, color_hex, is_occupied, height above the stage plane)
+    zone_polygons: list[tuple[list[tuple[float, float]], str, bool, float]] = field(default_factory=list)
     zone_z_offset: float = 0.0
     # Paths: (curve, ends, locked) each, world X/Y/Z; an end is (at, a point just inside the path, releases).
     show_paths: bool = False

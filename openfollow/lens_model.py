@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """The lens model's one validity rule, shared by config, web and solver.
 
 The overlay follows the lens with the two-term division model about a lens

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Measure the lens from lines that are straight in reality.
 
 The plumb-line method: the operator traces features that are straight on
@@ -382,7 +383,7 @@ def _cost(lines: _Lines, k: FloatArray, free: Sequence[int] = ()) -> float:
 
 def _residual_dof(lines: _Lines, n_params: int) -> int:
     """Degrees of freedom of the residuals: the points less each line's own two and the lens's."""
-    return max(lines.n - n_params - 2 * lines.count, 1)
+    return int(max(lines.n - n_params - 2 * lines.count, 1))
 
 
 def _residual_variance(lines: _Lines, k: FloatArray, n_params: int) -> float:

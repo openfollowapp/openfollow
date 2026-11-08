@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Tests for :class:`openfollow.app.OpenFollowApp`.
 
 The app is a thin shell that composes subsystems via
@@ -18,6 +20,8 @@ runtime-helper tests:
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -148,7 +152,7 @@ class TestConstruction:
         assert app._server is None
         assert app._settings_menu_active is False
         assert app._settings_menu_index == 0
-        assert app._show_hud_help is True
+        assert app._show_hud_help is False
         assert app._speed_key_streak == {}
         assert app._update_worker is None
         assert app._viewer_ids == []
@@ -433,12 +437,31 @@ class TestRun:
         than the misleading "Network ready" INFO."""
         from openfollow import net_utils
 
-        monkeypatch.setattr(net_utils, "wait_for_source_ip", lambda **kw: "127.0.0.1")
+        monkeypatch.setattr(net_utils, "wait_for_source_ip", lambda **kw: "")
         app = OpenFollowApp(config_path=patched_ctor.cfg_path)
         with caplog.at_level("INFO"):
             app.run()
-        assert any(r.levelname == "WARNING" and "loopback" in r.message for r in caplog.records)
+        assert any(r.levelname == "WARNING" and "usable network address" in r.message for r in caplog.records)
         assert not any("Network ready" in r.message for r in caplog.records)
+
+    def test_a_station_on_loopback_starts_ready(
+        self,
+        patched_ctor,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog,  # noqa: ANN001
+    ) -> None:
+        """On a Mac, a lo0 pin resolves to 127.0.0.1: the station's address, which is no timeout."""
+        from dataclasses import replace
+
+        from openfollow import net_utils
+
+        monkeypatch.setattr(net_utils, "wait_for_source_ip", lambda **kw: "127.0.0.1")
+        app = OpenFollowApp(config_path=patched_ctor.cfg_path)
+        app._config = replace(app._config, psn_source_iface="lo0")
+        with caplog.at_level("INFO"):
+            app.run()
+        assert not any("usable network address" in r.message for r in caplog.records)
+        assert any("Network ready for startup – local IP 127.0.0.1" in r.message for r in caplog.records)
 
     def test_uses_short_bounded_ip_wait(
         self,
@@ -500,6 +523,29 @@ class TestRun:
         app.run()
         assert len(banners) == 1
         assert "ghost0" in banners[0]
+
+    def test_a_mac_with_one_nic_is_not_made_ambiguous_by_loopback(
+        self,
+        patched_ctor,
+        monkeypatch: pytest.MonkeyPatch,  # noqa: ANN001
+    ) -> None:
+        app = OpenFollowApp(config_path=patched_ctor.cfg_path)
+        from dataclasses import replace
+
+        app._config = replace(app._config, psn_source_iface="ghost0")
+
+        from openfollow import net_utils
+
+        monkeypatch.setattr(net_utils, "LOOPBACK_OFFERED", True)
+        monkeypatch.setattr(net_utils, "get_local_ipv4_addresses", lambda: {"127.0.0.1", "10.0.0.1"})
+        monkeypatch.setattr(net_utils, "list_iface_ipv4", lambda: [("en0", "10.0.0.1"), ("lo0", "127.0.0.1")])
+        monkeypatch.setattr(net_utils, "get_primary_local_ipv4", lambda default="": "10.0.0.1")
+        banners: list[str] = []
+        monkeypatch.setattr(
+            app_module, "runtime_enter_settings_menu", lambda a, *, banner="", action="": banners.append(banner)
+        )
+        app.run()
+        assert banners == []
 
     def test_stale_pin_with_single_nic_proceeds_silently(
         self,
@@ -572,7 +618,7 @@ class TestRun:
 
         from openfollow import net_utils
 
-        monkeypatch.setattr(net_utils, "wait_for_source_ip", lambda **kw: "127.0.0.1")
+        monkeypatch.setattr(net_utils, "wait_for_source_ip", lambda **kw: "")
         monkeypatch.setattr(net_utils, "list_iface_ipv4", lambda: [])
         monkeypatch.setattr(net_utils, "get_local_ipv4_addresses", lambda: {"127.0.0.1"})
         monkeypatch.setattr(net_utils, "get_primary_local_ipv4", lambda default="": "")
@@ -761,6 +807,7 @@ class TestDelegators:
             ("_check_button_detection_request", "runtime_check_button_detection_request", ()),
             ("_check_controller_slot_actions", "runtime_check_controller_slot_actions", ()),
             ("_check_camera_setup_requests", "runtime_check_camera_setup_requests", ()),
+            ("_check_latency_requests", "runtime_check_latency_requests", ()),
             ("_process_source_selection_input", "runtime_process_source_selection_input", ()),
             ("_enter_source_selection", "runtime_enter_source_selection", ()),
             ("_enter_button_detection", "runtime_enter_button_detection", ()),
@@ -1053,3 +1100,27 @@ def test_startup_reconciles_the_station_fqdn() -> None:
     )
     OpenFollowApp._reconcile_station_fqdn(fake)
     assert asked == ["of-1.stage.example.com"]
+
+
+def test_a_restore_cut_short_is_put_right_before_the_catalog_loads(patched_ctor) -> None:  # noqa: ANN001
+    state = Path(patched_ctor.cfg_path).parent
+    staged = state / ".lens-calibrations.abcd1234.restore"
+    staged.mkdir()
+    (staged / "tele.json").write_text("{}", encoding="utf-8")
+    (state / ".markers.toml.efgh5678.restore").write_text("[[marker]]\nid = 3\n", encoding="utf-8")
+    # The restore had committed; its journal names the catalog.
+    (state / ".restore-commit").write_text(json.dumps({"catalog": str(state / "markers.toml")}), encoding="utf-8")
+
+    OpenFollowApp(config_path=patched_ctor.cfg_path)
+
+    assert [p.name for p in (state / "lens-calibrations").iterdir()] == ["tele.json"]
+    assert (state / "markers.toml").read_text(encoding="utf-8") == "[[marker]]\nid = 3\n"
+    assert sorted(p.name for p in state.iterdir() if p.name.startswith(".")) == []
+
+
+def test_a_new_instance_starts_with_nothing_a_restore_held(patched_ctor) -> None:  # noqa: ANN001
+    from openfollow import restore_hold
+
+    restore_hold.hold(patched_ctor.cfg_path)  # an instance that crashed in its restart's grace
+    OpenFollowApp(config_path=patched_ctor.cfg_path)
+    assert not restore_hold.is_held(patched_ctor.cfg_path)

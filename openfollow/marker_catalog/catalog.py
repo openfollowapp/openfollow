@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Marker catalog: per-marker id/name/color, persisted in ``markers.toml``.
 
 The catalog is the shared source of truth for marker identity. Per-
@@ -28,6 +30,8 @@ from pathlib import Path
 from typing import Any
 
 import tomli_w
+
+from openfollow.restore_hold import unless_held
 
 try:
     import tomllib
@@ -343,8 +347,8 @@ def load_catalog(path: str) -> MarkerCatalog:
 
 
 def save_catalog(catalog: MarkerCatalog, path: str) -> None:
-    """Atomically write catalog (including tombstones) via tempfile+rename."""
-    with catalog._save_lock:
+    """Atomically write catalog (including tombstones) via tempfile+rename; a held one raises HeldForRestartError."""
+    with catalog._save_lock, unless_held(path):
         entries = catalog.all_entries()
         data: dict[str, Any] = {
             "marker": [asdict(e) for e in entries],

@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Tests for the overlay-state sync helpers in
 ``runtime/services_marker_visuals``: ``sync_marker_config`` /
 ``sync_grid_config`` / ``sync_ui_config`` / ``build_initial_overlay_state`` /
@@ -14,10 +16,12 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from conftest import PsnStepClock
 
 import openfollow.system_stats as stats_module
 from openfollow.configuration import Mouse3DConfig
 from openfollow.power_health import WARNING_HOLD_S, PowerMonitor
+from openfollow.psn.marker import Marker, marker_age_s
 from openfollow.runtime.overlay_draw_style import COLOR_WARNING_FILL
 from openfollow.runtime.overlay_layout import PictureGeometry
 from openfollow.runtime.overlay_state import OverlayState
@@ -34,6 +38,7 @@ from openfollow.runtime.services_marker_visuals import (
 from openfollow.system_stats import SystemStats, SystemStatsCollector
 from openfollow.units import UnitSystem
 from openfollow.video.failure import VideoFailure
+from openfollow.video.source_limits import OverLimit, SourceReading
 from tests._fake_cairo import FakeCairo, FakeRenderer
 
 pytestmark = pytest.mark.unit
@@ -492,12 +497,13 @@ class TestBuildInitialOverlayState:
         assert state.crosshair_color == "#ff0000"
 
 
-def _make_zone(vertices: list[tuple[float, float]], *, enabled: bool = True) -> SimpleNamespace:
+def _make_zone(vertices: list[tuple[float, float]], *, enabled: bool = True, z_offset: float = 0.0) -> SimpleNamespace:
     return SimpleNamespace(
         vertices=vertices,
         color="#ffcc00",
         name="Z",
         enabled=enabled,
+        z_offset=z_offset,
     )
 
 
@@ -506,12 +512,14 @@ def _make_cfg(
     enabled: bool,
     show_overlay: bool,
     zones: list[SimpleNamespace] | None = None,
+    highlight_occupied: bool = True,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         grid=_make_grid_config(),
         trigger_zones=SimpleNamespace(
             enabled=enabled,
             show_overlay=show_overlay,
+            highlight_occupied=highlight_occupied,
             zones=zones or [],
         ),
     )
@@ -537,10 +545,9 @@ class TestPopulateZoneOverlay:
 
         assert state.show_zones is True
         assert len(state.zone_polygons) == 1
-        # Occupancy defaults to (False, 0) when the engine is not consulted.
-        _, _, _, is_occupied, count = state.zone_polygons[0]
+        # Unoccupied when the engine is not consulted.
+        _, _, is_occupied, _height = state.zone_polygons[0]
         assert is_occupied is False
-        assert count == 0
 
     def test_zones_are_not_drawn_while_their_feature_is_off(self) -> None:
         from openfollow.configuration import UiConfig
@@ -555,6 +562,24 @@ class TestPopulateZoneOverlay:
 
         assert state.show_zones is False
         assert state.zone_polygons == []
+
+    @pytest.mark.parametrize(
+        ("features", "height"),
+        [(["zones", "zone_heights"], 0.75), (["zones"], 0.0)],
+        ids=["zone heights on", "zone heights off"],
+    )
+    def test_each_zone_carries_its_height_while_zone_heights_is_on(self, features: list[str], height: float) -> None:
+        from openfollow.configuration import UiConfig
+
+        square = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+        cfg = _make_cfg(enabled=False, show_overlay=True, zones=[_make_zone(square, z_offset=0.75)])
+        cfg.ui = UiConfig(shown_features=features)
+        state = OverlayState()
+
+        _populate_zone_overlay(state, cfg, SimpleNamespace(_runtime_services=SimpleNamespace(_zone_engine=None)))
+
+        assert state.zone_polygons[0][3] == height
+        assert state.zone_z_offset == cfg.grid.z_offset
 
     def test_hides_overlay_only_when_show_overlay_is_false(self) -> None:
         square = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
@@ -577,9 +602,20 @@ class TestPopulateZoneOverlay:
         _populate_zone_overlay(state, cfg, app)
 
         assert state.show_zones is True
-        _, _, _, is_occupied, count = state.zone_polygons[0]
+        _, _, is_occupied, _height = state.zone_polygons[0]
         assert is_occupied is True
-        assert count == 3
+
+    def test_occupancy_is_not_shown_while_the_highlight_is_off(self) -> None:
+        square = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+        cfg = _make_cfg(enabled=True, show_overlay=True, zones=[_make_zone(square)], highlight_occupied=False)
+        engine = _StubZoneEngine([(0, True, 3)])
+        state = OverlayState()
+
+        _populate_zone_overlay(state, cfg, SimpleNamespace(_runtime_services=SimpleNamespace(_zone_engine=engine)))
+
+        assert state.show_zones is True
+        _, _, is_occupied, _height = state.zone_polygons[0]
+        assert is_occupied is False
 
     def test_engine_occupancy_is_ignored_when_disabled(self) -> None:
         """When triggers are off, occupancy must not be read from the engine."""
@@ -591,9 +627,8 @@ class TestPopulateZoneOverlay:
 
         _populate_zone_overlay(state, cfg, app)
 
-        _, _, _, is_occupied, count = state.zone_polygons[0]
+        _, _, is_occupied, _height = state.zone_polygons[0]
         assert is_occupied is False
-        assert count == 0
 
     def test_enabled_but_engine_is_none_skips_occupancy_lookup(self) -> None:
         square = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
@@ -605,9 +640,8 @@ class TestPopulateZoneOverlay:
 
         assert state.show_zones is True
         assert len(state.zone_polygons) == 1
-        _, _, _, is_occupied, count = state.zone_polygons[0]
+        _, _, is_occupied, _height = state.zone_polygons[0]
         assert is_occupied is False
-        assert count == 0
 
     def test_disabled_and_degenerate_zones_are_skipped(self) -> None:
         """Cover the ``continue`` at ``services_marker_visuals.py:167``.
@@ -636,7 +670,7 @@ class TestPopulateZoneOverlay:
 
         # Only the one live zone survives the filter.
         assert len(state.zone_polygons) == 1
-        verts, _color, _name, _is_occupied, _count = state.zone_polygons[0]
+        verts, _color, _is_occupied, _height = state.zone_polygons[0]
         assert verts == [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
 
 
@@ -889,6 +923,8 @@ class _TornMarker:
     def speed(self) -> tuple[float, float, float]:
         return (0.0, 0.0, 0.0)
 
+    lift = 0.0
+
 
 def _make_full_marker_config() -> SimpleNamespace:
     tc = _make_marker_config()
@@ -927,6 +963,7 @@ def _make_visual_app(marker: object, *, controlled: bool) -> SimpleNamespace:
             btn_settings="",
             btn_menu_confirm="",
             btn_menu_cancel="",
+            button_name_style="standard",
             move_xy_stick="",
             key_move_layout="",
             key_move_z_up="",
@@ -1039,6 +1076,21 @@ class TestBuildMarkerVisualStateTornRead:
 
         assert state.lens == (-0.15, 0.04, 0.03, -0.02)
 
+    @pytest.mark.parametrize("level", [None, 0.0, 1.0])
+    def test_the_latency_probe_s_level_reaches_the_overlay_state(self, level: float | None) -> None:
+        app = _make_visual_app(_TornMarker([(0.0, 0.0, 0.0)]), controlled=False)
+
+        state = build_marker_visual_state(
+            app,
+            system_stats=None,
+            person_detector=None,
+            cam_params_buffer=np.zeros(7),
+            dt=1.0 / 60.0,
+            latency_flash=level,
+        )
+
+        assert state.latency_flash == level
+
     @pytest.mark.parametrize("enabled", [True, False])
     def test_wheel_z_setting_reaches_the_help_overlay_state(self, enabled: bool) -> None:
         # The HUD help shows the scroll-wheel hint only while wheel-Z is on.
@@ -1054,6 +1106,35 @@ class TestBuildMarkerVisualStateTornRead:
         )
 
         assert state.mouse_wheel_z_enabled is enabled
+
+
+class TestParkedMarker:
+    """A parked marker keeps transmitting: its frame stamp is fresh and its card says it is parked."""
+
+    def _build(self, app: SimpleNamespace):  # noqa: ANN202
+        app.get_marker_move_speed = lambda _mid: 1.0
+        return build_marker_visual_state(
+            app, system_stats=None, person_detector=None, cam_params_buffer=np.zeros(7), dt=1.0 / 60.0
+        )
+
+    def test_a_parked_marker_is_stamped_every_frame_and_its_card_is_parked(self) -> None:
+        clock = PsnStepClock(1_000_000)
+        marker = Marker(marker_id=1, name="M1", clock=clock)
+        marker.set_pos(1.0, 2.0, 0.0)
+        app = _make_visual_app(marker, controlled=True)
+        app._parked_ids = frozenset({1})
+        clock.now = 9_000_000
+        state = self._build(app)
+        assert marker_age_s(marker) == pytest.approx(0.0)
+        assert state.markers[0].parked is True
+
+    @pytest.mark.parametrize(("controlled", "parked"), [(True, frozenset()), (False, frozenset({1}))])
+    def test_only_a_parked_controlled_marker_has_a_parked_card(self, controlled: bool, parked: frozenset) -> None:
+        marker = Marker(marker_id=1, name="M1")
+        marker.set_pos(1.0, 2.0, 0.0)
+        app = _make_visual_app(marker, controlled=controlled)
+        app._parked_ids = parked
+        assert self._build(app).markers[0].parked is False
 
 
 class TestVideoFailureReachesTheTopRightBadge:
@@ -1098,6 +1179,63 @@ class TestVideoFailureReachesTheTopRightBadge:
     def test_an_unconfigured_source_is_not_alarmed_about(self) -> None:
         """Nothing is broken; the operator has not finished setting up."""
         assert self._flags_after(VideoFailure.NOT_CONFIGURED)["video_failure"] is None
+
+
+class TestASourceOverTheLimitsReachesTheTopRightBadge:
+    """A feed past Full HD or 30 fps is an error row naming what is over."""
+
+    def _build(self, reading: SourceReading | None) -> OverlayState:
+        app = _make_visual_app(_TornMarker([(0.0, 0.0, 0.0)]), controlled=False)
+        app._video_receiver.source_limits = reading
+        app._runtime_services = SimpleNamespace(_status_flags={})
+        return build_marker_visual_state(
+            app,
+            system_stats=None,
+            person_detector=None,
+            cam_params_buffer=np.zeros(7),
+            dt=1.0 / 60.0,
+        )
+
+    def _rows(self, reading: SourceReading | None) -> list[tuple[str, str, str]]:
+        return [row for row in self._build(reading).status_flags if row[0] == "video_limits"]
+
+    def test_both_causes_share_one_row(self) -> None:
+        reading = SourceReading(3840, 2160, 60.0, (OverLimit.RESOLUTION, OverLimit.FRAME_RATE))
+        assert self._rows(reading) == [("video_limits", "Video 3840×2160 > Full HD, 60 fps > 30 fps", "error")]
+
+    def test_a_rate_alone_is_named(self) -> None:
+        reading = SourceReading(1920, 1080, 50.0, (OverLimit.FRAME_RATE,))
+        assert self._rows(reading) == [("video_limits", "Video 50 fps > 30 fps", "error")]
+
+    @pytest.mark.parametrize(
+        "reading", [None, SourceReading(1920, 1080, 30.0, ()), SourceReading(0, 0, None, ())], ids=str
+    )
+    def test_a_source_within_the_limits_raises_no_row(self, reading: SourceReading | None) -> None:
+        assert self._rows(reading) == []
+
+    def test_the_row_clears_when_the_source_comes_within(self) -> None:
+        app = _make_visual_app(_TornMarker([(0.0, 0.0, 0.0)]), controlled=False)
+        flags: dict = {}
+        app._runtime_services = SimpleNamespace(_status_flags=flags)
+
+        def build() -> None:
+            build_marker_visual_state(
+                app, system_stats=None, person_detector=None, cam_params_buffer=np.zeros(7), dt=1.0 / 60.0
+            )
+
+        app._video_receiver.source_limits = SourceReading(3840, 2160, None, (OverLimit.RESOLUTION,))
+        build()
+        assert flags["video_limits"] == ("error", "Video 3840×2160 > Full HD")
+        app._video_receiver.source_limits = None
+        build()
+        assert flags["video_limits"] is None
+
+    def test_the_row_is_drawn_as_an_error_box(self) -> None:
+        state = self._build(SourceReading(3840, 2160, None, (OverLimit.RESOLUTION,)))
+        cr = FakeCairo()
+        draw_status_badge(FakeRenderer(state=state), cr, state, 1920, 1080)
+        assert "Video 3840×2160 > Full HD" in cr.show_text_strings()
+        assert ("rgba", *COLOR_WARNING_FILL) in cr.calls
 
 
 class TestPowerWarningReachesTheTopRightBadge:
@@ -1293,76 +1431,21 @@ class TestPathsOnTheOperatorScreen:
 
 
 # --------------------------------------------------------------------------- #
-# Ground grid: config -> overlay state -> floor height
+# Floor height: config -> overlay state
 # --------------------------------------------------------------------------- #
 
 
-class TestGroundGridSync:
-    @staticmethod
-    def _cfg(*, experimental: bool = True, **gg: object):
-        from openfollow.configuration import AppConfig, GroundGridConfig
+def test_a_marker_stands_on_the_main_grid_s_height() -> None:
+    from openfollow.configuration import AppConfig
+    from openfollow.runtime.overlay_draw_scene import floor_z
 
-        cfg = AppConfig()
-        cfg.ui.shown_features = ["ground_grid"] if experimental else []
-        cfg.ground_grid = GroundGridConfig(**gg)
-        return cfg
+    cfg = AppConfig()
+    cfg.grid.z_offset = -0.9
+    assert floor_z(build_initial_overlay_state(cfg)) == -0.9
 
-    _SQUARE = [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]]
 
-    def test_enabled_polygon_redirects_the_floor_of_a_marker_inside(self) -> None:
-        from openfollow.runtime.overlay_draw_scene import floor_z_at
+def test_without_a_grid_a_marker_stands_at_zero() -> None:
+    from openfollow.runtime.overlay_draw_scene import floor_z
+    from openfollow.runtime.overlay_state import OverlayState
 
-        state = build_initial_overlay_state(self._cfg(enabled=True, z_offset=-0.9, vertices=self._SQUARE))
-        assert state.ground_grid_active is True
-        assert state.ground_grid_visible is True
-        assert floor_z_at(state, 1.0, 1.0) == -0.9
-        assert floor_z_at(state, 3.0, 1.0) == 0.0
-
-    @pytest.mark.parametrize(
-        "gg",
-        [
-            {"enabled": True, "vertices": _SQUARE[:2]},
-            {"enabled": True, "vertices": _SQUARE, "experimental": False},
-        ],
-        ids=["two-corners", "experimental-off"],
-    )
-    def test_unusable_ground_grid_neither_redirects_nor_draws(self, gg: dict) -> None:
-        from openfollow.runtime.overlay_draw_scene import floor_z_at
-
-        state = build_initial_overlay_state(self._cfg(z_offset=-0.9, **gg))
-        assert state.ground_grid_active is False
-        assert state.ground_grid_visible is False
-        assert floor_z_at(state, 1.0, 1.0) == 0.0
-
-    def test_a_displayed_ground_grid_draws_without_dropping_markers(self) -> None:
-        from openfollow.runtime.overlay_draw_scene import floor_z_at
-
-        state = build_initial_overlay_state(self._cfg(enabled=False, z_offset=-0.9, vertices=self._SQUARE))
-        assert state.ground_grid_visible is True
-        assert state.ground_grid_active is False
-        assert floor_z_at(state, 1.0, 1.0) == 0.0
-
-    def test_turning_the_ground_grid_feature_off_hides_it_at_once(self) -> None:
-        from openfollow.runtime.services_marker_visuals import sync_ground_grid_config
-
-        cfg = self._cfg(enabled=True, vertices=self._SQUARE)
-        state = build_initial_overlay_state(cfg)
-        cfg.ui.shown_features = []
-        sync_ground_grid_config(state, cfg)
-        assert (state.ground_grid_active, state.ground_grid_visible) == (False, False)
-
-    def test_hidden_ground_grid_still_redirects(self) -> None:
-        state = build_initial_overlay_state(self._cfg(enabled=True, visible=False, vertices=self._SQUARE))
-        assert state.ground_grid_active is True
-        assert state.ground_grid_visible is False
-
-    def test_shim_config_without_the_section_has_no_ground_grid(self) -> None:
-        from types import SimpleNamespace
-
-        from openfollow.configuration import AppConfig
-        from openfollow.runtime.services_marker_visuals import sync_ground_grid_config
-
-        state = build_initial_overlay_state(self._cfg(enabled=True, vertices=self._SQUARE))
-        sync_ground_grid_config(state, SimpleNamespace(grid=AppConfig().grid))
-        assert state.ground_grid_active is False
-        assert state.ground_grid_vertices == []
+    assert floor_z(OverlayState(grid_config=None)) == 0.0

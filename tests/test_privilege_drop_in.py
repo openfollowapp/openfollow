@@ -27,6 +27,10 @@ from openfollow.privilege.drop_in import (
 )
 from tests._fake_broker import FakeBroker, make_failure
 
+# The classic sudo a station runs. Where sudo-rs is the default (Ubuntu 26.04), its
+# visudo rejects the drop-in's wildcards and regexes, and classic sudo's is visudo.ws.
+_VISUDO = shutil.which("visudo.ws") or shutil.which("visudo")
+
 pytestmark = pytest.mark.unit
 
 # ---------- render ---------------------------------------------------------
@@ -56,7 +60,7 @@ class TestRenderDropIn:
         assert "t.silent" not in text
         assert "openfollow ALL=(root) NOPASSWD:" not in text
 
-    @pytest.mark.skipif(shutil.which("visudo") is None, reason="visudo not installed")
+    @pytest.mark.skipif(_VISUDO is None, reason="visudo not installed")
     def test_full_drop_in_passes_visudo(self, tmp_path: Path) -> None:
         """The rendered drop-in for the whole live registry must parse with
         ``visudo -cf`` – the same gate build-deb.sh applies. Catches a new
@@ -65,7 +69,7 @@ class TestRenderDropIn:
         path = tmp_path / "openfollow-privileged"
         path.write_text(render_drop_in("openfollow"))
         proc = subprocess.run(
-            ["visudo", "-cf", str(path)],
+            [str(_VISUDO), "-cf", str(path)],
             capture_output=True,
             text=True,
             check=False,

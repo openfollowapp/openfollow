@@ -1888,6 +1888,7 @@ _B2 = FakeGdkModifierType.BUTTON2_MASK
 _B3 = FakeGdkModifierType.BUTTON3_MASK
 _B4 = FakeGdkModifierType.BUTTON4_MASK
 _B5 = FakeGdkModifierType.BUTTON5_MASK
+_CTRL = FakeGdkModifierType.CONTROL_MASK
 
 
 class _PointerFrames:
@@ -2128,6 +2129,51 @@ class TestPointerPoll:
         frames.poll(140, 260)
         frames.poll(140, 260, mask)
         assert frames.events == [("pointer_down", {"x": 140, "y": 260, "button": button})]
+
+    def test_control_click_is_a_right_click_latched_until_release(self, window) -> None:
+        frames = _PointerFrames(window)
+        frames.poll(100, 200)
+        frames.events.clear()
+        frames.poll(100, 200, _B1 | _CTRL)
+        frames.poll(120, 220, _B1)  # Control let go first: still the same right press
+        frames.poll(120, 220)
+        frames.poll(130, 230, _B1)  # a plain click afterwards grabs
+        assert frames.events == [
+            ("pointer_down", {"x": 100, "y": 200, "button": 3}),
+            ("pointer_move", {"x": 120, "y": 220}),
+            ("pointer_down", {"x": 130, "y": 230, "button": 1}),
+        ]
+
+    def test_control_during_a_drag_keeps_the_grab(self, window) -> None:
+        frames = _PointerFrames(window)
+        frames.poll(100, 200, _B1)
+        frames.poll(120, 220, _B1 | _CTRL)
+        frames.poll(140, 240, _B1)
+        assert frames.events == [
+            ("pointer_down", {"x": 100, "y": 200, "button": 1}),
+            ("pointer_move", {"x": 120, "y": 220}),
+            ("pointer_move", {"x": 140, "y": 240}),
+        ]
+
+    @pytest.mark.parametrize(
+        ("key", "over"), [(False, True), (True, False)], ids=["another-window-key", "window-above"]
+    )
+    def test_control_click_the_screen_did_not_take_does_nothing(self, window, key: bool, over: bool) -> None:
+        frames = _PointerFrames(window)
+        frames.poll(100, 200, key=key, over=over)
+        frames.events.clear()
+        frames.poll(100, 200, _B1 | _CTRL, key=key, over=over)
+        frames.poll(100, 200, _B1, key=key, over=over)
+        assert frames.events == []
+
+    def test_control_click_that_activates_the_screen_releases_nothing(self, window) -> None:
+        frames = _PointerFrames(window)
+        frames.poll(100, 200, key=False)
+        frames.poll(100, 200, _B1 | _CTRL)  # the frame the Operator Screen becomes key
+        frames.poll(100, 200, _B1)  # Control let go: still not a grab
+        frames.poll(100, 200)
+        frames.poll(100, 200, _B1 | _CTRL)
+        assert frames.events == [("pointer_down", {"x": 100, "y": 200, "button": 3})]
 
     def test_drag_the_window_took_is_not_hit_tested(self, window) -> None:
         frames = _PointerFrames(window)

@@ -8,7 +8,7 @@ On a Mac, the mouse and its scroll wheel act only while the Operator Screen is t
 
 ## Taking and releasing control
 
-**Left-click a marker's ground circle** to take control of that marker, then move the mouse to steer it. Clicking the circle grabs the marker where it stands – it does not jump to the cursor. A click on empty stage does nothing, so a stray click can't fling a marker. Left-click a different marker's circle to switch control to it. **Right-click** releases control (movement stops until the next grab). If the ground circle is turned off in Marker settings, the small area around the marker's base stays clickable.
+**Left-click a marker's ground circle** to take control of that marker, then move the mouse to steer it. Clicking the circle grabs the marker where it stands – it does not jump to the cursor. A click on empty stage does nothing, so a stray click can't fling a marker. Left-click a different marker's circle to switch control to it. **Right-click** (on a Mac also Control+click) releases control (movement stops until the next grab). If the ground circle is turned off in Marker settings, the small area around the marker's base stays clickable.
 
 **Double right-click** – when on, **double right-clicking** snaps the controlled marker back to the default position (the same as the reset key) and lets go of it, so it parks there until you grab it again. It sits on the right button because that's already the release button. Turn it off if you find yourself resetting markers by accident.
 

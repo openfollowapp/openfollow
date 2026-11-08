@@ -1708,6 +1708,28 @@ class TestShutdown:
         # All subsystems start as None – shutdown must not raise.
         services.shutdown()
 
+    def test_logs_one_line_when_complete(self, services: AppRuntimeServices, caplog: pytest.LogCaptureFixture) -> None:
+        """A clean teardown reads differently in the log from a killed process."""
+        with caplog.at_level(logging.INFO, logger="openfollow.services"):
+            services.shutdown()
+            services.shutdown()
+
+        assert [r.getMessage() for r in caplog.records if r.name == "openfollow.services"] == ["Shutdown complete."]
+
+    def test_logs_completion_after_a_failing_step(
+        self, services: AppRuntimeServices, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        def _boom() -> None:
+            raise RuntimeError("stuck socket")
+
+        services._app._server = SimpleNamespace(stop=_boom)  # type: ignore[assignment]
+        with caplog.at_level(logging.INFO, logger="openfollow.services"):
+            services.shutdown()
+
+        messages = [r.getMessage() for r in caplog.records if r.name == "openfollow.services"]
+        assert any("PSN server" in m for m in messages)
+        assert messages[-1] == "Shutdown complete."
+
     def test_is_idempotent(self, services: AppRuntimeServices) -> None:
         app = services._app
         app._server = _FakePsnServer()

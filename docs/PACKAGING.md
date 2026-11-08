@@ -651,6 +651,29 @@ regresses one is caught at build time:
   (`~/Library/Application Support/OpenFollow/yolo/`) and pins
   `YOLO_CONFIG_DIR` / `MPLCONFIGDIR` / `XDG_CACHE_HOME` under it before exporting.
 
+### Logs
+
+The app logs to `~/Library/Logs/OpenFollow/openfollow.log`, which Console lists
+under Log Reports. A Finder launch has no terminal, so the file takes over the
+process's stdout and stderr, as the journal does on a Pi. Beside every record at
+INFO and above it holds what is written there directly, such as GLib, GTK and
+GStreamer warnings and an uncaught exception in a thread. The launcher enables
+`faulthandler` on stderr, so a native crash (GStreamer, GTK, Cocoa) leaves every
+thread's Python traceback at the end of the file.
+
+- **Size:** the file rotates at 5 MB and keeps four copies (`openfollow.log.1`
+  the newest), 25 MB at most. A check every 10 s rotates a file that native
+  output alone has filled, which no record would.
+- **Restarts:** each process start logs `Process <pid> logging to <path>`, so the
+  file shows where a restart or a relaunch begins.
+- **Failure:** a file that cannot be opened leaves the log on stderr, with a
+  warning in the in-memory ring.
+- **Diagnostics:** the bundle reads the file and its copies where a Pi reads the
+  journal ([diagnostics](architecture/diagnostics.md#log-sources)).
+
+Only the bundled app writes the file. A source checkout run
+(`poetry run openfollow`) logs to its terminal.
+
 ### Signing / Gatekeeper
 
 The `.app` is **ad-hoc signed, not notarized**. macOS quarantines it on first

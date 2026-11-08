@@ -87,6 +87,31 @@ def test_a_frame_keeps_its_aspect(
     assert letterbox(*frame, *area) == pytest.approx(box)
 
 
+@pytest.mark.parametrize(
+    ("frame", "area", "rect"),
+    [
+        ((1920, 1080), (1920, 1080), (0, 0, 1920, 1080)),
+        ((640, 480), (1920, 1080), (240, 0, 1440, 1080)),
+        ((1080, 1920), (1280, 720), (438, 0, 405, 720)),
+        ((1920, 1080), (1000, 1000), (0, 219, 1000, 562)),
+        ((1920, 1080), (1366, 768), (0, 0, 1366, 768)),
+        ((0, 0), (1920, 1080), (0, 0, 1920, 1080)),
+    ],
+    ids=["same", "4:3", "portrait", "letterbox", "fractional", "no-frame"],
+)
+def test_the_scene_sits_where_the_video_is_drawn_at_square_pixels(
+    frame: tuple[int, int], area: tuple[int, int], rect: tuple[int, int, int, int]
+) -> None:
+    view = gl_display.scene_view(*frame, *area)
+
+    assert (tuple(view.rect), view.pixel_aspect) == (rect, 1.0)
+    # Back in clip space it is the quad the video is drawn on, to half a pixel.
+    x, y, w, h = view.rect
+    aw, ah = area
+    drawn = (2 * x / aw - 1, 1 - 2 * (y + h) / ah, 2 * (x + w) / aw - 1, 1 - 2 * y / ah)
+    assert drawn == pytest.approx(letterbox(*frame, *area), abs=1 / min(aw, ah))
+
+
 # Published BT.709 / BT.601 YUV to RGB terms (V->R, U->G, V->G, U->B), limited and full range.
 _BT709_LIMITED = (1.7927, 0.2132, 0.5329, 2.1124)
 _BT709_FULL = (1.5748, 0.1873, 0.4681, 1.8556)

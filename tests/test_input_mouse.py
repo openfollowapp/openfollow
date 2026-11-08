@@ -54,8 +54,9 @@ class _DummyCamera:
 
 
 class _DummyCanvas:
-    def __init__(self, w: int, h: int) -> None:
+    def __init__(self, w: int, h: int, *, gl: bool = False) -> None:
         self._size = (w, h)
+        self.gl_display_attached = gl
 
     def get_canvas_size(self) -> tuple[int, int]:
         return self._size
@@ -106,10 +107,15 @@ def _cam_buffer(app: _DummyApp) -> np.ndarray:
 
 
 def _draw(
-    app: _DummyApp, canvas: tuple[int, int], source: tuple[int, int] = (0, 0), par: tuple[int, int] = (1, 1)
+    app: _DummyApp,
+    canvas: tuple[int, int],
+    source: tuple[int, int] = (0, 0),
+    par: tuple[int, int] = (1, 1),
+    *,
+    gl: bool = False,
 ) -> SceneView:
-    """An Operator Screen of ``canvas`` showing a ``source`` picture of ``par`` pixels."""
-    app._canvas = _DummyCanvas(*canvas)
+    """An Operator Screen of ``canvas`` showing a ``source`` picture of ``par`` pixels, gtksink's view of it."""
+    app._canvas = _DummyCanvas(*canvas, gl=gl)
     app._video_receiver = SimpleNamespace(picture_geometry=PictureGeometry(*source, par))
     return scene_view(*canvas, *source, par)
 
@@ -1488,6 +1494,63 @@ class TestLetterboxedVideo:
         via_mouse = _dragged_to(app, _LETTERBOX_D1, drawn, aspect=aspect)
         assert via_mouse[0] == pytest.approx(6.0, abs=1e-6)
         assert via_mouse[1] == pytest.approx(2.0, abs=1e-6)
+
+
+# A 4:3 Media Gallery picture boxed into 16:9 caps: its shape is in the pixel aspect alone.
+_GALLERY_4_3, _GALLERY_4_3_PAR = (1920, 1080), (3, 4)
+_WHOLE_1080 = (0, 0, 1920, 1080)
+
+
+class TestTheSceneFollowsTheActiveDisplay:
+    """The GL Operator Screen fits the stored frame at square pixels, gtksink the
+    frame's display size; the HUD, the mouse and the control frame read the one
+    the screen shows."""
+
+    @pytest.mark.parametrize(
+        ("source", "par", "gl", "rect", "aspect"),
+        [
+            (_GALLERY_4_3, _GALLERY_4_3_PAR, True, _WHOLE_1080, 1.0),
+            (_GALLERY_4_3, _GALLERY_4_3_PAR, False, _PILLARBOX_4_3, 0.75),
+            ((640, 480), (1, 1), True, _PILLARBOX_4_3, 1.0),
+            ((640, 480), (1, 1), False, _PILLARBOX_4_3, 1.0),
+        ],
+        ids=["gl-gallery", "gtksink-gallery", "gl-square-4:3", "gtksink-square-4:3"],
+    )
+    def test_the_view_is_the_active_display_s(
+        self,
+        source: tuple[int, int],
+        par: tuple[int, int],
+        gl: bool,
+        rect: tuple[int, int, int, int],
+        aspect: float,
+    ) -> None:
+        app = _DummyApp()
+        _draw(app, (1920, 1080), source, par, gl=gl)
+        view = _view(app)
+        assert (tuple(view.rect), view.pixel_aspect) == (rect, aspect)
+
+    def test_a_grab_lands_on_the_ring_the_active_display_shows(self) -> None:
+        on_gl, on_gtksink = _DummyApp(), _DummyApp()
+        _draw(on_gl, (1920, 1080), _GALLERY_4_3, _GALLERY_4_3_PAR, gl=True)
+        _draw(on_gtksink, (1920, 1080), _GALLERY_4_3, _GALLERY_4_3_PAR)
+        for app in (on_gl, on_gtksink):
+            app._server.get_marker(1).set_pos(5.0, 2.0, 0.0)  # off centre, where the two views part
+        gl_ring = _ground_center_in(on_gl, _WHOLE_1080)
+        gtksink_ring = _ground_center_in(on_gtksink, _PILLARBOX_4_3, aspect=0.75)
+        assert math.hypot(gl_ring[0] - gtksink_ring[0], gl_ring[1] - gtksink_ring[1]) > 2 * _MIN_GRAB_PX
+        assert MouseHandler(on_gl).on_pointer_down(*gl_ring, 1) is True
+        assert MouseHandler(on_gl).on_pointer_down(*gtksink_ring, 1) is False
+        assert MouseHandler(on_gtksink).on_pointer_down(*gtksink_ring, 1) is True
+        assert MouseHandler(on_gtksink).on_pointer_down(*gl_ring, 1) is False
+
+    def test_on_gl_a_drag_unprojects_on_the_whole_stretched_picture(self) -> None:
+        app = _DummyApp()
+        _draw(app, (1920, 1080), _GALLERY_4_3, _GALLERY_4_3_PAR, gl=True)
+        # Inside gtksink's bar, but on the picture GL shows.
+        drawn = _drawn_at(app, _WHOLE_1080, -6.0, 2.0)
+        assert drawn[0] < _PILLARBOX_4_3[0]
+        via_mouse = _dragged_to(app, _WHOLE_1080, drawn)
+        assert via_mouse == pytest.approx((-6.0, 2.0), abs=1e-6)
 
 
 class TestDecentredStrongLens:

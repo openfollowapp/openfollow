@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 import openfollow
 from openfollow import keyboard_layout
-from openfollow.logging_setup import RingBufferLogHandler
+from openfollow.logging_setup import RingBufferLogHandler, read_log_file
 from openfollow.net_utils import HOST_RESOLVER, read_ipv4_routes
 from openfollow.network.validate import is_link_local
 from openfollow.power_health import THROTTLE_BIT_LABELS, parse_throttled
@@ -1171,6 +1171,30 @@ def _is_failure_line(line: str) -> bool:
     return not any(rx.search(line) for rx in _BENIGN_FAILURE_RES)
 
 
+_LOG_FILE_SOURCE = "log file"
+# A log file record opens on its ``logging_setup.LOG_FILE_DATEFMT`` stamp.
+_LOG_FILE_RECORD_RE = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} ")
+# Output the log file takes from stderr that is a failure on its own: a
+# faulthandler crash dump and an uncaught thread exception.
+_STDERR_FAILURE_HEADS = ("Fatal Python error:", "Exception in thread ")
+
+
+def _log_file_failures(lines: list[str]) -> list[str]:
+    """The lines of every failing record, each record kept whole with its traceback."""
+    records: list[list[str]] = []
+    for line in lines:
+        if not records or _LOG_FILE_RECORD_RE.match(line) or line.startswith(_STDERR_FAILURE_HEADS):
+            records.append([line])
+        else:
+            records[-1].append(line)
+    return [
+        line
+        for record in records
+        if _is_failure_line(record[0]) or record[0].startswith(_STDERR_FAILURE_HEADS)
+        for line in record
+    ]
+
+
 # Journal noise stripped before two log lines are compared for repetition:
 # the ``MMM DD HH:MM:SS`` prefix journalctl adds, the ``[pid]`` of the emitting
 # process, and the application's own ``HH:MM:SS``. Everything else - including
@@ -1431,7 +1455,12 @@ def collect_recent_failures(
         else:
             # The 24h window only applies to journald; the ring fallback
             # covers the current process lifetime / ring capacity.
-            window = "last 24h" if fsrc == "journalctl" else "this process (ring buffer)"
+            if fsrc == "journalctl":
+                window = "last 24h"
+            elif fsrc.startswith(_LOG_FILE_SOURCE):
+                window = "all kept log files"
+            else:
+                window = "this process (ring buffer)"
             rows.append(f"  Failure extract (WARNING+, {window}, source: {fsrc}):")
             rows.append("  ----- begin failure extract -----")
             if failure_lines:
@@ -1480,10 +1509,11 @@ def collect_log_tail(
     ring: RingBufferLogHandler | None,
     *,
     update_service_name: str | None = None,
+    log_file: Path | None = None,
     last_n: int = 500,
     timeout_s: float = _DEFAULT_SUBPROCESS_TIMEOUT_S,
 ) -> tuple[str, list[str]]:
-    """Read up to ``last_n`` log lines, preferring journalctl and falling back to the ring.
+    """Read up to ``last_n`` log lines: journalctl, else ``log_file``, else the ring.
 
     Returns ``(source_label, lines)`` where the label describes the source.
     """
@@ -1495,6 +1525,11 @@ def collect_log_tail(
         fallback_label = "in-memory ring buffer (journalctl unavailable)"
     else:
         fallback_label = "in-memory ring buffer (no journald service name configured)"
+    if log_file is not None:
+        try:
+            return f"{_LOG_FILE_SOURCE} {log_file}", read_log_file(log_file, last_n=last_n)
+        except OSError as exc:
+            fallback_label = f"in-memory ring buffer (log file unreadable: {exc})"
     if ring is None:
         return (
             "no log source available (ring not initialised)",
@@ -1507,6 +1542,7 @@ def collect_failure_extract(
     ring: RingBufferLogHandler | None,
     *,
     update_service_name: str | None = None,
+    log_file: Path | None = None,
     since: str = _FAILURE_EXTRACT_SINCE,
     last_n: int = _FAILURE_EXTRACT_LINES,
     timeout_s: float = _FAILURE_EXTRACT_TIMEOUT_S,
@@ -1514,7 +1550,8 @@ def collect_failure_extract(
     """Severity-filtered log extract; WARNING/ERROR lines only.
 
     Over a longer window than the raw tail to prevent WARNING/ERROR lines
-    from being evicted during an INFO flood. Returns ``(source_label, lines)``.
+    from being evicted during an INFO flood: journalctl's last 24h, else every
+    kept copy of ``log_file``, else the ring. Returns ``(source_label, lines)``.
     """
     if update_service_name:
         rc, out = _run(
@@ -1545,6 +1582,13 @@ def collect_failure_extract(
             fallback_label = "in-memory ring buffer (journalctl unavailable)"
     else:
         fallback_label = "in-memory ring buffer (no journald service name configured)"
+    if log_file is not None:
+        try:
+            failures = _log_file_failures(read_log_file(log_file))
+        except OSError as exc:
+            fallback_label = f"in-memory ring buffer (log file unreadable: {exc})"
+        else:
+            return f"{_LOG_FILE_SOURCE} {log_file}", failures[-last_n:] if last_n > 0 else []
     if ring is None:
         return (
             "no log source available (ring not initialised)",
@@ -3239,6 +3283,7 @@ def collect_bundle(
     *,
     log_ring: RingBufferLogHandler | None = None,
     update_service_name: str | None = None,
+    log_file: Path | None = None,
     repo_root: Path | None = None,
     extra_storage_paths: list[Path] | None = None,
     config_path: Path | None = None,
@@ -3257,6 +3302,9 @@ def collect_bundle(
 
     ``config_path`` is the station's config file; E5c lists the web UI's
     settings backups kept beside it.
+
+    ``log_file`` is the file the station logs to when it has no journal (the
+    macOS app); section D reads it before the ring.
 
     ``budget_s`` is the whole-assembly wall-clock budget; sections not reached
     before it expires are listed as skipped rather than run. ``None`` reads
@@ -3277,6 +3325,7 @@ def collect_bundle(
         return collect_log_tail(
             log_ring,
             update_service_name=update_service_name,
+            log_file=log_file,
             last_n=_BUNDLE_LOG_TAIL_LINES,
             timeout_s=remaining(_DEFAULT_SUBPROCESS_TIMEOUT_S),
         )
@@ -3285,6 +3334,7 @@ def collect_bundle(
         return collect_failure_extract(
             log_ring,
             update_service_name=update_service_name,
+            log_file=log_file,
             timeout_s=remaining(_FAILURE_EXTRACT_TIMEOUT_S),
         )
 

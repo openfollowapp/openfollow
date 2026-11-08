@@ -16,6 +16,7 @@ from openfollow.configuration import (
     load_config,
     save_config_fields,
 )
+from openfollow.macos_quit import install_quit_handler
 from openfollow.psn.marker import MARKER_STALE_AFTER_S
 from openfollow.runtime.app_modes import keyboard_owned
 
@@ -62,6 +63,15 @@ def run_native_loop(app: OpenFollowApp) -> None:
     GLib.unix_signal_add(GLib.PRIORITY_HIGH, _signal.SIGTERM, Gtk.main_quit)
 
     assert app._canvas is not None
+    canvas = app._canvas
+
+    def _quit_from_event_poll() -> None:
+        # Called inside the loop's own poll, where a source added by the owning thread wakes nothing.
+        GLib.idle_add(canvas.request_quit, priority=GLib.PRIORITY_HIGH)
+        GLib.MainContext.default().wakeup()
+
+    # The Dock, logout, restart and shutdown quit the macOS app as Cmd+Q does.
+    install_quit_handler(_quit_from_event_poll)
     # start_hud_tick / timeout_add are inside the try so a failure there still
     # runs shutdown() – the subsystems were already started by app.run() before
     # this loop is entered.

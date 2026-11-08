@@ -60,9 +60,13 @@ class _FakeCanvas:
     def __init__(self) -> None:
         self.hud_ticks_started = 0
         self.is_closing = False
+        self.quit_requests = 0
 
     def start_hud_tick(self) -> None:
         self.hud_ticks_started += 1
+
+    def request_quit(self) -> None:
+        self.quit_requests += 1
 
 
 class _RecordingErrorLog:
@@ -592,11 +596,22 @@ class TestCheckConfigReload:
 # --------------------------------------------------------------------------- #
 
 
+class _FakeMainContext:
+    def __init__(self) -> None:
+        self.wakeups = 0
+
+    def wakeup(self) -> None:
+        self.wakeups += 1
+
+
 class _FakeGLib:
     def __init__(self) -> None:
         self.signals: list[tuple[int, int, object]] = []
         self.timeouts: list[tuple[int, object]] = []
+        self.idles: list[tuple[object, int]] = []
         self.PRIORITY_HIGH = 300
+        self.default_context = _FakeMainContext()
+        self.MainContext = SimpleNamespace(default=lambda: self.default_context)
 
     def unix_signal_add(self, priority: int, sig: int, handler: object) -> None:
         self.signals.append((priority, sig, handler))
@@ -604,6 +619,10 @@ class _FakeGLib:
     def timeout_add(self, interval_ms: int, callback: object) -> int:
         self.timeouts.append((interval_ms, callback))
         return len(self.timeouts)
+
+    def idle_add(self, callback: object, *, priority: int) -> int:
+        self.idles.append((callback, priority))
+        return len(self.idles)
 
 
 class _FakeGtk:
@@ -620,12 +639,46 @@ class _FakeGtk:
             raise KeyboardInterrupt("simulated Ctrl+C")
 
 
+@pytest.fixture(autouse=True)
+def quit_handlers(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """Stands in for the macOS quit handler, so no test installs a real one."""
+    installed: list[object] = []
+
+    def _install(on_quit: object) -> bool:
+        installed.append(on_quit)
+        return True
+
+    monkeypatch.setattr(orch, "install_quit_handler", _install)
+    return installed
+
+
 class TestRunNativeLoop:
     def _patch_gi(self, monkeypatch: pytest.MonkeyPatch, glib, gtk) -> None:  # noqa: ANN001
         import gi.repository as repo
 
         monkeypatch.setattr(repo, "GLib", glib, raising=False)
         monkeypatch.setattr(repo, "Gtk", gtk, raising=False)
+
+    def test_a_macos_quit_request_quits_through_the_window(
+        self, monkeypatch: pytest.MonkeyPatch, quit_handlers: list[object]
+    ) -> None:
+        glib = _FakeGLib()
+        self._patch_gi(monkeypatch, glib, _FakeGtk())
+        app = _make_fake_app()
+        orch.run_native_loop(app)
+
+        [on_quit] = quit_handlers
+        on_quit()  # type: ignore[operator]
+
+        # Scheduled on the main loop, ahead of the frame clock, and the loop is
+        # woken: the request arrives inside its poll, where a new source alone
+        # does not end the wait.
+        [(callback, priority)] = glib.idles
+        assert priority == glib.PRIORITY_HIGH
+        assert glib.default_context.wakeups == 1
+        assert app._canvas.quit_requests == 0
+        callback()  # type: ignore[operator]
+        assert app._canvas.quit_requests == 1
 
     def test_wires_sigint_and_sigterm_to_gtk_main_quit(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import signal as _signal

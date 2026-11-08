@@ -4089,7 +4089,7 @@ class AppRuntimeServices:
         }
         if self._person_detector is not None:
             detection_snapshot = dict(self._person_detector.performance_stats)
-        detection_snapshot["compiling"] = self._detector_build is not None
+        detection_snapshot["compiling"] = self._detector_build is not None or bool(detection_snapshot.get("compiling"))
         detection_snapshot["pin_status"] = self._detection_pin_status()
         detection_snapshot["missing_deps"] = self._resolve_detection_missing_deps(
             cfg.detection,

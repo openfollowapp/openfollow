@@ -713,17 +713,20 @@ class TestDetectorModelChangeCompile:
     def test_compile_runs_before_the_build(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         calls: list[dict[str, Any]] = []
         detector = self._detector(monkeypatch, tmp_path, calls)
-        compiled: list[tuple[str, Path, int]] = []
+        compiled: list[tuple[str, Path, int, bool]] = []
         monkeypatch.setattr(
             detection_module,
             "precompile",
-            lambda model, root, cancelled: compiled.append((model, root, len(calls))) or True,
+            lambda model, root, cancelled: (
+                compiled.append((model, root, len(calls), detector.performance_stats["compiling"])) or True
+            ),
         )
 
         detector.reload_config(_cfg(enabled=True, model="yolo26m.onnx", storage_path=str(tmp_path)))
         detector._drain_pending_config()
 
-        assert compiled == [(str(tmp_path / "models" / "yolo26m.onnx"), tmp_path / "cache", 1)]
+        assert compiled == [(str(tmp_path / "models" / "yolo26m.onnx"), tmp_path / "cache", 1, True)]
+        assert detector.performance_stats["compiling"] is False
         assert detector._model_path == str(tmp_path / "models" / "yolo26m.onnx")
 
     def test_stopped_while_compiling_keeps_the_prior_backend(

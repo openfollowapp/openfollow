@@ -580,6 +580,8 @@ class PersonDetector:
         self._clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         self._results: list[DetectionBox] = []
         self._running = False
+        # Set while the worker waits on a model change's CoreML compile.
+        self._compiling = False
         self._thread: threading.Thread | None = None
         self._appsink = None  # Set by pipeline builder
 
@@ -965,6 +967,7 @@ class PersonDetector:
                 "enabled": bool(self._config.enabled),
                 "available": backend_available,
                 "running": self._running,
+                "compiling": self._compiling,
                 "backend": backend_name or "none",
                 "model": model_path,
                 "interval_ms": int(self._config.interval_ms),
@@ -1122,7 +1125,11 @@ class PersonDetector:
             cache_root = detection_cache_dir(pending.storage_path)
             # Waits for a CoreML compile without holding the GIL; a failed one
             # leaves the compile to the in-process build below.
-            compiled = precompile(new_model_path, cache_root, cancelled=lambda: not self._running)
+            self._compiling = True
+            try:
+                compiled = precompile(new_model_path, cache_root, cancelled=lambda: not self._running)
+            finally:
+                self._compiling = False
             if not compiled and not self._running:
                 self._restore_storage_env(old_env)
                 return

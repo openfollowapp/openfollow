@@ -640,6 +640,32 @@ class TestPublishRuntimeStats:
         services.publish_runtime_stats(force=True)
         assert services.get_runtime_stats_snapshot()["tracking"]["pin_status"] is None
 
+    def test_detector_compiling_a_model_change_surfaces_into_tracking_section(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        detector = _FakeDetector()
+        detector.performance_stats = {**_FakeDetector.performance_stats, "compiling": True}
+        self._prime(services, detector=detector)
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+
+        services.publish_runtime_stats(force=True)
+        assert services.get_runtime_stats_snapshot()["tracking"]["compiling"] is True
+
+    @pytest.mark.parametrize("compiling", [True, False])
+    def test_pending_coreml_compile_surfaces_into_tracking_section(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, compiling: bool
+    ) -> None:
+        self._prime(services)
+        import openfollow.video.detection as det
+
+        monkeypatch.setattr(det, "check_detection_dependencies", lambda cfg: [])
+        services._detector_compiling = compiling
+
+        services.publish_runtime_stats(force=True)
+        assert services.get_runtime_stats_snapshot()["tracking"]["compiling"] is compiling
+
     def test_missing_deps_surface_into_tracking_section(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
     ) -> None:

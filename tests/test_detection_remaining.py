@@ -503,7 +503,7 @@ class TestCoreMLModelCache:
 
     @staticmethod
     def _half_written_compile(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Path, Path]:
-        """A model whose cache holds a compile cut short (a quit during the first build)."""
+        """A model whose finished compile was damaged afterwards."""
         first: list[dict[str, Any]] = []
         _install_fake_onnxruntime(monkeypatch, _recording_session_factory(first), _COREML_HOST)
         model = _write_model(tmp_path / "models")
@@ -518,7 +518,7 @@ class TestCoreMLModelCache:
         tmp_path: Path,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        # The half-written compile fails the load rather than recompiling; one
+        # The damaged compile fails the load rather than recompiling; one
         # compile into the emptied cache repairs it.
         model, half_written = self._half_written_compile(monkeypatch, tmp_path)
         calls: list[dict[str, Any]] = []
@@ -699,6 +699,89 @@ class TestDetectorModelCacheLocation:
 
         assert detector._model_path == str(new_storage / "models" / "yolo26m.onnx")
         assert _coreml_cache_of(calls[1]).parent == new_storage / "cache" / "coreml"
+
+
+class TestDetectorModelChangeCompile:
+    """A live model change on a CoreML host compiles in a child before the worker builds."""
+
+    def _detector(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, calls: list[dict[str, Any]]) -> PersonDetector:
+        _install_fake_onnxruntime(monkeypatch, _recording_session_factory(calls), _COREML_HOST)
+        _write_model(tmp_path / "models", "yolo26n.onnx")
+        _write_model(tmp_path / "models", "yolo26m.onnx")
+        return PersonDetector(_cfg(enabled=True, model="yolo26n.onnx", storage_path=str(tmp_path)))
+
+    def test_compile_runs_before_the_build(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        calls: list[dict[str, Any]] = []
+        detector = self._detector(monkeypatch, tmp_path, calls)
+        compiled: list[tuple[str, Path, int, bool]] = []
+        monkeypatch.setattr(
+            detection_module,
+            "precompile",
+            lambda model, root, cancelled: (
+                compiled.append((model, root, len(calls), detector.performance_stats["compiling"])) or True
+            ),
+        )
+
+        detector.reload_config(_cfg(enabled=True, model="yolo26m.onnx", storage_path=str(tmp_path)))
+        detector._drain_pending_config()
+
+        assert compiled == [(str(tmp_path / "models" / "yolo26m.onnx"), tmp_path / "cache", 1, True)]
+        assert detector.performance_stats["compiling"] is False
+        assert detector._model_path == str(tmp_path / "models" / "yolo26m.onnx")
+
+    def test_stopped_while_compiling_keeps_the_prior_backend(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        calls: list[dict[str, Any]] = []
+        detector = self._detector(monkeypatch, tmp_path, calls)
+        monkeypatch.setattr(detection_module, "precompile", lambda *_args, **_kwargs: False)
+        env_before = os.environ.get("XDG_CACHE_HOME")
+        detector._running = False
+
+        detector.reload_config(_cfg(enabled=True, model="yolo26m.onnx", storage_path=str(tmp_path / "other")))
+        (tmp_path / "other" / "models").mkdir(parents=True)
+        detector._drain_pending_config()
+
+        assert len(calls) == 1
+        assert detector._model_path == str(tmp_path / "models" / "yolo26n.onnx")
+        assert os.environ.get("XDG_CACHE_HOME") == env_before
+
+    @pytest.mark.parametrize(
+        ("newer_model", "builds"),
+        [("yolo26s.onnx", False), ("yolo26m.onnx", True)],
+    )
+    def test_newer_change_staged_while_compiling(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, newer_model: str, builds: bool
+    ) -> None:
+        # Another model cuts the compile short and is drained next; the same model lets it build.
+        calls: list[dict[str, Any]] = []
+        detector = self._detector(monkeypatch, tmp_path, calls)
+        detector._running = True
+        newer = _cfg(enabled=True, model=newer_model, storage_path=str(tmp_path), confidence=0.9)
+
+        def _compile(_model: str, _root: Path, cancelled: Any) -> bool:
+            assert cancelled() is False
+            detector.reload_config(newer)
+            return not cancelled()
+
+        monkeypatch.setattr(detection_module, "precompile", _compile)
+        detector.reload_config(_cfg(enabled=True, model="yolo26m.onnx", storage_path=str(tmp_path)))
+        detector._drain_pending_config()
+
+        assert (len(calls) == 2) is builds
+        assert detector._pending_config is newer
+
+    def test_failed_compile_still_builds_in_process(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        calls: list[dict[str, Any]] = []
+        detector = self._detector(monkeypatch, tmp_path, calls)
+        monkeypatch.setattr(detection_module, "precompile", lambda *_args, **_kwargs: False)
+        detector._running = True
+
+        detector.reload_config(_cfg(enabled=True, model="yolo26m.onnx", storage_path=str(tmp_path)))
+        detector._drain_pending_config()
+
+        assert len(calls) == 2
+        assert detector._model_path == str(tmp_path / "models" / "yolo26m.onnx")
 
 
 class _FakeCv2:

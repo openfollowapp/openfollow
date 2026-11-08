@@ -102,6 +102,7 @@ logger = logging.getLogger(__name__)
 # diagnostics bundle shows; bounds output rather than dumping every row's
 # full per-row ring.
 _RECENT_OSC_SENDS_LIMIT = 100
+_COMPILE_STOP_WAIT_S = 1.0
 
 # Per-request budget for the web 3D-Mouse button-detect poll. Kept short so a
 # Detect click never pins its request thread for seconds; the browser widget
@@ -746,6 +747,8 @@ class AppRuntimeServices:
         # One build at a time: the one in flight, and the newest request waiting for it.
         self._detector_building: int | None = None
         self._queued_detector_build: tuple[int, DetectionConfig, Callable[[], None] | None] | None = None
+        # Set while a detector build waits on its model's CoreML compile.
+        self._detector_compiling = False
 
         self._frame_metrics = FrameMetrics()
         self._frame_start_time = 0.0
@@ -1104,7 +1107,9 @@ class AppRuntimeServices:
 
         # Optional person detection (lazy import, zero cost when disabled)
         detector = None
+        startup_build = False
         if self.detection_config().enabled:
+            from openfollow.video.coreml_compile import detection_compile_needed
             from openfollow.video.detection import (
                 PersonDetector,
                 check_detection_dependencies,
@@ -1117,6 +1122,9 @@ class AppRuntimeServices:
                     "Install with: pip install openfollow[detection]",
                     ", ".join(missing),
                 )
+            elif detection_compile_needed(cfg.detection):
+                # Built off the frame loop once the receiver is up, after the compile.
+                startup_build = True
             else:
                 detector = PersonDetector(cfg.detection)
 
@@ -1181,6 +1189,8 @@ class AppRuntimeServices:
             self._person_detector = detector
             if self._person_detector is not None:
                 self._person_detector.start()
+            if startup_build:
+                self.swap_detector(cfg.detection)
         except Exception:
             try:
                 receiver.stop()
@@ -2823,10 +2833,11 @@ class AppRuntimeServices:
         takes seconds on a large model, so it runs off the frame loop and
         the branch is wired back on it (``_install_detector``). The session
         build still holds the GIL, so every thread (frame clock, output
-        senders, web server) stops until it is done: on CoreML a model's
-        first build compiles it for seconds, while later builds load the
-        compiled copy from the storage cache; the CPU provider (the Pi)
-        builds without one. One build runs at a time; the newest change
+        senders, web server) stops until it is done. On CoreML a model's
+        first build would compile it for seconds there, so the build thread
+        first compiles it in a child process (``precompile_detection``), and
+        the session build loads the compiled copy; the CPU provider (the Pi)
+        never starts one. One build runs at a time; the newest change
         waiting for it is built next, and a build a later detection change
         overtook is dropped. A wiring failure calls
         ``on_failure``, as the dispatcher reverts the stored config on a
@@ -2858,11 +2869,24 @@ class AppRuntimeServices:
         build, new_cfg, on_failure = queued
         self._detector_building = build
 
+        def compile_cut_short() -> bool:
+            # An overtaken build keeps compiling while the newest request loads the same model.
+            if build == self._detector_builds:
+                return False
+            queued = self._queued_detector_build
+            return queued is None or (queued[1].model, queued[1].storage_path) != (new_cfg.model, new_cfg.storage_path)
+
         def construct() -> None:
             try:
                 # Its first import loads cv2 and onnxruntime, too slow for the frame loop.
+                from openfollow.video.coreml_compile import precompile_detection
                 from openfollow.video.detection import PersonDetector
 
+                self._detector_compiling = True
+                try:
+                    precompile_detection(new_cfg, compile_cut_short)
+                finally:
+                    self._detector_compiling = False
                 detector = PersonDetector(new_cfg)
             except Exception:
                 logger.exception("detection: the person detector could not be built")
@@ -4361,6 +4385,7 @@ class AppRuntimeServices:
         }
         if self._person_detector is not None:
             detection_snapshot = dict(self._person_detector.performance_stats)
+        detection_snapshot["compiling"] = self._detector_compiling or bool(detection_snapshot.get("compiling"))
         detection_snapshot["pin_status"] = self._detection_pin_status()
         detection_snapshot["missing_deps"] = self._resolve_detection_missing_deps(
             cfg.detection,
@@ -4460,8 +4485,12 @@ class AppRuntimeServices:
             return
         self._shutdown_in_progress = True
         app = self._app
-        # A detector still being built is dropped when it lands.
+        # A detector still being built is dropped when it lands, and its compile child killed.
         self._detector_builds += 1
+        from openfollow.video import coreml_compile
+
+        if not coreml_compile.wait_idle(_COMPILE_STOP_WAIT_S):
+            logger.warning("A CoreML compile is still running at shutdown")
         # Each step is isolated (see ``_safe_stop``) so one failing
         # teardown can't strand the rest – the OSC-service drain and MIDI
         # close at the end must always run.

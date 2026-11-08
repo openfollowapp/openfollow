@@ -209,6 +209,17 @@ def test_main_routes_export(launcher, monkeypatch) -> None:
     assert captured == [["yolov8n.pt", "--imgsz", "320"]]
 
 
+def test_main_routes_coreml_compile(launcher, monkeypatch) -> None:
+    from openfollow.video import coreml_compile
+
+    captured: list[list[str]] = []
+    monkeypatch.setattr(coreml_compile, "main", lambda args: captured.append(args) or 3)
+    monkeypatch.setattr(launcher, "run_gui", lambda: pytest.fail("GUI must not run for --coreml-compile"))
+
+    assert launcher.main(["--coreml-compile", "/models/m.onnx", "/cache"]) == 3
+    assert captured == [["/models/m.onnx", "/cache"]]
+
+
 def test_main_routes_selfcheck(launcher, monkeypatch) -> None:
     monkeypatch.setenv("OPENFOLLOW_SELFCHECK", "1")
     monkeypatch.setattr(launcher, "run_selfcheck", lambda: 0)

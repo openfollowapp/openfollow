@@ -43,6 +43,7 @@ openfollow/              # Single unified package
 │   ├── gl_display.py    # GL Operator Screen: video and HUD in one GL area, the checks it runs behind
 │   ├── gl_cadence.py    # When GL video frames meet the refresh, and what that did to them
 │   ├── detection.py     # Optional person detection
+│   ├── coreml_compile.py # First CoreML compile of a model, in a child process
 │   ├── tracking.py      # ByteTrack tracker (Kalman + two-stage association)
 │   ├── media_store.py   # Media Gallery library (images/clips, storage, validation)
 │   ├── connection_status.py

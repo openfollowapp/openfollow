@@ -21,6 +21,7 @@ import json
 import logging
 import socket
 import threading
+from collections.abc import Callable
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
@@ -5238,3 +5239,101 @@ class TestStationFollowersDoNotBindOnADownInterface:
         self._down_station(services, monkeypatch)
         assert services._resolved_source_ip() == ""
         assert services.station_source_ip_or_none() is None
+
+
+class TestDetectorBuildCompile:
+    """The build thread compiles the model for CoreML in a child before it builds the detector."""
+
+    def _setup(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, compile_model: Any
+    ) -> tuple[_RecordingReceiver, list[Callable[[], None]]]:
+        from openfollow.video import coreml_compile
+        from openfollow.video import detection as detection_mod
+
+        receiver = _RecordingReceiver()
+        services._app._video_receiver = receiver  # type: ignore[assignment]
+        services._person_detector = None
+        _FakePersonDetector.instances = []
+        _FakePersonDetector.available_default = True
+        monkeypatch.setattr(detection_mod, "PersonDetector", _FakePersonDetector)
+        monkeypatch.setattr(coreml_compile, "precompile_detection", compile_model)
+        off_main: list[Callable[[], None]] = []
+        services._off_main_thread = off_main.append
+        services._on_main_thread = lambda work: work()
+        return receiver, off_main
+
+    def test_compile_runs_before_the_build_and_shows_in_stats(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: list[tuple[Any, bool, int]] = []
+
+        def _compile(cfg: Any, cancelled: Callable[[], bool]) -> bool:
+            seen.append((cfg, services._detector_compiling, len(_FakePersonDetector.instances)))
+            assert cancelled() is False
+            return True
+
+        receiver, off_main = self._setup(services, monkeypatch, _compile)
+        cfg = DetectionConfig(enabled=True)
+        services.swap_detector(cfg)
+        off_main.pop()()
+
+        assert seen == [(cfg, True, 0)]
+        assert services._detector_compiling is False
+        assert receiver.swap_detector_calls == _FakePersonDetector.instances
+
+    @pytest.mark.parametrize(
+        ("next_change", "cut_short"),
+        [
+            (DetectionConfig(enabled=False), True),
+            (DetectionConfig(enabled=True, model="yolo26m.onnx"), True),
+            (DetectionConfig(enabled=True, inference_size=640), False),
+        ],
+    )
+    def test_compile_cut_short_by_a_change_needing_another_model(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, next_change: Any, cut_short: bool
+    ) -> None:
+        verdicts: list[bool] = []
+
+        def _compile(_cfg: Any, cancelled: Callable[[], bool]) -> bool:
+            if next_change.enabled:
+                services.swap_detector(next_change)
+            else:
+                services.apply_detection_change(next_change)
+            verdicts.append(cancelled())
+            return not verdicts[-1]
+
+        _, off_main = self._setup(services, monkeypatch, _compile)
+        services.swap_detector(DetectionConfig(enabled=True))
+        off_main.pop(0)()
+
+        assert verdicts == [cut_short]
+
+    def test_compile_cut_short_at_shutdown(self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch) -> None:
+        verdicts: list[bool] = []
+
+        def _compile(_cfg: Any, cancelled: Callable[[], bool]) -> bool:
+            services._app._video_receiver = None
+            services.shutdown()
+            verdicts.append(cancelled())
+            return False
+
+        _, off_main = self._setup(services, monkeypatch, _compile)
+        services.swap_detector(DetectionConfig(enabled=True))
+        off_main.pop()()
+
+        assert verdicts == [True]
+
+    def test_shutdown_waits_for_a_running_compile(
+        self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from openfollow.video import coreml_compile
+
+        waits: list[float] = []
+        monkeypatch.setattr(coreml_compile, "wait_idle", lambda timeout: waits.append(timeout) or False)
+        services._app._video_receiver = None
+
+        with caplog.at_level("WARNING", logger="openfollow.services"):
+            services.shutdown()
+
+        assert waits == [services_module._COMPILE_STOP_WAIT_S]
+        assert any("still running" in r.getMessage() for r in caplog.records)

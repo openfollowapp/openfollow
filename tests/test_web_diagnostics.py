@@ -34,6 +34,7 @@ from openfollow.platform_support import PlatformSupport
 from openfollow.runtime.removable_media import Media
 from openfollow.video.source_limits import OverLimit, SourceReading, limits_snapshot
 from openfollow.web import diagnostics as diag
+from tests import _netstat_routes
 
 pytestmark = pytest.mark.unit
 
@@ -4503,6 +4504,20 @@ def test_collect_network_interfaces_renders_each_default_route(monkeypatch: pyte
     assert "  Default route:  via 192.0.2.1 on eth0 (metric 100)" in diag.collect_network_interfaces(path)
 
 
+def test_collect_network_interfaces_on_macos_renders_the_netstat_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    import psutil
+
+    monkeypatch.setattr(psutil, "net_if_stats", lambda: {})
+    monkeypatch.setattr(psutil, "net_if_addrs", lambda: {})
+    _netstat_routes.install(monkeypatch, _netstat_routes.netstat_run())
+    rows = [row for row in diag.collect_network_interfaces() if row.startswith("  Default route:")]
+    assert rows == [
+        "  Default route:  via 192.0.2.1 on en0 (primary)",
+        "  Default route:  via 198.51.100.1 on en7 (scoped)",
+        "  Default route:  on utun3 (no gateway, scoped)",
+    ]
+
+
 def test_collect_network_interfaces_survives_unreadable_addresses(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -5310,6 +5325,26 @@ def test_describe_address_reachability_names_the_gateway_when_there_is_one(
     path = _route_file(tmp_path, "eth0\t00000000\t010200C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n")
     rows = diag.describe_address_reachability("198.51.100.10", path)
     assert "routed via 192.0.2.1 on eth0 (route 0.0.0.0/0, metric 100)" in rows[0]
+
+
+@pytest.mark.parametrize(
+    ("address", "verdict"),
+    [
+        ("203.0.113.130", "routed via 192.0.2.254 on en0 (route 203.0.113.128/25, primary)"),
+        ("203.0.113.20", "routed via 192.0.2.1 on en0 (route 0.0.0.0/0, primary)"),
+        ("203.0.113.9", "203.0.113.9/32 is directly connected on utun3"),
+        ("198.51.100.20", "198.51.100.0/24 is directly connected on en7"),
+    ],
+)
+def test_describe_address_reachability_on_macos_reads_netstat(
+    monkeypatch: pytest.MonkeyPatch, address: str, verdict: str
+) -> None:
+    _addrs(
+        monkeypatch,
+        {"en0": [SimpleNamespace(family=socket.AF_INET, address="192.0.2.10", netmask="255.255.255.0")]},
+    )
+    _netstat_routes.install(monkeypatch, _netstat_routes.netstat_run())
+    assert verdict in diag.describe_address_reachability(address)[0]
 
 
 def test_describe_address_reachability_handles_an_unreadable_route_table(

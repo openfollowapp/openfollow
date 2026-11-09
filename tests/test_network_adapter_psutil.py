@@ -26,6 +26,7 @@ from openfollow.network.adapter import (
     VlanInterface,
 )
 from openfollow.network.psutil_adapter import PsutilReadOnlyAdapter
+from tests import _netstat_routes
 
 pytestmark = pytest.mark.unit
 
@@ -136,6 +137,40 @@ class TestPsutilAdapter:
 
         monkeypatch.setattr(net_utils, "_PROC_NET_ROUTE", tmp_path / "missing.route")
         assert self._router(monkeypatch, tmp_path) is None
+
+    @pytest.mark.parametrize(("iface", "router"), [("en0", "192.0.2.1"), ("en7", "198.51.100.1"), ("utun3", None)])
+    def test_the_router_on_macos_comes_from_netstat(
+        self, monkeypatch, tmp_path, iface: str, router: str | None
+    ) -> None:
+        stats = {name: SimpleNamespace(isup=True) for name in ("en0", "en7", "utun3")}
+        monkeypatch.setattr(psutil_adapter.psutil, "net_if_stats", lambda: stats)
+        monkeypatch.setattr(psutil_adapter.psutil, "net_if_addrs", lambda: {name: [] for name in stats})
+        monkeypatch.setattr(psutil_adapter, "_RESOLV_CONF", tmp_path / "missing.resolv")
+        _netstat_routes.install(monkeypatch, _netstat_routes.netstat_run())
+        state = PsutilReadOnlyAdapter().get_state(iface)
+        assert state is not None
+        assert state.ipv4.router == router
+
+    def test_one_reading_reads_the_route_table_once(self, monkeypatch, tmp_path) -> None:
+        stats = {name: SimpleNamespace(isup=True) for name in ("en0", "en7", "utun3")}
+        monkeypatch.setattr(psutil_adapter.psutil, "net_if_stats", lambda: stats)
+        monkeypatch.setattr(psutil_adapter.psutil, "net_if_addrs", lambda: {name: [] for name in stats})
+        monkeypatch.setattr(psutil_adapter, "_RESOLV_CONF", tmp_path / "missing.resolv")
+        calls: list[list[str]] = []
+        run = _netstat_routes.netstat_run()
+
+        def counted(argv, **kwargs):
+            calls.append(argv)
+            return run(argv, **kwargs)
+
+        _netstat_routes.install(monkeypatch, counted)
+        reading = PsutilReadOnlyAdapter().read_network()
+        assert {name: state.ipv4.router for name, state in reading.states.items()} == {
+            "en0": "192.0.2.1",
+            "en7": "198.51.100.1",
+            "utun3": None,
+        }
+        assert len(calls) == 1
 
     def test_read_dns_missing_file(self, monkeypatch, tmp_path) -> None:
         monkeypatch.setattr(psutil_adapter, "_RESOLV_CONF", tmp_path / "missing")

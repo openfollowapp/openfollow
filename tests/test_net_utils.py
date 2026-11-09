@@ -1313,8 +1313,8 @@ def test_read_ipv4_routes_on_macos_reads_netstat(monkeypatch) -> None:
         Ipv4Route("en0", _net("0.0.0.0/0"), "192.0.2.1", 0),
         Ipv4Route("en7", _net("0.0.0.0/0"), "198.51.100.1", 1),
         Ipv4Route("utun3", _net("0.0.0.0/0"), "0.0.0.0", 1),
-        Ipv4Route("lo0", _net("127.0.0.0/8"), "127.0.0.1", 0),
-        Ipv4Route("lo0", _net("127.0.0.1/32"), "127.0.0.1", 0),
+        Ipv4Route("lo0", _net("127.0.0.0/8"), "0.0.0.0", 0),
+        Ipv4Route("lo0", _net("127.0.0.1/32"), "0.0.0.0", 0),
         Ipv4Route("en0", _net("169.254.0.0/16"), "0.0.0.0", 0),
         Ipv4Route("en0", _net("192.0.2.0/24"), "0.0.0.0", 0),
         Ipv4Route("en0", _net("192.0.2.1/32"), "0.0.0.0", 0),
@@ -1325,6 +1325,7 @@ def test_read_ipv4_routes_on_macos_reads_netstat(monkeypatch) -> None:
         Ipv4Route("en0", _net("203.0.113.128/25"), "192.0.2.254", 0),
         Ipv4Route("en0", _net("224.0.0.0/4"), "0.0.0.0", 0),
         Ipv4Route("en0", _net("255.255.255.255/32"), "0.0.0.0", 0),
+        Ipv4Route("utun3", _net("203.0.113.9/32"), "0.0.0.0", 0),
     ]
 
 

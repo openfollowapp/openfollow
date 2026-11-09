@@ -637,9 +637,10 @@ def _netstat_network(destination: str, host: bool) -> ipaddress.IPv4Network:
 def parse_netstat_routes(text: str) -> list[Ipv4Route] | None:
     """``netstat -rn -f inet`` as :func:`read_ipv4_routes` rows; ``None`` without a table header.
 
-    A gateway that is not an address (``link#6``, a neighbour's MAC) is directly
-    connected. The table prints no metric, so an interface-scoped route takes
-    metric 1 behind the unscoped one the kernel picks first.
+    A route without the G flag is directly connected, whatever its Gateway column
+    names (``link#6``, a neighbour's MAC, a tunnel's own address). The table
+    prints no metric, so an interface-scoped route takes metric 1 behind the
+    unscoped one the kernel picks first.
     """
     columns: tuple[int, int] | None = None
     routes: list[Ipv4Route] = []
@@ -655,7 +656,7 @@ def parse_netstat_routes(text: str) -> list[Ipv4Route] | None:
             if _NETSTAT_DROP_FLAGS & set(flags):
                 continue
             network = _netstat_network(fields[0], "H" in flags)
-            gateway = fields[1] if _is_ipv4_literal(fields[1]) else "0.0.0.0"
+            gateway = fields[1] if "G" in flags and _is_ipv4_literal(fields[1]) else "0.0.0.0"
         except (ValueError, IndexError):
             continue
         routes.append(Ipv4Route(iface=netif, network=network, gateway=gateway, metric=1 if "I" in flags else 0))

@@ -37,6 +37,7 @@ default            link#21            UCSIg               utun3
 203.0.113.8        127.0.0.1          UGHSR                 lo0
 224.0.0/4          link#6             UmCS                  en0      !
 255.255.255.255/32 link#6             UCS                   en0      !
+203.0.113.9        203.0.113.10       UH                  utun3
 """
 
 # Older releases print Refs and Use before Netif.

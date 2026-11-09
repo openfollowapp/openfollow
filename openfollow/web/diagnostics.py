@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import openfollow
-from openfollow import keyboard_layout, platform_support
+from openfollow import keyboard_layout, net_utils, platform_support
 from openfollow.logging_setup import RingBufferLogHandler, read_log_file
 from openfollow.net_utils import HOST_RESOLVER, read_ipv4_routes
 from openfollow.network.validate import is_link_local
@@ -807,7 +807,8 @@ def describe_address_reachability(address: str, route_path: Path | None = None) 
     iface, network, gateway, metric = best.iface, best.network, best.gateway, best.metric
     if gateway == "0.0.0.0":  # noqa: S104 - comparison, not a bind
         return [f"{indent}not on this station's own subnet, but {network} is directly connected on {iface}"]
-    return [f"{indent}not on any local subnet; routed via {gateway} on {iface} (route {network}, metric {metric})"]
+    rank = _route_rank(metric, route_path)
+    return [f"{indent}not on any local subnet; routed via {gateway} on {iface} (route {network}, {rank})"]
 
 
 # What a blank pin means, by the panel row's ``blank`` kind, as the panel's picker offers it.
@@ -2434,16 +2435,29 @@ def netmask_prefix_len(netmask: str) -> int | None:
     return prefix
 
 
+def _from_netstat(route_path: Path | None) -> bool:
+    return route_path is None and net_utils.ROUTES_FROM_NETSTAT
+
+
+def _route_rank(metric: int, route_path: Path | None) -> str:
+    """A route's metric; netstat prints none, so there it says whether the route is interface-scoped."""
+    if _from_netstat(route_path):
+        return "scoped" if metric else "primary"
+    return f"metric {metric}"
+
+
 def read_default_routes(route_path: Path | None = None) -> list[tuple[str, str, int]] | None:
     """``(interface, gateway, metric)`` per IPv4 default route, best first.
 
     Sorted by metric, the order the kernel would try them: a multi-homed
-    station has several and they are not a set of equals.
+    station has several and they are not a set of equals. From netstat a
+    default with no gateway (a tunnel's) is kept, gateway ``0.0.0.0``.
     """
     routes = read_ipv4_routes(route_path)
     if routes is None:
         return None
-    defaults = [r for r in routes if r.network.prefixlen == 0 and r.gateway != "0.0.0.0"]
+    keep_direct = _from_netstat(route_path)
+    defaults = [r for r in routes if r.network.prefixlen == 0 and (keep_direct or r.gateway != "0.0.0.0")]
     return [(r.iface, r.gateway, r.metric) for r in sorted(defaults, key=lambda r: r.metric)]
 
 
@@ -2567,7 +2581,8 @@ def collect_network_interfaces(
         rows.append("  Default route:  none (nothing routes off-subnet)")
     else:
         for iface, gateway, metric in routes:
-            rows.append(f"  Default route:  via {gateway} on {iface} (metric {metric})")
+            via = f"on {iface} (no gateway, " if gateway == "0.0.0.0" else f"via {gateway} on {iface} ("  # noqa: S104
+            rows.append(f"  Default route:  {via}{_route_rank(metric, route_path)})")
     if sources_note:
         rows.append(f"  Address source: {sources_note}")
     return rows

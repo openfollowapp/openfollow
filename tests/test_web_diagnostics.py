@@ -4512,8 +4512,9 @@ def test_collect_network_interfaces_on_macos_renders_the_netstat_defaults(monkey
     _netstat_routes.install(monkeypatch, _netstat_routes.netstat_run())
     rows = [row for row in diag.collect_network_interfaces() if row.startswith("  Default route:")]
     assert rows == [
-        "  Default route:  via 192.0.2.1 on en0 (metric 0)",
-        "  Default route:  via 198.51.100.1 on en7 (metric 1)",
+        "  Default route:  via 192.0.2.1 on en0 (primary)",
+        "  Default route:  via 198.51.100.1 on en7 (scoped)",
+        "  Default route:  on utun3 (no gateway, scoped)",
     ]
 
 
@@ -5329,8 +5330,9 @@ def test_describe_address_reachability_names_the_gateway_when_there_is_one(
 @pytest.mark.parametrize(
     ("address", "verdict"),
     [
-        ("203.0.113.130", "routed via 192.0.2.254 on en0 (route 203.0.113.128/25, metric 0)"),
-        ("203.0.113.10", "routed via 192.0.2.1 on en0 (route 0.0.0.0/0, metric 0)"),
+        ("203.0.113.130", "routed via 192.0.2.254 on en0 (route 203.0.113.128/25, primary)"),
+        ("203.0.113.20", "routed via 192.0.2.1 on en0 (route 0.0.0.0/0, primary)"),
+        ("203.0.113.9", "203.0.113.9/32 is directly connected on utun3"),
         ("198.51.100.20", "198.51.100.0/24 is directly connected on en7"),
     ],
 )

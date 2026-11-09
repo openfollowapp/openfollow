@@ -1665,10 +1665,17 @@ def _safe_version(dist: str, module: str | None = None) -> str:
 
 
 def _gstreamer_version(timeout_s: float) -> str:
-    """The ``gst-launch-1.0`` version line, else the version of the library this process loads.
+    """The version of the GStreamer library this process loaded, else the ``gst-launch-1.0`` version line.
 
-    The macOS app bundles the library but no command-line tools.
+    The macOS app bundles the library but no command-line tools, and a tool on
+    ``PATH`` may belong to another install.
     """
+    loaded = sys.modules.get("gi.repository.Gst")
+    if loaded is not None:
+        try:
+            return f"{loaded.version_string()} (loaded library)"
+        except Exception:  # noqa: BLE001 - fall back to the command-line tool
+            pass
     rc, out = _run(["gst-launch-1.0", "--version"], timeout_s=timeout_s)
     if rc == 0 and out:
         return out.splitlines()[0]
@@ -1704,7 +1711,7 @@ def _loaded_images() -> list[str]:
 def _libndi_state() -> str:
     """The NDI SDK library this process has loaded, else the one the NDI input's lookup finds."""
     try:
-        loaded = next((p for p in _loaded_images() if Path(p).name.startswith("libndi.")), None)
+        loaded = next((p for p in _loaded_images() if Path(p).name.startswith(("libndi.", "libndi_"))), None)
     except Exception:  # noqa: BLE001 - an unreadable image list falls back to the lookup
         loaded = None
     if loaded:
@@ -2723,19 +2730,28 @@ def _walk_macos(node: dict[str, Any], out: list[UsbDevice]) -> None:
 _MACOS_USB_DATA_TYPES = ("SPUSBDataType", "SPUSBHostDataType")
 
 
+def _system_profiler_usb() -> dict[str, Any] | None:
+    """The ``system_profiler`` USB listing, both data types asked, else the older one alone."""
+    for data_types in (_MACOS_USB_DATA_TYPES, _MACOS_USB_DATA_TYPES[:1]):
+        rc, out = _run(["system_profiler", *data_types, "-json"], timeout_s=_PROFILER_TIMEOUT_S)
+        if rc != 0 or not out or out.startswith("[unavailable:"):
+            continue
+        try:
+            data = json.loads(out)
+        except json.JSONDecodeError:
+            return None
+        return data if isinstance(data, dict) else None
+    return None
+
+
 def collect_usb_devices_macos() -> list[UsbDevice] | None:
-    """The USB devices ``system_profiler`` lists, from the first data type that lists any; ``None`` when it fails."""
-    rc, out = _run(
-        ["system_profiler", *_MACOS_USB_DATA_TYPES, "-json"],
-        timeout_s=_PROFILER_TIMEOUT_S,
-    )
-    if rc != 0 or not out or out.startswith("[unavailable:"):
-        return None
-    try:
-        data = json.loads(out)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(data, dict):
+    """The USB devices ``system_profiler`` lists, from the first data type that lists any.
+
+    ``None`` when it fails or answers with neither data type, so a listing it
+    cannot read never reads as "none attached".
+    """
+    data = _system_profiler_usb()
+    if data is None or not any(key in data for key in _MACOS_USB_DATA_TYPES):
         return None
     for data_type in _MACOS_USB_DATA_TYPES:
         devices: list[UsbDevice] = []

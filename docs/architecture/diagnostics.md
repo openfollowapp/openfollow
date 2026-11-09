@@ -34,9 +34,9 @@ The diagnostics bundle (and later settings / templates) can be saved to the top 
 
 The macOS app is a PyInstaller bundle with no package metadata and no command-line tools on the Finder `PATH`, so section E reads what the process has loaded:
 
-- **E1:** a package's version is its dist metadata, else the loaded module's `__version__`. GStreamer is `gst-launch-1.0 --version`, else `Gst.version_string()` of the loaded library. `libndi` is the library the process has loaded (dyld's image list, `/proc/self/maps` on Linux), else the one the NDI input's own lookup finds.
+- **E1:** a package's version is its dist metadata, else the loaded module's `__version__`. GStreamer is `Gst.version_string()` of the library the process has loaded, else `gst-launch-1.0 --version` (a tool on `PATH` may belong to another install). `libndi` is the library the process has loaded (dyld's image list, `/proc/self/maps` on Linux), else the one the NDI input's own lookup finds.
 - **E1b:** the decoder list includes the VideoToolbox decoders (`vtdec_hw`, `vtdec`).
-- **E8:** one `system_profiler SPUSBDataType SPUSBHostDataType -json` call (macOS 15 lists USB under the second); a listing with no device is `none attached`, a failed one is unavailable.
+- **E8:** `system_profiler SPUSBDataType SPUSBHostDataType -json` (macOS 15 lists USB under the second), asked again with `SPUSBDataType` alone if that fails; a listing with no device is `none attached`, a failed one or one holding neither data type is unavailable.
 - **Left out off Linux:** the `vcgencmd` throttling row (E6) and the privilege grants (G), which are sudo rules on Linux only.
 
 ## Runtime state (A3)

@@ -6800,28 +6800,31 @@ def _fake_module(monkeypatch: pytest.MonkeyPatch, name: str, **attrs: Any) -> No
     monkeypatch.setitem(sys.modules, name, module)
 
 
-def test_safe_version_reads_the_dist_metadata_where_there_is_some() -> None:
-    import bottle
-
-    assert diag._safe_version("bottle", "bottle") == importlib.metadata.version("bottle") == bottle.__version__
+def _bottle_row() -> str:
+    return next(r for r in diag.collect_runtime_versions() if r.startswith("  bottle "))
 
 
-def test_safe_version_reads_the_loaded_module_without_dist_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_runtime_versions_read_bottle_from_the_dist_metadata_where_there_is_some() -> None:
+    assert _bottle_row() == f"  {'bottle':<29}{importlib.metadata.version('bottle')}"
+
+
+def test_runtime_versions_read_the_loaded_module_without_dist_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
     _no_dist(monkeypatch)
-    _fake_module(monkeypatch, "frozenmod", __version__="1.2.3")
-    assert diag._safe_version("frozen-dist", "frozenmod") == "1.2.3"
+    _fake_module(monkeypatch, "bottle", __version__="1.2.3")
+    assert _bottle_row() == f"  {'bottle':<29}1.2.3"
 
 
 @pytest.mark.parametrize("version", [None, "", 123, True])
-def test_safe_version_ignores_an_unusable_module_version(monkeypatch: pytest.MonkeyPatch, version: Any) -> None:
+def test_runtime_versions_ignore_an_unusable_module_version(monkeypatch: pytest.MonkeyPatch, version: Any) -> None:
     _no_dist(monkeypatch)
-    _fake_module(monkeypatch, "frozenmod", __version__=version)
-    assert diag._safe_version("frozen-dist", "frozenmod") == "[not installed]"
+    _fake_module(monkeypatch, "bottle", __version__=version)
+    assert _bottle_row() == f"  {'bottle':<29}[not installed]"
 
 
-def test_safe_version_reports_a_module_that_is_not_there(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_runtime_versions_report_a_module_that_is_not_there(monkeypatch: pytest.MonkeyPatch) -> None:
     _no_dist(monkeypatch)
-    assert diag._safe_version("frozen-dist", "openfollow_no_such_module") == "[not installed]"
+    monkeypatch.setitem(sys.modules, "bottle", None)
+    assert _bottle_row() == f"  {'bottle':<29}[not installed]"
 
 
 def test_runtime_versions_name_bottle_and_psutil_in_a_frozen_app(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -6847,6 +6850,7 @@ def _fake_gst(monkeypatch: pytest.MonkeyPatch, **attrs: Any) -> None:
 
 
 def test_runtime_versions_read_gstreamer_from_the_cli_where_there_is_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delitem(sys.modules, "gi.repository.Gst", raising=False)
     monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (0, "gst-launch-1.0 version 1.22.0\nGStreamer 1.22.0"))
     row = _gstreamer_row(diag.collect_runtime_versions())
     assert row == "  GStreamer                    gst-launch-1.0 version 1.22.0"
@@ -6855,47 +6859,67 @@ def test_runtime_versions_read_gstreamer_from_the_cli_where_there_is_one(monkeyp
 def test_runtime_versions_read_gstreamer_from_the_loaded_library_without_the_cli(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delitem(sys.modules, "gi.repository.Gst", raising=False)
     monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (-1, "[unavailable: gst-launch-1.0 not found]"))
     _fake_gst(monkeypatch, version_string=lambda: "GStreamer 1.24.9")
     row = _gstreamer_row(diag.collect_runtime_versions())
     assert row == "  GStreamer                    GStreamer 1.24.9 (loaded library)"
 
 
+def test_runtime_versions_prefer_the_gstreamer_library_already_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    ran: list[list[str]] = []
+    monkeypatch.setitem(sys.modules, "gi.repository.Gst", SimpleNamespace(version_string=lambda: "GStreamer 1.26.0"))
+    monkeypatch.setattr(diag, "_run", lambda cmd, **_k: ran.append(cmd) or (0, "gst-launch-1.0 version 1.22.0"))
+    row = _gstreamer_row(diag.collect_runtime_versions())
+    assert row == "  GStreamer                    GStreamer 1.26.0 (loaded library)"
+    assert ["gst-launch-1.0", "--version"] not in ran
+
+
 def test_runtime_versions_report_gstreamer_unavailable_with_neither(monkeypatch: pytest.MonkeyPatch) -> None:
     import gi
 
+    monkeypatch.delitem(sys.modules, "gi.repository.Gst", raising=False)
     monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (-1, "[unavailable: gst-launch-1.0 not found]"))
     monkeypatch.setattr(gi, "require_version", lambda *_a, **_k: (_ for _ in ()).throw(ValueError("no Gst")))
     assert _gstreamer_row(diag.collect_runtime_versions()) == "  GStreamer                    [unavailable]"
+
+
+def _libndi_row() -> str:
+    return next(r for r in diag.collect_runtime_versions() if r.startswith("  libndi "))
 
 
 @pytest.mark.parametrize(
     ("images", "found", "expected"),
     [
         (["/usr/lib/libc.so.6", "/usr/lib/libndi.so.6"], None, "loaded (/usr/lib/libndi.so.6)"),
+        (["/usr/lib/libndi_advanced.so.6"], None, "loaded (/usr/lib/libndi_advanced.so.6)"),
         (["/usr/lib/libc.so.6"], "/usr/local/lib/libndi.so", "present (/usr/local/lib/libndi.so), not loaded"),
         (["/usr/lib/libc.so.6", "/opt/libndifoo.so"], None, "[not present]"),
     ],
 )
-def test_libndi_state_prefers_the_loaded_library(
+def test_runtime_versions_prefer_the_loaded_libndi(
     monkeypatch: pytest.MonkeyPatch, images: list[str], found: str | None, expected: str
 ) -> None:
     from openfollow.video.inputs import ndi
 
     monkeypatch.setattr(diag, "_loaded_images", lambda: images)
     monkeypatch.setattr(ndi, "_find_ndi_library", lambda: found)
-    assert diag._libndi_state() == expected
+    assert _libndi_row() == f"  libndi                       {expected}"
 
 
-def test_libndi_state_falls_back_to_the_lookup_when_the_image_list_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_runtime_versions_fall_back_to_the_ndi_lookup_when_the_image_list_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from openfollow.video.inputs import ndi
 
     monkeypatch.setattr(diag, "_loaded_images", lambda: (_ for _ in ()).throw(OSError("no maps")))
     monkeypatch.setattr(ndi, "_find_ndi_library", lambda: None)
-    assert diag._libndi_state() == "[not present]"
+    assert _libndi_row() == "  libndi                       [not present]"
 
 
-def test_loaded_images_reads_dyld_on_macos(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_runtime_versions_find_libndi_in_the_dyld_images_on_macos(monkeypatch: pytest.MonkeyPatch) -> None:
     import ctypes
 
     images = [b"/usr/lib/libSystem.B.dylib", None, b"/Applications/OpenFollow.app/Contents/Frameworks/libndi.dylib"]
@@ -6913,13 +6937,13 @@ def test_loaded_images_reads_dyld_on_macos(monkeypatch: pytest.MonkeyPatch) -> N
 
     monkeypatch.setattr(diag.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(ctypes, "CDLL", lambda _name: _Libc())
-    assert diag._loaded_images() == [
-        "/usr/lib/libSystem.B.dylib",
-        "/Applications/OpenFollow.app/Contents/Frameworks/libndi.dylib",
-    ]
+    assert (
+        _libndi_row()
+        == "  libndi                       loaded (/Applications/OpenFollow.app/Contents/Frameworks/libndi.dylib)"
+    )
 
 
-def test_loaded_images_reads_the_process_maps_on_linux(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_runtime_versions_find_libndi_in_the_process_maps_on_linux(monkeypatch: pytest.MonkeyPatch) -> None:
     maps = (
         "7f00-7f01 r--p 00000000 08:01 1 /usr/lib/libndi.so.6\n"
         "7f01-7f02 r-xp 00001000 08:01 1 /usr/lib/libndi.so.6\n"
@@ -6933,16 +6957,19 @@ def test_loaded_images_reads_the_process_maps_on_linux(monkeypatch: pytest.Monke
 
     monkeypatch.setattr(diag.platform, "system", lambda: "Linux")
     monkeypatch.setattr(Path, "read_text", _read_text)
-    assert diag._loaded_images() == ["/usr/lib/libndi.so.6", "/usr/lib/libc.so.6"]
+    assert _libndi_row() == "  libndi                       loaded (/usr/lib/libndi.so.6)"
 
 
-def test_loaded_images_is_empty_without_a_readable_maps_file(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_runtime_versions_without_a_readable_maps_file_ask_the_ndi_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
     def _unreadable(self: Path, *_a: Any, **_k: Any) -> str:
         raise OSError(2, "No such file")
 
+    from openfollow.video.inputs import ndi
+
     monkeypatch.setattr(diag.platform, "system", lambda: "Linux")
     monkeypatch.setattr(Path, "read_text", _unreadable)
-    assert diag._loaded_images() == []
+    monkeypatch.setattr(ndi, "_find_ndi_library", lambda: None)
+    assert _libndi_row() == "  libndi                       [not present]"
 
 
 def test_collect_video_capability_names_the_videotoolbox_decoders(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -7033,12 +7060,39 @@ def test_collect_usb_devices_macos_prefers_the_classic_listing_where_it_has_devi
     assert [d.name for d in diag.collect_usb_devices_macos() or []] == ["Webcam"]
 
 
-@pytest.mark.parametrize("payload", ["[]", '"text"', '{"SPUSBHostDataType": ["not a bus"]}'])
-def test_collect_usb_devices_macos_reads_an_odd_shape_as_no_device_or_a_failure(
+@pytest.mark.parametrize("payload", ["[]", '"text"', "{}", '{"SPUSBThunderboltDataType": []}'])
+def test_collect_usb_devices_macos_reads_a_listing_without_usb_as_a_failure(
     monkeypatch: pytest.MonkeyPatch, payload: str
 ) -> None:
     monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (0, payload))
-    assert diag.collect_usb_devices_macos() in (None, [])
+    assert diag.collect_usb_devices_macos() is None
+
+
+def test_collect_usb_devices_macos_skips_entries_that_are_not_buses(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (0, '{"SPUSBHostDataType": ["not a bus"]}'))
+    assert diag.collect_usb_devices_macos() == []
+
+
+def test_collect_usb_devices_macos_asks_the_older_data_type_alone_when_both_fail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json as json_module
+
+    asked: list[list[str]] = []
+    older = json_module.dumps(
+        {"SPUSBDataType": [{"_name": "Bus", "_items": [{"_name": "Webcam", "vendor_id": "0x046d"}]}]}
+    )
+
+    def run(cmd: list[str], **_k: Any) -> tuple[int, str]:
+        asked.append(cmd)
+        return (1, "unknown data type") if "SPUSBHostDataType" in cmd else (0, older)
+
+    monkeypatch.setattr(diag, "_run", run)
+    assert [d.name for d in diag.collect_usb_devices_macos() or []] == ["Webcam"]
+    assert asked == [
+        ["system_profiler", "SPUSBDataType", "SPUSBHostDataType", "-json"],
+        ["system_profiler", "SPUSBDataType", "-json"],
+    ]
 
 
 def test_collect_usb_lists_macos_15_devices_in_the_table(monkeypatch: pytest.MonkeyPatch) -> None:

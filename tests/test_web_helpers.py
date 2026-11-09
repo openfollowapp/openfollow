@@ -4624,3 +4624,31 @@ def test_a_push_leaves_this_stations_button_names() -> None:
     new = _apply_import_data(current, {"controller": {"button_name_style": "playstation"}}, pushed=True)
 
     assert new.controller.button_name_style == "xbox"
+
+
+def test_reset_config_to_defaults_lands_on_the_macos_first_run(tmp_path, monkeypatch) -> None:
+    """In the macOS app a reset returns to the bundled seed, identity kept."""
+    import shutil
+    import sys
+    from pathlib import Path
+
+    from openfollow.web.routes import reset_config_to_defaults
+
+    shutil.copyfile(
+        Path(__file__).resolve().parents[1] / "packaging" / "macos" / "config.seed.toml", tmp_path / "config.seed.toml"
+    )
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+    configured = AppConfig()
+    configured.video_source_type = "srt"
+    configured.detection.enabled = False
+    configured.detection.model = "yolo26n.onnx"
+    configured.detection.storage_path = "/Users/operator/Library/Application Support/OpenFollow/yolo"
+    configured.web_port = 8123
+
+    fresh = reset_config_to_defaults(configured)
+
+    assert fresh.video_source_type == "testpattern"
+    assert fresh.detection.enabled is True
+    assert fresh.detection.model == "yolo26m.onnx"
+    assert fresh.detection.storage_path == configured.detection.storage_path
+    assert fresh.web_port == 8123

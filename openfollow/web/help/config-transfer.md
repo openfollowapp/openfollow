@@ -6,7 +6,7 @@ Move a station's settings in and out as a `.ofsettings` file, put them back to t
 
 **Import Configuration…** – applies a `.ofsettings` file from any OpenFollow station, after a confirmation and a backup of the current settings. Show settings change at once; the update check, clock sync and network backend from the next start. What connects this station stays: the web login, port and interface, the station's identity, interface pins and labels, local file paths and the marker move speeds.
 
-**Restore Defaults** – returns every setting to a fresh install's value, after a confirmation and a backup, then restarts the station. Network access, the station's identity and local file paths stay; the shared marker catalog and uploaded media are untouched.
+**Restore Defaults** – returns every setting to a fresh install's value (on a Mac, the settings the app first starts with), after a confirmation and a backup, then restarts the station. Network access, the station's identity and local file paths stay; the shared marker catalog and uploaded media are untouched.
 
 **Backups on this station** – the backups saved before each update, import, restore and settings push, newest first. **Restore…** brings one back and restarts the station. When a backup could not be made, the change still goes ahead and says so.
 

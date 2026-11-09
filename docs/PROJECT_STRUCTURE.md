@@ -6,6 +6,7 @@ openfollow/              # Single unified package
 ├── main.py              # CLI entry point
 ├── app.py               # Main application class + event loop
 ├── configuration.py     # Config model, TOML I/O, hot-reload logic
+├── first_run.py         # What Restore defaults returns to: the macOS first-run seed, else the defaults
 ├── config_restore.py    # Lists and reads back the station's own settings backups for a web restore
 ├── restore_hold.py      # What a restore holds until its restart: no write lands over a restored part
 ├── services.py          # Runtime service orchestration

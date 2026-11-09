@@ -592,6 +592,15 @@ The About page's **License**, **Third-party notices** and **Written offer** read
 `LICENSE`, `THIRD_PARTY_NOTICES.md` and `WRITTEN_OFFER.md` from beside the
 `openfollow` package, as in a checkout. The spec bundles them there, so the app
 shows them offline, as the `.deb` does from `/usr/share/openfollow`.
+The repository's notices and offer describe the Pi image and the `.deb`, so after
+the freeze `build-dmg.sh` runs `packaging/macos/bundle_notices.py`, which writes
+the macOS app's own over the bundled copies: every native library in the `.app`
+matched to the Homebrew formula whose keg ships it (`brew info --json=v2
+--installed`, with version, license and homepage), every Python package
+PyInstaller froze (`PYZ-00.toc` and `COLLECT-00.toc`) matched to its
+distribution in the build venv, and any other library by name; the written offer
+is `packaging/macos/WRITTEN_OFFER.md`, which covers the DMG. The build fails
+when the bundle holds neither document to replace.
 
 ### Build internals (when the native stack breaks)
 

@@ -290,8 +290,8 @@ window.loadAutostart();
 %# ------------------------------------------------------------------
 %# 3. Software Update – GitHub Releases signed-bundle (.ofupdate) installer.
 %#
-%# Default-collapsed: most operators rarely update manually. Hidden on
-%# hosts where the .deb installer can't run (macOS) – ``update_supported``.
+%# Default-collapsed: most operators rarely update manually. Where the .deb
+%# installer can't run (macOS, ``update_supported`` false) only a found release shows.
 %# ------------------------------------------------------------------
 % if defined('update_supported') and update_supported:
 <div id="general-software-update-section" class="section"
@@ -627,4 +627,20 @@ window.openfollowUploadUpdate = async function (input) {
   openfollowPollUpdate(info.version);
 };
 </script>
+%# No in-app installer here: the release online sync found is a link to its page.
+% elif defined('update_release_url') and update_release_url:
+<div id="general-software-update-section" class="section"
+     data-fold-key="general-software-update" data-help="general-software-update"
+     data-fold-default="expanded">
+    <div class="section-head">
+        <h2>Software Update</h2>
+    </div>
+
+    <p class="field-note">Installed: v{{current_version}}</p>
+
+    <div class="notice" role="status">
+        <div>Version {{latest_version}} is available.</div>
+        <div class="notice-sub"><a href="{{update_release_url}}" target="_blank" rel="noopener noreferrer">Download it from the release page</a></div>
+    </div>
+</div>
 % end

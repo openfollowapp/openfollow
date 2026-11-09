@@ -11,6 +11,7 @@ Bundle-assembly test wires everything end-to-end.
 from __future__ import annotations
 
 import errno
+import importlib.metadata
 import logging
 import os
 import platform
@@ -1559,12 +1560,12 @@ def test_walk_macos_collects_nested_devices() -> None:
 
 def test_collect_usb_macos_handles_missing_binary(monkeypatch) -> None:
     monkeypatch.setattr(diag, "_run", lambda *a, **kw: (-1, "[unavailable: system_profiler not found]"))
-    assert diag.collect_usb_devices_macos() == []
+    assert diag.collect_usb_devices_macos() is None
 
 
 def test_collect_usb_macos_handles_garbage_json(monkeypatch) -> None:
     monkeypatch.setattr(diag, "_run", lambda *a, **kw: (0, "<not json>"))
-    assert diag.collect_usb_devices_macos() == []
+    assert diag.collect_usb_devices_macos() is None
 
 
 def test_collect_usb_linux_reads_sysfs(tmp_path) -> None:
@@ -3459,19 +3460,18 @@ def test_collect_usb_no_devices_returns_unavailable(monkeypatch) -> None:
     assert "/sys/bus/usb/devices" in joined
 
 
-def test_collect_usb_no_devices_macos_mentions_system_profiler(monkeypatch) -> None:
-    """Same empty-result sentinel on macOS, but the troubleshooting
-    hint mentions ``system_profiler`` instead of sysfs."""
+def test_collect_usb_failed_listing_macos_mentions_system_profiler(monkeypatch) -> None:
     monkeypatch.setattr(diag.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(
-        diag,
-        "collect_usb_devices_macos",
-        lambda: [],
-    )
+    monkeypatch.setattr(diag, "collect_usb_devices_macos", lambda: None)
     rows = diag.collect_usb(diag.DiagnosticsProviders())
-    joined = "\n".join(rows)
-    assert "no USB devices enumerated" in joined
-    assert "system_profiler" in joined
+    assert rows == ["  [unavailable: no USB devices enumerated (system_profiler failed or returned no JSON)]"]
+
+
+def test_collect_usb_empty_listing_macos_says_none_attached(monkeypatch) -> None:
+    """A Mac with nothing plugged in lists no device: that is an answer, not a failure."""
+    monkeypatch.setattr(diag.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(diag, "_run", lambda *a, **kw: (0, '{"SPUSBDataType": [], "SPUSBHostDataType": []}'))
+    assert diag.collect_usb(diag.DiagnosticsProviders()) == ["  none attached"]
 
 
 def test_collect_usb_with_subsystem_providers(monkeypatch) -> None:
@@ -3882,11 +3882,18 @@ def test_render_usb_table_camera_loop_skips_non_matching_first(monkeypatch) -> N
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture()
+def linux_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(diag.platform, "system", lambda: "Linux")
+
+
+@pytest.mark.usefixtures("linux_host")
 def test_collect_device_permissions_no_provider_says_not_applicable() -> None:
     rows = diag.collect_device_permissions(diag.DiagnosticsProviders())
     assert rows == ["  [not applicable: privilege broker not wired]"]
 
 
+@pytest.mark.usefixtures("linux_host")
 def test_collect_device_permissions_empty_states_branch() -> None:
     """Provider returns an empty dict – no capabilities reported.
     Surfaces a clear sentinel so the bundle reader doesn't see a
@@ -3896,6 +3903,7 @@ def test_collect_device_permissions_empty_states_branch() -> None:
     assert rows == ["  [no capabilities reported]"]
 
 
+@pytest.mark.usefixtures("linux_host")
 def test_collect_device_permissions_renders_summary_and_sorted_rows() -> None:
     """Happy path: mixed states render the summary line + one row per
     capability sorted alphabetically (deterministic diff in the
@@ -3918,6 +3926,7 @@ def test_collect_device_permissions_renders_summary_and_sorted_rows() -> None:
     assert a_idx < m_idx < z_idx
 
 
+@pytest.mark.usefixtures("linux_host")
 def test_collect_device_permissions_provider_exception_surfaces_sentinel() -> None:
     """Misbehaving provider folds into the same ``[unavailable: …]``
     sentinel format every other diagnostics collector uses, so the
@@ -3933,6 +3942,7 @@ def test_collect_device_permissions_provider_exception_surfaces_sentinel() -> No
     assert "privilege_states" in rows[0]
 
 
+@pytest.mark.usefixtures("linux_host")
 def test_collect_device_permissions_ignores_unknown_state_strings() -> None:
     p = diag.DiagnosticsProviders(
         privilege_states=lambda: {
@@ -6765,3 +6775,356 @@ def test_keyboard_layout_row_stays_one_row_whatever_the_values_hold(
 def test_collect_os_carries_the_keyboard_layout_of_the_bundles_config(xkb_station: Path) -> None:
     bundle = diag.collect_bundle(config_path=xkb_station)
     assert any("configured de (nodeadkeys)" in row for row in bundle.e3_os)
+
+
+# ---------------------------------------------------------------------------
+# A frozen macOS app: what is loaded, not what a Linux probe finds
+# ---------------------------------------------------------------------------
+
+
+def _no_dist(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dist metadata as a PyInstaller bundle has it: none."""
+
+    def _missing(name: str) -> str:
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(diag.importlib.metadata, "version", _missing)
+
+
+def _fake_module(monkeypatch: pytest.MonkeyPatch, name: str, **attrs: Any) -> None:
+    import types
+
+    module = types.ModuleType(name)
+    for key, value in attrs.items():
+        setattr(module, key, value)
+    monkeypatch.setitem(sys.modules, name, module)
+
+
+def _bottle_row() -> str:
+    return next(r for r in diag.collect_runtime_versions() if r.startswith("  bottle "))
+
+
+def test_runtime_versions_read_bottle_from_the_dist_metadata_where_there_is_some() -> None:
+    assert _bottle_row() == f"  {'bottle':<29}{importlib.metadata.version('bottle')}"
+
+
+def test_runtime_versions_read_the_loaded_module_without_dist_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    _no_dist(monkeypatch)
+    _fake_module(monkeypatch, "bottle", __version__="1.2.3")
+    assert _bottle_row() == f"  {'bottle':<29}1.2.3"
+
+
+@pytest.mark.parametrize("version", [None, "", 123, True])
+def test_runtime_versions_ignore_an_unusable_module_version(monkeypatch: pytest.MonkeyPatch, version: Any) -> None:
+    _no_dist(monkeypatch)
+    _fake_module(monkeypatch, "bottle", __version__=version)
+    assert _bottle_row() == f"  {'bottle':<29}[not installed]"
+
+
+def test_runtime_versions_report_a_module_that_is_not_there(monkeypatch: pytest.MonkeyPatch) -> None:
+    _no_dist(monkeypatch)
+    monkeypatch.setitem(sys.modules, "bottle", None)
+    assert _bottle_row() == f"  {'bottle':<29}[not installed]"
+
+
+def test_runtime_versions_name_bottle_and_psutil_in_a_frozen_app(monkeypatch: pytest.MonkeyPatch) -> None:
+    import bottle
+    import psutil
+
+    _no_dist(monkeypatch)
+    rows = diag.collect_runtime_versions()
+    assert f"  {'bottle':<29}{bottle.__version__}" in rows
+    assert f"  {'psutil':<29}{psutil.__version__}" in rows
+
+
+def _gstreamer_row(rows: list[str]) -> str:
+    return next(r for r in rows if r.startswith("  GStreamer "))
+
+
+def _fake_gst(monkeypatch: pytest.MonkeyPatch, **attrs: Any) -> None:
+    from types import SimpleNamespace
+
+    import gi.repository
+
+    monkeypatch.setattr(gi.repository, "Gst", SimpleNamespace(**attrs), raising=False)
+
+
+def test_runtime_versions_read_gstreamer_from_the_cli_where_there_is_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delitem(sys.modules, "gi.repository.Gst", raising=False)
+    monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (0, "gst-launch-1.0 version 1.22.0\nGStreamer 1.22.0"))
+    row = _gstreamer_row(diag.collect_runtime_versions())
+    assert row == "  GStreamer                    gst-launch-1.0 version 1.22.0"
+
+
+def test_runtime_versions_read_gstreamer_from_the_loaded_library_without_the_cli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delitem(sys.modules, "gi.repository.Gst", raising=False)
+    monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (-1, "[unavailable: gst-launch-1.0 not found]"))
+    _fake_gst(monkeypatch, version_string=lambda: "GStreamer 1.24.9")
+    row = _gstreamer_row(diag.collect_runtime_versions())
+    assert row == "  GStreamer                    GStreamer 1.24.9 (loaded library)"
+
+
+def test_runtime_versions_prefer_the_gstreamer_library_already_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    ran: list[list[str]] = []
+    monkeypatch.setitem(sys.modules, "gi.repository.Gst", SimpleNamespace(version_string=lambda: "GStreamer 1.26.0"))
+    monkeypatch.setattr(diag, "_run", lambda cmd, **_k: ran.append(cmd) or (0, "gst-launch-1.0 version 1.22.0"))
+    row = _gstreamer_row(diag.collect_runtime_versions())
+    assert row == "  GStreamer                    GStreamer 1.26.0 (loaded library)"
+    assert ["gst-launch-1.0", "--version"] not in ran
+
+
+def test_runtime_versions_fall_back_to_the_cli_when_the_loaded_gstreamer_cannot_say(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    def _broken() -> str:
+        raise RuntimeError("no version")
+
+    monkeypatch.setitem(sys.modules, "gi.repository.Gst", SimpleNamespace(version_string=_broken))
+    monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (0, "gst-launch-1.0 version 1.22.0"))
+    assert (
+        _gstreamer_row(diag.collect_runtime_versions())
+        == "  GStreamer                    gst-launch-1.0 version 1.22.0"
+    )
+
+
+def test_runtime_versions_report_a_failing_ndi_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openfollow.video.inputs import ndi
+
+    def _broken() -> str:
+        raise OSError("lookup failed")
+
+    monkeypatch.setattr(diag, "_loaded_images", lambda: [])
+    monkeypatch.setattr(ndi, "_find_ndi_library", _broken)
+    assert _libndi_row() == "  libndi                       [unavailable: OSError]"
+
+
+def test_runtime_versions_report_gstreamer_unavailable_with_neither(monkeypatch: pytest.MonkeyPatch) -> None:
+    import gi
+
+    monkeypatch.delitem(sys.modules, "gi.repository.Gst", raising=False)
+    monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (-1, "[unavailable: gst-launch-1.0 not found]"))
+    monkeypatch.setattr(gi, "require_version", lambda *_a, **_k: (_ for _ in ()).throw(ValueError("no Gst")))
+    assert _gstreamer_row(diag.collect_runtime_versions()) == "  GStreamer                    [unavailable]"
+
+
+def _libndi_row() -> str:
+    return next(r for r in diag.collect_runtime_versions() if r.startswith("  libndi "))
+
+
+@pytest.mark.parametrize(
+    ("images", "found", "expected"),
+    [
+        (["/usr/lib/libc.so.6", "/usr/lib/libndi.so.6"], None, "loaded (/usr/lib/libndi.so.6)"),
+        (["/usr/lib/libndi_advanced.so.6"], None, "loaded (/usr/lib/libndi_advanced.so.6)"),
+        (["/usr/lib/libc.so.6"], "/usr/local/lib/libndi.so", "present (/usr/local/lib/libndi.so), not loaded"),
+        (["/usr/lib/libc.so.6", "/opt/libndifoo.so"], None, "[not present]"),
+    ],
+)
+def test_runtime_versions_prefer_the_loaded_libndi(
+    monkeypatch: pytest.MonkeyPatch, images: list[str], found: str | None, expected: str
+) -> None:
+    from openfollow.video.inputs import ndi
+
+    monkeypatch.setattr(diag, "_loaded_images", lambda: images)
+    monkeypatch.setattr(ndi, "_find_ndi_library", lambda: found)
+    assert _libndi_row() == f"  libndi                       {expected}"
+
+
+def test_runtime_versions_fall_back_to_the_ndi_lookup_when_the_image_list_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openfollow.video.inputs import ndi
+
+    monkeypatch.setattr(diag, "_loaded_images", lambda: (_ for _ in ()).throw(OSError("no maps")))
+    monkeypatch.setattr(ndi, "_find_ndi_library", lambda: None)
+    assert _libndi_row() == "  libndi                       [not present]"
+
+
+def test_runtime_versions_find_libndi_in_the_dyld_images_on_macos(monkeypatch: pytest.MonkeyPatch) -> None:
+    import ctypes
+
+    images = [b"/usr/lib/libSystem.B.dylib", None, b"/Applications/OpenFollow.app/Contents/Frameworks/libndi.dylib"]
+
+    class _Fn:
+        def __init__(self, fn: Any) -> None:
+            self._fn = fn
+
+        def __call__(self, *args: Any) -> Any:
+            return self._fn(*args)
+
+    class _Libc:
+        _dyld_image_count = _Fn(lambda: len(images))
+        _dyld_get_image_name = _Fn(lambda i: images[i])
+
+    monkeypatch.setattr(diag.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(ctypes, "CDLL", lambda _name: _Libc())
+    assert (
+        _libndi_row()
+        == "  libndi                       loaded (/Applications/OpenFollow.app/Contents/Frameworks/libndi.dylib)"
+    )
+
+
+def test_runtime_versions_find_libndi_in_the_process_maps_on_linux(monkeypatch: pytest.MonkeyPatch) -> None:
+    maps = (
+        "7f00-7f01 r--p 00000000 08:01 1 /usr/lib/libndi.so.6\n"
+        "7f01-7f02 r-xp 00001000 08:01 1 /usr/lib/libndi.so.6\n"
+        "7f02-7f03 rw-p 00000000 00:00 0\n"
+        "7f03-7f04 r--p 00000000 08:01 2 /usr/lib/libc.so.6\n"
+    )
+    real_read_text = Path.read_text
+
+    def _read_text(self: Path, *args: Any, **kwargs: Any) -> str:
+        return maps if str(self) == "/proc/self/maps" else real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(diag.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(Path, "read_text", _read_text)
+    assert _libndi_row() == "  libndi                       loaded (/usr/lib/libndi.so.6)"
+
+
+def test_runtime_versions_without_a_readable_maps_file_ask_the_ndi_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _unreadable(self: Path, *_a: Any, **_k: Any) -> str:
+        raise OSError(2, "No such file")
+
+    from openfollow.video.inputs import ndi
+
+    monkeypatch.setattr(diag.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(Path, "read_text", _unreadable)
+    monkeypatch.setattr(ndi, "_find_ndi_library", lambda: None)
+    assert _libndi_row() == "  libndi                       [not present]"
+
+
+def test_collect_video_capability_names_the_videotoolbox_decoders(monkeypatch: pytest.MonkeyPatch) -> None:
+    """On a Mac decodebin picks VideoToolbox; the list must show it beside the software decoder."""
+    from types import SimpleNamespace
+
+    present = {"vtdec_hw": 264, "vtdec": 256, "avdec_h264": 256}
+    _fake_gst(
+        monkeypatch,
+        init=lambda _args: None,
+        Rank=SimpleNamespace(NONE=0),
+        ElementFactory=SimpleNamespace(
+            find=lambda name: SimpleNamespace(get_rank=lambda: present[name]) if name in present else None
+        ),
+    )
+    assert diag.collect_video_capability()[-1] == "  Video decoders:       vtdec_hw, vtdec, avdec_h264"
+
+
+def test_system_health_leaves_the_pi_throttling_probe_out_on_macos(monkeypatch: pytest.MonkeyPatch) -> None:
+    ran: list[list[str]] = []
+    monkeypatch.setattr(diag.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(diag, "_run", lambda cmd, **_k: ran.append(cmd) or (-1, "[unavailable: x not found]"))
+    rows = diag.collect_system_health()
+    assert not any(r.lstrip().startswith("throttling") for r in rows)
+    assert ["vcgencmd", "get_throttled"] not in ran
+
+
+def test_system_health_keeps_the_throttling_row_on_linux(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(diag.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (0, "throttled=0x0"))
+    rows = diag.collect_system_health()
+    assert f"  throttling                   {diag.decode_throttled('throttled=0x0')}" in rows
+
+
+@pytest.mark.parametrize("sysname", ["Darwin", "Windows"])
+def test_device_permissions_are_not_applicable_off_linux(monkeypatch: pytest.MonkeyPatch, sysname: str) -> None:
+    asked: list[bool] = []
+
+    def _states() -> dict[str, str]:
+        asked.append(True)
+        return {"system.set_clock": "needs_password"}
+
+    monkeypatch.setattr(diag.platform, "system", lambda: sysname)
+    rows = diag.collect_device_permissions(diag.DiagnosticsProviders(privilege_states=_states))
+    assert rows == ["  [not applicable: the privilege grants are sudo rules on Linux]"]
+    assert asked == []
+
+
+_HOST_USB_JSON = """{
+  "SPUSBDataType": [],
+  "SPUSBHostDataType": [
+    {"_name": "USB31Bus", "_items": [
+      {"_name": "USB3.1 Hub", "USBDeviceKeyVendorID": "0x05E3", "USBDeviceKeyProductID": "0x0612",
+       "USBDeviceKeyLinkSpeed": "5 Gb/s", "USBDeviceKeyVendorName": "GenesysLogic", "_items": [
+        {"_name": "MIDI Mix", "USBDeviceKeyVendorID": "0x09E8", "USBDeviceKeyPID": "0x0031",
+         "USBDeviceKeyLinkSpeed": "12 Mb/s", "USBDeviceKeyVendorName": "AKAI Pro",
+         "USBDeviceKeySerialNumber": "A1"}
+      ]}
+    ]}
+  ]
+}"""
+
+
+def test_collect_usb_devices_macos_reads_the_macos_15_host_data_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    asked: list[list[str]] = []
+    monkeypatch.setattr(diag, "_run", lambda cmd, **_k: asked.append(cmd) or (0, _HOST_USB_JSON))
+    devices = diag.collect_usb_devices_macos()
+    assert asked == [["system_profiler", "SPUSBDataType", "SPUSBHostDataType", "-json"]]
+    assert devices == [
+        diag.UsbDevice(
+            vid="05e3", pid="0612", speed="5 Gb/s", name="USB3.1 Hub", manufacturer="GenesysLogic", is_hub=True
+        ),
+        diag.UsbDevice(vid="09e8", pid="0031", speed="12 Mb/s", name="MIDI Mix", manufacturer="AKAI Pro", serial="A1"),
+    ]
+
+
+def test_collect_usb_devices_macos_prefers_the_classic_listing_where_it_has_devices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both data types can list the same devices; one listing, never both."""
+    import json as json_module
+
+    data = json_module.loads(_HOST_USB_JSON)
+    data["SPUSBDataType"] = [
+        {"_name": "USB 3.1 Bus", "_items": [{"_name": "Webcam", "vendor_id": "0x046d", "product_id": "0x0892"}]}
+    ]
+    monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (0, json_module.dumps(data)))
+    assert [d.name for d in diag.collect_usb_devices_macos() or []] == ["Webcam"]
+
+
+@pytest.mark.parametrize("payload", ["[]", '"text"', "{}", '{"SPUSBThunderboltDataType": []}'])
+def test_collect_usb_devices_macos_reads_a_listing_without_usb_as_a_failure(
+    monkeypatch: pytest.MonkeyPatch, payload: str
+) -> None:
+    monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (0, payload))
+    assert diag.collect_usb_devices_macos() is None
+
+
+def test_collect_usb_devices_macos_skips_entries_that_are_not_buses(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (0, '{"SPUSBHostDataType": ["not a bus"]}'))
+    assert diag.collect_usb_devices_macos() == []
+
+
+def test_collect_usb_devices_macos_asks_the_older_data_type_alone_when_both_fail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json as json_module
+
+    asked: list[list[str]] = []
+    older = json_module.dumps(
+        {"SPUSBDataType": [{"_name": "Bus", "_items": [{"_name": "Webcam", "vendor_id": "0x046d"}]}]}
+    )
+
+    def run(cmd: list[str], **_k: Any) -> tuple[int, str]:
+        asked.append(cmd)
+        return (1, "unknown data type") if "SPUSBHostDataType" in cmd else (0, older)
+
+    monkeypatch.setattr(diag, "_run", run)
+    assert [d.name for d in diag.collect_usb_devices_macos() or []] == ["Webcam"]
+    assert asked == [
+        ["system_profiler", "SPUSBDataType", "SPUSBHostDataType", "-json"],
+        ["system_profiler", "SPUSBDataType", "-json"],
+    ]
+
+
+def test_collect_usb_lists_macos_15_devices_in_the_table(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(diag.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (0, _HOST_USB_JSON))
+    joined = "\n".join(diag.collect_usb(diag.DiagnosticsProviders(midi_port_names=lambda: ["MIDI Mix"])))
+    assert "09e8:0031" in joined
+    assert "MIDI: MIDI Mix" in joined

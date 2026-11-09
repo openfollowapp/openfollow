@@ -636,8 +636,6 @@ window.openfollowUploadUpdate = async function (input) {
         <h2>Software Update</h2>
     </div>
 
-    <p class="field-note">Installed: v{{current_version}}</p>
-
     <div class="notice" role="status">
         <div>Version {{latest_version}} is available.</div>
         <div class="notice-sub"><a href="{{update_release_url}}" target="_blank" rel="noopener noreferrer">Download it from the release page</a></div>

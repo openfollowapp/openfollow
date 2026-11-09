@@ -3462,6 +3462,8 @@ class AppRuntimeServices:
             "dhcp_manual": "DHCP with manual address",
             "static": "Static",
         }.get(state.ipv4.method.value, state.ipv4.method.value)
+        if not adapter.reports_ipv4_method():
+            method_label = "Unknown"
         lease = state.lease
         # Pre-format the dotted subnet mask and lease label server-side
         # so the template doesn't need to import network helpers.
@@ -3511,6 +3513,8 @@ class AppRuntimeServices:
             "writable": adapter.is_writable(),
             "backend": adapter.backend_name,
         }
+        if not adapter.reports_ipv4_method():
+            base["method_known"] = False
         if not interfaces:
             return base
         chosen_name = iface if iface in names else None

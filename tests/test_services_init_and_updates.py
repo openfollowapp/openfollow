@@ -1401,7 +1401,10 @@ class TestInitWebServer:
         services._snapshot_provider = SimpleNamespace(get_snapshot=lambda: None)
         reads: list[int] = []
         services._network_adapter = SimpleNamespace(
-            read_network=lambda: reads.append(1) or NetworkReading(), is_writable=lambda: False, backend_name="fake"
+            read_network=lambda: reads.append(1) or NetworkReading(),
+            is_writable=lambda: False,
+            reports_ipv4_method=lambda: True,
+            backend_name="fake",
         )
 
         services.init_web_server()

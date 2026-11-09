@@ -1054,6 +1054,11 @@ def _startup_settings_supported() -> bool:
     return sys.platform.startswith("linux")
 
 
+def _network_set_in_system_settings() -> bool:
+    """Whether this host's network is set in the OS's own settings, never by OpenFollow (macOS)."""
+    return sys.platform == "darwin"
+
+
 def _page_update_context(server: ConfigWebServer) -> dict[str, Any]:
     """base.tpl update context: the footer "Update available" flag and the
     What's new step an in-app update ends in.
@@ -6740,6 +6745,10 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
                     # the interface's state.
                     row["entered"] = {key: net[key] for key in ("method", "address", "subnet_mask", "router", "dns")}
                 break
+        if not cfg.get("method_known", True):
+            for row in net["iface_rows"]:
+                row["method_label"] = "Unknown"
+        net["system_settings"] = _network_set_in_system_settings()
         return net
 
     def _station_picker(

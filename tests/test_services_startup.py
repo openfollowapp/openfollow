@@ -312,6 +312,50 @@ def test_network_state_provider_returns_full_state(monkeypatch) -> None:
     assert snap["backend"] == "fake-dhcpcd"
 
 
+class _AssumedDhcpAdapter(_ReadOnlyAdapter):
+    """One interface on DHCP, from a backend that may or may not have read that."""
+
+    backend_name = "fake"
+
+    def __init__(self, *, reads_method: bool) -> None:
+        self._reads_method = reads_method
+
+    def list_interfaces(self):
+        from openfollow.network.adapter import NetworkInterface
+
+        return [NetworkInterface(name="en0", mac=None, kind=None, is_up=True)]
+
+    def get_state(self, iface):
+        from openfollow.network.adapter import Ipv4Config, Ipv4Method, NetworkInterface, NetworkState
+
+        return NetworkState(
+            interface=NetworkInterface(name=iface, mac=None, kind=None, is_up=True),
+            ipv4=Ipv4Config(method=Ipv4Method.DHCP, address="192.0.2.10", prefix=24),
+            lease=None,
+        )
+
+    def reports_ipv4_method(self) -> bool:
+        return self._reads_method
+
+
+@pytest.mark.parametrize(("reads_method", "label"), [(True, "DHCP"), (False, "Unknown")])
+def test_network_state_provider_names_an_assumed_method_unknown(monkeypatch, reads_method: bool, label: str) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._network_adapter = _AssumedDhcpAdapter(reads_method=reads_method)
+    assert services._network_state_provider()["method"] == label
+
+
+def test_network_config_provider_flags_an_assumed_method_only(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._network_adapter = _AssumedDhcpAdapter(reads_method=True)
+    assert "method_known" not in services._network_config_provider()
+    services._network_adapter = _AssumedDhcpAdapter(reads_method=False)
+    services._forget_network_reading()
+    snapshot = services._network_config_provider()
+    assert snapshot["method_known"] is False
+    assert snapshot["method"] == "dhcp"
+
+
 def test_network_state_provider_filters_loopback(monkeypatch) -> None:
     """The ``_network_state_provider`` must skip loopback and pick the first real
     ``is_up`` interface to surface the correct device address in the web Overview."""

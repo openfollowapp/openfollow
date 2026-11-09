@@ -18,10 +18,16 @@ One row per adapter:
 - **Name** – your label, with the interface name and adapter underneath.
 - **Dot** – green: up with an address. Grey: none, or not plugged in.
 - **Address** – with its prefix, or `(no address)`.
-- **Method tag** – `DHCP`, `DHCP + manual` or `Static`; **VLAN n** marks a VLAN and its ID.
+- **Method tag** – `DHCP`, `DHCP + manual` or `Static` (`Unknown` on a Mac); **VLAN n** marks a VLAN and its ID.
 - **This session** – this adapter answers your browser; changing its addressing drops this page.
 
 An unplugged adapter with saved settings stays listed as **Not connected**. Open a row to see its settings. **Scan** re-reads the adapter list.
+
+### On a Mac
+
+Read only.
+
+The list shows the adapters in **System Settings › Network**, cable or not, and any other adapter with an address; macOS's own internal links (AirDrop, hotspot, VPN tunnels) are left out. The method is not read, so it shows `Unknown`. Nothing here can change a Mac's network settings: change them in System Settings.
 
 ## Adapter
 

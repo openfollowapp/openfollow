@@ -241,6 +241,10 @@ class NetworkAdapter(ABC):
         """Return True if this adapter can mutate host state."""
         return True
 
+    def reports_ipv4_method(self) -> bool:
+        """Whether ``get_state``'s ``ipv4.method`` is read from the host rather than assumed."""
+        return True
+
     def set_dhcp_fqdn(self, fqdn: str, *, reconnect: bool = True) -> ApplyResult:
         """Send ``fqdn`` as the DHCP client FQDN (option 81) on every interface, or the
         hostname again when blank, and reconnect each one so its DHCP server sees it now.

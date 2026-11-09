@@ -89,8 +89,16 @@ class FakeNetwork:
         # real lookup can never report one; the fixture patches it to this.
         self.session_iface = ""
         self.session_address = ""
+        # False: a backend that assumes the method rather than reading it.
+        self.method_known = True
 
     def config_provider(self, iface: str | None = None) -> dict | None:
+        snapshot = self._config_snapshot(iface)
+        if snapshot is not None and not self.method_known:
+            snapshot["method_known"] = False
+        return snapshot
+
+    def _config_snapshot(self, iface: str | None) -> dict | None:
         if not self.interfaces:
             return {"interfaces": [], "writable": self.writable, "backend": "fake"}
         if self.omit_active:
@@ -838,6 +846,51 @@ def test_read_only_host_offers_no_edit_at_all(net_server) -> None:
     # Read-only mode bar points the operator at the on-screen menu instead.
     assert 'class="net-mode-pill readonly"' in body
     assert "on-screen Settings menu" in body
+
+
+def test_read_only_linux_host_keeps_its_banner(net_server) -> None:
+    fake, base = net_server
+    fake.writable = False
+    _, body = _get(base, "/section/network/status")
+    assert "how to enable web editing" in body
+    assert "System Settings" not in body
+
+
+def test_read_only_mac_points_at_system_settings(net_server, monkeypatch) -> None:
+    """On a Mac the Operator Screen cannot change the network either, and nothing enables web editing."""
+    monkeypatch.setattr("openfollow.web.routes._network_set_in_system_settings", lambda: True)
+    fake, base = net_server
+    fake.writable = False
+    _, body = _get(base, "/section/network/status")
+    bar = _outer_html(body, 'class="net-mode-bar readonly"')
+    assert "Change them in System Settings › Network." in bar
+    assert "on-screen Settings menu" not in bar
+    assert "enable web editing" not in bar
+
+
+def _method_badges(body: str) -> dict[str, str]:
+    badges = {}
+    for name in ("eth0", "wlan0"):
+        summary = body.split(f'data-adv-key="net-iface-{name}"', 1)[1].split("</summary>", 1)[0]
+        badges[name] = summary.split('<span class="net-iface-method-badge">', 1)[1].split("<", 1)[0]
+    return badges
+
+
+def test_a_backend_that_reads_the_method_labels_each_row_with_it(net_server) -> None:
+    fake, base = net_server
+    fake.writable = False
+    _, body = _get(base, "/section/network/status")
+    assert _method_badges(body) == {"eth0": "DHCP", "wlan0": "Static"}
+
+
+@pytest.mark.parametrize("provide_rows", [True, False], ids=["rows", "synthesised"])
+def test_a_backend_that_cannot_read_the_method_labels_it_unknown(net_server, provide_rows: bool) -> None:
+    fake, base = net_server
+    fake.writable = False
+    fake.method_known = False
+    fake.provide_rows = provide_rows
+    _, body = _get(base, "/section/network/status")
+    assert _method_badges(body) == {"eth0": "Unknown", "wlan0": "Unknown"}
 
 
 @pytest.mark.parametrize(

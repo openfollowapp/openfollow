@@ -43,15 +43,17 @@ def main(*, log_file: Path | None = None) -> None:
     """Run the app, restarting it after a crash. ``log_file`` replaces stderr for the log."""
     config_path = sys.argv[1] if len(sys.argv) > 1 else "config.toml"
 
-    # Configure logging with in-memory ring fallback for diagnostics.
-    log_ring = setup_logging(level=logging.INFO, log_file=log_file)
-
+    # Before logging: the running copy owns the log file, and a rollover here would move it away from it.
     try:
         instance_lock = acquire_instance_lock(config_path)
     except AlreadyRunningError as exc:
+        setup_logging(level=logging.INFO)
         logger.error("%s Not starting a second copy.", exc)
         _alert_already_running()
         sys.exit(1)
+
+    # Configure logging with in-memory ring fallback for diagnostics.
+    log_ring = setup_logging(level=logging.INFO, log_file=log_file)
 
     restart_times: list[float] = []
 

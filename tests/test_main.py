@@ -373,12 +373,17 @@ def test_a_second_copy_on_the_same_config_exits_without_starting(
     monkeypatch.setattr(main_module.sys, "platform", platform)
     alert_calls: list[list[str]] = []
     monkeypatch.setattr(main_module.subprocess, "run", lambda argv, **kw: alert_calls.append(argv))
+    logging_calls: list[dict] = []
+    monkeypatch.setattr(main_module, "setup_logging", lambda **kw: logging_calls.append(kw))
 
     with pytest.raises(SystemExit) as excinfo:
-        main_module.main()
+        main_module.main(log_file=tmp_path / "openfollow.log")
 
     assert excinfo.value.code == 1
     assert call_log == []
+    # The running copy's log file is never opened, so a rollover cannot move it away from it.
+    assert logging_calls == [{"level": main_module.logging.INFO}]
+    assert not (tmp_path / "openfollow.log").exists()
     assert len(alert_calls) == alerts
     if alerts:
         assert alert_calls[0][0] == "osascript"

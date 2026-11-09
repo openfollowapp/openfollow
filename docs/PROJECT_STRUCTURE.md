@@ -4,6 +4,7 @@
 openfollow/              # Single unified package
 ├── __init__.py          # Exports OpenFollowApp
 ├── main.py              # CLI entry point
+├── instance_lock.py     # One running station per config file (flock beside the config)
 ├── app.py               # Main application class + event loop
 ├── configuration.py     # Config model, TOML I/O, hot-reload logic
 ├── config_restore.py    # Lists and reads back the station's own settings backups for a web restore

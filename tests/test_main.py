@@ -117,6 +117,7 @@ def patched_main(monkeypatch):
             "setup_logging",
             lambda **kw: None,
         )
+        monkeypatch.setattr(main_module, "acquire_instance_lock", lambda path: None)
         return call_log, clock, fake_app
 
     return _install
@@ -356,3 +357,80 @@ def test_main_logs_to_stderr_unless_handed_a_log_file(patched_main, monkeypatch,
     main_module.main(log_file=tmp_path / "openfollow.log")
 
     assert seen == [None, tmp_path / "openfollow.log"]
+
+
+@pytest.mark.parametrize(("platform", "alerts"), [("darwin", 1), ("linux", 0)])
+def test_a_second_copy_on_the_same_config_exits_without_starting(
+    patched_main, monkeypatch, tmp_path, platform, alerts
+) -> None:
+    from openfollow.instance_lock import acquire_instance_lock
+
+    config = tmp_path / "config.toml"
+    held = acquire_instance_lock(config)
+    assert held is not None
+    call_log, _clock, _fake_app = patched_main(behaviours=[], times=[0.0], argv=["openfollow", str(config)])
+    monkeypatch.setattr(main_module, "acquire_instance_lock", acquire_instance_lock)
+    monkeypatch.setattr(main_module.sys, "platform", platform)
+    alert_calls: list[list[str]] = []
+    monkeypatch.setattr(main_module.subprocess, "run", lambda argv, **kw: alert_calls.append(argv))
+
+    with pytest.raises(SystemExit) as excinfo:
+        main_module.main()
+
+    assert excinfo.value.code == 1
+    assert call_log == []
+    assert len(alert_calls) == alerts
+    if alerts:
+        assert alert_calls[0][0] == "osascript"
+    held.close()
+
+
+def test_an_alert_that_cannot_open_still_exits(patched_main, monkeypatch, tmp_path) -> None:
+    from openfollow.instance_lock import acquire_instance_lock
+
+    config = tmp_path / "config.toml"
+    held = acquire_instance_lock(config)
+    patched_main(behaviours=[], times=[0.0], argv=["openfollow", str(config)])
+    monkeypatch.setattr(main_module, "acquire_instance_lock", acquire_instance_lock)
+    monkeypatch.setattr(main_module.sys, "platform", "darwin")
+
+    def _no_osascript(argv, **kw):
+        raise FileNotFoundError("osascript")
+
+    monkeypatch.setattr(main_module.subprocess, "run", _no_osascript)
+
+    with pytest.raises(SystemExit):
+        main_module.main()
+    held.close()
+
+
+def test_the_lock_is_held_for_the_whole_run(patched_main, monkeypatch, tmp_path) -> None:
+    from openfollow.instance_lock import AlreadyRunningError, acquire_instance_lock
+
+    config = tmp_path / "config.toml"
+    seen: list[bool] = []
+
+    def _probe() -> None:
+        try:
+            other = acquire_instance_lock(config)
+        except AlreadyRunningError:
+            seen.append(True)
+        else:
+            seen.append(False)
+            if other is not None:
+                other.close()
+
+    call_log, _clock, _fake_app = patched_main(
+        behaviours=[lambda: (_ for _ in ()).throw(RuntimeError("boom")), _probe],
+        times=[0.0, 1.0, 2.0],
+        argv=["openfollow", str(config)],
+    )
+    monkeypatch.setattr(main_module, "acquire_instance_lock", acquire_instance_lock)
+
+    main_module.main()
+
+    assert call_log == [str(config), str(config)]
+    assert seen == [True]
+    again = acquire_instance_lock(config)
+    assert again is not None
+    again.close()

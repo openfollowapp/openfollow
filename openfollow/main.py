@@ -7,11 +7,13 @@
 from __future__ import annotations
 
 import logging
+import subprocess  # nosec B404
 import sys
 import time
 from pathlib import Path
 
 from openfollow import OpenFollowApp
+from openfollow.instance_lock import AlreadyRunningError, acquire_instance_lock
 from openfollow.logging_setup import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -20,6 +22,22 @@ logger = logging.getLogger(__name__)
 _MAX_RESTARTS = 5
 _RESTART_WINDOW = 300  # seconds
 
+_ALREADY_RUNNING_ALERT = (
+    'display alert "OpenFollow is already running" '
+    'message "Quit the open copy of OpenFollow before starting another one." '
+    "as critical giving up after 60"
+)
+
+
+def _alert_already_running() -> None:
+    """Tell a Finder-launched second copy's operator why nothing opens."""
+    if sys.platform != "darwin":
+        return
+    try:
+        subprocess.run(["osascript", "-e", _ALREADY_RUNNING_ALERT], check=False, timeout=90)  # nosec B603 B607
+    except (OSError, subprocess.SubprocessError):
+        logger.debug("Could not show the already-running alert.", exc_info=True)
+
 
 def main(*, log_file: Path | None = None) -> None:
     """Run the app, restarting it after a crash. ``log_file`` replaces stderr for the log."""
@@ -27,6 +45,13 @@ def main(*, log_file: Path | None = None) -> None:
 
     # Configure logging with in-memory ring fallback for diagnostics.
     log_ring = setup_logging(level=logging.INFO, log_file=log_file)
+
+    try:
+        instance_lock = acquire_instance_lock(config_path)
+    except AlreadyRunningError as exc:
+        logger.error("%s Not starting a second copy.", exc)
+        _alert_already_running()
+        sys.exit(1)
 
     restart_times: list[float] = []
 
@@ -83,6 +108,8 @@ def main(*, log_file: Path | None = None) -> None:
                     app._runtime_services.shutdown()
                 except Exception:
                     logger.exception("Error tearing down the exited instance.")
+
+    del instance_lock  # held until here, across every restart
 
 
 if __name__ == "__main__":

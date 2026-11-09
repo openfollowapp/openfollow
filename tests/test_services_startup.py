@@ -3808,6 +3808,33 @@ def test_what_dhcp_could_not_do_is_reported_for_the_configured_name_only(fqdn_se
     assert services.station_fqdn_problems() == ()
 
 
+@pytest.mark.parametrize(
+    ("adapter", "fqdn", "problems"),
+    [
+        (_FqdnAdapter(writable=False), "of-1.stage.example.com", (services_module.FQDN_NOT_SENT,)),
+        (None, "of-1.stage.example.com", (services_module.FQDN_NOT_SENT,)),
+        (_FqdnAdapter(writable=False), "", ()),
+        (_FqdnAdapter(writable=True), "of-1.stage.example.com", ()),
+    ],
+    ids=["read-only", "no-backend", "read-only-no-name", "writable"],
+)
+def test_a_station_that_cannot_send_its_name_says_so(fqdn_services, adapter, fqdn: str, problems) -> None:
+    """A Mac stores the name but sends it nowhere; saying nothing reads as sent."""
+    services, _ = fqdn_services
+    services._network_adapter = adapter
+    services._app._config.station_fqdn = fqdn
+    assert services.station_fqdn_problems() == problems
+
+
+def test_a_save_on_a_read_only_station_keeps_its_caution(fqdn_services) -> None:
+    services, _ = fqdn_services
+    adapter = services._network_adapter = _FqdnAdapter(writable=False)
+    services._app._config.station_fqdn = "of-1.stage.example.com"
+    services.apply_station_fqdn_change("of-1.stage.example.com").join(timeout=5)
+    assert adapter.sent == []
+    assert services.station_fqdn_problems() == (services_module.FQDN_NOT_SENT,)
+
+
 def test_a_web_change_holds_the_lock_the_operator_screen_takes(monkeypatch) -> None:
     """The Operator Screen changes the network inside ``network_change``, so it and a
     web apply exclude each other only if both hold the same lock."""

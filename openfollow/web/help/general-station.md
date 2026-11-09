@@ -10,7 +10,7 @@ This station's name, web access and display units, plus the settings you set onc
 
 **mDNS address** – the station's `.local` name, which computers on the same network open it by. Read only. On a Raspberry Pi it follows the station name; on a Mac it is the Local hostname set under System Settings → General → Sharing.
 
-**Custom domain name (FQDN)** – this station's name on a venue network with its own DNS, such as `of-1.stage.example.com`. It has to resolve to this station in the venue's DNS. The Operator Screen then shows it in place of the `.local` name, which keeps working. **Saving a changed name reconnects every network interface**: each link drops for a few seconds. **Remove FQDN** on the Operator Screen's Network screen clears it.
+**Custom domain name (FQDN)** – this station's name on a venue network with its own DNS, such as `of-1.stage.example.com`. It has to resolve to this station in the venue's DNS. The Operator Screen then shows it in place of the `.local` name, which keeps working. **Saving a changed name reconnects every network interface**: each link drops for a few seconds. A station that cannot send the name by DHCP, such as a Mac, says so under the field: add it to the venue's DNS by hand. **Remove FQDN** on the Operator Screen's Network screen clears it.
 
 **Autostart** – whether OpenFollow starts when the station powers on. Switching it off leaves the running station untouched, but this web UI is gone after the next reboot, and switching it back on takes SSH or a keyboard on the station. Absent on macOS.
 

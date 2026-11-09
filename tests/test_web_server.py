@@ -9324,6 +9324,19 @@ def test_what_dhcp_could_not_do_is_shown_under_the_custom_domain_name(live_serve
     assert ("Profile &#039;Wired connection 1&#039; was not updated." in row) is shown
 
 
+def test_a_name_the_station_cannot_send_is_a_caution_under_the_custom_domain_name(live_server) -> None:
+    from openfollow.services import FQDN_NOT_SENT
+
+    server, base = live_server
+    save_config(AppConfig(station_fqdn="of-1.stage.example.com"), server.config_path)
+    server._station_fqdn_problems_provider = lambda: (FQDN_NOT_SENT,)
+    _, body = _get(base, "/")
+    start = body.index('id="general-station-fqdn-row"')
+    row = body[start : body.index('<div class="row">', start)]
+    notice = row[row.index('<div class="notice warning" role="status">') :]
+    assert "Sent on no interface: this station&#039;s network settings are read-only." in notice
+
+
 def test_a_failing_dhcp_problems_provider_costs_nothing(live_server) -> None:
     server, base = live_server
 

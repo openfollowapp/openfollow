@@ -6877,6 +6877,33 @@ def test_runtime_versions_prefer_the_gstreamer_library_already_loaded(monkeypatc
     assert ["gst-launch-1.0", "--version"] not in ran
 
 
+def test_runtime_versions_fall_back_to_the_cli_when_the_loaded_gstreamer_cannot_say(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    def _broken() -> str:
+        raise RuntimeError("no version")
+
+    monkeypatch.setitem(sys.modules, "gi.repository.Gst", SimpleNamespace(version_string=_broken))
+    monkeypatch.setattr(diag, "_run", lambda *_a, **_k: (0, "gst-launch-1.0 version 1.22.0"))
+    assert (
+        _gstreamer_row(diag.collect_runtime_versions())
+        == "  GStreamer                    gst-launch-1.0 version 1.22.0"
+    )
+
+
+def test_runtime_versions_report_a_failing_ndi_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    from openfollow.video.inputs import ndi
+
+    def _broken() -> str:
+        raise OSError("lookup failed")
+
+    monkeypatch.setattr(diag, "_loaded_images", lambda: [])
+    monkeypatch.setattr(ndi, "_find_ndi_library", _broken)
+    assert _libndi_row() == "  libndi                       [unavailable: OSError]"
+
+
 def test_runtime_versions_report_gstreamer_unavailable_with_neither(monkeypatch: pytest.MonkeyPatch) -> None:
     import gi
 

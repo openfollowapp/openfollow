@@ -144,12 +144,8 @@ class _NSPoint(ctypes.Structure):
     _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double)]
 
 
-class _AppKitPointerProbe:
-    """macOS: whether a mouse-down at the pointer would land on the key window.
-
-    Asked only while the Operator Screen is key, so that is its own window.
-    AppKit's hit-test sees every app's windows; GDK's sees only this app's.
-    """
+class _AppKit:
+    """libobjc with AppKit loaded, sending typed messages."""
 
     def __init__(self) -> None:
         objc = ctypes.cdll.LoadLibrary(_LIBOBJC)
@@ -159,6 +155,26 @@ class _AppKitPointerProbe:
         objc.sel_registerName.restype = ctypes.c_void_p
         objc.sel_registerName.argtypes = [ctypes.c_char_p]
         self._objc = objc
+
+    def _message(self, selector: bytes, restype: Any, *argtypes: Any) -> Callable[..., Any]:
+        # Indexing returns a new function object, so each message keeps its own C signature.
+        send = self._objc["objc_msgSend"]
+        send.restype = restype
+        send.argtypes = [ctypes.c_void_p, ctypes.c_void_p, *argtypes]
+        sel = self._objc.sel_registerName(selector)
+        return lambda receiver, *args: send(receiver, sel, *args)
+
+
+class _AppKitPointerProbe(_AppKit):
+    """macOS: whether a mouse-down at the pointer would land on the key window.
+
+    Asked only while the Operator Screen is key, so that is its own window.
+    AppKit's hit-test sees every app's windows; GDK's sees only this app's.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        objc = self._objc
         self._event = objc.objc_getClass(b"NSEvent")
         self._ns_window = objc.objc_getClass(b"NSWindow")
         application = objc.objc_getClass(b"NSApplication")
@@ -172,18 +188,75 @@ class _AppKitPointerProbe:
         self._key_window = self._message(b"keyWindow", ctypes.c_void_p)
         self._window_number = self._message(b"windowNumber", ctypes.c_long)
 
-    def _message(self, selector: bytes, restype: Any, *argtypes: Any) -> Callable[..., Any]:
-        # Indexing returns a new function object, so each message keeps its own C signature.
-        send = self._objc["objc_msgSend"]
-        send.restype = restype
-        send.argtypes = [ctypes.c_void_p, ctypes.c_void_p, *argtypes]
-        sel = self._objc.sel_registerName(selector)
-        return lambda receiver, *args: send(receiver, sel, *args)
-
     def __call__(self) -> bool:
         number = self._number_at(self._ns_window, self._mouse_location(self._event), 0)
         # With no key window the message goes to nil and answers 0, no window's number.
         return bool(number > 0 and number == self._window_number(self._key_window(self._app)))
+
+
+_NS_EVENT_TYPE_SCROLL_WHEEL = 22
+_NS_EVENT_PHASE_BEGAN = 1
+_NS_EVENT_PHASE_ENDS = 8 | 16  # Ended, Cancelled
+_MS_WRAP = 0xFFFFFFFF
+# How long after the last momentum seen a running momentum still sends scrolls.
+_MOMENTUM_LAG_MS = 250
+
+
+class _AppKitScrollMomentum(_AppKit):
+    """macOS: whether a GDK scroll event is trackpad momentum, sent after the fingers lift.
+
+    GDK keeps no scroll phase, but it translates one NSEvent per main-loop
+    pass, so the application's current event is mostly the scroll's own; the
+    GDK event's time (the NSEvent timestamp in ms) tells. While GDK's queue
+    lags, the current event is a later scroll or another event (a main-loop
+    wake-up), so each call also records the span of momentum it has seen, and
+    a scroll it cannot match is momentum when its time lies in that span.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        application = self._objc.objc_getClass(b"NSApplication")
+        if not application:
+            raise OSError("AppKit classes unavailable")
+        self._app = self._message(b"sharedApplication", ctypes.c_void_p)(application)
+        self._current_event = self._message(b"currentEvent", ctypes.c_void_p)
+        self._type = self._message(b"type", ctypes.c_ulong)
+        self._timestamp = self._message(b"timestamp", ctypes.c_double)
+        self._momentum_phase = self._message(b"momentumPhase", ctypes.c_ulong)
+        # First and last momentum time seen, and whether that momentum has not ended yet.
+        self._span: tuple[int, int, bool] | None = None
+
+    def __call__(self, event_time: int) -> bool:
+        event = self._current_event(self._app)
+        if event and self._type(event) == _NS_EVENT_TYPE_SCROLL_WHEEL:
+            stamp = int(self._timestamp(event) * 1000.0) & _MS_WRAP
+            phase = self._momentum_phase(event)
+            self._record(stamp, phase)
+            if stamp == event_time:
+                return bool(phase)
+        if self._span is None:
+            return False
+        first, last, running = self._span
+        if not _not_before(event_time, first):
+            return False
+        if running:
+            return _not_before(last + _MOMENTUM_LAG_MS, event_time)
+        return _not_before(last, event_time)
+
+    def _record(self, stamp: int, phase: int) -> None:
+        if not phase:
+            self._span = None  # fingers on the trackpad, or a wheel: no momentum runs
+            return
+        running = not phase & _NS_EVENT_PHASE_ENDS
+        if phase & _NS_EVENT_PHASE_BEGAN or self._span is None or not self._span[2]:
+            self._span = (stamp, stamp, running)
+        else:
+            self._span = (self._span[0], stamp, running)
+
+
+def _not_before(time_ms: int, other_ms: int) -> bool:
+    """Whether 32-bit wrapping ``time_ms`` is at or after ``other_ms``."""
+    return (time_ms - other_ms) & _MS_WRAP < 1 << 31
 
 
 def _pointer_probe() -> Callable[[], bool]:
@@ -194,6 +267,14 @@ def _pointer_probe() -> Callable[[], bool]:
             "Window under the pointer unknown: clicks in a window over the Operator Screen reach it", exc_info=True
         )
         return lambda: True
+
+
+def _scroll_momentum() -> Callable[[int], bool]:
+    try:
+        return _AppKitScrollMomentum()
+    except (OSError, AttributeError):
+        logger.warning("Scroll phase unknown: trackpad momentum keeps changing marker height", exc_info=True)
+        return lambda _time: False
 
 
 class GtkNativeSinkWindow:
@@ -257,6 +338,7 @@ class GtkNativeSinkWindow:
         self._scroll_is_batched = sys.platform == "darwin"
         self._pointer_device: Any = None  # lazily acquired on the first poll
         self._pointer_probe: Callable[[], bool] | None = None  # built on first use
+        self._scroll_momentum: Callable[[int], bool] | None = None  # built on first use
         self._poll_last_pos: tuple[int, int] | None = None
         # Held buttons, each with whether its press was the Operator Screen's.
         self._poll_held: dict[int, bool] = {}
@@ -743,6 +825,8 @@ class GtkNativeSinkWindow:
         if self._pointer_poll and not self._window.has_toplevel_focus():
             # macOS scrolls the window under the pointer even while another one is key.
             return True
+        if self._pointer_poll and self._is_scroll_momentum(event):
+            return True
         Gdk = self._Gdk
         ok, _dx, dy = event.get_scroll_deltas()
         if ok:
@@ -776,6 +860,14 @@ class GtkNativeSinkWindow:
         elif event.direction == Gdk.ScrollDirection.DOWN:
             self._emit("wheel", dy=-1.0)
         return True
+
+    def _is_scroll_momentum(self, event: Any) -> bool:
+        event_time = getattr(event, "time", None)
+        if not isinstance(event_time, int):
+            return False
+        if self._scroll_momentum is None:
+            self._scroll_momentum = _scroll_momentum()
+        return self._scroll_momentum(event_time)
 
     def _on_button_press(self, widget: Any, event: Any) -> bool:
         if self._pointer_poll:

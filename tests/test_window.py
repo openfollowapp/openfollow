@@ -2506,3 +2506,241 @@ class TestAppKitPointerProbe:
         load(_appkit(missing=frozenset({missing})))
         with pytest.raises(OSError, match="AppKit"):
             _AppKitPointerProbe()
+
+
+class _CurrentEvent:
+    """AppKit's current event, changed between calls the way the main loop dequeues."""
+
+    def __init__(self, *, event: Any = "scroll", kind: int = 22, timestamp: float = 12.345, phase: int = 4) -> None:
+        self.set(event=event, kind=kind, timestamp=timestamp, phase=phase)
+
+    def set(self, *, event: Any = "scroll", kind: int = 22, timestamp: float = 12.345, phase: int = 4) -> None:
+        self.event, self.kind, self.timestamp, self.phase = event, kind, timestamp, phase
+
+
+def _momentum_appkit(current: _CurrentEvent | None = None, missing=frozenset()) -> _FakeObjc:
+    current = current or _CurrentEvent()
+    return _FakeObjc(
+        {
+            b"sharedApplication": lambda: "app",
+            b"currentEvent": lambda: current.event,
+            b"type": lambda: current.kind,
+            b"timestamp": lambda: current.timestamp,
+            b"momentumPhase": lambda: current.phase,
+        },
+        missing,
+    )
+
+
+class TestAppKitScrollMomentum:
+    """GDK keeps no scroll phase, so AppKit's current event says whether a scroll is momentum."""
+
+    @pytest.fixture
+    def load(self, monkeypatch) -> Callable[[_FakeObjc], None]:
+        import ctypes
+
+        import openfollow.window as window_module
+
+        def install(objc: _FakeObjc) -> None:
+            monkeypatch.setattr(
+                ctypes.cdll, "LoadLibrary", lambda path: objc if path == window_module._LIBOBJC else object()
+            )
+
+        return install
+
+    @pytest.fixture
+    def reader(self, load) -> tuple[Any, _CurrentEvent]:
+        from openfollow.window import _AppKitScrollMomentum
+
+        current = _CurrentEvent()
+        load(_momentum_appkit(current))
+        return _AppKitScrollMomentum(), current
+
+    @pytest.mark.parametrize("phase", [1, 4, 8])
+    def test_the_scrolls_own_event_is_momentum_in_any_phase(self, reader, phase: int) -> None:
+        read, current = reader
+        current.set(timestamp=12.345, phase=phase)
+        assert read(12345) is True
+
+    def test_the_scrolls_own_event_with_the_fingers_down_is_not(self, reader) -> None:
+        read, current = reader
+        current.set(timestamp=12.345, phase=0)
+        assert read(12345) is False
+
+    @pytest.mark.parametrize("current_event", [{"event": None}, {"kind": 1}])
+    def test_with_no_momentum_seen_an_unmatched_scroll_counts(self, reader, current_event: dict[str, Any]) -> None:
+        read, current = reader
+        current.set(**current_event)
+        assert read(12345) is False
+
+    def test_a_scroll_queued_behind_momentum_it_belongs_to_is_momentum(self, reader) -> None:
+        read, current = reader
+        current.set(timestamp=1.000, phase=1)
+        assert read(1000) is True
+        current.set(timestamp=1.032, phase=4)
+        assert read(1016) is True
+
+    def test_a_finger_scroll_queued_before_the_momentum_seen_counts(self, reader) -> None:
+        read, current = reader
+        current.set(timestamp=1.032, phase=4)  # momentum first seen here, the swipe's own scrolls still queued
+        assert read(1016) is False
+
+    def test_a_wake_up_as_current_event_is_judged_by_the_momentum_seen(self, reader) -> None:
+        read, current = reader
+        current.set(timestamp=1.000, phase=1)
+        read(1000)
+        current.set(timestamp=1.032, phase=4)
+        read(1032)
+        current.set(kind=15)  # an application-defined main-loop wake-up
+        assert read(1040) is True
+        assert read(1032 + 250) is True
+        assert read(1032 + 251) is False
+        assert read(990) is False
+
+    def test_ended_momentum_covers_only_its_own_span(self, reader) -> None:
+        read, current = reader
+        current.set(timestamp=1.000, phase=1)
+        read(1000)
+        current.set(timestamp=1.100, phase=8)
+        assert read(1100) is True
+        current.set(kind=15)
+        assert read(1090) is True
+        assert read(1110) is False
+
+    def test_a_finger_scroll_ends_the_momentum_seen(self, reader) -> None:
+        read, current = reader
+        current.set(timestamp=1.000, phase=1)
+        read(1000)
+        current.set(timestamp=2.000, phase=0)
+        assert read(2000) is False
+        current.set(kind=15)
+        assert read(1050) is False
+
+    def test_new_momentum_starts_a_new_span(self, reader) -> None:
+        read, current = reader
+        current.set(timestamp=1.000, phase=1)
+        read(1000)
+        current.set(timestamp=1.100, phase=8)
+        read(1100)
+        current.set(timestamp=3.000, phase=4)  # a later swipe's momentum, its Began not seen
+        read(3000)
+        current.set(kind=15)
+        assert read(1050) is False
+        assert read(3010) is True
+
+    def test_the_timestamp_wraps_like_gdks_32_bit_time(self, reader) -> None:
+        read, current = reader
+        current.set(timestamp=(2**32 + 7) / 1000.0, phase=4)
+        assert read(7) is True
+        current.set(kind=15)
+        assert read(2**32 - 5) is False  # just before the wrap, so before the momentum seen
+        assert read(20) is True
+
+    def test_each_message_has_its_own_signature(self, load) -> None:
+        import ctypes
+
+        from openfollow.window import _AppKitScrollMomentum
+
+        objc = _momentum_appkit()
+        load(objc)
+        _AppKitScrollMomentum()(12345)
+        receiver = [ctypes.c_void_p, ctypes.c_void_p]
+        signatures = {fn.selectors[0]: (fn.restype, fn.argtypes) for fn in objc.sends}
+        assert signatures == {
+            b"sharedApplication": (ctypes.c_void_p, receiver),
+            b"currentEvent": (ctypes.c_void_p, receiver),
+            b"type": (ctypes.c_ulong, receiver),
+            b"timestamp": (ctypes.c_double, receiver),
+            b"momentumPhase": (ctypes.c_ulong, receiver),
+        }
+
+    def test_refuses_without_appkit(self, load) -> None:
+        from openfollow.window import _AppKitScrollMomentum
+
+        load(_momentum_appkit(missing=frozenset({b"NSApplication"})))
+        with pytest.raises(OSError, match="AppKit"):
+            _AppKitScrollMomentum()
+
+
+class TestScrollMomentum:
+    """Trackpad momentum after the fingers lift never changes marker height."""
+
+    @staticmethod
+    def _scroll(window, dy: float = -13.0, time: Any = 500) -> bool:
+        event = SimpleNamespace(get_scroll_deltas=lambda: (True, 0.0, dy), direction=FakeGdkScrollDirection.SMOOTH)
+        if time is not None:
+            event.time = time
+        return window._window.fire("scroll-event", event)
+
+    @staticmethod
+    def _wheel(window) -> list[dict[str, Any]]:
+        received: list[dict[str, Any]] = []
+        window.add_event_handler(received.append, "wheel")
+        return received
+
+    @pytest.fixture
+    def mac(self, window):
+        window._pointer_poll = True
+        window._scroll_is_batched = True
+        window._window.toplevel_focus = True
+        return window
+
+    def test_momentum_is_dropped_on_macos(self, mac) -> None:
+        mac._scroll_momentum = lambda time: time == 501
+        received = self._wheel(mac)
+        assert self._scroll(mac, time=500) is True
+        assert self._scroll(mac, time=501) is True
+        assert self._scroll(mac, time=502) is True
+        assert [r["dy"] for r in received] == [1.0, 1.0]
+
+    def test_linux_never_asks(self, window) -> None:
+        window._pointer_poll = False
+        window._scroll_is_batched = False
+        asked: list[int] = []
+        window._scroll_momentum = lambda time: asked.append(time) or True
+        received = self._wheel(window)
+        self._scroll(window)
+        assert asked == []
+        assert [r["dy"] for r in received] == [1.0]
+
+    @pytest.mark.parametrize("time", [None, "abc"])
+    def test_an_event_without_a_time_counts(self, mac, time: Any) -> None:
+        mac._scroll_momentum = lambda _time: True
+        received = self._wheel(mac)
+        self._scroll(mac, time=time)
+        assert [r["dy"] for r in received] == [1.0]
+
+    def test_the_phase_reader_is_built_on_first_use(self, mac, monkeypatch) -> None:
+        import openfollow.window as window_module
+
+        built: list[bool] = []
+
+        class _Reader:
+            def __init__(self) -> None:
+                built.append(True)
+
+            def __call__(self, _time: int) -> bool:
+                return False
+
+        monkeypatch.setattr(window_module, "_AppKitScrollMomentum", _Reader)
+        received = self._wheel(mac)
+        self._scroll(mac)
+        self._scroll(mac)
+        assert built == [True]
+        assert len(received) == 2
+
+    def test_without_appkit_every_scroll_counts(self, mac, monkeypatch, caplog) -> None:
+        import logging
+
+        import openfollow.window as window_module
+
+        def _unavailable() -> Any:
+            raise OSError("no AppKit")
+
+        monkeypatch.setattr(window_module, "_AppKitScrollMomentum", _unavailable)
+        received = self._wheel(mac)
+        with caplog.at_level(logging.WARNING, logger="openfollow.window"):
+            self._scroll(mac)
+            self._scroll(mac)
+        assert len(received) == 2
+        assert [r.levelname for r in caplog.records] == ["WARNING"]

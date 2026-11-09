@@ -137,7 +137,11 @@
     % if not _writable:
     <div class="net-mode-bar readonly">
         <span class="net-mode-pill readonly">Read only</span>
+        % if _net.get("system_settings"):
+        <span class="net-mode-text">OpenFollow can't change network settings on this Mac. Change them in System Settings › Network.</span>
+        % else:
         <span class="net-mode-text">Network settings can't be changed from the web on this station. Use the on-screen Settings menu, or see openfollow.app for troubleshooting and how to enable web editing.</span>
+        % end
     </div>
     % end
 

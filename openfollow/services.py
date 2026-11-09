@@ -128,6 +128,10 @@ _MOUSE3D_WEB_DETECT_BUDGET_S = 0.35
 # How long one network backend reading serves the web UI after it completes, so
 # every section one render asks for shares it.
 _NETWORK_READING_MAX_AGE_S = 1.0
+# The station FQDN caution on a host whose network backend cannot send it by DHCP.
+FQDN_NOT_SENT = (
+    "Sent on no interface: this station's network settings are read-only. Add the name to the venue's DNS by hand."
+)
 # The OSC listener binds the wildcard; the plane's address while no pin governs it.
 _OSC_LISTENER_ANY = "0.0.0.0"
 # The window hooks the GL Operator Screen needs: one to show it, the rest to fall back to Cairo.
@@ -2864,6 +2868,9 @@ class AppRuntimeServices:
 
     def station_fqdn_problems(self) -> tuple[str, ...]:
         """What the last DHCP change for the configured name could not do; empty when it did it all."""
+        adapter = getattr(self, "_network_adapter", None)
+        if self._app._config.station_fqdn and (adapter is None or not adapter.is_writable()):
+            return (FQDN_NOT_SENT,)
         last = self._fqdn_last
         if last is None or last[0] != self._app._config.station_fqdn:
             return ()
@@ -3462,6 +3469,8 @@ class AppRuntimeServices:
             "dhcp_manual": "DHCP with manual address",
             "static": "Static",
         }.get(state.ipv4.method.value, state.ipv4.method.value)
+        if not adapter.reports_ipv4_method():
+            method_label = "Unknown"
         lease = state.lease
         # Pre-format the dotted subnet mask and lease label server-side
         # so the template doesn't need to import network helpers.
@@ -3511,6 +3520,8 @@ class AppRuntimeServices:
             "writable": adapter.is_writable(),
             "backend": adapter.backend_name,
         }
+        if not adapter.reports_ipv4_method():
+            base["method_known"] = False
         if not interfaces:
             return base
         chosen_name = iface if iface in names else None

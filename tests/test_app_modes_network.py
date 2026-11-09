@@ -1213,6 +1213,18 @@ class TestTheInterfaceListSaysHowEachAddressWasCome_By:
         anm.enter_pi_network(app)
         assert _list_pills(app)["eth0"] == "web UI not here"
 
+    def test_a_method_the_backend_assumed_gets_no_pill(self, monkeypatch) -> None:
+        """A backend that never read the method (a Mac) reports DHCP for every interface."""
+
+        class _Assumed(_FakeAdapter):
+            def reports_ipv4_method(self) -> bool:
+                return False
+
+        _patch_ifaces(monkeypatch, {"eth0": "192.168.1.5"})
+        app = _make_app(_Assumed(writable=False))
+        anm.enter_pi_network(app)
+        assert _list_pills(app)["eth0"] == ""
+
     def test_an_unreadable_interface_gets_no_pill_rather_than_a_guess(self, monkeypatch) -> None:
         """``get_state`` returning None is a real backend answer. Inventing
         "DHCP" for it would put a claim on screen nothing checked."""

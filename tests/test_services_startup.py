@@ -312,6 +312,50 @@ def test_network_state_provider_returns_full_state(monkeypatch) -> None:
     assert snap["backend"] == "fake-dhcpcd"
 
 
+class _AssumedDhcpAdapter(_ReadOnlyAdapter):
+    """One interface on DHCP, from a backend that may or may not have read that."""
+
+    backend_name = "fake"
+
+    def __init__(self, *, reads_method: bool) -> None:
+        self._reads_method = reads_method
+
+    def list_interfaces(self):
+        from openfollow.network.adapter import NetworkInterface
+
+        return [NetworkInterface(name="en0", mac=None, kind=None, is_up=True)]
+
+    def get_state(self, iface):
+        from openfollow.network.adapter import Ipv4Config, Ipv4Method, NetworkInterface, NetworkState
+
+        return NetworkState(
+            interface=NetworkInterface(name=iface, mac=None, kind=None, is_up=True),
+            ipv4=Ipv4Config(method=Ipv4Method.DHCP, address="192.0.2.10", prefix=24),
+            lease=None,
+        )
+
+    def reports_ipv4_method(self) -> bool:
+        return self._reads_method
+
+
+@pytest.mark.parametrize(("reads_method", "label"), [(True, "DHCP"), (False, "Unknown")])
+def test_network_state_provider_names_an_assumed_method_unknown(monkeypatch, reads_method: bool, label: str) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._network_adapter = _AssumedDhcpAdapter(reads_method=reads_method)
+    assert services._network_state_provider()["method"] == label
+
+
+def test_network_config_provider_flags_an_assumed_method_only(monkeypatch) -> None:
+    services = _build_services_with_psutil_backend(monkeypatch)
+    services._network_adapter = _AssumedDhcpAdapter(reads_method=True)
+    assert "method_known" not in services._network_config_provider()
+    services._network_adapter = _AssumedDhcpAdapter(reads_method=False)
+    services._forget_network_reading()
+    snapshot = services._network_config_provider()
+    assert snapshot["method_known"] is False
+    assert snapshot["method"] == "dhcp"
+
+
 def test_network_state_provider_filters_loopback(monkeypatch) -> None:
     """The ``_network_state_provider`` must skip loopback and pick the first real
     ``is_up`` interface to surface the correct device address in the web Overview."""
@@ -3762,6 +3806,33 @@ def test_what_dhcp_could_not_do_is_reported_for_the_configured_name_only(fqdn_se
     assert services.station_fqdn_problems() == ("No profile could be updated.", "Profile 'X' was not updated.")
     services._app._config.station_fqdn = "other.example.com"
     assert services.station_fqdn_problems() == ()
+
+
+@pytest.mark.parametrize(
+    ("adapter", "fqdn", "problems"),
+    [
+        (_FqdnAdapter(writable=False), "of-1.stage.example.com", (services_module.FQDN_NOT_SENT,)),
+        (None, "of-1.stage.example.com", (services_module.FQDN_NOT_SENT,)),
+        (_FqdnAdapter(writable=False), "", ()),
+        (_FqdnAdapter(writable=True), "of-1.stage.example.com", ()),
+    ],
+    ids=["read-only", "no-backend", "read-only-no-name", "writable"],
+)
+def test_a_station_that_cannot_send_its_name_says_so(fqdn_services, adapter, fqdn: str, problems) -> None:
+    """A Mac stores the name but sends it nowhere; saying nothing reads as sent."""
+    services, _ = fqdn_services
+    services._network_adapter = adapter
+    services._app._config.station_fqdn = fqdn
+    assert services.station_fqdn_problems() == problems
+
+
+def test_a_save_on_a_read_only_station_keeps_its_caution(fqdn_services) -> None:
+    services, _ = fqdn_services
+    adapter = services._network_adapter = _FqdnAdapter(writable=False)
+    services._app._config.station_fqdn = "of-1.stage.example.com"
+    services.apply_station_fqdn_change("of-1.stage.example.com").join(timeout=5)
+    assert adapter.sent == []
+    assert services.station_fqdn_problems() == (services_module.FQDN_NOT_SENT,)
 
 
 def test_a_web_change_holds_the_lock_the_operator_screen_takes(monkeypatch) -> None:

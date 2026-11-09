@@ -158,7 +158,10 @@ def _read_pi_network(app: OpenFollowApp) -> _NetworkSnapshot:
         return _NetworkSnapshot(True, [], "", None, None, saved=reading.saved)
     active = getattr(app, "_pi_network_active_iface", "") or interfaces[0].name
     auto = ""
-    methods = {name: _METHOD_LABELS.get(iface_state.ipv4.method, "") for name, iface_state in reading.states.items()}
+    methods = {
+        name: _METHOD_LABELS.get(iface_state.ipv4.method, "") if adapter.reports_ipv4_method() else ""
+        for name, iface_state in reading.states.items()
+    }
     adapters = {iface.name: describe(iface.name) for iface in interfaces}
     names = {i.name for i in interfaces}
     # Read once: a hot reload between two reads would pair one station's values with another's.

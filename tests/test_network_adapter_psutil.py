@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 import openfollow.network.psutil_adapter as psutil_adapter
-from openfollow import net_utils
+from openfollow import net_adapters, net_utils
 from openfollow.network.adapter import (
     VLAN_UNSUPPORTED_MESSAGE,
     ApplyResult,
@@ -26,6 +26,7 @@ from openfollow.network.adapter import (
     VlanInterface,
 )
 from openfollow.network.psutil_adapter import PsutilReadOnlyAdapter
+from tests import _netstat_routes
 
 pytestmark = pytest.mark.unit
 
@@ -83,6 +84,53 @@ class TestPsutilAdapter:
     def test_is_writable_false(self) -> None:
         assert PsutilReadOnlyAdapter().is_writable() is False
 
+    def test_the_method_is_assumed_not_read(self) -> None:
+        assert PsutilReadOnlyAdapter().reports_ipv4_method() is False
+
+
+_MAC_SERVICES = "(1) Wi-Fi\n(Hardware Port: Wi-Fi, Device: en0)\n(2) USB LAN\n(Hardware Port: USB LAN, Device: en7)\n"
+_MAC_LINKS = ("en0", "en7", "anpi0", "en4", "en1", "ap1", "bridge0", "awdl0", "llw0", "utun0")
+
+
+@pytest.fixture
+def mac_links(monkeypatch):
+    """A MacBook's links: Wi-Fi with an address, a USB adapter without, and macOS's own."""
+    addrs = {name: [] for name in _MAC_LINKS}
+    addrs["en0"] = [SimpleNamespace(family=socket.AF_INET, address="192.0.2.10", netmask="255.255.255.0")]
+    addrs["utun0"] = [SimpleNamespace(family=socket.AF_INET, address="198.51.100.2", netmask="255.255.255.255")]
+    monkeypatch.setattr(psutil_adapter.psutil, "net_if_addrs", lambda: addrs)
+    monkeypatch.setattr(psutil_adapter.psutil, "net_if_stats", lambda: {n: SimpleNamespace(isup=True) for n in addrs})
+    monkeypatch.setattr(psutil_adapter, "_RESOLV_CONF", Path("/nonexistent/resolv.conf"))
+    monkeypatch.setattr(net_utils, "_PROC_NET_ROUTE", Path("/nonexistent/route"))
+
+
+def _platform(monkeypatch, platform: str, stdout: str = _MAC_SERVICES) -> None:
+    def run(argv, **_kwargs):
+        return SimpleNamespace(stdout=stdout if argv[1] == "-listnetworkserviceorder" else "", returncode=0)
+
+    monkeypatch.setattr(net_adapters, "_reader", net_adapters.AdapterReader(platform=platform, run=run))
+
+
+class TestOperatorInterfaces:
+    def test_a_mac_card_lists_only_the_system_settings_services(self, mac_links, monkeypatch) -> None:
+        _platform(monkeypatch, "darwin")
+        reading = PsutilReadOnlyAdapter().read_network()
+        assert [i.name for i in reading.interfaces] == ["en0", "en7"]
+        assert set(reading.states) == {"en0", "en7"}
+
+    def test_a_mac_without_the_service_list_still_leaves_out_its_own_links(self, mac_links, monkeypatch) -> None:
+        _platform(monkeypatch, "darwin", stdout="")
+        names = [i.name for i in PsutilReadOnlyAdapter().list_interfaces()]
+        assert names == ["en0", "en7", "en4", "en1", "bridge0"]
+
+    def test_a_hidden_interface_has_no_state(self, mac_links, monkeypatch) -> None:
+        _platform(monkeypatch, "darwin")
+        assert PsutilReadOnlyAdapter().get_state("awdl0") is None
+
+    def test_linux_lists_every_interface_as_before(self, mac_links, monkeypatch) -> None:
+        _platform(monkeypatch, "linux")
+        assert [i.name for i in PsutilReadOnlyAdapter().list_interfaces()] == list(_MAC_LINKS)
+
     @staticmethod
     def _routes(monkeypatch, tmp_path, *rows: tuple[str, str, str, int]) -> None:
         """``(iface, destination, gateway, metric)`` rows the way the kernel prints them."""
@@ -136,6 +184,40 @@ class TestPsutilAdapter:
 
         monkeypatch.setattr(net_utils, "_PROC_NET_ROUTE", tmp_path / "missing.route")
         assert self._router(monkeypatch, tmp_path) is None
+
+    @pytest.mark.parametrize(("iface", "router"), [("en0", "192.0.2.1"), ("en7", "198.51.100.1"), ("utun3", None)])
+    def test_the_router_on_macos_comes_from_netstat(
+        self, monkeypatch, tmp_path, iface: str, router: str | None
+    ) -> None:
+        stats = {name: SimpleNamespace(isup=True) for name in ("en0", "en7", "utun3")}
+        monkeypatch.setattr(psutil_adapter.psutil, "net_if_stats", lambda: stats)
+        monkeypatch.setattr(psutil_adapter.psutil, "net_if_addrs", lambda: {name: [] for name in stats})
+        monkeypatch.setattr(psutil_adapter, "_RESOLV_CONF", tmp_path / "missing.resolv")
+        _netstat_routes.install(monkeypatch, _netstat_routes.netstat_run())
+        state = PsutilReadOnlyAdapter().get_state(iface)
+        assert state is not None
+        assert state.ipv4.router == router
+
+    def test_one_reading_reads_the_route_table_once(self, monkeypatch, tmp_path) -> None:
+        stats = {name: SimpleNamespace(isup=True) for name in ("en0", "en7", "utun3")}
+        monkeypatch.setattr(psutil_adapter.psutil, "net_if_stats", lambda: stats)
+        monkeypatch.setattr(psutil_adapter.psutil, "net_if_addrs", lambda: {name: [] for name in stats})
+        monkeypatch.setattr(psutil_adapter, "_RESOLV_CONF", tmp_path / "missing.resolv")
+        calls: list[list[str]] = []
+        run = _netstat_routes.netstat_run()
+
+        def counted(argv, **kwargs):
+            calls.append(argv)
+            return run(argv, **kwargs)
+
+        _netstat_routes.install(monkeypatch, counted)
+        reading = PsutilReadOnlyAdapter().read_network()
+        assert {name: state.ipv4.router for name, state in reading.states.items()} == {
+            "en0": "192.0.2.1",
+            "en7": "198.51.100.1",
+            "utun3": None,
+        }
+        assert len(calls) == 1
 
     def test_read_dns_missing_file(self, monkeypatch, tmp_path) -> None:
         monkeypatch.setattr(psutil_adapter, "_RESOLV_CONF", tmp_path / "missing")

@@ -590,3 +590,27 @@ def test_selfcheck_fails_when_the_discoverer_cannot_be_built(launcher, monkeypat
 
     assert launcher.run_selfcheck() == 1
     assert capsys.readouterr().out.strip() == "FAIL: cannot load libgstpbutils"
+
+
+def test_restore_defaults_lands_on_what_the_first_run_seeded(launcher, tmp_path, monkeypatch) -> None:
+    """The app's Restore defaults and its first run start from the same bundled seed."""
+    import shutil
+    from dataclasses import asdict
+
+    from openfollow.configuration import load_config
+    from openfollow.first_run import SEED_CONFIG_NAME
+    from openfollow.web.routes import reset_config_to_defaults
+
+    assert launcher.SEED_CONFIG_NAME == SEED_CONFIG_NAME
+    resources = tmp_path / "res"
+    resources.mkdir()
+    shutil.copyfile(_LAUNCHER_PATH.parent / SEED_CONFIG_NAME, resources / SEED_CONFIG_NAME)
+    monkeypatch.setattr(sys, "_MEIPASS", str(resources), raising=False)
+    first_run = load_config(str(launcher.seed_user_data(tmp_path / "support", resources)))
+    edited = load_config(str(tmp_path / "support" / "config.toml"))
+    edited.video_source_type = "srt"
+    edited.detection.enabled = False
+    edited.grid.width = 42.0
+
+    restored = asdict(reset_config_to_defaults(edited))
+    assert restored == asdict(first_run) | {"psn_system_name": restored["psn_system_name"]}

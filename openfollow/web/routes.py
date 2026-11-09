@@ -1037,9 +1037,9 @@ def _deb_update_supported() -> bool:
     """Whether the in-app signed-.deb updater can run on this host.
 
     The updater installs via dpkg/systemd, which only exist on the Linux (Pi)
-    target, so the Software Update section, its box, and the footer flag are hidden
-    everywhere else. Single source of truth for the index and section-reload
-    render paths so their platform gate can't drift.
+    target; everywhere else its routes refuse and a newer release is only
+    announced, with a link to its page. Single source of truth for the render
+    paths and the routes so their platform gate can't drift.
     """
     return sys.platform.startswith("linux")
 
@@ -1062,7 +1062,7 @@ def _release_page_url(server: ConfigWebServer, cfg: AppConfig, latest: str) -> s
     if not latest or _deb_update_supported():
         return ""
     repo, _ = server.update_source(cfg.update_github_repo, cfg.update_include_prereleases)
-    return f"https://github.com/{quote(repo.strip(), safe='/')}/releases/tag/v{quote(latest, safe='')}"
+    return f"https://github.com/{quote(str(repo).strip(), safe='/')}/releases/tag/v{quote(latest, safe='')}"
 
 
 def _page_update_context(server: ConfigWebServer, cfg: AppConfig) -> dict[str, Any]:

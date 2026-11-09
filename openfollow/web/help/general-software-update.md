@@ -12,7 +12,6 @@ The device briefly goes away while the service restarts. An install that fails b
 
 > **Needs internet.** This option reaches GitHub. On an isolated show LAN with no uplink, use **Install .ofupdate File**.
 
-
 ### On a Mac
 
 The Mac app does not install updates itself.

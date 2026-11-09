@@ -12,7 +12,6 @@ The install runs detached from the running service (the package restarts the ser
 
 > **Needs internet.** This option reaches `api.github.com` and the release download. On an isolated show LAN with no uplink, **Install .ofupdate File** is the path that works.
 
-
 ### On a Mac
 
 The Mac app does not install updates itself.

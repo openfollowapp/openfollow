@@ -12,6 +12,12 @@ The install runs detached from the running service (the package restarts the ser
 
 > **Needs internet.** This option reaches `api.github.com` and the release download. On an isolated show LAN with no uplink, **Install .ofupdate File** is the path that works.
 
+### On a Mac
+
+The Mac app does not install updates itself.
+
+When the station's background check finds a newer release, this section shows **Version … is available** with a link to its release page, and the footer flag links there too. Download the new version there. Without an internet uplink nothing is shown.
+
 ## Settings backup
 
 Before an update installs, the station saves its settings: the configuration, the marker catalog, your own templates and the saved lens calibrations. The Media Gallery and the detection models are not included. Backups are kept in `/var/lib/openfollow/backups/`, one per install, named after the station, the version it came from and the time, for example `brave-otter-v0.4.3-20260929T180000Z.ofbackup`. The ten newest are kept.

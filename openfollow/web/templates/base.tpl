@@ -2555,6 +2555,8 @@
  % end
  % if defined('update_supported') and update_supported and defined('update_available') and update_available:
  <span class="update-flag">Update available: v{{latest_version}}</span>
+ % elif defined('update_release_url') and update_release_url:
+ <a class="update-flag" href="{{update_release_url}}" target="_blank" rel="noopener noreferrer">Update available: v{{latest_version}}</a>
  % end
  <span class="sep">·</span>
  © 2026 The OpenFollow Project

@@ -266,26 +266,6 @@ def test_wizard_page_shows_update_footer_flag(live_server, monkeypatch) -> None:
     assert '<span class="update-flag">Update available: v0.4.0</span>' in body  # footer flag
 
 
-def test_update_banner_and_footer_hidden_on_unsupported_platform(live_server, monkeypatch) -> None:
-    # macOS can't run the .deb installer, so neither the Software Update banner
-    # nor the footer flag surfaces even when a newer release was discovered.
-    from openfollow.web import routes
-
-    monkeypatch.setattr(routes.sys, "platform", "darwin")
-
-    server, base = live_server
-    server._command_queue.set_update_available("0.4.0")
-
-    status, body = _get(base, "/")
-    assert status == 200
-    assert "Version 0.4.0 is available." not in body
-    assert '<span class="update-flag">' not in body
-
-    status_section, section = _get(base, "/section/general")
-    assert status_section == 200
-    assert "Version 0.4.0 is available." not in section
-
-
 def _software_update_section(body: str) -> str:
     start = body.index('id="general-software-update-section"')
     return body[start : body.index("<script>", start)]
@@ -6078,6 +6058,18 @@ def test_a_pin_saved_for_an_unregistered_source_type_starts_no_lookup(
     assert resolver.started == []
 
 
+@pytest.fixture()
+def linux_host(monkeypatch):
+    """A host the signed-.deb updater runs on."""
+    monkeypatch.setattr(sys, "platform", "linux")
+
+
+@pytest.fixture()
+def macos_host(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+
+@pytest.mark.usefixtures("linux_host")
 def test_deb_update_dispatches_request(live_server, monkeypatch) -> None:
     """POST /section/general/deb-update queues a deb update when idle."""
     from openfollow.web import server as server_module
@@ -6100,6 +6092,7 @@ def test_deb_update_dispatches_request(live_server, monkeypatch) -> None:
     assert captured["service_name"] == "openfollow"
 
 
+@pytest.mark.usefixtures("linux_host")
 def test_deb_update_falls_back_to_default_when_service_name_invalid(live_server, monkeypatch) -> None:
     """An invalid update_service_name in config must not block the update –
     the route falls back to 'openfollow' so the button always works."""
@@ -6127,6 +6120,7 @@ def test_deb_update_falls_back_to_default_when_service_name_invalid(live_server,
     assert captured.get("service_name") == "openfollow"
 
 
+@pytest.mark.usefixtures("linux_host")
 def test_deb_update_reports_when_already_running(live_server, monkeypatch) -> None:
     """request_deb_update returns False when another update is in flight;
     the route must surface an 'already running' message."""
@@ -6144,6 +6138,7 @@ def test_deb_update_reports_when_already_running(live_server, monkeypatch) -> No
     assert "already running" in body
 
 
+@pytest.mark.usefixtures("linux_host")
 def test_an_update_asked_for_while_a_restart_is_pending_is_refused_and_says_why(live_server) -> None:
     server, base = live_server
     server._command_queue.request_restart()
@@ -6153,6 +6148,7 @@ def test_an_update_asked_for_while_a_restart_is_pending_is_refused_and_says_why(
     assert server._command_queue.get_update_status()["state"] == "idle"
 
 
+@pytest.mark.usefixtures("linux_host")
 def test_deb_update_check_returns_json_available(live_server, monkeypatch) -> None:
     """GET /section/general/deb-update/check returns JSON the General-tab
     modal uses to decide whether to offer the install."""
@@ -6183,6 +6179,7 @@ def _check_asks_for(base: str, monkeypatch) -> tuple[str, bool]:
         asked.append((repo, include_prereleases))
         return {"tag_name": "v0.0.1", "assets": []}
 
+    monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(deb_update_mod, "_fetch_latest_release", _fetch)
     # A pre-release build always asks for pre-releases.
     monkeypatch.setattr(openfollow, "__version__", "1.0.0")
@@ -6217,6 +6214,7 @@ def test_deb_update_check_unwired_asks_for_the_saved_settings(live_server, monke
     assert _check_asks_for(base, monkeypatch) == ("stage-crew/openfollow", True)
 
 
+@pytest.mark.usefixtures("linux_host")
 def test_deb_update_check_surfaces_error_as_json(live_server, monkeypatch) -> None:
     """A network/API failure during check returns ok=False with the error
     message rather than a 500 – the modal shows it as feedback."""
@@ -6267,6 +6265,7 @@ def _post_upload(
         return e.code, json.loads(e.read().decode() or "{}")
 
 
+@pytest.mark.usefixtures("linux_host")
 def test_deb_upload_rejects_when_no_file(live_server) -> None:
     _, base = live_server
     status, body = _post_upload(base, "/section/general/deb-upload", filename=None)
@@ -6275,6 +6274,7 @@ def test_deb_upload_rejects_when_no_file(live_server) -> None:
     assert "No file" in body["error"]
 
 
+@pytest.mark.usefixtures("linux_host")
 def test_deb_upload_rejects_unsupported_extension(live_server) -> None:
     _, base = live_server
     status, body = _post_upload(base, "/section/general/deb-upload", filename="evil.exe")
@@ -6283,6 +6283,7 @@ def test_deb_upload_rejects_unsupported_extension(live_server) -> None:
     assert "Unsupported file type" in body["error"]
 
 
+@pytest.mark.usefixtures("linux_host")
 def test_deb_upload_rejects_raw_deb(live_server) -> None:
     # A bare .deb (no signature wrapper) is no longer installable – only the
     # signed .ofupdate bundle is accepted.
@@ -6293,6 +6294,7 @@ def test_deb_upload_rejects_raw_deb(live_server) -> None:
     assert "Unsupported file type" in body["error"]
 
 
+@pytest.mark.usefixtures("linux_host")
 def test_deb_upload_rejects_oversized_body(live_server, monkeypatch) -> None:
     import openfollow.web.routes as routes_mod
 
@@ -6304,6 +6306,7 @@ def test_deb_upload_rejects_oversized_body(live_server, monkeypatch) -> None:
     assert "too large" in body["error"]
 
 
+@pytest.mark.usefixtures("linux_host")
 def test_deb_upload_rejects_empty_body(live_server) -> None:
     _, base = live_server
     status, body = _post_upload(base, "/section/general/deb-upload", content=b"")
@@ -6312,6 +6315,7 @@ def test_deb_upload_rejects_empty_body(live_server) -> None:
     assert "Empty" in body["error"]
 
 
+@pytest.mark.usefixtures("linux_host")
 def test_deb_upload_plain_deb_stages_and_queues(live_server, monkeypatch) -> None:
     """A valid bundle is staged under the temp prefix, verified, and queued;
     a newer version is not flagged as a downgrade."""
@@ -6353,6 +6357,7 @@ def test_deb_upload_plain_deb_stages_and_queues(live_server, monkeypatch) -> Non
         pass
 
 
+@pytest.mark.usefixtures("linux_host")
 def test_deb_upload_flags_downgrade(live_server, monkeypatch) -> None:
     import openfollow
     import openfollow.runtime.deb_update as deb_update_mod
@@ -6390,6 +6395,7 @@ def test_deb_upload_flags_downgrade(live_server, monkeypatch) -> None:
         pass
 
 
+@pytest.mark.usefixtures("linux_host")
 def test_deb_upload_invalid_deb_returns_error(live_server, monkeypatch) -> None:
     import openfollow.runtime.deb_update as deb_update_mod
 
@@ -6410,6 +6416,7 @@ def test_deb_upload_invalid_deb_returns_error(live_server, monkeypatch) -> None:
     assert "expected 'openfollow'" in body["error"]
 
 
+@pytest.mark.usefixtures("linux_host")
 def test_deb_upload_reports_when_already_running(live_server, monkeypatch) -> None:
     import openfollow.runtime.deb_update as deb_update_mod
     from openfollow.web import server as server_module
@@ -6432,6 +6439,7 @@ def test_deb_upload_reports_when_already_running(live_server, monkeypatch) -> No
     assert "already running" in body["error"]
 
 
+@pytest.mark.usefixtures("linux_host")
 def test_an_upload_while_a_restart_is_pending_is_refused_and_says_why(live_server, monkeypatch) -> None:
     import openfollow.runtime.deb_update as deb_update_mod
 
@@ -6453,6 +6461,7 @@ def test_an_upload_while_a_restart_is_pending_is_refused_and_says_why(live_serve
     assert server._command_queue.get_update_status()["state"] == "idle"
 
 
+@pytest.mark.usefixtures("linux_host")
 def test_deb_upload_falls_back_to_default_service_name(live_server, monkeypatch) -> None:
     """An invalid update_service_name in config must not block the upload –
     the route falls back to 'openfollow' (mirrors the online updater)."""
@@ -6491,6 +6500,110 @@ def test_deb_upload_falls_back_to_default_service_name(live_server, monkeypatch)
         os.unlink(captured["deb_path"])
     except (OSError, KeyError):
         pass
+
+
+_MAC_REFUSAL = {
+    "ok": False,
+    "error": "This station cannot install updates itself.",
+    "action": "Download the new version from its release page.",
+}
+
+
+@pytest.mark.usefixtures("macos_host")
+@pytest.mark.parametrize(
+    "send",
+    [
+        lambda base: _post_json(base, "/section/general/deb-update", {}),
+        lambda base: _get_json(base, "/section/general/deb-update/check"),
+        lambda base: _post_upload(base, "/section/general/deb-upload"),
+    ],
+    ids=["install", "check", "upload"],
+)
+def test_the_updater_routes_refuse_on_macos_without_acting(live_server, monkeypatch, send) -> None:
+    import openfollow.runtime.deb_update as deb_update_mod
+
+    def _no_fetch(*_a, **_kw):
+        raise AssertionError("the check reached the release server")
+
+    monkeypatch.setattr(deb_update_mod, "_fetch_latest_release", _no_fetch)
+    server, base = live_server
+
+    assert send(base) == (400, _MAC_REFUSAL)
+    assert server._command_queue.get_update_status()["state"] == "idle"
+
+
+_RELEASE_PAGE = "https://github.com/openfollowapp/openfollow/releases/tag/v9.9.9"
+_RELEASE_LINK = f'href="{_RELEASE_PAGE}" target="_blank" rel="noopener noreferrer"'
+
+
+def _software_update_box(body: str) -> str:
+    start = body.index('id="general-software-update-section"')
+    return body[start : body.index("</div>\n</div>", start)]
+
+
+@pytest.mark.usefixtures("macos_host")
+def test_macos_names_a_found_release_and_links_its_page(live_server) -> None:
+    server, base = live_server
+    server._command_queue.set_update_available("9.9.9")
+
+    status, body = _get(base, "/")
+
+    assert status == 200
+    box = _software_update_box(body)
+    assert "<div>Version 9.9.9 is available.</div>" in box
+    assert f"<a {_RELEASE_LINK}>Download it from the release page</a>" in box
+    assert "Install Latest Version Online" not in body
+    assert f'<a class="update-flag" {_RELEASE_LINK}>Update available: v9.9.9</a>' in body
+
+
+@pytest.mark.usefixtures("macos_host")
+@pytest.mark.parametrize("path", ["/", "/section/general"])
+def test_macos_shows_no_update_section_while_up_to_date(live_server, path: str) -> None:
+    _, base = live_server
+    status, body = _get(base, path)
+    assert status == 200
+    assert 'id="general-software-update-section"' not in body
+    assert "releases/tag" not in body
+
+
+@pytest.mark.usefixtures("macos_host")
+def test_macos_footer_flag_links_the_release_from_the_wizard(live_server) -> None:
+    server, base = live_server
+    server._command_queue.set_update_available("9.9.9")
+    status, body = _get(base, "/wizard")
+    assert status == 200
+    assert f'<a class="update-flag" {_RELEASE_LINK}>Update available: v9.9.9</a>' in body
+
+
+@pytest.mark.usefixtures("macos_host")
+@pytest.mark.parametrize(
+    ("repo", "page"),
+    [
+        ("stage-crew/openfollow", "https://github.com/stage-crew/openfollow/releases/tag/v9.9.9"),
+        (' a"b/<c> ', "https://github.com/a%22b/%3Cc%3E/releases/tag/v9.9.9"),
+    ],
+)
+def test_macos_release_link_follows_the_configured_repo(live_server, repo: str, page: str) -> None:
+    server, base = live_server
+    save_config(AppConfig(update_github_repo=repo), server.config_path)
+    server._command_queue.set_update_available("9.9.9")
+    status, body = _get(base, "/section/general")
+    assert status == 200
+    assert f'<a href="{page}" target="_blank"' in _software_update_box(body)
+
+
+@pytest.mark.usefixtures("linux_host")
+def test_a_pi_offers_the_installer_for_a_found_release_and_no_link(live_server) -> None:
+    server, base = live_server
+    server._command_queue.set_update_available("9.9.9")
+
+    status, body = _get(base, "/")
+
+    assert status == 200
+    assert "Install Latest Version Online" in _software_update_box(body)
+    assert "<div>Version 9.9.9 is available.</div>" in body
+    assert '<span class="update-flag">Update available: v9.9.9</span>' in body
+    assert "releases/tag" not in body
 
 
 def test_update_psn_persists_and_renders_partial(live_server) -> None:

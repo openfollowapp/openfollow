@@ -1037,9 +1037,9 @@ def _deb_update_supported() -> bool:
     """Whether the in-app signed-.deb updater can run on this host.
 
     The updater installs via dpkg/systemd, which only exist on the Linux (Pi)
-    target, so the Software Update section, its box, and the footer flag are hidden
-    everywhere else. Single source of truth for the index and section-reload
-    render paths so their platform gate can't drift.
+    target; everywhere else its routes refuse and a newer release is only
+    announced, with a link to its page. Single source of truth for the render
+    paths and the routes so their platform gate can't drift.
     """
     return sys.platform.startswith("linux")
 
@@ -1054,7 +1054,18 @@ def _startup_settings_supported() -> bool:
     return sys.platform.startswith("linux")
 
 
-def _page_update_context(server: ConfigWebServer) -> dict[str, Any]:
+def _release_page_url(server: ConfigWebServer, cfg: AppConfig, latest: str) -> str:
+    """The release page for ``latest`` where the in-app updater cannot install it, else "".
+
+    A plain link the operator opens; the station itself fetches nothing.
+    """
+    if not latest or _deb_update_supported():
+        return ""
+    repo, _ = server.update_source(cfg.update_github_repo, cfg.update_include_prereleases)
+    return f"https://github.com/{quote(str(repo).strip(), safe='/')}/releases/tag/v{quote(latest, safe='')}"
+
+
+def _page_update_context(server: ConfigWebServer, cfg: AppConfig) -> dict[str, Any]:
     """base.tpl update context: the footer "Update available" flag and the
     What's new step an in-app update ends in.
 
@@ -1068,6 +1079,7 @@ def _page_update_context(server: ConfigWebServer) -> dict[str, Any]:
         "update_supported": _deb_update_supported(),
         "update_available": bool(latest),
         "latest_version": latest,
+        "update_release_url": _release_page_url(server, cfg, latest),
         "whats_new_pending": server.whats_new_pending(),
     }
 
@@ -1092,6 +1104,7 @@ def _build_general_template_data(
     latest = server.get_update_available()
     data["update_available"] = bool(latest)
     data["latest_version"] = latest
+    data["update_release_url"] = _release_page_url(server, cfg, latest)
     return data
 
 
@@ -4127,6 +4140,15 @@ def _and(words: Iterable[str]) -> str:
 _RESTART_AFTER_UPDATE = "Restart once it has finished."
 
 
+_NO_IN_APP_UPDATE = ("This station cannot install updates itself.", "Download the new version from its release page.")
+_NO_STARTUP_SWITCH = ("Starting at boot cannot be changed on this host.", "")
+
+
+def _host_refused(refusal: tuple[str, str]) -> HTTPResponse:
+    """An updater or systemd action asked of a host that has neither."""
+    return _save_failed(400, *refusal, ok=False)
+
+
 def _update_refused(server: Any) -> str:
     """Why an update was not queued: a restart under way, or another update."""
     if server.is_restart_pending():
@@ -6354,7 +6376,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             current_version=openfollow.__version__,
             # Update-available box (General section) + footer flag (base.tpl);
             # read once so the flag and version label can't disagree mid-render.
-            **_page_update_context(server),
+            **_page_update_context(server, config),
             **_page_host_context(config),
             # index.tpl includes the General partial directly, so the platform
             # gate for the Startup box has to be supplied here too.
@@ -7745,6 +7767,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """Switch start-at-boot on or off, re-rendering from what systemd
         reports afterwards - including when the change was refused, so the
         switch never shows a state the host doesn't hold."""
+        if not _startup_settings_supported():
+            return _host_refused(_NO_STARTUP_SWITCH)
         enabled = _as_bool(request.forms.get("autostart"), False)
         result = server.apply_autostart(_autostart_unit_name(), enabled)
         startup: dict[str, Any] = {
@@ -7776,6 +7800,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         actually queued – a rejected request (another update in flight) must
         not leave the operator polling a locked progress modal.
         """
+        if not _deb_update_supported():
+            return _host_refused(_NO_IN_APP_UPDATE)
         cfg = _last_whole_config(server)
         response.content_type = "application/json"
         service_name = _service_unit_name(cfg)
@@ -7793,6 +7819,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         """
         from openfollow.runtime.deb_update import check_for_update
 
+        if not _deb_update_supported():
+            return _host_refused(_NO_IN_APP_UPDATE)
         cfg = _last_whole_config(server)
         repo, include_prereleases = server.update_source(cfg.update_github_repo, cfg.update_include_prereleases)
         response.content_type = "application/json"
@@ -7821,6 +7849,8 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
             verify_and_extract_bundle,
         )
 
+        if not _deb_update_supported():
+            return _host_refused(_NO_IN_APP_UPDATE)
         response.content_type = "application/json"
 
         # The file is the raw request body (not multipart, to dodge Bottle's
@@ -11067,7 +11097,7 @@ def setup_routes(app: Bottle, server: ConfigWebServer) -> None:
         # Footer "Update available" flag: an update is most often discovered
         # while the operator is still in the Setup Wizard.
         return template(
-            "wizard", config=config, **input_data, **_page_update_context(server), **_page_host_context(config)
+            "wizard", config=config, **input_data, **_page_update_context(server, config), **_page_host_context(config)
         )
 
     @app.get("/api/video/snapshot/full")

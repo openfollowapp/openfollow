@@ -21,6 +21,7 @@ from typing import Any
 
 from openfollow.video.failure import SourceKind
 from openfollow.video.inputs._base import (
+    SHOWN_INPUT_TRIGGER,
     ConfigField,
     InputCapabilities,
     ReconnectPolicy,
@@ -322,7 +323,7 @@ class NdiInput(VideoInputBase):
             '    <div class="field wide">'
             "        <label>NDI® Source</label>"
             '        <select name="ndi_source_name" hx-get="/video-input/ndi/sources"'
-            '                hx-trigger="load, click from:#refresh-ndi"'
+            f'                hx-trigger="{SHOWN_INPUT_TRIGGER}, click from:#refresh-ndi"'
             '                hx-target="this" hx-swap="innerHTML">'
             f'            <option value="{source_name}">'
             f"              {source_name or '-- Loading... --'}"

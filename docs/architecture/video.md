@@ -211,6 +211,16 @@ find** as `STREAM_NOT_FOUND`, with the same backoff and the same hand-over to
 the picker, so a missing camera is never replaced by another. A camera list it
 cannot read refuses as `UNKNOWN` with that reason, never as "not found".
 
+**Nothing looks for NDI sources unless NDI is used.** The NDI runtime, once
+started, stays loaded and holds a macOS power assertion that keeps the Mac from
+idle sleep. So the camera list (`_list_avf_devices`) probes GStreamer's
+`avfdeviceprovider` alone, never a `Gst.DeviceMonitor`, which starts every
+video-source provider, NDI's included; the macOS self-check fails a bundle
+without that provider. And the Video Source page renders every input's
+fragment, hidden ones too, so a fragment's source lookup fires on load only
+for the input the page shows (`SHOWN_INPUT_TRIGGER`), and on `of-input-shown`
+when the Source Type picker shows it.
+
 **The preflight never waits for DNS.** It runs on the main loop before every
 build, so it reads only the answer `HOST_RESOLVER` already holds for the source's
 name. `VideoInputBase.prefetch` starts that lookup ahead of the build: when the

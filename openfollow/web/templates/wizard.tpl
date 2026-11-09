@@ -421,7 +421,7 @@
         <div class="field">
           <label for="wizard-video-source-type">Source Type</label>
           <select id="wizard-video-source-type"
-                  onchange="document.querySelectorAll('[data-wizard-input-type]').forEach(function(el){el.style.display=el.dataset.wizardInputType===this.value?'':'none';}.bind(this));">
+                  onchange="document.querySelectorAll('[data-wizard-input-type]').forEach(function(el){var shown=el.dataset.wizardInputType===this.value;if(shown&&el.style.display==='none'){el.style.display='';el.querySelectorAll('[hx-trigger*=of-input-shown]').forEach(function(t){htmx.trigger(t,'of-input-shown');});}else if(!shown){el.style.display='none';}}.bind(this));">
             % for iid, iname in available_inputs:
             <option value="{{iid}}" {{'selected' if config.video_source_type == iid else ''}}>{{iname}}</option>
             % end

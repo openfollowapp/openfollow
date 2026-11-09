@@ -365,6 +365,7 @@ def _install_fake_gst(
     missing: set[str],
     *,
     plugins: frozenset[str] = frozenset({"typefindfunctions"}),
+    providers: frozenset[str] = frozenset({"avfdeviceprovider"}),
     namespaces: frozenset[str] = frozenset(),
     unloadable: frozenset[str] = frozenset({"Gtk", "Gdk"}),
     require_errors: dict[str, str] | None = None,
@@ -393,6 +394,7 @@ def _install_fake_gst(
         Registry=types.SimpleNamespace(
             get=lambda: types.SimpleNamespace(find_plugin=lambda name: object() if name in plugins else None)
         ),
+        DeviceProviderFactory=types.SimpleNamespace(find=lambda name: object() if name in providers else None),
     )
     gi = types.ModuleType("gi")
     gi.RepositoryError = type("RepositoryError", (Exception,), {})  # type: ignore[attr-defined]
@@ -460,6 +462,14 @@ def test_selfcheck_fails_without_the_typefinders_plugin(launcher, monkeypatch, c
 
     assert launcher.run_selfcheck() == 1
     assert capsys.readouterr().out.strip() == "FAIL: missing GStreamer plugin: typefindfunctions"
+
+
+def test_selfcheck_fails_without_the_avf_device_provider(launcher, monkeypatch, capsys) -> None:
+    # The camera list probes it alone, so no device monitor starts NDI's provider.
+    _install_fake_gst(monkeypatch, set(), providers=frozenset({"ndideviceprovider"}))
+
+    assert launcher.run_selfcheck() == 1
+    assert capsys.readouterr().out.strip() == "FAIL: missing GStreamer device provider: avfdeviceprovider"
 
 
 @pytest.mark.parametrize("namespace", [name for name, _version in _load_launcher().REQUIRED_TYPELIBS])

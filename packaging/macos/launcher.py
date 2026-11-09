@@ -237,6 +237,10 @@ def run_selfcheck() -> int:
         if Gst.Registry.get().find_plugin("typefindfunctions") is None:
             print("FAIL: missing GStreamer plugin: typefindfunctions")
             return 1
+        # The camera list probes this provider alone (openfollow/video/inputs/avf.py).
+        if Gst.DeviceProviderFactory.find("avfdeviceprovider") is None:
+            print("FAIL: missing GStreamer device provider: avfdeviceprovider")
+            return 1
         # The Media Gallery reads clip metadata through it; building one loads libgstpbutils.
         GstPbutils.Discoverer.new(Gst.SECOND)
 

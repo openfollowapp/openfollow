@@ -51,7 +51,13 @@
         // healing (network sources only), preview and latency (not the gallery).
         window.ofVideoSourceToggle = function(value){
             document.querySelectorAll('[data-input-type]').forEach(function(el){
-                el.style.display = el.dataset.inputType === value ? '' : 'none';
+                var shown = el.dataset.inputType === value;
+                if(shown && el.style.display === 'none'){
+                    el.style.display = '';
+                    el.querySelectorAll('[hx-trigger*="of-input-shown"]').forEach(function(t){ htmx.trigger(t, 'of-input-shown'); });
+                } else if(!shown){
+                    el.style.display = 'none';
+                }
             });
             var net = (value === 'rtsp' || value === 'srt' || value === 'rtp');
             function vis(id, on){ var el = document.getElementById(id); if(el) el.style.display = on ? '' : 'none'; }

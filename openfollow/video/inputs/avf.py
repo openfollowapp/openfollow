@@ -18,6 +18,7 @@ from typing import Any
 
 from openfollow.video.failure import SourceKind, VideoFailure
 from openfollow.video.inputs._base import (
+    SHOWN_INPUT_TRIGGER,
     ConfigField,
     InputCapabilities,
     ReconnectPolicy,
@@ -57,14 +58,21 @@ def _camera_name(unique_id: str, stored: object = "") -> str:
     return f"{name} ({unique_id})" if any(listed_name == name for _uid, listed_name in names) else name
 
 
+_AVF_DEVICE_PROVIDER = "avfdeviceprovider"
+
+
 def _list_avf_devices() -> list[dict[str, str]]:
-    """Enumerate AVFoundation video sources via ``Gst.DeviceMonitor``.
+    """Enumerate AVFoundation video sources through GStreamer's AVF device provider.
 
     Returns a list of dicts with keys: ``unique_id``, ``name``, ``index``.
     The ``index`` is the device's position within the AVF-only filtered
     list – that matches what ``avfvideosrc device-index`` expects, since
     GStreamer's AVF provider iterates ``AVCaptureDevice.devices`` in the
     same order.
+
+    Only that provider is probed: a ``Gst.DeviceMonitor`` starts every
+    provider of video sources, NDI's too, whose runtime then keeps running
+    and holds off the Mac's idle sleep.
 
     Raises when the cameras cannot be listed, so that is never read as "no
     camera". Empty off macOS, so contract tests on Linux never scan.
@@ -76,20 +84,16 @@ def _list_avf_devices() -> list[dict[str, str]]:
     from openfollow.configuration import clean_avf_device_name, clean_avf_unique_id
 
     Gst.init(None)
-    monitor = Gst.DeviceMonitor.new()
-    monitor.add_filter("Video/Source", None)
-    if not monitor.start():
-        raise RuntimeError("the device monitor did not start")
-    try:
-        devices = monitor.get_devices() or []
-    finally:
-        monitor.stop()
+    provider = Gst.DeviceProviderFactory.get_by_name(_AVF_DEVICE_PROVIDER)
+    if provider is None:
+        raise RuntimeError("the AVFoundation device provider is not installed")
+    devices = provider.get_devices() or []
 
     result: list[dict[str, str]] = []
     avf_index = 0
     for dev in devices:
         props = dev.get_properties()
-        if props is None:
+        if props is None or not dev.has_classes("Video/Source"):
             continue
         api = props.get_string("device.api") or ""
         if api != "avf":
@@ -349,7 +353,7 @@ class AvfInput(VideoInputBase):
             "        <label>Device</label>"
             '        <select name="avf_unique_id"'
             '                hx-get="/video-input/avf/devices"'
-            '                hx-trigger="load, click from:'
+            f'                hx-trigger="{SHOWN_INPUT_TRIGGER}, click from:'
             '#refresh-avf"'
             '                hx-target="this"'
             '                hx-swap="innerHTML">'

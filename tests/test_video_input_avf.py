@@ -35,9 +35,11 @@ class _FakeDevice:
         *,
         props: dict[str, str] | None,
         display_name: str = "",
+        classes: str = "Video/Source",
     ) -> None:
         self._props = _FakeProps(props) if props is not None else None
         self._name = display_name
+        self._classes = classes
 
     def get_properties(self) -> _FakeProps | None:
         return self._props
@@ -45,26 +47,13 @@ class _FakeDevice:
     def get_display_name(self) -> str:
         return self._name
 
+    def has_classes(self, classes: str) -> bool:
+        return set(classes.split("/")) <= set(self._classes.split("/"))
 
-class _FakeMonitor:
-    def __init__(
-        self,
-        devices: list[_FakeDevice],
-        *,
-        start_ok: bool = True,
-    ) -> None:
+
+class _FakeProvider:
+    def __init__(self, devices: list[_FakeDevice]) -> None:
         self._devices = devices
-        self._start_ok = start_ok
-        self.filters: list[tuple[str, object]] = []
-
-    def add_filter(self, classification: str, caps: object) -> None:
-        self.filters.append((classification, caps))
-
-    def start(self) -> bool:
-        return self._start_ok
-
-    def stop(self) -> None:
-        pass
 
     def get_devices(self) -> list[_FakeDevice]:
         return list(self._devices)
@@ -74,15 +63,22 @@ def _make_fake_gst_with_devices(
     devices: list[_FakeDevice],
     *,
     start_ok: bool = True,
+    asked: list[str] | None = None,
 ):
+    """A Gst whose AVF provider lists *devices*; without it (``start_ok`` False) none is installed.
+
+    It has no ``DeviceMonitor``: a monitor would start every provider, NDI's included.
+    """
     fake = make_fake_gst()
 
-    class _DeviceMonitorNs:
+    class _DeviceProviderFactoryNs:
         @staticmethod
-        def new() -> _FakeMonitor:
-            return _FakeMonitor(devices, start_ok=start_ok)
+        def get_by_name(name: str) -> _FakeProvider | None:
+            if asked is not None:
+                asked.append(name)
+            return _FakeProvider(devices) if start_ok and name == "avfdeviceprovider" else None
 
-    fake.DeviceMonitor = _DeviceMonitorNs  # type: ignore[attr-defined]
+    fake.DeviceProviderFactory = _DeviceProviderFactoryNs  # type: ignore[attr-defined]
     return fake
 
 
@@ -102,7 +98,7 @@ def _no_cameras_listed_yet(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
 
 
 def _cameras(monkeypatch: pytest.MonkeyPatch, *cameras: tuple[str, str]) -> list[int]:
-    """Have the device monitor list *cameras* (unique ID, name) in order; one entry per listing."""
+    """Have the AVF device provider list *cameras* (unique ID, name) in order; one entry per listing."""
     listings: list[int] = []
 
     def _list() -> list[dict[str, str]]:
@@ -246,7 +242,29 @@ class TestDiscoverAvfDevices:
         monkeypatch.setattr("builtins.__import__", _fail_gi)
         assert _discover_avf_devices() == []
 
-    def test_monitor_start_failure_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_only_the_avf_provider_is_probed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A device monitor would start NDI's provider too, whose runtime keeps the Mac awake."""
+        monkeypatch.setattr(sys, "platform", "darwin")
+        asked: list[str] = []
+        camera = _FakeDevice(
+            props={"device.api": "avf", "avf.unique_id": "47B4B64B"}, display_name="FaceTime HD Camera"
+        )
+        with patch("gi.repository.Gst", _make_fake_gst_with_devices([camera], asked=asked)):
+            devices = avf_module._list_avf_devices()
+
+        assert asked == ["avfdeviceprovider"]
+        assert [d["unique_id"] for d in devices] == ["47B4B64B"]
+
+    def test_skips_devices_that_are_no_video_source(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(sys, "platform", "darwin")
+        microphone = _FakeDevice(props={"device.api": "avf", "avf.unique_id": "MIC"}, classes="Audio/Source")
+        camera = _FakeDevice(props={"device.api": "avf", "avf.unique_id": "CAM"}, display_name="Camera")
+        with patch("gi.repository.Gst", _make_fake_gst_with_devices([microphone, camera])):
+            devices = avf_module._list_avf_devices()
+
+        assert devices == [{"unique_id": "CAM", "name": "Camera", "index": "0"}]
+
+    def test_a_missing_avf_provider_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(sys, "platform", "darwin")
         fake = _make_fake_gst_with_devices([], start_ok=False)
         with patch("gi.repository.Gst", fake):
@@ -387,7 +405,7 @@ class TestDiscoverAvfDevices:
         operator reads still show none."""
         monkeypatch.setattr(sys, "platform", "darwin")
         with patch("gi.repository.Gst", _make_fake_gst_with_devices([], start_ok=False)):
-            with pytest.raises(RuntimeError, match="device monitor did not start"):
+            with pytest.raises(RuntimeError, match="device provider is not installed"):
                 avf_module._list_avf_devices()
             assert _discover_avf_devices() == []
 
@@ -666,7 +684,7 @@ class TestAvfPreflight:
         assert AvfInput.preflight(config) is None
         assert listings == []
 
-    @pytest.mark.parametrize("reason", ["the device monitor did not start", "device provider broke"])
+    @pytest.mark.parametrize("reason", ["the AVFoundation device provider is not installed", "device provider broke"])
     def test_a_list_that_cannot_be_read_is_not_a_missing_camera(
         self, monkeypatch: pytest.MonkeyPatch, reason: str
     ) -> None:
@@ -684,8 +702,8 @@ class TestAvfPreflight:
             VideoFailure.UNKNOWN, f"the camera list could not be read: {reason}"
         )
 
-    @pytest.mark.parametrize("start_ok", [False, None], ids=["monitor-not-started", "gst-init-raises"])
-    def test_a_broken_device_monitor_is_not_a_missing_camera(
+    @pytest.mark.parametrize("start_ok", [False, None], ids=["no-avf-provider", "gst-init-raises"])
+    def test_a_broken_device_provider_is_not_a_missing_camera(
         self, monkeypatch: pytest.MonkeyPatch, start_ok: bool | None
     ) -> None:
         from openfollow.video.failure import VideoFailure
@@ -1004,7 +1022,7 @@ class TestHandleListDevices:
         cannot tell; the camera stays selected, as the build refuses as unknown."""
 
         def _broken() -> list[dict[str, str]]:
-            raise RuntimeError("the device monitor did not start")
+            raise RuntimeError("the AVFoundation device provider is not installed")
 
         monkeypatch.setattr(avf_module, "_list_avf_devices", _broken)
 
@@ -1019,7 +1037,7 @@ class TestHandleListDevices:
         selectable, so a save keeps the remembered camera."""
 
         def _broken() -> list[dict[str, str]]:
-            raise RuntimeError("the device monitor did not start")
+            raise RuntimeError("the AVFoundation device provider is not installed")
 
         monkeypatch.setattr(avf_module, "_list_avf_devices", _broken)
 
@@ -1034,7 +1052,7 @@ class TestHandleListDevices:
         """Not "No devices found": that sends the operator to a cable, not to the listing."""
 
         def _broken() -> list[dict[str, str]]:
-            raise RuntimeError("the device monitor did not start")
+            raise RuntimeError("the AVFoundation device provider is not installed")
 
         monkeypatch.setattr(avf_module, "_list_avf_devices", _broken)
 

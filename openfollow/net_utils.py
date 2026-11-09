@@ -15,6 +15,7 @@ import errno
 import ipaddress
 import socket
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -533,6 +534,10 @@ def join_multicast_group_on_iface(sock: socket.socket, group: str, iface_ip: str
 # network backend: the backend reports what is *configured*, and "where does a
 # packet to that address go" is a question about what the kernel will do.
 _PROC_NET_ROUTE = Path("/proc/net/route")
+# macOS has no /proc: the same table comes from netstat.
+ROUTES_FROM_NETSTAT = sys.platform == "darwin"
+_NETSTAT = ("/usr/sbin/netstat", "-rn", "-f", "inet")
+_NETSTAT_TIMEOUT_S = 2.0
 
 
 class Ipv4Route(NamedTuple):
@@ -560,11 +565,14 @@ def _route_word(field: str) -> str:
 def read_ipv4_routes(path: Path | None = None) -> list[Ipv4Route] | None:
     """Every route in the kernel's main IPv4 table that can carry a packet.
 
-    ``None`` means the table could not be read (no ``/proc`` on macOS), which a
-    caller must report as unknown - distinct from ``[]``, a host that really has
-    nowhere to send a packet. The path is resolved here rather than as a default
-    argument, so a test pointing the module at another table is honoured.
+    ``None`` means the table could not be read, which a caller must report as
+    unknown - distinct from ``[]``, a host that really has nowhere to send a
+    packet. Without *path*, macOS asks ``netstat`` (:func:`parse_netstat_routes`).
+    The path is resolved here rather than as a default argument, so a test
+    pointing the module at another table is honoured.
     """
+    if path is None and ROUTES_FROM_NETSTAT:
+        return _read_netstat_routes()
     try:
         text = (path or _PROC_NET_ROUTE).read_text()
     except (OSError, ValueError):
@@ -590,6 +598,76 @@ def read_ipv4_routes(path: Path | None = None) -> list[Ipv4Route] | None:
             continue
         routes.append(route)
     return routes
+
+
+def _read_netstat_routes() -> list[Ipv4Route] | None:
+    try:
+        done = subprocess.run(list(_NETSTAT), capture_output=True, text=True, timeout=_NETSTAT_TIMEOUT_S, check=False)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if done.returncode != 0:
+        return None
+    return parse_netstat_routes(done.stdout or "")
+
+
+# BSD netstat flags: R reject, B blackhole (neither sends anything), H host
+# route, I scoped to its interface (used only by a socket bound there).
+_NETSTAT_DROP_FLAGS = frozenset("RB")
+
+
+def _netstat_network(destination: str, host: bool) -> ipaddress.IPv4Network:
+    if destination == "default":
+        return ipaddress.IPv4Network("0.0.0.0/0")
+    address, slash, length = destination.partition("/")
+    octets = address.split(".")
+    if not 1 <= len(octets) <= 4:
+        raise ValueError(destination)
+    address = ".".join(octets + ["0"] * (4 - len(octets)))
+    if slash:
+        prefix = int(length)
+    elif host:
+        prefix = 32
+    else:
+        # netstat leaves out a mask that is the address's classful one.
+        first = int(octets[0])
+        prefix = 8 if first < 128 else 16 if first < 192 else 24
+    return ipaddress.IPv4Network(f"{address}/{prefix}", strict=False)
+
+
+def parse_netstat_routes(text: str) -> list[Ipv4Route] | None:
+    """``netstat -rn -f inet`` as :func:`read_ipv4_routes` rows; ``None`` without a table header.
+
+    A gateway that is not an address (``link#6``, a neighbour's MAC) is directly
+    connected. The table prints no metric, so an interface-scoped route takes
+    metric 1 behind the unscoped one the kernel picks first.
+    """
+    columns: tuple[int, int] | None = None
+    routes: list[Ipv4Route] = []
+    for line in text.splitlines():
+        fields = line.split()
+        if fields[:1] == ["Destination"] and {"Flags", "Netif"} <= set(fields):
+            columns = (fields.index("Flags"), fields.index("Netif"))
+            continue
+        if columns is None:
+            continue
+        try:
+            flags, netif = fields[columns[0]], fields[columns[1]]
+            if _NETSTAT_DROP_FLAGS & set(flags):
+                continue
+            network = _netstat_network(fields[0], "H" in flags)
+            gateway = fields[1] if _is_ipv4_literal(fields[1]) else "0.0.0.0"
+        except (ValueError, IndexError):
+            continue
+        routes.append(Ipv4Route(iface=netif, network=network, gateway=gateway, metric=1 if "I" in flags else 0))
+    return routes if columns is not None else None
+
+
+def _is_ipv4_literal(text: str) -> bool:
+    try:
+        ipaddress.IPv4Address(text)
+    except ValueError:
+        return False
+    return True
 
 
 @dataclass(frozen=True)

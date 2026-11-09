@@ -10,6 +10,7 @@ import errno
 import ipaddress
 import socket
 import struct
+import subprocess
 import sys
 import threading
 from types import SimpleNamespace
@@ -36,7 +37,7 @@ from openfollow.net_utils import (
     route_source,
     tcp_port_shared,
 )
-from tests import _driver_alias
+from tests import _driver_alias, _netstat_routes
 from tests._port_sharing import STATION_ADDRESS, SharingKernel, share_ports
 
 pytestmark = pytest.mark.unit
@@ -1286,6 +1287,101 @@ def test_read_ipv4_routes_reads_the_kernel_table_by_default(tmp_path, monkeypatc
     path.write_text(_ROUTE_HEADER + _row("eth1", "198.51.100.0", "0.0.0.0", 0x1, "0", "255.255.255.0"))
     monkeypatch.setattr(net_utils_module, "_PROC_NET_ROUTE", path)
     assert [route.iface for route in read_ipv4_routes() or []] == ["eth1"]
+
+
+def test_read_ipv4_routes_reads_proc_off_macos_without_running_netstat(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "route"
+    path.write_text(_ROUTE_HEADER + _row("eth1", "198.51.100.0", "0.0.0.0", 0x1, "0", "255.255.255.0"))
+    monkeypatch.setattr(net_utils_module, "_PROC_NET_ROUTE", path)
+
+    def _no_netstat(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("netstat run off macOS")
+
+    monkeypatch.setattr(net_utils_module.subprocess, "run", _no_netstat)
+    assert [route.iface for route in read_ipv4_routes() or []] == ["eth1"]
+    monkeypatch.setattr(net_utils_module, "_PROC_NET_ROUTE", tmp_path / "absent")
+    assert read_ipv4_routes() is None
+
+
+def _net(text: str) -> ipaddress.IPv4Network:
+    return ipaddress.IPv4Network(text)
+
+
+def test_read_ipv4_routes_on_macos_reads_netstat(monkeypatch) -> None:
+    _netstat_routes.install(monkeypatch, _netstat_routes.netstat_run())
+    assert read_ipv4_routes() == [
+        Ipv4Route("en0", _net("0.0.0.0/0"), "192.0.2.1", 0),
+        Ipv4Route("en7", _net("0.0.0.0/0"), "198.51.100.1", 1),
+        Ipv4Route("utun3", _net("0.0.0.0/0"), "0.0.0.0", 1),
+        Ipv4Route("lo0", _net("127.0.0.0/8"), "127.0.0.1", 0),
+        Ipv4Route("lo0", _net("127.0.0.1/32"), "127.0.0.1", 0),
+        Ipv4Route("en0", _net("169.254.0.0/16"), "0.0.0.0", 0),
+        Ipv4Route("en0", _net("192.0.2.0/24"), "0.0.0.0", 0),
+        Ipv4Route("en0", _net("192.0.2.1/32"), "0.0.0.0", 0),
+        Ipv4Route("en0", _net("192.0.2.1/32"), "0.0.0.0", 1),
+        Ipv4Route("en0", _net("192.0.2.10/32"), "0.0.0.0", 0),
+        Ipv4Route("en7", _net("198.51.100.0/24"), "0.0.0.0", 0),
+        Ipv4Route("en7", _net("198.51.100.0/24"), "0.0.0.0", 1),
+        Ipv4Route("en0", _net("203.0.113.128/25"), "192.0.2.254", 0),
+        Ipv4Route("en0", _net("224.0.0.0/4"), "0.0.0.0", 0),
+        Ipv4Route("en0", _net("255.255.255.255/32"), "0.0.0.0", 0),
+    ]
+
+
+def test_read_ipv4_routes_on_macos_finds_the_columns_by_header(monkeypatch) -> None:
+    _netstat_routes.install(monkeypatch, _netstat_routes.netstat_run(_netstat_routes.CATALINA))
+    assert read_ipv4_routes() == [
+        Ipv4Route("en0", _net("0.0.0.0/0"), "192.0.2.1", 0),
+        Ipv4Route("en0", _net("192.0.2.0/24"), "0.0.0.0", 0),
+    ]
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        "short",
+        "",
+        "999.0.2           link#6             UCS                   en0",
+        "192.0.2/33        link#6             UCS                   en0",
+        "192.0.2.0.1       link#6             UCS                   en0",
+        "192.0.2&0xffff00ff link#6            UCS                   en0",
+        "net               link#6             UCS                   en0",
+    ],
+    ids=["short", "blank", "bad-octet", "bad-prefix", "five-octets", "noncontiguous-mask", "not-an-address"],
+)
+def test_read_ipv4_routes_on_macos_skips_rows_it_cannot_parse(monkeypatch, row: str) -> None:
+    text = _netstat_routes.CATALINA.replace("default ", f"{row}\ndefault ", 1)
+    _netstat_routes.install(monkeypatch, _netstat_routes.netstat_run(text))
+    assert [str(route.network) for route in read_ipv4_routes() or []] == ["0.0.0.0/0", "192.0.2.0/24"]
+
+
+@pytest.mark.parametrize(
+    "netstat",
+    [
+        _netstat_routes.netstat_run(raises=FileNotFoundError("netstat")),
+        _netstat_routes.netstat_run(raises=PermissionError("netstat")),
+        _netstat_routes.netstat_run(raises=subprocess.TimeoutExpired("netstat", 2.0)),
+        _netstat_routes.netstat_run(returncode=1),
+        _netstat_routes.netstat_run("netstat: sysctl: Operation not permitted\n"),
+        _netstat_routes.netstat_run("Destination Gateway Flags\ndefault 192.0.2.1 UGSc\n"),
+    ],
+    ids=["missing", "not-executable", "timeout", "failed", "no-table", "no-netif-column"],
+)
+def test_read_ipv4_routes_on_macos_reports_an_unreadable_table_as_unknown(monkeypatch, netstat) -> None:
+    _netstat_routes.install(monkeypatch, netstat)
+    assert read_ipv4_routes() is None
+
+
+def test_read_ipv4_routes_on_macos_tells_an_empty_table_from_an_unreadable_one(monkeypatch) -> None:
+    _netstat_routes.install(monkeypatch, _netstat_routes.netstat_run(_netstat_routes.CATALINA.split("default")[0]))
+    assert read_ipv4_routes() == []
+
+
+def test_read_ipv4_routes_on_macos_still_reads_a_given_table(tmp_path, monkeypatch) -> None:
+    _netstat_routes.install(monkeypatch, _netstat_routes.netstat_run(raises=AssertionError("netstat run")))
+    path = tmp_path / "route"
+    path.write_text(_ROUTE_HEADER + _row("eth1", "198.51.100.0", "0.0.0.0", 0x1, "0", "255.255.255.0"))
+    assert [route.iface for route in read_ipv4_routes(path) or []] == ["eth1"]
 
 
 # --------------------------------------------------------------------------- #

@@ -1337,16 +1337,24 @@ def test_read_ipv4_routes_on_macos_finds_the_columns_by_header(monkeypatch) -> N
     ]
 
 
+def test_read_ipv4_routes_on_macos_reads_a_gateway_that_is_not_an_address_as_directly_connected(
+    monkeypatch,
+) -> None:
+    text = _netstat_routes.CATALINA.replace("default ", "203.0.113/24  link#4  UGSc  2  0  en0\ndefault ", 1)
+    _netstat_routes.install(monkeypatch, _netstat_routes.netstat_run(text))
+    assert (read_ipv4_routes() or [])[0] == Ipv4Route("en0", _net("203.0.113.0/24"), "0.0.0.0", 0)
+
+
 @pytest.mark.parametrize(
     "row",
     [
         "short",
         "",
-        "999.0.2           link#6             UCS                   en0",
-        "192.0.2/33        link#6             UCS                   en0",
-        "192.0.2.0.1       link#6             UCS                   en0",
-        "192.0.2&0xffff00ff link#6            UCS                   en0",
-        "net               link#6             UCS                   en0",
+        "999.0.2           link#6             UCS  2  0  en0",
+        "192.0.2/33        link#6             UCS  2  0  en0",
+        "192.0.2.0.1       link#6             UCS  2  0  en0",
+        "192.0.2&0xffff00ff link#6            UCS  2  0  en0",
+        "net               link#6             UCS  2  0  en0",
     ],
     ids=["short", "blank", "bad-octet", "bad-prefix", "five-octets", "noncontiguous-mask", "not-an-address"],
 )

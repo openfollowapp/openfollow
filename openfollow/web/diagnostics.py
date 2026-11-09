@@ -324,6 +324,8 @@ _DECODER_ELEMENTS: tuple[str, ...] = (
     "v4l2h264dec",
     "v4l2h265dec",
     "v4l2slh265dec",
+    "vtdec_hw",
+    "vtdec",
     "avdec_h264",
     "avdec_h265",
     "openh264dec",
@@ -1643,11 +1645,77 @@ def collect_failure_extract(
 # E1. Runtime / versions ----------------------------------------------------
 
 
-def _safe_version(dist: str) -> str:
+def _safe_version(dist: str, module: str | None = None) -> str:
+    """``dist``'s version, else the loaded ``module``'s ``__version__``.
+
+    A frozen app (the macOS bundle) carries the module without its dist metadata.
+    """
     try:
         return importlib.metadata.version(dist)
     except importlib.metadata.PackageNotFoundError:
-        return "[not installed]"
+        pass
+    if module is not None:
+        try:
+            version = getattr(importlib.import_module(module), "__version__", None)
+        except Exception:  # noqa: BLE001 - a broken module reads as absent
+            version = None
+        if isinstance(version, str) and version:
+            return version
+    return "[not installed]"
+
+
+def _gstreamer_version(timeout_s: float) -> str:
+    """The ``gst-launch-1.0`` version line, else the version of the library this process loads.
+
+    The macOS app bundles the library but no command-line tools.
+    """
+    rc, out = _run(["gst-launch-1.0", "--version"], timeout_s=timeout_s)
+    if rc == 0 and out:
+        return out.splitlines()[0]
+    try:
+        import gi  # noqa: PLC0415
+
+        gi.require_version("Gst", "1.0")
+        from gi.repository import Gst  # noqa: PLC0415
+
+        return f"{Gst.version_string()} (loaded library)"
+    except Exception:  # noqa: BLE001 - no GStreamer at all
+        return "[unavailable]"
+
+
+def _loaded_images() -> list[str]:
+    """Paths of the shared libraries this process has loaded (dyld on macOS, ``/proc/self/maps`` elsewhere)."""
+    if platform.system() == "Darwin":
+        import ctypes  # noqa: PLC0415
+
+        libc = ctypes.CDLL(None)
+        libc._dyld_image_count.restype = ctypes.c_uint32
+        libc._dyld_get_image_name.restype = ctypes.c_char_p
+        libc._dyld_get_image_name.argtypes = [ctypes.c_uint32]
+        names = (libc._dyld_get_image_name(i) for i in range(libc._dyld_image_count()))
+        return [name.decode(errors="replace") for name in names if name]
+    try:
+        maps = Path("/proc/self/maps").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    return list(dict.fromkeys(f[5] for f in (line.split(None, 5) for line in maps.splitlines()) if len(f) == 6))
+
+
+def _libndi_state() -> str:
+    """The NDI SDK library this process has loaded, else the one the NDI input's lookup finds."""
+    try:
+        loaded = next((p for p in _loaded_images() if Path(p).name.startswith("libndi.")), None)
+    except Exception:  # noqa: BLE001 - an unreadable image list falls back to the lookup
+        loaded = None
+    if loaded:
+        return f"loaded ({loaded})"
+    try:
+        from openfollow.video.inputs.ndi import _find_ndi_library  # noqa: PLC0415
+
+        path = _find_ndi_library()
+    except Exception as exc:  # noqa: BLE001
+        return f"[unavailable: {type(exc).__name__}]"
+    return f"present ({path}), not loaded" if path else "[not present]"
 
 
 def _pygame_build() -> str:
@@ -1717,14 +1785,12 @@ def collect_runtime_versions(
             rows.append(f"  Working tree                 {'dirty' if out.strip() else 'clean'}")
         else:
             rows.append(f"  Working tree                 {_git_failure_detail(out)}")
-    rows.append(f"  {'bottle':<29}{_safe_version('bottle')}")
+    rows.append(f"  {'bottle':<29}{_safe_version('bottle', 'bottle')}")
     rows.append(f"  {'pygame':<29}{_pygame_build()}")
-    rows.append(f"  {'psutil':<29}{_safe_version('psutil')}")
-    rc, out = _run(["gst-launch-1.0", "--version"], timeout_s=cap())
-    rows.append(f"  GStreamer                    {out.splitlines()[0] if rc == 0 and out else '[unavailable]'}")
+    rows.append(f"  {'psutil':<29}{_safe_version('psutil', 'psutil')}")
+    rows.append(f"  GStreamer                    {_gstreamer_version(cap())}")
     rows.append(f"  GTK 3                        {_gtk3_version(cap())}")
-    ndi = "present" if importlib.util.find_spec("NDIlib") else "[not present]"
-    rows.append(f"  libndi                       {ndi}")
+    rows.append(f"  libndi                       {_libndi_state()}")
     rows.append(f"  openfollow package           {_installed_package_version(cap())}")
     return rows
 
@@ -2368,7 +2434,8 @@ def collect_system_health() -> list[str]:
     bt = psutil.boot_time()
     rows.append(f"  boot time (UTC)              {datetime.fromtimestamp(bt, tz=UTC).isoformat(timespec='seconds')}")
     rows.append(f"  uptime                       {(time.time() - bt) / 3600:.1f} h")
-    rows.append(f"  throttling                   {_collect_throttle_state()}")
+    if platform.system() == "Linux":
+        rows.append(f"  throttling                   {_collect_throttle_state()}")
     # ``sensors_temperatures`` doesn't exist on macOS at all
     # (``AttributeError``); on Linux it can be empty / Permission
     # Denied. Treat all three as the same "unavailable" case.
@@ -2623,12 +2690,18 @@ def _hex4(v: str) -> str:
     return s[:4]
 
 
+def _first_key(node: dict[str, Any], *keys: str) -> str:
+    """The first of ``keys`` ``node`` carries a value for, as text."""
+    return next((str(node[k]).strip() for k in keys if node.get(k)), "")
+
+
 def _walk_macos(node: dict[str, Any], out: list[UsbDevice]) -> None:
-    name = (node.get("_name") or "").strip()
+    """Collect a ``system_profiler`` USB tree: ``SPUSBDataType`` keys, or ``SPUSBHostDataType``'s (macOS 15)."""
+    name = _first_key(node, "_name", "USBDeviceKeyProductName")
     is_hub = "hub" in name.lower()
-    vid = _hex4(str(node.get("vendor_id", "")))
-    pid = _hex4(str(node.get("product_id", "")))
-    speed_raw = str(node.get("device_speed") or node.get("speed", "")).strip()
+    vid = _hex4(_first_key(node, "vendor_id", "USBDeviceKeyVendorID"))
+    pid = _hex4(_first_key(node, "product_id", "USBDeviceKeyProductID", "USBDeviceKeyPID"))
+    speed_raw = _first_key(node, "device_speed", "speed", "USBDeviceKeyLinkSpeed")
     if vid or pid:
         out.append(
             UsbDevice(
@@ -2636,8 +2709,8 @@ def _walk_macos(node: dict[str, Any], out: list[UsbDevice]) -> None:
                 pid=pid,
                 speed=_MACOS_SPEED_LABEL.get(speed_raw, speed_raw or "?"),
                 name=name,
-                manufacturer=(node.get("manufacturer") or "").strip(),
-                serial=(node.get("serial_num") or "").strip(),
+                manufacturer=_first_key(node, "manufacturer", "USBDeviceKeyVendorName"),
+                serial=_first_key(node, "serial_num", "USBDeviceKeySerialNumber"),
                 is_hub=is_hub,
                 disks=tuple(str(m["bsd_name"]) for m in node.get("Media") or [] if m.get("bsd_name")),
             )
@@ -2646,21 +2719,32 @@ def _walk_macos(node: dict[str, Any], out: list[UsbDevice]) -> None:
         _walk_macos(child, out)
 
 
-def collect_usb_devices_macos() -> list[UsbDevice]:
+# macOS 15 lists USB under SPUSBHostDataType; earlier releases under SPUSBDataType.
+_MACOS_USB_DATA_TYPES = ("SPUSBDataType", "SPUSBHostDataType")
+
+
+def collect_usb_devices_macos() -> list[UsbDevice] | None:
+    """The USB devices ``system_profiler`` lists, from the first data type that lists any; ``None`` when it fails."""
     rc, out = _run(
-        ["system_profiler", "SPUSBDataType", "-json"],
+        ["system_profiler", *_MACOS_USB_DATA_TYPES, "-json"],
         timeout_s=_PROFILER_TIMEOUT_S,
     )
     if rc != 0 or not out or out.startswith("[unavailable:"):
-        return []
+        return None
     try:
         data = json.loads(out)
     except json.JSONDecodeError:
-        return []
-    devices: list[UsbDevice] = []
-    for bus in data.get("SPUSBDataType", []):
-        _walk_macos(bus, devices)
-    return devices
+        return None
+    if not isinstance(data, dict):
+        return None
+    for data_type in _MACOS_USB_DATA_TYPES:
+        devices: list[UsbDevice] = []
+        for bus in data.get(data_type) or []:
+            if isinstance(bus, dict):
+                _walk_macos(bus, devices)
+        if devices:
+            return devices
+    return []
 
 
 def _usb_owners(class_root: Path | None, label: Callable[[Path], str]) -> dict[str, list[str]]:
@@ -2978,13 +3062,16 @@ def collect_usb(p: DiagnosticsProviders) -> list[str]:
     if sysname == "Linux":
         devices = collect_usb_devices_linux()
     elif sysname == "Darwin":
-        devices = collect_usb_devices_macos()
+        listed = collect_usb_devices_macos()
+        if listed is None:
+            return ["  [unavailable: no USB devices enumerated (system_profiler failed or returned no JSON)]"]
+        if not listed:
+            return ["  none attached"]
+        devices = listed
     else:
         return [f"  [unavailable: USB enumeration not implemented for {sysname}]"]
     if not devices:
-        if sysname == "Linux":
-            return ["  [unavailable: no USB devices enumerated (/sys/bus/usb/devices missing or unreadable)]"]
-        return ["  [unavailable: no USB devices enumerated (system_profiler unavailable or returned no SPUSBDataType)]"]
+        return ["  [unavailable: no USB devices enumerated (/sys/bus/usb/devices missing or unreadable)]"]
     provider_errors: list[str] = []
     midi: list[str] | None = None
     gp: list[dict[str, Any]] | None = None
@@ -3162,6 +3249,8 @@ def collect_mouse3d(p: DiagnosticsProviders) -> list[str]:
 
 
 def collect_device_permissions(p: DiagnosticsProviders) -> list[str]:
+    if platform.system() != "Linux":
+        return ["  [not applicable: the privilege grants are sudo rules on Linux]"]
     if p.privilege_states is None:
         return ["  [not applicable: privilege broker not wired]"]
     states, err = _safely_value(p.privilege_states, "privilege_states", {})

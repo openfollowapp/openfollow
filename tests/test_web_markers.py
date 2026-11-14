@@ -253,12 +253,14 @@ class TestCatalogEndpoints:
             body={"controlled_ids": [1, 2], "viewer_ids": [2]},
         )
         assert status == 200
+        _request(base, "/api/markers/prediction/2", method="PUT", body={"horizon_ms": 500})
         status, _ = _request(base, "/api/markers/catalog/2", method="DELETE")
         assert status == 200
         cfg = load_config(cfg_path)
-        # Deleted id pruned from both selection lists; the survivor stays, viewed.
+        # Deleted id pruned from both selection lists and the leads; the survivor stays, viewed.
         assert cfg.controlled_marker_ids == [1]
         assert cfg.viewer_marker_ids == [1]
+        assert cfg.marker_prediction_ms == {}
         assert catalog.get(2) is None
         assert catalog.get(1) is not None
 
@@ -1071,3 +1073,15 @@ class TestPredictionEndpoint:
         status, _ = _request(base, "/api/markers/prediction/2", method="PUT", body={"horizon_ms": 300})
         assert status == 409
         assert load_config(cfg_path).marker_prediction_ms == {}
+
+    def test_leaving_view_and_control_drops_the_lead(self, live_server) -> None:
+        """A dropped lead cannot come back unseen when the marker is controlled again."""
+        _, base, cfg_path, catalog, _ = live_server
+        self._control(base, catalog, 1, 2)
+        _request(base, "/api/markers/prediction/1", method="PUT", body={"horizon_ms": 300})
+        _request(base, "/api/markers/prediction/2", method="PUT", body={"horizon_ms": 500})
+        status, _ = _request(
+            base, "/api/markers/selection", method="POST", body={"controlled_ids": [2], "viewer_ids": [1, 2]}
+        )
+        assert status == 200
+        assert load_config(cfg_path).marker_prediction_ms == {2: 500}

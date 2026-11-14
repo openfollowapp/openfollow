@@ -3,7 +3,7 @@
 # Copyright (C) 2026 Paul Hermann and Michel Honold
 """Tests for :mod:`openfollow.runtime.marker_velocity`.
 
-The estimator behind the PSN speed field: a per-frame position delta in m/s,
+The estimator behind the PSN speed field: a per-sample position delta in m/s,
 EMA-smoothed with a frame-rate-independent alpha, zero on the seeding frame,
 clamped to the wire ceiling, and settling to exactly zero at rest.
 """
@@ -17,6 +17,7 @@ import pytest
 from openfollow.runtime.frame_timing import NOMINAL_FRAME_DT, dt_steps, ema_factor
 from openfollow.runtime.marker_velocity import (
     _MAX_REPORTED_SPEED_MPS,
+    _MAX_SAMPLE_GAP_S,
     _MIN_SAMPLE_DT,
     _STILL_SPEED_MPS,
     _VELOCITY_ALPHA,
@@ -180,3 +181,44 @@ def test_returned_vector_matches_state() -> None:
     state = MarkerVelocityState()
     out = _drive(state, (0.0, 2.0, 0.0), dt=_DT_60, frames=5)
     assert out == state.velocity
+
+
+def _stepped(state: MarkerVelocityState, speed: float, *, writer_hz: int, seconds: float) -> list[float]:
+    """Walk at *speed* m/s along X, written at *writer_hz* and sampled at 60 fps."""
+    out = []
+    for frame in range(int(seconds * 60) + 1):
+        t = frame * _DT_60
+        x = speed * math.floor(t * writer_hz + 1e-9) / writer_hz
+        out.append(estimate_marker_velocity(state, (x, 0.0, 0.0), _DT_60)[0])
+    return out
+
+
+@pytest.mark.parametrize("writer_hz", [10, 15, 30])
+def test_a_writer_slower_than_the_frame_clock_reads_steady(writer_hz: int) -> None:
+    """Between a slow writer's samples the position stands still; the estimate
+    holds instead of swinging between zero and a multiple of the real speed."""
+    settled = _stepped(MarkerVelocityState(), 1.5, writer_hz=writer_hz, seconds=3.0)[-60:]
+    assert min(settled) == pytest.approx(1.5, rel=0.02)
+    assert max(settled) == pytest.approx(1.5, rel=0.02)
+
+
+def test_a_slow_writer_that_stops_still_settles_to_zero() -> None:
+    state = MarkerVelocityState()
+    _stepped(state, 1.5, writer_hz=10, seconds=2.0)
+    resting = state.prev_pos
+    assert resting is not None
+    for _ in range(int(_MAX_SAMPLE_GAP_S * 60) + 60):
+        out = estimate_marker_velocity(state, resting, _DT_60)
+    assert out == (0.0, 0.0, 0.0)
+
+
+def test_the_first_sample_after_a_rest_is_not_divided_by_the_whole_rest() -> None:
+    """A marker resting for seconds that moves again reports its frame's rate."""
+    state = MarkerVelocityState()
+    _drive(state, (1.0, 0.0, 0.0), dt=_DT_60, frames=60)
+    resting = state.prev_pos
+    assert resting is not None
+    for _ in range(300):
+        estimate_marker_velocity(state, resting, _DT_60)
+    out = estimate_marker_velocity(state, (resting[0] + 1.0 * _DT_60, 0.0, 0.0), _DT_60)
+    assert out[0] > 0.1

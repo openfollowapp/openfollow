@@ -342,6 +342,7 @@ function pollLead(prediction, controlled) {
     })}}}));
 }
 function lead(id) { return root.querySelector('tr[data-marker-id="' + id + '"] input[data-prediction]'); }
+function leadLater(ms) { var base = Date.now(); Date.now = function () { return base + ms; }; }
 function leadPuts() {
     return requests.filter(function (r) { return r.url.indexOf('/api/markers/prediction/') === 0; })
         .map(function (r) { return [r.method, r.url, r.body]; });
@@ -389,3 +390,44 @@ def test_the_poll_never_overwrites_a_lead_being_typed_or_just_saved() -> None:
 def test_a_lead_set_elsewhere_shows_at_the_next_poll() -> None:
     out = _run_async(_LEAD_STEPS + "pollLead({'3': 100}); pollLead({'3': 900}); out.value = lead(3).value;")
     assert out == {"value": "900"}
+
+
+def test_a_refused_lead_reports_the_error_and_the_next_poll_shows_the_saved_value() -> None:
+    out = _run_async(
+        _LEAD_STEPS
+        + "var shown = []; window.OpenFollow.saveError.show = function (box, info) { shown.push(info.error); };"
+        " window.OpenFollow.saveError.fromResponse = function (r) { return r.json(); };"
+        " station = function () { return {status: 400, body: {error: 'Lead must be 0 to 1000 ms.'}}; };"
+        " pollLead({'3': 100}); typeInto(lead(3), '5000'); lead(3).blur(); await settle();"
+        " pollLead({'3': 100}); out.value = lead(3).value; out.shown = shown;"
+    )
+    assert out == {"value": "100", "shown": ["Lead must be 0 to 1000 ms."]}
+
+
+def test_text_the_field_cannot_read_is_an_error_not_a_cleared_lead() -> None:
+    out = _run_async(
+        _LEAD_STEPS
+        + "var shown = []; window.OpenFollow.saveError.show = function (box, info) { shown.push(info.error); };"
+        " pollLead({'3': 100}); typeInto(lead(3), '');"
+        " Object.defineProperty(lead(3), 'validity', {value: {badInput: true}}); lead(3).blur(); await settle();"
+        " out.puts = leadPuts(); out.shown = shown; pollLead({'3': 100}); out.value = lead(3).value;"
+    )
+    assert out == {"puts": [], "shown": ["Lead must be a whole number from 0 to 1000 ms."], "value": "100"}
+
+
+def test_a_slow_save_holds_the_typed_lead_until_it_answers() -> None:
+    """The hold starts when the save answers, so a poll during a long save never shows the old lead."""
+    out = _run_async(
+        _LEAD_STEPS + "holdWhen = function (r) { return r.url.indexOf('/api/markers/prediction/') === 0; };"
+        " pollLead({'3': 100}); typeInto(lead(3), '700'); lead(3).blur(); await settle();"
+        " leadLater(5000); pollLead({'3': 100}); out.during = lead(3).value;"
+        " release(); await settle(); pollLead({'3': 100}); out.after = lead(3).value;"
+    )
+    assert out == {"during": "700", "after": "700"}
+
+
+def test_a_row_leaving_view_and_control_can_no_longer_edit_its_lead() -> None:
+    out = _run_async(
+        _LEAD_STEPS + "pollLead({'3': 450}); pollLead({}, []); out.lead = [lead(3).value, lead(3).disabled];"
+    )
+    assert out == {"lead": ["0", True]}

@@ -2911,6 +2911,12 @@ def coerce_marker_prediction_ms(raw: object) -> dict[int, int]:
     return coerced
 
 
+def prediction_within(controlled: Any, leads: dict[int, int]) -> dict[int, int]:
+    """The leads as kept: only a controlled marker sends, so leaving control drops its lead."""
+    allowed = set(controlled) if isinstance(controlled, list) else set()
+    return {mid: ms for mid, ms in leads.items() if mid in allowed}
+
+
 def feature_on(cfg: Any, key: str) -> bool:
     """Whether ``cfg`` has feature ``key`` on; a config without ``[ui]`` reads the defaults."""
     shown = getattr(getattr(cfg, "ui", None), "shown_features", DEFAULT_SHOWN_FEATURES)
@@ -3288,7 +3294,9 @@ class AppConfig:
                 continue
             coerced[key] = value
         self.marker_move_speeds = coerced
-        self.marker_prediction_ms = coerce_marker_prediction_ms(self.marker_prediction_ms)
+        self.marker_prediction_ms = prediction_within(
+            self.controlled_marker_ids, coerce_marker_prediction_ms(self.marker_prediction_ms)
+        )
 
     def normalise_startup_settings(self) -> None:
         """Coerce the update and time-sync settings read at startup, so a hand-edited TOML or an

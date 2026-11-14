@@ -105,6 +105,7 @@ from openfollow.configuration import (
     path_name_from,
     plane_pin_key,
     plane_pins,
+    prediction_within,
     reconcile_simple_corners,
     save_config,
     stage_config,
@@ -3542,7 +3543,7 @@ _STARTUP_ONLY_FIELDS = ("update_include_prereleases", "auto_update_check", "auto
 def _apply_file_import_data(cfg: AppConfig, data: dict[str, Any]) -> None:
     """Apply what a file import restores and a push leaves as it is.
 
-    That is this station's own setup: its marker selection, detection masks, the
+    That is this station's own setup: its marker selection and leads, detection masks, the
     fields of every video input rather than only the running one's, its 3D Mouse,
     operator messages, MIDI patches, virtual faders, gamepad mapping and whether it
     draws paths, and the settings read at startup (network backend, update and
@@ -3553,6 +3554,9 @@ def _apply_file_import_data(cfg: AppConfig, data: dict[str, Any]) -> None:
             setattr(cfg, name, marker_id_list(data[name], path="imported settings", field_name=name))
     cfg.viewer_marker_ids = viewed_with_controlled(cfg.controlled_marker_ids, cfg.viewer_marker_ids)
     cfg.parked_marker_ids = parked_within(cfg.controlled_marker_ids, cfg.parked_marker_ids)
+    if "marker_prediction_ms" in data:
+        cfg.marker_prediction_ms = coerce_marker_prediction_ms(data["marker_prediction_ms"])
+    cfg.marker_prediction_ms = prediction_within(cfg.controlled_marker_ids, cfg.marker_prediction_ms)
 
     from openfollow.video.inputs import get_registry
 
@@ -3678,9 +3682,6 @@ def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any], *, pushed: 
         cfg.window_width = _as_int(data["window_width"], cfg.window_width)
     if "window_height" in data:
         cfg.window_height = _as_int(data["window_height"], cfg.window_height)
-    if "marker_prediction_ms" in data:
-        cfg.marker_prediction_ms = coerce_marker_prediction_ms(data["marker_prediction_ms"])
-
     if not pushed:
         _apply_file_import_data(cfg, data)
 
@@ -5052,6 +5053,7 @@ def _register_marker_catalog_routes(
                     fresh.controlled_marker_ids = new_controlled
                     fresh.viewer_marker_ids = new_viewer
                     fresh.parked_marker_ids = parked_within(new_controlled, fresh.parked_marker_ids)
+                    fresh.marker_prediction_ms = prediction_within(new_controlled, fresh.marker_prediction_ms)
                     save_config(fresh, server.config_path)
             except OSError:
                 logger.exception(
@@ -5167,6 +5169,7 @@ def _register_marker_catalog_routes(
             cfg.parked_marker_ids = parked_within(
                 cfg.controlled_marker_ids, park_changes_applied(cfg.parked_marker_ids, park)
             )
+            cfg.marker_prediction_ms = prediction_within(cfg.controlled_marker_ids, cfg.marker_prediction_ms)
             save_config(cfg, server.config_path)
         return json.dumps({"success": True})
 

@@ -59,6 +59,7 @@ _WRITES: dict[tuple[str, str], tuple[str, str, Any]] = {
     ("POST", "/api/detection/masks/enabled"): ("/api/detection/masks/enabled", "json", {"enabled": True}),
     ("DELETE", "/api/markers/catalog/<marker_id:int>"): ("/api/markers/catalog/1", "json", None),
     ("POST", "/api/markers/selection"): ("/api/markers/selection", "json", {"controlled_ids": [1], "viewer_ids": [1]}),
+    ("PUT", "/api/markers/prediction/<marker_id:int>"): ("/api/markers/prediction/1", "json", {"horizon_ms": 300}),
     ("POST", "/api/paths"): ("/api/paths", "json", {"name": "P"}),
     ("PUT", "/api/paths/<name>"): ("/api/paths/P", "json", {"name": "Q"}),
     ("DELETE", "/api/paths/<name>"): ("/api/paths/P", "json", None),

@@ -30,10 +30,10 @@ How the lead moves what every output sends.
 
 Each controlled marker can be sent ahead of where it is: **Lead (ms)**, `0` to `1000`. The station sends the position that far ahead along the marker's current speed, so a moving light with slow pan / tilt or a long fade lands on the performer instead of behind them. Pick the lead per marker, roughly the time its lights need to catch up.
 
-- `0` (or an empty field) sends the real position. The lead is this station's setting; it travels with export and import.
+- `0` (or an empty field) sends the real position. The lead is this station's setting, like its marker selection: it travels with export and import, not with a push to other stations, and a marker that leaves View & Control loses its lead.
 - Only X and Y are predicted; Z is sent as it is.
 - Every output carries the predicted position: PSN, OTP, RTTrPM and OSC. Other OpenFollow stations that receive this station's PSN see it too. The PSN speed field stays the real speed.
 - The Operator Screen, zones, paths and person detection keep working on the real position.
 - When a performer stops abruptly, the sent point overshoots by up to speed × lead and comes back as the speed settles. It is not clipped to the grid.
-- The speed used is capped at 5 m/s. A jump (reset, OSC snap to a preset) sends no lead for half a second, so lights go straight to the new position.
+- The speed used is capped at 5 m/s. A jump faster than 10 m/s (reset, OSC snap to a preset) sends no lead for half a second, so lights go straight to the new position. A shorter snap still throws the point briefly past its target.
 - Noisy positions (person detection, an external tracker over OSC) are multiplied by the lead too: a marker that jitters while standing still swings its lights at long leads. Use a short lead for those markers.

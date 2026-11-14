@@ -525,15 +525,25 @@
     }
 
     function savePrediction(tr, id, input) {
+        // Text a number field can't read has an empty value; sent, it would clear the lead.
+        if (input.validity && input.validity.badInput) {
+            tr._predictionUntil = 0;
+            writeFailed(input, {error: 'Lead must be a whole number from 0 to 1000 ms.', action: '', href: ''});
+            flashRow(tr, false);
+            return;
+        }
         const raw = input.value.trim();
-        tr._predictionUntil = Date.now() + 1600;
+        // Held while the save is in flight, then until a poll begun before it has landed.
+        tr._predictionUntil = Infinity;
         fetch('/api/markers/prediction/' + id, {
             method: 'PUT',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({horizon_ms: raw === '' ? 0 : Number(raw)})
         }).then(writeResult(input)).then(function(ok) {
+            tr._predictionUntil = ok ? Date.now() + 1600 : 0;
             flashRow(tr, ok);
         }).catch(function() {
+            tr._predictionUntil = 0;
             flashRow(tr, false);
             writeUnreachable(input)();
         });

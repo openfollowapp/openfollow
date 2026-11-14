@@ -170,6 +170,30 @@ class TestJumpDetection:
         estimate_marker_velocity(state, (10.02, 0.0, 0.0), 1 / 60)
         assert state.since_jump_s == pytest.approx(1 / 60)
 
+    @pytest.mark.parametrize("snap_m", [0.2, 0.3, 1.0])
+    def test_a_short_snap_at_rest_is_a_jump(self, snap_m: float) -> None:
+        state = MarkerVelocityState()
+        for _ in range(30):
+            estimate_marker_velocity(state, (0.0, 0.0, 0.0), 1 / 60)
+        estimate_marker_velocity(state, (snap_m, 0.0, 0.0), 1 / 60)
+        assert state.since_jump_s == 0.0
+
+    def test_a_z_step_is_not_a_jump(self) -> None:
+        """Z is never led, so an instant lift must not switch the X/Y lead off."""
+        state = MarkerVelocityState()
+        for frame in range(60):
+            estimate_marker_velocity(state, (1.5 * frame / 60, 0.0, 0.0), 1 / 60)
+        estimate_marker_velocity(state, (1.5, 0.0, 2.0), 1 / 60)
+        assert state.since_jump_s == math.inf
+
+    @pytest.mark.parametrize("writer_hz", [10, 30])
+    def test_a_slow_writer_walking_is_not_a_jump(self, writer_hz: int) -> None:
+        state = MarkerVelocityState()
+        for frame in range(120):
+            x = 1.5 * math.floor(frame / 60 * writer_hz + 1e-9) / writer_hz
+            estimate_marker_velocity(state, (x, 0.0, 0.0), 1 / 60)
+        assert state.since_jump_s == math.inf
+
     def test_a_fast_walk_is_not_a_jump(self) -> None:
         state = MarkerVelocityState()
         for frame in range(60):

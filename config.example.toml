@@ -308,5 +308,5 @@ unit_system = "metric"
 # Features this station uses (General tab, Features). One that is left out is
 # hidden in the web UI and does not run; its settings are kept. Also:
 # "lens_suggestions", "detection", "rttrpm", "paths", "touch_remote",
-# "zone_heights" (experimental).
+# "zone_heights", "output_prediction" (experimental).
 shown_features = ["zones", "midi", "psn_input"]

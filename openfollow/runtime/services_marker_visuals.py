@@ -34,6 +34,7 @@ from openfollow.runtime.latency_warning import HEADLINE as LATENCY_WARNING_HEADL
 from openfollow.runtime.latency_warning import INFO as LATENCY_WARNING_INFO
 from openfollow.runtime.latency_warning import MESSAGE as LATENCY_WARNING_MESSAGE
 from openfollow.runtime.latency_warning import card_showing as latency_card_showing
+from openfollow.runtime.marker_prediction import prediction_lead
 from openfollow.runtime.marker_velocity import MarkerVelocityState, estimate_marker_velocity
 from openfollow.runtime.overlay_draw_style import STATUS_LEVELS, status_level
 from openfollow.runtime.overlay_state import (
@@ -504,13 +505,17 @@ def build_marker_visual_state(
     # and returns restarts from its new position instead of a stale reference.
     velocity_states: dict[int, MarkerVelocityState] = app._marker_velocity_states
     prune_to_keep(velocity_states, controlled_set)
+    horizons: dict[int, int] = app._config.marker_prediction_ms if feature_on(app._config, "output_prediction") else {}
     for marker_id in controlled_set:
         marker = app._server.get_marker(marker_id)
         if marker is None:
             continue
         vstate: MarkerVelocityState = get_or_create(velocity_states, marker_id, MarkerVelocityState)
-        # The velocity of what is sent: a zone's lift easing in moves the sent Z.
-        marker.set_speed(*estimate_marker_velocity(vstate, marker.sent_pos, dt))
+        # A zone's lift easing in moves the sent Z, so it is in the velocity; the lead
+        # is not, or it would feed back into the velocity it is built from.
+        velocity = estimate_marker_velocity(vstate, marker.lifted_pos, dt)
+        marker.set_speed(*velocity)
+        marker.set_lead(*prediction_lead(vstate, horizons.get(marker_id, 0)))
 
     # Fetch controller info once and build a reverse map so the per-marker
     # loop can stamp each marker card with its bound controller without an

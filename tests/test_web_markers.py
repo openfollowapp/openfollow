@@ -1010,3 +1010,64 @@ class TestResolveMarkerCatalogPath:
 
         out = _resolve_marker_catalog_path("/etc/openfollow/config.toml", "markers.toml")
         assert out == "/etc/openfollow/markers.toml"
+
+
+class TestPredictionEndpoint:
+    """The catalog table's Lead (ms) column: one controlled marker's output prediction horizon."""
+
+    @staticmethod
+    def _control(base: str, catalog: MarkerCatalog, *ids: int) -> None:
+        for mid in ids:
+            catalog.upsert(mid, f"M{mid}", "#ff0000")
+        status, _ = _request(
+            base, "/api/markers/selection", method="POST", body={"controlled_ids": list(ids), "viewer_ids": list(ids)}
+        )
+        assert status == 200
+
+    def test_a_lead_is_saved_and_listed_by_the_catalog(self, live_server) -> None:
+        _, base, cfg_path, catalog, _ = live_server
+        self._control(base, catalog, 1, 2)
+        status, _ = _request(base, "/api/markers/prediction/2", method="PUT", body={"horizon_ms": 450})
+        assert status == 200
+        assert load_config(cfg_path).marker_prediction_ms == {2: 450}
+        _, body = _request(base, "/api/markers/catalog")
+        assert json.loads(body)["this_station"]["prediction_ms"] == {"2": 450}
+
+    def test_zero_removes_the_lead(self, live_server) -> None:
+        _, base, cfg_path, catalog, _ = live_server
+        self._control(base, catalog, 1)
+        _request(base, "/api/markers/prediction/1", method="PUT", body={"horizon_ms": 300})
+        status, _ = _request(base, "/api/markers/prediction/1", method="PUT", body={"horizon_ms": 0})
+        assert status == 200
+        assert load_config(cfg_path).marker_prediction_ms == {}
+
+    @pytest.mark.parametrize("horizon", [-1, 1001, 99999])
+    def test_an_out_of_range_lead_is_refused(self, live_server, horizon: int) -> None:
+        _, base, cfg_path, catalog, _ = live_server
+        self._control(base, catalog, 1)
+        status, body = _request(base, "/api/markers/prediction/1", method="PUT", body={"horizon_ms": horizon})
+        assert status == 400
+        assert "0 to 1000" in json.loads(body)["error"]
+        assert load_config(cfg_path).marker_prediction_ms == {}
+
+    @pytest.mark.parametrize("horizon", [None, "abc", "300", True, 12.5, [300]])
+    def test_a_wrong_type_lead_is_refused(self, live_server, horizon: object) -> None:
+        _, base, cfg_path, catalog, _ = live_server
+        self._control(base, catalog, 1)
+        status, _ = _request(base, "/api/markers/prediction/1", method="PUT", body={"horizon_ms": horizon})
+        assert status == 400
+        assert load_config(cfg_path).marker_prediction_ms == {}
+
+    @pytest.mark.parametrize("body", [[], "x", {}, {"horizon": 300}])
+    def test_a_malformed_body_is_refused(self, live_server, body: object) -> None:
+        _, base, _, catalog, _ = live_server
+        self._control(base, catalog, 1)
+        status, _ = _request(base, "/api/markers/prediction/1", method="PUT", body=body)  # type: ignore[arg-type]
+        assert status == 400
+
+    def test_a_marker_this_station_does_not_control_is_refused(self, live_server) -> None:
+        _, base, cfg_path, catalog, _ = live_server
+        self._control(base, catalog, 1)
+        status, _ = _request(base, "/api/markers/prediction/2", method="PUT", body={"horizon_ms": 300})
+        assert status == 409
+        assert load_config(cfg_path).marker_prediction_ms == {}

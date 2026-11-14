@@ -42,6 +42,8 @@ class MarkerVelocityState:
 
     prev_pos: Vec3 | None = None
     velocity: Vec3 = _ZERO
+    # Seconds since a sample's rate passed the ceiling: a repositioning, not motion.
+    since_jump_s: float = math.inf
 
 
 def estimate_marker_velocity(state: MarkerVelocityState, pos: Vec3, dt: float) -> Vec3:
@@ -62,6 +64,7 @@ def estimate_marker_velocity(state: MarkerVelocityState, pos: Vec3, dt: float) -
     rate_y = (pos[1] - prev[1]) / seconds
     rate_z = (pos[2] - prev[2]) / seconds
     magnitude = math.hypot(rate_x, rate_y, rate_z)
+    state.since_jump_s = 0.0 if magnitude > _MAX_REPORTED_SPEED_MPS else state.since_jump_s + seconds
     if magnitude > _MAX_REPORTED_SPEED_MPS:
         scale = _MAX_REPORTED_SPEED_MPS / magnitude
         rate_x *= scale

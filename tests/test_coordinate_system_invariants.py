@@ -228,6 +228,23 @@ def test_collect_marker_positions_is_offset_independent(offsets) -> None:
 
 
 @pytest.mark.parametrize("offsets", OFFSET_CASES)
+def test_a_prediction_lead_is_sent_offset_free_and_zones_see_the_real_position(offsets) -> None:
+    """The lead is added to what is sent only, never to marker.pos and never with an offset."""
+    ox, oy, oz = offsets
+    app = _make_app(_grid(ox, oy, oz))
+    ctrl = app._server.add_marker(1)
+    ctrl.set_pos(2.0, 3.0, 0.5)
+    ctrl.set_lead(0.4, -0.6)
+    app._controlled_ids = [1]
+    app._viewer_ids = [1]
+
+    psn_out = ctrl.to_psn_marker()
+    assert (psn_out.pos.x, psn_out.pos.y, psn_out.pos.z) == pytest.approx((2.4, 2.4, 0.5))
+    result = {key: (x, y) for key, x, y in _services_for(app)._collect_marker_positions()}
+    assert result[("marker", 1)] == pytest.approx((2.0, 3.0))
+
+
+@pytest.mark.parametrize("offsets", OFFSET_CASES)
 def test_collect_marker_positions_ignores_grid_offsets(offsets) -> None:
     ox, oy, oz = offsets
     baseline_app = _make_app(_grid(0.0, 0.0, 0.0))

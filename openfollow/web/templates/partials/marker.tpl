@@ -518,6 +518,27 @@
         });
     }
 
+    // ---- Output prediction: this station's lead per controlled marker, saved on change.
+    function predictionInput(markerId) {
+        return '<input type="number" class="prediction-input" data-prediction min="0" max="1000" ' +
+            'placeholder="0" id="prediction-ms-' + markerId + '" aria-label="Lead (ms)" disabled>';
+    }
+
+    function savePrediction(tr, id, input) {
+        const raw = input.value.trim();
+        tr._predictionUntil = Date.now() + 1600;
+        fetch('/api/markers/prediction/' + id, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({horizon_ms: raw === '' ? 0 : Number(raw)})
+        }).then(writeResult(input)).then(function(ok) {
+            flashRow(tr, ok);
+        }).catch(function() {
+            flashRow(tr, false);
+            writeUnreachable(input)();
+        });
+    }
+
     // ---- Row factories: build the row once, attach listeners once.
     function createCatalogRow(id, root) {
         const tr = document.createElement('tr');
@@ -532,12 +553,14 @@
                 'data-color-picker="full" aria-label="Marker colour"></button></td>' +
             '<td class="cell-soft" data-cell="controlled-by"></td>' +
             '<td data-cell="this-station">' + thisStationToggle('this-station-' + id, id) + parkToggle(id) + '</td>' +
+            '<td data-cell="prediction" data-feature="output_prediction">' + predictionInput(id) + '</td>' +
             '<td class="row-actions">' +
                 '<span class="stat-chip info unsaved-chip" hidden>Unsaved</span>' +
                 '<button type="button" class="save-btn small" data-action="save">Save</button>' +
                 '<button type="button" class="danger small" data-action="delete">Delete</button>' +
             '</td>';
         tr._held = {name: false, color: false};
+        tr._predictionUntil = 0;
         tr._stored = storedValues('', '');
         // Until then a poll begun before the save may still carry the old values.
         tr._savedUntil = 0;
@@ -556,6 +579,10 @@
                 setPark(park, radio.value, park.getAttribute('aria-pressed') === 'true');
                 postSelection(root, tr);
             });
+        });
+        const lead = tr.querySelector('input[data-prediction]');
+        lead.addEventListener('change', function() {
+            savePrediction(tr, id, lead);
         });
         park.addEventListener('click', function() {
             if (park.disabled) return;
@@ -622,10 +649,16 @@
             setPark(park, state, (thisStation.parked_ids || []).indexOf(entry.id) !== -1);
         }
         tr.dataset.synced = 'true';
+        const lead = tr.querySelector('input[data-prediction]');
+        if (lead.disabled !== (state !== 'control')) lead.disabled = state !== 'control';
+        if (Date.now() >= tr._predictionUntil) {
+            setInputIfChanged(lead, String((thisStation.prediction_ms || {})[String(entry.id)] || 0));
+        }
         const markerName = entry.name || ('Marker ' + entry.id);
         const label = 'This station: ' + markerName;
         if (toggle.getAttribute('aria-label') !== label) toggle.setAttribute('aria-label', label);
         if (park.getAttribute('aria-label') !== 'Park ' + markerName) park.setAttribute('aria-label', 'Park ' + markerName);
+        if (lead.getAttribute('aria-label') !== 'Lead (ms): ' + markerName) lead.setAttribute('aria-label', 'Lead (ms): ' + markerName);
     }
 
     function createAddRow() {
@@ -641,6 +674,7 @@
                 'data-color-picker="full" aria-label="New marker colour"></button></td>' +
             '<td><span id="add-marker-feedback" class="add-feedback" aria-live="polite"></span></td>' +
             '<td data-cell="this-station">' + thisStationToggle('this-station-new', null) + '</td>' +
+            '<td data-feature="output_prediction"></td>' +
             '<td class="row-actions"><button type="button" class="save-btn small" id="add-marker-btn">Add</button></td>';
         const idIn = tr.querySelector('#new-marker-id');
         const nameIn = tr.querySelector('#new-marker-name');
@@ -752,6 +786,7 @@
                         '<th>ID</th><th>Name</th><th>Color</th>' +
                         '<th>Controlled by</th>' +
                         '<th>This Station <span id="selection-saved-flash" class="saved-flash" aria-live="polite"></span></th>' +
+                        '<th data-feature="output_prediction">Lead (ms)</th>' +
                         '<th></th>' +
                     '</tr></thead>' +
                     '<tbody data-role="catalog-body"></tbody>' +
@@ -831,6 +866,9 @@
 <style>
 .marker-catalog-table { margin-top: 0.5rem; }
 .marker-catalog-table td[data-cell="this-station"] { white-space: nowrap; }
+.marker-catalog-table .prediction-input { width: 5.5rem; }
+/* Only a View & Control row has a lead. */
+.marker-catalog-table .prediction-input:disabled { visibility: hidden; }
 /* Park: grey while off, the info line while on, inert unless the row is View & Control. */
 .marker-catalog-table .park-toggle {
     display: inline-flex; align-items: center; justify-content: center; vertical-align: middle;

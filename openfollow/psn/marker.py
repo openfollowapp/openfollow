@@ -74,8 +74,9 @@ class Marker:
     sender's start: never comparable to ours, never re-broadcast as ours.
 
     ``lift`` is a Z a zone adds to everything sent (``sent_pos``), kept apart
-    from ``pos`` so the operator's own Z is never changed by it. Setting it is
-    not a data write: it neither stamps nor marks the marker valid.
+    from ``pos`` so the operator's own Z is never changed by it. ``lead`` is the
+    X/Y shift output prediction adds to everything sent, kept apart the same way.
+    Setting either is not a data write: it neither stamps nor marks the marker valid.
     """
 
     __slots__ = (
@@ -89,6 +90,7 @@ class Marker:
         "_status",
         "_timestamp",
         "_lift",
+        "_lead",
         "_remote",
         "_clock",
         "_lock",
@@ -119,6 +121,7 @@ class Marker:
         self._status: float | None = None
         self._timestamp: int = 0
         self._lift: float = 0.0
+        self._lead: tuple[float, float] = (0.0, 0.0)
         self._remote: bool = bool(remote)
         self._clock = clock
         self._lock = threading.Lock()
@@ -134,11 +137,27 @@ class Marker:
             return self._lift
 
     @property
-    def sent_pos(self) -> Vec3:
-        """The position every output sends: ``pos`` with ``lift`` added to Z, read under one lock."""
+    def lead(self) -> tuple[float, float]:
+        with self._lock:
+            return self._lead
+
+    @property
+    def lifted_pos(self) -> Vec3:
+        """``pos`` with ``lift`` added to Z and no ``lead``: where the marker really is, as sent."""
         with self._lock:
             x, y, z = self._pos
             return (x, y, z + self._lift)
+
+    @property
+    def sent_pos(self) -> Vec3:
+        """The position every output sends: ``pos`` with ``lead`` on X/Y and ``lift`` on Z, read under one lock."""
+        with self._lock:
+            return self._sent_pos_locked()
+
+    def _sent_pos_locked(self) -> Vec3:
+        x, y, z = self._pos
+        dx, dy = self._lead
+        return (x + dx, y + dy, z + self._lift)
 
     @property
     def speed(self) -> Vec3:
@@ -197,6 +216,11 @@ class Marker:
         """Set the Z added to what is sent; no stamp, so it never makes a stale marker look fresh."""
         with self._lock:
             self._lift = float(lift)
+
+    def set_lead(self, dx: float, dy: float) -> None:
+        """Set the X/Y shift added to what is sent; no stamp, like :meth:`set_lift`."""
+        with self._lock:
+            self._lead = (float(dx), float(dy))
 
     def set_name(self, name: str) -> None:
         """Update the marker name (used by live catalog rename)."""
@@ -262,11 +286,10 @@ class Marker:
         :func:`is_marker_stale`): computing it here would re-enter ``_lock``.
         """
         with self._lock:
-            x, y, z = self._pos
             # pypsn uses tracker_id (wire protocol); we translate at boundary.
             return pypsn.PsnTracker(
                 tracker_id=self.marker_id,
-                pos=pypsn.PsnVector3(x, y, z + self._lift),
+                pos=pypsn.PsnVector3(*self._sent_pos_locked()),
                 speed=pypsn.PsnVector3(*self._speed),
                 ori=pypsn.PsnVector3(*self._ori),
                 accel=pypsn.PsnVector3(*self._accel),

@@ -22,6 +22,7 @@ All config lives in `config.toml` (auto-reloaded when file changes on disk).
 | `auto_update_check` | `True` | Auto-query GitHub on startup / IP change (drives the Software Update box + footer flag); fail-silent offline |
 | `auto_time_sync` | `True` | Auto-sync the system clock from `time_sync_server` on startup / IP change (Pi has no RTC); needs the `system.set_clock` grant |
 | `marker_move_speeds` | `{}` | Device-local and runtime-authoritative: never exported, and an import keeps the live speeds. See [input](input.md#speed-per-marker-appconfigmarker_move_speeds) |
+| `marker_prediction_ms` | `{}` | Output prediction horizon per marker, `0..1000` ms; a zero or bad pair is dropped. Travels with export and peer push, applied live. See [outputs](outputs.md#output-prediction-markerlead) |
 | `viewer_marker_ids` | `[]` | Markers shown in overlay (incl. remote); always holds every controlled id (`viewed_with_controlled`: on load, in the selection route and in `init_markers`) |
 | `parked_marker_ids` | `[]` | Controlled markers relative input skips; always a subset of `controlled_marker_ids` (`parked_within`: in `__post_init__`, the selection route, a file import and the hot reload). Travels with export, Restore defaults clears it, applied live. See [input](input.md#parked-markers-inputparkingpy) |
 

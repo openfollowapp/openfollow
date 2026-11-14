@@ -73,6 +73,7 @@ from openfollow.configuration import (
     NETWORK_MODES,
     OFFERED_FEATURES,
     PLANE_PIN_FIELDS,
+    PREDICTION_HORIZON_MAX_MS,
     VALID_BUTTON_NAMES,
     AppConfig,
     CalibrationMarkConfig,
@@ -87,6 +88,7 @@ from openfollow.configuration import (
     _coerce_marker_tokens,
     apply_renamed_marker_keys,
     calibration_mark_drops,
+    coerce_marker_prediction_ms,
     config_file_health,
     config_problem_kind,
     config_problem_words,
@@ -2794,6 +2796,11 @@ def _mouse3d_status_view(server: ConfigWebServer) -> dict[str, Any]:
     return dict(server.get_runtime_stats().get("mouse3d") or {})
 
 
+def _prediction_json(cfg: AppConfig) -> dict[str, int]:
+    """This station's output prediction horizons for the catalog table, JSON-keyed."""
+    return {str(mid): ms for mid, ms in cfg.marker_prediction_ms.items()}
+
+
 def _controller_slots_view(server: ConfigWebServer) -> dict[str, Any]:
     """The Controller Slots snapshot with each slot's marker named and coloured as its HUD card is:
     the catalog entry, or ``Marker <id>`` in the palette colour while the catalog has none."""
@@ -3671,6 +3678,8 @@ def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any], *, pushed: 
         cfg.window_width = _as_int(data["window_width"], cfg.window_width)
     if "window_height" in data:
         cfg.window_height = _as_int(data["window_height"], cfg.window_height)
+    if "marker_prediction_ms" in data:
+        cfg.marker_prediction_ms = coerce_marker_prediction_ms(data["marker_prediction_ms"])
 
     if not pushed:
         _apply_file_import_data(cfg, data)
@@ -4870,6 +4879,7 @@ def _register_marker_catalog_routes(
                         "controlled_ids": list(cfg.controlled_marker_ids),
                         "viewer_ids": list(cfg.viewer_marker_ids),
                         "parked_ids": list(cfg.parked_marker_ids),
+                        "prediction_ms": _prediction_json(cfg),
                     },
                 }
             )
@@ -4898,6 +4908,7 @@ def _register_marker_catalog_routes(
                     "controlled_ids": list(cfg.controlled_marker_ids),
                     "viewer_ids": list(cfg.viewer_marker_ids),
                     "parked_ids": list(cfg.parked_marker_ids),
+                    "prediction_ms": _prediction_json(cfg),
                 },
                 "next_free_id": catalog.next_free_id(),
             }
@@ -5053,6 +5064,27 @@ def _register_marker_catalog_routes(
         sync = server.get_marker_catalog_sync()
         if sync is not None:
             sync.request_delta([marker_id])
+        return json.dumps({"success": True})
+
+    @app.put("/api/markers/prediction/<marker_id:int>")
+    def api_put_marker_prediction(marker_id: int) -> Any:
+        """Set one controlled marker's output prediction horizon; ``0`` removes it."""
+        response.content_type = "application/json"
+        data = _load_json_body()
+        horizon = data.get("horizon_ms") if isinstance(data, dict) else None
+        if isinstance(horizon, bool) or not isinstance(horizon, int) or not 0 <= horizon <= PREDICTION_HORIZON_MAX_MS:
+            response.status = 400
+            return json.dumps({"error": f"Lead must be a whole number from 0 to {PREDICTION_HORIZON_MAX_MS} ms."})
+        with _config_write_lock:
+            cfg = _config_for_save(server)
+            if marker_id not in cfg.controlled_marker_ids:
+                response.status = 409
+                return json.dumps({"error": "This station does not control that marker."})
+            horizons = {mid: ms for mid, ms in cfg.marker_prediction_ms.items() if mid != marker_id}
+            if horizon:
+                horizons[marker_id] = horizon
+            cfg.marker_prediction_ms = horizons
+            save_config(cfg, server.config_path)
         return json.dumps({"success": True})
 
     @app.post("/api/markers/selection")

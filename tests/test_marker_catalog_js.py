@@ -327,3 +327,65 @@ def test_a_failed_save_keeps_the_edit_unsaved_and_held() -> None:
         " later(5000); pollCatalog(LEAD, SECOND); out.lead = state(3);"
     )
     assert out["lead"] == {"name": "Lead Vocal", "color": "#ff0000", "unsaved": True, "outlined": ["name"]}
+
+
+_LEAD_STEPS = """
+function pollLead(prediction, controlled) {
+    document.body.dispatchEvent(makeEvent('htmx:afterRequest', {detail: {elt: root, xhr: {responseText: JSON.stringify({
+        entries: [{id: 3, name: 'Lead', color: '#ff0000'}, {id: 4, name: 'Second', color: '#00ff00'}],
+        peer_selections: [],
+        this_station: {
+            station_id: 'me', station_name: 'FOH', controlled_ids: controlled || [3], viewer_ids: [3, 4],
+            parked_ids: [], prediction_ms: prediction,
+        },
+        next_free_id: 5,
+    })}}}));
+}
+function lead(id) { return root.querySelector('tr[data-marker-id="' + id + '"] input[data-prediction]'); }
+function leadPuts() {
+    return requests.filter(function (r) { return r.url.indexOf('/api/markers/prediction/') === 0; })
+        .map(function (r) { return [r.method, r.url, r.body]; });
+}
+"""
+
+
+def test_the_lead_column_is_feature_gated_and_lines_up_with_every_row() -> None:
+    out = _run_async(
+        _LEAD_STEPS + "pollLead({});"
+        " out.head = root.querySelectorAll('th[data-feature=\"output_prediction\"]').length;"
+        " out.cells = root.querySelectorAll('td[data-feature=\"output_prediction\"]').length;"
+        " out.rows = root.querySelectorAll('tbody tr').length;"
+    )
+    assert out == {"head": 1, "cells": 3, "rows": 3}
+
+
+def test_the_lead_shows_the_saved_value_and_only_a_controlled_row_can_edit_it() -> None:
+    out = _run_async(
+        _LEAD_STEPS + "pollLead({'3': 450});"
+        " out.lead = [lead(3).value, lead(3).disabled]; out.second = [lead(4).value, lead(4).disabled];"
+    )
+    assert out == {"lead": ["450", False], "second": ["0", True]}
+
+
+@pytest.mark.parametrize(("typed", "sent"), [("600", 600), ("", 0), ("12.5", 12.5)])
+def test_a_changed_lead_saves_that_rows_value(typed: str, sent: float) -> None:
+    """The server decides what a lead may be; a value it refuses comes back as a save error."""
+    out = _run_async(
+        _LEAD_STEPS + f"pollLead({{}}); typeInto(lead(3), {typed!r}); lead(3).blur(); await settle();"
+        " out.puts = leadPuts();"
+    )
+    assert out["puts"] == [["PUT", "/api/markers/prediction/3", {"horizon_ms": sent}]]
+
+
+def test_the_poll_never_overwrites_a_lead_being_typed_or_just_saved() -> None:
+    out = _run_async(
+        _LEAD_STEPS + "pollLead({'3': 100}); typeInto(lead(3), '700'); pollLead({'3': 100});"
+        " out.typing = lead(3).value; lead(3).blur(); await settle(); pollLead({'3': 100});"
+        " out.saved = lead(3).value;"
+    )
+    assert out == {"typing": "700", "saved": "700"}
+
+
+def test_a_lead_set_elsewhere_shows_at_the_next_poll() -> None:
+    out = _run_async(_LEAD_STEPS + "pollLead({'3': 100}); pollLead({'3': 900}); out.value = lead(3).value;")
+    assert out == {"value": "900"}

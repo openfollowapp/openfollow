@@ -2859,9 +2859,10 @@ FEATURE_KEYS: tuple[str, ...] = (
     "paths",
     "touch_remote",
     "zone_heights",
+    "output_prediction",
 )
 EXPERIMENTAL_FEATURES: frozenset[str] = frozenset(
-    {"lens_suggestions", "detection", "rttrpm", "paths", "touch_remote", "zone_heights"}
+    {"lens_suggestions", "detection", "rttrpm", "paths", "touch_remote", "zone_heights", "output_prediction"}
 )
 DEFAULT_SHOWN_FEATURES: tuple[str, ...] = tuple(key for key in FEATURE_KEYS if key not in EXPERIMENTAL_FEATURES)
 # Gated like any feature but not offered: no Features row, no web route turns one on.
@@ -2885,6 +2886,29 @@ def migrate_ui_keys(ui_data: dict[str, Any]) -> None:
     shown_all = _coerce_bool(ui_data.pop("show_experimental_features"), False)
     if shown_all and "shown_features" not in ui_data:
         ui_data["shown_features"] = list(OFFERED_FEATURES)
+
+
+PREDICTION_HORIZON_MAX_MS = 1000
+
+
+def coerce_marker_prediction_ms(raw: object) -> dict[int, int]:
+    """``{marker_id: horizon_ms}`` from TOML, JSON or a form: ids >= 1, horizons clamped to
+    ``0..PREDICTION_HORIZON_MAX_MS``; a bad pair or a zero horizon is dropped."""
+    if not isinstance(raw, dict):
+        return {}
+    coerced: dict[int, int] = {}
+    for raw_key, raw_value in raw.items():
+        # ``int(True)`` is 1 and would land on marker 1.
+        if isinstance(raw_key, bool):
+            continue
+        try:
+            key = int(raw_key)
+        except (TypeError, ValueError):
+            continue
+        horizon = _coerce_int(raw_value, 0, lo=0, hi=PREDICTION_HORIZON_MAX_MS)
+        if key >= 1 and horizon > 0:
+            coerced[key] = horizon
+    return coerced
 
 
 def feature_on(cfg: Any, key: str) -> bool:
@@ -3119,6 +3143,8 @@ class AppConfig:
     # Per-marker move-speed overrides; ``MarkerConfig.move_speed`` is the
     # fallback for a marker with no entry.
     marker_move_speeds: dict[int, float] = field(default_factory=dict)
+    # Output prediction horizon per marker, in ms; a marker with no entry sends no lead.
+    marker_prediction_ms: dict[int, int] = field(default_factory=dict)
 
     # Shared marker catalog persisted in a separate file so the
     # multicast sync layer can rewrite it without touching this
@@ -3262,6 +3288,7 @@ class AppConfig:
                 continue
             coerced[key] = value
         self.marker_move_speeds = coerced
+        self.marker_prediction_ms = coerce_marker_prediction_ms(self.marker_prediction_ms)
 
     def normalise_startup_settings(self) -> None:
         """Coerce the update and time-sync settings read at startup, so a hand-edited TOML or an
@@ -3783,6 +3810,7 @@ def config_to_toml_dict(config: AppConfig) -> dict[str, Any]:
     if isinstance(raw_speeds, dict):  # pragma: no branch
         controlled = set(config.controlled_marker_ids)
         data["marker_move_speeds"] = {str(k): v for k, v in raw_speeds.items() if int(k) in controlled}
+    data["marker_prediction_ms"] = {str(k): v for k, v in config.marker_prediction_ms.items()}
     return data
 
 
@@ -4322,6 +4350,9 @@ def apply_runtime_config_changes(app: OpenFollowApp, new_config: AppConfig) -> b
 
     if new_config.marker != app._config.marker:
         app._config.marker = new_config.marker
+
+    if new_config.marker_prediction_ms != app._config.marker_prediction_ms:
+        app._config.marker_prediction_ms = dict(new_config.marker_prediction_ms)
 
     # ``marker_move_speeds`` is deliberately NOT reloaded here. It is device-local
     # and runtime-authoritative – written live by the R/T keys + gamepad bumpers, so

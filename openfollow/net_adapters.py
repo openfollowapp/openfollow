@@ -17,7 +17,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -39,6 +39,10 @@ _NETWORKSETUP_TIMEOUT_S = 2.0
 # How often macOS's hardware-port list is re-read for a name it did not list.
 _HARDWARE_PORTS_REFRESH_S = 10.0
 _HARDWARE_PORT_SUFFIX_RE = re.compile(r"\s*\([a-z]+\d+\)$")
+_SERVICE_DEVICE_RE = re.compile(r"^\(Hardware Port: .*, Device: ([^)\s]+)\)$")
+# macOS's own links: the network processor, Wi-Fi Direct and low-latency WLAN,
+# the hotspot, tunnels and packet taps. No operator sends a show's traffic there.
+_MACOS_INTERNAL_RE = re.compile(r"(anpi|awdl|llw|ap|utun|ipsec|gif|stf|pktap|iptap)\d+")
 
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 
@@ -163,6 +167,8 @@ class AdapterReader:
         self._cache: dict[tuple[str, str], Adapter] = {}
         self._hardware_ports: dict[str, tuple[str, str]] = {}
         self._hardware_ports_read_at: float | None = None
+        self._services: frozenset[str] | None = None
+        self._services_read_at: float | None = None
 
     def read(self, name: str) -> Adapter:
         if not valid_iface_name(name):
@@ -173,6 +179,50 @@ class AdapterReader:
             port, mac = self._macos_ports(name).get(name, ("", ""))
             return Adapter(name, port=port, mac=mac)
         return Adapter(name)
+
+    def operator_interfaces(self, names: Iterable[str], addressed: Collection[str] = ()) -> list[str]:
+        """*names* without the ones no operator can use; every one off macOS.
+
+        On macOS: the devices of System Settings' network services, cable or
+        not, and any other interface holding an address *addressed* names that
+        is not one of macOS's own. Without the service list, every interface
+        that is not one of macOS's own.
+        """
+        if self._platform != "darwin":
+            return list(names)
+        services = self._macos_services()
+        return [
+            name
+            for name in names
+            if (services is not None and name in services)
+            or (not _MACOS_INTERNAL_RE.fullmatch(name) and (services is None or name in addressed))
+        ]
+
+    def _macos_services(self) -> frozenset[str] | None:
+        with self._lock:
+            read_at = self._services_read_at
+            if read_at is not None and self._clock() - read_at < _HARDWARE_PORTS_REFRESH_S:
+                return self._services
+        services = self._list_services()
+        with self._lock:
+            self._services = services
+            self._services_read_at = self._clock()
+            return services
+
+    def _list_services(self) -> frozenset[str] | None:
+        try:
+            done = self._run(
+                ["networksetup", "-listnetworkserviceorder"],
+                capture_output=True,
+                text=True,
+                timeout=_NETWORKSETUP_TIMEOUT_S,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if getattr(done, "returncode", 0) != 0:
+            return None
+        return parse_service_devices(done.stdout or "") or None
 
     def _read_linux(self, name: str) -> Adapter:
         base = self._root / "class" / "net" / name
@@ -269,6 +319,12 @@ def parse_hardware_ports(text: str) -> dict[str, tuple[str, str]]:
         elif key == "Ethernet Address" and device and value.upper() != "N/A":
             ports[device] = (ports[device][0], value.lower())
     return ports
+
+
+def parse_service_devices(text: str) -> frozenset[str]:
+    """The devices ``networksetup -listnetworkserviceorder`` names, disabled services included."""
+    found = (_SERVICE_DEVICE_RE.match(line.strip()) for line in text.splitlines())
+    return frozenset(match.group(1) for match in found if match and valid_iface_name(match.group(1)))
 
 
 def _read(path: Path) -> str:

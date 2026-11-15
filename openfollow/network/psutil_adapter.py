@@ -12,6 +12,7 @@ from pathlib import Path
 
 import psutil
 
+from openfollow import net_adapters
 from openfollow.net_utils import Ipv4Route, read_ipv4_routes
 from openfollow.network.adapter import (
     ApplyResult,
@@ -97,14 +98,27 @@ def read_interfaces() -> list[NetworkInterface]:
     return out
 
 
+def _addressed() -> set[str]:
+    try:
+        addrs = psutil.net_if_addrs()
+    except Exception:  # noqa: BLE001 - psutil raises bare Exception on some hosts
+        return set()
+    return {
+        name for name, entries in addrs.items() if any(getattr(e, "family", None) == socket.AF_INET for e in entries)
+    }
+
+
 class PsutilReadOnlyAdapter(NetworkAdapter):
     backend_name = "psutil"
 
     def list_interfaces(self) -> list[NetworkInterface]:
+        """The interfaces an operator can use (:meth:`AdapterReader.operator_interfaces`)."""
         try:
-            return read_interfaces()
+            interfaces = read_interfaces()
         except BackendReadError:
             return []
+        usable = set(net_adapters.reader().operator_interfaces([i.name for i in interfaces], _addressed()))
+        return [i for i in interfaces if i.name in usable]
 
     def get_state(self, iface: str) -> NetworkState | None:
         return self.read_network().states.get(iface)
@@ -150,4 +164,7 @@ class PsutilReadOnlyAdapter(NetworkAdapter):
         )
 
     def is_writable(self) -> bool:
+        return False
+
+    def reports_ipv4_method(self) -> bool:
         return False

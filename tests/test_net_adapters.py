@@ -368,6 +368,100 @@ def test_macos_without_the_list_describes_nothing(error: Exception) -> None:
     assert AdapterReader(platform="darwin", run=run).read("en0") == Adapter("en0")
 
 
+# A MacBook: System Settings lists Wi-Fi, the Thunderbolt Bridge and a USB
+# adapter (disabled). The service list never names anpi, the Ethernet Adapter
+# ports behind them, the bridge's members, awdl, llw, ap or the tunnels.
+_SERVICE_ORDER = """\
+An asterisk (*) denotes that a network service is disabled.
+(1) Wi-Fi
+(Hardware Port: Wi-Fi, Device: en0)
+
+(2) Thunderbolt Bridge
+(Hardware Port: Thunderbolt Bridge, Device: bridge0)
+
+(*) USB 10/100/1000 LAN
+(Hardware Port: USB 10/100/1000 LAN, Device: en7)
+
+(3) Show VPN
+(Hardware Port: com.example.vpn, Device: )
+
+"""
+
+_MACBOOK = [
+    "en0", "anpi0", "anpi1", "anpi2", "en4", "en5", "en6", "en1", "en2", "en3", "en7",
+    "ap1", "bridge0", "awdl0", "llw0", "utun0", "utun1", "utun2", "utun3",
+]  # fmt: skip
+
+
+def _services(stdout: str = _SERVICE_ORDER, *, returncode: int = 0, calls: list | None = None):
+    def run(argv, **_kwargs):
+        if calls is not None:
+            calls.append(argv)
+        assert argv == ["networksetup", "-listnetworkserviceorder"]
+        return SimpleNamespace(stdout=stdout, returncode=returncode)
+
+    return run
+
+
+def _raises(error: Exception):
+    def run(*_args, **_kwargs):
+        raise error
+
+    return run
+
+
+def test_parse_service_devices_names_every_service_with_a_device() -> None:
+    assert net_adapters.parse_service_devices(_SERVICE_ORDER) == {"en0", "bridge0", "en7"}
+    unsafe = "(Hardware Port: X, Device: a/b)\n(1) Wi-Fi\n"
+    assert net_adapters.parse_service_devices(unsafe) == frozenset()
+
+
+def test_macos_lists_the_interfaces_system_settings_does() -> None:
+    reader = AdapterReader(platform="darwin", run=_services())
+    assert reader.operator_interfaces(_MACBOOK) == ["en0", "en7", "bridge0"]
+
+
+def test_macos_also_lists_an_addressed_interface_without_a_service_unless_it_is_macos_own() -> None:
+    reader = AdapterReader(platform="darwin", run=_services())
+    assert reader.operator_interfaces(_MACBOOK, {"en0", "utun3", "awdl0"}) == ["en0", "en7", "bridge0"]
+    assert reader.operator_interfaces([*_MACBOOK, "en9"], {"en9", "utun3"}) == ["en0", "en7", "bridge0", "en9"]
+
+
+@pytest.mark.parametrize(
+    "run",
+    [
+        _services(""),
+        _services("networksetup: not permitted\n", returncode=4),
+        _raises(OSError("no networksetup")),
+        _raises(subprocess.TimeoutExpired("networksetup", 2.0)),
+    ],
+    ids=["empty", "failed", "missing", "timeout"],
+)
+def test_macos_without_the_service_list_leaves_out_only_macos_own_links(run) -> None:
+    reader = AdapterReader(platform="darwin", run=run)
+    assert reader.operator_interfaces(_MACBOOK) == [
+        "en0", "en4", "en5", "en6", "en1", "en2", "en3", "en7", "bridge0",
+    ]  # fmt: skip
+
+
+def test_macos_reads_the_service_list_once_per_refresh() -> None:
+    calls: list = []
+    now = [100.0]
+    reader = AdapterReader(platform="darwin", run=_services(calls=calls), clock=lambda: now[0])
+    reader.operator_interfaces(_MACBOOK)
+    reader.operator_interfaces(_MACBOOK)
+    assert len(calls) == 1
+    now[0] += 11.0
+    reader.operator_interfaces(_MACBOOK)
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_off_macos_every_interface_is_an_operators(platform: str) -> None:
+    reader = AdapterReader(platform=platform, run=_raises(AssertionError("networksetup run off macOS")))
+    assert reader.operator_interfaces(_MACBOOK) == _MACBOOK
+
+
 def test_other_platforms_describe_nothing() -> None:
     assert AdapterReader(platform="win32").read("Ethernet") == Adapter("Ethernet")
 

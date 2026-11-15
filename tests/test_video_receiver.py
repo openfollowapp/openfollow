@@ -1465,32 +1465,6 @@ class TestSourceSelectionNavigation:
 # --------------------------------------------------------------------------- #
 
 
-class TestUpdateInputFields:
-    def test_a_field_that_does_not_rebuild_is_stored_without_a_build(self, fake_gst, fake_glib, monkeypatch) -> None:
-        from openfollow.video.inputs import avf
-
-        monkeypatch.setattr(avf, "_camera_names", {})
-        # Connected and available on every platform, so a rebuild would reach the build.
-        monkeypatch.setattr(
-            avf, "_list_avf_devices", lambda: [{"unique_id": "0x14100000", "name": "USB Capture", "index": "0"}]
-        )
-        monkeypatch.setattr(avf.AvfInput, "is_available", classmethod(lambda _cls: (True, "")))
-        monkeypatch.setattr(receiver_mod, "get_input_class", lambda _input_id: avf.AvfInput)
-        builds: list[object] = []
-        monkeypatch.setattr(
-            avf.AvfInput, "create_pipeline", lambda *args, **kwargs: builds.append(args) or FakePipeline()
-        )
-        r = receiver_mod.GstNativeSinkReceiver(source_type="avf", input_config={"avf_unique_id": "0x14100000"})
-        assert not {f.name: f for f in avf.AvfInput.config_fields()}["avf_device_name"].rebuilds
-
-        r.update_input_fields({"avf_device_name": "Capture Card"})
-
-        assert r.source_name.startswith("Capture Card (")
-        assert builds == []
-        assert r._pipeline is None
-        assert not fake_glib.timers
-
-
 class TestSetSource:
     def test_set_source_with_configured_value_creates_pipeline_and_plays(
         self, fake_gst, fake_glib, fake_input_cls
@@ -6635,14 +6609,14 @@ class TestARememberedDeviceThatIsAbsent:
         monkeypatch.setattr(receiver_mod, "get_input_class", lambda _input_id: avf.AvfInput)
         built: list[Any] = []
         monkeypatch.setattr(avf.AvfInput, "create_pipeline", lambda *args, **kwargs: built.append(args))
-        cfg = AppConfig(video_source_type="avf", avf_unique_id="0x14100000", avf_device_name="Capture Card")
+        cfg = AppConfig(video_source_type="avf", avf_unique_id="0x14100000")
         r = receiver_mod.GstNativeSinkReceiver(source_type="avf", input_config=avf.AvfInput.runtime_config(cfg))
         return r, built
 
-    def test_a_usb_camera_missing_since_startup_is_reported_by_name_not_replaced(
+    def test_a_usb_camera_missing_since_startup_is_reported_not_replaced(
         self, fake_gst, fake_glib, monkeypatch
     ) -> None:
-        """The capture card is named as not found; the laptop camera is never opened in its place."""
+        """The capture card is reported as not found; the laptop camera is never opened in its place."""
         from openfollow.runtime.overlay_layout import format_source_text
         from openfollow.video.failure import SourceKind, failure_sentence
 
@@ -6657,9 +6631,9 @@ class TestARememberedDeviceThatIsAbsent:
         status = r.status_marker.snapshot()
         assert status.failure is VideoFailure.STREAM_NOT_FOUND
         assert failure_sentence(status.failure, where=status.source_name, kind=SourceKind.LOCAL) == (
-            "Capture Card (1920x1080@30) was not found."
+            "0x14100000 (1920x1080@30) was not found."
         )
-        assert format_source_text("avf", r.source_name) == "AVF: Capture Card (1920x1080@30)"
+        assert format_source_text("avf", r.source_name) == "AVF: 0x14100000 (1920x1080@30)"
 
     def test_a_camera_list_that_cannot_be_read_is_not_reported_as_a_missing_camera(
         self, fake_gst, fake_glib, monkeypatch, caplog
@@ -6700,6 +6674,7 @@ class TestARememberedDeviceThatIsAbsent:
         r, _built = self._usb_camera(
             monkeypatch, lambda: [{"unique_id": "0x14100000", "name": "Capture Card", "index": "0"}]
         )
+        avf._camera_names["0x14100000"] = "Capture Card"  # the real listing records the name it lists
         refusing = FakePipeline(
             set_state_returns={FakeState.PLAYING: FakeStateChangeReturn.FAILURE}, bus=FakeBus(pop_message=_Msg())
         )

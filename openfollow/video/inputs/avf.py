@@ -39,22 +39,15 @@ _camera_names: dict[str, str] = {}
 _checked_index: dict[str, int] = {}
 
 
-def _camera_name(unique_id: str, stored: object = "") -> str:
-    """The camera's name, told apart from any listed camera that shares it.
-
-    As listed this run, numbered from 1 in listing order where two share a
-    name; else as stored with its ID, followed by the ID where a listed camera
-    has that name; else the ID itself.
-    """
+def _camera_name(unique_id: str) -> str:
+    """The camera's name as listed this run, numbered from 1 in listing order
+    where two share a name; else its unique ID."""
     names = tuple(_camera_names.items())
     listed = dict(names).get(unique_id)
-    if listed:
-        twins = [uid for uid, name in names if name == listed]
-        return listed if len(twins) == 1 else f"{listed} ({twins.index(unique_id) + 1})"
-    name = stored if isinstance(stored, str) else ""
-    if not name:
+    if not listed:
         return unique_id
-    return f"{name} ({unique_id})" if any(listed_name == name for _uid, listed_name in names) else name
+    twins = [uid for uid, name in names if name == listed]
+    return listed if len(twins) == 1 else f"{listed} ({twins.index(unique_id) + 1})"
 
 
 def _list_avf_devices() -> list[dict[str, str]]:
@@ -154,9 +147,6 @@ class AvfInput(VideoInputBase):
     def config_fields(cls) -> list[ConfigField]:
         return [
             ConfigField("avf_unique_id", str, "", "Device"),
-            # Recorded on the first save of an older config, or when macOS
-            # reports another name; neither may black the video out.
-            ConfigField("avf_device_name", str, "", "Device name", device_editable=False, rebuilds=False),
             ConfigField(
                 "avf_device_index",
                 int,
@@ -336,7 +326,7 @@ class AvfInput(VideoInputBase):
     def web_ui_html(cls, config: dict[str, Any]) -> str:
         stored = str(config.get("avf_unique_id", "") or "")
         unique_id = cls._esc(stored)
-        shown = _camera_name(stored, config.get("avf_device_name")) if stored else ""
+        shown = _camera_name(stored) if stored else ""
         # ``avf_device_index`` drives nothing (with no camera chosen no pipeline
         # plays); a hidden input keeps its stored value through a save.
         device_index = int(config.get("avf_device_index", -1))
@@ -418,7 +408,7 @@ class AvfInput(VideoInputBase):
         # list that was read can say it is not connected.
         if current and current not in {dev["unique_id"] for dev in devices}:
             cur = self._esc(current)
-            name = self._esc(_camera_name(current, config.get("avf_device_name")))
+            name = self._esc(_camera_name(current))
             suffix = " (unavailable)" if listed else ""
             options.append(f'<option value="{cur}" selected>{name}{suffix}</option>')
         for dev in devices:
@@ -450,26 +440,12 @@ class AvfInput(VideoInputBase):
         width = config.get("avf_width", 1920)
         height = config.get("avf_height", 1080)
         framerate = config.get("avf_framerate", 30)
-        return f"{_camera_name(unique_id, config.get('avf_device_name'))} ({width}x{height}@{framerate})"
+        return f"{_camera_name(unique_id)} ({width}x{height}@{framerate})"
 
     @classmethod
     def apply_config_fields(cls, cfg: Any, form_data: dict[str, Any]) -> None:
-        """Store the chosen camera's name with its unique ID.
+        """Store the form's fields; a posted unique ID is cleaned as a load would clean it."""
+        from openfollow.configuration import clean_avf_unique_id
 
-        A name listed this run wins; otherwise a name sent with the ID (an
-        import, a peer) is kept, and a camera left as it was keeps its name.
-        """
-        from openfollow.configuration import clean_avf_device_name, clean_avf_unique_id
-
-        stored_id = getattr(cfg, "avf_unique_id", "")
-        stored_name = getattr(cfg, "avf_device_name", "")
         super().apply_config_fields(cfg, form_data)
-        unique_id = cfg.avf_unique_id = clean_avf_unique_id(getattr(cfg, "avf_unique_id", ""))
-        name: object = ""
-        if unique_id in _camera_names:
-            name = _camera_names[unique_id]
-        elif unique_id and "avf_device_name" in form_data:
-            name = form_data["avf_device_name"]
-        elif unique_id and unique_id == stored_id:
-            name = stored_name
-        cfg.avf_device_name = clean_avf_device_name(name)
+        cfg.avf_unique_id = clean_avf_unique_id(getattr(cfg, "avf_unique_id", ""))

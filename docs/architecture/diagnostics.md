@@ -30,6 +30,15 @@ The diagnostics bundle (and later settings / templates) can be saved to the top 
 - **The export** (`runtime/diagnostics_export.py`) holds **one slot across HUD and web**: both start it on its worker (`start`, busy → `False`) – the ~20 s collection must never run on the GTK main loop or a web request. The HUD reads `status()` each frame; the web dialog (`openfollowSaveToDrive` in `base.tpl`, over `GET /api/diagnostics/drives` and `GET`/`POST /api/diagnostics/export`) polls it, asking for its own export by number (`?generation=N`, answered from `last_done(WEB)`) because a newer export may already hold the slot. Both word it with `status_lines`, so the two screens say the same thing. `build_diagnostics_bundle(server, cfg)` in `web/routes.py` is the one builder the download, the drive save and the HUD share.
 - **HUD** (`runtime/app_modes_media.py`): the picker lists drives through `MediaWatch` (a worker re-listing ~1 Hz while open), the highlight follows the drive id, rows that can't be written are skipped. A HUD export the operator left before it finished posts to the status corner (`_status_flags["diagnostics_export"]`): success green, cleared after 15 s; failure red until the export is reopened (where its reason shows) or a later export succeeds. Web exports never post there.
 
+## What the bundle reads on macOS
+
+The macOS app is a PyInstaller bundle with no package metadata and no command-line tools on the Finder `PATH`, so section E reads what the process has loaded:
+
+- **E1:** a package's version is its dist metadata, else the loaded module's `__version__`. GStreamer is `Gst.version_string()` of the library the process has loaded, else `gst-launch-1.0 --version` (a tool on `PATH` may belong to another install). `libndi` is the library the process has loaded (dyld's image list, `/proc/self/maps` on Linux), else the one the NDI input's own lookup finds.
+- **E1b:** the decoder list includes the VideoToolbox decoders (`vtdec_hw`, `vtdec`).
+- **E8:** `system_profiler SPUSBDataType SPUSBHostDataType -json` (macOS 15 lists USB under the second), asked again with `SPUSBDataType` alone if that fails; a listing with no device is `none attached`, a failed one or one holding neither data type is unavailable.
+- **Left out off Linux:** the `vcgencmd` throttling row (E6) and the privilege grants (G), which are sudo rules on Linux only.
+
 ## Runtime state (A3)
 
 Section A3 reads the live `/api/stats` snapshot. Under the video block, `camera latency` is the last successful **Measure latency** run (see [video](video.md#camera-latency-probe-runtimelatency_probepy)): its median, spread, sample count, how long ago it finished and the source type it measured, or `not measured`. A run that failed never replaces it, and nothing is kept across a restart.

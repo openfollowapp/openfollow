@@ -4017,6 +4017,23 @@ def save_park_changes(config: AppConfig, path: str, changes: Mapping[int, bool])
         return True
 
 
+def leads_applied(controlled: list[int], leads: Mapping[int, int], changes: Mapping[int, float]) -> dict[int, int]:
+    """*leads* with *changes* in ms applied (``0`` removes one), kept to *controlled*."""
+    return prediction_within(controlled, coerce_marker_prediction_ms({**leads, **changes}))
+
+
+def save_lead_changes(config: AppConfig, path: str, changes: Mapping[int, float]) -> None:
+    """Apply *changes* to the leads in the file at *path* in one read-modify-write under the lock.
+
+    The file is the base, as in :func:`save_park_changes`, so a lead the web UI saved since survives.
+    """
+    with config_write_lock:
+        on_disk = read_config_whole(path)
+        target = copy.deepcopy(config) if on_disk is None else on_disk
+        target.marker_prediction_ms = leads_applied(target.controlled_marker_ids, target.marker_prediction_ms, changes)
+        save_config(target, path)
+
+
 # ---------------------------------------------------------------------------
 # Runtime Hot-Reload
 # ---------------------------------------------------------------------------

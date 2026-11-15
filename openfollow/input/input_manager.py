@@ -19,9 +19,11 @@ from openfollow.configuration import (
     _apply_with_fallback,
     feature_gated,
     feature_on,
+    leads_applied,
     park_changes_applied,
     parked_within,
     save_config_fields,
+    save_lead_changes,
     save_park_changes,
 )
 from openfollow.input.control_frame import ControlFrame
@@ -452,6 +454,7 @@ class InputManager:
         if self.osc_handler is not None:
             try:
                 self._apply_osc_parks(self.osc_handler.flush_parks())
+                self._apply_osc_leads(self.osc_handler.flush_leads())
             except Exception:
                 self._osc_apply_err_log.log()
 
@@ -602,6 +605,18 @@ class InputManager:
             save_park_changes(self.app._config, self.app._config_path, parks)
         except Exception:
             logger.exception("Failed to save the parked markers.")
+
+    def _apply_osc_leads(self, leads: dict[int, float]) -> None:
+        """Set controlled markers' leads from OSC, live and in the file; others are ignored."""
+        leads = {mid: ms for mid, ms in leads.items() if mid in self.app._controlled_ids}
+        if not leads:
+            return
+        config = self.app._config
+        config.marker_prediction_ms = leads_applied(self.app._controlled_ids, config.marker_prediction_ms, leads)
+        try:
+            save_lead_changes(config, self.app._config_path, leads)
+        except Exception:
+            logger.exception("Failed to save the marker leads.")
 
     def _apply_osc_position(self, marker_id: int, axes: dict[str, float], paths: PathEngine | None) -> None:
         if marker_id not in self.app._controlled_ids or holds(self.app, marker_id):

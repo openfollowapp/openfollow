@@ -20,4 +20,6 @@ With the server on and this list empty, any device on the LAN can move markers.
 
 `/marker/{id}/park` and `/marker/{id}/unpark` park and unpark a marker this station controls; arguments are ignored. A parked marker still follows position messages; only keyboard, gamepads and 3D Mice leave it alone. Messages for markers this station does not control are ignored.
 
+`/marker/{id}/lead <ms>` sets the marker's output prediction lead (Markers & Zones, Lead (ms)), `0` to `1000`; `0` turns it off, a larger value is capped. Ignored for markers this station does not control.
+
 **Save** – applies the settings; the receiver restarts if the port or enabled state changed.

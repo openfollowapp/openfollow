@@ -110,7 +110,8 @@ def python_rows(
     describe: Callable[[str], Row],
 ) -> list[Row]:
     """One row per distribution providing a frozen top-level package; *describe(dist)* gives its Row."""
-    dists = sorted({dist for package in packages for dist in providers.get(package, [])}, key=str.lower)
+    # A broken dist-info without METADATA reports its distribution as None.
+    dists = sorted({dist for package in packages for dist in providers.get(package, []) if dist}, key=str.lower)
     return [describe(dist) for dist in dists if dist.lower() != "openfollow"]
 
 

@@ -143,6 +143,16 @@ def test_python_rows_name_each_providing_distribution_once(notices) -> None:
     assert [r.name for r in rows] == ["numpy", "opencv-python-headless"]
 
 
+def test_python_rows_skip_a_distribution_without_a_name(notices) -> None:
+    rows = notices.python_rows(
+        {"numpy", "wheel"},
+        {"numpy": ["numpy"], "wheel": [None]},
+        lambda dist: notices.Row(dist, "1", "MIT"),
+    )
+
+    assert [r.name for r in rows] == ["numpy"]
+
+
 def test_the_document_lists_every_part_and_no_pi_image(notices) -> None:
     text = notices.render(
         "0.5.0",

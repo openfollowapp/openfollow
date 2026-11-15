@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """ANSI E1.59-2021 OTP (Object Transform Protocol) output server over UDP multicast."""
 
 from __future__ import annotations
@@ -379,7 +381,7 @@ def encode_otp_transform_packet(
         now_us = markers[0].clock_now_us if markers else 0
     point_pdu_parts: list[bytes] = []
     for marker in markers:
-        x, y, z = marker.pos
+        x, y, z = marker.sent_pos
         x_um = _metres_to_um_i32(x)
         y_um = _metres_to_um_i32(y)
         z_um = _metres_to_um_i32(z)
@@ -803,30 +805,11 @@ class OtpServer:
 
     def _try_open_multicast_socket_once(self, attempt: int, stop_event: threading.Event | None = None) -> bool:
         """Attempt to create the multicast TX socket once. Returns True on success."""
+        from openfollow.net_utils import multicast_tx_socket
+
         staging = contextlib.ExitStack()
         try:
-            groups = self._multicast_groups()
-            if self._source_iface:
-                # By name: selected by index, as PsnServer does.
-                sock = multicast_expert.McastTxSocket(
-                    socket.AF_INET,
-                    mcast_ips=groups,
-                    iface=self._source_iface,
-                    enable_external_loopback=True,
-                )
-            elif self._source_ip:
-                sock = multicast_expert.McastTxSocket(
-                    socket.AF_INET,
-                    mcast_ips=groups,
-                    iface_ip=self._source_ip,
-                    enable_external_loopback=True,
-                )
-            else:
-                sock = multicast_expert.McastTxSocket(
-                    socket.AF_INET,
-                    mcast_ips=groups,
-                    enable_external_loopback=True,
-                )
+            sock = multicast_tx_socket(self._multicast_groups(), self._source_iface, self._source_ip)
             opened = staging.enter_context(sock)
         except Exception as exc:
             logger.warning("OTP multicast socket failed (attempt %d): %s", attempt, exc)

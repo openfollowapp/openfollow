@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Counting what an Operator Screen picture costs, for tests that must not depend on timing.
 
 ``CountingContext`` is a real Cairo context on a real surface (the pixels are

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Free-port allocation for tests that bind a real socket.
 
 Picking a port by binding a transient socket to ``(*, 0)`` and closing it
@@ -24,7 +25,7 @@ import errno
 import socket
 import time
 from collections.abc import Callable, Iterator
-from typing import Protocol, TypeVar
+from typing import Protocol
 
 import psutil
 
@@ -38,9 +39,6 @@ class _Startable(Protocol):
     def start(self) -> None: ...
 
     def stop(self) -> None: ...
-
-
-_ServerT = TypeVar("_ServerT", bound=_Startable)
 
 
 def free_udp_port() -> int:
@@ -105,13 +103,13 @@ def wait_for_own_listener(port: int, timeout: float = STARTUP_TIMEOUT_S) -> bool
     return False
 
 
-def start_on_free_port(
-    factory: Callable[[int], _ServerT],
+def start_on_free_port[ServerT: _Startable](
+    factory: Callable[[int], ServerT],
     *,
     host: str = "127.0.0.1",
     attempts: int = BIND_ATTEMPTS,
     timeout: float = STARTUP_TIMEOUT_S,
-) -> tuple[_ServerT, str]:
+) -> tuple[ServerT, str]:
     """Start ``factory(port)`` on a free TCP port; return it with its base URL.
 
     The caller owns ``stop()``; prefer :func:`live_on_free_port` where the
@@ -128,13 +126,13 @@ def start_on_free_port(
 
 
 @contextlib.contextmanager
-def live_on_free_port(
-    factory: Callable[[int], _ServerT],
+def live_on_free_port[ServerT: _Startable](
+    factory: Callable[[int], ServerT],
     *,
     host: str = "127.0.0.1",
     attempts: int = BIND_ATTEMPTS,
     timeout: float = STARTUP_TIMEOUT_S,
-) -> Iterator[tuple[_ServerT, str]]:
+) -> Iterator[tuple[ServerT, str]]:
     """:func:`start_on_free_port`, stopped on the way out even if the body raises."""
     server, base = start_on_free_port(factory, host=host, attempts=attempts, timeout=timeout)
     try:

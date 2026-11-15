@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
 """OSC message tokeniser.
 
 Parses a freeform string (``/cue/go "My Cue" 1.5``) into ``(address, args)``

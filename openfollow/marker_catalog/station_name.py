@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
 """Derive a human-memorable station name from a UUID-shaped station id.
 
 ``derive_station_name`` maps a ``station_id`` UUID to a distinct

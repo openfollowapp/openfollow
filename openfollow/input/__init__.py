@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
 """Input handling for game controllers, keyboard, and mouse.
 
 Marker-position OSC input flows through the unified :class:`openfollow.osc.OscService`.

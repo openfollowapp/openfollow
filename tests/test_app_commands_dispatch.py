@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Tests for runtime/app_commands.py dispatch helpers.
 
 The module glues web-UI commands onto ``OpenFollowApp`` via the
@@ -459,3 +461,47 @@ def test_a_failed_rebuild_is_logged_not_raised(caplog) -> None:  # noqa: ANN001
 
 def test_an_unanswered_release_times_out() -> None:
     assert _make_app()._web_commands.release_camera(0.01) is False
+
+
+# ---------------------------------------------------------------------------
+# check_latency_requests
+# ---------------------------------------------------------------------------
+
+
+class _LatencyServices:
+    def __init__(self) -> None:
+        self.starts = 0
+        self.status: dict = {"state": "idle"}
+
+    def start_latency_run(self) -> None:
+        self.starts += 1
+        self.status = {"state": "running", "measured": 0}
+
+    def latency_status(self) -> dict:
+        return dict(self.status)
+
+
+@pytest.mark.parametrize(("clicks", "starts", "state"), [(1, 1, "running"), (2, 1, "running"), (0, 0, "idle")])
+def test_a_start_click_runs_once_and_the_run_is_reported_back(clicks: int, starts: int, state: str) -> None:
+    app = _make_app(_runtime_services=_LatencyServices())
+    for _ in range(clicks):
+        app._web_commands.request_latency()
+    app_commands.check_latency_requests(app)
+    app_commands.check_latency_requests(app)
+    assert app._runtime_services.starts == starts
+    assert app._web_commands.get_latency_status()["state"] == state
+
+
+def test_a_start_reads_as_running_before_the_main_loop_takes_it() -> None:
+    queue = WebCommandQueue()
+    queue.request_latency()
+    # The main loop's last report, from before the click, does not overwrite it.
+    queue.set_latency_status({"state": "done"})
+    assert queue.get_latency_status() == {"state": "running", "measured": 0}
+
+
+def test_a_start_during_a_run_keeps_its_progress() -> None:
+    queue = WebCommandQueue()
+    queue.set_latency_status({"state": "running", "measured": 4})
+    queue.request_latency()
+    assert queue.get_latency_status() == {"state": "running", "measured": 4}

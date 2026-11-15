@@ -1,41 +1,29 @@
 # Detection Masks
 
-Polygons that confine person detection to part of the camera image. With masking on, a person is detected only when their feet fall inside at least one mask; anyone outside every mask is ignored. Use this to keep the audience, wings, or a side screen from being tracked.
+Polygons that confine person detection to part of the camera image. A person is detected only when their feet fall inside an enabled mask.
 
 ## Detection area
 
-**Detection area** is the master switch. It is **Whole frame** by default, so drawing a mask does not restrict anything until you choose **Only inside the enabled masks** - the masks you draw are saved but inactive. Choose **Whole frame** again to detect over the whole frame without deleting your masks. With no mask enabled, detection covers the whole frame either way.
+**Detection area** is the master switch. **Whole frame** (default) ignores masks, so drawn masks do nothing until you choose **Only inside the enabled masks**. With no mask enabled, detection covers the whole frame either way.
 
-This section is collapsible and starts collapsed; click the section header to expand it.
-
-## How masks work
-
-- Masks are **image-relative**, drawn directly on a snapshot of the camera. They are not stage coordinates and need no camera calibration.
-- The check uses each detection's **ground point** (the bottom-center of its box - where the person stands), so a performer at the edge of a masked region counts as in or out by where their feet are.
-- Multiple masks act as a **union**: a detection inside any enabled mask is kept.
-- Because masks track the camera image, **redraw them if the camera is repositioned or re-zoomed**.
+Masks are drawn on a camera snapshot, not in stage coordinates. A detection counts by its ground point (bottom-center of its box), and several masks act as a union. Redraw masks if the camera is moved or re-zoomed.
 
 ## Canvas
 
-The canvas shows a still snapshot from the active video source. Press **Refresh Image** to grab a fresh frame. If no feed is available, configure a video source first, then refresh.
+Shows a still from the active video source. **Refresh Image** grabs a new frame.
 
-- **Drawn masks** appear as green polygons (gray and dashed when disabled).
-- **Click a mask** to select it; its corners show as draggable handles.
-- **Drag a handle** to reshape the mask. **Right-click a handle** to remove that corner (three corners minimum).
+- Enabled masks are green polygons; disabled ones are gray and dashed.
+- Click a mask to select it, drag a corner handle to reshape it, right-click a handle to remove that corner (three minimum).
 
 ## Drawing controls
 
-- **+ New Mask** – start drawing; each click drops a corner.
-- **Finish Polygon** – close and save once three or more corners are placed. You can also close by clicking the first corner (highlighted amber) or double-clicking.
-- **Cancel** – discard the in-progress polygon.
-- **Delete Selected** – remove the selected mask.
+- **+ New Mask** – each click drops a corner.
+- **Finish Polygon** – closes the mask once three or more corners are placed. Clicking the first corner or double-clicking also closes it.
+- **Cancel** – discards the polygon in progress.
+- **Delete Selected** – removes the selected mask.
 
 ## Mask list
 
-Below the canvas, one row per mask:
+One row per mask: a checkbox to enable or disable it without deleting it, a **Name** for your reference, and **Delete**.
 
-- **Checkbox** – enable or disable that one mask without deleting it. Disabled masks are ignored even with **Only inside the enabled masks** chosen.
-- **Name** – a label for your own reference.
-- **Delete** – remove the mask.
-
-Changes apply live – no restart needed.
+Changes apply live.

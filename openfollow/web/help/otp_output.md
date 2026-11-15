@@ -1,18 +1,16 @@
 # OTP Output
 
-> OTP output is currently experimental. Test thoroughly with your receiver before relying on it in a show.
+> OTP output is experimental. Test it with your receiver before a show.
 
-Sends tracked marker positions as ANSI E1.59 Object Transform Protocol (OTP) multicast UDP packets, running in parallel with any other active outputs. OTP receivers pick up each controlled marker as an OTP point – marker ID 1 appears as OTP point 1, and so on.
+Sends marker positions as ANSI E1.59 Object Transform Protocol (OTP) multicast, alongside any other output. Marker ID 1 appears as OTP point 1, and so on.
 
 ## OTP Network
 
-- **OTP output** – master toggle for the OTP transmitter. Off by default; no packets are sent while unchecked.
-- **System Number** – OTP system identifier, 1 – 200. It also determines the multicast addresses packets are sent to (see **Multicast addresses**); change it to move OTP traffic onto a different multicast group. Default: `1`.
-- **Multicast addresses** – read-only display of the two addresses derived automatically from System Number, per ANSI E1.59 Table 15-19. **Transform** carries the position data (e.g. `239.159.1.1` for System Number 1); **Advertisement** carries discovery packets (`239.159.2.1`). Adjust System Number to change the group.
-- **UDP Port** – port the transmitter binds to and sends from, 1–65535. Default: `5568`.
-- **Priority** – OTP priority value sent in each packet, 0 – 200. When multiple OTP sources are present, receivers use priority to resolve conflicts – higher values win. Default: `100`.
-- **Source Interface** – read-only here; it reports which interface OTP multicast currently leaves from. Set it under **General → Network Interface Assignment**, where every protocol's interface is chosen in one place. In Simple network mode OTP follows the station interface and this row is not shown. `Follows station default interface` (the default) is right on a single-adapter station; on a host with both Ethernet and Wi-Fi, pin it to the adapter on the lighting network so packets reach the right subnet. A pinned interface that's down stops OTP rather than moving it to another one; it resumes when the interface returns.
+- **OTP output** – master toggle. Off by default.
+- **System Number** – OTP system, 1–200. It sets the multicast addresses. Default `1`.
+- **Multicast addresses** – read-only: **Transform** carries positions (`239.159.1.1` for System Number 1), **Advertisement** carries discovery (`239.159.2.1`).
+- **UDP Port** – 1–65535. Default `5568`.
+- **Priority** – 0–200. Receivers prefer the source with the higher value. Default `100`.
+- **Source Interface** – read-only: the interface OTP leaves from, set under **General → Network Interface Assignment**. Not shown in Simple network mode. A pinned interface that is down stops OTP until it returns.
 
-## Saving
-
-- **Save** – writes the current settings to disk and applies them live. OTP output starts or restarts immediately after saving if **OTP output** is on.
+**Save** applies live.

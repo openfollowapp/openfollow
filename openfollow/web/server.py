@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Threaded web server for the configuration UI with peer discovery."""
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 import secrets
@@ -20,12 +23,14 @@ if TYPE_CHECKING:
     from openfollow.logging_setup import RingBufferLogHandler
     from openfollow.network.adapter import ApplyResult
     from openfollow.runtime.diagnostics_export import DiagnosticsExport
+    from openfollow.runtime.latency_warning import LatencyWarning
     from openfollow.runtime.removable_media import Media
 
-from bottle import TEMPLATE_PATH, Bottle
+from bottle import TEMPLATE_PATH, Bottle, HTTPError
 
 import openfollow
-from openfollow.net_utils import get_local_ipv4_addresses, get_primary_local_ipv4
+from openfollow import net_utils
+from openfollow.net_utils import get_local_ipv4_addresses, get_primary_local_ipv4, offered_loopback
 from openfollow.services import WebCommandQueue
 from openfollow.web.discovery import BeaconReceiver, BeaconSender, PeerInfo
 from openfollow.web.pushed_settings import PushedSettings
@@ -81,15 +86,211 @@ _REQUEST_BUSY_RESPONSE = (
 )
 
 
+# How long a connection may idle: the request line and headers in total, then
+# each read of the body, so a slow upload lives as long as it keeps moving.
+_REQUEST_HEAD_TIMEOUT_S = 10.0
+_REQUEST_BODY_READ_TIMEOUT_S = 60.0
+
+# Unread request data at close makes the kernel reset the connection and can drop the
+# answer, so an unread body is discarded first, within these bounds.
+_UNREAD_BODY_MAX_BYTES = 16 * 1024 * 1024
+_UNREAD_BODY_TIMEOUT_S = 5.0
+_UNREAD_BODY_CHUNK = 64 * 1024
+
+# A busy answer is followed by a discard too, briefly and for a few connections at once;
+# past that bound the connection closes at once.
+_BUSY_DRAIN_TIMEOUT_S = 2.0
+_BUSY_DRAIN_MAX_BYTES = 4 * 1024 * 1024
+_BUSY_DRAIN_MAX_CONCURRENT = 8
+_busy_drain_semaphore = threading.BoundedSemaphore(_BUSY_DRAIN_MAX_CONCURRENT)
+
+
+class _RequestStream(socket.SocketIO):
+    """The connection's reads, each bounded by a deadline when one is set, else by ``read_timeout``."""
+
+    def __init__(self, connection: socket.socket) -> None:
+        super().__init__(connection, "rb")
+        self._connection = connection
+        self.deadline: float | None = None
+        self.read_timeout: float | None = None
+
+    def readinto(self, buffer: Any) -> int | None:
+        timeout = self.read_timeout
+        if self.deadline is not None:
+            timeout = max(self.deadline - time.monotonic(), 1e-3)
+        self._connection.settimeout(timeout)
+        try:
+            return super().readinto(buffer)
+        except TimeoutError:
+            if self.deadline is not None:
+                raise
+            # A body that stops arriving: Bottle answers this rather than a 500 with a traceback.
+            logger.info("Config web UI gave up on a request body that stopped arriving.")
+            raise HTTPError(408, "Request body timed out") from None
+        finally:
+            # Writes stay unbounded: a socket timeout would cap a whole sendall.
+            self._connection.settimeout(None)
+
+    def discard(self, read: Callable[[int], bytes | None], left: int, timeout: float) -> None:
+        """Half-close, then drop up to ``left`` bytes from ``read`` until the client closes or ``timeout`` passes."""
+        self.deadline = time.monotonic() + timeout
+        try:
+            self._connection.shutdown(socket.SHUT_WR)
+            while left > 0:
+                data = read(min(left, _UNREAD_BODY_CHUNK))
+                if not data:
+                    return
+                left -= len(data)
+        except OSError:
+            pass
+
+
+class _CountingReader:
+    """The request stream, counting the bytes wsgiref and Bottle read through it."""
+
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+        self.count = 0
+
+    def read(self, size: int | None = -1) -> bytes:
+        data: bytes = self._stream.read(size)
+        self.count += len(data)
+        return data
+
+    def read1(self, size: int = -1) -> bytes:
+        data: bytes = self._stream.read1(size)
+        self.count += len(data)
+        return data
+
+    def readline(self, size: int | None = -1) -> bytes:
+        data: bytes = self._stream.readline(size)
+        self.count += len(data)
+        return data
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._stream, name)
+
+
 class _QuietHandler(WSGIRequestHandler):
     def log_request(self, *args: object, **kwargs: object) -> None:
         pass
+
+    def setup(self) -> None:
+        super().setup()
+        self.rfile.close()
+        self._stream = _RequestStream(self.connection)
+        self._stream.deadline = time.monotonic() + _REQUEST_HEAD_TIMEOUT_S
+        self._counted = _CountingReader(io.BufferedReader(self._stream))
+        self.rfile = self._counted  # type: ignore[assignment]
+        self._body_start: int | None = None
 
     def get_environ(self) -> dict[str, Any]:
         env = super().get_environ()
         # The station address this connection arrived on: one the browser can reach.
         env["SERVER_ADDR"] = str(self.connection.getsockname()[0])
         return env
+
+    def parse_request(self) -> bool:
+        parsed = super().parse_request()
+        if parsed:
+            self._body_start = self._counted.count
+            self._stream.deadline = None
+            self._stream.read_timeout = _REQUEST_BODY_READ_TIMEOUT_S
+        return parsed
+
+    def handle(self) -> None:
+        try:
+            super().handle()
+        except TimeoutError:
+            logger.debug(
+                "Config web UI closed a connection from %s that sent no request in time.", self.client_address[0]
+            )
+            return
+        self._discard_unread_body()
+
+    def _discard_unread_body(self) -> None:
+        """Read what is left of the request body once the answer is sent."""
+        if self._body_start is None:
+            return
+        if "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
+            # Its end is not known without decoding it: read until the client closes.
+            left = _UNREAD_BODY_MAX_BYTES
+        else:
+            try:
+                declared = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                return
+            left = declared - (self._counted.count - self._body_start)
+            if left <= 0 or left > _UNREAD_BODY_MAX_BYTES:
+                return
+        self._stream.discard(self._counted.read1, left, _UNREAD_BODY_TIMEOUT_S)
+
+
+def _discard_busy_request(request: socket.socket) -> None:
+    """Let the busy answer arrive: discard what the client still sends, unless every drain place is taken."""
+    drains = _busy_drain_semaphore
+    if not drains.acquire(blocking=False):
+        return
+    try:
+        stream = _RequestStream(request)
+        try:
+            stream.discard(stream.read, _BUSY_DRAIN_MAX_BYTES, _BUSY_DRAIN_TIMEOUT_S)
+        finally:
+            stream.close()
+    finally:
+        drains.release()
+
+
+# Refusals at the handler cap log a streak's start, then at most one reminder per interval;
+# a streak ends once a request is accepted after an interval without refusals.
+_BUSY_LOG_INTERVAL_S = 60.0
+
+
+class _BusyLog:
+    """The log lines for refusals at the handler cap, so a reload storm stays a few lines."""
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._logged_at: float | None = None  # None: no streak
+        self._refused_at = 0.0
+        self._unlogged = 0
+
+    def refused(self, client: str) -> None:
+        now = self._clock()
+        with self._lock:
+            logged_at = self._logged_at
+            self._refused_at = now
+            if logged_at is not None:
+                self._unlogged += 1
+                if now - logged_at < _BUSY_LOG_INTERVAL_S:
+                    return
+            self._logged_at = now
+            count, self._unlogged = self._unlogged, 0
+        if logged_at is None:
+            logger.warning(
+                "Config web UI is refusing requests: concurrent handler cap %d reached (first from %s).",
+                _REQUEST_MAX_CONCURRENT,
+                client,
+            )
+        else:
+            logger.warning(
+                "Config web UI refused %d more requests at its concurrent handler cap %d since its last warning.",
+                count,
+                _REQUEST_MAX_CONCURRENT,
+            )
+
+    def accepted(self) -> None:
+        now = self._clock()
+        with self._lock:
+            if self._logged_at is None or now - self._refused_at < _BUSY_LOG_INTERVAL_S:
+                return
+            self._logged_at = None
+            count, self._unlogged = self._unlogged, 0
+        logger.info("Config web UI accepts requests again; %d refused since its last warning.", count)
+
+
+_busy_log = _BusyLog()
 
 
 class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
@@ -102,9 +303,9 @@ class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
         # ThreadingMixIn has already spawned this worker thread. Gate
         # actual request handling on a global bounded semaphore so a
         # flood of concurrent slow requests cannot pile up real work.
-        # Rejected threads send a short 503 and terminate within a few
-        # ms; the total number of threads doing WSGI work at once is
-        # capped at ``_REQUEST_MAX_CONCURRENT``.
+        # Rejected threads send a short 503 and end within
+        # ``_BUSY_DRAIN_TIMEOUT_S``; the total number of threads doing WSGI
+        # work at once is capped at ``_REQUEST_MAX_CONCURRENT``.
         #
         # Capture the semaphore reference once so acquire and release
         # always target the same object – tests monkeypatch the module
@@ -116,21 +317,22 @@ class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
             global _request_semaphore_rejections
             with _request_rejections_lock:
                 _request_semaphore_rejections += 1
+            _busy_log.refused(str(client_address[0]))
             try:
-                request.sendall(_REQUEST_BUSY_RESPONSE)
-            except OSError:
-                pass
-            try:
-                self.shutdown_request(request)
-            except Exception:
-                pass
-            logger.warning(
-                "Config web UI rejected a request from %s: concurrent handler cap %d reached.",
-                client_address,
-                _REQUEST_MAX_CONCURRENT,
-            )
+                try:
+                    request.sendall(_REQUEST_BUSY_RESPONSE)
+                except OSError:
+                    pass
+                else:
+                    _discard_busy_request(request)
+            finally:
+                try:
+                    self.shutdown_request(request)
+                except Exception:
+                    pass
             return
         try:
+            _busy_log.accepted()
             super().process_request_thread(request, client_address)
         finally:
             sem.release()
@@ -224,6 +426,9 @@ class ConfigWebServer:
         network_vlan_provider: Callable[[], dict[str, Any]] | None = None,
         network_vlan_create_handler: Callable[[str, int], ApplyResult] | None = None,
         network_vlan_delete_handler: Callable[[str], ApplyResult] | None = None,
+        # Interfaces that are not present but have saved settings, and deleting those settings.
+        network_saved_provider: Callable[[], list[dict[str, Any]]] | None = None,
+        network_forget_handler: Callable[[str], ApplyResult] | None = None,
         # Scan: drop the network reading the sections share, so the next read asks the backend.
         network_rescan_handler: Callable[[], None] | None = None,
         # Privilege capability snapshot for the diagnostics bundle; optional for tests.
@@ -244,6 +449,8 @@ class ConfigWebServer:
         # favour of the inline UI.
         marker_catalog_provider: Callable[[], Any] | None = None,
         marker_catalog_sync_provider: Callable[[], Any] | None = None,
+        # Renames saved on this station, handed to the running outputs.
+        marker_rename_handler: Callable[[list[int]], None] | None = None,
         # Live per-controller SDL snapshot for the diagnostics bundle's
         # gamepad section (backend / GUID / calibration-match). Optional so
         # the server still constructs in tests that don't wire input.
@@ -333,6 +540,8 @@ class ConfigWebServer:
         self._network_vlan_provider = network_vlan_provider
         self._network_vlan_create_handler = network_vlan_create_handler
         self._network_vlan_delete_handler = network_vlan_delete_handler
+        self._network_saved_provider = network_saved_provider
+        self._network_forget_handler = network_forget_handler
         self._network_rescan_handler = network_rescan_handler
         self._psn_source_advisory_provider = psn_source_advisory_provider
         self._web_bind_advisory_provider = web_bind_advisory_provider
@@ -344,6 +553,7 @@ class ConfigWebServer:
         self._camera_setup_restart_handler = camera_setup_restart_handler
         self._marker_catalog_provider = marker_catalog_provider
         self._marker_catalog_sync_provider = marker_catalog_sync_provider
+        self._marker_rename_handler = marker_rename_handler
         # Public so ``_build_diagnostics_providers`` can pass it straight
         # through; ``None`` when unwired keeps the bundle's "not wired" vs
         # "no controllers connected" distinction meaningful.
@@ -385,8 +595,9 @@ class ConfigWebServer:
         self._loopback_http_server: Any = None
 
         # Peer discovery
-        beacon_iface_ip = station_ip if station_ip != "127.0.0.1" else ""
         beacon_iface = self._station_iface()
+        # 127.0.0.1 is "could not resolve", unless the station is pinned to an offered loopback.
+        beacon_iface_ip = station_ip if station_ip != "127.0.0.1" or offered_loopback(beacon_iface) else ""
         self._beacon_sender = BeaconSender(
             name=system_name,
             web_port=port,
@@ -415,6 +626,11 @@ class ConfigWebServer:
         if self._marker_catalog_provider is None:
             return None
         return self._marker_catalog_provider()
+
+    def apply_marker_renames(self, marker_ids: list[int]) -> None:
+        """Hand catalog entries saved on this station to the running outputs."""
+        if self._marker_rename_handler is not None:
+            self._marker_rename_handler(marker_ids)
 
     def get_marker_catalog_sync(self) -> Any:
         """Return the running :class:`MarkerCatalogSync`, or ``None``."""
@@ -648,6 +864,28 @@ class ConfigWebServer:
             logger.exception("network_vlan_delete handler raised")
             return ApplyResult(ok=False, message=str(exc))
 
+    def get_network_saved(self) -> list[dict[str, Any]]:
+        """Every interface that is not present but has saved settings; empty when unwired or unreadable."""
+        if self._network_saved_provider is None:
+            return []
+        try:
+            return self._network_saved_provider()
+        except Exception:  # noqa: BLE001
+            logger.exception("Network saved-settings provider raised")
+            return []
+
+    def forget_network_interface(self, name: str) -> ApplyResult:
+        """Delete the saved settings of the absent interface ``name``; always returns ApplyResult."""
+        from openfollow.network.adapter import ApplyResult
+
+        if self._network_forget_handler is None:
+            return ApplyResult(ok=False, message="Network writes are not available on this build.")
+        try:
+            return self._network_forget_handler(name)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("network_forget handler raised")
+            return ApplyResult(ok=False, message=str(exc))
+
     def get_psn_source_advisory(self) -> dict[str, str]:
         """Startup advisory when pinned PSN source iface unavailable; returns status/banner/resolved_ip."""
         empty = {"status": "", "banner": "", "resolved_ip": ""}
@@ -712,9 +950,9 @@ class ConfigWebServer:
                 self._beacon_sender.update_iface_ip(None)
                 self._beacon_receiver.update_iface_ip(None)
             return True
-        if not candidate or candidate.startswith("127."):
-            return False
         iface = self._station_iface()
+        if not candidate or (candidate.startswith("127.") and not offered_loopback(iface)):
+            return False
         with self._local_ip_lock:
             self._station_interface_down = False
             if (
@@ -785,7 +1023,7 @@ class ConfigWebServer:
         return PeerInfo(
             name=self._system_name,
             ip=self._local_ip,
-            web_port=self._port,
+            web_port=self.display_port,
             version=openfollow.__version__,
             last_seen=time.time(),
         )
@@ -849,8 +1087,25 @@ class ConfigWebServer:
         return self._command_queue.get_update_available()
 
     def request_slot_action(self, action: str, index: int, ref: str) -> None:
-        """Queue a controller-slot action (``identify`` / ``forget``) for the main loop."""
+        """Queue a Controller Slots action for the main loop."""
         self._command_queue.request_slot_action(action, index, ref)
+
+    def request_slot_marker(self, index: int, ref: str, marker_id: int) -> None:
+        """Queue a marker picked for a controller slot, for the main loop."""
+        self._command_queue.request_slot_marker(index, ref, marker_id)
+
+    def request_latency(self) -> None:
+        """Queue the start of a camera latency run for the main loop."""
+        self._command_queue.request_latency()
+
+    @property
+    def latency_warning(self) -> LatencyWarning:
+        """The Operator Screen's warning card, held up by Measure dialogs showing their warnings."""
+        return self._command_queue.latency_warning
+
+    def get_latency_status(self) -> dict[str, Any]:
+        """The camera latency run as the main loop last reported it."""
+        return self._command_queue.get_latency_status()
 
     def whats_new_pending(self) -> bool:
         """True when the page should open the updater's What's new step."""
@@ -951,7 +1206,7 @@ class ConfigWebServer:
         return self._marker_positions_provider()
 
     def get_marker_position(self, marker_id: int) -> tuple[float, float, float] | None:
-        """Where ``marker_id`` is on the wire now, X/Y/Z; ``None`` when it is not here or offline."""
+        """Where ``marker_id`` is now, X/Y/Z without a zone's lift; ``None`` when it is not here or offline."""
         if self._marker_position_provider is None:
             return None
         return self._marker_position_provider(marker_id)
@@ -1112,7 +1367,7 @@ class ConfigWebServer:
 
     @staticmethod
     def _can_bind(host: str, port: int) -> bool:
-        """Return True if an IPv4 TCP socket can bind to host:port."""
+        """Return True if an IPv4 TCP socket can bind to host:port and no other socket shares the port there."""
         bind_host = "" if host in {"", "0.0.0.0"} else host
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -1120,7 +1375,10 @@ class ConfigWebServer:
                 sock.bind((bind_host, port))
             except OSError:
                 return False
-        return True
+        shared = net_utils.tcp_port_shared(bind_host, port)
+        if shared:
+            logger.info("Web UI port %d is in use on %s.", port, ", ".join(shared))
+        return not shared
 
     def start(self) -> None:
         """Start web server and beacon threads.
@@ -1172,6 +1430,12 @@ class ConfigWebServer:
             )
             return
 
+        serving = fallback_port if not primary_ok and fallback_port is not None else self._port
+        # Probed before any listener binds: on macOS the station's own wildcard would read as sharing 127.0.0.1.
+        loopback_ok = self._needs_loopback_listener() and self._can_bind("127.0.0.1", serving)
+        self._fallback_port = fallback_port
+        self._advertise_port(serving)
+
         # Start beacon discovery (only once at least one HTTP socket will bind).
         self._beacon_sender.start()
         self._beacon_receiver.start()
@@ -1197,7 +1461,6 @@ class ConfigWebServer:
             )
 
         if fallback_port is not None:
-            self._fallback_port = fallback_port
             self._fallback_thread = threading.Thread(
                 target=self._run,
                 args=(self._host, fallback_port, "fallback"),
@@ -1218,27 +1481,32 @@ class ConfigWebServer:
                     fallback_port,
                 )
 
-        # When the external listener is pinned to a specific (non-loopback)
-        # IP, also serve 127.0.0.1 so the on-screen embedded browser (always
-        # loopback) still reaches the UI. Serves the live display port; a
-        # loopback-bind failure must not take down the pinned listener.
-        loopback_port = self._port if primary_ok else fallback_port
-        if self._needs_loopback_listener() and loopback_port is not None and self._can_bind("127.0.0.1", loopback_port):
+        # The on-screen embedded browser always targets 127.0.0.1, so serve it
+        # there on the live display port; a loopback-bind failure must not
+        # take down the external listener.
+        if loopback_ok:
             self._loopback_thread = threading.Thread(
                 target=self._run,
-                args=("127.0.0.1", loopback_port, "loopback"),
+                args=("127.0.0.1", serving, "loopback"),
                 daemon=True,
                 name="ConfigWebServerLoopback",
             )
             self._loopback_thread.start()
-            logger.info("Config web UI also reachable at http://127.0.0.1:%d (loopback)", loopback_port)
+            logger.info("Config web UI also reachable at http://127.0.0.1:%d (loopback)", serving)
 
     def _needs_loopback_listener(self) -> bool:
-        """True when the external bind pins a specific non-loopback IP, so a
-        separate 127.0.0.1 listener is needed for the on-screen browser.
-        ``0.0.0.0`` and any 127.x / ::1 address already cover loopback."""
+        """True when the external listener does not hold 127.0.0.1 itself: a
+        specific non-loopback IP, or on macOS the wildcard, beside which
+        another process could still bind 127.0.0.1 on the same port."""
         host = self._host
-        return bool(host) and host != "0.0.0.0" and not host.startswith("127.") and host != "::1"
+        if not host or host == "0.0.0.0":
+            return net_utils.BINDS_SHARE_PORTS
+        return not host.startswith("127.") and host != "::1"
+
+    def _advertise_port(self, port: int) -> None:
+        """Point the beacon, and its filter for this station's own, at the port served."""
+        self._beacon_sender.update_web_port(port)
+        self._beacon_receiver.set_local_port(port)
 
     @property
     def bind_host(self) -> str:
@@ -1366,6 +1634,9 @@ class ConfigWebServer:
             else:
                 self._http_server = None
                 self._thread = None
+                fallback = self._fallback_port
+                if fallback is not None:
+                    self._advertise_port(fallback)
 
     def stop(self) -> None:
         """Stop the web server and beacons."""

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Whether a sender's datagrams are leaving, judged by the results of its sends.
 
 The network observer watches interfaces, so it cannot see a send the OS refuses

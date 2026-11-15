@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """V4L2 (USB camera / capture card) video input plugin."""
 
 from __future__ import annotations
@@ -327,6 +329,7 @@ class V4l2Input(VideoInputBase):
     input_id = "v4l2"
     display_name = "USB Camera"
     source_element_name = "v4l2src"
+    frame_meter_element_name = "post_queue"
     source_kind = SourceKind.LOCAL
 
     def __init__(self) -> None:
@@ -422,9 +425,10 @@ class V4l2Input(VideoInputBase):
         ``src_caps`` pins a mode from the camera's own list (``_choose_mode``),
         never a fixed size: a capture card only lists the incoming signal's
         resolution. With no list to choose from the source stays open. A
-        render-resolution preset adds videoscale + a size-pinning capsfilter to
-        scale the stream down; ``native`` omits videoscale so the device's own
-        resolution flows through (the sink scales it for the widget).
+        render-resolution preset adds videoscale + a capsfilter pinning the size
+        and square pixels, so a mode of another shape keeps its shape between bars;
+        ``native`` omits videoscale so the device's own resolution flows through
+        (the sink scales it for the widget).
         """
         from gi.repository import Gst
 
@@ -455,6 +459,8 @@ class V4l2Input(VideoInputBase):
         if dims is not None:
             caps_parts.append(f"width=(int){dims[0]}")
             caps_parts.append(f"height=(int){dims[1]}")
+            # Square pixels make videoscale letterbox a mode of another shape instead of stretching it.
+            caps_parts.append("pixel-aspect-ratio=(fraction)1/1")
         caps_parts.append(f"framerate=(fraction){framerate}/1")
         caps_str = ",".join(caps_parts)
         capsfilter.set_property("caps", Gst.Caps.from_string(caps_str))
@@ -488,7 +494,9 @@ class V4l2Input(VideoInputBase):
         # scaler would let the sink's widget size shrink the buffer below the
         # device resolution.
         if dims is not None:
-            chain.append(make("videoscale", "videoscale"))
+            scale = make("videoscale", "videoscale")
+            scale.set_property("add-borders", True)
+            chain.append(scale)
         chain += [rate, capsfilter, convert]
 
         for elem in (*chain, sink):

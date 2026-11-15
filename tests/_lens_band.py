@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """What the wizard's canvas does for the Lens step: cut the luma band along a traced chord."""
 
 from __future__ import annotations

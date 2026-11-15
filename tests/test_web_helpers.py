@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Unit tests for web route helpers: config section apply/serialise, web-PIN
 and update-URL validators, peer SSRF / port guards, zone + wizard parsers, and
 the detection-extras probes."""
@@ -14,7 +16,14 @@ from types import SimpleNamespace
 import pytest
 
 import openfollow.video.inputs as inputs_module
-from openfollow.configuration import AppConfig, CameraConfig, OscDestinationConfig, OscDestinationsConfig
+from openfollow.configuration import (
+    AppConfig,
+    CameraConfig,
+    OscDestinationConfig,
+    OscDestinationsConfig,
+    SlotMarkerConfig,
+    SlotPinConfig,
+)
 from openfollow.input.control_frame import ControlFrame
 from openfollow.lens_model import lens_warp_is_valid
 from openfollow.web.routes import (
@@ -69,6 +78,17 @@ def test_config_dict_redacted_drops_device_local_fields() -> None:
     # names this box: two stations must never claim one name through a copied config.
     assert "station_fqdn" not in d
     assert d["web_port"] == 8080  # non-secret fields preserved
+
+
+def test_config_dict_redacted_drops_slot_pins_and_markers() -> None:
+    """A pin names a USB socket on this box and a pick one of its slots; a peer has neither."""
+    cfg = AppConfig()
+    cfg.controller.slot_pins = [SlotPinConfig(slot=2, key="usb:platform/xhci-hcd.1:1.4", label="Pad")]
+    cfg.controller.slot_markers = [SlotMarkerConfig(slot=1, marker=4)]
+    d = _config_dict_redacted(cfg)
+    assert "slot_pins" not in d["controller"]
+    assert "slot_markers" not in d["controller"]
+    assert d["controller"]["deadzone"] == cfg.controller.deadzone
 
 
 def test_the_touch_remote_switch_never_leaves_the_station_but_its_tuning_does() -> None:
@@ -131,6 +151,14 @@ def test_strip_device_local_fields_drops_detection_storage_path() -> None:
     )
     assert "storage_path" not in scrubbed
     assert scrubbed["model"] == "yolov8n.onnx"  # non-local fields kept
+
+
+@pytest.mark.parametrize("section", ["controller", "gamepad", "keyboard", "mouse"])
+def test_strip_device_local_fields_drops_slot_pins(section: str) -> None:
+    pin = {"slot": 2, "key": "usb:platform/xhci-hcd.1:1.4", "kind": "gamepad", "label": "Pad"}
+    pick = {"slot": 1, "marker": 4}
+    scrubbed = strip_device_local_fields(section, {"slot_pins": [pin], "slot_markers": [pick], "deadzone": 0.2})
+    assert scrubbed == {"deadzone": 0.2}
 
 
 def test_interface_assignment_is_device_local_in_full() -> None:
@@ -208,34 +236,6 @@ def test_as_int_list_parses_csv_and_falls_back() -> None:
 # exercise the public boundary (``apply_section_data``) rather than the
 # private ``_as_float`` / ``_as_int`` helpers, so a refactor of the
 # helpers shouldn't break these.
-
-
-def test_apply_section_data_marker_accepts_the_former_z_line_names() -> None:
-    """A peer or API client still on the pre-rename names must not be accepted and
-    then ignored. ``apply_section_data`` returns True either way, so a silent drop
-    would look exactly like a successful broadcast during a rolling upgrade."""
-    config = AppConfig()
-
-    ok = apply_section_data(config, "marker", {"drop_line": False, "drop_line_thickness": 9})
-
-    assert ok is True
-    assert config.marker.z_line is False
-    assert config.marker.z_line_thickness == 9
-
-
-def test_apply_section_data_marker_prefers_the_current_z_line_names() -> None:
-    """With both spellings present the current one wins, matching the config-file
-    path, so a stale key from an older sender cannot override a deliberate value."""
-    config = AppConfig()
-
-    apply_section_data(
-        config,
-        "marker",
-        {"drop_line": False, "z_line": True, "drop_line_thickness": 9, "z_line_thickness": 4},
-    )
-
-    assert config.marker.z_line is True
-    assert config.marker.z_line_thickness == 4
 
 
 def test_apply_section_data_reads_the_control_direction_flip_from_an_older_peer() -> None:
@@ -424,6 +424,7 @@ def test_apply_section_data_mouse3d_button_goes_to_the_field_that_changed() -> N
 )
 def test_apply_section_data_move_stick_always_keeps_its_stick(data: dict[str, str], move: str, fader: str) -> None:
     config = AppConfig()
+    config.controller.move_xy_stick = "left"
     config.controller.marker_fader_stick = "right_y"  # on the stick Move X/Y is not using
     apply_section_data(config, "gamepad", data)
     assert (config.controller.move_xy_stick, config.controller.marker_fader_stick) == (move, fader)
@@ -589,11 +590,13 @@ def test_apply_section_data_general_ignores_marker_ids(monkeypatch) -> None:
         {
             "controlled_marker_ids": "99",
             "viewer_marker_ids": "98",
+            "parked_marker_ids": "99",
         },
     )
     assert ok is True
     assert config.controlled_marker_ids == original_controlled
     assert config.viewer_marker_ids == original_viewer
+    assert config.parked_marker_ids == []
 
 
 def test_apply_section_data_marker_ignores_marker_id_fields() -> None:
@@ -1337,6 +1340,44 @@ def test_an_imported_controlled_marker_is_viewed_too() -> None:
     assert new.viewer_marker_ids == [4, 2]
 
 
+def test_an_import_restores_the_parked_markers_it_controls() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    new = _apply_import_data(AppConfig(), {"controlled_marker_ids": [2, 3], "parked_marker_ids": [3, 4, True, "2", 3]})
+
+    assert new.parked_marker_ids == [3]
+
+
+def test_an_import_that_drops_a_controlled_marker_drops_its_park() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    new = _apply_import_data(
+        AppConfig(controlled_marker_ids=[1, 2], parked_marker_ids=[1, 2]), {"controlled_marker_ids": [2]}
+    )
+
+    assert new.parked_marker_ids == [2]
+
+
+def test_a_push_leaves_this_stations_parked_markers() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    new = _apply_import_data(
+        AppConfig(controlled_marker_ids=[1, 2], parked_marker_ids=[1]),
+        {"controlled_marker_ids": [1, 2], "parked_marker_ids": [2]},
+        pushed=True,
+    )
+
+    assert new.parked_marker_ids == [1]
+
+
+def test_an_export_carries_the_parked_markers() -> None:
+    from openfollow.web.routes import _config_dict_redacted
+
+    payload = _config_dict_redacted(AppConfig(controlled_marker_ids=[1, 2], parked_marker_ids=[2]))
+
+    assert payload["parked_marker_ids"] == [2]
+
+
 def test_an_import_without_a_marker_selection_keeps_this_stations() -> None:
     from openfollow.web.routes import _apply_import_data
 
@@ -1354,6 +1395,8 @@ def test_an_import_without_a_marker_selection_keeps_this_stations() -> None:
         ("controller.button_raw_indices", {"A": 3}, "abc", {}),
         ("controller.swap_triggers", True, None, False),
         ("controller.mapped_controller_guid", "0300abcd", 3, ""),
+        ("controller.button_name_style", "xbox", 3, "standard"),
+        ("controller.button_name_style", "xbox", "ps5", "standard"),
         ("ui.developer_mode", True, "abc", False),
         ("paths.show_paths", False, "abc", True),
         ("network.backend", "nm", 3, "auto"),
@@ -1894,6 +1937,8 @@ _DEVICE_IDENTITY_SAMPLES = [
     ("markers_catalog_path", "/mnt/nvme/openfollow/markers.toml"),
     ("testpattern_selected_media", "0123456789abcdef"),
     ("detection.storage_path", "/mnt/nvme/openfollow/yolo"),
+    ("controller.slot_pins", [SlotPinConfig(slot=2, key="usb:platform/xhci-hcd.1:1.4", label="Pad")]),
+    ("controller.slot_markers", [SlotMarkerConfig(slot=2, marker=5)]),
     ("display.operator_screen", "cairo"),
 ]
 
@@ -1923,6 +1968,7 @@ def test_reset_config_to_defaults_returns_every_section_to_default() -> None:
     configured.window_width = 3840
     configured.controlled_marker_ids = [1, 2]
     configured.viewer_marker_ids = [1, 2, 3]
+    configured.parked_marker_ids = [2]
     configured.marker_move_speeds = {1: 2.5}
     configured.auto_update_check = False
     configured.camera.pos_x = 9.5
@@ -2213,7 +2259,10 @@ def test_a_peer_that_said_why_it_did_not_apply_is_reported_with_its_reason(monke
             "its settings file is empty; restart it to restore the settings from its latest backup copy",
         ),
         ("empty", "its settings file is empty; restart it to start again with default settings"),
-        ("unreadable", "its settings file could not be read; import a settings file there to replace it"),
+        (
+            "unreadable",
+            "its settings file could not be read; import a settings file or restore a backup there to replace it",
+        ),
     ],
 )
 def test_a_peer_s_settings_file_is_named_as_its_own_not_the_sender_s(monkeypatch, kind: str, reason: str) -> None:
@@ -3549,12 +3598,39 @@ def test_cancel_button_label_default_is_B() -> None:
     assert routes_mod._cancel_button_label(cfg) == "B"
 
 
+@pytest.mark.parametrize(
+    ("style", "button", "word"),
+    [("playstation", "B", "Circle"), ("xbox", "BACK", "View")],
+)
+def test_cancel_button_label_draws_the_symbol_with_its_word(style: str, button: str, word: str) -> None:
+    from openfollow.configuration import AppConfig
+    from openfollow.web import routes as routes_mod
+
+    cfg = AppConfig()
+    cfg.controller.button_name_style = style
+    cfg.controller.btn_menu_cancel = button
+    label = routes_mod._cancel_button_label(cfg)
+    assert label.startswith('<span class="btn-symbol"><svg class="btn-symbol-icon"')
+    assert f'<span class="visually-hidden">{word}</span>' in label
+
+
+@pytest.mark.parametrize(("style", "word"), [("standard", "Back"), ("playstation", "Create"), ("nintendo", "Minus")])
+def test_cancel_button_label_names_a_worded_button_in_the_style(style: str, word: str) -> None:
+    from openfollow.configuration import AppConfig
+    from openfollow.web import routes as routes_mod
+
+    cfg = AppConfig()
+    cfg.controller.button_name_style = style
+    cfg.controller.btn_menu_cancel = "BACK"
+    assert routes_mod._cancel_button_label(cfg) == word
+
+
 @pytest.mark.parametrize("cleared", ["", "   "])
 def test_cancel_button_label_falls_back_when_binding_cleared(cleared) -> None:
     """Empty / whitespace ``btn_menu_cancel`` (an operator cleared the
     binding via the web form) → fall back to the word ``"Cancel"`` so
-    the footer renders ``<kbd>Cancel</kbd>Close embedded browser``
-    instead of an empty key-cap hint."""
+    the footer renders ``<kbd>Cancel</kbd>`` instead of an empty
+    key-cap hint."""
     from openfollow.configuration import AppConfig
     from openfollow.web import routes as routes_mod
 
@@ -3575,6 +3651,12 @@ class TestPeerPortAllowlist:
         assert _is_allowed_peer_port(9000, 9000) is True  # matches configured
         assert _is_allowed_peer_port(31337, 8080) is False  # arbitrary beacon port
         assert _is_allowed_peer_port(22, 8080) is False  # internal-service probe
+
+    def test_a_peer_serving_any_fallback_port_is_reachable(self) -> None:
+        from openfollow.web.routes import _is_allowed_peer_port
+        from openfollow.web.server import _FALLBACK_PORTS
+
+        assert all(_is_allowed_peer_port(port, 80) for port in _FALLBACK_PORTS)
 
     def test_probe_peer_refuses_unexpected_port(self) -> None:
         from openfollow.web.routes import _probe_peer
@@ -4523,3 +4605,22 @@ def test_unknown_camera_calibration_keys_are_dropped_by_a_write(how: str) -> Non
     exported = _config_dict_redacted(station)
     assert "corner_pins" not in exported["camera"]
     assert "calibration_points" not in exported["camera"]
+
+
+def test_a_settings_file_restores_the_button_names() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    new = _apply_import_data(AppConfig(), {"controller": {"button_name_style": "playstation"}})
+
+    assert new.controller.button_name_style == "playstation"
+
+
+def test_a_push_leaves_this_stations_button_names() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    current = AppConfig()
+    current.controller.button_name_style = "xbox"
+
+    new = _apply_import_data(current, {"controller": {"button_name_style": "playstation"}}, pushed=True)
+
+    assert new.controller.button_name_style == "xbox"

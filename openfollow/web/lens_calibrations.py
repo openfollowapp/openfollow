@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Lens calibrations saved on this station by the Setup Wizard, one small JSON file each.
 
 They live beside ``config.toml``, not in it, so an export, an import or a push never carries them. Each
@@ -22,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from openfollow.lens_model import lens_warp_is_valid
+from openfollow.restore_hold import unless_held
 
 logger = logging.getLogger(__name__)
 
@@ -185,15 +187,16 @@ def save_calibration(
         },
         indent=2,
     )
-    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".lens-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(body + "\n")
-        os.replace(tmp, target)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
-    for old in same:
-        if old != target:
-            old.unlink(missing_ok=True)
+    with unless_held(directory):
+        fd, tmp = tempfile.mkstemp(dir=directory, prefix=".lens-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(body + "\n")
+            os.replace(tmp, target)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+        for old in same:
+            if old != target:
+                old.unlink(missing_ok=True)
     return calibration

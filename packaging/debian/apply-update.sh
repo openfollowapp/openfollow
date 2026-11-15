@@ -1,6 +1,8 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 # Install a staged OpenFollow .deb update and make sure the service is running.
 #
 # Must run detached from openfollow.service (launched as root in a transient

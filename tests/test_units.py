@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Unit formatter / parser contract.
 
 Pins the adaptive imperial format boundaries, the Postel-style parser
@@ -222,3 +224,8 @@ class TestRoundTrip:
             # Speed displays to 2 dp in the active unit.
             tol = 0.01 if mode is M else 0.01 * 0.3048
             assert abs(back - mps) <= tol + 1e-9
+
+
+@pytest.mark.parametrize("member", list(UnitSystem))
+def test_unit_system_renders_as_its_value(member: UnitSystem) -> None:
+    assert str(member) == f"{member}" == format(member) == member.value

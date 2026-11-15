@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
 """Tests for the MIDI → virtual-fader dispatch layer.
 
 Covers the match contract (patch / type / channel / number wildcards),

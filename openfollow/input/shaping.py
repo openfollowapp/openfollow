@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Shared analog-axis shaping: per-axis deadzone + response curve.
 
 The gamepad sticks and the 3D mouse axes shape raw deflection the same way, so

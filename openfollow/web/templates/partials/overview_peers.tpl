@@ -1,4 +1,4 @@
-% # Discovered-peer rows fragment – see partials/overview.tpl for why only this
+% # Discovered-peer rows fragment – see partials/diagnostics.tpl for why only this
 % # region polls. Threaded context: ``local`` (this station's PeerInfo) + ``peers``.
 %# ``station_down`` means the pinned interface has no address. The displayed
 %# address keeps its last known good value (the UI is usually still reachable

@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Tests for :mod:`openfollow.runtime.app_orchestration`.
 
 This module is the wiring between the GTK main loop, the per-frame
@@ -86,6 +88,7 @@ class _RecordingServices:
         self.calls: list[str] = []
         self.frame_times: list[float] = []
         self.marker_visual_dts: list[float] = []
+        self.zone_dts: list[float] = []
         self.runtime_stats_calls = 0
         self._frame_metrics = SimpleNamespace(add_frame=self._record_frame_time)
         self.shutdown_calls = 0
@@ -99,8 +102,9 @@ class _RecordingServices:
     def apply_detection_pin(self, dt: float = 0.0) -> None:
         self.calls.append("apply_detection_pin")
 
-    def update_zone_triggers(self) -> None:
+    def update_zone_triggers(self, dt: float) -> None:
         self.calls.append("update_zone_triggers")
+        self.zone_dts.append(dt)
 
     def update_marker_visuals(self, dt: float = 0.0) -> None:
         self.calls.append("update_marker_visuals")
@@ -151,6 +155,7 @@ def _make_fake_app(
         _check_button_detection_request=_recorder("check_button_detection_request"),
         _check_controller_slot_actions=_recorder("check_controller_slot_actions"),
         _check_camera_setup_requests=_recorder("check_camera_setup_requests"),
+        _check_latency_requests=_recorder("check_latency_requests"),
         _check_marker_speeds_persist=_recorder("check_marker_speeds_persist"),
         _check_frame_loop_stall=_recorder("check_frame_loop_stall"),
         _frame_stalled=False,
@@ -231,6 +236,17 @@ class TestAnimate:
         stalled = app._runtime_services.marker_visual_dts[1]
         assert stalled > orch._MAX_FRAME_DT
         assert stalled == pytest.approx(5.0, abs=0.5)
+
+    def test_the_zone_lift_eases_on_the_clamped_step(self) -> None:
+        """A stalled frame must not finish a lift's ramp in one catch-up jump any more than it may teleport a marker."""
+        app = _make_fake_app()
+        orch.animate(app)
+        app._last_animate_time -= 5.0
+        orch.animate(app)
+        assert app._runtime_services.zone_dts == [
+            pytest.approx(orch._DEFAULT_FRAME_DT),
+            pytest.approx(orch._MAX_FRAME_DT),
+        ]
 
     def test_no_input_manager_skips_keyboard_poll(self) -> None:
         app = _make_fake_app(input_manager=None)
@@ -328,6 +344,7 @@ class TestHousekeeping:
             "check_button_detection_request",
             "check_controller_slot_actions",
             "check_camera_setup_requests",
+            "check_latency_requests",
             "check_marker_speeds_persist",
             # The stall watchdog belongs here and not on the frame clock: a
             # stalled loop cannot report its own stall.
@@ -356,6 +373,7 @@ class TestHousekeeping:
             "check_button_detection_request",
             "check_controller_slot_actions",
             "check_camera_setup_requests",
+            "check_latency_requests",
             "check_marker_speeds_persist",
             "check_frame_loop_stall",
             "observe_network_planes",
@@ -1058,6 +1076,19 @@ class TestCheckMarkerSpeedsPersist:
         # waits out the settle window again rather than firing every tick.
         assert app._marker_speeds_dirty_since == 100.0
         assert app._marker_speeds_dirty_since != before
+
+    def test_a_flush_during_a_restore_s_restart_is_logged_as_the_restart(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from openfollow import restore_hold
+
+        monkeypatch.setattr(orch.time, "monotonic", lambda: 100.0)
+        app = self._app(tmp_path, {5: 2.7}, dirty=True, dirty_since=90.0)
+        restore_hold.hold(app._config_path)
+        with caplog.at_level("INFO"):
+            orch.check_marker_speeds_persist(app)
+        assert "OpenFollow is restarting after a restore" in caplog.text
+        assert [r for r in caplog.records if r.levelname == "ERROR"] == []
 
     def test_malformed_config_is_not_overwritten(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
         """The flush loads ``strict=True``, so a malformed / unparseable

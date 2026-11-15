@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """AVFoundation (macOS USB camera / capture card) video input plugin.
 
 Builds an ``avfvideosrc`` capture pipeline and persists the device's
@@ -143,6 +145,7 @@ class AvfInput(VideoInputBase):
     input_id = "avf"
     display_name = "USB Camera (AVFoundation)"
     source_element_name = "avfvideosrc"
+    frame_meter_element_name = "post_queue"
     source_kind = SourceKind.LOCAL
 
     # -- Declarations ---------------------------------------------------

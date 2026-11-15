@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
 """Unit tests for ``usb_camera_names``.
 
 The helper dispatches by platform to the V4L2 (Linux) / AVFoundation

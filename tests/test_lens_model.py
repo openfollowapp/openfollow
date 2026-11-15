@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """The lens's one validity rule: the map must stay defined and rising out to every frame corner."""
 
 from __future__ import annotations

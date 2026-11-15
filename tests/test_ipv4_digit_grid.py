@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Digit-grid model behind gamepad entry of an IPv4 value.
 
 The behaviour these pin is "an operator with no keyboard can set a static

@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Tests for the mouse input handler.
 
 Control is grabbed by left-clicking a marker's ground circle and released
@@ -18,9 +20,11 @@ import pytest
 from openfollow.configuration import (
     AppConfig,
     CameraConfig,
+    DetectionConfig,
     GridConfig,
 )
 from openfollow.input.mouse import _MIN_GRAB_PX, MouseHandler
+from openfollow.input.parking import set_parked
 from openfollow.psn.marker import Marker
 from openfollow.runtime.overlay_draw_scene import project as draw_project
 from openfollow.runtime.overlay_layout import PictureGeometry, SceneView, scene_view
@@ -1675,18 +1679,8 @@ class TestLockedOnAPath:
         assert app._server.get_marker(1).pos == _DEFAULT_POS
 
 
-class TestGrabOnTheGroundGrid:
-    """Inside a ground grid that drops markers, the ring is drawn on its floor, and grabbed there."""
-
-    @staticmethod
-    def _pit(app: _DummyApp, *, experimental: bool = True) -> None:
-        from openfollow.configuration import GroundGridConfig
-
-        app._config.ui.shown_features = ["ground_grid"] if experimental else []
-        app._config.ground_grid = GroundGridConfig(
-            enabled=True, z_offset=-1.5, vertices=[[-2.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]]
-        )
-        app._config.marker.ground_circle = True
+class TestGrabOnALiftedRing:
+    """A zone's lift raises the ring the Operator Screen draws; the mouse grabs and drags it there."""
 
     @staticmethod
     def _seen(app: _DummyApp, z: float) -> tuple[float, float]:
@@ -1694,32 +1688,32 @@ class TestGrabOnTheGroundGrid:
         scr = project_points(_cam_buffer(app), np.array([[0.0, 0.0, z]], dtype=np.float64), float(w), float(h))
         return float(scr[0, 0]), float(scr[0, 1])
 
-    def test_the_ring_drawn_on_the_pit_floor_grabs(self) -> None:
-        app = _DummyApp()
-        self._pit(app)
-        assert MouseHandler(app).on_pointer_down(*self._seen(app, -1.5), 1) is True
+    @staticmethod
+    def _lifted(app: _DummyApp) -> float:
+        app._config.marker.ground_circle = True
+        app._server.get_marker(1).set_lift(1.0)
+        return app._config.grid.z_offset + 1.0
 
-    def test_the_stage_level_spot_above_it_does_not(self) -> None:
+    def test_the_lifted_ring_grabs(self) -> None:
         app = _DummyApp()
-        self._pit(app)
-        assert MouseHandler(app).on_pointer_down(*self._seen(app, 0.0), 1) is False
+        floor = self._lifted(app)
+        assert MouseHandler(app).on_pointer_down(*TestGrabOnALiftedRing._seen(app, floor), 1) is True
 
-    def test_a_marker_grabbed_on_the_pit_floor_does_not_jump_when_the_mouse_moves(self) -> None:
+    def test_the_stage_level_spot_below_it_does_not(self) -> None:
         app = _DummyApp()
-        self._pit(app)
+        self._lifted(app)
+        seen = TestGrabOnALiftedRing._seen(app, app._config.grid.z_offset)
+        assert MouseHandler(app).on_pointer_down(*seen, 1) is False
+
+    def test_a_marker_grabbed_on_its_lifted_ring_does_not_jump_when_the_mouse_moves(self) -> None:
+        app = _DummyApp()
+        x, y = TestGrabOnALiftedRing._seen(app, self._lifted(app))
         handler = MouseHandler(app)
-        x, y = self._seen(app, -1.5)
         assert handler.on_pointer_down(x, y, 1) is True
-        # A move of one pixel from where it was grabbed leaves the marker where it is.
         handler.on_pointer_move(x + 1.0, y)
         handler.update()
         mx, my, _ = app._server.get_marker(1).pos
         assert (mx, my) == (pytest.approx(0.0, abs=0.05), pytest.approx(0.0, abs=0.05))
-
-    def test_without_experimental_features_the_ring_stays_on_the_main_grid(self) -> None:
-        app = _DummyApp()
-        self._pit(app, experimental=False)
-        assert MouseHandler(app).on_pointer_down(*self._seen(app, 0.0), 1) is True
 
 
 def test_an_unreadable_operator_screen_size_ignores_the_click_instead_of_raising() -> None:
@@ -1736,3 +1730,123 @@ def test_an_unreadable_operator_screen_size_ignores_the_click_instead_of_raising
     handler.on_pointer_down(cx, cy, 1)
 
     assert handler.active is False
+
+
+class TestParkedGrab:
+    """A parked marker: the mouse grabs and moves it without moving the keyboard's selection."""
+
+    def _app(self) -> _DummyApp:
+        app = _DummyApp()
+        app._server.add_marker(2).set_pos(4.0, 0.0, 0.0)
+        app._controlled_ids = [1, 2]
+        app._selected_id = 1
+        return app
+
+    def test_grabbing_a_parked_marker_moves_it_and_keeps_the_selection(self) -> None:
+        app = self._app()
+        set_parked(app, [2])
+        handler = MouseHandler(app)
+        assert _grab(handler, app, marker_id=2) is True
+        assert app._selected_id == 1
+        cx, cy = _ground_center(app, 2)
+        handler.on_pointer_move(cx + 80, cy + 40)
+        handler.update()
+        assert app._server.get_marker(2).pos != (4.0, 0.0, 0.0)
+        assert app._server.get_marker(1).pos == (0.0, 0.0, 0.0)
+
+    def test_the_wheel_lifts_the_grabbed_parked_marker(self) -> None:
+        app = self._app()
+        set_parked(app, [2])
+        handler = MouseHandler(app)
+        _grab(handler, app, marker_id=2)
+        assert handler.on_wheel(1.0) is True
+        assert app._server.get_marker(2).pos[2] > 0.0
+        assert app._server.get_marker(1).pos == (0.0, 0.0, 0.0)
+
+    def test_a_double_right_click_resets_the_grabbed_parked_marker(self) -> None:
+        app = self._app()
+        set_parked(app, [2])
+        handler = MouseHandler(app)
+        clock = _FakeClock()
+        handler._clock = clock
+        _grab(handler, app, marker_id=2)
+        cx, cy = _ground_center(app, 2)
+        clock.t = 0.1
+        handler.on_pointer_down(cx, cy, 3)
+        clock.t = 0.2
+        handler.on_pointer_down(cx, cy, 3)
+        assert app._server.get_marker(2).pos == _DEFAULT_POS
+        assert app._server.get_marker(1).pos == (0.0, 0.0, 0.0)
+
+    def test_parking_the_dragged_marker_keeps_the_drag_on_it(self) -> None:
+        app = self._app()
+        handler = MouseHandler(app)
+        app._input_manager = SimpleNamespace(mouse_handler=handler)
+        _grab(handler, app, marker_id=1)
+        set_parked(app, [1])
+        assert app._selected_id == 2
+        cx, cy = _ground_center(app, 1)
+        handler.on_pointer_move(cx + 80, cy + 40)
+        handler.update()
+        assert app._server.get_marker(1).pos != (0.0, 0.0, 0.0)
+        assert app._server.get_marker(2).pos == (4.0, 0.0, 0.0)
+
+    def test_parking_the_selection_leaves_a_drag_on_another_parked_marker(self) -> None:
+        app = self._app()
+        app._server.add_marker(3).set_pos(-4.0, 0.0, 0.0)
+        app._controlled_ids = [1, 2, 3]
+        handler = MouseHandler(app)
+        app._input_manager = SimpleNamespace(mouse_handler=handler)
+        set_parked(app, [2])
+        _grab(handler, app, marker_id=2)
+        set_parked(app, [1, 2])
+        assert app._selected_id == 3
+        cx, cy = _ground_center(app, 2)
+        handler.on_pointer_move(cx + 80, cy + 40)
+        handler.update()
+        assert app._server.get_marker(2).pos != (4.0, 0.0, 0.0)
+        assert app._server.get_marker(1).pos == (0.0, 0.0, 0.0)
+        assert app._server.get_marker(3).pos == (-4.0, 0.0, 0.0)
+
+    def test_a_double_right_click_after_the_released_marker_parks_resets_that_marker(self) -> None:
+        app = self._app()
+        handler = MouseHandler(app)
+        app._input_manager = SimpleNamespace(mouse_handler=handler)
+        clock = _FakeClock()
+        handler._clock = clock
+        _grab(handler, app, marker_id=1)
+        cx, cy = _ground_center(app, 1)
+        clock.t = 0.1
+        handler.on_pointer_down(cx, cy, 3)
+        set_parked(app, [1])
+        clock.t = 0.2
+        handler.on_pointer_down(cx, cy, 3)
+        assert app._server.get_marker(1).pos == _DEFAULT_POS
+        assert app._server.get_marker(2).pos == (4.0, 0.0, 0.0)
+
+    def test_a_grab_of_an_unparked_marker_is_an_operator_selection(self) -> None:
+        app = self._app()
+        app._config.detection = DetectionConfig(enabled=True, pin_mode="replace", pin_marker_id=-1)
+        app._config.ui.shown_features = [*app._config.ui.shown_features, "detection"]
+        set_parked(app, [1])
+        assert app._pin_waits_for_selection is True
+        handler = MouseHandler(app)
+        _grab(handler, app, marker_id=1)
+        assert app._pin_waits_for_selection is True  # a parked grab selects nothing
+        handler.on_pointer_down(5, 5, 3)
+        _grab(handler, app, marker_id=2)
+        assert app._pin_waits_for_selection is False
+
+    def test_a_later_grab_of_an_unparked_marker_selects_it_again(self) -> None:
+        app = self._app()
+        set_parked(app, [2])
+        handler = MouseHandler(app)
+        _grab(handler, app, marker_id=2)
+        handler.on_pointer_down(5, 5, 3)
+        _grab(handler, app, marker_id=1)
+        cx, cy = _ground_center(app, 1)
+        handler.on_pointer_move(cx + 80, cy + 40)
+        handler.update()
+        assert app._selected_id == 1
+        assert app._server.get_marker(1).pos != (0.0, 0.0, 0.0)
+        assert app._server.get_marker(2).pos == (4.0, 0.0, 0.0)

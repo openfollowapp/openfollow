@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Tests for :class:`GtkNativeSinkWindow` in ``openfollow.window``.
 
 ``GtkNativeSinkWindow`` wraps GTK 3 widgets behind a RenderCanvas-
@@ -1518,6 +1520,13 @@ class TestEventDispatch:
 
         window._window.fire("key-release-event", SimpleNamespace(keyval=8888))
         assert received == []
+
+    def test_a_late_echo_is_kept_from_the_overlay(self, window) -> None:
+        """A key_down a handler marks as the late echo of a polled press never reaches the WebView."""
+        self._register_key_table()
+        window.add_event_handler(lambda event: event.update(late_echo=True), "key_down")
+        window.add_overlay_widget(_FakeVideoWidget())
+        assert window._window.fire("key-press-event", SimpleNamespace(keyval=3)) is True
 
     def test_key_press_returns_false_when_overlay_active(self, window) -> None:
         self._register_key_table()

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
 """PSN receive-buffer / datagram-truncation probe – DUT-local, no companion.
 
 A PSN V2 data packet is ~104 B/tracker plus header, so a single datagram crosses

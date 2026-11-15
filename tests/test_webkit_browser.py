@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Tests for the embedded WebKitGTK browser overlay.
 
 WebKit2 is a heavy system dep we can't depend on inside the test runner.
@@ -1160,6 +1162,12 @@ class TestProcessInputAndKeyDispatchShortCircuit:
 
         class _KB:
             def on_key_down(self, _ev) -> None: ...
+
+            def is_late_echo(self, _ev) -> bool:
+                return False
+
+            def take_text_key(self, _key) -> bool:  # noqa: ANN001
+                return True
 
         class _IM:
             keyboard_handler = _KB()

@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Smoke tests for the capability registry."""
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ from openfollow.privilege.capabilities import (
     SYSTEM_SET_CLOCK,
     SYSTEMD_UNIT_TMP_PREFIX,
     Capability,
+    CapabilityState,
     capability_by_name,
 )
 
@@ -401,3 +404,8 @@ def test_a_regex_rule_admits_its_own_probe(cap: Capability) -> None:
 )
 def test_a_regex_rule_admits_only_its_calls(cap: Capability, args: str, admitted: bool) -> None:
     assert _sudo_admits(cap, args) is admitted
+
+
+@pytest.mark.parametrize("member", list(CapabilityState))
+def test_capability_state_renders_as_its_value(member: CapabilityState) -> None:
+    assert str(member) == f"{member}" == format(member) == member.value

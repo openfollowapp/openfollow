@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Hermetic edge-case tests for ``openfollow.psn.receiver`` and ``server``.
 
 The existing PSN server tests use real loopback UDP and are marked
@@ -19,8 +21,15 @@ from conftest import psn_packet_clock as _packet_clock
 import openfollow.psn.receiver as receiver_module
 from openfollow.psn.receiver import PsnReceiver
 from openfollow.psn.server import PsnServer
+from tests import _pinned_iface
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _pinned(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pinned interface as the sender names it, never the host's own."""
+    _pinned_iface.install(monkeypatch)
 
 
 @dataclass

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Status polls answer 204 while nothing they show has changed.
 
 A 204 leaves the page untouched, so a ``role="alert"`` box is inserted, and
@@ -17,7 +18,7 @@ import pytest
 
 import openfollow.web.discovery as discovery_module
 from openfollow.input.mouse3d_status import DeviceState, Mouse3DDeviceStatus, Mouse3DStatus, status_key
-from openfollow.web.live_alerts import statistics_alerts
+from openfollow.web.live_alerts import diagnostics_alerts
 from openfollow.web.server import ConfigWebServer
 from tests._ports import live_on_free_port
 
@@ -113,14 +114,25 @@ def test_every_render_of_the_section_carries_the_status(status_server, path: str
     assert _NOT_SUPPORTED in body
 
 
-def test_the_statistics_announcer_answers_204_while_unchanged(status_server) -> None:
+def test_the_status_announcer_answers_204_while_unchanged(status_server) -> None:
     base, stats = status_server
-    key = statistics_alerts(stats).key()
-    assert _request(base, f"/section/statistics/alerts?key={key}") == (204, "")
+    key = diagnostics_alerts(stats).key()
+    assert _request(base, f"/section/diagnostics/alerts?key={key}") == (204, "")
     stats["controllers"]["items"].append({"controller_index": 1, "state": "missing", "name": "8BitDo"})
-    status, body = _request(base, f"/section/statistics/alerts?key={key}")
+    status, body = _request(base, f"/section/diagnostics/alerts?key={key}")
     assert status == 200
     assert "C2 missing · 8BitDo" in body
+
+
+@pytest.mark.parametrize("enabled", [True, False], ids=["feature-on", "feature-off"])
+def test_missing_detection_packages_are_spoken_only_while_detection_is_enabled(status_server, enabled: bool) -> None:
+    base, stats = status_server
+    # The runtime stats report detection as enabled only while its feature is on.
+    stats["tracking"] = {"enabled": enabled, "missing_deps": ["onnxruntime"]}
+    _, body = _request(base, "/section/diagnostics/alerts")
+    assert ("Missing packages: onnxruntime." in body) is enabled
+    _, boxes = _request(base, "/section/diagnostics")
+    assert ("Missing packages: onnxruntime." in boxes) is enabled
 
 
 class _Ancestors(HTMLParser):
@@ -147,22 +159,22 @@ class _Ancestors(HTMLParser):
             self._stack.pop()
 
 
-def test_the_announcer_sits_outside_the_panel_it_speaks_for(status_server) -> None:
+def test_the_announcer_sits_outside_the_boxes_it_speaks_for(status_server) -> None:
     base, _ = status_server
     _, page = _request(base, "/")
-    parser = _Ancestors("statistics-alerts")
+    parser = _Ancestors("diagnostics-alerts")
     parser.feed(page)
     assert parser.found is not None
-    # The panel's own 1 s swap would re-insert it, and re-announce it, every second.
-    assert "statistics-section-content" not in parser.found
-    assert "statistics-section" in parser.found
-    announcer = page.index('id="statistics-alerts"')
+    # The boxes' own 1 s swap would re-insert it, and re-announce it, every second.
+    assert "diagnostics-live" not in parser.found
+    assert "diagnostics-section" in parser.found
+    announcer = page.index('id="diagnostics-alerts"')
     assert "C1 missing · GameSir" in page[announcer : page.index("</div>", announcer)]
 
 
 def test_the_announcer_swaps_only_itself(status_server) -> None:
     base, _ = status_server
     _, page = _request(base, "/")
-    start = page.index('<div id="statistics-alerts"')
+    start = page.index('<div id="diagnostics-alerts"')
     tag = page[start : page.index(">", start)]
     assert 'hx-target="this"' in tag

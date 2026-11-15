@@ -5,7 +5,7 @@
 <p align="center">
   Track people and objects on stage with a live video overlay, and broadcast positions via PSN (PosiStageNet) and OTP (Object Transform Protocol) to show control tools like lighting consoles, tracker processors, media servers, and audio processors.</p>
 <p align="center">
-  <b>Raspberry Pi is the recommended deployment target.</b> macOS support is for development only.
+  <b>Raspberry Pi 5 with Raspberry Pi OS Lite is the recommended platform.</b> OpenFollow also runs on other Debian 13 systems.
 </p>
 
 <p align="center">
@@ -102,7 +102,7 @@ artifact for your hardware:
 | Compute Module 5 (eMMC) | Flash `openfollow-cm5_<version>.img.xz` – [steps](https://openfollow.app/docs/installation.html#cm5) |
 | Pi 5 or CM5 with Raspberry Pi OS Lite already installed | Install the `.deb` package – [steps](https://openfollow.app/docs/installation.html#deb) |
 | x86_64 PC running Debian 13 | Install the `.deb` package – [steps](https://openfollow.app/docs/installation.html#amd64) |
-| Other Debian machine, or macOS | Build from source – [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) (development only) |
+| Other Debian machine | Build from source – [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) (development only) |
 
 The image is Raspberry Pi OS Lite with OpenFollow pre-installed. Flash it with
 **Raspberry Pi Imager** (**Choose OS → Use custom**) and it boots straight into the
@@ -156,10 +156,10 @@ OpenFollow is designed for trusted LAN deployment, but a few knobs are worth rev
 
 ## Development
 
-Building from source, the macOS and Linux development environments, source installs on a
-Raspberry Pi, and the test suite are covered in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
-The code layout is in [docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md); building the
-`.deb`, the Pi image, and the macOS `.dmg` is in [docs/PACKAGING.md](docs/PACKAGING.md).
+Building from source, the development environments, source installs on a Raspberry Pi,
+and the test suite are covered in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). The code
+layout is in [docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md); building the `.deb`
+and the Pi image is in [docs/PACKAGING.md](docs/PACKAGING.md).
 
 ---
 

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """When video frames meet the display refresh, and what that did to them.
 
 Unlocked, each refresh shows the newest frame that arrived. Locked, a frame is
@@ -17,9 +18,6 @@ import math
 import threading
 from collections import Counter, deque
 from dataclasses import dataclass
-from typing import Generic, TypeVar
-
-T = TypeVar("T")
 
 # More queued frames than this means the timestamps no longer match the clock.
 MAX_QUEUED = 6
@@ -79,7 +77,7 @@ class Durations:
         return len(values), _percentile(values, 0.5), _percentile(values, 0.99)
 
 
-class Cadence(Generic[T]):
+class Cadence[T]:
     """Frames in from the streaming thread, one pick per display refresh on the GTK main thread.
 
     Unlocked, each refresh shows the newest frame that arrived, and only the newest is held.

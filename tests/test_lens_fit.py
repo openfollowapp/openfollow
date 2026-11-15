@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """The plumb-line fit: k1 / k2 back from lines warped with the real overlay functions."""
 
 from __future__ import annotations

@@ -1,6 +1,7 @@
 #!/usr/bin/python3 -I
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """The CSI camera a Raspberry Pi's boot configuration names, and loading it live.
 
 A Compute Module never detects a camera by itself, and a regular Pi only

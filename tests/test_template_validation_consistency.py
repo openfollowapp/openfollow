@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Consistency check: every web-form input registered in FIELD_RULES has
 the on-blur validation markup.
 
@@ -40,7 +42,7 @@ pytestmark = pytest.mark.unit
 _PARTIALS_DIR = Path(__file__).resolve().parents[1] / "openfollow" / "web" / "templates" / "partials"
 
 # Read-only display partials. They contain no editable fields.
-_SKIP_PARTIALS = {"overview.tpl", "statistics.tpl"}
+_SKIP_PARTIALS = {"diagnostics_cards.tpl"}
 
 # Inputs whose ``type`` makes blur validation meaningless.
 _SKIP_INPUT_TYPES = {"hidden", "checkbox", "radio", "file", "submit", "button", "reset"}

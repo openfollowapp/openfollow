@@ -39,7 +39,7 @@
     #detection-mask-editor .dme-master { margin-bottom: 12px; max-width: 26rem; }
     #detection-mask-editor .dme-toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
     #detection-mask-editor .dme-btn {
-        padding: 6px 12px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.18);
+        padding: 6px 12px; border-radius: 3px; border: 1px solid rgba(255,255,255,0.18);
         background: rgba(255,255,255,0.06); color: inherit; font-size: 0.85rem; cursor: pointer;
     }
     #detection-mask-editor .dme-btn:hover { background: rgba(255,255,255,0.12); }
@@ -48,7 +48,7 @@
     #detection-mask-editor .dme-btn.danger:hover:not(:disabled) { background: var(--error-row); }
     #detection-mask-editor .dme-stage {
         position: relative; width: 100%; max-width: 960px; line-height: 0;
-        border-radius: 8px; overflow: hidden; background: #000;
+        border-radius: 4px; overflow: hidden; background: #000;
     }
     #detection-mask-editor .dme-hidden { display: none; }
     #detection-mask-editor #dme-img { display: block; width: 100%; height: auto; }
@@ -56,23 +56,23 @@
         position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: crosshair;
     }
     #detection-mask-editor .dme-no-feed {
-        padding: 24px 12px; border: 1px dashed rgba(255,255,255,0.22); border-radius: 8px;
+        padding: 24px 12px; border: 1px dashed rgba(255,255,255,0.22); border-radius: 4px;
         text-align: center; color: rgba(255,255,255,0.7); font-size: 0.85rem; background: rgba(255,255,255,0.03);
     }
     #detection-mask-editor .dme-hint { min-height: 1.1em; margin: 8px 0; font-size: 0.8rem; color: rgba(180,210,255,0.85); }
     #detection-mask-editor .dme-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
     #detection-mask-editor .dme-row {
-        display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-radius: 6px;
+        display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-radius: 3px;
         border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.04);
     }
     #detection-mask-editor .dme-row.dme-selected { border-color: var(--accent); background: var(--accent-soft); }
     #detection-mask-editor .dme-row input[type="text"] {
         flex: 1 1 auto; min-width: 0; background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.14);
-        border-radius: 4px; color: inherit; padding: 4px 6px; font-size: 0.85rem;
+        border-radius: 2px; color: inherit; padding: 4px 6px; font-size: 0.85rem;
     }
     #detection-mask-editor .dme-row .dme-count { font-size: 0.75rem; color: rgba(255,255,255,0.5); white-space: nowrap; }
     #detection-mask-editor .dme-row button {
-        background: none; border: none; border-radius: 0.4rem; color: var(--error-text); cursor: pointer; font-size: 0.85rem; padding: 2px 6px;
+        background: none; border: none; border-radius: 0.2rem; color: var(--error-text); cursor: pointer; font-size: 0.85rem; padding: 2px 6px;
     }
     #detection-mask-editor .dme-row button:hover { background: var(--error-row); }
 </style>

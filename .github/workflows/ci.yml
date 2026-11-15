@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 # CI pipeline: lint, bandit, unit/integration/smoke tests + coverage, build, weekly audit.
 name: CI
 
@@ -53,6 +55,7 @@ jobs:
         # ``python-rtmidi``'s wheel build for Linux – only sdist ships
         # for the runner's CPython/glibc combo, and meson build
         # aborts with "Dependency 'alsa' not found" without headers.
+        # ``libxkbcommon-dev`` likewise for the Linux-only ``xkbcommon`` binding.
         # ``sudo`` is classic sudo, the one a station runs: the drop-in test
         # checks the sudoers fragment with its visudo, not sudo-rs's.
         run: |
@@ -72,7 +75,8 @@ jobs:
             gstreamer1.0-plugins-base \
             gstreamer1.0-plugins-good \
             gstreamer1.0-plugins-bad \
-            libasound2-dev
+            libasound2-dev \
+            libxkbcommon-dev
 
       # Pinned to the version stamped in ``poetry.lock``'s header. Unpinned,
       # ``snok/install-poetry@v1`` installs whatever resolves as latest at run
@@ -217,7 +221,8 @@ jobs:
             gstreamer1.0-plugins-base \
             gstreamer1.0-plugins-good \
             gstreamer1.0-plugins-bad \
-            libasound2-dev
+            libasound2-dev \
+            libxkbcommon-dev
 
       - name: Install Poetry
         uses: snok/install-poetry@v1
@@ -317,7 +322,8 @@ jobs:
             gstreamer1.0-plugins-base \
             gstreamer1.0-plugins-good \
             gstreamer1.0-plugins-bad \
-            libasound2-dev
+            libasound2-dev \
+            libxkbcommon-dev
 
       - name: Install Poetry
         uses: snok/install-poetry@v1

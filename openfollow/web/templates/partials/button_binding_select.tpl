@@ -1,4 +1,4 @@
-% from openfollow.web.labels import pretty_label
+% from openfollow.button_names import button_label
 % field_id = 'gamepad-' + name.replace('_', '-')
 <div class="field"{{!' data-feature="%s"' % get('feature') if get('feature', '') else ''}}>
     <label for="{{field_id}}">{{label}}</label>
@@ -8,7 +8,7 @@
             aria-describedby="{{field_id}}-error" aria-invalid="false">
         <option value="" {{'selected' if not value else ''}}>–</option>
         % for btn in buttons:
-        <option value="{{btn}}" {{'selected' if value == btn else ''}}>{{pretty_label(btn)}}</option>
+        <option value="{{btn}}" {{'selected' if value == btn else ''}}>{{button_label(btn, names, short=False, spelled=True)}}</option>
         % end
     </select>
     <span id="{{field_id}}-error" class="field-error"></span>

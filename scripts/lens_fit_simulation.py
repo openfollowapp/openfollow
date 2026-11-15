@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Simulate the straight-line lens fit over coverage scenarios, lens strengths and lens centres.
 
 This is where the coverage rating thresholds (``RATING_THRESHOLDS_PX``) and the

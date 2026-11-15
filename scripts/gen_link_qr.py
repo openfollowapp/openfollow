@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Regenerate the Settings-screen QR symbols in ``runtime/overlay_links.py``.
 
 A workstation task: it needs OpenCV, which the runtime only has when the

@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """OpenFollowApp: top-level GTK application object.
 
 Owns config load/hot-reload, the marker catalog, and all on-screen modal
@@ -18,6 +20,7 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from openfollow.config_restore import recover_interrupted_restore
 from openfollow.configuration import (
     AppConfig,
     bootstrap_config_if_missing,
@@ -25,6 +28,7 @@ from openfollow.configuration import (
     load_config,
     load_config_for_save,
     network_mode_unsaved,
+    parked_within,
     restore_empty_config,
     save_config,
 )
@@ -38,6 +42,7 @@ from openfollow.marker_catalog import (
 )
 from openfollow.palette import AUTO_PICK_ORDER as _PALETTE_AUTO_PICK_ORDER
 from openfollow.paths.engine import PathEngine
+from openfollow.restore_hold import HeldForRestartError, release_all
 from openfollow.runtime.app_commands import (
     check_button_detection_request as runtime_check_button_detection_request,
 )
@@ -46,6 +51,9 @@ from openfollow.runtime.app_commands import (
 )
 from openfollow.runtime.app_commands import (
     check_controller_slot_actions as runtime_check_controller_slot_actions,
+)
+from openfollow.runtime.app_commands import (
+    check_latency_requests as runtime_check_latency_requests,
 )
 from openfollow.runtime.app_commands import (
     check_restart_request as runtime_check_restart_request,
@@ -205,6 +213,7 @@ if TYPE_CHECKING:
     from openfollow.input.button_detection import ButtonDetectionWizard
     from openfollow.logging_setup import RingBufferLogHandler
     from openfollow.net_adapters import Adapter
+    from openfollow.network.adapter import SavedInterface
     from openfollow.otp import OtpServer
     from openfollow.psn import Marker, PsnReceiver, PsnServer
     from openfollow.rttrpm import RttrpmServer
@@ -237,6 +246,10 @@ class OpenFollowApp:
         # a station that has silently respawned several times reads exactly
         # like a healthy one in every other section.
         self._crash_restarts: int = crash_restarts
+        # A respawn in this process is the restart a restore held its files for.
+        release_all()
+        # Before anything reads the config: a restore cut short is finished or undone as a whole.
+        recover_interrupted_restore(Path(self._config_path))
         restore_empty_config(self._config_path)
         bootstrap_config_if_missing(self._config_path)
         self._config: AppConfig = load_config(self._config_path)
@@ -267,6 +280,10 @@ class OpenFollowApp:
         self._controlled_ids: list[int] = []
         self._viewer_ids: list[int] = []
         self._selected_id: int | None = None
+        # Controlled markers no relative input moves (``input/parking.py``).
+        self._parked_ids: frozenset[int] = frozenset()
+        # The selection moved off a marker that parked; a pin following the selection waits for the operator.
+        self._pin_waits_for_selection = False
         # Assist-mode manual anchor markers, keyed by the pinned marker id.
         # These are operator-steered "ghosts" that are never registered with
         # ``_server`` (so never broadcast) – the detection pin reads them as the
@@ -375,6 +392,8 @@ class OpenFollowApp:
         self._pi_network_methods: dict[str, str] = {}
         # Interface name -> which adapter it is, read with the methods.
         self._pi_network_adapters: dict[str, Adapter] = {}
+        # Interfaces that are not present but have saved settings, read with the methods.
+        self._pi_network_saved: tuple[SavedInterface, ...] = ()
         # Which interface's own screen is open; "" is the interface list.
         # Separate from ``_pi_network_active_iface``, which says whose state is
         # loaded from the adapter and has to stay set for the static editor.
@@ -416,7 +435,7 @@ class OpenFollowApp:
         self._pi_network_worker_lock = threading.Lock()
         self._pi_network_pending_result: tuple[Any, str, str, int, Any] | None = None
 
-        self._show_hud_help: bool = True
+        self._show_hud_help: bool = False
 
         # Tap-streak acceleration per marker (avoids leaking multiplier between controllers).
         self._speed_key_streak: dict[int, int] = {}
@@ -428,6 +447,8 @@ class OpenFollowApp:
         self._marker_speeds_dirty_since: float = 0.0
 
         self._button_detection: ButtonDetectionWizard | None = None
+        # ``seq`` of the HUD prompt an armed Pin here shows.
+        self._slot_pin_prompt: int | None = None
 
         self._update_worker: threading.Thread | None = None
 
@@ -445,14 +466,12 @@ class OpenFollowApp:
             iface=self._config.psn_source_iface,
             timeout_s=10.0,
         )
-        if resolved_ip.startswith("127."):
+        if not resolved_ip:
             # Timed out; subsystems bind once (won't self-heal).
             logger.warning(
-                "Starting without a usable network address (local IP %s) – "
-                "web server, peer discovery, and PSN binding will use loopback "
-                "and will not recover automatically; restart OpenFollow once "
-                "networking is available.",
-                resolved_ip,
+                "Starting without a usable network address – peer discovery and PSN "
+                "have no interface to use and will not recover automatically; "
+                "restart OpenFollow once networking is available."
             )
         else:
             logger.info("Network ready for startup – local IP %s", resolved_ip)
@@ -494,9 +513,10 @@ class OpenFollowApp:
         if pinned_iface:
             banner = self._refresh_psn_source_advisory()
             if banner:
-                from openfollow.net_utils import list_iface_ipv4
+                from openfollow.net_utils import list_iface_ipv4, offered_loopback
 
-                candidates = list_iface_ipv4()
+                # Loopback is a deliberate choice, never one of the station's network candidates.
+                candidates = [(name, ip) for name, ip in list_iface_ipv4() if not offered_loopback(name)]
                 resolved = self._psn_source_resolved_ip
                 logger.warning(
                     "Pinned PSN source iface=%r unavailable – %s",
@@ -593,6 +613,9 @@ class OpenFollowApp:
 
     def _check_camera_setup_requests(self) -> None:
         runtime_check_camera_setup_requests(self)
+
+    def _check_latency_requests(self) -> None:
+        runtime_check_latency_requests(self)
 
     def _run_deb_update(self, request: dict[str, str]) -> None:
         runtime_run_deb_update(self, request)
@@ -795,6 +818,17 @@ class OpenFollowApp:
             return str(p)
         return str(Path(self._config_path).parent / p)
 
+    def _apply_catalog_names(self, marker_ids: list[int]) -> None:
+        """Rename controlled markers in the running outputs from the catalog, as a restart would name them.
+
+        OTP and RTTrPM share PsnServer's Marker objects, so one rename reaches all three.
+        """
+        server = self._server
+        if server is None:
+            return
+        # The server holds only controlled markers, including one still being added; a tombstone is left to the prune.
+        server.rename_markers([i for i in marker_ids if self._marker_catalog.get(i) is not None])
+
     def _prune_selection_ids(self, ids: list[int]) -> None:
         """Drop ids from persisted selection (on-disk config for race-free hot-reload)."""
         drop = set(ids)
@@ -807,7 +841,13 @@ class OpenFollowApp:
                     return  # none of the deleted ids were in our selection
                 cfg.controlled_marker_ids = new_controlled
                 cfg.viewer_marker_ids = new_viewer
+                cfg.parked_marker_ids = parked_within(new_controlled, cfg.parked_marker_ids)
                 save_config(cfg, self._config_path)
+            except HeldForRestartError:
+                logger.info(
+                    "Selection after a peer deleted markers %s not saved: OpenFollow is restarting after a restore.",
+                    sorted(drop),
+                )
             except OSError:
                 logger.exception(
                     "Failed to persist selection after a peer deleted markers %s",
@@ -834,31 +874,25 @@ class OpenFollowApp:
         from openfollow.marker_catalog.sync import MarkerCatalogSync
 
         def _on_change(changed_ids: list[int]) -> None:
-            # Background sync receiver: apply renames + prune deletions.
-            server = self._server
-            if server is None:
-                return
+            # Background sync receiver: save, prune deletions, then rename the running outputs.
             catalog = self._marker_catalog
-            controlled = set(self._controlled_ids)
-            tombstoned: list[int] = []
-            for marker_id in changed_ids:
-                entry = catalog.get(marker_id)
-                if entry is None:
-                    # get() hides tombstones; None means peer deleted it.
-                    if catalog.get_any(marker_id) is not None:
-                        tombstoned.append(marker_id)
-                    continue
-                if marker_id in controlled and entry.name:
-                    server.update_marker_name(marker_id, entry.name)
+            # get() hides tombstones; None with a stored entry means a peer deleted it.
+            tombstoned = [i for i in changed_ids if catalog.get(i) is None and catalog.get_any(i) is not None]
             # Persist remote changes.
             try:
                 save_catalog(self._marker_catalog, self._marker_catalog_path())
+            except HeldForRestartError:
+                logger.info("Catalog changes from a peer not saved: OpenFollow is restarting after a restore.")
             except OSError:
                 logger.exception(
                     "Failed to persist catalog updates from peer",
                 )
             if tombstoned:
                 self._prune_selection_ids(tombstoned)
+            try:
+                self._apply_catalog_names(changed_ids)
+            except Exception:
+                logger.exception("Catalog changes from a peer saved, but the running outputs did not take the names")
 
         def _selection_provider() -> tuple[list[int], list[int]]:
             return (
@@ -922,6 +956,7 @@ class OpenFollowApp:
         if new_controlled != controlled or new_viewer != viewer:
             self._config.controlled_marker_ids = new_controlled
             self._config.viewer_marker_ids = new_viewer
+            self._config.parked_marker_ids = parked_within(new_controlled, self._config.parked_marker_ids)
             try:
                 save_config(self._config, self._config_path)
             except OSError:

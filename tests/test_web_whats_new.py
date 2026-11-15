@@ -1,15 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """The updater's What's new step: which bundled notes a release shows."""
 
 from __future__ import annotations
 
 import fnmatch
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
-import tomllib
 
 from openfollow.web import whats_new as whats_new_module
 from openfollow.web.whats_new import load_backup_note, load_whats_new

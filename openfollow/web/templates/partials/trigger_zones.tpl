@@ -27,6 +27,13 @@
                     <label for="trigger-zones-show-overlay">Show zones on the Operator Screen</label>
                 </div>
             </div>
+            <div class="field checkbox-field">
+                <label for="trigger-zones-highlight-occupied">Occupied zones</label>
+                <div class="checkbox-wrap checkbox-field inline">
+                    <input type="checkbox" id="trigger-zones-highlight-occupied" name="highlight_occupied" {{'checked' if config.trigger_zones.highlight_occupied else ''}}>
+                    <label for="trigger-zones-highlight-occupied">Highlight a zone while something is inside</label>
+                </div>
+            </div>
             <div class="field">
                 <label>Eval Rate (FPS)</label>
                 <select name="eval_fps">

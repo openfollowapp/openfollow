@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
 # Pre-render the boot splash PNG: the OpenFollow logo centered (~70% width) on a
 # black WxH canvas. Primary path uses gi Rsvg + pycairo (present on the build
 # host via gir1.2-rsvg-2.0 + python3-cairo); falls back to a solid near-black

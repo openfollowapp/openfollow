@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Show live in the MIDI section, run in node: on for ten seconds, off on its own or on a second click."""
 
 from __future__ import annotations

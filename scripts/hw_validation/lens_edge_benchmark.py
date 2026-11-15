@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Edge suggestion cost on the DUT – how long the Lens step's edge search takes.
 
 ``POST /api/wizard/lens/edges`` runs ``find_edge_candidates`` on a web thread,

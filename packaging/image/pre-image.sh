@@ -1,6 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 #
 # SRCROOT pre-image hook. Runs after the image layout generated genimage.cfg
 # and before genimage executes (bin/runner pre-image phase, SRCROOT last).

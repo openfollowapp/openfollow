@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Top-level package for openfollow.
 
 OpenFollowApp is lazily imported to avoid loading GObject/GStreamer until needed.
@@ -7,12 +9,11 @@ OpenFollowApp is lazily imported to avoid loading GObject/GStreamer until needed
 
 from __future__ import annotations
 
+import tomllib
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-
-import tomllib
 
 if TYPE_CHECKING:
     from openfollow.app import OpenFollowApp

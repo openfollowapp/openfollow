@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Two-station marker-catalog conflict regression check (clock skew).
 
 Reproduces the field bug where a clock-ahead peer's stale catalog entry reverted

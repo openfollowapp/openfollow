@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
 """UTF-8 monkey-patch for Bottle's URL form decoding to prevent mojibake in form submissions."""
 
 from __future__ import annotations

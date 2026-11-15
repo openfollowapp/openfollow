@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Display-unit conversion, formatting, and parsing.
 
 Single source of truth for turning the internal **metric** model into
@@ -24,10 +26,10 @@ from __future__ import annotations
 
 import math
 import re
-from enum import Enum
+from enum import StrEnum
 
 
-class UnitSystem(str, Enum):
+class UnitSystem(StrEnum):
     METRIC = "metric"
     IMPERIAL = "imperial"
 

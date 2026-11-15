@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """The settings backup the ``.deb`` ``preinst`` takes before an upgrade unpacks."""
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ import shutil
 import stat
 import subprocess
 import tarfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -27,7 +28,7 @@ pytestmark = pytest.mark.unit
 
 _REPO_ROOT = Path(openfollow.__file__).resolve().parent.parent
 _DEBIAN = _REPO_ROOT / "packaging" / "debian"
-_NOW = datetime(2026, 9, 29, 18, 0, 0, tzinfo=timezone.utc)
+_NOW = datetime(2026, 9, 29, 18, 0, 0, tzinfo=UTC)
 _LENS = (
     '{"name": "Zoom wide", "k1": -0.2, "k2": 0.03, "cx": 0.0, "cy": 0.0, '
     '"saved": "2026-09-28", "openfollow_version": "0.6.0"}\n'

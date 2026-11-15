@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Marker and overlay state helpers for runtime services."""
 
 from __future__ import annotations
@@ -12,6 +14,8 @@ from typing import Any
 
 import numpy.typing as npt
 
+from openfollow import platform_support
+from openfollow.button_names import name_style
 from openfollow.configuration import (
     MOUSE3D_AXES,
     MOUSE3D_BUTTON_FIELDS,
@@ -20,11 +24,16 @@ from openfollow.configuration import (
     feature_on,
     is_simple_mode,
 )
+from openfollow.input.parking import is_parked
 from openfollow.input.touch_remote import STATUS_FLAG as REMOTE_FLAG
 from openfollow.input.touch_remote import status_row as remote_row
 from openfollow.marker_catalog.control_conflicts import ControlConflict
 from openfollow.network.validate import is_link_local
 from openfollow.palette import AUTO_PICK_ORDER as _PALETTE_AUTO_PICK_ORDER
+from openfollow.runtime.latency_warning import HEADLINE as LATENCY_WARNING_HEADLINE
+from openfollow.runtime.latency_warning import INFO as LATENCY_WARNING_INFO
+from openfollow.runtime.latency_warning import MESSAGE as LATENCY_WARNING_MESSAGE
+from openfollow.runtime.latency_warning import card_showing as latency_card_showing
 from openfollow.runtime.marker_velocity import MarkerVelocityState, estimate_marker_velocity
 from openfollow.runtime.overlay_draw_style import STATUS_LEVELS, status_level
 from openfollow.runtime.overlay_state import (
@@ -39,6 +48,7 @@ from openfollow.runtime.state_maps import get_or_create, prune_to_keep
 from openfollow.station_fqdn import web_ui_host
 from openfollow.units import UnitSystem
 from openfollow.video.failure import SourceKind, VideoFailure, failure_action, failure_chip, failure_sentence
+from openfollow.video.source_limits import limits_row
 from openfollow.window import operator_scene_view
 
 
@@ -292,23 +302,6 @@ def sync_grid_config(state: OverlayState, cfg: Any) -> None:
     state.origin_thickness = _soft_int(g.origin_thickness, d.origin_thickness, lo=1)
 
 
-def sync_ground_grid_config(state: OverlayState, cfg: Any) -> None:
-    """Copy the ground grid into the overlay state: ``enabled`` drops markers inside it onto its height
-    and ``visible`` draws it, each on its own; neither without the Ground grid feature or three corners."""
-    # getattr: a shim config without the section draws no ground grid.
-    gg = getattr(cfg, "ground_grid", None)
-    if gg is None:
-        state.ground_grid_vertices = []
-        state.ground_grid_z = 0.0
-        state.ground_grid_active = state.ground_grid_visible = False
-        return
-    state.ground_grid_vertices = [(float(v[0]), float(v[1])) for v in gg.vertices]
-    state.ground_grid_z = _soft_float(gg.z_offset, 0.0)
-    usable = feature_on(cfg, "ground_grid") and len(state.ground_grid_vertices) >= 3
-    state.ground_grid_active = usable and _soft_bool(gg.enabled, False)
-    state.ground_grid_visible = usable and _soft_bool(gg.visible, True)
-
-
 def sync_ui_config(state: OverlayState, cfg: Any) -> None:
     """Copy the UI display unit system into the overlay state.
 
@@ -437,14 +430,14 @@ def _populate_zone_overlay(state: OverlayState, cfg: Any, app: Any) -> None:
         state.zone_polygons = []
         return
 
-    occupancy_by_index: dict[int, tuple[bool, int]] = {}
-    if tz.enabled:
+    occupied: set[int] = set()
+    if tz.enabled and tz.highlight_occupied:
         zone_engine = getattr(app._runtime_services, "_zone_engine", None)
         if zone_engine is not None:
-            for idx, is_occupied, count in zone_engine.get_zone_states():
-                occupancy_by_index[idx] = (is_occupied, count)
+            occupied = {idx for idx, is_occupied, _count in zone_engine.get_zone_states() if is_occupied}
 
-    polygons: list[tuple[list[tuple[float, float]], str, str, bool, int]] = []
+    heights = feature_on(cfg, "zone_heights")
+    polygons: list[tuple[list[tuple[float, float]], str, bool, float]] = []
     for idx, zone in enumerate(tz.zones):
         if not zone.enabled or len(zone.vertices) < 3:
             continue
@@ -452,8 +445,8 @@ def _populate_zone_overlay(state: OverlayState, cfg: Any, app: Any) -> None:
         # PSN-absolute frame – no translation needed on any side of the
         # zone-membership comparison.
         verts_world = [(float(v[0]), float(v[1])) for v in zone.vertices]
-        is_occupied, count = occupancy_by_index.get(idx, (False, 0))
-        polygons.append((verts_world, zone.color, zone.name, is_occupied, count))
+        height = float(zone.z_offset) if heights else 0.0
+        polygons.append((verts_world, zone.color, idx in occupied, height))
     state.zone_polygons = polygons
 
 
@@ -461,7 +454,6 @@ def build_initial_overlay_state(cfg: Any) -> OverlayState:
     """Create the initial disconnected overlay state from config."""
     state = OverlayState()
     sync_grid_config(state, cfg)
-    sync_ground_grid_config(state, cfg)
     sync_marker_config(state, cfg)
     sync_ui_config(state, cfg)
 
@@ -493,6 +485,7 @@ def build_marker_visual_state(
     dt: float,
     network_alerts: list[str] | None = None,
     control_conflicts: Sequence[ControlConflict] = (),
+    latency_flash: float | None = None,
 ) -> OverlayState:
     """Build a new OverlayState for the renderer; it is never changed once handed over.
 
@@ -517,7 +510,8 @@ def build_marker_visual_state(
         if marker is None:
             continue
         vstate: MarkerVelocityState = get_or_create(velocity_states, marker_id, MarkerVelocityState)
-        marker.set_speed(*estimate_marker_velocity(vstate, marker.pos, dt))
+        # The velocity of what is sent: a zone's lift easing in moves the sent Z.
+        marker.set_speed(*estimate_marker_velocity(vstate, marker.sent_pos, dt))
 
     # Fetch controller info once and build a reverse map so the per-marker
     # loop can stamp each marker card with its bound controller without an
@@ -538,7 +532,7 @@ def build_marker_visual_state(
     # The card an Identify has lit this frame, if any.
     flash_marker = app._input_manager.identify_flash_marker() if app._input_manager is not None else None
 
-    state = OverlayState()
+    state = OverlayState(latency_flash=latency_flash)
 
     # The actually-bound port from the running web server so the HUD reflects
     # reachability, not just configuration. Falls back to the configured port
@@ -649,6 +643,8 @@ def build_marker_visual_state(
         state.settings_selected_index = app._settings_menu_index
         state.settings_menu_banner = app._settings_menu_banner
         state.settings_menu_banner_action = app._settings_menu_banner_action
+        if platform_support.warning_shown(app._config):
+            state.settings_platform_warning = platform_support.current().title
     else:
         state.settings_items = []
         state.settings_items_enabled = []
@@ -713,6 +709,8 @@ def build_marker_visual_state(
         # snapshot. The receiver thread can call ``apply_remote`` between separate
         # ``marker.pos`` accesses, which would tear X/Y/Z across two packets.
         px, py, pz = marker.pos
+        # A zone's lift: the floor and Z are drawn where they are sent.
+        lift = marker.lift
 
         # Each assist-controlled marker's card sits at its operator-steered
         # anchor, not the broadcast position. Capture the registered (AI-
@@ -724,7 +722,8 @@ def build_marker_visual_state(
                     marker_id=marker_id,
                     x=px,
                     y=py,
-                    z=pz,
+                    z=pz + lift,
+                    lift=lift,
                     color=color,
                     radius=cfg.marker.ball_size,
                     speed=None,
@@ -743,7 +742,8 @@ def build_marker_visual_state(
                 marker_id=marker_id,
                 x=px,
                 y=py,
-                z=pz,
+                z=pz + lift,
+                lift=lift,
                 color=color,
                 radius=cfg.marker.ball_size,
                 speed=speed,
@@ -752,6 +752,7 @@ def build_marker_visual_state(
                 controller_connected=ctrl_conn,
                 identify_flash=marker_id == flash_marker,
                 is_controlled=is_controlled,
+                parked=is_controlled and is_parked(app, marker_id),
                 control_conflict=marker_id in conflict_ids,
                 name=name,
                 marker_fader=marker_fader,
@@ -780,7 +781,6 @@ def build_marker_visual_state(
 
     sync_marker_config(state, cfg)
     sync_grid_config(state, cfg)
-    sync_ground_grid_config(state, cfg)
     sync_ui_config(state, cfg)
 
     if person_detector is not None:
@@ -815,6 +815,7 @@ def build_marker_visual_state(
     # While paths are off their bindings do nothing, so help names none.
     paths_engine = getattr(app, "_paths", None)
     paths_on = paths_engine is not None and paths_engine.enabled
+    state.button_name_style = name_style(cc.button_name_style)
     state.button_labels = {
         "reset": cc.btn_reset,
         "toggle_help": cc.btn_toggle_help,
@@ -857,11 +858,11 @@ def build_marker_visual_state(
     state.controller_connected = cfg.controller.enabled and any(
         bool(info["connected"]) for info in controller_info if info.get("backend") != "mouse3d"
     )
-    # Connected pads that map to no marker (more pads than
-    # ``controlled_marker_ids``) are surfaced in the Settings menu's info
-    # card; there is no bottom-center status panel.
-    state.unbound_controller_indices = [
-        int(info["controller_index"])
+    # Connected controllers that map to no marker (more than
+    # ``controlled_marker_ids``) go to the Settings menu's info box by slot
+    # kind; any kind but a 3D mouse is a gamepad, the two the HUD names.
+    state.unbound_controllers = [
+        (int(info["controller_index"]), "mouse3d" if info.get("kind") == "mouse3d" else "gamepad")
         for info in controller_info
         if info["marker_id"] is None and bool(info["connected"])
     ]
@@ -928,6 +929,8 @@ def build_marker_visual_state(
             if status.failure not in (VideoFailure.NONE, VideoFailure.NOT_CONFIGURED)
             else None
         )
+        limits = limits_row(getattr(video_receiver, "source_limits", None))
+        flags_dict["video_limits"] = ("error", limits) if limits else None
         flags_dict[RECORDING_FLAG] = recording_row(app) if paths_on else None
         flags_dict[REMOTE_FLAG] = remote_row(app)
         flags_dict["power"] = ("error", power_warning) if power_warning else None
@@ -984,6 +987,12 @@ def build_marker_visual_state(
             parts.append(str(info["name"]))
         state.status_flags.append((f"controller_missing_{info['controller_index']}", " · ".join(parts), "error"))
 
+    # Last of the errors: a live fault outranks a condition that never clears.
+    if platform_support.warning_shown(app._config):
+        state.status_flags.append(
+            ("platform", f"{platform_support.current().title}. {platform_support.SHORT_STEP}", "error")
+        )
+
     # Gravest first, each level in the order above: the badge shows a few rows
     # and folds the rest into "+N more", which must never hide a fault behind a notice.
     state.status_flags.sort(key=lambda row: STATUS_LEVELS.index(status_level(row[2])))
@@ -994,11 +1003,29 @@ def build_marker_visual_state(
     # guards windows where services or the store aren't wired yet.
     op_store = getattr(runtime_services, "_operator_message_store", None) if runtime_services is not None else None
     op_cfg = app._config.operator_messages
-    if op_store is not None and op_cfg.enabled:
+    latency_warning = latency_card_showing(app)
+    if latency_warning or op_store is not None:
         state.operator_message_position = op_cfg.position
         state.operator_message_scale = op_cfg.scale
+    # The latency test's warning: one card of its own, whether OSC messages are on or not.
+    if latency_warning:
+        state.operator_messages.append(
+            OperatorMessageView(
+                message=LATENCY_WARNING_MESSAGE,
+                info=LATENCY_WARNING_INFO,
+                marker_id=0,
+                marker_name="",
+                marker_color="",
+                is_forever=True,
+                remaining_fraction=1.0,
+                headline=LATENCY_WARNING_HEADLINE,
+                headline_level="caution",
+            )
+        )
+    if op_store is not None:
         now = time.monotonic()
-        messages = op_store.snapshot(now)
+        # Switching operator messages off gates OSC ingest, not the app's own prompts.
+        messages = [m for m in op_store.snapshot(now) if op_cfg.enabled or m.from_app]
         max_visible = op_cfg.max_visible
         state.operator_message_overflow = max(0, len(messages) - max_visible)
         for msg in messages[:max_visible]:

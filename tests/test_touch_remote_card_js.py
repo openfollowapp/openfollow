@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """The touch remote card (static/js/touch-remote.js) in node, on a fake page and a scripted station."""
 
 from __future__ import annotations

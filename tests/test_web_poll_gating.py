@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Timed polls ask the station only while someone can see what they refresh."""
 
 from __future__ import annotations
@@ -101,12 +102,15 @@ def test_every_page_loads_the_gate_from_the_station(live_server: str) -> None:
 @pytest.mark.parametrize(
     ("marker", "trigger"),
     [
-        ('id="statistics-section-content"', f"every 1s {_SECTION}"),
-        ('id="statistics-alerts"', f"every 1s {_SECTION}"),
+        ('id="diagnostics-alerts"', f"every 1s {_SECTION}"),
         ('id="marker-catalog-root"', f"load, every 1500ms {_SECTION}"),
         ('id="overview-peers"', f"every 5s {_SECTION}"),
-        ('id="diagnostics-live"', f"every 5s {_SECTION}"),
-        ('id="controller-slots-content"', f"every 1s {_SECTION}"),
+        ('id="diagnostics-live"', f"every 1s {_SECTION}"),
+        # Not while a marker picker is open, or the swap would close it.
+        (
+            'id="controller-slots-content"',
+            "every 1s [pollShown(this) && !this.querySelector('select:focus')], poll-shown[pollShown(this)] from:body",
+        ),
         ('id="mouse3d-status"', f"every 1s {_SECTION}"),
         # Page-wide: nobody can answer a prompt in a hidden tab, and it shows on return.
         ('id="privilege-password-modal"', "load, every 3s [!document.hidden], poll-shown from:body"),
@@ -124,6 +128,7 @@ def test_the_main_page_polls_only_what_is_in_view(live_server: str, marker: str,
         ("detection.tpl", 'hx-get="/section/detection"'),
         ("midi_fader_capture_status.tpl", "/learn/poll"),
         ("osc_midi_capture_status.tpl", "/midi/learn/poll/"),
+        ("video_source_latency_progress.tpl", 'hx-get="/section/video_source/latency/dialog?poll=1"'),
     ],
 )
 def test_a_short_lived_poll_pauses_only_with_the_browser_tab(template: str, url: str) -> None:
@@ -153,10 +158,6 @@ _SCRIPT_POLLS: dict[tuple[str, str], tuple[str, str] | None] = {
     ("detect-input.js", "poll"): ("poll", "if (document.hidden) {"),
     ("video_source.tpl", "refresh"): ("refresh", "pollShown(cb)"),
     ("zone_editor.tpl", ""): ("isZoneEditorVisible", "pollShown(section)"),
-    ("ground_grid.tpl", ""): (
-        "visible",
-        "!document.hidden && document.body.contains(canvas) && canvas.getClientRects()",
-    ),
     ("path_editor.tpl", ""): ("onScreen", "!document.hidden && q('list').getClientRects()"),
     # The remote's heartbeat and card state, only while the card is open on a visible page.
     ("touch-remote.js", "driveTick"): ("driveTick", "|| document.hidden) return;"),

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """The shared rule behind every output protocol's staleness handling.
 
 ``build_marker_visual_state`` rewrites each controlled marker once per frame, so

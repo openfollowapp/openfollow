@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""The alert boxes Live Statistics shows, for the panel and its announcer.
+# Copyright (C) 2026 Michel Honold and Paul Hermann
+"""The alert boxes Status & Diagnostics shows, for the section and its announcer.
 
-The panel is swapped every second, so a ``role="alert"`` inside it would be
+The boxes are swapped every second, so a ``role="alert"`` inside it would be
 inserted, and announced, every second. The boxes carry no role; one announcer
 outside the swap speaks their text, and its poll answers 204 while that text
 is unchanged. Both read this module, so they cannot say different things.
@@ -15,7 +16,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-__all__ = ["PowerAlert", "StatisticsAlerts", "statistics_alerts"]
+from openfollow.platform_support import STEP as PLATFORM_STEP
+from openfollow.platform_support import PlatformSupport
+
+__all__ = ["DiagnosticsAlerts", "PowerAlert", "diagnostics_alerts"]
 
 DETECTION_MISSING_STEP = "Install them from the Person Detection section, then restart."
 
@@ -45,7 +49,7 @@ THROTTLED_SINCE_BOOT = PowerAlert("caution", "CPU throttling reported since the 
 
 
 @dataclass(frozen=True)
-class StatisticsAlerts:
+class DiagnosticsAlerts:
     # The failure sentence (or the element's own wording) and its action.
     video: tuple[str, str] | None
     # One (sentence, action) per output not sending, as the HUD's network rows.
@@ -56,10 +60,18 @@ class StatisticsAlerts:
     detection: str | None
     # Supply and throttling, errors first.
     power: tuple[PowerAlert, ...] = ()
+    # A source over the station's limits, and its step.
+    video_limits: tuple[str, str] | None = None
+    # The unsupported platform's title; its step is ``PLATFORM_STEP``.
+    platform: str | None = None
 
     def spoken(self) -> list[str]:
         """Every box's text in page order, as the announcer reads it."""
         out = [_read_out(*self.video)] if self.video is not None else []
+        if self.video_limits is not None:
+            out.append(" ".join(part for part in self.video_limits if part))
+        if self.platform is not None:
+            out.append(f"{self.platform}. {PLATFORM_STEP}")
         out.extend(_read_out(*row) for row in self.network)
         out.extend(self.controllers)
         out.extend(" ".join(part for part in (alert.text, alert.step) if part) for alert in self.power)
@@ -71,7 +83,7 @@ class StatisticsAlerts:
         return hashlib.sha256("\x00".join(self.spoken()).encode("utf-8")).hexdigest()[:12]
 
 
-def statistics_alerts(stats: Mapping[str, Any]) -> StatisticsAlerts:
+def diagnostics_alerts(stats: Mapping[str, Any]) -> DiagnosticsAlerts:
     video = stats.get("video") or {}
     failure = str(video.get("failure") or "none")
     # "unknown" contributes no sentence: it would contradict the element's own wording.
@@ -80,6 +92,9 @@ def statistics_alerts(stats: Mapping[str, Any]) -> StatisticsAlerts:
     video_alert = None
     if shown and not video.get("connected"):
         video_alert = (shown, str(video.get("failure_action") or ""))
+    limits = video.get("limits") or {}
+    limits_text = str(limits.get("text") or "")
+    limits_alert = (limits_text, str(limits.get("action") or "")) if limits_text else None
 
     network = tuple(
         (str(row.get("text") or ""), str(row.get("action") or ""))
@@ -102,14 +117,19 @@ def statistics_alerts(stats: Mapping[str, Any]) -> StatisticsAlerts:
 
     tracking = stats.get("tracking") or {}
     missing = tracking.get("missing_deps") or []
+    # ``enabled`` is already off while the Person Detection feature is, so nothing speaks for its box.
     detection = f"Missing packages: {', '.join(missing)}." if missing and tracking.get("enabled") else None
-    power = (stats.get("system") or {}).get("power") or {}
-    return StatisticsAlerts(
+    system = stats.get("system") or {}
+    power = system.get("power") or {}
+    platform = system.get("platform") or {}
+    return DiagnosticsAlerts(
         video=video_alert,
         network=network,
         controllers=tuple(controllers),
         detection=detection,
         power=_power_alerts(power),
+        video_limits=limits_alert,
+        platform=PlatformSupport(False, str(platform.get("name") or "")).title if platform.get("warning") else None,
     )
 
 

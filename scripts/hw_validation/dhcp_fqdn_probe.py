@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Check what a station sends its DHCP server: its FQDN (option 81) or its hostname (option 12).
 
 Runs **on the companion, as root**, on an interface that shares a network with

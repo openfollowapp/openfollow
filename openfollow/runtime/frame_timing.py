@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """The animate-clock step, shared by every per-frame filter.
 
 The filters that run on the frame loop (detection pinning, the assist glide,

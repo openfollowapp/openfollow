@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Draw the scene of the Media Gallery's Concert default: a concert stage seen from a camera on the back truss.
 
 The camera hangs on the upstage back truss over the back of the band riser and looks down over the stage

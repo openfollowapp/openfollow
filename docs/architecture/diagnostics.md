@@ -23,12 +23,16 @@ Section D reads the journal (`journalctl -u <update_service_name>`) first. Where
 - Every source goes through `redact_log_line`.
 
 ## Removable drives (`runtime/removable_media.py`)
-The diagnostics bundle (and later settings / templates) can be saved to the top level of a USB drive or card reader, from Diagnostics → Bundle & tools and from Settings → **Export Diagnostics File for Support** on the Operator Screen.
+The diagnostics bundle (and later settings / templates) can be saved to the top level of a USB drive or card reader, from Status & Diagnostics → Bundle & tools and from Settings → **Export Diagnostics File for Support** on the Operator Screen.
 
 - **Listing** (`list_media`): `lsblk` on Linux, `diskutil` on macOS (an APFS stick's partition is only its container's store, so its volumes are read from the container); every removable partition with a label an operator recognises, writable or not, the reason when not. **Never the station's own disks**: a disk carrying `/`, `/boot/firmware` or `/mnt/nvme` is left out whatever its bus – the boot SD reports `hotplug: true`, so hotplug alone is not "removable". `list_media` (the pickers) logs a failed listing and lists nothing; `scan_media` raises `MediaError` instead, and the diagnostics USB table reads that one (`media_scan_provider`), so a failed listing reads as not checked, never as no device.
 - **Writing** (`write_file`) enumerates afresh and accepts only an id from that list, never a path. A drive something else mounted (desktop automount, macOS `/Volumes`) is written directly, without overwriting, synced and left mounted – only what the station mounted does it unmount. One nothing mounted goes through the `media.write` grant: `/usr/share/openfollow/write-to-media write <device>`, a stdlib-only copy of `privilege/media_writer.py` run by `python3 -I` (**keep it stdlib-only**), name + bytes on stdin (`<name>\n<bytes>`), never prompting (`broker.run(..., stdin=bytes, allow_prompt=False)` – bytes are refused on a prompting run, since the password shares the pipe). The helper re-checks the device (USB, not a system disk, unmounted, FAT32 / exFAT / NTFS via `ntfs3` / ext4), the name rule it shares with the app (safe charset + `.txt` / `.ofsettings` / `.oftemplate`), a 32 MB cap, mounts `nosuid,nodev,noexec` under `/run/openfollow-media`, never overwrites (`-1`, `-2`), and unmounts on every path. One exit code + one sentence per failure; `WriteResult` carries the result and the next step separately.
 - **The export** (`runtime/diagnostics_export.py`) holds **one slot across HUD and web**: both start it on its worker (`start`, busy → `False`) – the ~20 s collection must never run on the GTK main loop or a web request. The HUD reads `status()` each frame; the web dialog (`openfollowSaveToDrive` in `base.tpl`, over `GET /api/diagnostics/drives` and `GET`/`POST /api/diagnostics/export`) polls it, asking for its own export by number (`?generation=N`, answered from `last_done(WEB)`) because a newer export may already hold the slot. Both word it with `status_lines`, so the two screens say the same thing. `build_diagnostics_bundle(server, cfg)` in `web/routes.py` is the one builder the download, the drive save and the HUD share.
 - **HUD** (`runtime/app_modes_media.py`): the picker lists drives through `MediaWatch` (a worker re-listing ~1 Hz while open), the highlight follows the drive id, rows that can't be written are skipped. A HUD export the operator left before it finished posts to the status corner (`_status_flags["diagnostics_export"]`): success green, cleared after 15 s; failure red until the export is reopened (where its reason shows) or a later export succeeds. Web exports never post there.
+
+## Runtime state (A3)
+
+Section A3 reads the live `/api/stats` snapshot. Under the video block, `camera latency` is the last successful **Measure latency** run (see [video](video.md#camera-latency-probe-runtimelatency_probepy)): its median, spread, sample count, how long ago it finished and the source type it measured, or `not measured`. A run that failed never replaces it, and nothing is kept across a restart.
 
 ## Video-source reachability probe (A5)
 
@@ -37,6 +41,23 @@ Section A5 of the bundle ([`web/diagnostics.py`](../../openfollow/web/diagnostic
 ## USB table (E8)
 
 Section E8 lists every USB device and, in its OpenFollow column, what OpenFollow picks up on it. Exact evidence decides first: a gamepad by the USB ids in its SDL GUID, a 3D mouse by the USB ids its status reports, storage by the disks under it, a camera by the V4L2 devices under it (`/sys/class/video4linux/*` resolved up to the USB device, Linux only) when the USB Camera input lists that name. Only then does a name decide: MIDI ports, gamepads without USB ids, and cameras found under no USB device (every camera on macOS). A shared word is weak evidence, so a camera placed through sysfs is never offered to the name match, and another device sharing its vendor or model word stays unclaimed.
+
+## Platform support (`platform_support.py`)
+
+OpenFollow is developed for one platform, and a station on any other warns loudly on every surface. `detect` decides once per process (`current()` caches it): hardware and OS never change while the app runs.
+
+- **Supported:** a Raspberry Pi of generation 5 or later (Pi 5, CM5, Pi 500, by the number in `/proc/device-tree/model`; the keyboard models carry it in the hundreds), or, on hardware that is not a Pi, `/etc/os-release` naming `ID=debian` with `VERSION_ID` 13 or later (none: testing or unstable) or `debian` in `ID_LIKE` (any version of a derivative). Either needs a 64-bit OS (the running Python's pointer size: a 32-bit OS on a Pi 5 boots a 64-bit kernel, so `uname` cannot tell) and no desktop (`/etc/systemd/system/display-manager.service`, the link every display manager enables; the boot target cannot tell, since a station is `graphical.target` too). An older Pi is unsupported whatever OS it runs.
+- **Unsupported:** an older Pi or a Zero, macOS, Windows, any other OS, a Linux that is neither, or one with no readable `os-release`; supported hardware with a 32-bit OS or a desktop. The name the warning shows is the model without its revision, `macOS`, `Windows`, or the OS's `PRETTY_NAME`, followed by `with a 32-bit OS` or `with a desktop` where that is the reason.
+- **One wording:** `PlatformSupport.title` ("Unsupported platform: Windows") and `STEP`; the Operator Screen's corner row, two lines high, carries `SHORT_STEP` instead.
+- **Developer mode hides it:** `warning_shown(config)` is false while `ui.developer_mode` is on, read per frame and per request, so it applies without a restart. The bundle still says it.
+
+Surfaces, all from `warning_shown`:
+
+- **Web UI:** an error box (`partials/platform_warning.tpl`) on every page between its navigation and its panels: under the tab bar on the main page and About, under the step bar in the Setup Wizard, under the header on pages without navigation (`base.tpl`; a page that places it itself rebases with `platform_warning_inline=True`).
+- **Operator Screen:** a top-right error row (`platform`), appended after the live faults so a video, network or controller fault ranks above it, and an ERROR box in the Settings menu under the live fault's (`settings_platform_warning`). It never turns the bottom-left panel red: a condition that never clears would mask a live fault there.
+- **Status & Diagnostics:** an error box first in the This Station box, from `system.platform` in `/api/stats` (`supported`, `name`, `warning`), spoken by the announcer.
+- **Bundle:** a `support:` line in the header after `platform:`, with ` (warning hidden: developer mode)` when the stats say so.
+- **Log:** one warning at startup.
 
 ## Power supply and throttling (`power_health.py`)
 
@@ -51,5 +72,5 @@ A Raspberry Pi on a weak supply freezes and drops USB devices; one that runs hot
 
 Two surfaces show it, and neither shows anything without a reading:
 
-- **Live Statistics** (`web/live_alerts.py`): in the Device panel, an error box while under voltage or throttled now, a caution box once only the since-boot flag is left. While under voltage, throttling is not named: an under voltage caps the CPU too.
+- **Status & Diagnostics** (`web/live_alerts.py`): in the This Station box, an error box while under voltage or throttled now, a caution box once only the since-boot flag is left. While under voltage, throttling is not named: an under voltage caps the CPU too.
 - **Operator Screen:** live only, a top-right error row (`_status_flags["power"]`), "Power supply under voltage" or "CPU throttled (too hot)", held `WARNING_HOLD_S` (10 s) after the last active reading by `PowerWarningHold`, on the collector's injectable clock.

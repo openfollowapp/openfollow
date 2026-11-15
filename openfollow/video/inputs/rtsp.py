@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """RTSP video input plugin with automatic codec negotiation and flexible transport."""
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ from openfollow.video.inputs._base import (
     video_input_pin_field,
 )
 from openfollow.video.inputs._hevc_guard import guard_hevc_decoder
-from openfollow.video.inputs._pin import PinRefusal, check_video_pin, config_pin, dials_ipv6
+from openfollow.video.inputs._pin import PinRefusal, check_video_pin, config_pin
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +75,7 @@ class RtspInput(VideoInputBase):
     input_id = "rtsp"
     display_name = "RTSP"
     source_element_name = "rtspsrc"
+    frame_meter_element_name = "post_queue"
     source_kind = SourceKind.REMOTE
     pins_interface = True
 
@@ -193,16 +196,14 @@ class RtspInput(VideoInputBase):
         # rtspsrc opens its UDP ports for the address type of the server's session
         # description (IPv4 when it names none), whatever family the connection
         # reached the server on, and udpsink then refuses an address of the other
-        # family. A name dialled over IPv6 takes the interleaved transport up front,
-        # a host whose attempt failed that way from then on; everything else may
-        # negotiate TCP, UDP or multicast.
+        # family. A host whose attempt failed that way takes the interleaved
+        # transport from then on; every other attempt may negotiate TCP, UDP or
+        # multicast. Choosing the transport looks no name up.
         endpoint = self.source_endpoint(config)
         self._dialled_host = endpoint.host if endpoint is not None else ""
         tcp_reason = ""
         if self._dialled_host and self._dialled_host == self._interleaved_host:
             tcp_reason = "an earlier attempt's UDP ports were of the other IP family"
-        elif endpoint is not None and dials_ipv6(endpoint.host):
-            tcp_reason = "the name is dialled over IPv6"
         rtspsrc.set_property("protocols", _TRANSPORTS_TCP if tcp_reason else _TRANSPORTS_ALL)
         pin = config_pin(config)
         if pin:

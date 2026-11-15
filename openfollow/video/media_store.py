@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Device-local media store for the Media Gallery video source.
 
 Holds operator-uploaded still images and short looping clips, plus the
@@ -43,6 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from openfollow.station_dir import station_dir
+from openfollow.video.source_limits import MAX_FPS, MAX_LONG_SIDE, MAX_SHORT_SIDE, OverLimit, over_limits
 
 logger = logging.getLogger(__name__)
 
@@ -109,12 +111,8 @@ JPEG_QUALITY = 85
 # -- Video limits -------------------------------------------------------------
 
 VIDEO_CODEC = "vp8"
-VIDEO_MAX_WIDTH = 1920
-VIDEO_MAX_HEIGHT = 1080
-VIDEO_MAX_FPS = 30
 VIDEO_MAX_DURATION_S = 60
-# Tolerances absorb container rounding (e.g. 30000/1001 fps, 60.04 s duration).
-_FPS_TOLERANCE = 0.5
+# Absorbs container rounding (e.g. a 60.04 s duration).
 _DURATION_TOLERANCE_S = 0.5
 
 # -- Id / file conventions ----------------------------------------------------
@@ -403,12 +401,14 @@ def validate_video_probe(probe: VideoProbe) -> None:
     if probe.codec != VIDEO_CODEC:
         got = probe.codec or "unknown"
         raise MediaStoreError(f"Video must be VP8 in WebM (got {got}). See the help drawer for an ffmpeg recipe.")
-    if probe.width > VIDEO_MAX_WIDTH or probe.height > VIDEO_MAX_HEIGHT:
+    over = over_limits(probe.width, probe.height, probe.fps)
+    if OverLimit.RESOLUTION in over:
         raise MediaStoreError(
-            f"Video resolution {probe.width}x{probe.height} exceeds the {VIDEO_MAX_WIDTH}x{VIDEO_MAX_HEIGHT} limit."
+            f"Video resolution {probe.width}x{probe.height} exceeds the "
+            f"{MAX_LONG_SIDE}x{MAX_SHORT_SIDE} limit (either orientation)."
         )
-    if probe.fps > VIDEO_MAX_FPS + _FPS_TOLERANCE:
-        raise MediaStoreError(f"Video frame rate {probe.fps:.0f} fps exceeds the {VIDEO_MAX_FPS} fps limit.")
+    if OverLimit.FRAME_RATE in over:
+        raise MediaStoreError(f"Video frame rate {probe.fps:.0f} fps exceeds the {MAX_FPS} fps limit.")
     # A non-positive duration means the container declared no length (probe maps
     # the unknown-duration sentinel to 0). Fail closed – an unknown-length clip
     # must not bypass the ≤60 s cap.

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Evaluate the GitHub Actions expression subset ci.yml uses, for workflow tests.
 
 String-matching an ``if:`` pins its spelling, not what it decides. Evaluating it

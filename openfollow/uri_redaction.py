@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Credential handling for media URIs.
 
 Stream URLs carry credentials inline – RTSP userinfo (``rtsp://user:pass@host``)

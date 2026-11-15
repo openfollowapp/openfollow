@@ -24,7 +24,7 @@
 % _pinned_text = _pinned_of("known", "corner", "corners") if _cam.calibration_mode == "simple" else ", ".join(t for t in (_pinned_of("known", "known point", "known points"), _pinned_of("triangulated", "triangulated point", "triangulated points")) if t)
 % # Pins are fractions of the snapshot, counted in pixels of the live video.
 % _errors = pin_errors(_cam, *_vs) if _vs else {}
-% _ratings = {"excellent": "Excellent", "good": "Good", "fair": "Fair", "poor": "Poor", "user_input": "User input", "loaded": "Loaded"}
+% _ratings = {"excellent": "Excellent", "good": "Good", "fair": "Fair", "poor": "Poor", "user_input": "User input", "loaded": "Loaded", "opencv": "OpenCV calibration"}
 <form id="camera-section" class="section {{'saved' if defined('saved') and saved else ''}}" data-fold-key="camera" data-help="camera"
       data-template-form="1">
     <div class="section-head">

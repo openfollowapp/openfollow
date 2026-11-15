@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """The backoff a failed network operation is retried on: 2 s, doubling to a minute."""
 
 from __future__ import annotations

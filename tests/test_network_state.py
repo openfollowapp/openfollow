@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Tests for NetworkState.address_source: the operator-facing origin of an interface's address."""
 
 from __future__ import annotations
@@ -46,3 +47,8 @@ class TestAddressSource:
     )
     def test_operator_chosen_address_reports_static(self, method: Ipv4Method) -> None:
         assert _state(method, "10.20.0.5").address_source == "static"
+
+
+@pytest.mark.parametrize("member", list(Ipv4Method))
+def test_ipv4_method_renders_as_its_value(member: Ipv4Method) -> None:
+    assert str(member) == f"{member}" == format(member) == member.value

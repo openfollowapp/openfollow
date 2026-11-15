@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """The marker catalog table (partials/marker.tpl), run in node on the fake DOM: its Conflict flag."""
 
 from __future__ import annotations
@@ -90,3 +91,239 @@ def test_two_controllers_the_runtime_has_not_flagged_are_no_conflict(conflicts: 
 def test_a_conflict_the_runtime_withdraws_clears_at_the_next_poll() -> None:
     out = _run(f"poll({_CONFLICT_3}); out.before = flags()['3']; poll([]); out.after = flags()['3'];")
     assert out == {"before": {"red": True, "chip": 1}, "after": {"red": False, "chip": 0}}
+
+
+_PARK_PAGE = """
+window.OpenFollow.saveError = {clear: function () {}, boxFor: function () { return null; }, show: function () {}};
+station = function () { return {status: 200, body: {success: true}}; };
+function pollPark(parked, controlled) {
+    controlled = controlled || [3];
+    document.body.dispatchEvent(makeEvent('htmx:afterRequest', {detail: {elt: root, xhr: {responseText: JSON.stringify({
+        entries: [{id: 3, name: 'Lead', color: '#ff0000'}, {id: 4, name: 'Second', color: '#00ff00'}],
+        peer_selections: [],
+        this_station: {
+            station_id: 'me', station_name: 'FOH',
+            controlled_ids: controlled, viewer_ids: controlled, parked_ids: parked,
+        },
+        next_free_id: 5,
+    })}}}));
+}
+function radio(id, value) {
+    return root.querySelector('tr[data-marker-id="' + id + '"] input[data-this-station][value="' + value + '"]');
+}
+function park(id) { return root.querySelector('tr[data-marker-id="' + id + '"] button[data-park]'); }
+function parkState(id) { return {pressed: park(id).getAttribute('aria-pressed'), disabled: park(id).disabled}; }
+function posted() {
+    return requests.filter(function (r) { return r.url === '/api/markers/selection'; })
+        .map(function (r) { return r.body.park; });
+}
+"""
+
+
+def _run_async(steps: str) -> Any:
+    """Like :func:`_run`, with ``await settle()`` available to let saves answer."""
+    source = "\n".join(
+        [
+            (_TESTS / "_fake_dom.js").read_text(encoding="utf-8"),
+            _PAGE,
+            _script(),
+            _PARK_PAGE,
+            "var out = {};",
+            "(async function () {",
+            steps,
+            "process.stdout.write(JSON.stringify(out));",
+            "})();",
+        ]
+    )
+    node = shutil.which("node")
+    assert node is not None
+    done = subprocess.run([node, "-e", source], capture_output=True, text=True, timeout=20)  # nosec B603
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+def test_the_park_toggle_shows_the_saved_park_and_only_a_controlled_row_can_take_one() -> None:
+    out = _run_async("pollPark([3]); out.lead = parkState(3); out.second = parkState(4);")
+    assert out == {"lead": {"pressed": "true", "disabled": False}, "second": {"pressed": "false", "disabled": True}}
+
+
+def test_a_click_on_p_sends_only_that_rows_change() -> None:
+    out = _run_async(
+        "pollPark([]); park(3).click(); await settle(); out.on = parkState(3);"
+        " park(3).click(); await settle(); out.off = parkState(3); out.posted = posted();"
+    )
+    assert out["on"] == {"pressed": "true", "disabled": False}
+    assert out["off"] == {"pressed": "false", "disabled": False}
+    assert out["posted"] == [{"3": True}, {"3": False}]
+
+
+def test_another_rows_save_never_sends_a_park_it_did_not_click() -> None:
+    """A park the poll showed (set by OSC, say) is the station's; only a P click changes it."""
+    out = _run_async(
+        "pollPark([3]);"
+        ' var ctrl = root.querySelector(\'tr[data-marker-id="4"] input[data-this-station][value="control"]\');'
+        " ctrl.checked = true; ctrl.dispatchEvent(makeEvent('change')); await settle();"
+        " out.posted = posted();"
+    )
+    assert out["posted"] == [{}]
+
+
+def test_moving_a_parked_row_off_view_and_control_clears_its_park() -> None:
+    out = _run_async(
+        "pollPark([3]);"
+        ' var view = root.querySelector(\'tr[data-marker-id="3"] input[data-this-station][value="view"]\');'
+        ' var ctrl = root.querySelector(\'tr[data-marker-id="3"] input[data-this-station][value="control"]\');'
+        " ctrl.checked = false; view.checked = true; view.dispatchEvent(makeEvent('change')); await settle();"
+        " out.state = parkState(3); out.posted = posted();"
+    )
+    # The server drops the park of a marker that leaves View & Control; the save carries no change.
+    assert out == {"state": {"pressed": "false", "disabled": True}, "posted": [{}]}
+
+
+def test_a_park_set_elsewhere_shows_while_focus_stays_on_p() -> None:
+    out = _run_async(
+        "pollPark([]); park(3).focus(); pollPark([3]); out.parked = parkState(3);"
+        " pollPark([]); out.unparked = parkState(3);"
+    )
+    assert out == {
+        "parked": {"pressed": "true", "disabled": False},
+        "unparked": {"pressed": "false", "disabled": False},
+    }
+
+
+def test_the_poll_never_moves_the_this_station_choice_under_focus() -> None:
+    out = _run_async(
+        "pollPark([]); radio(3, 'control').focus(); pollPark([], [4]);"
+        " out.control = radio(3, 'control').checked; out.hide = radio(3, 'hide').checked;"
+        " out.park = parkState(3);"
+    )
+    # The P follows the station (marker 3 no longer controlled) while the radios wait for focus to leave.
+    assert out == {"control": True, "hide": False, "park": {"pressed": "false", "disabled": True}}
+
+
+_EDIT_PAGE = """
+window.OpenFollow.saveError = {
+    clear: function () {}, boxFor: function () { return null; }, show: function () {},
+    fromResponse: function () { return Promise.resolve({}); },
+};
+window.OpenFollow.attachColorPicker = function (el, opts) {
+    el._pick = function (hex) {
+        el.dataset.value = hex;
+        el.style.background = hex;
+        (opts.onChange || function () {})(hex);
+    };
+};
+station = function () { return {status: 200, body: {success: true}}; };
+var realNow = Date.now;
+function later(ms) { var base = realNow(); Date.now = function () { return base + ms; }; }
+function pollCatalog(lead, second) {
+    document.body.dispatchEvent(makeEvent('htmx:afterRequest', {detail: {elt: root, xhr: {responseText: JSON.stringify({
+        entries: [{id: 3, name: lead[0], color: lead[1]}, {id: 4, name: second[0], color: second[1]}],
+        peer_selections: [],
+        this_station: {station_id: 'me', station_name: 'FOH', controlled_ids: [3], viewer_ids: [3], parked_ids: []},
+        next_free_id: 5,
+    })}}}));
+}
+function row(id) { return root.querySelector('tr[data-marker-id="' + id + '"]'); }
+function nameOf(id) { return row(id).querySelector('[data-field="name"]'); }
+function swatchOf(id) { return row(id).querySelector('[data-field="color"]'); }
+function state(id) {
+    return {
+        name: nameOf(id).value,
+        color: swatchOf(id).dataset.value,
+        unsaved: !row(id).querySelector('.unsaved-chip').hidden,
+        outlined: ['name', 'color'].filter(function (f) {
+            return row(id).querySelector('[data-field="' + f + '"]').classList.contains('field-unsaved');
+        }),
+    };
+}
+function puts() {
+    return requests.filter(function (r) { return r.method === 'PUT'; }).map(function (r) { return r.body; });
+}
+var LEAD = ['Lead', '#ff0000'];
+var SECOND = ['Second', '#00ff00'];
+"""
+
+
+def _run_edit(steps: str) -> Any:
+    return _run_async(_EDIT_PAGE + steps)
+
+
+def test_a_rename_left_unsaved_survives_the_next_poll() -> None:
+    """Clicking away from an edited name used to let the next poll put the catalog's name back."""
+    out = _run_edit(
+        "pollCatalog(LEAD, SECOND); typeInto(nameOf(3), 'Lead Vocal'); nameOf(3).blur();"
+        " pollCatalog(LEAD, SECOND); out.lead = state(3); out.second = state(4);"
+    )
+    assert out["lead"] == {"name": "Lead Vocal", "color": "#ff0000", "unsaved": True, "outlined": ["name"]}
+    assert out["second"] == {"name": "Second", "color": "#00ff00", "unsaved": False, "outlined": []}
+
+
+def test_a_picked_colour_left_unsaved_survives_the_next_poll() -> None:
+    out = _run_edit(
+        "pollCatalog(LEAD, SECOND); swatchOf(3)._pick('#0000ff'); pollCatalog(LEAD, SECOND); out.lead = state(3);"
+    )
+    assert out["lead"] == {"name": "Lead", "color": "#0000ff", "unsaved": True, "outlined": ["color"]}
+
+
+def test_a_row_the_operator_has_not_edited_follows_another_stations_change() -> None:
+    out = _run_edit(
+        "pollCatalog(LEAD, SECOND); typeInto(nameOf(3), 'Lead Vocal'); nameOf(3).blur();"
+        " pollCatalog(['Lead', '#ff0000'], ['Spot', '#ffff00']); out.lead = state(3); out.second = state(4);"
+    )
+    assert out["lead"]["name"] == "Lead Vocal"
+    assert out["second"] == {"name": "Spot", "color": "#ffff00", "unsaved": False, "outlined": []}
+
+
+def test_a_held_colour_still_takes_another_stations_rename() -> None:
+    out = _run_edit(
+        "pollCatalog(LEAD, SECOND); swatchOf(3)._pick('#0000ff');"
+        " pollCatalog(['Lead Vocal', '#ff0000'], SECOND); out.lead = state(3);"
+    )
+    assert out["lead"] == {"name": "Lead Vocal", "color": "#0000ff", "unsaved": True, "outlined": ["color"]}
+
+
+def test_an_edit_typed_back_to_the_saved_value_is_clean_and_follows_the_catalog_again() -> None:
+    out = _run_edit(
+        "pollCatalog(LEAD, SECOND); typeInto(nameOf(3), 'Lead Vocal'); typeInto(nameOf(3), 'Lead');"
+        " nameOf(3).blur(); out.typedBack = state(3);"
+        " pollCatalog(['Spot', '#ff0000'], SECOND); out.renamed = state(3);"
+    )
+    assert out["typedBack"] == {"name": "Lead", "color": "#ff0000", "unsaved": False, "outlined": []}
+    assert out["renamed"]["name"] == "Spot"
+
+
+def test_another_station_saving_the_same_name_makes_the_edit_clean() -> None:
+    out = _run_edit(
+        "pollCatalog(LEAD, SECOND); typeInto(nameOf(3), 'Lead Vocal'); nameOf(3).blur();"
+        " pollCatalog(['Lead Vocal', '#ff0000'], SECOND); out.lead = state(3);"
+    )
+    assert out["lead"] == {"name": "Lead Vocal", "color": "#ff0000", "unsaved": False, "outlined": []}
+
+
+def test_a_save_sends_the_held_values_and_clears_the_unsaved_state() -> None:
+    """A poll begun before the save carries the old values; it must not undo what was just saved."""
+    out = _run_edit(
+        "pollCatalog(LEAD, SECOND); typeInto(nameOf(3), 'Lead Vocal'); swatchOf(3)._pick('#0000ff');"
+        " row(3).querySelector('[data-action=\"save\"]').click(); await settle();"
+        " out.saved = state(3); out.puts = puts();"
+        " pollCatalog(LEAD, SECOND); out.stalePoll = state(3);"
+        " later(5000); pollCatalog(['Lead Vocal', '#0000ff'], SECOND); out.synced = state(3);"
+        " pollCatalog(['Spot', '#0000ff'], SECOND); out.renamed = state(3).name;"
+    )
+    clean = {"name": "Lead Vocal", "color": "#0000ff", "unsaved": False, "outlined": []}
+    assert out["puts"] == [{"name": "Lead Vocal", "color": "#0000ff"}]
+    assert out["saved"] == clean
+    assert out["stalePoll"] == clean
+    assert out["synced"] == clean
+    assert out["renamed"] == "Spot"
+
+
+def test_a_failed_save_keeps_the_edit_unsaved_and_held() -> None:
+    out = _run_edit(
+        "station = function () { return {status: 500, body: {error: 'x'}}; };"
+        " pollCatalog(LEAD, SECOND); typeInto(nameOf(3), 'Lead Vocal');"
+        " row(3).querySelector('[data-action=\"save\"]').click(); await settle();"
+        " later(5000); pollCatalog(LEAD, SECOND); out.lead = state(3);"
+    )
+    assert out["lead"] == {"name": "Lead Vocal", "color": "#ff0000", "unsaved": True, "outlined": ["name"]}

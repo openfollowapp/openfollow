@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Michel Honold and Paul Hermann
 """Operator Screen scenes for the cost-proxy tests and ``scripts/hw_validation/hud_bench.py``.
 
 Each scene is a list of frames ``(width, height, OverlayState)`` with markers on
@@ -37,7 +38,6 @@ ZONES = [
     ("Zone 5", [(2.0, 2.5), (4.0, 3.0), (3.5, 4.2), (2.2, 4.0)], "#9B59B6"),
     ("Zone 6", [(-4.0, -0.8), (-2.0, -0.8), (-2.2, 0.4), (-3.8, 0.5), (-4.2, 0.0)], "#00CED1"),
 ]
-GROUND_GRID = [(-2.5, 2.0), (2.5, 2.0), (3.0, 3.5), (0.0, 4.5), (-3.0, 3.5)]
 PATHS = [
     ([(-4.0, -0.5), (-1.5, 0.0), (1.5, 0.0), (4.0, -0.5)], False),
     ([(-1.5, 1.5), (1.5, 1.5), (2.0, 3.0), (-2.0, 3.0)], True),
@@ -119,9 +119,9 @@ def _path_lines() -> list[Any]:
 def _base(t: float, *, markers: int, controlled: int, zones: int, **extra: Any) -> OverlayState:
     marker_list = _markers(markers, controlled, t)
     polygons = []
-    for name, verts, color in ZONES[:zones]:
-        count = sum(point_in_polygon(m.x, m.y, verts) for m in marker_list)
-        polygons.append((verts, color, name, count > 0, count))
+    for _name, verts, color in ZONES[:zones]:
+        occupied = any(point_in_polygon(m.x, m.y, verts) for m in marker_list)
+        polygons.append((verts, color, occupied, 0.0))
     values: dict[str, Any] = {
         "markers": marker_list,
         "selected_id": 1,
@@ -164,10 +164,6 @@ def full(t: float) -> OverlayState:
         controlled=2,
         zones=6,
         grid_visible=True,
-        ground_grid_active=True,
-        ground_grid_visible=True,
-        ground_grid_z=0.6,
-        ground_grid_vertices=list(GROUND_GRID),
         show_paths=True,
         path_lines=_path_lines(),
     )

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Seed pre-shipped detection models into the per-device storage folder.
 
 The Pi image, the ``.deb``, and the macOS app bundle a set of YOLO quality-tier

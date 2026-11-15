@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Fail the DMG build when a bundled Mach-O needs a newer macOS than the app declares.
 
 ``build-dmg.sh`` runs this against the frozen ``.app``. Every Mach-O's minimum

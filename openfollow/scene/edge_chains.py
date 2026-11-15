@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Suggest the edges of a snapshot a Lens line could be traced along.
 
 The wizard sends the snapshot's luma scaled down by ``edge_map_scale``. Thin
@@ -488,7 +489,7 @@ def _repeats(
     if np.mean(near) < _DUPLICATE_FRACTION:
         return False
     within = np.count_nonzero(_distance_to_polyline(chain[near], other) <= distance)
-    return within / len(chain) >= _DUPLICATE_FRACTION
+    return bool(within / len(chain) >= _DUPLICATE_FRACTION)
 
 
 def _distance_to_polyline(

@@ -1,22 +1,28 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
-"""Controller slots through the InputManager: routing, missing slots, Forget, Identify."""
+# Copyright (C) 2026 Michel Honold and Paul Hermann
+"""Controller slots through the InputManager: routing, missing slots, Forget, Identify, pins and Pin here."""
 
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 import openfollow.input.input_manager as input_manager_module
-from openfollow.configuration import AppConfig
+from openfollow.configuration import AppConfig, SlotMarkerConfig, SlotPinConfig
 from openfollow.input.controller_slots import NOTE_BUTTON_MAP_OTHER_MODEL, NOTE_CANNOT_IDENTIFY
 from openfollow.input.gamepad import GamepadUpdate
 from openfollow.input.input_manager import InputManager
 from openfollow.input.mouse3d import Mouse3DDeviceInfo, Mouse3DUpdate
+from openfollow.input.parking import set_parked
+from openfollow.input.slot_pin_capture import CAPTURE_TIMEOUT_S, RELEASE_TIMEOUT_S, CaptureResult
 from openfollow.operator_messages import OperatorMessageStore
 from openfollow.psn import Marker
+from openfollow.runtime import app_commands, app_modes
+from openfollow.services import WebCommandQueue
 
 pytestmark = pytest.mark.unit
 
@@ -25,7 +31,11 @@ _HOST = "platform/xhci-hcd.1"
 
 class _Keyboard:
     def __init__(self, app: Any, *, event_bus: Any = None) -> None:
-        pass
+        self.keys: set[str] = set()
+        self.cleared = 0
+
+    def clear(self) -> None:
+        self.cleared += 1
 
     def update(self, _dt: float) -> None:
         return None
@@ -43,15 +53,25 @@ class _Pads:
         self.inputs: dict[int, float] = {}
         self.rumbles_ok: dict[int, bool] = {}
         self.identified: list[int] = []
+        self.held: dict[int, frozenset[int]] = {}
+        self.resyncs = 0
+        self.next_update = GamepadUpdate()
 
     initial: dict[int, tuple[str | None, str]] = {}
+
+    def held_inputs(self) -> dict[int, frozenset[int]]:
+        return {idx: self.held.get(idx, frozenset()) for idx in self.pads}
+
+    def resync_edges(self) -> None:
+        self.resyncs += 1
 
     @property
     def joysticks(self) -> dict[int, object]:
         return {idx: object() for idx in self.pads}
 
     def update(self, _dt: float) -> GamepadUpdate:
-        return GamepadUpdate()
+        update, self.next_update = self.next_update, GamepadUpdate()
+        return update
 
     def device_identities(self) -> dict[int, tuple[str | None, str, tuple[str, ...]]]:
         return {idx: (key, name, self.notes.get(idx, ())) for idx, (key, name) in self.pads.items()}
@@ -89,6 +109,17 @@ class _Pucks:
         self.leds_ok = True
         self.without_led: set[int] = set()
         self.identified: list[int] = []
+        self.presses: dict[int, set[int]] = {}
+        self.held: dict[int, frozenset[int]] = {}
+
+    def take_presses(self) -> dict[int, set[int]]:
+        presses = {idx: set(self.presses.get(idx, ())) for idx in self.devices}
+        self.presses = {}
+        return presses
+
+    def held_buttons(self) -> dict[int, frozenset[int]]:
+        return {idx: self.held.get(idx, frozenset()) for idx in self.devices}
+        self.next_frames: dict[int, Mouse3DUpdate] = {}
 
     def start(self) -> None:
         pass
@@ -116,7 +147,8 @@ class _Pucks:
         return self.leds_ok
 
     def update(self, _dt: float) -> dict[int, Mouse3DUpdate]:
-        return {}
+        frames, self.next_frames = self.next_frames, {}
+        return frames
 
 
 class _Server:
@@ -411,3 +443,672 @@ def test_slot_changes_are_logged_with_their_sockets(station, caplog) -> None:
     with caplog.at_level("INFO", logger=input_manager_module.__name__):
         manager.update(0.016)
     assert "Controller slots" not in caplog.text
+
+
+# -- pins ----------------------------------------------------------------------
+
+
+def _pin(slot: int, port: str, label: str = "Pad") -> SlotPinConfig:
+    return SlotPinConfig(slot=slot, key=_key(port), kind="gamepad", label=label)
+
+
+def _names(manager: InputManager) -> list[tuple[str, bool]]:
+    return [(c["name"], c["pinned"]) for c in manager.get_controller_info()]
+
+
+def test_a_pinned_socket_holds_its_slot_and_its_marker_from_startup(station) -> None:
+    manager, _ = station(
+        {0: (_key("1"), "Left"), 1: (_key("2"), "Right")}, controller__slot_pins=[_pin(1, "2", "Right")]
+    )
+    assert _names(manager) == [("Right", True), ("Left", False)]
+    assert manager._gamepad_marker_id(1) == 10
+    assert manager.slot_pins() == [_pin(1, "2", "Right")]
+
+
+def test_pinning_moves_the_pad_and_its_marker(station, caplog) -> None:
+    manager, _ = station({0: (_key("1"), "Left"), 1: (_key("2"), "Right")})
+    with caplog.at_level("INFO", logger=input_manager_module.__name__):
+        assert manager.pin_slot(0, "gamepad", 1) is True
+    assert "C1 pinned to USB 1, port 2" in caplog.text
+    assert _names(manager) == [("Right", True), ("Left", False)]
+    assert manager._gamepad_marker_id(1) == 10
+    assert manager._gamepad_marker_id(0) == 11
+    assert manager.slot_pins() == [_pin(1, "2", "Right")]
+
+
+def test_a_pad_with_no_stable_port_cannot_be_pinned(station) -> None:
+    manager, _ = station({0: (None, "Pad")})
+    assert manager.pin_slot(0, "gamepad", 0) is False
+    assert manager.slot_pins() == []
+
+
+def test_unpinning_keeps_every_pad_where_it_is(station, caplog) -> None:
+    manager, _ = station(
+        {0: (_key("1"), "Left"), 1: (_key("2"), "Right")}, controller__slot_pins=[_pin(1, "2", "Right")]
+    )
+    with caplog.at_level("INFO", logger=input_manager_module.__name__):
+        assert manager.unpin_slot(0) is True
+    assert "C1 unpinned" in caplog.text
+    assert _names(manager) == [("Right", False), ("Left", False)]
+    assert manager.slot_pins() == []
+    assert manager.unpin_slot(0) is False
+
+
+def test_a_lone_pad_pinned_above_the_first_slot_still_follows_the_selection(station) -> None:
+    manager, app = station({0: (_key("1"), "Solo")}, controller__slot_pins=[_pin(3, "1", "Solo")])
+    assert _states(manager) == [("empty", None), ("empty", None), ("connected", app._selected_id)]
+    assert [c["all_markers"] for c in manager.get_controller_info()] == [False, False, True]
+    assert manager.controller_marker_id(0) is None
+    assert manager._gamepad_marker_id(0) == app._selected_id
+    assert manager.marker_cycle_active() is True
+
+
+def test_hand_edited_pins_move_their_pads(station, caplog) -> None:
+    manager, _ = station({0: (_key("1"), "Left"), 1: (_key("2"), "Right")})
+    with caplog.at_level("INFO", logger=input_manager_module.__name__):
+        manager.apply_slot_pins([_pin(1, "2", "Right")])
+    assert "pins changed" in caplog.text
+    assert _names(manager) == [("Right", True), ("Left", False)]
+    caplog.clear()
+    with caplog.at_level("INFO", logger=input_manager_module.__name__):
+        manager.apply_slot_pins([_pin(1, "2", "Right")])
+    assert "pins changed" not in caplog.text
+
+
+def _armed(station, pads, slot: int = 0, **config: Any) -> tuple[InputManager, _App, _Clock]:
+    manager, app = station(pads, **config)
+    clock = _Clock()
+    manager._clock = clock
+    assert manager.start_pin_capture(slot) is True
+    return manager, app, clock
+
+
+def test_the_first_press_pins_its_socket_once_released(station) -> None:
+    manager, _, clock = _armed(station, {0: (_key("1"), "Left"), 1: (_key("2"), "Right")})
+    assert manager.pin_capture_active is True
+    manager.gamepad_handler.held = {1: frozenset({3})}
+    assert manager.poll_pin_capture() is None
+    # Nothing moves until the press is let go, so it reaches no other consumer.
+    assert _names(manager) == [("Left", False), ("Right", False)]
+    manager.gamepad_handler.held = {}
+    clock.now += 0.1
+    assert manager.poll_pin_capture() == CaptureResult(0, "pinned", "USB 1, port 2")
+    assert manager.pin_capture_active is False
+    assert _names(manager) == [("Right", True), ("Left", False)]
+    assert manager.slot_pins() == [_pin(1, "2", "Right")]
+    assert manager.gamepad_handler.resyncs == 1
+
+
+def test_a_press_held_past_the_release_window_pins_anyway(station) -> None:
+    manager, _, clock = _armed(station, {0: (_key("1"), "Left"), 1: (_key("2"), "Right")})
+    manager.gamepad_handler.held = {1: frozenset({3})}
+    assert manager.poll_pin_capture() is None
+    clock.now += RELEASE_TIMEOUT_S
+    assert manager.poll_pin_capture() == CaptureResult(0, "pinned", "USB 1, port 2")
+
+
+def test_a_button_held_when_the_capture_starts_is_not_the_press(station) -> None:
+    manager, _ = station({0: (_key("1"), "Left"), 1: (_key("2"), "Right")})
+    manager._clock = _Clock()
+    manager.gamepad_handler.held = {1: frozenset({3})}
+    manager.start_pin_capture(0)
+    assert manager.poll_pin_capture() is None
+    # Let go and pressed again, it counts.
+    manager.gamepad_handler.held = {}
+    assert manager.poll_pin_capture() is None
+    manager.gamepad_handler.held = {1: frozenset({3})}
+    assert manager.poll_pin_capture() is None
+    manager.gamepad_handler.held = {}
+    assert manager.poll_pin_capture() == CaptureResult(0, "pinned", "USB 1, port 2")
+
+
+def test_a_puck_press_pins_the_puck(station) -> None:
+    _Pucks.initial = {4: Mouse3DDeviceInfo(path="/dev/hidraw0", port_key=_key("3"), product_name="Puck")}
+    try:
+        manager, _, _ = _armed(station, {0: (_key("1"), "Pad")}, slot=0, mouse3d__enabled=True)
+    finally:
+        _Pucks.initial = {}
+    manager.mouse3d_manager.presses = {4: {0}}
+    assert manager.poll_pin_capture() == CaptureResult(0, "pinned", "USB 1, port 3")
+    assert [(c["kind"], c["name"]) for c in manager.get_controller_info()] == [("mouse3d", "Puck"), ("gamepad", "Pad")]
+
+
+def test_a_puck_press_latched_before_the_capture_is_not_the_press(station) -> None:
+    _Pucks.initial = {4: Mouse3DDeviceInfo(path="/dev/hidraw0", port_key=_key("3"), product_name="Puck")}
+    try:
+        manager, _ = station({0: (_key("1"), "Pad")}, mouse3d__enabled=True)
+    finally:
+        _Pucks.initial = {}
+    manager.mouse3d_manager.presses = {4: {0}}
+    manager.start_pin_capture(1)
+    assert manager.poll_pin_capture() is None
+
+
+def test_a_puck_press_waits_for_its_release(station) -> None:
+    _Pucks.initial = {4: Mouse3DDeviceInfo(path="/dev/hidraw0", port_key=_key("3"), product_name="Puck")}
+    try:
+        manager, _, _ = _armed(station, {}, slot=0, mouse3d__enabled=True)
+    finally:
+        _Pucks.initial = {}
+    manager.mouse3d_manager.presses = {4: {1}}
+    manager.mouse3d_manager.held = {4: frozenset({1})}
+    assert manager.poll_pin_capture() is None
+    manager.mouse3d_manager.held = {}
+    assert manager.poll_pin_capture() == CaptureResult(0, "pinned", "USB 1, port 3")
+
+
+def test_a_controller_with_no_stable_port_is_refused(station) -> None:
+    manager, _, _ = _armed(station, {0: (_key("1"), "Left"), 1: (None, "Keyless")})
+    manager.gamepad_handler.held = {1: frozenset({0})}
+    manager.poll_pin_capture()
+    manager.gamepad_handler.held = {}
+    assert manager.poll_pin_capture() == CaptureResult(0, "no_port", "Keyless")
+    assert manager.slot_pins() == []
+    assert _names(manager) == [("Left", False), ("Keyless", False)]
+
+
+def test_a_controller_in_no_slot_is_refused(station, monkeypatch) -> None:
+    manager, _, _ = _armed(station, {0: (_key("1"), "Left")})
+    # Read while waiting, but holding no slot: its kind's slots were never built.
+    monkeypatch.setattr(manager, "_refresh_slots", lambda: manager._slot_table.slots)
+    manager.gamepad_handler.pads[5] = (_key("4"), "Stray")
+    manager.poll_pin_capture()
+    manager.gamepad_handler.held = {5: frozenset({0})}
+    manager.poll_pin_capture()
+    manager.gamepad_handler.held = {}
+    assert manager.poll_pin_capture() == CaptureResult(0, "no_slot", "")
+
+
+def test_a_pad_plugged_in_while_waiting_can_be_pinned(station) -> None:
+    manager, _, _ = _armed(station, {0: (_key("1"), "Left")})
+    manager.gamepad_handler.pads[5] = (_key("4"), "New")
+    assert manager.poll_pin_capture() is None
+    manager.gamepad_handler.held = {5: frozenset({2})}
+    manager.poll_pin_capture()
+    manager.gamepad_handler.held = {}
+    assert manager.poll_pin_capture() == CaptureResult(0, "pinned", "USB 1, port 4")
+    assert _names(manager) == [("New", True), ("Left", False)]
+
+
+def test_a_pad_plugged_in_with_a_button_down_is_not_the_press(station) -> None:
+    manager, _, _ = _armed(station, {0: (_key("1"), "Left")})
+    manager.gamepad_handler.pads[5] = (_key("4"), "New")
+    manager.gamepad_handler.held = {5: frozenset({2})}
+    assert manager.poll_pin_capture() is None
+    manager.gamepad_handler.held = {}
+    assert manager.poll_pin_capture() is None
+    assert manager.pin_capture_active is True
+
+
+def test_a_capture_with_no_press_times_out_and_pins_nothing(station) -> None:
+    manager, _, clock = _armed(station, {0: (_key("1"), "Left")})
+    clock.now += CAPTURE_TIMEOUT_S - 0.5
+    assert manager.poll_pin_capture() is None
+    assert manager.pin_capture_status()["seconds_left"] == pytest.approx(0.5)
+    clock.now += 0.5
+    assert manager.poll_pin_capture() == CaptureResult(0, "timeout", "")
+    assert manager.pin_capture_active is False
+    assert manager.slot_pins() == []
+    assert manager.gamepad_handler.resyncs == 1
+
+
+def test_cancel_pins_nothing(station) -> None:
+    manager, _, _ = _armed(station, {0: (_key("1"), "Left")})
+    manager.gamepad_handler.held = {0: frozenset({1})}
+    assert manager.cancel_pin_capture() == CaptureResult(0, "cancelled", "")
+    assert manager.slot_pins() == []
+    assert manager.cancel_pin_capture() is None
+    assert manager.poll_pin_capture() is None
+
+
+def test_a_switched_off_kind_cannot_answer(station) -> None:
+    manager, _, _ = _armed(station, {0: (_key("1"), "Left")}, mouse3d__enabled=True)
+    manager.app._config.controller.enabled = False
+    manager.gamepad_handler.held = {0: frozenset({1})}
+    assert manager.poll_pin_capture() is None
+    manager.gamepad_handler.held = {}
+    assert manager.poll_pin_capture() is None
+
+
+@pytest.mark.parametrize("slot", [-1, 1])
+def test_a_capture_needs_a_slot(station, slot: int) -> None:
+    manager, _ = station({0: (_key("1"), "Left")})
+    assert manager.start_pin_capture(slot) is False
+    assert manager.pin_capture_active is False
+
+
+def test_only_one_capture_runs_at_a_time(station) -> None:
+    manager, _, _ = _armed(station, {0: (_key("1"), "Left"), 1: (_key("2"), "Right")})
+    assert manager.start_pin_capture(1) is False
+    assert manager.pin_capture_status()["slot"] == 0
+
+
+def test_the_status_reports_the_armed_slot_then_the_result_for_a_while(station) -> None:
+    manager, _ = station({0: (_key("1"), "Left")})
+    clock = _Clock()
+    manager._clock = clock
+    assert manager.pin_capture_status() == {"slot": None, "seconds_left": 0.0, "result": None}
+    manager.start_pin_capture(0)
+    clock.now += 2.0
+    assert manager.pin_capture_status() == {"slot": 0, "seconds_left": CAPTURE_TIMEOUT_S - 2.0, "result": None}
+    manager.cancel_pin_capture()
+    assert manager.pin_capture_status()["result"] == {"slot": 0, "outcome": "cancelled", "detail": ""}
+    clock.now += 9.9
+    assert manager.pin_capture_status()["result"] is not None
+    clock.now += 0.1
+    assert manager.pin_capture_status()["result"] is None
+    # A new capture clears the last one's result.
+    manager.cancel_pin_capture()
+    manager.start_pin_capture(0)
+    assert manager.pin_capture_status()["result"] is None
+
+
+def test_an_empty_slot_reports_no_kind_of_backend(station) -> None:
+    manager, _ = station({0: (_key("1"), "Solo")}, controller__slot_pins=[_pin(2, "1", "Solo")])
+    empty = manager.get_controller_info()[0]
+    assert (empty["state"], empty["backend"], empty["effective_speed"]) == ("empty", "", 0.0)
+
+
+@pytest.fixture
+def running(station, tmp_path):
+    """A station wired the way the main loop drives Pin here: web clicks, the HUD prompt, config.toml."""
+
+    def build(pads: dict[int, tuple[str | None, str]], **config: Any) -> tuple[InputManager, _App, _Clock]:
+        manager, app = station(pads, **config)
+        clock = _Clock()
+        manager._clock = clock
+        app._input_manager = manager
+        app._web_commands = WebCommandQueue()
+        app._config_path = str(tmp_path / "config.toml")
+        app._slot_pin_prompt = None
+        return manager, app, clock
+
+    return build
+
+
+def _click(app: _App, action: str, index: int) -> None:
+    ref = app._input_manager.slot_ref(index) or ""
+    app._web_commands.request_slot_action(action, index, ref)
+    app_commands.check_controller_slot_actions(app)
+
+
+def _prompts(app: _App) -> list[tuple[str, bool]]:
+    return [(m.message, m.from_app) for m in app._runtime_services._operator_message_store.snapshot()]
+
+
+def _saved_pins(app: _App) -> list[SlotPinConfig]:
+    from openfollow.configuration import load_config
+
+    return load_config(app._config_path).controller.slot_pins
+
+
+def test_pin_here_prompts_on_the_operator_screen_and_saves_the_pin(running) -> None:
+    manager, app, _ = running({0: (_key("1"), "Left"), 1: (_key("2"), "Right")})
+    _click(app, "pin", 0)
+    assert manager.pin_capture_active is True
+    assert _prompts(app) == [("Press a button on the controller for C1", True)]
+    manager.gamepad_handler.held = {1: frozenset({0})}
+    app_modes.process_input(app, 0.016)
+    manager.gamepad_handler.held = {}
+    app_modes.process_input(app, 0.016)
+    assert manager.pin_capture_active is False
+    assert _prompts(app) == []
+    assert app._config.controller.slot_pins == [_pin(1, "2", "Right")]
+    assert _saved_pins(app) == [_pin(1, "2", "Right")]
+
+
+def test_while_waiting_no_input_reaches_a_marker(running, monkeypatch) -> None:
+    manager, app, _ = running({0: (_key("1"), "Left")})
+    _click(app, "pin", 0)
+    monkeypatch.setattr(manager, "update", lambda _dt: pytest.fail("input ran while waiting for the press"))
+    app_modes.process_input(app, 0.016)
+    assert app._marker_control_suspended is True
+    # The key and pointer handlers stand down too.
+    assert app_modes._exclusive_mode_active(app) is True
+
+
+@pytest.mark.parametrize("how", ["escape", "web", "timeout"])
+def test_a_capture_that_ends_without_a_press_saves_nothing(running, how: str) -> None:
+    manager, app, clock = running({0: (_key("1"), "Left")})
+    _click(app, "pin", 0)
+    if how == "escape":
+        manager.keyboard_handler.keys = {"Escape"}
+        app_modes.process_input(app, 0.016)
+    elif how == "web":
+        app._web_commands.request_slot_action("cancel-pin", 0, "")
+        app_commands.check_controller_slot_actions(app)
+    else:
+        clock.now += CAPTURE_TIMEOUT_S
+        app_modes.process_input(app, 0.016)
+    assert manager.pin_capture_active is False
+    assert _prompts(app) == []
+    assert app._config.controller.slot_pins == []
+    assert not os.path.exists(app._config_path)
+
+
+def test_a_refused_press_retracts_the_prompt_and_saves_nothing(running) -> None:
+    manager, app, _ = running({0: (None, "Keyless")})
+    _click(app, "pin", 0)
+    manager.gamepad_handler.held = {0: frozenset({0})}
+    app_modes.process_input(app, 0.016)
+    manager.gamepad_handler.held = {}
+    app_modes.process_input(app, 0.016)
+    assert manager.pin_capture_status()["result"]["outcome"] == "no_port"
+    assert _prompts(app) == []
+    assert app._config.controller.slot_pins == []
+
+
+def test_the_prompt_shows_with_operator_messages_switched_off(running) -> None:
+    _, app, _ = running({0: (_key("1"), "Left")}, operator_messages__enabled=False)
+    _click(app, "pin", 0)
+    assert _prompts(app) == [("Press a button on the controller for C1", True)]
+
+
+def test_pin_here_waits_while_a_screen_owns_the_input(running, caplog) -> None:
+    manager, app, _ = running({0: (_key("1"), "Left")})
+    app._settings_menu_active = True
+    with caplog.at_level("WARNING", logger=app_modes.__name__):
+        _click(app, "pin", 0)
+    assert manager.pin_capture_active is False
+    assert _prompts(app) == []
+    assert "Pin here for C1 ignored" in caplog.text
+
+
+def test_pin_here_on_no_slot_raises_no_prompt(running) -> None:
+    _, app, _ = running({0: (_key("1"), "Left")})
+    assert app_modes.enter_slot_pin_capture(app, 3) is False
+    assert _prompts(app) == []
+
+
+def test_unpin_from_the_web_saves_the_pins_left(running) -> None:
+    manager, app, _ = running(
+        {0: (_key("1"), "Left"), 1: (_key("2"), "Right")},
+        controller__slot_pins=[_pin(1, "2", "Right"), _pin(2, "1", "Left")],
+    )
+    _click(app, "unpin", 0)
+    assert app._config.controller.slot_pins == [_pin(2, "1", "Left")]
+    assert _saved_pins(app) == [_pin(2, "1", "Left")]
+
+
+def test_unpin_on_a_slot_without_a_pin_writes_nothing(running) -> None:
+    _, app, _ = running({0: (_key("1"), "Left")})
+    _click(app, "unpin", 0)
+    assert not os.path.exists(app._config_path)
+
+
+def test_web_cancel_with_nothing_armed_does_nothing(running) -> None:
+    manager, app, _ = running({0: (_key("1"), "Left")})
+    app._web_commands.request_slot_action("cancel-pin", 0, "")
+    app_commands.check_controller_slot_actions(app)
+    assert manager.pin_capture_status()["result"] is None
+
+
+def test_pins_are_not_saved_without_an_input_manager() -> None:
+    app = SimpleNamespace(_input_manager=None)
+    assert app_modes.save_slot_pins(app) is False
+
+
+def test_a_capture_armed_without_a_prompt_ends_cleanly(running) -> None:
+    manager, app, _ = running({0: (_key("1"), "Left")})
+    app._runtime_services._operator_message_store.add("from OSC")
+    manager.start_pin_capture(0)
+    app_modes.exit_slot_pin_capture(app)
+    assert manager.pin_capture_active is False
+    assert _prompts(app) == [("from OSC", False)]
+
+
+def _markers(manager: InputManager) -> list[int | None]:
+    return [c["marker_id"] for c in manager.get_controller_info()]
+
+
+def _pick(slot: int, marker: int) -> SlotMarkerConfig:
+    return SlotMarkerConfig(slot=slot, marker=marker)
+
+
+def test_a_picked_marker_routes_its_slot_everywhere(station) -> None:
+    manager, _ = station({0: (_key("1"), "Left"), 1: (_key("2"), "Right")}, controller__slot_markers=[_pick(1, 12)])
+    assert _markers(manager) == [12, 10]
+    assert manager._gamepad_marker_id(0) == 12
+    assert manager.controller_marker_id(0) == 12
+
+
+def test_picking_a_marker_swaps_it_with_the_slot_that_drove_it(station, caplog) -> None:
+    manager, app = station({0: (_key("1"), "Left"), 1: (_key("2"), "Right")})
+    with caplog.at_level("INFO", logger=input_manager_module.__name__):
+        assert manager.pick_slot_marker(0, 11) is True
+    assert "C1 drives marker 11; C1 11, C2 10" in caplog.text
+    assert _markers(manager) == [11, 10]
+    assert app._config.controller.slot_markers == [_pick(1, 11), _pick(2, 10)]
+
+
+def test_a_missing_slot_can_be_given_a_marker(station) -> None:
+    manager, _ = station({0: (_key("1"), "Left"), 1: (_key("2"), "Right")})
+    del manager.gamepad_handler.pads[0]
+    manager.update(0.016)
+    assert manager.pick_slot_marker(0, 12) is True
+    assert _states(manager) == [("missing", 12), ("connected", 11)]
+
+
+def test_picking_for_a_slot_without_a_marker_leaves_the_other_without_one(station) -> None:
+    manager, app = station({0: (_key("1"), "A"), 1: (_key("2"), "B"), 2: (_key("3"), "C"), 3: (_key("4"), "D")})
+    assert _markers(manager) == [10, 11, 12, None]
+    assert manager.pick_slot_marker(3, 10) is True
+    assert _markers(manager) == [None, 11, 12, 10]
+    # A newly controlled marker goes nowhere it wasn't picked: the emptied slot stays empty.
+    app._controlled_ids.append(13)
+    assert _markers(manager) == [None, 11, 12, 10]
+
+
+def test_an_unassigned_slot_takes_a_newly_controlled_marker(station) -> None:
+    manager, app = station({0: (_key("1"), "A"), 1: (_key("2"), "B"), 2: (_key("3"), "C"), 3: (_key("4"), "D")})
+    manager.pick_slot_marker(0, 11)
+    app._controlled_ids.append(13)
+    assert _markers(manager) == [11, 10, 12, 13]
+
+
+def test_a_marker_that_stops_being_controlled_lets_its_slot_fall_back(station) -> None:
+    manager, app = station({0: (_key("1"), "Left"), 1: (_key("2"), "Right")}, controller__slot_markers=[_pick(1, 12)])
+    app._controlled_ids.remove(12)
+    assert _markers(manager) == [10, 11]
+
+
+def test_hand_edited_picks_apply_at_once(station) -> None:
+    manager, app = station({0: (_key("1"), "Left"), 1: (_key("2"), "Right")})
+    app._config.controller.slot_markers = [_pick(2, 10), _pick(1, 0)]
+    assert _markers(manager) == [None, 10]
+
+
+@pytest.mark.parametrize("marker", [99, 0])
+def test_only_a_controlled_marker_can_be_picked(station, marker: int) -> None:
+    manager, app = station({0: (_key("1"), "Left"), 1: (_key("2"), "Right")})
+    assert manager.pick_slot_marker(0, marker) is False
+    assert app._config.controller.slot_markers == []
+
+
+def test_a_reserved_or_empty_slot_has_no_marker_to_pick(station) -> None:
+    manager, app = station(
+        {0: (_key("1"), "Left"), 1: (_key("2"), "Right")}, controller__slot_pins=[_pin(4, "2", "Right")]
+    )
+    del manager.gamepad_handler.pads[0]
+    manager.update(0.016)
+    manager.forget_slot(0)
+    assert [c["state"] for c in manager.get_controller_info()] == ["reserved", "empty", "empty", "connected"]
+    assert manager.pick_slot_marker(0, 11) is False
+    assert manager.pick_slot_marker(1, 11) is False
+    assert manager.pick_slot_marker(9, 11) is False
+    assert app._config.controller.slot_markers == []
+
+
+def test_a_lone_slot_drives_all_markers_and_has_no_pick(station) -> None:
+    manager, app = station({0: (_key("1"), "Solo")}, controller__slot_markers=[_pick(1, 12), _pick(2, 10)])
+    info = manager.get_controller_info()[0]
+    assert (info["all_markers"], info["marker_id"]) == (True, app._selected_id)
+    assert manager.pick_slot_marker(0, 11) is False
+    # The picks wait for a second slot.
+    manager.gamepad_handler.pads[1] = (_key("2"), "Second")
+    manager.update(0.016)
+    assert _markers(manager) == [12, 10]
+    assert [c["all_markers"] for c in manager.get_controller_info()] == [False, False]
+
+
+def _pick_click(app: _App, index: int, marker: int, ref: str | None = None) -> None:
+    app._web_commands.request_slot_marker(index, app._input_manager.slot_ref(index) if ref is None else ref, marker)
+    app_commands.check_controller_slot_actions(app)
+
+
+def _saved_picks(app: _App) -> list[SlotMarkerConfig]:
+    from openfollow.configuration import load_config
+
+    return load_config(app._config_path).controller.slot_markers
+
+
+def test_a_marker_picked_on_the_web_is_saved(running) -> None:
+    manager, app, _ = running({0: (_key("1"), "Left"), 1: (_key("2"), "Right")})
+    app._config.controlled_marker_ids = [10, 11, 12]
+    _pick_click(app, 1, 12)
+    assert _markers(manager) == [10, 12]
+    assert _saved_picks(app) == [_pick(1, 10), _pick(2, 12)]
+
+
+def test_a_pick_for_a_slot_that_changed_since_is_left_alone(running, caplog) -> None:
+    manager, app, _ = running({0: (_key("1"), "Left"), 1: (_key("2"), "Right")})
+    with caplog.at_level("INFO", logger=app_commands.__name__):
+        _pick_click(app, 1, 12, ref="stale")
+    assert "C2 changed since its marker was picked" in caplog.text
+    assert _markers(manager) == [10, 11]
+    assert not os.path.exists(app._config_path)
+
+
+def test_a_refused_pick_writes_nothing(running) -> None:
+    _, app, _ = running({0: (_key("1"), "Left"), 1: (_key("2"), "Right")})
+    _pick_click(app, 0, 99)
+    assert not os.path.exists(app._config_path)
+
+
+def test_picks_without_input_are_dropped() -> None:
+    queue = WebCommandQueue()
+    queue.request_slot_marker(0, "r", 10)
+    app_commands.check_controller_slot_actions(SimpleNamespace(_input_manager=None, _web_commands=queue))
+    assert queue.consume_slot_marker_picks() == []
+
+
+def _positions(app: _App) -> dict[int, tuple[float, float, float]]:
+    return {mid: marker.pos for mid, marker in app._server.markers.items()}
+
+
+def test_a_slot_whose_marker_is_parked_idles_and_moves_nobody_else(station) -> None:
+    manager, app = station({0: (_key("1"), "First"), 1: (_key("2"), "Second")})
+    set_parked(app, [10])
+    manager.gamepad_handler.next_update = GamepadUpdate(movements={0: (1.0, 0.0, 0.0), 1: (0.0, 1.0, 0.0)})
+    manager.update(0.5)
+    positions = _positions(app)
+    assert positions[10] == (0.0, 0.0, 0.0)
+    assert positions[11] != (0.0, 0.0, 0.0)
+    assert positions[12] == (0.0, 0.0, 0.0)
+    # Slot order is unchanged: the pad behind the parked slot keeps its own marker.
+    assert manager._gamepad_marker_id(1) == 11
+
+
+def test_a_parked_slot_resets_nothing_and_unparking_gives_control_back(station) -> None:
+    manager, app = station({0: (_key("1"), "First"), 1: (_key("2"), "Second")})
+    app._server.markers[10].set_pos(3.0, 4.0, 1.0)
+    set_parked(app, [10])
+    manager.gamepad_handler.next_update = GamepadUpdate(resets={0})
+    manager.update(0.016)
+    assert app._server.markers[10].pos == (3.0, 4.0, 1.0)
+    set_parked(app, [])
+    manager.gamepad_handler.next_update = GamepadUpdate(resets={0})
+    manager.update(0.016)
+    assert app._server.markers[10].pos == (0.0, 0.0, 0.0)
+
+
+def test_a_parked_slot_keeps_its_marker_in_the_slot_table_and_for_osc(station) -> None:
+    manager, app = station({0: (_key("1"), "First"), 1: (_key("2"), "Second")})
+    set_parked(app, [11])
+    info = manager.get_controller_info()
+    assert [(c["marker_id"], c["parked"]) for c in info] == [(10, False), (11, True)]
+    # OSC ``c2`` still resolves: the slot idles, its marker still sends.
+    assert manager.controller_marker_id(1) == 11
+    assert manager._gamepad_marker_id(1) is None
+
+
+def test_a_parked_pad_slot_reports_its_markers_speed(station) -> None:
+    """The pad's own reading resolves no marker for a parked slot; the slot still shows its marker's speed."""
+    manager, app = station({0: (_key("1"), "First"), 1: (_key("2"), "Second")})
+    app.get_marker_move_speed = lambda marker_id: {10: 0.7, 11: 0.9}[marker_id]
+    set_parked(app, [10])
+    speeds = [c["effective_speed"] for c in manager.get_controller_info()]
+    # The unparked pad keeps its own reading (1.5 in this fake).
+    assert speeds == [0.7, 1.5]
+
+
+def test_identify_flashes_the_card_of_a_parked_slot(station) -> None:
+    manager, app = station({0: (_key("1"), "First"), 1: (_key("2"), "Second")})
+    set_parked(app, [11])
+    manager._clock = _Clock()
+    manager.identify_slot(1)
+    assert manager.identify_flash_marker() == 11
+
+
+def test_a_puck_on_a_parked_slot_moves_and_resets_nothing(station, monkeypatch) -> None:
+    monkeypatch.setattr(_Pucks, "initial", {0: Mouse3DDeviceInfo(path="/dev/hidraw0", port_key=_key("3"))})
+    manager, app = station({0: (_key("1"), "First")}, mouse3d__enabled=True)
+    app._server.markers[11].set_pos(2.0, 2.0, 1.0)
+    set_parked(app, [11])
+    manager.mouse3d_manager.next_frames = {0: Mouse3DUpdate(velocity=(1.0, 1.0, 1.0), reset=True)}
+    manager.update(0.5)
+    assert app._server.markers[11].pos == (2.0, 2.0, 1.0)
+    set_parked(app, [])
+    manager.mouse3d_manager.next_frames = {0: Mouse3DUpdate(velocity=(1.0, 0.0, 0.0))}
+    manager.update(0.5)
+    assert app._server.markers[11].pos != (2.0, 2.0, 1.0)
+
+
+@pytest.mark.parametrize(
+    ("device", "frame"),
+    [
+        ("gamepad", GamepadUpdate(pathfinder_presses={0, 1})),
+        ("mouse3d", Mouse3DUpdate(speed_steps=2)),
+        ("mouse3d", Mouse3DUpdate(pathfinder=True)),
+        ("mouse3d", Mouse3DUpdate(fader_signal=1.0)),
+    ],
+    ids=["gamepad-pathfinder", "puck-speed-steps", "puck-pathfinder", "puck-fader"],
+)
+def test_a_parked_slot_writes_nothing_while_the_other_slot_still_does(
+    station, monkeypatch, device: str, frame: object
+) -> None:
+    monkeypatch.setattr(_Pucks, "initial", {0: Mouse3DDeviceInfo(path="/dev/hidraw0", port_key=_key("3"))})
+    manager, app = station({0: (_key("1"), "First"), 1: (_key("2"), "Second")}, mouse3d__enabled=True)
+    # Slots: C1 pad 0 -> 10, C2 pad 1 -> 11, C3 puck -> 12.
+    writes: list[tuple[str, int]] = []
+    app._paths = object()
+    monkeypatch.setattr(
+        input_manager_module.paths_runtime, "pathfinder", lambda _app, mid, _m: writes.append(("pathfinder", mid))
+    )
+    app.adjust_move_speed = lambda _direction, marker_id=None: writes.append(("speed", marker_id))
+    manager._virtual_faders = SimpleNamespace(
+        set_marker_fader_from_velocity_delta=lambda mid, _delta: writes.append(("fader", mid))
+    )
+    if device == "gamepad":
+        set_parked(app, [10])
+        manager.gamepad_handler.next_update = frame
+        manager.update(0.016)
+        assert writes == [("pathfinder", 11)]
+    else:
+        set_parked(app, [12])
+        manager.mouse3d_manager.next_frames = {0: frame}
+        manager.update(0.016)
+        assert writes == []
+        set_parked(app, [])
+        manager.mouse3d_manager.next_frames = {0: frame}
+        manager.update(0.016)
+        assert writes and {mid for _kind, mid in writes} == {12}
+
+
+def test_a_lone_controller_never_moves_a_parked_marker(station) -> None:
+    manager, app = station({0: (_key("1"), "Only")})
+    set_parked(app, [10, 11, 12])
+    assert app._selected_id is None
+    manager.gamepad_handler.next_update = GamepadUpdate(movements={0: (1.0, 1.0, 0.0)}, resets={0})
+    manager.update(0.5)
+    assert set(_positions(app).values()) == {(0.0, 0.0, 0.0)}

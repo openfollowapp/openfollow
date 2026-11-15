@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """SRT video input plugin with automatic reconnect and background healing."""
 
 from __future__ import annotations
@@ -48,6 +50,7 @@ class SrtInput(VideoInputBase):
     input_id = "srt"
     display_name = "SRT"
     source_element_name = "srtsrc"
+    frame_meter_element_name = "post_queue"
     source_kind = SourceKind.REMOTE
     pins_interface = True
 

@@ -1,18 +1,14 @@
 # RTTrPM Output
 
-> RTTrPM output is currently experimental. Confirm compatibility with your specific receiver software before using it in a live show.
+> RTTrPM output is experimental. Confirm compatibility with your receiver before a live show.
 
-Sends tracked marker positions over Real Time Tracking Protocol – Motion (RTTrPM) as unicast UDP datagrams. Use it to feed immersive audio engines or other show-control systems that consume RTTrPM data.
+Sends marker positions as RTTrPM unicast UDP datagrams, for immersive audio engines and other show-control systems.
 
-## RTTrPM Network
+- **RTTrPM output** – master toggle.
+- **Destination Host** – IP address or hostname of the receiver. Default: `127.0.0.1`.
+- **UDP Port** – 1–65535. Default: `36700`.
+- **Send Rate (FPS)** – packets per second, 1–240. Default: `60`.
+- **Context** – a 32-bit integer (0–4294967295) in every packet, to tell this station's stream apart at a shared receiver. Default `0`.
+- **Source Interface** – read-only; set under **General → Network Interface Assignment**. Not shown in Simple network mode. A pinned interface that is down stops RTTrPM.
 
-- **RTTrPM output** – master toggle. Turn on to start sending RTTrPM packets.
-- **Destination Host** – IP address of the RTTrPM receiver (e.g. `192.168.1.50`); a hostname is also accepted. Default: `127.0.0.1`.
-- **UDP Port** – destination UDP port, 1–65535. Default: `36700`.
-- **Send Rate (FPS)** – position packets sent per second, 1–240. Default: `60`. Match it to your receiver's expected update rate; higher rates give smoother motion but increase network load.
-- **Context** – a user-defined 32-bit integer (0–4294967295) included in every packet. Use it to distinguish this station's stream when multiple sources feed the same receiver. Leave at `0` if your receiver doesn't use it.
-- **Source Interface** – read-only here; it reports which interface RTTrPM leaves from. Set it under **General → Network Interface Assignment**, where every protocol's interface is chosen in one place. In Simple network mode RTTrPM follows the station interface and this row is not shown. A pinned interface that's down stops RTTrPM rather than moving it to another one; it resumes when the interface returns.
-
-## Saving
-
-- **Save** – write the current settings to disk. RTTrPM output applies immediately when Enabled is checked, but reverts to the previous saved state on reload unless you Save first.
+**Save** writes the settings; unsaved changes are lost on reload.

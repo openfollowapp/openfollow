@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 # Project metadata, dependencies, and tool config (ruff, mypy, bandit, pytest, coverage, mutmut).
 [project]
 name = "openfollow"
-version = "0.4.1"
+version = "0.5.0"
 description = "Live video stage-tracking with PSN, OTP, OSC and RTTrPM output for lighting, media and audio show control"
 license = "AGPL-3.0-or-later"
 readme = "README.md"
@@ -17,11 +19,11 @@ authors = [
 requires-python = ">=3.13,<3.14"
 dependencies = [
     "pypsn @ git+https://github.com/open-stage/python-psn.git",
-    "numpy>=1.24",
+    "numpy>=2.5.4",
     "tomli-w>=1.0",
     "bottle>=0.12",
     "pygame-ce>=2.5.8",
-    "multicast-expert>=1.4",
+    "multicast-expert>=1.6",
     # Floor is what Debian Trixie's python3-gi ships: a packaged install runs the
     # OS bindings, not the pip build (packaging/build-deb.sh drops the pip copy).
     "PyGObject>=3.50",
@@ -47,15 +49,21 @@ dependencies = [
     # The GL Operator Screen's OpenGL ES calls. Pure Python over the system libEGL and
     # libGLESv2 (both .deb Depends); imported only when the GL display starts.
     "PyOpenGL>=3.1.7",
+    # The Operator Screen's keyboard state on Linux (``EVIOCGKEY``). C extension
+    # built from sdist against the kernel's ``linux/input.h`` (``linux-libc-dev``).
+    "evdev>=1.6; sys_platform == 'linux'",
+    # Maps that poller's letters to the session's keyboard layout. cffi binding
+    # built from sdist against ``libxkbcommon-dev``; loads ``libxkbcommon0``.
+    "xkbcommon>=1.0,<2; sys_platform == 'linux'",
 ]
 
 [project.optional-dependencies]
-detection = ["onnxruntime>=1.17", "opencv-python>=5.0.0.93"]
+detection = ["onnxruntime>=1.31.1", "opencv-python>=5.0.0.93"]
 # Model export tooling: converts YOLO ``.pt`` weights to the ONNX models the
 # detector runs. Pulls torch, so it's a workstation-only extra, never required
 # at show time. Used by ``scripts/export_onnx.py`` and the web model-export
 # action; installed on demand from the detection UI.
-export = ["ultralytics>=8.4.123"]
+export = ["ultralytics>=8.4.194"]
 
 [project.scripts]
 openfollow = "openfollow.main:main"
@@ -92,11 +100,11 @@ include = [
 # This is the only ruff version in the repo: the pre-commit hook runs it out of
 # the poetry env rather than fetching its own at a ``rev``, so a second pin
 # cannot drift from this one.
-ruff = "0.17.1"
-pytest = "^9.1.1"
+ruff = "0.17.3"
+pytest = "^9.2.0"
 pytest-cov = "^7.1"
-coverage = { extras = ["toml"], version = "^7.16" }
-pre-commit = "^4.6.2"
+coverage = { extras = ["toml"], version = "^7.17" }
+pre-commit = "^4.7.0"
 mypy = "^2.4"
 
 # Static type checking: mypy --strict for all openfollow.* modules.
@@ -133,16 +141,17 @@ mutmut = "^3.8"
 
 # Linting: ruff check/format (faster pyflakes/pycodestyle/isort/pyupgrade bundle).
 # line-length=120 matches old flake8 setting.
+# target-version=py313 matches requires-python.
 [tool.ruff]
 line-length = 120
-target-version = "py310"
+target-version = "py313"
 
 # Selected rule sets:
 #   E/W  pycodestyle   – style errors + warnings (flake8 parity)
 #   F    pyflakes      – real bugs: undefined names, unused imports, bad f-strings
 #   B    flake8-bugbear      – likely-bug patterns (zip w/o strict, mutable defaults)
 #   I    isort               – import ordering / grouping
-#   UP   pyupgrade           – modernise syntax to the py310 floor
+#   UP   pyupgrade           – modernise syntax to the py313 floor
 #   C4   flake8-comprehensions – simpler/faster comprehension forms
 #   SIM  flake8-simplify     – clarity simplifications, CURATED subset (see ``ignore``)
 #
@@ -174,6 +183,8 @@ module = [
     "pyspacemouse",
     "easyhid",
     "OpenGL",
+    "evdev",
+    "xkbcommon.*",
 ]
 ignore_missing_imports = true
 

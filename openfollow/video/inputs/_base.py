@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 OpenFollow Project
+# Copyright (C) 2026 Paul Hermann, Michel Honold, and Vinzenz Schultz
+# Copyright (C) 2026 Paul Hermann and Michel Honold
 """Base class and declaration types for video input plugins.
 
 ``VideoInputBase`` is the ABC each protocol plugin subclasses; the dataclasses
@@ -22,7 +24,7 @@ from openfollow.net_egress import is_loopback_host
 from openfollow.net_utils import plane_source_iface
 from openfollow.runtime.receiver_bus import BusError
 from openfollow.video.failure import ConnectionPhase, SourceKind
-from openfollow.video.inputs._pin import PinRefusal
+from openfollow.video.inputs._pin import PinRefusal, config_pin, prefetch
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +139,11 @@ class VideoInputBase(ABC):
     # from the source; the receiver probes it to tell "never reached" from
     # "reached, sent nothing usable". ``None`` = no such boundary.
     source_element_name: str | None = None
+
+    # Instance name of the leaky queue that first holds whole video frames; the
+    # receiver measures the source on its sink pad, before it can drop any.
+    # ``None`` = not measured.
+    frame_meter_element_name: str | None = None
 
     # What this input gets its video from: picks the wording of the advice an
     # operator is given, and whether "not authorised" is a rejected login or a
@@ -287,9 +294,15 @@ class VideoInputBase(ABC):
         interface pin forbids, or a remembered device that is absent.
 
         Runs before every build, on the main loop; keep it to a routing-table
-        lookup or a device listing.
+        lookup, a device listing and the name answers :meth:`prefetch` started.
         """
         return None
+
+    @classmethod
+    def prefetch(cls, config: dict[str, Any]) -> None:
+        """Start the name lookup :meth:`preflight` reads, without waiting for it."""
+        if config_pin(config):
+            prefetch(cls.route_target(config))
 
     @classmethod
     def source_endpoint(cls, config: dict[str, Any]) -> SourceEndpoint | None:

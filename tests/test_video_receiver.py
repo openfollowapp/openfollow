@@ -888,6 +888,46 @@ class TestSharedSink:
         sink.get_property = boom  # type: ignore[assignment]
         assert r.get_sink_widget() is None
 
+    def test_on_macos_the_gtksink_sits_behind_a_device_scaler_named_as_the_shared_sink(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(receiver_mod.sys, "platform", "darwin")
+        factory = FakeElementFactory(available_elements={"gtksink", "videoscale"})
+        make = factory.make
+
+        def make_with_widget(kind: str, name: str) -> FakeElement:
+            element = make(kind, name)
+            element.set_property("widget", "gtk widget")
+            return element
+
+        factory.make = make_with_widget  # type: ignore[method-assign]
+        fake_gst.ElementFactory = factory
+        wrapped: list[tuple[Any, str]] = []
+        followed: list[tuple[Any, Any]] = []
+        scaler = FakeElement(receiver_mod.SHARED_SINK_NAME)
+
+        def fake_wrap(_gst: Any, inner: Any, name: str) -> Any:
+            wrapped.append((inner, name))
+            return scaler
+
+        monkeypatch.setattr(receiver_mod, "device_scaled_sink", fake_wrap)
+        monkeypatch.setattr(receiver_mod, "follow_widget", lambda _gst, b, w: followed.append((b, w)))
+        r = _make_receiver()
+        assert r._get_shared_sink() is scaler
+        ((inner, name),) = wrapped
+        assert name == receiver_mod.SHARED_SINK_NAME
+        assert inner.get_name() == f"{receiver_mod.SHARED_SINK_NAME}_gtk"
+        assert inner.properties["sync"] is False
+        assert followed == [(scaler, "gtk widget")]
+        assert r.get_sink_widget() == "gtk widget"
+
+    def test_off_macos_the_gtksink_is_the_shared_sink(self, fake_gst, fake_glib, fake_input_cls, monkeypatch) -> None:
+        monkeypatch.setattr(receiver_mod.sys, "platform", "linux")
+        fake_gst.ElementFactory = FakeElementFactory(available_elements={"gtksink", "videoscale"})
+        monkeypatch.setattr(receiver_mod, "device_scaled_sink", lambda *_a: pytest.fail("wrapped off macOS"))
+        sink = _make_receiver()._get_shared_sink()
+        assert sink.get_name() == receiver_mod.SHARED_SINK_NAME
+
 
 # --------------------------------------------------------------------------- #
 # _has_configured_source and video-flow connection

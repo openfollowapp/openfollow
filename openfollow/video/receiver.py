@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -19,6 +20,7 @@ from openfollow.runtime.receiver_bus import BusError, ReceiverBusHandler
 from openfollow.runtime.receiver_pipeline import ReceiverPipelineAssembler
 from openfollow.runtime.receiver_state import ReceiverStateMachine
 from openfollow.video.connection_status import NdiStatusMarker
+from openfollow.video.device_scale import device_scaled_sink, follow_widget
 from openfollow.video.failure import ConnectionPhase, SourceKind, VideoFailure, classify_failure
 from openfollow.video.inputs import get_input_class
 from openfollow.video.inputs._base import InputCapabilities, ReconnectPolicy
@@ -43,6 +45,8 @@ except Exception:  # pragma: no cover - depends on system gstreamer bindings
     GLib = None
 
 logger = logging.getLogger(__name__)
+
+SHARED_SINK_NAME = "shared_videosink"
 
 # Timeout passed to ``pipeline.get_state()`` inside the swap worker thread
 # (nanoseconds). Must be long enough for a healthy NULL transition to
@@ -179,6 +183,7 @@ class GstNativeSinkReceiver:
 
         # Shared sink created lazily
         self._shared_sink = None
+        self._sink_widget: Any = None
         # Told of every frame that reaches the display sink, from its streaming thread.
         self._display_frame_listener: Callable[[], None] | None = None
         # Handed each source frame reaching the display sink, with its caps, only while set.
@@ -242,7 +247,9 @@ class GstNativeSinkReceiver:
             logger.error("No embeddable video sink available")
             return None
 
-        sink = Gst.ElementFactory.make(sink_name, "shared_videosink")
+        # The pipeline finds the sink by this name, so a scaling bin takes it from gtksink.
+        scaled = sys.platform == "darwin" and bool(Gst.ElementFactory.find("videoscale"))
+        sink = Gst.ElementFactory.make(sink_name, f"{SHARED_SINK_NAME}_gtk" if scaled else SHARED_SINK_NAME)
         if sink is None:
             logger.error("Failed to create %s video sink", sink_name)
             return None
@@ -251,6 +258,12 @@ class GstNativeSinkReceiver:
             sink.set_property("sync", False)
         except Exception:
             pass
+
+        if scaled:
+            widget = sink.get_property("widget")
+            sink = device_scaled_sink(Gst, sink, SHARED_SINK_NAME)
+            follow_widget(Gst, sink, widget)
+            self._sink_widget = widget
 
         logger.info("Created shared %s element for all pipelines", sink_name)
         return sink
@@ -777,7 +790,7 @@ class GstNativeSinkReceiver:
         # lifetime – the sink (and its sink pad) survive every rebuild, so
         # re-adding here each time would accumulate duplicate probes.
         if not self._sink_probes_added:
-            sink = self._pipeline.get_by_name("videosink") or self._pipeline.get_by_name("shared_videosink")
+            sink = self._pipeline.get_by_name("videosink") or self._pipeline.get_by_name(SHARED_SINK_NAME)
             if sink is not None:
                 pad = sink.get_static_pad("sink")
                 if pad is not None:
@@ -895,6 +908,8 @@ class GstNativeSinkReceiver:
         sink = self._get_shared_sink()
         if sink is None:
             return None
+        if self._sink_widget is not None:
+            return self._sink_widget
         try:
             return sink.get_property("widget")
         except Exception:

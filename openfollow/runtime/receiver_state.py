@@ -44,7 +44,6 @@ class ReceiverStateMachine:
         # nothing.
         self._phase_lock = threading.Lock()
         self.resolution: tuple[int, int] = (0, 0)
-        self.pixel_aspect_ratio: tuple[int, int] = (1, 1)
         self.source_framerate: float = 0.0
         # What the source element itself delivered: a pixel format for raw
         # video, else the media type.
@@ -95,12 +94,11 @@ class ReceiverStateMachine:
         ``picture_geometry`` stays: the sink is still showing that picture.
         """
         self.resolution = (0, 0)
-        self.pixel_aspect_ratio = (1, 1)
         self.source_framerate = 0.0
         self.source_format = ""
 
-    def set_resolution(self, width: int, height: int, pixel_aspect_ratio: tuple[int, int] = (1, 1)) -> bool:
-        """Record the source's negotiated size and pixel aspect ratio; ``True`` when either changed.
+    def set_resolution(self, width: int, height: int) -> bool:
+        """Record the source's negotiated resolution; ``True`` when it changed.
 
         Placeholder caps are refused for the same reason placeholder buffers
         can't connect (see ``mark_frame_received``): the "No Signal" pipeline
@@ -111,11 +109,10 @@ class ReceiverStateMachine:
         """
         if self.is_placeholder_pipeline:
             return False
-        previous = (self.resolution, self.pixel_aspect_ratio)
-        self.pixel_aspect_ratio = pixel_aspect_ratio
+        previous = self.resolution
         self.resolution = (width, height)
-        self.picture_geometry = PictureGeometry(width, height, pixel_aspect_ratio)
-        return previous != (self.resolution, self.pixel_aspect_ratio)
+        self.picture_geometry = PictureGeometry(width, height)
+        return previous != self.resolution
 
     def set_source_framerate(self, fps: float) -> None:
         if self.is_placeholder_pipeline:

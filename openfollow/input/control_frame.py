@@ -86,11 +86,9 @@ class ControlFrame:
         if params is None:
             return STAGE_AXES
         if frame == "screen":
-            # In the frame's own pixels, where the HUD projects: a stretch across keeps right and up.
-            rect, aspect = operator_scene_view(self._app)
+            rect = operator_scene_view(self._app)
             if rect.width > 0 and rect.height > 0:
-                w, h = rect.width / aspect, float(rect.height)
-                axes = screen_axes_at(params, marker_pos, w, h, *effective_lens(self._app._config))
+                axes = screen_axes_at(params, marker_pos, rect.width, rect.height, *effective_lens(self._app._config))
                 if axes is not None:
                     return axes
         return ground_axes(params)

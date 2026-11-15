@@ -22,7 +22,7 @@ import numpy as np
 import pytest
 
 from openfollow.runtime.overlay_layers import LayerContext
-from openfollow.runtime.overlay_layout import SceneView, VideoRect, scene_view
+from openfollow.runtime.overlay_layout import VideoRect, video_rect
 from openfollow.runtime.overlay_state import (
     ButtonDetectionState,
     MarkerOverlayData,
@@ -847,11 +847,11 @@ def test_the_screen_reuses_a_still_cone_and_forgets_a_removed_one(monkeypatch) -
 _SCENE = ("grid_cache", "draw_origin_pass", "draw_zones_pass", "draw_paths_pass", "draw_marker_pass")
 
 
-def _scene_state(canvas: tuple[int, int], source: tuple[int, int], par: tuple[int, int] = (1, 1)) -> OverlayState:
-    """A scene on ``canvas``, boxed by the main thread for a ``source`` picture of ``par`` pixels."""
+def _scene_state(canvas: tuple[int, int], source: tuple[int, int]) -> OverlayState:
+    """A scene on ``canvas``, boxed by the main thread for a ``source`` picture."""
     state = OverlayState()
     state.camera_params = np.zeros(7, dtype=np.float64)
-    state.scene_view = scene_view(*canvas, *source, par)
+    state.scene_view = video_rect(*canvas, *source)
     state.markers = [MarkerOverlayData(marker_id=0, x=0, y=0, z=0, color="#fff")]
     return state
 
@@ -892,7 +892,7 @@ class TestLetterboxedScene:
     def test_the_scene_is_drawn_in_the_view_the_state_carries(self, pass_sizes) -> None:
         # The renderer works out no view of its own: a box that is not the canvas's letterbox is kept.
         state = _scene_state((1000, 1000), (1920, 1080))
-        state.scene_view = SceneView(VideoRect(10, 20, 300, 200), 1.0)
+        state.scene_view = VideoRect(10, 20, 300, 200)
         fake = FakeCairo()
         CairoOverlayRenderer().draw(fake, 1000, 1000, state)
         assert pass_sizes["grid_cache"] == [(300, 200)]
@@ -957,14 +957,6 @@ class TestLetterboxedScene:
         assert fake.saves == fake.restores
         assert any("Overlay Error" in t for t in fake.text_calls)
 
-    def test_a_frame_of_non_square_pixels_is_boxed_by_its_display_size(self, pass_sizes) -> None:
-        # D1 at 12:11 is shown 768x576 (4:3), not at its 704x576 caps size.
-        fake = FakeCairo()
-        CairoOverlayRenderer().draw(fake, 1000, 1000, _scene_state((1000, 1000), (704, 576), (12, 11)))
-        for name in _SCENE:
-            assert pass_sizes[name] == [(1000, 750)], name
-        assert fake.translates == [(0, 125)]
-
 
 @pytest.mark.filterwarnings("ignore:Rsvg.Handle.render_cairo is deprecated:DeprecationWarning")
 def test_a_frame_with_no_room_for_the_scene_still_forgets_a_removed_cone(monkeypatch) -> None:
@@ -992,7 +984,7 @@ def test_a_frame_with_no_room_for_the_scene_still_forgets_a_removed_cone(monkeyp
 
     def frame(width: int, height: int, *markers: MarkerOverlayData) -> None:
         state.markers = list(markers)
-        state.scene_view = scene_view(width, height, 1280, 720)
+        state.scene_view = video_rect(width, height, 1280, 720)
         surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
         renderer.draw(cairo.Context(surface), width, height, state)
 
@@ -1000,36 +992,6 @@ def test_a_frame_with_no_room_for_the_scene_still_forgets_a_removed_cone(monkeyp
     frame(1, 1, a)  # 16:9 in one pixel has no height: no scene this frame
     frame(1280, 720, a, b)
     assert sorted(worked_out) == [1, 2, 2]
-
-
-@pytest.mark.filterwarnings("ignore:Rsvg.Handle.render_cairo is deprecated:DeprecationWarning")
-def test_a_cone_is_drawn_again_when_the_frame_s_pixels_change_shape(monkeypatch) -> None:
-    import cairo
-
-    from openfollow.runtime import overlay_draw_scene as scene
-    from openfollow.runtime.overlay_state import MarkerOverlayData
-
-    worked_out: list[int] = []
-    real = scene._cone_geometry
-
-    def _counting(state, t, w, h):
-        worked_out.append(t.marker_id)
-        return real(state, t, w, h)
-
-    monkeypatch.setattr(scene, "_cone_geometry", _counting)
-    renderer = CairoOverlayRenderer()
-    state = renderer.state
-    state.camera_params = np.array([0.0, -11.0, 6.0, -22.0, 0.0, 0.0, 60.0])
-    state.grid_config = (10.0, 6.0, 1.0, 0.0, 3.0, 0.0)
-    state.marker_style = "cone"
-    state.markers = [MarkerOverlayData(marker_id=1, x=-1.0, y=2.0, z=1.6, color="#ff3333")]
-    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 1280, 720)
-    # Both frames box to the same 1280x720 rectangle; only the stretch differs.
-    state.scene_view = scene_view(1280, 720, 1280, 720)
-    renderer.draw(cairo.Context(surface), 1280, 720, state)
-    state.scene_view = scene_view(1280, 720, 1152, 720, (10, 9))
-    renderer.draw(cairo.Context(surface), 1280, 720, state)
-    assert worked_out == [1, 1]
 
 
 def test_the_renderer_keeps_its_paths_as_one_picture_between_frames(monkeypatch) -> None:
@@ -1060,7 +1022,7 @@ def test_the_renderer_keeps_its_paths_as_one_picture_between_frames(monkeypatch)
         ("settings_menu_active", True),
         ("camera_params", None),
         ("button_detection", ButtonDetectionState(active=True)),
-        ("scene_view", SceneView(VideoRect(0, 0, 0, 0), 1.0)),
+        ("scene_view", VideoRect(0, 0, 0, 0)),
     ],
     ids=["menu-open", "no-camera", "button-wizard", "no-picture-area"],
 )
@@ -1114,7 +1076,7 @@ def test_the_renderer_keeps_its_zones_as_one_picture_between_frames() -> None:
         ("settings_menu_active", True),
         ("camera_params", None),
         ("button_detection", ButtonDetectionState(active=True)),
-        ("scene_view", SceneView(VideoRect(0, 0, 0, 0), 1.0)),
+        ("scene_view", VideoRect(0, 0, 0, 0)),
     ],
     ids=["menu-open", "no-camera", "button-wizard", "no-picture-area"],
 )
@@ -1168,7 +1130,7 @@ def test_the_renderer_keeps_its_grid_as_one_picture_between_frames() -> None:
         ("settings_menu_active", True),
         ("camera_params", None),
         ("button_detection", ButtonDetectionState(active=True)),
-        ("scene_view", SceneView(VideoRect(0, 0, 0, 0), 1.0)),
+        ("scene_view", VideoRect(0, 0, 0, 0)),
     ],
     ids=["menu-open", "no-camera", "button-wizard", "no-picture-area"],
 )

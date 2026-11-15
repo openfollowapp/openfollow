@@ -74,11 +74,11 @@ def _zone_outlines(state: OverlayState, w: int, h: int) -> list[_Zone]:
         # from subdivided edges; otherwise the vertex projection is the outline.
         n = _DISTORTION_SUBDIVISIONS if (state.lens_k1 or state.lens_k2) else 1
         if n == 1:
-            outline = project(cam, pts, w, h, *state.lens, state.pixel_aspect)
+            outline = project(cam, pts, w, h, *state.lens)
         else:
             loop = pts + [pts[0]]
             edges = [(loop[i], loop[i + 1]) for i in range(len(pts))]
-            polys = _project_segments(cam, edges, w, h, *state.lens, n, state.pixel_aspect)
+            polys = _project_segments(cam, edges, w, h, *state.lens, n)
             # Drop each edge's last point – it repeats the next edge's first.
             outline = np.vstack([poly[:-1] for poly in polys])
 
@@ -94,10 +94,9 @@ def _zone_outlines(state: OverlayState, w: int, h: int) -> list[_Zone]:
                 float(state.zone_z_offset),
                 float(z),
                 tuple(np.asarray(cam, dtype=np.float64).tolist()),
-                state.lens,
+                tuple(state.lens),
                 w,
                 h,
-                state.pixel_aspect,
             )
         zones.append(_Zone(outline, color_hex, is_occupied, floor))
     return zones
@@ -109,10 +108,9 @@ def _floor_runs(
     bottom: float,
     top: float,
     cam: tuple[float, ...],
-    lens: tuple[float, float, float, float],
+    lens: tuple[float, ...],
     w: int,
     h: int,
-    pixel_aspect: float = 1.0,
 ) -> tuple[_FloorRun, ...]:
     """A raised zone's floor outline and corner lines on screen, cut where they pass behind the zone."""
     eye = (cam[0], cam[1], cam[2])
@@ -120,7 +118,7 @@ def _floor_runs(
     segments = [((*vertices[i], bottom), (*vertices[(i + 1) % n], bottom)) for i in range(n)]
     segments += [((x, y, bottom), (x, y, top)) for x, y in vertices]
     world = _subdivided(segments, _DISTORTION_SUBDIVISIONS)
-    screen = project(np.asarray(cam), world.reshape(-1, 3), w, h, *lens, pixel_aspect).reshape(world.shape[0], -1, 2)
+    screen = project(np.asarray(cam), world.reshape(-1, 3), w, h, *lens).reshape(world.shape[0], -1, 2)
     runs = []
     for index, (points, line) in enumerate(zip(world, screen, strict=True)):
         mids = ((points[:-1] + points[1:]) / 2).tolist()
@@ -201,7 +199,6 @@ class ZoneCache:
             state.zone_z_offset,
             tuple(float(v) for v in cam),
             state.lens,
-            state.pixel_aspect,
             w,
             h,
             scale,

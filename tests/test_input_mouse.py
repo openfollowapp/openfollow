@@ -27,7 +27,7 @@ from openfollow.input.mouse import _MIN_GRAB_PX, MouseHandler
 from openfollow.input.parking import set_parked
 from openfollow.psn.marker import Marker
 from openfollow.runtime.overlay_draw_scene import project as draw_project
-from openfollow.runtime.overlay_layout import PictureGeometry, SceneView, scene_view
+from openfollow.runtime.overlay_layout import PictureGeometry, VideoRect, video_rect
 from openfollow.scene.solver import project_points, unproject_to_plane
 from openfollow.window import operator_scene_view
 
@@ -114,23 +114,22 @@ def _draw(
     app: _DummyApp,
     canvas: tuple[int, int],
     source: tuple[int, int] = (0, 0),
-    par: tuple[int, int] = (1, 1),
     *,
     gl: bool = False,
-) -> SceneView:
-    """An Operator Screen of ``canvas`` showing a ``source`` picture of ``par`` pixels, gtksink's view of it."""
+) -> VideoRect:
+    """An Operator Screen of ``canvas`` showing a ``source`` picture, gtksink's view of it."""
     app._canvas = _DummyCanvas(*canvas, gl=gl)
-    app._video_receiver = SimpleNamespace(picture_geometry=PictureGeometry(*source, par))
-    return scene_view(*canvas, *source, par)
+    app._video_receiver = SimpleNamespace(picture_geometry=PictureGeometry(*source))
+    return video_rect(*canvas, *source)
 
 
-def _view(app: _DummyApp) -> SceneView:
+def _view(app: _DummyApp) -> VideoRect:
     """The scene view the frame loop hands the renderer."""
     return operator_scene_view(app)  # type: ignore[arg-type]
 
 
 def _canvas_size(app: _DummyApp) -> tuple[int, int]:
-    rect = _view(app).rect
+    rect = _view(app)
     return rect.width, rect.height
 
 
@@ -430,7 +429,7 @@ class TestPosition:
         app = _DummyApp()
         app._canvas = _DummyCanvas(1000, 500)
         app._video_receiver = receiver
-        assert tuple(_view(app).rect) == (0, 0, 1000, 500)
+        assert tuple(_view(app)) == (0, 0, 1000, 500)
         assert MouseHandler(app).on_pointer_down(*_ground_center(app, 1), 1) is True
 
     def test_second_update_is_noop_once_settled(self) -> None:
@@ -1232,43 +1231,34 @@ class TestHitTestLensDistortion:
 _LETTERBOX_1000 = (0, 219, 1000, 562)  # 16:9 feed on a square canvas
 _PILLARBOX_4_3 = (240, 0, 1440, 1080)  # 4:3 feed on a 16:9 canvas
 _PILLARBOX_PORTRAIT = (437, 0, 405, 720)  # 9:16 feed on a 16:9 canvas
-# A D1 frame of 12:11 pixels, which gtksink shows 768x576, on a square canvas.
-_D1, _D1_PAR = (704, 576), (12, 11)
-_LETTERBOX_D1 = (0, 125, 1000, 750)
 
 
-def _letterboxed_app(canvas: tuple[int, int], source: tuple[int, int], par: tuple[int, int] = (1, 1)) -> _DummyApp:
+def _letterboxed_app(canvas: tuple[int, int], source: tuple[int, int]) -> _DummyApp:
     app = _DummyApp()
-    _draw(app, canvas, source, par)
+    _draw(app, canvas, source)
     return app
 
 
-def _drawn_at(
-    app: _DummyApp, rect: tuple[int, int, int, int], wx: float, wy: float, *, aspect: float = 1.0
-) -> tuple[float, float]:
+def _drawn_at(app: _DummyApp, rect: tuple[int, int, int, int], wx: float, wy: float) -> tuple[float, float]:
     """Window pixel where the renderer draws the stage point ``(wx, wy)`` in ``rect``."""
     x, y, w, h = rect
     cam = app._config.camera
     point = [(wx, wy, app._config.grid.z_offset)]
-    scr = draw_project(_cam_buffer(app), point, w, h, cam.lens_k1, cam.lens_k2, cam.lens_cx, cam.lens_cy, aspect)
+    scr = draw_project(_cam_buffer(app), point, w, h, cam.lens_k1, cam.lens_k2, cam.lens_cx, cam.lens_cy)
     return float(scr[0, 0]) + x, float(scr[0, 1]) + y
 
 
-def _ground_center_in(
-    app: _DummyApp, rect: tuple[int, int, int, int], marker_id: int = 1, *, aspect: float = 1.0
-) -> tuple[float, float]:
+def _ground_center_in(app: _DummyApp, rect: tuple[int, int, int, int], marker_id: int = 1) -> tuple[float, float]:
     """Window pixel of a marker's ground centre as drawn in ``rect``."""
     m = app._server.get_marker(marker_id)
-    return _drawn_at(app, rect, m.pos[0], m.pos[1], aspect=aspect)
+    return _drawn_at(app, rect, m.pos[0], m.pos[1])
 
 
-def _dragged_to(
-    app: _DummyApp, rect: tuple[int, int, int, int], pointer: tuple[float, float], *, aspect: float = 1.0
-) -> tuple[float, float]:
+def _dragged_to(app: _DummyApp, rect: tuple[int, int, int, int], pointer: tuple[float, float]) -> tuple[float, float]:
     """Where marker 1 lands when grabbed where it is drawn and dragged to ``pointer``."""
     app._config.controller.mouse_smoothing = 0.0  # the marker lands on the target in one update
     handler = MouseHandler(app)
-    assert handler.on_pointer_down(*_ground_center_in(app, rect, aspect=aspect), 1) is True
+    assert handler.on_pointer_down(*_ground_center_in(app, rect), 1) is True
     handler.on_pointer_move(*pointer)
     handler.update()
     x, y, _ = app._server.get_marker(1).pos
@@ -1389,36 +1379,32 @@ class TestLetterboxedVideo:
         assert app._server.get_marker(1).pos == _DEFAULT_POS
 
     @pytest.mark.parametrize(
-        ("canvas", "source", "par", "rect"),
+        ("canvas", "source", "rect"),
         [
-            ((1000, 1000), (1920, 1080), (1, 1), _LETTERBOX_1000),
-            ((1920, 1080), (1024, 768), (1, 1), _PILLARBOX_4_3),
-            ((1280, 720), (1080, 1920), (1, 1), _PILLARBOX_PORTRAIT),
-            ((1000, 1000), _D1, _D1_PAR, _LETTERBOX_D1),
+            ((1000, 1000), (1920, 1080), _LETTERBOX_1000),
+            ((1920, 1080), (1024, 768), _PILLARBOX_4_3),
+            ((1280, 720), (1080, 1920), _PILLARBOX_PORTRAIT),
         ],
-        ids=["16:9", "4:3", "portrait", "non-square pixels"],
+        ids=["16:9", "4:3", "portrait"],
     )
     def test_the_mouse_and_the_detection_pin_agree_on_every_shape(
         self,
         canvas: tuple[int, int],
         source: tuple[int, int],
-        par: tuple[int, int],
         rect: tuple[int, int, int, int],
     ) -> None:
         """One stage point, three readers, one answer.
 
-        The renderer draws a point into the rect, stretched as gtksink
-        stretches the frame, and the pointer is read back through the same
-        view; the detection pin unprojects frame pixels with the source size.
-        All of them land on the same stage point, whatever the shape of the
-        window or of the frame's pixels.
+        The renderer draws a point into the rect, and the pointer is read back
+        through the same view; the detection pin unprojects frame pixels with
+        the source size. All of them land on the same stage point, whatever
+        the shape of the window.
         """
-        app = _letterboxed_app(canvas, source, par)
+        app = _letterboxed_app(canvas, source)
         app._config.grid.z_offset = 0.5  # a raised stage: every reader must use its plane
         x0, y0, w, h = rect
-        aspect = _view(app).pixel_aspect
-        drawn = _drawn_at(app, rect, 2.0, 3.0, aspect=aspect)
-        via_mouse = _dragged_to(app, rect, drawn, aspect=aspect)
+        drawn = _drawn_at(app, rect, 2.0, 3.0)
+        via_mouse = _dragged_to(app, rect, drawn)
         assert via_mouse[0] == pytest.approx(2.0, abs=1e-6)
         assert via_mouse[1] == pytest.approx(3.0, abs=1e-6)
         # The same pixel in the frame's own resolution, as the detection pin
@@ -1476,85 +1462,15 @@ class TestLetterboxedVideo:
         assert handler.on_pointer_down(x0 + 500.0, y0 + h + 6.0, 1) is False
         assert handler.on_pointer_down(x0 + 500.0, y0 + h - 6.0, 1) is True
 
-    def test_a_frame_of_non_square_pixels_is_read_where_it_is_drawn(self) -> None:
-        app = _letterboxed_app((1000, 1000), _D1, _D1_PAR)
-        view = _view(app)
-        assert tuple(view.rect) == _LETTERBOX_D1
-        app._config.marker.ground_circle = False  # the touch radius alone decides
-        # Near the bottom of the picture, where the stretch moves a point most.
-        app._server.get_marker(1).set_pos(2.0, -4.0, 0.0)
-        drawn = _ground_center_in(app, _LETTERBOX_D1, aspect=view.pixel_aspect)
-        unstretched = _ground_center_in(app, _LETTERBOX_D1)
-        assert math.hypot(drawn[0] - unstretched[0], drawn[1] - unstretched[1]) > _MIN_GRAB_PX
-        handler = MouseHandler(app)
-        assert handler.on_pointer_down(*unstretched, 1) is False
-        assert handler.on_pointer_down(*drawn, 1) is True
-
-    def test_non_square_pixels_and_a_lens_read_back_the_drawn_point(self) -> None:
-        app = _letterboxed_app((1000, 1000), _D1, _D1_PAR)
-        app._config.camera.lens_k1 = -0.15
-        aspect = _view(app).pixel_aspect
-        drawn = _drawn_at(app, _LETTERBOX_D1, 6.0, 2.0, aspect=aspect)
-        via_mouse = _dragged_to(app, _LETTERBOX_D1, drawn, aspect=aspect)
-        assert via_mouse[0] == pytest.approx(6.0, abs=1e-6)
-        assert via_mouse[1] == pytest.approx(2.0, abs=1e-6)
-
-
-# A 4:3 Media Gallery picture boxed into 16:9 caps: its shape is in the pixel aspect alone.
-_GALLERY_4_3, _GALLERY_4_3_PAR = (1920, 1080), (3, 4)
-_WHOLE_1080 = (0, 0, 1920, 1080)
-
 
 class TestTheSceneFollowsTheActiveDisplay:
-    """The GL Operator Screen fits the stored frame at square pixels, gtksink the
-    frame's display size; the HUD, the mouse and the control frame read the one
-    the screen shows."""
+    """The HUD, the mouse and the control frame read the box of the display the screen shows."""
 
-    @pytest.mark.parametrize(
-        ("source", "par", "gl", "rect", "aspect"),
-        [
-            (_GALLERY_4_3, _GALLERY_4_3_PAR, True, _WHOLE_1080, 1.0),
-            (_GALLERY_4_3, _GALLERY_4_3_PAR, False, _PILLARBOX_4_3, 0.75),
-            ((640, 480), (1, 1), True, _PILLARBOX_4_3, 1.0),
-            ((640, 480), (1, 1), False, _PILLARBOX_4_3, 1.0),
-        ],
-        ids=["gl-gallery", "gtksink-gallery", "gl-square-4:3", "gtksink-square-4:3"],
-    )
-    def test_the_view_is_the_active_display_s(
-        self,
-        source: tuple[int, int],
-        par: tuple[int, int],
-        gl: bool,
-        rect: tuple[int, int, int, int],
-        aspect: float,
-    ) -> None:
+    @pytest.mark.parametrize("gl", [True, False], ids=["gl", "gtksink"])
+    def test_the_view_is_the_active_display_s(self, gl: bool) -> None:
         app = _DummyApp()
-        _draw(app, (1920, 1080), source, par, gl=gl)
-        view = _view(app)
-        assert (tuple(view.rect), view.pixel_aspect) == (rect, aspect)
-
-    def test_a_grab_lands_on_the_ring_the_active_display_shows(self) -> None:
-        on_gl, on_gtksink = _DummyApp(), _DummyApp()
-        _draw(on_gl, (1920, 1080), _GALLERY_4_3, _GALLERY_4_3_PAR, gl=True)
-        _draw(on_gtksink, (1920, 1080), _GALLERY_4_3, _GALLERY_4_3_PAR)
-        for app in (on_gl, on_gtksink):
-            app._server.get_marker(1).set_pos(5.0, 2.0, 0.0)  # off centre, where the two views part
-        gl_ring = _ground_center_in(on_gl, _WHOLE_1080)
-        gtksink_ring = _ground_center_in(on_gtksink, _PILLARBOX_4_3, aspect=0.75)
-        assert math.hypot(gl_ring[0] - gtksink_ring[0], gl_ring[1] - gtksink_ring[1]) > 2 * _MIN_GRAB_PX
-        assert MouseHandler(on_gl).on_pointer_down(*gl_ring, 1) is True
-        assert MouseHandler(on_gl).on_pointer_down(*gtksink_ring, 1) is False
-        assert MouseHandler(on_gtksink).on_pointer_down(*gtksink_ring, 1) is True
-        assert MouseHandler(on_gtksink).on_pointer_down(*gl_ring, 1) is False
-
-    def test_on_gl_a_drag_unprojects_on_the_whole_stretched_picture(self) -> None:
-        app = _DummyApp()
-        _draw(app, (1920, 1080), _GALLERY_4_3, _GALLERY_4_3_PAR, gl=True)
-        # Inside gtksink's bar, but on the picture GL shows.
-        drawn = _drawn_at(app, _WHOLE_1080, -6.0, 2.0)
-        assert drawn[0] < _PILLARBOX_4_3[0]
-        via_mouse = _dragged_to(app, _WHOLE_1080, drawn)
-        assert via_mouse == pytest.approx((-6.0, 2.0), abs=1e-6)
+        _draw(app, (1920, 1080), (640, 480), gl=gl)
+        assert tuple(_view(app)) == _PILLARBOX_4_3
 
 
 class TestDecentredStrongLens:

@@ -18,7 +18,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from openfollow.logging_setup import ThrottledExceptionLogger
-from openfollow.runtime.overlay_layout import PictureGeometry, SceneView, scene_view
+from openfollow.runtime.overlay_layout import PictureGeometry, VideoRect, video_rect
 from openfollow.video import gl_display
 
 if TYPE_CHECKING:
@@ -44,21 +44,21 @@ def operator_screen_size(app: OpenFollowApp) -> tuple[int, int]:
         return 0, 0
 
 
-def operator_scene_view(app: OpenFollowApp) -> SceneView:
+def operator_scene_view(app: OpenFollowApp) -> VideoRect:
     """Where the scene sits on the Operator Screen: the box the active display letterboxes the picture into.
 
     The last source picture (``picture_geometry``) on the canvas of
     ``operator_screen_size``; the whole canvas before any picture. The GL
-    display fits the stored frame at square pixels, gtksink the frame's display
-    size. Main thread: the frame loop hands it to the renderer, and the mouse
-    and the control frame read the screen through the same view.
+    display rounds its box to whole pixels, gtksink truncates. Main thread: the
+    frame loop hands it to the renderer, and the mouse and the control frame
+    read the screen through the same box.
     """
     width, height = operator_screen_size(app)
     receiver = app._video_receiver
     picture = PictureGeometry() if receiver is None else receiver.picture_geometry
     if getattr(app._canvas, "gl_display_attached", False):
         return gl_display.scene_view(picture.width, picture.height, width, height)
-    return scene_view(width, height, picture.width, picture.height, picture.par)
+    return video_rect(width, height, picture.width, picture.height)
 
 
 # GDK key name → rendercanvas-style key name

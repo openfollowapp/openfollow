@@ -64,7 +64,7 @@ This station's name on a venue's own DNS (`of-1.stage.example.com`). One rule in
 
 ## `.local` name on macOS (`mdns_host.py`)
 
-On macOS the `.local` name is Bonjour's LocalHostName, not the kernel host name (which DHCP often sets): `mdns_host` reads `scutil --get LocalHostName` on a worker thread, bounded, re-read every 10 s (a read that gets no answer keeps the last name), so the frame clock never waits and a request waits only for the first read; the kernel name stays an accepted host.
+On macOS the `.local` name is Bonjour's LocalHostName, not the kernel host name (which DHCP often sets): `mdns_host` reads `scutil --get LocalHostName` once, on a worker thread, bounded, so the frame clock never waits and a request waits only for that read; a rename in System Settings shows after a restart. The kernel name stays an accepted host.
 
 ## `video_input_iface`
 

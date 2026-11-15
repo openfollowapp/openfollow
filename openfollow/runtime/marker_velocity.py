@@ -40,7 +40,7 @@ _STILL_SPEED_MPS = 0.005
 _SAMPLE_GAP_FACTOR = 1.5
 _MAX_SAMPLE_GAP_S = 0.25
 # A sample whose X/Y rate passes this is a repositioning (reset, OSC snap), not
-# motion: twice the fastest speed a lead is built from.
+# motion: twice the fastest speed a prediction is built from.
 REPOSITION_SPEED_MPS = 10.0
 _ZERO: Vec3 = (0.0, 0.0, 0.0)
 

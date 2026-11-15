@@ -1367,9 +1367,10 @@ def test_marker_prediction_ms_not_a_table_is_empty(raw: object) -> None:
     assert AppConfig(controlled_marker_ids=_LED_IDS, marker_prediction_ms=raw).marker_prediction_ms == {}  # type: ignore[arg-type]
 
 
-def test_marker_prediction_ms_keeps_only_controlled_markers() -> None:
-    """Only a controlled marker sends; a lead for any other marker is dropped on load."""
-    assert AppConfig(controlled_marker_ids=[2], marker_prediction_ms={1: 300, 2: 400}).marker_prediction_ms == {2: 400}
+def test_marker_prediction_ms_saves_only_controlled_markers(temp_config_path) -> None:
+    """Only a controlled marker sends, so a marker leaving control drops its prediction on the next save."""
+    save_config(AppConfig(controlled_marker_ids=[2], marker_prediction_ms={1: 300, 2: 400}), str(temp_config_path))
+    assert load_config(str(temp_config_path)).marker_prediction_ms == {2: 400}
 
 
 def test_output_prediction_is_an_experimental_feature_off_by_default() -> None:

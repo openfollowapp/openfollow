@@ -577,7 +577,7 @@ class TestPruneSelectionIds:
     """Direct coverage for ``_prune_selection_ids`` (called from the sync
     receiver thread when a peer's delete tombstones a marker)."""
 
-    def test_a_peer_delete_drops_the_park_and_lead_of_the_deleted_marker(self, tmp_path) -> None:
+    def test_a_peer_delete_drops_the_park_and_prediction_of_the_deleted_marker(self, tmp_path) -> None:
         import tomllib
 
         from openfollow.configuration import save_config
@@ -595,7 +595,7 @@ class TestPruneSelectionIds:
         assert (saved["controlled_marker_ids"], saved["parked_marker_ids"]) == ([1], [1])
         assert saved["marker_prediction_ms"] == {"1": 300}
 
-    def test_a_startup_prune_of_a_tombstoned_marker_drops_its_park_and_lead(self, tmp_path, monkeypatch) -> None:
+    def test_a_startup_prune_of_a_tombstoned_marker_drops_its_park(self, tmp_path, monkeypatch) -> None:
         from openfollow.marker_catalog.catalog import save_catalog as _save
 
         catalog_path = tmp_path / "markers.toml"
@@ -604,23 +604,15 @@ class TestPruneSelectionIds:
         pre.upsert(2, "Doomed", "#222222", updated_at=100.0)
         pre.delete(2)
         _save(pre, str(catalog_path))
-        cfg = AppConfig(
-            controlled_marker_ids=[1, 2],
-            parked_marker_ids=[2, 1],
-            marker_prediction_ms={1: 300, 2: 500},
-            markers_catalog_path=str(catalog_path),
-        )
-        saved: list[object] = []
-        monkeypatch.setattr(
-            "openfollow.app.save_config",
-            lambda c, _p: saved.append((list(c.parked_marker_ids), dict(c.marker_prediction_ms))),
-        )
+        cfg = AppConfig(controlled_marker_ids=[1, 2], parked_marker_ids=[2, 1], markers_catalog_path=str(catalog_path))
+        saved: list[list[int]] = []
+        monkeypatch.setattr("openfollow.app.save_config", lambda c, _p: saved.append(list(c.parked_marker_ids)))
         fake = types.SimpleNamespace(_config=cfg, _config_path=str(tmp_path / "config.toml"))
         _bind(fake, "_marker_catalog_path")
 
         OpenFollowApp._load_or_seed_marker_catalog(fake)  # type: ignore[arg-type]
 
-        assert saved == [([1], {1: 300})]
+        assert saved == [[1]]
 
     def test_save_failure_is_logged_not_raised(
         self,

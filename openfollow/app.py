@@ -29,7 +29,6 @@ from openfollow.configuration import (
     load_config_for_save,
     network_mode_unsaved,
     parked_within,
-    prediction_within,
     restore_empty_config,
     save_config,
 )
@@ -842,7 +841,6 @@ class OpenFollowApp:
                 cfg.controlled_marker_ids = new_controlled
                 cfg.viewer_marker_ids = new_viewer
                 cfg.parked_marker_ids = parked_within(new_controlled, cfg.parked_marker_ids)
-                cfg.marker_prediction_ms = prediction_within(new_controlled, cfg.marker_prediction_ms)
                 save_config(cfg, self._config_path)
             except HeldForRestartError:
                 logger.info(
@@ -958,7 +956,6 @@ class OpenFollowApp:
             self._config.controlled_marker_ids = new_controlled
             self._config.viewer_marker_ids = new_viewer
             self._config.parked_marker_ids = parked_within(new_controlled, self._config.parked_marker_ids)
-            self._config.marker_prediction_ms = prediction_within(new_controlled, self._config.marker_prediction_ms)
             try:
                 save_config(self._config, self._config_path)
             except OSError:

@@ -39,7 +39,7 @@ class OscMarkerAdapter:
     _AXIS_PATTERN_FMT = "/marker/*/{axis}"
     # Park state per address; arguments are ignored, so a press and its release land on one state.
     _PARK_PATTERNS: dict[str, bool] = {"/marker/*/park": True, "/marker/*/unpark": False}
-    _LEAD_PATTERN = "/marker/*/lead"
+    _PREDICTION_PATTERN = "/marker/*/prediction"
 
     # Alias kept for external callers that reference ``PATTERN``.
     PATTERN = _TRIPLE_PATTERN
@@ -67,7 +67,7 @@ class OscMarkerAdapter:
         self._lock = threading.Lock()
         self._pending: dict[int, dict[str, float]] = {}
         self._pending_parks: dict[int, bool] = {}
-        self._pending_leads: dict[int, float] = {}
+        self._pending_predictions: dict[int, float] = {}
         self._started = False
 
     def _all_patterns(self) -> tuple[str, ...]:
@@ -75,7 +75,7 @@ class OscMarkerAdapter:
             self._TRIPLE_PATTERN,
             *(self._AXIS_PATTERN_FMT.format(axis=a) for a in _AXES),
             *self._PARK_PATTERNS,
-            self._LEAD_PATTERN,
+            self._PREDICTION_PATTERN,
         )
 
     def start(self) -> None:
@@ -93,7 +93,7 @@ class OscMarkerAdapter:
             )
         for pattern, parked in self._PARK_PATTERNS.items():
             self._service.subscribe(pattern, functools.partial(self._handle_park, parked))
-        self._service.subscribe(self._LEAD_PATTERN, self._handle_lead)
+        self._service.subscribe(self._PREDICTION_PATTERN, self._handle_prediction)
         try:
             self._service.start_listener(
                 self._port,
@@ -138,12 +138,12 @@ class OscMarkerAdapter:
             self._pending_parks.clear()
         return parks
 
-    def flush_leads(self) -> dict[int, float]:
-        """Return the latest lead in ms per marker and clear them."""
+    def flush_predictions(self) -> dict[int, float]:
+        """Return the latest prediction in ms per marker and clear them."""
         with self._lock:
-            leads = dict(self._pending_leads)
-            self._pending_leads.clear()
-        return leads
+            predictions = dict(self._pending_predictions)
+            self._pending_predictions.clear()
+        return predictions
 
     @property
     def port(self) -> int:
@@ -229,9 +229,9 @@ class OscMarkerAdapter:
             self._pending_parks[marker_id] = parked
         logger.debug("OSC → marker %d %s", marker_id, parts[2])
 
-    def _handle_lead(self, address: str, *args: Any) -> None:
+    def _handle_prediction(self, address: str, *args: Any) -> None:
         parts = address.strip("/").split("/")
-        if len(parts) != 3 or parts[2] != "lead" or len(args) != 1:
+        if len(parts) != 3 or parts[2] != "prediction" or len(args) != 1:
             return
         try:
             marker_id = int(parts[1])
@@ -241,5 +241,5 @@ class OscMarkerAdapter:
         if not math.isfinite(value):
             return
         with self._lock:
-            self._pending_leads[marker_id] = value
-        logger.debug("OSC → marker %d lead=%.0f ms", marker_id, value)
+            self._pending_predictions[marker_id] = value
+        logger.debug("OSC → marker %d prediction=%.0f ms", marker_id, value)

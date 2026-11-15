@@ -411,12 +411,12 @@ class TestRendering:
         manager._tick_once()
         assert svc.calls[0][1] == [2.25]
 
-    def test_a_real_markers_prediction_lead_is_sent(self) -> None:
+    def test_a_real_markers_prediction_offset_is_sent(self) -> None:
         from openfollow.psn.marker import Marker
 
         marker = Marker(1, "T1")
         marker.set_pos(1.0, 2.0, 1.5)
-        marker.set_lead(0.5, -0.25)
+        marker.set_prediction(0.5, -0.25)
         manager, svc = _manager(markers={1: marker})  # type: ignore[dict-item]
         manager.restart(OscTransmittersConfig(transmitters=[_row(marker_id=1, args=["[x]", "[y]", "[z]"])]))
         manager._tick_once()

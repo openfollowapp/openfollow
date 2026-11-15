@@ -4536,8 +4536,8 @@ def test_prediction_horizons_travel_with_export_and_import() -> None:
     assert _apply_import_data(AppConfig(), payload).marker_prediction_ms == {1: 250, 2: 800}
 
 
-def test_a_peer_push_keeps_the_receivers_own_leads() -> None:
-    """The leads belong to this station's marker selection, which a push leaves as it is."""
+def test_a_peer_push_keeps_the_receivers_own_predictions() -> None:
+    """The predictions belong to this station's marker selection, which a push leaves as it is."""
     from openfollow.web.routes import _apply_import_data
 
     source = AppConfig(controlled_marker_ids=[1], marker_prediction_ms={1: 250})
@@ -4545,13 +4545,6 @@ def test_a_peer_push_keeps_the_receivers_own_leads() -> None:
     receiver = AppConfig(controlled_marker_ids=[2], marker_prediction_ms={2: 400})
 
     assert _apply_import_data(receiver, payload, pushed=True).marker_prediction_ms == {2: 400}
-
-
-def test_an_imported_lead_for_a_marker_this_station_does_not_control_is_dropped() -> None:
-    from openfollow.web.routes import _apply_import_data
-
-    payload = {"controlled_marker_ids": [1], "marker_prediction_ms": {"1": 250, "2": 800}}
-    assert _apply_import_data(AppConfig(), payload).marker_prediction_ms == {1: 250}
 
 
 def test_an_import_without_prediction_horizons_keeps_the_current_ones() -> None:

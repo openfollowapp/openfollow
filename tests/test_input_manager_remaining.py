@@ -136,7 +136,7 @@ class _FakeOscHandler:
     instances: list[_FakeOscHandler] = []
     next_updates: dict[int, tuple[float, float, float]] = {}
     next_parks: dict[int, bool] = {}
-    next_leads: dict[int, float] = {}
+    next_predictions: dict[int, float] = {}
 
     def __init__(
         self,
@@ -177,9 +177,9 @@ class _FakeOscHandler:
         parks, _FakeOscHandler.next_parks = _FakeOscHandler.next_parks, {}
         return parks
 
-    def flush_leads(self) -> dict[int, float]:
-        leads, _FakeOscHandler.next_leads = _FakeOscHandler.next_leads, {}
-        return leads
+    def flush_predictions(self) -> dict[int, float]:
+        predictions, _FakeOscHandler.next_predictions = _FakeOscHandler.next_predictions, {}
+        return predictions
 
 
 class _FakePathOscAdapter:
@@ -293,7 +293,7 @@ def _patch_handlers(monkeypatch: pytest.MonkeyPatch) -> None:
     _FakeOscHandler.instances = []
     _FakeOscHandler.next_updates = {}
     _FakeOscHandler.next_parks = {}
-    _FakeOscHandler.next_leads = {}
+    _FakeOscHandler.next_predictions = {}
     _FakeOperatorMessageAdapter.instances = []
     _FakeKeyboardHandler.next_velocity = None
     _FakeGamepadHandler.next_update = GamepadUpdate()
@@ -502,7 +502,7 @@ class TestOscPark:
         assert "Failed to save the parked markers." in caplog.text
 
 
-class TestOscLead:
+class TestOscPrediction:
     @pytest.fixture
     def app(self, tmp_path) -> _DummyApp:  # noqa: ANN001
         app = _DummyApp(osc_enabled=True)
@@ -511,32 +511,42 @@ class TestOscLead:
         save_config(app._config, app._config_path)
         return app
 
-    def test_a_lead_applies_live_and_in_the_file_and_zero_removes_it(self, app: _DummyApp) -> None:
+    def test_a_prediction_applies_live_and_in_the_file_and_zero_removes_it(self, app: _DummyApp) -> None:
         manager = InputManager(app)
-        _FakeOscHandler.next_leads = {10: 400.0, 11: 1500.0, 99: 300.0}
+        _FakeOscHandler.next_predictions = {10: 400.0, 11: 1500.0, 99: 300.0}
         manager.update(0.016)
         assert app._config.marker_prediction_ms == {10: 400, 11: 1000}
         assert load_config(app._config_path).marker_prediction_ms == {10: 400, 11: 1000}
-        _FakeOscHandler.next_leads = {10: 0.0}
+        _FakeOscHandler.next_predictions = {10: 0.0}
         manager.update(0.016)
         assert load_config(app._config_path).marker_prediction_ms == {11: 1000}
 
-    def test_a_lead_saved_by_the_web_ui_the_running_config_has_not_seen_survives(self, app: _DummyApp) -> None:
+    def test_a_prediction_saved_by_the_web_ui_the_running_config_has_not_seen_survives(self, app: _DummyApp) -> None:
         on_disk = load_config(app._config_path)
         on_disk.marker_prediction_ms = {11: 250}
         save_config(on_disk, app._config_path)
         manager = InputManager(app)
-        _FakeOscHandler.next_leads = {10: 400.0}
+        _FakeOscHandler.next_predictions = {10: 400.0}
         manager.update(0.016)
         assert load_config(app._config_path).marker_prediction_ms == {10: 400, 11: 250}
 
-    def test_a_lead_for_a_marker_this_station_does_not_control_writes_nothing(self, app: _DummyApp) -> None:
+    def test_a_prediction_for_a_marker_this_station_does_not_control_writes_nothing(self, app: _DummyApp) -> None:
         before = Path(app._config_path).read_bytes()
         manager = InputManager(app)
-        _FakeOscHandler.next_leads = {99: 300.0}
+        _FakeOscHandler.next_predictions = {99: 300.0}
         manager.update(0.016)
         assert app._config.marker_prediction_ms == {}
         assert Path(app._config_path).read_bytes() == before
+
+    def test_an_unreadable_file_keeps_the_prediction_live_and_is_left_alone(self, app: _DummyApp, caplog) -> None:  # noqa: ANN001
+        Path(app._config_path).write_text("not [[ toml", encoding="utf-8")
+        manager = InputManager(app)
+        _FakeOscHandler.next_predictions = {10: 400.0}
+        with caplog.at_level("ERROR"):
+            manager.update(0.016)
+        assert app._config.marker_prediction_ms == {10: 400}
+        assert Path(app._config_path).read_text(encoding="utf-8") == "not [[ toml"
+        assert "Failed to save the marker predictions." in caplog.text
 
 
 class TestParkedKeyboard:

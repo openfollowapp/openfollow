@@ -19,12 +19,12 @@ from openfollow.configuration import (
     _apply_with_fallback,
     feature_gated,
     feature_on,
-    leads_applied,
     park_changes_applied,
     parked_within,
+    predictions_applied,
     save_config_fields,
-    save_lead_changes,
     save_park_changes,
+    save_prediction_changes,
 )
 from openfollow.input.control_frame import ControlFrame
 from openfollow.input.controller_identity import port_label, usb_host_paths
@@ -454,7 +454,7 @@ class InputManager:
         if self.osc_handler is not None:
             try:
                 self._apply_osc_parks(self.osc_handler.flush_parks())
-                self._apply_osc_leads(self.osc_handler.flush_leads())
+                self._apply_osc_predictions(self.osc_handler.flush_predictions())
             except Exception:
                 self._osc_apply_err_log.log()
 
@@ -606,17 +606,17 @@ class InputManager:
         except Exception:
             logger.exception("Failed to save the parked markers.")
 
-    def _apply_osc_leads(self, leads: dict[int, float]) -> None:
-        """Set controlled markers' leads from OSC, live and in the file; others are ignored."""
-        leads = {mid: ms for mid, ms in leads.items() if mid in self.app._controlled_ids}
-        if not leads:
+    def _apply_osc_predictions(self, predictions: dict[int, float]) -> None:
+        """Set controlled markers' predictions from OSC, live and in the file; others are ignored."""
+        predictions = {mid: ms for mid, ms in predictions.items() if mid in self.app._controlled_ids}
+        if not predictions:
             return
         config = self.app._config
-        config.marker_prediction_ms = leads_applied(self.app._controlled_ids, config.marker_prediction_ms, leads)
+        config.marker_prediction_ms = predictions_applied(config.marker_prediction_ms, predictions)
         try:
-            save_lead_changes(config, self.app._config_path, leads)
+            save_prediction_changes(config, self.app._config_path, predictions)
         except Exception:
-            logger.exception("Failed to save the marker leads.")
+            logger.exception("Failed to save the marker predictions.")
 
     def _apply_osc_position(self, marker_id: int, axes: dict[str, float], paths: PathEngine | None) -> None:
         if marker_id not in self.app._controlled_ids or holds(self.app, marker_id):

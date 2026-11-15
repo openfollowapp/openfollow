@@ -460,43 +460,43 @@ def test_real_udp_park_round_trip() -> None:
         svc.shutdown()
 
 
-# Lead
+# Prediction
 
 
 @pytest.mark.parametrize(("arg", "expected"), [(400, 400.0), (250.5, 250.5), ("300", 300.0)])
-def test_the_latest_lead_per_marker_is_queued(arg: Any, expected: float) -> None:
+def test_the_latest_prediction_per_marker_is_queued(arg: Any, expected: float) -> None:
     a = _adapter()
-    a._handle_lead("/marker/2/lead", 10)
-    a._handle_lead("/marker/2/lead", arg)
-    assert a.flush_leads() == {2: expected}
-    assert a.flush_leads() == {}
+    a._handle_prediction("/marker/2/prediction", 10)
+    a._handle_prediction("/marker/2/prediction", arg)
+    assert a.flush_predictions() == {2: expected}
+    assert a.flush_predictions() == {}
 
 
 @pytest.mark.parametrize(
     ("address", "args"),
     [
-        ("/marker/x/lead", (100,)),
-        ("/marker/2/lead/now", (100,)),
-        ("/marker/2/lead", ()),
-        ("/marker/2/lead", (100, 200)),
-        ("/marker/2/lead", ("abc",)),
-        ("/marker/2/lead", (None,)),
-        ("/marker/2/lead", (float("nan"),)),
-        ("/marker/2/lead", (float("inf"),)),
+        ("/marker/x/prediction", (100,)),
+        ("/marker/2/prediction/now", (100,)),
+        ("/marker/2/prediction", ()),
+        ("/marker/2/prediction", (100, 200)),
+        ("/marker/2/prediction", ("abc",)),
+        ("/marker/2/prediction", (None,)),
+        ("/marker/2/prediction", (float("nan"),)),
+        ("/marker/2/prediction", (float("inf"),)),
     ],
 )
-def test_a_malformed_lead_is_dropped(address: str, args: tuple[Any, ...]) -> None:
+def test_a_malformed_prediction_is_dropped(address: str, args: tuple[Any, ...]) -> None:
     a = _adapter()
-    a._handle_lead(address, *args)
-    assert a.flush_leads() == {}
+    a._handle_prediction(address, *args)
+    assert a.flush_predictions() == {}
 
 
 @pytest.mark.skipif(not _PYTHONOSC_AVAILABLE, reason="python-osc not installed")
-def test_start_subscribes_lead_and_stop_drops_it() -> None:
+def test_start_subscribes_prediction_and_stop_drops_it() -> None:
     svc = OscService()
     a, _ = _listening_adapter(svc)
     try:
-        assert "/marker/*/lead" in svc._subscriptions
+        assert "/marker/*/prediction" in svc._subscriptions
     finally:
         a.stop()
-    assert "/marker/*/lead" not in svc._subscriptions
+    assert "/marker/*/prediction" not in svc._subscriptions

@@ -257,7 +257,7 @@ class TestCatalogEndpoints:
         status, _ = _request(base, "/api/markers/catalog/2", method="DELETE")
         assert status == 200
         cfg = load_config(cfg_path)
-        # Deleted id pruned from both selection lists and the leads; the survivor stays, viewed.
+        # Deleted id pruned from both selection lists and the predictions; the survivor stays, viewed.
         assert cfg.controlled_marker_ids == [1]
         assert cfg.viewer_marker_ids == [1]
         assert cfg.marker_prediction_ms == {}
@@ -1015,7 +1015,7 @@ class TestResolveMarkerCatalogPath:
 
 
 class TestPredictionEndpoint:
-    """The catalog table's Lead (ms) column: one controlled marker's output prediction horizon."""
+    """The catalog table's Prediction (ms) column: one controlled marker's output prediction horizon."""
 
     @staticmethod
     def _control(base: str, catalog: MarkerCatalog, *ids: int) -> None:
@@ -1026,7 +1026,7 @@ class TestPredictionEndpoint:
         )
         assert status == 200
 
-    def test_a_lead_is_saved_and_listed_by_the_catalog(self, live_server) -> None:
+    def test_a_prediction_is_saved_and_listed_by_the_catalog(self, live_server) -> None:
         _, base, cfg_path, catalog, _ = live_server
         self._control(base, catalog, 1, 2)
         status, _ = _request(base, "/api/markers/prediction/2", method="PUT", body={"horizon_ms": 450})
@@ -1035,7 +1035,7 @@ class TestPredictionEndpoint:
         _, body = _request(base, "/api/markers/catalog")
         assert json.loads(body)["this_station"]["prediction_ms"] == {"2": 450}
 
-    def test_zero_removes_the_lead(self, live_server) -> None:
+    def test_zero_removes_the_prediction(self, live_server) -> None:
         _, base, cfg_path, catalog, _ = live_server
         self._control(base, catalog, 1)
         _request(base, "/api/markers/prediction/1", method="PUT", body={"horizon_ms": 300})
@@ -1044,7 +1044,7 @@ class TestPredictionEndpoint:
         assert load_config(cfg_path).marker_prediction_ms == {}
 
     @pytest.mark.parametrize("horizon", [-1, 1001, 99999])
-    def test_an_out_of_range_lead_is_refused(self, live_server, horizon: int) -> None:
+    def test_an_out_of_range_prediction_is_refused(self, live_server, horizon: int) -> None:
         _, base, cfg_path, catalog, _ = live_server
         self._control(base, catalog, 1)
         status, body = _request(base, "/api/markers/prediction/1", method="PUT", body={"horizon_ms": horizon})
@@ -1053,7 +1053,7 @@ class TestPredictionEndpoint:
         assert load_config(cfg_path).marker_prediction_ms == {}
 
     @pytest.mark.parametrize("horizon", [None, "abc", "300", True, 12.5, [300]])
-    def test_a_wrong_type_lead_is_refused(self, live_server, horizon: object) -> None:
+    def test_a_wrong_type_prediction_is_refused(self, live_server, horizon: object) -> None:
         _, base, cfg_path, catalog, _ = live_server
         self._control(base, catalog, 1)
         status, _ = _request(base, "/api/markers/prediction/1", method="PUT", body={"horizon_ms": horizon})
@@ -1074,8 +1074,8 @@ class TestPredictionEndpoint:
         assert status == 409
         assert load_config(cfg_path).marker_prediction_ms == {}
 
-    def test_leaving_view_and_control_drops_the_lead(self, live_server) -> None:
-        """A dropped lead cannot come back unseen when the marker is controlled again."""
+    def test_leaving_view_and_control_drops_the_prediction(self, live_server) -> None:
+        """A dropped prediction cannot come back unseen when the marker is controlled again."""
         _, base, cfg_path, catalog, _ = live_server
         self._control(base, catalog, 1, 2)
         _request(base, "/api/markers/prediction/1", method="PUT", body={"horizon_ms": 300})

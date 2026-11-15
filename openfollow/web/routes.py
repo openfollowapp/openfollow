@@ -105,7 +105,7 @@ from openfollow.configuration import (
     path_name_from,
     plane_pin_key,
     plane_pins,
-    prediction_within,
+    predictions_applied,
     reconcile_simple_corners,
     save_config,
     stage_config,
@@ -2797,11 +2797,6 @@ def _mouse3d_status_view(server: ConfigWebServer) -> dict[str, Any]:
     return dict(server.get_runtime_stats().get("mouse3d") or {})
 
 
-def _prediction_json(cfg: AppConfig) -> dict[str, int]:
-    """This station's output prediction horizons for the catalog table, JSON-keyed."""
-    return {str(mid): ms for mid, ms in cfg.marker_prediction_ms.items()}
-
-
 def _controller_slots_view(server: ConfigWebServer) -> dict[str, Any]:
     """The Controller Slots snapshot with each slot's marker named and coloured as its HUD card is:
     the catalog entry, or ``Marker <id>`` in the palette colour while the catalog has none."""
@@ -3543,7 +3538,7 @@ _STARTUP_ONLY_FIELDS = ("update_include_prereleases", "auto_update_check", "auto
 def _apply_file_import_data(cfg: AppConfig, data: dict[str, Any]) -> None:
     """Apply what a file import restores and a push leaves as it is.
 
-    That is this station's own setup: its marker selection and leads, detection masks, the
+    That is this station's own setup: its marker selection and predictions, detection masks, the
     fields of every video input rather than only the running one's, its 3D Mouse,
     operator messages, MIDI patches, virtual faders, gamepad mapping and whether it
     draws paths, and the settings read at startup (network backend, update and
@@ -3556,7 +3551,6 @@ def _apply_file_import_data(cfg: AppConfig, data: dict[str, Any]) -> None:
     cfg.parked_marker_ids = parked_within(cfg.controlled_marker_ids, cfg.parked_marker_ids)
     if "marker_prediction_ms" in data:
         cfg.marker_prediction_ms = coerce_marker_prediction_ms(data["marker_prediction_ms"])
-    cfg.marker_prediction_ms = prediction_within(cfg.controlled_marker_ids, cfg.marker_prediction_ms)
 
     from openfollow.video.inputs import get_registry
 
@@ -3682,6 +3676,7 @@ def _apply_import_data(current_cfg: AppConfig, data: dict[str, Any], *, pushed: 
         cfg.window_width = _as_int(data["window_width"], cfg.window_width)
     if "window_height" in data:
         cfg.window_height = _as_int(data["window_height"], cfg.window_height)
+
     if not pushed:
         _apply_file_import_data(cfg, data)
 
@@ -4880,7 +4875,7 @@ def _register_marker_catalog_routes(
                         "controlled_ids": list(cfg.controlled_marker_ids),
                         "viewer_ids": list(cfg.viewer_marker_ids),
                         "parked_ids": list(cfg.parked_marker_ids),
-                        "prediction_ms": _prediction_json(cfg),
+                        "prediction_ms": {str(mid): ms for mid, ms in cfg.marker_prediction_ms.items()},
                     },
                 }
             )
@@ -4909,7 +4904,7 @@ def _register_marker_catalog_routes(
                     "controlled_ids": list(cfg.controlled_marker_ids),
                     "viewer_ids": list(cfg.viewer_marker_ids),
                     "parked_ids": list(cfg.parked_marker_ids),
-                    "prediction_ms": _prediction_json(cfg),
+                    "prediction_ms": {str(mid): ms for mid, ms in cfg.marker_prediction_ms.items()},
                 },
                 "next_free_id": catalog.next_free_id(),
             }
@@ -5053,7 +5048,6 @@ def _register_marker_catalog_routes(
                     fresh.controlled_marker_ids = new_controlled
                     fresh.viewer_marker_ids = new_viewer
                     fresh.parked_marker_ids = parked_within(new_controlled, fresh.parked_marker_ids)
-                    fresh.marker_prediction_ms = prediction_within(new_controlled, fresh.marker_prediction_ms)
                     save_config(fresh, server.config_path)
             except OSError:
                 logger.exception(
@@ -5076,16 +5070,13 @@ def _register_marker_catalog_routes(
         horizon = data.get("horizon_ms") if isinstance(data, dict) else None
         if isinstance(horizon, bool) or not isinstance(horizon, int) or not 0 <= horizon <= PREDICTION_HORIZON_MAX_MS:
             response.status = 400
-            return json.dumps({"error": f"Lead must be a whole number from 0 to {PREDICTION_HORIZON_MAX_MS} ms."})
+            return json.dumps({"error": f"Prediction must be a whole number from 0 to {PREDICTION_HORIZON_MAX_MS} ms."})
         with _config_write_lock:
             cfg = _config_for_save(server)
             if marker_id not in cfg.controlled_marker_ids:
                 response.status = 409
                 return json.dumps({"error": "This station does not control that marker."})
-            horizons = {mid: ms for mid, ms in cfg.marker_prediction_ms.items() if mid != marker_id}
-            if horizon:
-                horizons[marker_id] = horizon
-            cfg.marker_prediction_ms = horizons
+            cfg.marker_prediction_ms = predictions_applied(cfg.marker_prediction_ms, {marker_id: horizon})
             save_config(cfg, server.config_path)
         return json.dumps({"success": True})
 
@@ -5169,7 +5160,6 @@ def _register_marker_catalog_routes(
             cfg.parked_marker_ids = parked_within(
                 cfg.controlled_marker_ids, park_changes_applied(cfg.parked_marker_ids, park)
             )
-            cfg.marker_prediction_ms = prediction_within(cfg.controlled_marker_ids, cfg.marker_prediction_ms)
             save_config(cfg, server.config_path)
         return json.dumps({"success": True})
 

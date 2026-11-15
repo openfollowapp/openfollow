@@ -514,14 +514,13 @@ class TestCoreMLModelCache:
         half_written.write_bytes(b"truncated")
         return model, half_written
 
-    def test_failed_cached_build_retries_into_an_empty_cache(
+    def test_failed_cached_build_drops_the_cache_and_builds_uncached(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        # The half-written compile fails the load rather than recompiling; one
-        # compile into the emptied cache repairs it.
+        # The half-written compile fails the load; dropped, the next start compiles a clean copy.
         model, half_written = self._half_written_compile(monkeypatch, tmp_path)
         calls: list[dict[str, Any]] = []
         corrupt = RuntimeError("Failed to create MLModel, error: Unable to load model")
@@ -532,32 +531,10 @@ class TestCoreMLModelCache:
             backend = _OnnxBackend(str(model), cache_root=tmp_path / "cache")
 
         assert backend.model_input_size == 320
-        assert _cached(calls) == [True, True]
-        assert _coreml_cache_of(calls[0]) == _coreml_cache_of(calls[1])
+        assert _cached(calls) == [True, False]
         assert not half_written.exists()
-        assert any("CoreML model cache" in r.getMessage() for r in caplog.records)
-
-    def test_emptied_cache_failing_again_builds_uncached_and_drops_it(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        model, _ = self._half_written_compile(monkeypatch, tmp_path)
-        calls: list[dict[str, Any]] = []
-        refused = RuntimeError("Failed to create MLModel, error: Unable to load model")
-        factory = _recording_session_factory(calls, cached_failures=(refused, refused))
-        _install_fake_onnxruntime(monkeypatch, factory, _COREML_HOST)
-
-        with caplog.at_level(logging.WARNING, logger="openfollow.video.detection"):
-            backend = _OnnxBackend(str(model), cache_root=tmp_path / "cache")
-
-        assert backend.model_input_size == 320
-        assert _cached(calls) == [True, True, False]
-        assert calls[2]["providers"] == _COREML_HOST
-        # Dropped, so the next build compiles a clean copy.
         assert not _coreml_cache_of(calls[0]).exists()
-        assert sum("CoreML model cache" in r.getMessage() for r in caplog.records) == 2
+        assert any("CoreML model cache" in r.getMessage() for r in caplog.records)
 
     def test_failed_cold_compile_builds_uncached_without_a_retry(
         self,

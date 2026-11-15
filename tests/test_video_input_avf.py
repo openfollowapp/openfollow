@@ -349,13 +349,14 @@ class TestDiscoverAvfDevices:
                 _FakeDevice(props={"device.api": "avf", "avf.unique_id": "A"}, display_name="Capture\u202e Card\n"),
                 _FakeDevice(props={"device.api": "avf", "avf.unique_id": "B"}, display_name="C" * 1000),
                 _FakeDevice(props={"device.api": "avf", "avf.unique_id": "C"}, display_name="\u200e"),
+                _FakeDevice(props={"device.api": "avf", "avf.unique_id": "D"}, display_name=None),  # type: ignore[arg-type]
             ]
         )
         with patch("gi.repository.Gst", fake):
             names = [dev["name"] for dev in avf_module._list_avf_devices()]
 
-        assert names == ["Capture Card", "C" * AVF_DEVICE_NAME_MAX_LEN, "C"]
-        assert avf_module._camera_names == dict(zip("ABC", names, strict=True))
+        assert names == ["Capture Card", "C" * AVF_DEVICE_NAME_MAX_LEN, "C", "D"]
+        assert avf_module._camera_names == dict(zip("ABCD", names, strict=True))
 
     @pytest.mark.parametrize(
         "listed",

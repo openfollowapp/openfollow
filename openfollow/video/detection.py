@@ -284,9 +284,8 @@ def remove_coreml_compiles(cache_root: Path, model_name: str) -> None:
             logger.warning("Could not remove the CoreML model cache %s: %s", entry, exc)
 
 
-def _coreml_cache_dir(cache_root: Path, model_path: str, runtime_version: str) -> tuple[Path, bool] | None:
-    """The compiled-CoreML cache for one model file and whether it already holds a
-    compile, or ``None`` when there is none to use.
+def _coreml_cache_dir(cache_root: Path, model_path: str, runtime_version: str) -> Path | None:
+    """The compiled-CoreML cache for one model file, or ``None`` when there is none to use.
 
     onnxruntime keys its cache by the model path alone and never invalidates it,
     so a replaced file or an updated onnxruntime would load the old compile. The
@@ -302,16 +301,13 @@ def _coreml_cache_dir(cache_root: Path, model_path: str, runtime_version: str) -
     name = Path(model_path).name
     cache_dir = cache_root / "coreml" / f"{Path(name).stem}-{digest}"
     try:
-        if cache_dir.is_dir():
-            holds_compile = any(cache_dir.iterdir())
-        else:
-            holds_compile = False
+        if not cache_dir.is_dir():
             remove_coreml_compiles(cache_root, name)
             cache_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         logger.warning("CoreML model cache unavailable at %s (%s); compiling %s without it", cache_dir, exc, name)
         return None
-    return cache_dir, holds_compile
+    return cache_dir
 
 
 class _OnnxBackend:
@@ -373,32 +369,23 @@ class _OnnxBackend:
         model_path: str,
         session_options: Any,
         providers: list[str],
-        cache: tuple[Path, bool] | None,
+        cache: Path | None,
     ) -> Any:
         if cache is not None:
-            cache_dir, holds_compile = cache
-            options = [{"ModelCacheDirectory": str(cache_dir)} if p == _COREML_PROVIDER else {} for p in providers]
-            # A half-written compile fails the load rather than being recompiled, so a cache that
-            # held one is emptied and tried once more; a failed cold compile would only fail again.
-            next_steps = ["building without it"]
-            if holds_compile:
-                next_steps.insert(0, "retrying with an empty cache")
-            for next_step in next_steps:
-                try:
-                    return ort.InferenceSession(
-                        model_path,
-                        sess_options=session_options,
-                        providers=providers,
-                        provider_options=options,
-                    )
-                except Exception as exc:
-                    shutil.rmtree(cache_dir, ignore_errors=True)
-                    logger.warning(
-                        "Loading %s through the CoreML model cache failed (%s); %s",
-                        model_path,
-                        exc,
-                        next_step,
-                    )
+            options = [{"ModelCacheDirectory": str(cache)} if p == _COREML_PROVIDER else {} for p in providers]
+            try:
+                return ort.InferenceSession(
+                    model_path,
+                    sess_options=session_options,
+                    providers=providers,
+                    provider_options=options,
+                )
+            except Exception as exc:
+                # A half-written compile fails the load; emptied, the next start compiles afresh.
+                shutil.rmtree(cache, ignore_errors=True)
+                logger.warning(
+                    "Loading %s through the CoreML model cache failed (%s); building without it", model_path, exc
+                )
         return ort.InferenceSession(
             model_path,
             sess_options=session_options,

@@ -122,6 +122,9 @@ poetry run pyinstaller --noconfirm --clean \
 
 # Homebrew bottles target the build host's macOS. A library needing a newer one
 # than the Info.plist declares makes the app quit at launch on an older Mac.
+echo "==> Writing the Third-Party Notices and written offer from the bundle"
+poetry run python "$SCRIPT_DIR/bundle_notices.py" --app "$APP" --workdir "$REPO/build/openfollow" --version "$VERSION"
+
 echo "==> Checking the declared macOS minimum"
 poetry run python "$SCRIPT_DIR/check_macos_minimum.py" "$APP"
 

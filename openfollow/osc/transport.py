@@ -108,10 +108,6 @@ def _length_prefix_encode(payload: bytes) -> bytes:
     return len(payload).to_bytes(4, "big") + payload
 
 
-class TcpBackoffError(OSError):
-    """A send dropped inside the post-failure backoff window, without touching the OS."""
-
-
 class TcpOscSender:
     """Connection-oriented OSC sender for one ``(host, port)`` target.
 
@@ -184,7 +180,7 @@ class TcpOscSender:
             if self._sock is None:
                 now = _now()
                 if now < self._next_attempt_at:
-                    raise TcpBackoffError(
+                    raise OSError(
                         f"TCP {self._host}:{self._port} in backoff window",
                     )
                 self._open()

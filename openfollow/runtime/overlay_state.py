@@ -17,7 +17,7 @@ from openfollow.configuration import (
     _GRID_THICKNESS_DEFAULT,
     _GRID_TRANSPARENCY_DEFAULT,
 )
-from openfollow.runtime.overlay_layout import SceneView
+from openfollow.runtime.overlay_layout import VideoRect
 from openfollow.units import UnitSystem
 
 if TYPE_CHECKING:
@@ -141,7 +141,7 @@ class OverlayState:
     camera_params: npt.NDArray[Any] | None = None
     # Where the scene sits on the canvas, worked out on the main thread
     # (window.operator_scene_view); None draws it on the whole canvas.
-    scene_view: SceneView | None = None
+    scene_view: VideoRect | None = None
     # The lens the overlay is bowed to match (openfollow.lens_model): the pair and
     # the lens centre. A 0 pair draws straight lines; a centre alone shifts them.
     lens_k1: float = 0.0
@@ -336,11 +336,6 @@ class OverlayState:
     ] = field(default_factory=list)
     # Where a locked marker can turn at a nearby junction: a short (tail, tip) stretch along each way.
     path_arrows: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = field(default_factory=list)
-
-    @property
-    def pixel_aspect(self) -> float:
-        """How much wider than tall one frame pixel is drawn; 1.0 when square."""
-        return 1.0 if self.scene_view is None else self.scene_view.pixel_aspect
 
     @property
     def lens(self) -> tuple[float, float, float, float]:

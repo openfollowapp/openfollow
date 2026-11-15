@@ -141,7 +141,7 @@ def test_cache_dir_clears_a_compile_cut_short(tmp_path: Path) -> None:
     cache_dir.mkdir(parents=True)
     (cache_dir / "compiled_model.mlmodelc").write_bytes(b"truncated")
 
-    assert _coreml_cache_dir(tmp_path / "cache", str(model), _VERSION) == (cache_dir, False)
+    assert _coreml_cache_dir(tmp_path / "cache", str(model), _VERSION) == cache_dir
     assert list(cache_dir.iterdir()) == []
 
 

@@ -31,7 +31,6 @@ from openfollow.runtime.overlay_draw_scene import (
     draw_origin,
     project,
 )
-from openfollow.runtime.overlay_layout import scene_view
 from openfollow.runtime.overlay_state import MarkerOverlayData, OverlayState
 from openfollow.scene.solver import CONE_RING_SEGMENTS
 from openfollow.video.detection import DetectionBox
@@ -158,7 +157,7 @@ class TestDrawOrigin:
 
         calls = [0]
 
-        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0, pixel_aspect=1.0):
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0):
             calls[0] += 1
             if calls[0] == 1:
                 # X axis: make the endpoint NaN so the branch body is skipped.
@@ -371,7 +370,7 @@ class TestDrawMarkerBranches:
 
         calls: list[int] = []
 
-        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0, pixel_aspect=1.0):
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0):
             arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
             calls.append(len(arr))
             out = np.zeros((len(arr), 2), dtype=np.float64)
@@ -413,7 +412,7 @@ class TestDrawMarkerBranches:
     def test_crosshair_skips_nonfinite_axis_endpoints(self) -> None:
         from openfollow.runtime import overlay_draw_scene as mod
 
-        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0, pixel_aspect=1.0):
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0):
             arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
             # Only called by the crosshair path for 6 endpoints; make them
             # all NaN.  The center projection (called first) stays finite.
@@ -459,7 +458,7 @@ class TestDrawMarkerBranches:
     def test_z_line_skipped_when_projection_nonfinite(self) -> None:
         from openfollow.runtime import overlay_draw_scene as mod
 
-        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0, pixel_aspect=1.0):
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0):
             # The marker's point and radius end land on screen; the Z line is behind the camera.
             arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
             out = np.full((len(arr), 2), np.nan, dtype=np.float64)
@@ -515,7 +514,7 @@ class TestDrawMarkerBranches:
 
         calls = [0]
 
-        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0, pixel_aspect=1.0):
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0):
             arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
             calls[0] += 1
             if calls[0] == 1:
@@ -818,10 +817,10 @@ class TestDrawMarkerConeStyle:
 
         real = mod.project
 
-        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0, pixel_aspect=1.0):
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0):
             arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
             if len(arr) == 2:  # the marker's own centre + radius point
-                return real(cam, pts, w, h, k1, k2, cx, cy, pixel_aspect)
+                return real(cam, pts, w, h, k1, k2, cx, cy)
             return np.full((len(arr), 2), np.nan, dtype=np.float64)
 
         monkeypatch.setattr(mod, "project", _fake_project)
@@ -837,8 +836,8 @@ class TestDrawMarkerConeStyle:
 
         real = mod.project
 
-        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0, pixel_aspect=1.0):
-            out = real(cam, pts, w, h, k1, k2, cx, cy, pixel_aspect)
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0):
+            out = real(cam, pts, w, h, k1, k2, cx, cy)
             if _is_cone_projection(out):
                 out[5] = np.nan  # a base ring point
                 out[_top_start(out) + 5] = np.nan  # a top ring point
@@ -997,8 +996,8 @@ class TestDrawMarkerConeStyle:
 
         real = mod.project
 
-        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0, pixel_aspect=1.0):
-            out = real(cam, pts, w, h, k1, k2, cx, cy, pixel_aspect)
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0):
+            out = real(cam, pts, w, h, k1, k2, cx, cy)
             if _is_cone_projection(out):
                 out[_top_start(out) :] = np.nan  # no top ring, so no silhouette edges
             return out
@@ -1083,10 +1082,10 @@ class TestDrawMarkerConeStyle:
 
         real = mod.project
 
-        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0, pixel_aspect=1.0):
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0):
             arr = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
             if len(arr) == 2:
-                return real(cam, pts, w, h, k1, k2, cx, cy, pixel_aspect)
+                return real(cam, pts, w, h, k1, k2, cx, cy)
             return np.full((len(arr), 2), np.nan, dtype=np.float64)
 
         monkeypatch.setattr(mod, "project", _fake_project)
@@ -1110,8 +1109,8 @@ class TestDrawMarkerConeStyle:
 
         real = mod.project
 
-        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0, pixel_aspect=1.0):
-            out = real(cam, pts, w, h, k1, k2, cx, cy, pixel_aspect)
+        def _fake_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0):
+            out = real(cam, pts, w, h, k1, k2, cx, cy)
             if _is_cone_projection(out):
                 out[_top_start(out) :] = np.nan  # top centre and the whole top ring
             return out
@@ -1131,9 +1130,9 @@ class TestDrawMarkerConeStyle:
         real = mod.project
         calls: list[int] = []
 
-        def _counting_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0, pixel_aspect=1.0):
+        def _counting_project(cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0):
             calls.append(len(np.asarray(pts, dtype=np.float64).reshape(-1, 3)))
-            return real(cam, pts, w, h, k1, k2, cx, cy, pixel_aspect)
+            return real(cam, pts, w, h, k1, k2, cx, cy)
 
         monkeypatch.setattr(mod, "project", _counting_project)
         cr = FakeCairo()
@@ -1276,7 +1275,6 @@ class TestConeCache:
             {"state": {"lens_k2": 0.02}},
             {"state": {"lens_cx": 0.03}},
             {"state": {"lens_cy": -0.02}},
-            {"state": {"scene_view": scene_view(1920, 1080, 704, 576, (12, 11))}},
             {"state": {"grid_config": (10.0, 6.0, 1.0, 0.0, 0.0, 0.3)}},
             {"state": {"cone_base_diameter": 0.8}},
             {"state": {"cone_top_diameter": 0.1}},
@@ -1346,9 +1344,7 @@ class TestConeCache:
             monkeypatch.setattr(mod, "project", lambda *args, **kw: real(*args, **kw) + np.array([dx, dy]))
         elif where == "behind-the-camera":
             monkeypatch.setattr(
-                mod,
-                "project",
-                lambda cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0, pixel_aspect=1.0: np.full((len(pts), 2), np.nan),
+                mod, "project", lambda cam, pts, w, h, k1=0.0, k2=0.0, cx=0.0, cy=0.0: np.full((len(pts), 2), np.nan)
             )
         else:
             state = self._state(grid_config=None)
@@ -1438,7 +1434,6 @@ class TestGridCache:
             {"state": {"lens_k2": 0.02}},
             {"state": {"lens_cx": 0.03}},
             {"state": {"lens_cy": -0.02}},
-            {"state": {"scene_view": scene_view(1920, 1080, 704, 576, (12, 11))}},
             {"size": (1280, 1080)},
             {"size": (1920, 720)},
             {"scale": 2.0},
@@ -1453,7 +1448,6 @@ class TestGridCache:
             "k2",
             "cx",
             "cy",
-            "pixel-aspect",
             "width",
             "height",
             "scale",

@@ -2188,31 +2188,26 @@ class TestSceneViewFlow:
 
     def test_a_4_3_picture_is_pillarboxed_on_a_16_9_canvas(self) -> None:
         state = _build(self._app(PictureGeometry(1024, 768)))
-        assert state.scene_view == ((240, 0, 1440, 1080), 1.0)
-
-    def test_the_pixel_aspect_ratio_stretches_the_scene(self) -> None:
-        state = _build(self._app(PictureGeometry(704, 576, (12, 11))))
-        assert tuple(state.scene_view.rect) == (240, 0, 1440, 1080)
-        assert state.pixel_aspect == pytest.approx(12 / 11)
+        assert state.scene_view == (240, 0, 1440, 1080)
 
     def test_a_reconnect_keeps_the_box_of_the_picture_still_shown(self) -> None:
         # A reconnect forgets the source's resolution, but the sink keeps the
         # last frame up in its box until new caps arrive.
         app = self._app(PictureGeometry(1024, 768))
         app._video_receiver.resolution = (0, 0)
-        assert tuple(_build(app).scene_view.rect) == (240, 0, 1440, 1080)
+        assert tuple(_build(app).scene_view) == (240, 0, 1440, 1080)
 
     def test_before_any_picture_the_scene_fills_the_canvas(self) -> None:
         state = _build(self._app(PictureGeometry()))
-        assert state.scene_view == ((0, 0, 1920, 1080), 1.0)
+        assert state.scene_view == (0, 0, 1920, 1080)
 
     def test_each_frame_reads_the_canvas_it_is_drawn_on(self) -> None:
         canvas = [(1920, 1080)]
         app = self._app(PictureGeometry(1920, 1080))
         app._canvas = SimpleNamespace(get_canvas_size=lambda: canvas[0])
-        assert tuple(_build(app).scene_view.rect) == (0, 0, 1920, 1080)
+        assert tuple(_build(app).scene_view) == (0, 0, 1920, 1080)
         canvas[0] = (1000, 1000)
-        assert tuple(_build(app).scene_view.rect) == (0, 219, 1000, 562)
+        assert tuple(_build(app).scene_view) == (0, 219, 1000, 562)
 
     def test_an_unreadable_canvas_draws_no_scene(self) -> None:
         def _raise() -> tuple[int, int]:
@@ -2220,7 +2215,7 @@ class TestSceneViewFlow:
 
         app = self._app(PictureGeometry(1920, 1080))
         app._canvas = SimpleNamespace(get_canvas_size=_raise)
-        rect = _build(app).scene_view.rect
+        rect = _build(app).scene_view
         assert rect.width == 0 and rect.height == 0
 
 

@@ -18,7 +18,7 @@ Every plane is live-applied by `NetworkPlaneObserver` (`runtime/network_observer
 
 ## Network alert rows (`network_alert_rows`)
 
-`AppRuntimeServices.network_alert_rows` appends `send_alerts(...)` to the observer's rows (each plane row carries its own next step), skipping a sender whose plane the observer already reports: the beacon and marker sync count as PSN's, an OSC target as its interface's `osc_out:` plane. OSC records are read through the destinations an enabled transmitter row or zone sends to, named after them, never by walking the client cache: a cached client outlives its row and its destination's previous address, so `forget_idle_osc_send_records` clears every target nothing sends to after each OSC routing or zones change. On macOS every multicast `EHOSTUNREACH` folds into one row whose main line says macOS refuses the station's sends, with the permission in its action; the HUD, which shows no action, gets `SendAlert.hud` ("macOS refuses network sends – check Local Network") through `network_alerts()`, while `network.alerts` on the wire carries only `text` and `action`. The rows reach the HUD and Live Statistics; `/api/stats` publishes them as `network.alerts` plus each sender's record as `network.senders` (a wire interface). Which sends count, and when a streak is failing: [outputs](outputs.md#send-health-send_healthpy-shared-by-every-sender).
+`AppRuntimeServices.network_alert_rows` appends `send_alerts(...)` to the observer's rows (each plane row carries its own next step), skipping a sender whose plane the observer already reports (the beacon counts as PSN's). `send_alerts` is one row, or none: a sender whose sends macOS refuses the way a denied Local Network permission does (`SendHealth.local_network`) raises a row whose main line says macOS refuses the station's sends, with the permission in its action; other send failures are logged, never a row, since an interface that is down or has no address already has its plane row. The HUD, which shows no action, gets `SendAlert.hud` ("macOS refuses network sends – check Local Network") through `network_alerts()`, while `network.alerts` on the wire carries only `text` and `action`. The rows reach the HUD and Live Statistics; `/api/stats` publishes them as `network.alerts` (a wire interface). When a streak is failing: [outputs](outputs.md#send-health-send_healthpy).
 
 ## Multicast sockets select an interface by index
 
@@ -64,7 +64,7 @@ This station's name on a venue's own DNS (`of-1.stage.example.com`). One rule in
 
 ## `.local` name on macOS (`mdns_host.py`)
 
-On macOS the `.local` name is Bonjour's LocalHostName, not the kernel host name (which DHCP often sets): `mdns_host` reads `scutil --get LocalHostName` on a worker thread, bounded, re-read every 10 s (a read that gets no answer keeps the last name), so the frame clock never waits and a request waits only for the first read; the kernel name stays an accepted host.
+On macOS the `.local` name is Bonjour's LocalHostName, not the kernel host name (which DHCP often sets): `mdns_host` reads `scutil --get LocalHostName` once, on a worker thread, bounded, so the frame clock never waits and a request waits only for that read; a rename in System Settings shows after a restart. The kernel name stays an accepted host.
 
 ## `video_input_iface`
 

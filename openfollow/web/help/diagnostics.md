@@ -29,7 +29,7 @@ The Raspberry Pi and the OpenFollow process on it.
 
 A red box means the Pi is short of power or slowed down now: **under voltage** (freezes, USB dropouts) or **CPU throttled** (too hot). An orange box means it happened since the last start and stays until restart.
 
-A red box names each output that is not reaching the network, as the Operator Screen's top-right rows do, with the next step: an interface with no address or an unplugged adapter (see Network Interface Assignment), or sends that keep failing while the interface is up. Each OSC destination in use has its own row. A row shows once failures last a second and clears once sends have kept going out for a second.
+A red box names each output that is not reaching the network, as the Operator Screen's top-right rows do, with the next step: an interface with no address or an unplugged adapter (see Network Interface Assignment).
 
 On macOS, **macOS refuses this station's network sends** means OpenFollow is not allowed on the local network: nothing it sends gets out, and other stations drop out of its list. Turn OpenFollow on under System Settings → Privacy & Security → Local Network; output resumes within about ten seconds, without a restart.
 

@@ -61,7 +61,7 @@ from typing import TYPE_CHECKING, NamedTuple
 from openfollow.net_egress import Egress, is_multicast_host, pin_socket_egress
 from openfollow.packet_chunking import MAX_DATAGRAM_BYTES, chunk_to_datagrams
 from openfollow.psn.marker import is_marker_stale
-from openfollow.send_health import FailureCause, SendHealth
+from openfollow.send_health import SendHealth
 
 if TYPE_CHECKING:
     from openfollow.psn.marker import Marker
@@ -265,8 +265,6 @@ class RttrpmServer:
         self._socket: socket.socket | None = None
         self._send_thread: threading.Thread | None = None
         self._send_health = SendHealth("RTTrPM output")
-        # What kept the socket from opening last; names a streak a skipped send starts.
-        self._open_error: FailureCause | None = None
         self._next_rebuild_at: float = 0.0
         self._stale_warned = False
         # Warn-once-per-episode guard: True while a run of capped frames is
@@ -317,12 +315,10 @@ class RttrpmServer:
         self._cap_warned = False
         try:
             self._socket = self._open_socket()
-            self._open_error = None
         except OSError as exc:
             # Retried by the send loop, unless a pinned one raises below; never sent unpinned meanwhile.
             logger.warning("RTTrPM: %s", exc)
             self._socket = None
-            self._open_error = FailureCause.from_exception(exc)
         egress = self._egress
         if self._socket is None and not retry_open and egress is not None:
             raise OSError(f"RTTrPM could not open a socket pinned to {egress.iface} ({egress.address or 'no address'})")
@@ -424,7 +420,6 @@ class RttrpmServer:
             self._maybe_rebuild_socket_after_error(stop_event)
             if self._socket is None:
                 # Still down: skip encoding a packet _send() would only drop.
-                self._record_skipped(stop_event)
                 return
         # Freeze name and position before sizing anything. The trackable module
         # is 34 octets plus the name, and the size the split budgets against is
@@ -499,15 +494,9 @@ class RttrpmServer:
             submitted,
         )
 
-    def _record_skipped(self, stop_event: threading.Event | None) -> None:
-        """Count a send skipped for want of a socket, unless its generation has stopped."""
-        if not self._resolve_stop(stop_event).is_set():
-            self._send_health.record_skipped(self._open_error, self._host)
-
     def _send(self, data: bytes, stop_event: threading.Event | None = None) -> None:
         sock = self._socket
         if sock is None:
-            self._record_skipped(stop_event)
             return
         try:
             sock.sendto(data, (self._host, self._port))
@@ -542,11 +531,9 @@ class RttrpmServer:
             old_sock = self._socket
             try:
                 self._socket = self._open_socket()
-                self._open_error = None
             except OSError as exc:
                 logger.warning("RTTrPM: socket rebuild failed: %s", exc)
                 self._socket = None
-                self._open_error = FailureCause.from_exception(exc)
         if old_sock is not None:
             try:
                 old_sock.close()

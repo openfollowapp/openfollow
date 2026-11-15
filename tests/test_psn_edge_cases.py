@@ -240,8 +240,7 @@ def test_server_send_is_noop_when_socket_none() -> None:
     server = PsnServer(mcast_ip=None)
     assert server._socket is None
     server._send(b"any")  # Must not raise.
-    status = server.send_health.status()
-    assert (status.sent_total, status.failed_total) == (0, 0)
+    assert server.send_health.failed == 0
 
 
 def test_server_send_data_packet_is_noop_with_no_markers(monkeypatch) -> None:
@@ -287,9 +286,7 @@ def test_server_send_counts_errors(monkeypatch) -> None:
     server._socket = _BadSocket()
     for _ in range(3):
         server._send(b"ping")
-    status = server.send_health.status()
-    assert (status.sent_total, status.failed_total, status.failed) == (0, 3, 3)
-    assert status.errno == errno.EACCES
+    assert server.send_health.failed == 3
 
 
 def test_server_stop_without_start_is_silent() -> None:

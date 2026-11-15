@@ -12,6 +12,12 @@ The device briefly goes away while the service restarts. An install that fails b
 
 > **Needs internet.** This option reaches GitHub. On an isolated show LAN with no uplink, use **Install .ofupdate File**.
 
+### On a Mac
+
+The Mac app does not install updates itself.
+
+When the station's background check finds a newer release, this section shows **Version … is available** with a link to its release page, and the footer flag links there too. Download the new version there. Without an internet uplink nothing is shown.
+
 ## Settings backup
 
 Before an update installs, the station saves its configuration, marker catalog, your own templates and saved lens calibrations. The Media Gallery and the detection models are not included. Backups are kept in `/var/lib/openfollow/backups/`, one per install; the ten newest are kept. A backup holds the web PIN and stream passwords, so only the OpenFollow service user can read it.

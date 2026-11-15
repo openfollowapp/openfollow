@@ -10,6 +10,7 @@ template and error copy without touching ``systemctl``.
 
 from __future__ import annotations
 
+import json
 import sys
 import urllib.error
 import urllib.parse
@@ -23,6 +24,12 @@ from openfollow.web.server import ConfigWebServer
 from tests._ports import live_on_free_port
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.fixture(autouse=True)
+def _systemd_host(monkeypatch) -> None:
+    """A Linux host; a test about another platform sets its own."""
+    monkeypatch.setattr(sys, "platform", "linux")
 
 
 class _Host:
@@ -215,6 +222,20 @@ class TestSwitchingIt:
         with _serve(tmp_path, monkeypatch, host) as (_server, base):
             _status, body = _post_form(base, "/section/general/startup", {})
         assert "could not be changed" in body
+
+    @pytest.mark.parametrize("form", [{"autostart": "on"}, {}])
+    def test_a_host_without_systemd_refuses_without_asking_it(self, tmp_path, monkeypatch, form: dict) -> None:
+        monkeypatch.setattr(sys, "platform", "darwin")
+        host = _Host()
+        with _serve(tmp_path, monkeypatch, host) as (_server, base):
+            status, body = _post_form(base, "/section/general/startup", form)
+        assert status == 400
+        assert json.loads(body) == {
+            "ok": False,
+            "error": "Starting at boot cannot be changed on this host.",
+            "action": "",
+        }
+        assert host.writes == []
 
     def test_a_build_without_the_handler_answers_a_banner_not_a_crash(self, tmp_path, monkeypatch) -> None:
         with _serve(tmp_path, monkeypatch, None) as (_server, base):

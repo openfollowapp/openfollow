@@ -223,7 +223,7 @@ class TestDefaultRuntimeStatsSnapshot:
             "latency",
         }
         assert snap["marker_conflicts"] == []
-        assert snap["network"] == {"alerts": [], "senders": []}
+        assert snap["network"] == {"alerts": []}
         assert snap["keyboard"] == {"poller": None, "devices": None}
         assert snap["latency"] is None
         assert snap["system"]["cpu_percent"] == 0.0
@@ -444,7 +444,7 @@ class TestPublishRuntimeStats:
             [],
         )
 
-    def test_the_network_block_carries_the_rows_and_every_senders_record(
+    def test_the_network_block_carries_the_rows(
         self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         import errno
@@ -466,10 +466,6 @@ class TestPublishRuntimeStats:
         network = services.get_runtime_stats_snapshot()["network"]
         assert network["alerts"] == [
             {"text": send_health_module.LOCAL_NETWORK_TEXT, "action": send_health_module.LOCAL_NETWORK_ACTION}
-        ]
-        assert [(s["label"], s["state"], s["local_network"]) for s in network["senders"]] == [
-            ("PSN", "failing", True),
-            ("OTP output", "ok", False),
         ]
 
     def test_force_bypasses_throttle(self, services: AppRuntimeServices, monkeypatch: pytest.MonkeyPatch) -> None:

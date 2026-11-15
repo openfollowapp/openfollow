@@ -23,7 +23,7 @@ import multicast_expert
 from openfollow.packet_chunking import MAX_DATAGRAM_BYTES, chunk_to_datagrams
 from openfollow.psn.marker import Marker, marker_age_s
 from openfollow.retry_backoff import retry_with_backoff
-from openfollow.send_health import FailureCause, SendHealth
+from openfollow.send_health import SendHealth
 
 logger = logging.getLogger(__name__)
 
@@ -612,8 +612,6 @@ class OtpServer:
         self._adv_thread: threading.Thread | None = None
         self._socket_thread: threading.Thread | None = None
         self._send_health = SendHealth("OTP output")
-        # What kept the multicast socket from opening last; names a streak a skipped send starts.
-        self._open_error: FailureCause | None = None
         # Counter for dropped folios: one needing more pages than Last Page
         # can number, or one whose pages will not encode. Neither is reachable
         # by configuration, but without throttling either would flood the log
@@ -813,14 +811,11 @@ class OtpServer:
             opened = staging.enter_context(sock)
         except Exception as exc:
             logger.warning("OTP multicast socket failed (attempt %d): %s", attempt, exc)
-            if not self._resolve_stop(stop_event).is_set():
-                self._open_error = FailureCause.from_exception(exc)
             return False
         # Locked hand-over only, off-lock open. See PsnServer for the rationale.
         with self._lock:
             if not self._resolve_stop(stop_event).is_set():
                 self._socket = opened
-                self._open_error = None
                 self._exit_stack.push(staging.pop_all())
                 return True
             stale = staging.pop_all()
@@ -1078,8 +1073,6 @@ class OtpServer:
         # the socket hand-over. A send racing teardown sends, returns, or fails.
         sock = self._socket
         if sock is None:
-            if not self._resolve_stop(stop_event).is_set():
-                self._send_health.record_skipped(self._open_error, dest_ip)
             return
         try:
             sock.sendto(data, (dest_ip, self._port))

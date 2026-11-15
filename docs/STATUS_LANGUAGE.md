@@ -360,7 +360,7 @@ attributes, so it spells the token's value.
   3D Mouse C3 are connected but drive no marker.").
 - A fault's sentence is a top-right status row, whatever raised it (a video
   failure, a source over Full HD or 30 fps, a missing controller, an output
-  whose interface has no address or whose sends keep failing, a marker another
+  whose interface has no address or whose sends macOS refuses, a marker another
   station controls too). The bottom-left panel only turns red; it never
   carries the sentence. Status & Diagnostics shows the same network rows as
   error boxes in its This Station box, each with its next step.
@@ -381,13 +381,11 @@ attributes, so it spells the token's value.
   address, so its error row appears on the first poll that finds no address.
   Only stopping the output waits out the gap an Apply or Renew leaves. A
   rebind or stop that fails names the interface and the failure in that row
-  instead, until a later outage of that interface takes the row back. A
-  sender whose sends keep failing while its interface is up (each OSC
-  destination in use is one) gets its own row once a failure lands a second
-  after the first, and keeps it until sends have gone out for a second
-  (`send_health.py`); on macOS every sender refused the way a denied Local
-  Network permission refuses them shares one row, saying macOS refuses the
-  station's sends, with the permission in its next step. The HUD shows no
+  instead, until a later outage of that interface takes the row back. On
+  macOS, senders refused the way a denied Local Network permission refuses
+  them share one row once a failure lands a second after the first, and keep
+  it until sends have gone out for a second (`send_health.py`), saying macOS
+  refuses the station's sends, with the permission in its next step. The HUD shows no
   next step and its operator is at that station, so its row names the
   permission itself ("macOS refuses network sends – check Local Network").
 - Status rows show faults, progress and results. The one caution row is the

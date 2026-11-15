@@ -9852,6 +9852,7 @@ def test_an_upload_that_stops_arriving_is_answered_408_and_leaves_nothing_staged
     token = f"stall{os.getpid()}{time.monotonic_ns()}"
     monkeypatch.setattr(routes_module, "secrets", _FixedToken(token))
     monkeypatch.setattr(server_module, "_REQUEST_BODY_READ_TIMEOUT_S", 0.3)
+    monkeypatch.setattr(routes_module.sys, "platform", "linux")  # the .ofupdate route refuses off Linux
     caplog.set_level(logging.INFO)
     _, base = live_server
     host, port = urllib.parse.urlsplit(base).netloc.rsplit(":", 1)

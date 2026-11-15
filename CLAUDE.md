@@ -96,15 +96,15 @@ ranges. Diagnostics bundles stay in the support channel.
 
 1. **Issue first.** A change starts from an issue (templates in
    `.github/ISSUE_TEMPLATE/`) and its PR says `Closes #<n>`. Dependabot,
-   release bumps and docs-only changes need none.
+   release bumps and docs-only changes (as defined under "Development") need none.
 2. **One branch, one worktree per agent session.** A session creates its
    worktree once, `.claude/worktrees/<branch with / as ->`, and works only
    there; the main checkout stays on `main`. Never share a worktree between
    sessions, never delete or reset one you did not create. A cloud session
    already has its own clone and needs none.
 3. **Base branch:** `main`; a macOS-only change bases on
-   `macos-integration-branch` and runs the gate with
-   `OPENFOLLOW_CI_PERF_BASE=origin/macos-integration-branch`.
+   `macos-integration-branch` and sets
+   `OPENFOLLOW_CI_PERF_BASE=origin/macos-integration-branch` for the gate's HUD benchmark.
 4. **Gate:** tests per the next section, push gate per "Development".
 5. **Review loop:** run Claude Code `/code-review` on the branch, fix, repeat
    until no major finding (correctness, security, broken invariant) is left.
@@ -141,9 +141,9 @@ Untested code is treated as broken. A change without tests is incomplete.
    (`monkeypatch.setattr(<module>.sys, "platform", "darwin")`).
    A platform-specific test is allowed where the real OS is the point (a
    Linux-only binding, a macOS framework): it skips elsewhere with
-   `if sys.platform != "linux": pytest.skip("<why>")` (or `"darwin"`); lines
-   only it can run take a rule-7 pragma. A test failing on one target is
-   fixed, not skipped.
+   `if sys.platform != "linux": pytest.skip("<why>")` (or `"darwin"`), and the
+   code it runs is also covered by a faked test. A test failing on one target
+   is fixed, not skipped.
 
 ## Offline runtime (REQUIRED for every change)
 

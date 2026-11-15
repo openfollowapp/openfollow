@@ -94,13 +94,16 @@ ranges. Diagnostics bundles stay in the support channel.
 
 ## Issue → PR workflow
 
-1. **Issue first.** Every change starts from an issue (templates in
-   `.github/ISSUE_TEMPLATE/`); the PR closes it with `Closes #<n>` in the body.
+1. **Issue first.** A change starts from an issue (templates in
+   `.github/ISSUE_TEMPLATE/`) and its PR says `Closes #<n>`. Dependabot and
+   release bumps need none.
 2. **One branch, one worktree per agent session.** A session creates its
-   worktree once, `.claude/worktrees/<branch>`, and works only there. Never
-   share a worktree between sessions, never delete or reset one you did not create.
-3. **Base branch:** `main`. macOS work targets `macos-integration-branch`.
-4. **Gate:** tests per the next section, `make ci-remote` green before every push.
+   worktree once, `.claude/worktrees/<branch with / as ->`, and works only
+   there. Never share a worktree between sessions, never delete or reset one
+   you did not create.
+3. **Base branch:** `main`. Changes that only concern the macOS build target
+   `macos-integration-branch`.
+4. **Gate:** tests per the next section, push gate per "Development".
 5. **Review loop:** run Claude Code `/code-review` on the branch, fix, repeat
    until no major finding (correctness, security, broken invariant) is left.
    Remaining minor findings go in the PR description.
@@ -130,11 +133,13 @@ Untested code is treated as broken. A change without tests is incomplete.
    the sandbox>` **and** a row in the Pragma audit table of
    [`docs/COVERAGE.md`](docs/COVERAGE.md). A pragma without a row blocks review.
 8. No `@pytest.mark.skip` to unblock a merge.
-9. Platform-neutral by default: a test runs on both targets, Linux (Pi) and
-   macOS. Behaviour that exists on one target only gets a platform-specific
-   test, marked `@pytest.mark.skipif(sys.platform != "darwin", reason="macOS only: <why>")`
-   (Linux: `not sys.platform.startswith("linux")`). A test that fails on one
-   target is fixed, not skipped there. `make ci` is green on both.
+9. Platform-neutral by default: every test runs on both targets, Linux (Pi)
+   and macOS. Platform branches are tested on both by faking the platform
+   (`monkeypatch.setattr(<module>.sys, "platform", "darwin")`), so coverage
+   holds on each. A test that needs the real OS (a Linux-only binding, a macOS
+   framework) skips elsewhere with `if sys.platform != "linux":
+   pytest.skip("<why>")` (or `"darwin"`); a test failing on one target is
+   fixed, not skipped. `make ci` is green on both.
 
 ## Offline runtime (REQUIRED for every change)
 

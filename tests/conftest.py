@@ -133,6 +133,13 @@ def _no_shared_port_binds(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _routes_from_proc(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test reads the route table from ``/proc/net/route``, as on Linux; a test
+    about macOS's table installs it with ``tests._netstat_routes``."""
+    monkeypatch.setattr("openfollow.net_utils.ROUTES_FROM_NETSTAT", False)
+
+
+@pytest.fixture(autouse=True)
 def _no_loopback_interface(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every test sees a host that does not offer loopback as an interface, as Linux;
     a test about macOS's offer sets ``LOOPBACK_OFFERED`` itself."""

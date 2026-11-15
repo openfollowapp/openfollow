@@ -12,7 +12,7 @@ from pathlib import Path
 
 import psutil
 
-from openfollow.net_utils import read_ipv4_routes
+from openfollow.net_utils import Ipv4Route, read_ipv4_routes
 from openfollow.network.adapter import (
     ApplyResult,
     BackendReadError,
@@ -20,7 +20,9 @@ from openfollow.network.adapter import (
     Ipv4Method,
     NetworkAdapter,
     NetworkInterface,
+    NetworkReading,
     NetworkState,
+    is_loopback,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,8 +59,7 @@ def _read_dns() -> tuple[str, ...]:
     return tuple(out[:3])
 
 
-def _read_gateway(iface: str) -> str | None:
-    routes = read_ipv4_routes()
+def _read_gateway(iface: str, routes: list[Ipv4Route] | None) -> str | None:
     if routes is None:
         return None
     # A default route through a gateway, the one the kernel prefers first.
@@ -106,30 +107,35 @@ class PsutilReadOnlyAdapter(NetworkAdapter):
             return []
 
     def get_state(self, iface: str) -> NetworkState | None:
-        ifaces = {i.name: i for i in self.list_interfaces()}
-        if iface not in ifaces:
-            return None
-        addr: str | None = None
-        prefix: int | None = None
+        return self.read_network().states.get(iface)
+
+    def read_network(self) -> NetworkReading:
+        """One read of the interfaces, addresses, route table and resolver for every interface."""
+        interfaces = self.list_interfaces()
         try:
-            for entry in psutil.net_if_addrs().get(iface, []):
-                family = getattr(entry, "family", None)
-                if family == socket.AF_INET:
+            addrs = psutil.net_if_addrs()
+        except Exception:  # noqa: BLE001 - psutil raises bare Exception on some hosts
+            addrs = {}
+        routes = read_ipv4_routes()
+        dns = _read_dns()
+        states: dict[str, NetworkState] = {}
+        for interface in interfaces:
+            addr: str | None = None
+            prefix: int | None = None
+            for entry in addrs.get(interface.name, []):
+                if getattr(entry, "family", None) == socket.AF_INET:
                     addr = entry.address
                     prefix = _netmask_to_prefix(getattr(entry, "netmask", None))
                     break
-        except Exception:  # noqa: BLE001
-            pass
-        router = _read_gateway(iface)
-        dns = _read_dns()
-        ipv4 = Ipv4Config(
-            method=Ipv4Method.DHCP,
-            address=addr,
-            prefix=prefix,
-            router=router,
-            dns=dns,
-        )
-        return NetworkState(interface=ifaces[iface], ipv4=ipv4, lease=None)
+            ipv4 = Ipv4Config(
+                method=Ipv4Method.DHCP,
+                address=addr,
+                prefix=prefix,
+                router=_read_gateway(interface.name, routes),
+                dns=dns,
+            )
+            states[interface.name] = NetworkState(interface=interface, ipv4=ipv4, lease=None)
+        return NetworkReading(tuple(i for i in interfaces if not is_loopback(i)), states, ())
 
     def apply_ipv4(self, iface: str, config: Ipv4Config) -> ApplyResult:
         return ApplyResult(

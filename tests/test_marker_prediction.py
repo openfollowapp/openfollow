@@ -14,8 +14,10 @@ from openfollow.otp.server import encode_otp_transform_packet
 from openfollow.psn.marker import Marker, is_marker_stale
 from openfollow.rttrpm.server import RttrpmServer
 from openfollow.runtime.marker_prediction import (
+    PREDICTION_FADE_MPS,
     PREDICTION_JUMP_HOLD_S,
     PREDICTION_MAX_SPEED_MPS,
+    PREDICTION_RISE_S,
     prediction_offset,
 )
 from openfollow.runtime.marker_velocity import MarkerVelocityState, estimate_marker_velocity
@@ -23,43 +25,82 @@ from openfollow.runtime.marker_velocity import MarkerVelocityState, estimate_mar
 pytestmark = pytest.mark.unit
 
 _NOW_US = 4_000_000_000
+_FRAME_DT = 1 / 60
 
 
 def _state(vx: float, vy: float, vz: float = 0.0, *, since_jump_s: float = math.inf) -> MarkerVelocityState:
     return MarkerVelocityState(velocity=(vx, vy, vz), since_jump_s=since_jump_s)
 
 
+def _settled(state: MarkerVelocityState, horizon_ms: int) -> tuple[float, float]:
+    """The prediction once it has had far longer than its rise to grow."""
+    return prediction_offset(state, horizon_ms, 100 * PREDICTION_RISE_S)
+
+
 class TestPredictionOffset:
     @pytest.mark.parametrize("horizon_ms", [0, -5])
     def test_no_horizon_is_no_prediction(self, horizon_ms: int) -> None:
-        assert prediction_offset(_state(1.0, 2.0), horizon_ms) == (0.0, 0.0)
+        state = _state(1.0, 2.0)
+        state.prediction = (0.5, 1.0)
+        assert prediction_offset(state, horizon_ms, _FRAME_DT) == (0.0, 0.0)
+        assert state.prediction == (0.0, 0.0)
 
     def test_a_still_marker_has_no_prediction(self) -> None:
-        assert prediction_offset(_state(0.0, 0.0), 1000) == (0.0, 0.0)
+        assert _settled(_state(0.0, 0.0), 1000) == (0.0, 0.0)
 
-    def test_the_prediction_is_velocity_times_horizon(self) -> None:
-        assert prediction_offset(_state(1.5, -0.5), 500) == pytest.approx((0.75, -0.25))
+    def test_the_prediction_settles_at_velocity_times_horizon(self) -> None:
+        assert _settled(_state(1.5, -0.5), 500) == pytest.approx((0.75, -0.25))
 
-    def test_z_velocity_never_predictions(self) -> None:
-        assert prediction_offset(_state(0.0, 0.0, 3.0), 1000) == (0.0, 0.0)
+    def test_z_velocity_never_predicts(self) -> None:
+        assert _settled(_state(0.0, 0.0, 3.0), 1000) == (0.0, 0.0)
 
     def test_a_speed_above_the_ceiling_is_capped_and_keeps_its_direction(self) -> None:
-        dx, dy = prediction_offset(_state(12.0, 16.0), 1000)
+        dx, dy = _settled(_state(12.0, 16.0), 1000)
         assert math.hypot(dx, dy) == pytest.approx(PREDICTION_MAX_SPEED_MPS)
         assert dy / dx == pytest.approx(16.0 / 12.0)
 
     def test_the_ceiling_ignores_z(self) -> None:
         """A marker rising fast does not shrink the X/Y prediction."""
-        assert prediction_offset(_state(1.0, 0.0, 19.0), 1000) == pytest.approx((1.0, 0.0))
+        assert _settled(_state(1.0, 0.0, 19.0), 1000) == pytest.approx((1.0, 0.0))
 
     @pytest.mark.parametrize("since_jump_s", [0.0, PREDICTION_JUMP_HOLD_S / 2, PREDICTION_JUMP_HOLD_S - 1e-6])
     def test_no_prediction_while_a_repositioning_settles(self, since_jump_s: float) -> None:
-        assert prediction_offset(_state(4.0, 0.0, since_jump_s=since_jump_s), 1000) == (0.0, 0.0)
+        state = _state(4.0, 0.0, since_jump_s=since_jump_s)
+        state.prediction = (2.0, 0.0)
+        assert _settled(state, 1000) == (0.0, 0.0)
+        assert state.prediction == (0.0, 0.0)
 
     def test_the_prediction_returns_once_the_hold_is_over(self) -> None:
-        assert prediction_offset(_state(1.0, 0.0, since_jump_s=PREDICTION_JUMP_HOLD_S), 1000) == pytest.approx(
-            (1.0, 0.0)
-        )
+        assert _settled(_state(1.0, 0.0, since_jump_s=PREDICTION_JUMP_HOLD_S), 1000) == pytest.approx((1.0, 0.0))
+
+    @pytest.mark.parametrize(
+        ("speed", "share"),
+        [(0.0, 0.0), (0.1, 0.0), (PREDICTION_FADE_MPS[0], 0.0), (0.35, 0.5), (PREDICTION_FADE_MPS[1], 1.0), (2.0, 1.0)],
+    )
+    def test_a_slow_marker_fades_its_prediction_out(self, speed: float, share: float) -> None:
+        dx, dy = _settled(_state(0.0, speed), 1000)
+        assert dx == 0.0
+        assert dy == pytest.approx(share * speed)
+
+    def test_the_prediction_grows_with_its_rise_time(self) -> None:
+        state = _state(2.0, 0.0)
+        dx, _ = prediction_offset(state, 500, PREDICTION_RISE_S)
+        assert dx == pytest.approx(1.0 * (1.0 - math.exp(-1.0)))
+
+    def test_a_short_nudge_never_builds_the_full_prediction(self) -> None:
+        state = _state(1.0, 0.0)
+        for _ in range(6):
+            dx, _ = prediction_offset(state, 1000, _FRAME_DT)
+        assert 0.0 < dx < 0.5
+
+    def test_slowing_down_takes_the_prediction_back_at_once(self) -> None:
+        state = _state(2.0, 0.0)
+        _settled(state, 500)
+        state.velocity = (1.0, 0.0, 0.0)
+        assert prediction_offset(state, 500, _FRAME_DT) == pytest.approx((0.5, 0.0))
+
+    def test_a_long_stall_lands_on_the_target(self) -> None:
+        assert prediction_offset(_state(1.0, 0.0), 1000, 10.0) == pytest.approx((1.0, 0.0))
 
 
 class TestMarkerPrediction:

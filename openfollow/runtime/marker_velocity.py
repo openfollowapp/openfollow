@@ -56,6 +56,8 @@ class MarkerVelocityState:
     sample_interval_s: float = 0.0
     # Seconds since a sample's X/Y rate passed ``REPOSITION_SPEED_MPS``.
     since_jump_s: float = math.inf
+    # The X/Y prediction last sent (``marker_prediction``), which grows from frame to frame.
+    prediction: tuple[float, float] = (0.0, 0.0)
 
 
 def estimate_marker_velocity(state: MarkerVelocityState, pos: Vec3, dt: float) -> Vec3:

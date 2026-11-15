@@ -515,7 +515,7 @@ def build_marker_visual_state(
         # is not, or it would feed back into the velocity it is built from.
         velocity = estimate_marker_velocity(vstate, marker.lifted_pos, dt)
         marker.set_speed(*velocity)
-        marker.set_prediction(*prediction_offset(vstate, horizons.get(marker_id, 0)))
+        marker.set_prediction(*prediction_offset(vstate, horizons.get(marker_id, 0), dt))
 
     # Fetch controller info once and build a reverse map so the per-marker
     # loop can stamp each marker card with its bound controller without an

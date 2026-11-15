@@ -2032,8 +2032,20 @@ class TestOutputPrediction:
         app, marker = self._app(horizon_ms=500)
         _build(app)
         marker.set_pos(10.0, 0.0, 1.0)
-        self._walk(app, marker, vx=1.0, frames=90)
+        self._walk(app, marker, vx=1.0, frames=150)
         assert _shift(marker)[0] == pytest.approx(0.5, abs=1e-3)
+
+    def test_a_short_nudge_is_sent_less_than_its_full_prediction(self) -> None:
+        app, marker = self._app(horizon_ms=500)
+        self._walk(app, marker, vx=1.5, frames=10)
+        assert 0.0 < _shift(marker)[0] < 0.75 / 2
+
+    def test_a_stop_takes_the_prediction_back_within_a_few_frames(self) -> None:
+        app, marker = self._app(horizon_ms=500)
+        self._walk(app, marker, vx=1.5)
+        for _ in range(15):
+            _build(app)
+        assert _shift(marker) == (0.0, 0.0)
 
     def test_a_received_marker_is_never_predicted(self) -> None:
         received = Marker(2, "R", remote=True)

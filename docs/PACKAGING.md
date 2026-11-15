@@ -668,8 +668,8 @@ GStreamer warnings and an uncaught exception in a thread. The launcher enables
 thread's Python traceback at the end of the file.
 
 - **Size:** the file rotates at 5 MB and keeps four copies (`openfollow.log.1`
-  the newest), 25 MB at most. A check every 10 s rotates a file that native
-  output alone has filled, which no record would.
+  the newest), 25 MB at most. Native output counts towards the size, and the
+  next record rotates a file it has filled.
 - **Restarts:** each process start logs `Process <pid> logging to <path>`, so the
   file shows where a restart or a relaunch begins.
 - **Failure:** a file that cannot be opened leaves the log on stderr, with a

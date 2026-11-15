@@ -14,7 +14,6 @@ from __future__ import annotations
 import io
 import logging
 import os
-import sys
 import threading
 import time
 from collections import deque
@@ -37,8 +36,6 @@ LOG_FILE_DATEFMT = "%Y-%m-%d %H:%M:%S"
 # 5 MB a file, the current one and four rotated copies: 25 MB at most.
 LOG_FILE_MAX_BYTES = 5 * 1024 * 1024
 LOG_FILE_BACKUPS = 4
-# How often a log file checks its size between records.
-LOG_FILE_CHECK_S = 10.0
 # stdout and stderr, which a log file takes over.
 STD_FDS = (1, 2)
 
@@ -171,8 +168,8 @@ class LogFileHandler(RotatingFileHandler):
     writes there past the logging module (GLib and GStreamer warnings, uncaught
     thread exceptions, faulthandler's crash tracebacks) lands in the same file
     and follows each rotation. The rotation size counts those writes too: the
-    duplicated descriptors share the stream's file offset. A background check
-    every ``check_every_s`` rotates a file that output alone has filled.
+    duplicated descriptors share the stream's file offset, so the next record
+    rotates a file that output alone has filled.
     """
 
     def __init__(
@@ -182,44 +179,16 @@ class LogFileHandler(RotatingFileHandler):
         max_bytes: int = LOG_FILE_MAX_BYTES,
         backup_count: int = LOG_FILE_BACKUPS,
         std_fds: tuple[int, ...] = STD_FDS,
-        check_every_s: float = LOG_FILE_CHECK_S,
     ) -> None:
         self._std_fds = std_fds
         path.parent.mkdir(parents=True, exist_ok=True)
         super().__init__(path, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8")
-        self._closing = threading.Event()
-        self._watcher = threading.Thread(
-            target=self._watch, args=(check_every_s,), daemon=True, name="log-file-rotation"
-        )
-        self._watcher.start()
 
     def _open(self) -> io.TextIOWrapper:
         stream = super()._open()
         for fd in self._std_fds:
             os.dup2(stream.fileno(), fd)
         return stream
-
-    def roll_over_if_full(self) -> None:
-        """Rotate once the file has reached its size, whoever wrote to it."""
-        self.acquire()
-        try:
-            if self.stream is not None and self.stream.tell() >= self.maxBytes:
-                self.doRollover()
-        finally:
-            self.release()
-
-    def _watch(self, every_s: float) -> None:
-        while not self._closing.wait(every_s):
-            try:
-                self.roll_over_if_full()
-            except Exception as exc:  # noqa: BLE001 - one failed rotation must not end the checks
-                # Not through logging: a record would retry the rotation that just failed.
-                sys.stderr.write(f"Log file rotation failed: {exc!r}\n")
-
-    def close(self) -> None:
-        # No join: ``logging.shutdown`` calls this holding the lock a check may be waiting for.
-        self._closing.set()
-        super().close()
 
 
 def read_log_file(path: Path, *, last_n: int | None = None) -> list[str]:

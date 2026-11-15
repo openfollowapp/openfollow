@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 
 import pytest
@@ -106,7 +107,7 @@ def test_a_lock_the_filesystem_refuses_lets_the_station_run(tmp_path, monkeypatc
     import openfollow.instance_lock as instance_lock
 
     def _refuse(fd, op):
-        raise OSError(37, "No locks available")
+        raise OSError(errno.ENOLCK, "No locks available")
 
     monkeypatch.setattr(instance_lock.fcntl, "flock", _refuse)
 

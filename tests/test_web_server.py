@@ -9346,7 +9346,8 @@ def test_the_save_that_sets_a_name_answers_with_its_caution(live_server) -> None
     status, body = _post_form(base, "/section/general", {"station_fqdn": "of-1.stage.example.com"})
     assert status == 200
     start = body.index('id="general-station-fqdn-row"')
-    row = body[start : body.index('<div class="row">', start)]
+    end = body.find('<div class="row', start)  # the last row on a host without the startup switch
+    row = body[start:] if end == -1 else body[start:end]
     assert "Sent on no interface: this station&#039;s network settings are read-only." in row
 
 

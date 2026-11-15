@@ -101,6 +101,7 @@ State of the optional AI-based person detection engine. The box is shown only wh
 |-------------|---------|
 | Green – **Running** | Detection is enabled and the engine is actively processing frames. |
 | Blue – **Idle** | Detection is enabled but not yet running (for example, waiting for a video signal). |
+| Blue – **Compiling model** | On a Mac, the chosen quality tier is being prepared for this Mac before detection starts with it. Outputs keep running meanwhile. |
 | Red – **Unavailable** | Detection is enabled but required packages are missing; a banner lists them. |
 | Grey – **Off** | The feature is on, but detection is switched off in its section. |
 

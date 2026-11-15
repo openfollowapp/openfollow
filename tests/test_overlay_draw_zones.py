@@ -21,7 +21,6 @@ import pytest
 
 from openfollow.runtime.overlay_draw_scene import project
 from openfollow.runtime.overlay_draw_zones import draw_zones
-from openfollow.runtime.overlay_layout import scene_view
 from openfollow.runtime.overlay_state import OverlayState
 from tests._fake_cairo import FakeCairo
 
@@ -322,7 +321,7 @@ class TestLensDistortion:
         state.lens_k1 = -0.15
         state.lens_k2 = 0.04
 
-        def _nan_segments(_cam, segments, _w, _h, _k1, _k2, _cx, _cy, n, _pixel_aspect=1.0):
+        def _nan_segments(_cam, segments, _w, _h, _k1, _k2, _cx, _cy, n):
             segs = np.asarray(segments, dtype=np.float64).reshape(-1, 2, 3)
             out = np.full((segs.shape[0], n + 1, 2), 100.0)
             out[0, n // 2] = np.nan  # one sub-point on the first edge behind camera
@@ -430,33 +429,6 @@ class TestRaisedZoneFloor:
             if not s["closed"] and any(abs(px - spot[0]) < 1e-6 and abs(py - spot[1]) < 1e-6 for px, py in s["points"])
         ]
         assert holding == [pytest.approx(alpha)]
-
-
-# --------------------------------------------------------------------------- #
-# A frame of non-square pixels
-# --------------------------------------------------------------------------- #
-
-
-class TestNonSquarePixels:
-    """Drawn 1200 wide over a D1 frame of 12:11 pixels, a zone is the
-    square-pixel zone drawn 1100 wide, stretched across by 12/11."""
-
-    @pytest.mark.parametrize("k1", [0.0, -0.15])
-    def test_a_zone_outline_is_stretched(self, k1: float) -> None:
-        def draw(state: OverlayState, w: int) -> FakeCairo:
-            state.lens_k1 = k1
-            cr = FakeCairo()
-            draw_zones(cr, state, w, 900)
-            return cr
-
-        square = draw(_state_with_zone(vertices=_square(0.0, 2.0)), 1100)
-        non_square = _state_with_zone(vertices=_square(0.0, 2.0))
-        non_square.scene_view = scene_view(1200, 900, 704, 576, (12, 11))
-        stretched = draw(non_square, 1200)
-        aspect = 12 / 11
-        assert square.line_tos
-        np.testing.assert_allclose(stretched.move_tos, [(x * aspect, y) for x, y in square.move_tos], atol=1e-6)
-        np.testing.assert_allclose(stretched.line_tos, [(x * aspect, y) for x, y in square.line_tos], atol=1e-6)
 
 
 # --------------------------------------------------------------------------- #
@@ -616,7 +588,6 @@ class TestZoneCache:
             {"state": {"lens_k2": 0.02}},
             {"state": {"lens_cx": 0.03}},
             {"state": {"lens_cy": -0.02}},
-            {"state": {"scene_view": scene_view(1920, 1080, 704, 576, (12, 11))}},
             {"size": (1280, 1080)},
             {"size": (1920, 720)},
             {"scale": 2.0},
@@ -632,7 +603,6 @@ class TestZoneCache:
             "k2",
             "cx",
             "cy",
-            "pixel-aspect",
             "width",
             "height",
             "scale",

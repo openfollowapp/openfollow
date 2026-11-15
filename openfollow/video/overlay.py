@@ -325,7 +325,7 @@ class CairoOverlayRenderer:
             try:
                 # The scene sits on the video, boxed as the sink letterboxes it;
                 # the HUD below belongs to the screen.
-                rect = VideoRect(0, 0, width, height) if state.scene_view is None else state.scene_view.rect
+                rect = VideoRect(0, 0, width, height) if state.scene_view is None else state.scene_view
                 if rect.width > 0 and rect.height > 0:
                     with box(cr, *rect):
                         self._draw_scene(cr, state, rect.width, rect.height)

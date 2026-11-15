@@ -24,7 +24,7 @@ from openfollow.runtime.overlay_layers import (
     keep_fill,
     mark_top,
 )
-from openfollow.runtime.overlay_layout import scene_view
+from openfollow.runtime.overlay_layout import video_rect
 from openfollow.runtime.overlay_state import OperatorMessageView, OverlayState, VirtualFaderDisplayData
 from openfollow.video.detection import DetectionBox
 from openfollow.video.overlay import CairoOverlayRenderer
@@ -430,9 +430,8 @@ def test_a_box_on_a_plain_context_draws_the_same_picture_and_leaves_its_state() 
 
 
 _VIEWS = {
-    "4:3-pillarboxed": (1024, 768, (1, 1)),
-    "portrait": (1080, 1920, (1, 1)),
-    "non-square-pixels": (704, 576, (12, 11)),
+    "4:3-pillarboxed": (1024, 768),
+    "portrait": (1080, 1920),
 }
 
 
@@ -440,9 +439,9 @@ _VIEWS = {
 @pytest.mark.parametrize("view", sorted(_VIEWS))
 @pytest.mark.parametrize("scene", ["full", "cones"])
 def test_a_boxed_scene_composites_to_the_canvas_sized_one(scene: str, view: str, scale: float) -> None:
-    source_w, source_h, par = _VIEWS[view]
+    source_w, source_h = _VIEWS[view]
     for w, h, state in frames(scene, count=2 if scale == 1.0 else 1):
-        state.scene_view = scene_view(w, h, source_w, source_h, par)
+        state.scene_view = video_rect(w, h, source_w, source_h)
         whole = cairo.ImageSurface(cairo.FORMAT_ARGB32, round(w * scale), round(h * scale))
         whole.set_device_scale(scale, scale)
         CairoOverlayRenderer().draw(cairo.Context(whole), w, h, state)
@@ -456,6 +455,6 @@ def test_a_boxed_scene_composites_to_the_canvas_sized_one(scene: str, view: str,
 @pytest.mark.parametrize("scene", ["full", "cones"])
 def test_a_boxed_scene_keeps_every_cached_picture(scene: str) -> None:
     w, h, state = frames(scene, count=1)[0]
-    boxed = dataclasses.replace(state, scene_view=scene_view(w, h, 1024, 768))
+    boxed = dataclasses.replace(state, scene_view=video_rect(w, h, 1024, 768))
 
     assert _sprites(w, h, boxed, kept=True) == _sprites(w, h, state, kept=True)

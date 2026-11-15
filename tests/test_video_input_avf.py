@@ -35,9 +35,11 @@ class _FakeDevice:
         *,
         props: dict[str, str] | None,
         display_name: str = "",
+        classes: str = "Video/Source",
     ) -> None:
         self._props = _FakeProps(props) if props is not None else None
         self._name = display_name
+        self._classes = classes
 
     def get_properties(self) -> _FakeProps | None:
         return self._props
@@ -45,26 +47,13 @@ class _FakeDevice:
     def get_display_name(self) -> str:
         return self._name
 
+    def has_classes(self, classes: str) -> bool:
+        return set(classes.split("/")) <= set(self._classes.split("/"))
 
-class _FakeMonitor:
-    def __init__(
-        self,
-        devices: list[_FakeDevice],
-        *,
-        start_ok: bool = True,
-    ) -> None:
+
+class _FakeProvider:
+    def __init__(self, devices: list[_FakeDevice]) -> None:
         self._devices = devices
-        self._start_ok = start_ok
-        self.filters: list[tuple[str, object]] = []
-
-    def add_filter(self, classification: str, caps: object) -> None:
-        self.filters.append((classification, caps))
-
-    def start(self) -> bool:
-        return self._start_ok
-
-    def stop(self) -> None:
-        pass
 
     def get_devices(self) -> list[_FakeDevice]:
         return list(self._devices)
@@ -74,15 +63,22 @@ def _make_fake_gst_with_devices(
     devices: list[_FakeDevice],
     *,
     start_ok: bool = True,
+    asked: list[str] | None = None,
 ):
+    """A Gst whose AVF provider lists *devices*; without it (``start_ok`` False) none is installed.
+
+    It has no ``DeviceMonitor``: a monitor would start every provider, NDI's included.
+    """
     fake = make_fake_gst()
 
-    class _DeviceMonitorNs:
+    class _DeviceProviderFactoryNs:
         @staticmethod
-        def new() -> _FakeMonitor:
-            return _FakeMonitor(devices, start_ok=start_ok)
+        def get_by_name(name: str) -> _FakeProvider | None:
+            if asked is not None:
+                asked.append(name)
+            return _FakeProvider(devices) if start_ok and name == "avfdeviceprovider" else None
 
-    fake.DeviceMonitor = _DeviceMonitorNs  # type: ignore[attr-defined]
+    fake.DeviceProviderFactory = _DeviceProviderFactoryNs  # type: ignore[attr-defined]
     return fake
 
 
@@ -102,7 +98,7 @@ def _no_cameras_listed_yet(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
 
 
 def _cameras(monkeypatch: pytest.MonkeyPatch, *cameras: tuple[str, str]) -> list[int]:
-    """Have the device monitor list *cameras* (unique ID, name) in order; one entry per listing."""
+    """Have the AVF device provider list *cameras* (unique ID, name) in order; one entry per listing."""
     listings: list[int] = []
 
     def _list() -> list[dict[str, str]]:
@@ -136,7 +132,6 @@ class TestAvfConfig:
         names = {f.name for f in AvfInput.config_fields()}
         assert names == {
             "avf_unique_id",
-            "avf_device_name",
             "avf_device_index",
             "avf_width",
             "avf_height",
@@ -147,15 +142,9 @@ class TestAvfConfig:
         """The first field is what the picker selects and the receiver clears."""
         assert AvfInput.config_fields()[0].name == "avf_unique_id"
 
-    def test_the_name_is_never_edited_on_screen(self) -> None:
-        """It is written with the camera, not typed; the on-screen editor skips it."""
-        field = next(f for f in AvfInput.config_fields() if f.name == "avf_device_name")
-        assert field.device_editable is False
-
     def test_config_defaults(self) -> None:
         fields = {f.name: f.default for f in AvfInput.config_fields()}
         assert fields["avf_unique_id"] == ""
-        assert fields["avf_device_name"] == ""
         assert fields["avf_device_index"] == -1
         assert fields["avf_width"] == 1920
         assert fields["avf_height"] == 1080
@@ -246,7 +235,29 @@ class TestDiscoverAvfDevices:
         monkeypatch.setattr("builtins.__import__", _fail_gi)
         assert _discover_avf_devices() == []
 
-    def test_monitor_start_failure_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_only_the_avf_provider_is_probed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A device monitor would start NDI's provider too, whose runtime keeps the Mac awake."""
+        monkeypatch.setattr(sys, "platform", "darwin")
+        asked: list[str] = []
+        camera = _FakeDevice(
+            props={"device.api": "avf", "avf.unique_id": "47B4B64B"}, display_name="FaceTime HD Camera"
+        )
+        with patch("gi.repository.Gst", _make_fake_gst_with_devices([camera], asked=asked)):
+            devices = avf_module._list_avf_devices()
+
+        assert asked == ["avfdeviceprovider"]
+        assert [d["unique_id"] for d in devices] == ["47B4B64B"]
+
+    def test_skips_devices_that_are_no_video_source(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(sys, "platform", "darwin")
+        microphone = _FakeDevice(props={"device.api": "avf", "avf.unique_id": "MIC"}, classes="Audio/Source")
+        camera = _FakeDevice(props={"device.api": "avf", "avf.unique_id": "CAM"}, display_name="Camera")
+        with patch("gi.repository.Gst", _make_fake_gst_with_devices([microphone, camera])):
+            devices = avf_module._list_avf_devices()
+
+        assert devices == [{"unique_id": "CAM", "name": "Camera", "index": "0"}]
+
+    def test_a_missing_avf_provider_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(sys, "platform", "darwin")
         fake = _make_fake_gst_with_devices([], start_ok=False)
         with patch("gi.repository.Gst", fake):
@@ -346,8 +357,8 @@ class TestDiscoverAvfDevices:
 
         assert avf_module._camera_names == {"47B4B64B": "FaceTime HD Camera"}
 
-    def test_a_listed_name_is_cleaned_as_a_stored_one_is(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Drawn on the HUD, and compared with the stored (cleaned) name to tell two cameras apart."""
+    def test_a_listed_name_is_cleaned(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Drawn on the HUD and in the web UI."""
         from openfollow.configuration import AVF_DEVICE_NAME_MAX_LEN
 
         monkeypatch.setattr(sys, "platform", "darwin")
@@ -356,13 +367,14 @@ class TestDiscoverAvfDevices:
                 _FakeDevice(props={"device.api": "avf", "avf.unique_id": "A"}, display_name="Capture\u202e Card\n"),
                 _FakeDevice(props={"device.api": "avf", "avf.unique_id": "B"}, display_name="C" * 1000),
                 _FakeDevice(props={"device.api": "avf", "avf.unique_id": "C"}, display_name="\u200e"),
+                _FakeDevice(props={"device.api": "avf", "avf.unique_id": "D"}, display_name=None),  # type: ignore[arg-type]
             ]
         )
         with patch("gi.repository.Gst", fake):
             names = [dev["name"] for dev in avf_module._list_avf_devices()]
 
-        assert names == ["Capture Card", "C" * AVF_DEVICE_NAME_MAX_LEN, "C"]
-        assert avf_module._camera_names == dict(zip("ABC", names, strict=True))
+        assert names == ["Capture Card", "C" * AVF_DEVICE_NAME_MAX_LEN, "C", "D"]
+        assert avf_module._camera_names == dict(zip("ABCD", names, strict=True))
 
     @pytest.mark.parametrize(
         "listed",
@@ -387,7 +399,7 @@ class TestDiscoverAvfDevices:
         operator reads still show none."""
         monkeypatch.setattr(sys, "platform", "darwin")
         with patch("gi.repository.Gst", _make_fake_gst_with_devices([], start_ok=False)):
-            with pytest.raises(RuntimeError, match="device monitor did not start"):
+            with pytest.raises(RuntimeError, match="device provider is not installed"):
                 avf_module._list_avf_devices()
             assert _discover_avf_devices() == []
 
@@ -418,43 +430,6 @@ class TestAvfConfigChanged:
         old = AppConfig()
         new = AppConfig(avf_width=1280, avf_height=720)
         assert AvfInput.config_changed(old, new) is True
-
-    def test_a_name_alone_reconnects_nothing(self) -> None:
-        """The name never affects the build; a swap would black the video out for it."""
-        from openfollow.configuration import AppConfig
-
-        old = AppConfig(video_source_type="avf", avf_unique_id="0x14100000")
-        new = AppConfig(video_source_type="avf", avf_unique_id="0x14100000", avf_device_name="Capture Card")
-        assert AvfInput.config_changed(old, new) is False
-
-    def test_another_camera_with_its_name_still_reconnects(self) -> None:
-        from openfollow.configuration import AppConfig
-
-        old = AppConfig(video_source_type="avf", avf_unique_id="0x14100000", avf_device_name="Capture Card")
-        new = AppConfig(video_source_type="avf", avf_unique_id="47B4B64B", avf_device_name="FaceTime HD Camera")
-        assert AvfInput.config_changed(old, new) is True
-
-    def test_the_first_unchanged_save_of_an_older_config_reconnects_nothing(self, _no_cameras_listed_yet) -> None:
-        """An older config has the camera but no name; that save records it."""
-        import copy
-
-        from openfollow.configuration import AppConfig
-        from openfollow.web.routes import apply_section_data
-
-        _no_cameras_listed_yet["0x14100000"] = "Capture Card"
-        old = AppConfig(video_source_type="avf", avf_unique_id="0x14100000")
-        new = copy.deepcopy(old)
-        form = {
-            "video_source_type": "avf",
-            "avf_unique_id": "0x14100000",
-            "avf_device_index": "-1",
-            "avf_width": "1920",
-        }
-
-        apply_section_data(new, "video_source", form)
-
-        assert new.avf_device_name == "Capture Card"
-        assert AvfInput.config_changed(old, new) is False
 
 
 class TestAvfWebUI:
@@ -488,12 +463,6 @@ class TestAvfWebUI:
 
     def test_no_stored_camera_shows_loading(self) -> None:
         assert "-- Loading... --" in AvfInput.web_ui_html({"avf_unique_id": ""})
-
-    def test_a_camera_missing_since_startup_shows_its_stored_name(self) -> None:
-        html = AvfInput.web_ui_html({"avf_unique_id": "0x14100000", "avf_device_name": "Capture <Card>"})
-
-        assert '<option value="0x14100000">' in html
-        assert "Capture &lt;Card&gt;" in html
 
 
 class TestAvfSourceLabel:
@@ -530,27 +499,6 @@ class TestAvfSourceLabel:
 
         assert label.startswith("Capture Card (")
 
-    def test_a_camera_missing_since_startup_reads_as_its_stored_name(self) -> None:
-        """Never listed this run, so only the name stored when it was chosen can name it."""
-        label = AvfInput.get_source_label(
-            {"avf_unique_id": "0x14100000", "avf_device_name": "Capture Card", "avf_width": 1920}
-        )
-
-        assert label.startswith("Capture Card (1920x")
-
-    def test_a_listed_name_wins_over_the_stored_one(self, _no_cameras_listed_yet) -> None:
-        _no_cameras_listed_yet["47B4B64B"] = "FaceTime HD Camera"
-
-        label = AvfInput.get_source_label({"avf_unique_id": "47B4B64B", "avf_device_name": "Old Name"})
-
-        assert label.startswith("FaceTime HD Camera (")
-
-    @pytest.mark.parametrize("stored", [None, 5, ""])
-    def test_a_stored_name_that_is_not_text_reads_as_the_unique_id(self, stored: object) -> None:
-        label = AvfInput.get_source_label({"avf_unique_id": "0x14100000", "avf_device_name": stored})
-
-        assert label.startswith("0x14100000 (")
-
     def test_two_listed_cameras_of_one_name_are_told_apart(self, _no_cameras_listed_yet) -> None:
         """The source line, the failure sentence and /api/stats read the label,
         so it numbers them the way the picker and the web list do."""
@@ -558,14 +506,6 @@ class TestAvfSourceLabel:
 
         assert AvfInput.get_source_label({"avf_unique_id": "C"}).startswith("USB Capture (2) (")
         assert AvfInput.get_source_label({"avf_unique_id": "B"}).startswith("FaceTime HD Camera (")
-
-    def test_a_stored_name_a_listed_camera_shares_carries_the_unique_id(self, _no_cameras_listed_yet) -> None:
-        """The missing card must not read as the identical card that is plugged in."""
-        _no_cameras_listed_yet["A"] = "USB Capture"
-
-        label = AvfInput.get_source_label({"avf_unique_id": "0x14100000", "avf_device_name": "USB Capture"})
-
-        assert label.startswith("USB Capture (0x14100000) (")
 
     def test_no_camera_chosen_reads_as_no_source(self) -> None:
         """An empty label makes the receiver ask for a camera rather than open
@@ -666,7 +606,7 @@ class TestAvfPreflight:
         assert AvfInput.preflight(config) is None
         assert listings == []
 
-    @pytest.mark.parametrize("reason", ["the device monitor did not start", "device provider broke"])
+    @pytest.mark.parametrize("reason", ["the AVFoundation device provider is not installed", "device provider broke"])
     def test_a_list_that_cannot_be_read_is_not_a_missing_camera(
         self, monkeypatch: pytest.MonkeyPatch, reason: str
     ) -> None:
@@ -684,8 +624,8 @@ class TestAvfPreflight:
             VideoFailure.UNKNOWN, f"the camera list could not be read: {reason}"
         )
 
-    @pytest.mark.parametrize("start_ok", [False, None], ids=["monitor-not-started", "gst-init-raises"])
-    def test_a_broken_device_monitor_is_not_a_missing_camera(
+    @pytest.mark.parametrize("start_ok", [False, None], ids=["no-avf-provider", "gst-init-raises"])
+    def test_a_broken_device_provider_is_not_a_missing_camera(
         self, monkeypatch: pytest.MonkeyPatch, start_ok: bool | None
     ) -> None:
         from openfollow.video.failure import VideoFailure
@@ -964,13 +904,6 @@ class TestHandleListDevices:
         assert options[0] == '<option value="0x14100000" selected>0x14100000 (unavailable)</option>'
         assert options[1] == '<option value="47B4B64B">FaceTime HD Camera</option>'
 
-    def test_a_camera_missing_since_startup_is_named_as_stored(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _cameras(monkeypatch, ("47B4B64B", "FaceTime HD Camera"))
-
-        html = AvfInput().handle_list_devices({"avf_unique_id": "0x14100000", "avf_device_name": "Capture Card"})
-
-        assert html.split("\n")[0] == '<option value="0x14100000" selected>Capture Card (unavailable)</option>'
-
     def test_a_missing_camera_listed_earlier_is_named(
         self, monkeypatch: pytest.MonkeyPatch, _no_cameras_listed_yet
     ) -> None:
@@ -1004,13 +937,13 @@ class TestHandleListDevices:
         cannot tell; the camera stays selected, as the build refuses as unknown."""
 
         def _broken() -> list[dict[str, str]]:
-            raise RuntimeError("the device monitor did not start")
+            raise RuntimeError("the AVFoundation device provider is not installed")
 
         monkeypatch.setattr(avf_module, "_list_avf_devices", _broken)
 
-        html = AvfInput().handle_list_devices({"avf_unique_id": "0x14100000", "avf_device_name": "Capture Card"})
+        html = AvfInput().handle_list_devices({"avf_unique_id": "0x14100000"})
 
-        assert html.split("\n")[0] == '<option value="0x14100000" selected>Capture Card</option>'
+        assert html.split("\n")[0] == '<option value="0x14100000" selected>0x14100000</option>'
 
     def test_a_list_that_cannot_be_read_says_so_beside_a_remembered_camera(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1019,14 +952,14 @@ class TestHandleListDevices:
         selectable, so a save keeps the remembered camera."""
 
         def _broken() -> list[dict[str, str]]:
-            raise RuntimeError("the device monitor did not start")
+            raise RuntimeError("the AVFoundation device provider is not installed")
 
         monkeypatch.setattr(avf_module, "_list_avf_devices", _broken)
 
-        html = AvfInput().handle_list_devices({"avf_unique_id": "0x14100000", "avf_device_name": "Capture Card"})
+        html = AvfInput().handle_list_devices({"avf_unique_id": "0x14100000"})
 
         assert html.split("\n") == [
-            '<option value="0x14100000" selected>Capture Card</option>',
+            '<option value="0x14100000" selected>0x14100000</option>',
             '<option value="" disabled>-- Camera list could not be read --</option>',
         ]
 
@@ -1034,7 +967,7 @@ class TestHandleListDevices:
         """Not "No devices found": that sends the operator to a cable, not to the listing."""
 
         def _broken() -> list[dict[str, str]]:
-            raise RuntimeError("the device monitor did not start")
+            raise RuntimeError("the AVFoundation device provider is not installed")
 
         monkeypatch.setattr(avf_module, "_list_avf_devices", _broken)
 
@@ -1085,10 +1018,8 @@ class TestDiscoverSources:
         assert AvfInput.source_labels(["C"]) == ["USB Capture (2)"]
 
 
-class TestTheNameIsStoredWithTheCamera:
-    """``avf_device_name`` names a remembered camera that has not been listed
-    since startup. It is written by every path that chooses a camera: the web
-    save and the on-screen picker both go through ``apply_config_fields``."""
+class TestTheCameraIsSavedClean:
+    """A crafted camera ID is cleaned on save as a load would clean it."""
 
     def _saved(self, data: dict[str, Any], **stored: Any) -> Any:
         from openfollow.configuration import AppConfig
@@ -1097,73 +1028,6 @@ class TestTheNameIsStoredWithTheCamera:
         cfg = AppConfig(video_source_type="avf", **stored)
         apply_section_data(cfg, "video_source", data)
         return cfg
-
-    def test_choosing_a_listed_camera_stores_its_name(self, _no_cameras_listed_yet) -> None:
-        _no_cameras_listed_yet["0x14100000"] = "Capture Card"
-
-        cfg = self._saved({"avf_unique_id": "0x14100000"})
-
-        assert (cfg.avf_unique_id, cfg.avf_device_name) == ("0x14100000", "Capture Card")
-
-    def test_a_listed_name_wins_over_a_posted_one(self, _no_cameras_listed_yet) -> None:
-        _no_cameras_listed_yet["0x14100000"] = "Capture Card"
-
-        cfg = self._saved({"avf_unique_id": "0x14100000", "avf_device_name": "Something Else"})
-
-        assert cfg.avf_device_name == "Capture Card"
-
-    def test_a_name_sent_with_an_id_not_listed_here_is_kept(self) -> None:
-        """An import or a peer names a camera this station has not listed."""
-        cfg = self._saved({"avf_unique_id": "0x14100000", "avf_device_name": "Capture Card"})
-
-        assert cfg.avf_device_name == "Capture Card"
-
-    def test_saving_a_missing_camera_unchanged_keeps_its_name(self) -> None:
-        cfg = self._saved(
-            {"avf_unique_id": "0x14100000", "avf_width": "1280"},
-            avf_unique_id="0x14100000",
-            avf_device_name="Capture Card",
-        )
-
-        assert cfg.avf_device_name == "Capture Card"
-        assert cfg.avf_width == 1280
-
-    def test_a_save_that_names_no_camera_keeps_the_pair(self) -> None:
-        cfg = self._saved({"avf_width": "1280"}, avf_unique_id="0x14100000", avf_device_name="Capture Card")
-
-        assert (cfg.avf_unique_id, cfg.avf_device_name) == ("0x14100000", "Capture Card")
-
-    def test_another_camera_never_inherits_the_old_name(self) -> None:
-        cfg = self._saved({"avf_unique_id": "47B4B64B"}, avf_unique_id="0x14100000", avf_device_name="Capture Card")
-
-        assert cfg.avf_device_name == ""
-
-    def test_no_camera_chosen_stores_no_name(self) -> None:
-        cfg = self._saved(
-            {"avf_unique_id": "", "avf_device_name": "Capture Card"},
-            avf_unique_id="0x14100000",
-            avf_device_name="Capture Card",
-        )
-
-        assert (cfg.avf_unique_id, cfg.avf_device_name) == ("", "")
-
-    @pytest.mark.parametrize(
-        ("posted", "stored"),
-        [
-            ("Capture\x00 Card‮", "Capture Card"),
-            ("  Capture Card \n", "Capture Card"),
-            ("C" * 300, "C" * 128),
-            (None, ""),
-            (5, ""),
-            (True, ""),
-            (["Capture Card"], ""),
-        ],
-        ids=["control-and-bidi", "whitespace", "overlong", "none", "int", "bool", "list"],
-    )
-    def test_a_crafted_name_is_cleaned_as_a_load_would(self, posted: object, stored: str) -> None:
-        cfg = self._saved({"avf_unique_id": "0x14100000", "avf_device_name": posted})
-
-        assert cfg.avf_device_name == stored
 
     @pytest.mark.parametrize(
         "posted",
@@ -1176,7 +1040,7 @@ class TestTheNameIsStoredWithTheCamera:
         assert cfg.avf_unique_id == "0x14100000"
 
     def test_an_id_the_hud_shows_is_clean(self) -> None:
-        """A camera not listed this run and stored without a name is shown by its ID."""
+        """A camera not listed this run is shown by its ID."""
         from openfollow.configuration import AppConfig
 
         cfg = AppConfig(video_source_type="avf", avf_unique_id="0x1410\u202e0000")

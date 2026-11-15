@@ -100,14 +100,14 @@ def test_a_frame_keeps_its_aspect(
     ],
     ids=["same", "4:3", "portrait", "letterbox", "fractional", "no-frame"],
 )
-def test_the_scene_sits_where_the_video_is_drawn_at_square_pixels(
+def test_the_scene_sits_where_the_video_is_drawn(
     frame: tuple[int, int], area: tuple[int, int], rect: tuple[int, int, int, int]
 ) -> None:
     view = gl_display.scene_view(*frame, *area)
 
-    assert (tuple(view.rect), view.pixel_aspect) == (rect, 1.0)
+    assert tuple(view) == rect
     # Back in clip space it is the quad the video is drawn on, to half a pixel.
-    x, y, w, h = view.rect
+    x, y, w, h = view
     aw, ah = area
     drawn = (2 * x / aw - 1, 1 - 2 * (y + h) / ah, 2 * (x + w) / aw - 1, 1 - 2 * y / ah)
     assert drawn == pytest.approx(letterbox(*frame, *area), abs=1 / min(aw, ah))

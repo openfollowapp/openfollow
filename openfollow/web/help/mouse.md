@@ -26,6 +26,6 @@ When the video is boxed between black bars, the bars are not stage: a click in a
 
 - **Scroll wheel** – when on, the wheel raises and lowers the controlled marker's height.
 - **Wheel direction** – whether scrolling up raises or lowers the marker. Default: **Scroll up raises the marker**.
-- **Step per tick (m)** – how far each wheel click moves the height. Default `0.1` m. A trackpad or Magic Mouse sends many scroll events per swipe, so it moves the height much further than a wheel.
+- **Step per tick (m)** – how far each wheel click moves the height. Default `0.1` m. A trackpad or Magic Mouse sends many scroll events per swipe, so it moves the height much further than a wheel. On a Mac the height stops when the fingers lift: the scrolling macOS adds after a swipe does not move it.
 
 **Save** – store the settings. Changes apply immediately but are lost on restart unless saved.

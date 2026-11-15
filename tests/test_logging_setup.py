@@ -19,7 +19,6 @@ import re
 import threading
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -326,115 +325,6 @@ def test_the_log_file_counts_process_output_towards_its_size(tmp_path: Path, std
         handler.close()
     assert _lines(log_file) == ["second"]
     assert _lines(tmp_path / "openfollow.log.1")[0] == "first"
-
-
-def test_the_log_file_rotates_on_process_output_alone(tmp_path: Path, std_fds: tuple[int, int]) -> None:
-    """A GLib warning repeated every frame fills the file with no record to trigger a size check."""
-    log_file = tmp_path / "openfollow.log"
-    handler = _file_handler(log_file, std_fds)
-    try:
-        os.write(std_fds[1], b"n" * 100 + b"\n")
-        handler.roll_over_if_full()
-        assert not (tmp_path / "openfollow.log.1").exists()
-        os.write(std_fds[1], b"n" * 100 + b"\n")
-        handler.roll_over_if_full()
-    finally:
-        handler.close()
-    assert (tmp_path / "openfollow.log.1").stat().st_size == 202
-    assert log_file.stat().st_size == 0
-
-
-class _SignallingLogFileHandler(LogFileHandler):
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        self.rolled = threading.Event()
-        super().__init__(*args, **kwargs)
-
-    def doRollover(self) -> None:
-        super().doRollover()
-        self.rolled.set()
-
-
-def test_the_log_file_checks_its_size_in_the_background(tmp_path: Path, std_fds: tuple[int, int]) -> None:
-    handler = _SignallingLogFileHandler(
-        tmp_path / "openfollow.log", max_bytes=200, backup_count=2, std_fds=std_fds, check_every_s=0.01
-    )
-    try:
-        os.write(std_fds[1], b"n" * 300 + b"\n")
-        assert handler.rolled.wait(timeout=10)
-    finally:
-        handler.close()
-
-
-class _FailingOnceLogFileHandler(_SignallingLogFileHandler):
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        self.failures = 0
-        super().__init__(*args, **kwargs)
-
-    def doRollover(self) -> None:
-        if self.failures == 0:
-            self.failures += 1
-            raise PermissionError("rename refused")
-        super().doRollover()
-
-
-def test_a_failed_background_rotation_does_not_end_the_size_checks(
-    tmp_path: Path, std_fds: tuple[int, int], capsys: pytest.CaptureFixture[str]
-) -> None:
-    handler = _FailingOnceLogFileHandler(
-        tmp_path / "openfollow.log", max_bytes=200, backup_count=2, std_fds=std_fds, check_every_s=0.01
-    )
-    try:
-        os.write(std_fds[1], b"n" * 300 + b"\n")
-        assert handler.rolled.wait(timeout=10)
-    finally:
-        handler.close()
-    assert handler.failures == 1
-    assert "rename refused" in capsys.readouterr().err
-
-
-def test_closing_the_log_file_stops_its_size_checks(tmp_path: Path, std_fds: tuple[int, int]) -> None:
-    before = set(threading.enumerate())
-    handler = _file_handler(tmp_path / "openfollow.log", std_fds)
-    (watcher,) = set(threading.enumerate()) - before
-    handler.close()
-    watcher.join(timeout=10)
-    assert not watcher.is_alive()
-
-
-def test_logging_shutdown_closes_the_log_file_while_a_size_check_waits(
-    tmp_path: Path, std_fds: tuple[int, int]
-) -> None:
-    """``logging.shutdown`` holds the handler lock across ``close``: a size check
-    waiting for that lock must neither hold ``close`` up nor fail once it runs."""
-    # A zero interval keeps the background check queued on the lock as often as not.
-    handler = LogFileHandler(
-        tmp_path / "openfollow.log", max_bytes=200, backup_count=2, std_fds=std_fds, check_every_s=0.0
-    )
-    errors: list[BaseException] = []
-
-    def check() -> None:
-        try:
-            handler.roll_over_if_full()
-        except BaseException as exc:  # noqa: BLE001 - reported by the assertion below
-            errors.append(exc)
-
-    checking = threading.Thread(target=check, daemon=True)
-
-    def shut_down() -> None:
-        handler.acquire()
-        try:
-            checking.start()
-            handler.close()
-        finally:
-            handler.release()
-
-    closer = threading.Thread(target=shut_down, daemon=True)
-    closer.start()
-    closer.join(timeout=10)
-    checking.join(timeout=10)
-    assert not closer.is_alive()
-    assert not checking.is_alive()
-    assert errors == []
 
 
 def test_setup_logging_falls_back_to_stderr_when_the_log_file_cannot_open(

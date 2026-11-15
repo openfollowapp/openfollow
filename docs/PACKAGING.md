@@ -537,7 +537,7 @@ Everything lives under [`packaging/macos/`](../packaging/macos/):
 | `launcher.py` | Bundle entry point: `--export` re-exec, `OPENFOLLOW_SELFCHECK`, and the GUI (seeds per-user config + all quality-tier models on first run). |
 | `check_macos_minimum.py` | Build-time check: fails when a bundled Mach-O needs a newer macOS than the Info.plist's `LSMinimumSystemVersion`. |
 | `runtime_hook.py` | Points `GI_TYPELIB_PATH` / `GST_PLUGIN_PATH` / GdkPixbuf / GTK theme paths at the bundle before `gi` loads. |
-| `config.seed.toml` | First-run config (binds the web UI to port 8080, enables detection). |
+| `config.seed.toml` | First-run config (binds the web UI to port 8080, starts on the test pattern, detection off). |
 | `make-icns.sh` | Renders the `.icns` from `openfollow/web/static/icon.svg`. |
 
 ### Build it (macOS)
@@ -668,8 +668,8 @@ GStreamer warnings and an uncaught exception in a thread. The launcher enables
 thread's Python traceback at the end of the file.
 
 - **Size:** the file rotates at 5 MB and keeps four copies (`openfollow.log.1`
-  the newest), 25 MB at most. A check every 10 s rotates a file that native
-  output alone has filled, which no record would.
+  the newest), 25 MB at most. Native output counts towards the size, and the
+  next record rotates a file it has filled.
 - **Restarts:** each process start logs `Process <pid> logging to <path>`, so the
   file shows where a restart or a relaunch begins.
 - **Failure:** a file that cannot be opened leaves the log on stderr, with a

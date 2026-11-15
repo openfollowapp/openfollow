@@ -1230,8 +1230,7 @@ def test_beacon_send_failures_log_once_per_streak(
     assert [r.getMessage() for r in caplog.records if "Discovery" in r.getMessage()] == [
         f"Discovery: send failed: [Errno {errno.EHOSTUNREACH}] No route to host"
     ]
-    status = sender.send_health.status()
-    assert (status.failed, status.errno, sender.consecutive_errors) == (3, errno.EHOSTUNREACH, 3)
+    assert (sender.send_health.failed, sender.consecutive_errors) == (3, 3)
 
 
 def test_a_socket_that_takes_one_beacon_then_refuses_never_reads_as_recovered(
@@ -1272,8 +1271,7 @@ def test_a_socket_that_takes_one_beacon_then_refuses_never_reads_as_recovered(
     with caplog.at_level(logging.INFO):
         sender._run()
 
-    status = sender.send_health.status()
-    assert status.state == "failing"
+    assert sender.send_health.failing
     assert sender.consecutive_errors == 6
     assert not [r for r in caplog.records if "again" in r.getMessage() or "recovered" in r.getMessage()]
 
@@ -1314,9 +1312,9 @@ def _run_beacon_opening_late(sender: BeaconSender, failed_opens: int, sock: obje
     sender._run()
 
 
-@pytest.mark.parametrize(("send_fails", "expected"), [(True, 4), (False, 3)])
-def test_beacon_open_failures_count_until_beacons_keep_leaving(send_fails: bool, expected: int) -> None:
-    """A failed open is a beacon that did not leave; a socket that then sends once has not ended that."""
+@pytest.mark.parametrize(("send_fails", "expected"), [(True, 4), (False, 0)])
+def test_beacon_open_failures_count_until_a_beacon_leaves(send_fails: bool, expected: int) -> None:
+    """A failed open is a beacon that did not leave, counted until one does."""
     sender = BeaconSender(name="X", web_port=80)
     _run_beacon_opening_late(sender, failed_opens=3, sock=_BeaconSocket(send_fails), sends=1)
     assert sender.consecutive_errors == expected
@@ -1327,23 +1325,14 @@ def test_beacon_open_failures_clear_once_sends_keep_succeeding(monkeypatch: pyte
     sender = BeaconSender(name="X", web_port=80)
     _run_beacon_opening_late(sender, failed_opens=3, sock=_BeaconSocket(), sends=2)
     assert sender.consecutive_errors == 0
-    assert sender.send_health.status().state == "ok"
-
-
-def test_a_beacon_socket_that_never_opens_raises_a_row_named_by_its_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Other stations stop seeing this one, though no beacon send ever failed."""
-    monkeypatch.setattr("openfollow.send_health.FAILING_AFTER_S", 0.0)
-    sender = BeaconSender(name="X", web_port=80)
-    _run_beacon_opening_late(sender, failed_opens=2, sock=_BeaconSocket(), sends=0)
-    status = sender.send_health.status()
-    assert (status.state, status.error, status.failed) == ("failing", "Can't assign requested address", 2)
+    assert sender.send_health.failed == 0
 
 
 def test_beacon_reopen_starts_a_new_record() -> None:
     sender = BeaconSender(name="X", web_port=80)
     _run_beacon(sender, _RefusingSocket(), sends=2)
     sender.reopen()
-    assert sender.send_health.status().state == "ok"
+    assert sender.send_health.failed == 0
     assert sender.consecutive_errors == 0
 
 

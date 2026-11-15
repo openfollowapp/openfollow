@@ -1226,26 +1226,9 @@ def _report_unsaved(app: OpenFollowApp, what: str, again: str) -> None:
 
 
 def save_source_pick(app: OpenFollowApp, field: str, value: str) -> None:
-    """Save a source picked on screen; its input is connecting to it already, so the reload swaps nothing.
-
-    Stored through the input's web-save path, so what goes with the source (a camera's name) is saved with it.
-    """
-    from openfollow.video.inputs import get_input_class
-
-    names = [field]
-    cls = get_input_class(app._config.video_source_type)
-    if cls is None or field not in {f.name for f in cls.config_fields()}:
-        setattr(app._config, field, value)
-    else:
-        before = cls.get_config_field_values(app._config)
-        cls.apply_config_fields(app._config, {field: value})
-        after = cls.get_config_field_values(app._config)
-        names += [name for name, now in after.items() if name != field and now != before[name]]
-        quiet = {f.name: after[f.name] for f in cls.config_fields() if not f.rebuilds and f.name in names}
-        receiver = getattr(app, "_video_receiver", None)
-        if quiet and receiver is not None:
-            receiver.update_input_fields(quiet)
-    if not _persist_config(app, *names):
+    """Save a source picked on screen; its input is connecting to it already, so the reload swaps nothing."""
+    setattr(app._config, field, value)
+    if not _persist_config(app, field):
         what = f"The {_input_display_name(app._config.video_source_type)} source"
         _report_unsaved(app, what, "pick it again")
 

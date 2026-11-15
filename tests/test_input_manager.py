@@ -783,13 +783,12 @@ def test_screen_axes_that_cancel_a_diagonal_leave_the_marker_still(monkeypatch) 
     ("picture", "frame"),
     [
         (PictureGeometry(), (1920.0, 1080.0)),
-        (PictureGeometry(1024, 768), (1440.0, 1080.0)),
-        (PictureGeometry(704, 576, (12, 11)), (1320.0, 1080.0)),
+        (PictureGeometry(1024, 768), (1440, 1080)),
     ],
-    ids=["no-picture", "4:3-pillarboxed", "non-square-pixels"],
+    ids=["no-picture", "4:3-pillarboxed"],
 )
-def test_screen_frame_reads_the_picture_in_its_own_pixels(monkeypatch, picture, frame) -> None:  # noqa: ANN001
-    """Up the picture is taken where the HUD draws it: the letterboxed box, in frame pixels."""
+def test_screen_frame_reads_the_picture_where_the_hud_draws_it(monkeypatch, picture, frame) -> None:  # noqa: ANN001
+    """Up the picture is taken in the letterboxed box the HUD draws in."""
     import openfollow.input.control_frame as control_frame_module
 
     seen: list[tuple[float, float]] = []

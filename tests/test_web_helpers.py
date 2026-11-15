@@ -1207,57 +1207,6 @@ def test_apply_zone_fields_preserves_vertices_when_key_absent() -> None:
 
 
 # ---------------------------------------------------------------------------
-# The macOS USB camera's stored name travels exactly as its unique ID does
-# ---------------------------------------------------------------------------
-
-
-class TestTheCameraNameTravelsWithItsId:
-    """Not device-local, like ``avf_unique_id``: a camera chosen on one station
-    names the same camera on a peer, and neither is a secret."""
-
-    _CAMERA = {"avf_unique_id": "0x14100000", "avf_device_name": "Capture Card"}
-
-    def test_export_carries_both(self) -> None:
-        exported = _config_dict_redacted(AppConfig(video_source_type="avf", **self._CAMERA))
-
-        assert {key: exported[key] for key in self._CAMERA} == self._CAMERA
-
-    def test_import_applies_both(self) -> None:
-        from openfollow.web.routes import _apply_import_data
-
-        # Already on the USB camera: an import only switches to an input this
-        # platform offers, and off macOS that is never this one.
-        imported = _apply_import_data(AppConfig(video_source_type="avf"), {"video_source_type": "avf", **self._CAMERA})
-
-        assert (imported.avf_unique_id, imported.avf_device_name) == ("0x14100000", "Capture Card")
-
-    def test_a_section_broadcast_sends_and_applies_both(self) -> None:
-        sent = strip_device_local_fields(
-            "video_source", get_section_data(AppConfig(video_source_type="avf", **self._CAMERA), "video_source") or {}
-        )
-        peer = AppConfig(video_source_type="avf")
-
-        apply_section_data(peer, "video_source", sent)
-
-        assert {key: sent[key] for key in self._CAMERA} == self._CAMERA
-        assert (peer.avf_unique_id, peer.avf_device_name) == ("0x14100000", "Capture Card")
-
-    def test_restore_defaults_clears_both(self) -> None:
-        from openfollow.web.routes import reset_config_to_defaults
-
-        fresh = reset_config_to_defaults(AppConfig(video_source_type="avf", **self._CAMERA))
-
-        assert (fresh.avf_unique_id, fresh.avf_device_name) == ("", "")
-
-    def test_the_diagnostics_dump_keeps_both(self) -> None:
-        from openfollow.web.diagnostics import redact_config_secrets
-
-        dump = 'avf_unique_id = "0x14100000"\navf_device_name = "Capture Card"'
-
-        assert redact_config_secrets(dump) == dump
-
-
-# ---------------------------------------------------------------------------
 # _apply_import_data
 # ---------------------------------------------------------------------------
 
@@ -1989,7 +1938,7 @@ def test_reset_config_to_defaults_returns_every_section_to_default() -> None:
         parent, _, name = path.rpartition(".")
         (restored[parent] if parent else restored).pop(name)
         (defaults[parent] if parent else defaults).pop(name)
-    # The station name follows the preserved id, not the bare default – see below.
+    # The station keeps its name – see below.
     restored.pop("psn_system_name")
     defaults.pop("psn_system_name")
 
@@ -2007,20 +1956,17 @@ def test_reset_config_to_defaults_keeps_device_identity(path: str, value: object
     assert _get_path(reset_config_to_defaults(configured), path) == value
 
 
-def test_reset_config_to_defaults_names_the_station_from_its_preserved_id() -> None:
-    """The name a first run seeds, not the bare default that a later restart
-    would silently replace."""
+def test_reset_config_to_defaults_keeps_the_station_name() -> None:
+    """Neither the bare default nor the name the id derives, even when the two differ."""
     from openfollow.marker_catalog import derive_station_name
     from openfollow.web.routes import reset_config_to_defaults
 
     configured = AppConfig()
     configured.station_id = "f0e1d2c3b4a59687f0e1d2c3b4a59687"
     configured.psn_system_name = "Front of House"
+    assert derive_station_name(configured.station_id) != configured.psn_system_name
 
-    restored = reset_config_to_defaults(configured)
-
-    assert restored.psn_system_name == derive_station_name(configured.station_id)
-    assert restored.psn_system_name != configured.psn_system_name
+    assert reset_config_to_defaults(configured).psn_system_name == "Front of House"
 
 
 def test_reset_config_to_defaults_falls_back_to_the_plain_name_without_an_id() -> None:
@@ -4624,3 +4570,31 @@ def test_a_push_leaves_this_stations_button_names() -> None:
     new = _apply_import_data(current, {"controller": {"button_name_style": "playstation"}}, pushed=True)
 
     assert new.controller.button_name_style == "xbox"
+
+
+def test_reset_config_to_defaults_lands_on_the_macos_first_run(tmp_path, monkeypatch) -> None:
+    """In the macOS app a reset returns to the bundled seed, identity kept."""
+    import shutil
+    import sys
+    from pathlib import Path
+
+    from openfollow.web.routes import reset_config_to_defaults
+
+    shutil.copyfile(
+        Path(__file__).resolve().parents[1] / "packaging" / "macos" / "config.seed.toml", tmp_path / "config.seed.toml"
+    )
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+    configured = AppConfig()
+    configured.video_source_type = "srt"
+    configured.detection.enabled = True
+    configured.detection.model = "yolo26n.onnx"
+    configured.detection.storage_path = "/Users/operator/Library/Application Support/OpenFollow/yolo"
+    configured.web_port = 8123
+
+    fresh = reset_config_to_defaults(configured)
+
+    assert fresh.video_source_type == "testpattern"
+    assert fresh.detection.enabled is False
+    assert fresh.detection.model == "yolo26m.onnx"
+    assert fresh.detection.storage_path == configured.detection.storage_path
+    assert fresh.web_port == 8123

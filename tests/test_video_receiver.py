@@ -40,7 +40,7 @@ from typing import Any
 
 import pytest
 
-from openfollow.runtime.overlay_layout import PictureGeometry, VideoRect, scene_view
+from openfollow.runtime.overlay_layout import PictureGeometry, VideoRect, video_rect
 from openfollow.runtime.receiver_bus import BusError
 from openfollow.video import receiver as receiver_mod
 from openfollow.video.connection_status import ConnectionStatus
@@ -888,6 +888,46 @@ class TestSharedSink:
         sink.get_property = boom  # type: ignore[assignment]
         assert r.get_sink_widget() is None
 
+    def test_on_macos_the_gtksink_sits_behind_a_device_scaler_named_as_the_shared_sink(
+        self, fake_gst, fake_glib, fake_input_cls, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(receiver_mod.sys, "platform", "darwin")
+        factory = FakeElementFactory(available_elements={"gtksink", "videoscale"})
+        make = factory.make
+
+        def make_with_widget(kind: str, name: str) -> FakeElement:
+            element = make(kind, name)
+            element.set_property("widget", "gtk widget")
+            return element
+
+        factory.make = make_with_widget  # type: ignore[method-assign]
+        fake_gst.ElementFactory = factory
+        wrapped: list[tuple[Any, str]] = []
+        followed: list[tuple[Any, Any]] = []
+        scaler = FakeElement(receiver_mod.SHARED_SINK_NAME)
+
+        def fake_wrap(_gst: Any, inner: Any, name: str) -> Any:
+            wrapped.append((inner, name))
+            return scaler
+
+        monkeypatch.setattr(receiver_mod, "device_scaled_sink", fake_wrap)
+        monkeypatch.setattr(receiver_mod, "follow_widget", lambda _gst, b, w: followed.append((b, w)))
+        r = _make_receiver()
+        assert r._get_shared_sink() is scaler
+        ((inner, name),) = wrapped
+        assert name == receiver_mod.SHARED_SINK_NAME
+        assert inner.get_name() == f"{receiver_mod.SHARED_SINK_NAME}_gtk"
+        assert inner.properties["sync"] is False
+        assert followed == [(scaler, "gtk widget")]
+        assert r.get_sink_widget() == "gtk widget"
+
+    def test_off_macos_the_gtksink_is_the_shared_sink(self, fake_gst, fake_glib, fake_input_cls, monkeypatch) -> None:
+        monkeypatch.setattr(receiver_mod.sys, "platform", "linux")
+        fake_gst.ElementFactory = FakeElementFactory(available_elements={"gtksink", "videoscale"})
+        monkeypatch.setattr(receiver_mod, "device_scaled_sink", lambda *_a: pytest.fail("wrapped off macOS"))
+        sink = _make_receiver()._get_shared_sink()
+        assert sink.get_name() == receiver_mod.SHARED_SINK_NAME
+
 
 # --------------------------------------------------------------------------- #
 # _has_configured_source and video-flow connection
@@ -1463,32 +1503,6 @@ class TestSourceSelectionNavigation:
 # --------------------------------------------------------------------------- #
 # set_source
 # --------------------------------------------------------------------------- #
-
-
-class TestUpdateInputFields:
-    def test_a_field_that_does_not_rebuild_is_stored_without_a_build(self, fake_gst, fake_glib, monkeypatch) -> None:
-        from openfollow.video.inputs import avf
-
-        monkeypatch.setattr(avf, "_camera_names", {})
-        # Connected and available on every platform, so a rebuild would reach the build.
-        monkeypatch.setattr(
-            avf, "_list_avf_devices", lambda: [{"unique_id": "0x14100000", "name": "USB Capture", "index": "0"}]
-        )
-        monkeypatch.setattr(avf.AvfInput, "is_available", classmethod(lambda _cls: (True, "")))
-        monkeypatch.setattr(receiver_mod, "get_input_class", lambda _input_id: avf.AvfInput)
-        builds: list[object] = []
-        monkeypatch.setattr(
-            avf.AvfInput, "create_pipeline", lambda *args, **kwargs: builds.append(args) or FakePipeline()
-        )
-        r = receiver_mod.GstNativeSinkReceiver(source_type="avf", input_config={"avf_unique_id": "0x14100000"})
-        assert not {f.name: f for f in avf.AvfInput.config_fields()}["avf_device_name"].rebuilds
-
-        r.update_input_fields({"avf_device_name": "Capture Card"})
-
-        assert r.source_name.startswith("Capture Card (")
-        assert builds == []
-        assert r._pipeline is None
-        assert not fake_glib.timers
 
 
 class TestSetSource:
@@ -2277,20 +2291,14 @@ class TestPadEvent:
         fps_num: int = 30,
         fps_den: int = 1,
         fraction_returns: tuple[bool, int, int] = None,
-        par: tuple[int, int] | None = None,
     ):
-        fractions = {
-            "framerate": fraction_returns if fraction_returns is not None else (True, fps_num, fps_den),
-            # A field the caps do not carry reads as GStreamer reports it: not found.
-            "pixel-aspect-ratio": (True, *par) if par is not None else (False, 0, 0),
-        }
         structure = SimpleNamespace(
             get_value=lambda key: {"width": width, "height": height}.get(key),
-            get_fraction=lambda key: fractions[key],
+            get_fraction=lambda key: fraction_returns if fraction_returns is not None else (True, fps_num, fps_den),
         )
         caps = SimpleNamespace(
             get_structure=lambda _idx: structure,
-            to_string=lambda: _caps_string(width, height, par),
+            to_string=lambda: _caps_string(width, height),
         )
         event = SimpleNamespace(
             type=FakeEventType.CAPS,
@@ -2385,89 +2393,18 @@ class TestPadEvent:
         assert r.resolution == (1024, 768)
         assert r.source_framerate == 25.0
 
-    def test_caps_without_a_pixel_aspect_ratio_are_square(self, fake_gst, fake_glib, fake_input_cls) -> None:
-        r = _make_receiver(input_config={"fake_source": "cam-1"})
-        r._on_pad_event(object(), self._make_caps_event(1280, 720)[0])
-        assert r.picture_geometry.par == (1, 1)
-
-    @pytest.mark.parametrize(
-        ("par", "expected"),
-        [((12, 11), (12, 11)), ((24, 22), (12, 11)), ((1, 1), (1, 1))],
-        ids=["d1", "unreduced", "square"],
-    )
-    def test_caps_publish_the_pixel_aspect_ratio_in_lowest_terms(
-        self, fake_gst, fake_glib, fake_input_cls, par: tuple[int, int], expected: tuple[int, int]
-    ) -> None:
-        r = _make_receiver(input_config={"fake_source": "cam-1"})
-        r._on_pad_event(object(), self._make_caps_event(704, 576, par=par)[0])
-        assert r.resolution == (704, 576)
-        assert r.picture_geometry == PictureGeometry(704, 576, expected)
-
-    @pytest.mark.parametrize("par", [(0, 1), (1, 0), (-12, 11)], ids=["zero", "zero-den", "negative"])
-    def test_an_invalid_pixel_aspect_ratio_reads_as_square(
-        self, fake_gst, fake_glib, fake_input_cls, par: tuple[int, int]
-    ) -> None:
-        r = _make_receiver(input_config={"fake_source": "cam-1"})
-        r._on_pad_event(object(), self._make_caps_event(704, 576, par=par)[0])
-        assert r.picture_geometry.par == (1, 1)
-
-    def test_the_pixel_aspect_ratio_is_read_from_the_caps_string(self, fake_gst, fake_glib, fake_input_cls) -> None:
-        """The structure getters are what GStreamer 1.26.2 broke, so a getter
-        that cannot answer must not turn a non-square picture square."""
-        r = _make_receiver(input_config={"fake_source": "cam-1"})
-
-        def _get_fraction(key: str) -> tuple[bool, int, int]:
-            if key == "pixel-aspect-ratio":
-                raise RuntimeError("bad")
-            return (True, 25, 1)
-
-        structure = SimpleNamespace(
-            get_value=lambda key: {"width": 704, "height": 576}.get(key), get_fraction=_get_fraction
-        )
-        caps = SimpleNamespace(get_structure=lambda _i: structure, to_string=lambda: _caps_string(704, 576, (12, 11)))
-        event = SimpleNamespace(type=FakeEventType.CAPS, parse_caps=lambda: caps)
-        r._on_pad_event(object(), SimpleNamespace(get_event=lambda: event))
-        assert r.picture_geometry == PictureGeometry(704, 576, (12, 11))
-
-    def test_a_pixel_aspect_range_reads_as_square(self, fake_gst, fake_glib, fake_input_cls) -> None:
-        r = _make_receiver(input_config={"fake_source": "cam-1"})
-        info, event = self._make_caps_event(704, 576)
-        caps = event.parse_caps()
-        ranged = (
-            "video/x-raw, width=(int)704, height=(int)576, pixel-aspect-ratio=(fraction)[ 1/2147483647, 2147483647/1 ]"
-        )
-        event.parse_caps = lambda: SimpleNamespace(get_structure=caps.get_structure, to_string=lambda: ranged)
-        r._on_pad_event(object(), info)
-        assert r.resolution == (704, 576)
-        assert r.picture_geometry.par == (1, 1)
-
-    def test_a_pixel_aspect_change_alone_is_a_new_shape(self, fake_gst, fake_glib, fake_input_cls, caplog) -> None:
-        import logging as _logging
-
-        r = _make_receiver(input_config={"fake_source": "cam-1"})
-        r._on_pad_event(object(), self._make_caps_event(720, 576, par=(16, 15))[0])
-        with caplog.at_level(_logging.INFO, logger="openfollow.video.receiver"):
-            r._on_pad_event(object(), self._make_caps_event(720, 576, par=(64, 45))[0])
-        assert r.picture_geometry.par == (64, 45)
-        assert [rec.message for rec in caplog.records if "Video resolution" in rec.message] == [
-            "Video resolution: 720x576, pixel aspect ratio 64:45"
-        ]
-
     def test_placeholder_caps_leave_the_picture_alone(self, fake_gst, fake_glib, fake_input_cls) -> None:
         # Its black frame is no picture: the scene keeps the last source's box.
         r = _make_receiver(input_config={"fake_source": "cam-1"})
-        r._on_pad_event(object(), self._make_caps_event(704, 576, par=(12, 11))[0])
+        r._on_pad_event(object(), self._make_caps_event(704, 576)[0])
         r._state.set_placeholder_pipeline(True)
-        r._on_pad_event(object(), self._make_caps_event(1920, 1080, par=(4, 3))[0])
-        assert r.picture_geometry == PictureGeometry(704, 576, (12, 11))
+        r._on_pad_event(object(), self._make_caps_event(1920, 1080)[0])
+        assert r.picture_geometry == PictureGeometry(704, 576)
 
 
-def _caps_string(width: int, height: int, par: tuple[int, int] | None = None) -> str:
+def _caps_string(width: int, height: int) -> str:
     """Caps in the form ``Gst.Caps.to_string`` prints them."""
-    fields = f"video/x-raw, format=(string)I420, width=(int){width}, height=(int){height}"
-    if par is not None:
-        fields += f", pixel-aspect-ratio=(fraction){par[0]}/{par[1]}"
-    return fields + ", framerate=(fraction)30/1"
+    return f"video/x-raw, format=(string)I420, width=(int){width}, height=(int){height}, framerate=(fraction)30/1"
 
 
 def _caps_size_info(width: int, height: int) -> Any:
@@ -2493,7 +2430,7 @@ class TestTheHudKeepsTheBoxOfTheFrozenPicture:
     def _box(self, r: receiver_mod.GstNativeSinkReceiver) -> VideoRect:
         """The rectangle the renderer boxes the scene into, from what the overlay is fed."""
         picture = r.picture_geometry
-        return scene_view(*self._CANVAS, picture.width, picture.height, picture.par).rect
+        return video_rect(*self._CANVAS, picture.width, picture.height)
 
     @pytest.mark.parametrize(
         "rebuild",
@@ -6712,14 +6649,14 @@ class TestARememberedDeviceThatIsAbsent:
         monkeypatch.setattr(receiver_mod, "get_input_class", lambda _input_id: avf.AvfInput)
         built: list[Any] = []
         monkeypatch.setattr(avf.AvfInput, "create_pipeline", lambda *args, **kwargs: built.append(args))
-        cfg = AppConfig(video_source_type="avf", avf_unique_id="0x14100000", avf_device_name="Capture Card")
+        cfg = AppConfig(video_source_type="avf", avf_unique_id="0x14100000")
         r = receiver_mod.GstNativeSinkReceiver(source_type="avf", input_config=avf.AvfInput.runtime_config(cfg))
         return r, built
 
-    def test_a_usb_camera_missing_since_startup_is_reported_by_name_not_replaced(
+    def test_a_usb_camera_missing_since_startup_is_reported_not_replaced(
         self, fake_gst, fake_glib, monkeypatch
     ) -> None:
-        """The capture card is named as not found; the laptop camera is never opened in its place."""
+        """The capture card is reported as not found; the laptop camera is never opened in its place."""
         from openfollow.runtime.overlay_layout import format_source_text
         from openfollow.video.failure import SourceKind, failure_sentence
 
@@ -6734,9 +6671,9 @@ class TestARememberedDeviceThatIsAbsent:
         status = r.status_marker.snapshot()
         assert status.failure is VideoFailure.STREAM_NOT_FOUND
         assert failure_sentence(status.failure, where=status.source_name, kind=SourceKind.LOCAL) == (
-            "Capture Card (1920x1080@30) was not found."
+            "0x14100000 (1920x1080@30) was not found."
         )
-        assert format_source_text("avf", r.source_name) == "AVF: Capture Card (1920x1080@30)"
+        assert format_source_text("avf", r.source_name) == "AVF: 0x14100000 (1920x1080@30)"
 
     def test_a_camera_list_that_cannot_be_read_is_not_reported_as_a_missing_camera(
         self, fake_gst, fake_glib, monkeypatch, caplog
@@ -6777,6 +6714,7 @@ class TestARememberedDeviceThatIsAbsent:
         r, _built = self._usb_camera(
             monkeypatch, lambda: [{"unique_id": "0x14100000", "name": "Capture Card", "index": "0"}]
         )
+        avf._camera_names["0x14100000"] = "Capture Card"  # the real listing records the name it lists
         refusing = FakePipeline(
             set_state_returns={FakeState.PLAYING: FakeStateChangeReturn.FAILURE}, bus=FakeBus(pop_message=_Msg())
         )

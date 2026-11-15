@@ -37,14 +37,6 @@ class _Scutil:
         return SimpleNamespace(returncode=self._returncode, stdout=answer + "\n")
 
 
-class _Clock:
-    def __init__(self) -> None:
-        self.now = 100.0
-
-    def __call__(self) -> float:
-        return self.now
-
-
 @pytest.fixture
 def kernel_name(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("openfollow.privilege.device_repair.current_hostname", lambda: _KERNEL)
@@ -119,7 +111,7 @@ def test_a_read_with_no_thread_to_run_on_keeps_the_kernel_name(mac: None) -> Non
     assert mdns_name() == f"{_KERNEL}.local"
 
 
-def test_the_frame_clock_never_waits_for_the_first_read(mac: None) -> None:
+def test_the_frame_clock_never_waits_for_the_read(mac: None) -> None:
     # No name rather than the kernel name, which nothing may answer.
     threads = HeldThreads()
     _install(run=_Scutil(_BONJOUR), thread_factory=threads)
@@ -137,7 +129,7 @@ def test_one_read_runs_at_a_time(mac: None) -> None:
     assert threads.started == 1
 
 
-def test_a_caller_waits_for_the_first_read_within_its_budget(mac: None) -> None:
+def test_a_caller_waits_for_the_read_within_its_budget(mac: None) -> None:
     _install(run=_Scutil(_BONJOUR))
     assert mdns_name(wait_s=10.0) == f"{_BONJOUR}.local"
 
@@ -156,93 +148,8 @@ def test_a_caller_waits_no_longer_than_its_budget(mac: None) -> None:
         release.set()
 
 
-def test_a_rename_shows_after_the_refresh(mac: None) -> None:
-    clock = _Clock()
+def test_the_name_is_read_once(mac: None) -> None:
     scutil = _Scutil(_BONJOUR, "Stage-Mac")
-    _install(run=scutil, clock=clock, thread_factory=InlineThread, refresh_s=10.0)
-    assert mdns_name() == f"{_BONJOUR}.local"
-    clock.now += 9.0
-    assert mdns_name() == f"{_BONJOUR}.local"
+    _install(run=scutil, thread_factory=InlineThread)
+    assert [mdns_name() for _ in range(3)] == [f"{_BONJOUR}.local"] * 3
     assert len(scutil.calls) == 1
-    clock.now += 1.0
-    assert mdns_name() == "Stage-Mac.local"
-    assert len(scutil.calls) == 2
-
-
-class _FirstReadOnly:
-    """Runs the first read at once and holds every later one in flight."""
-
-    def __init__(self) -> None:
-        self.held = HeldThreads()
-        self._first = True
-
-    def __call__(self, **kwargs: Any) -> object:
-        if self._first:
-            self._first = False
-            return InlineThread(**kwargs)
-        return self.held(**kwargs)
-
-
-def test_a_refresh_still_running_serves_the_last_name(mac: None) -> None:
-    clock = _Clock()
-    threads = _FirstReadOnly()
-    _install(run=_Scutil(_BONJOUR), clock=clock, thread_factory=threads, refresh_s=10.0)
-    assert mdns_name() == f"{_BONJOUR}.local"
-    clock.now += 10.0
-    assert mdns_name(wait_s=10.0) == f"{_BONJOUR}.local"
-    assert threads.held.started == 1
-
-
-class _TimesOutAfterFirst:
-    """Answers the first read, then times out like a loaded or just-woken Mac."""
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def __call__(self, argv: list[str], **kwargs: Any) -> SimpleNamespace:
-        self.calls += 1
-        if self.calls > 1:
-            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
-        return SimpleNamespace(returncode=0, stdout=_BONJOUR + "\n")
-
-
-def test_a_refresh_that_gets_no_answer_keeps_the_name(mac: None) -> None:
-    clock = _Clock()
-    scutil = _TimesOutAfterFirst()
-    _install(run=scutil, clock=clock, thread_factory=InlineThread, refresh_s=10.0)
-    assert mdns_name() == f"{_BONJOUR}.local"
-    clock.now += 10.0
-    assert mdns_name() == f"{_BONJOUR}.local"
-    assert scutil.calls == 2
-
-
-class _NoThreadAfterFirst:
-    """Runs the first read at once, then has no thread left to start."""
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def __call__(self, **kwargs: Any) -> object:
-        self.calls += 1
-        if self.calls > 1:
-            raise RuntimeError("can't start new thread")
-        return InlineThread(**kwargs)
-
-
-def test_a_refresh_with_no_thread_to_run_on_keeps_the_name(mac: None) -> None:
-    clock = _Clock()
-    threads = _NoThreadAfterFirst()
-    _install(run=_Scutil(_BONJOUR), clock=clock, thread_factory=threads, refresh_s=10.0)
-    assert mdns_name() == f"{_BONJOUR}.local"
-    clock.now += 10.0
-    assert mdns_name() == f"{_BONJOUR}.local"
-    assert threads.calls == 2
-
-
-def test_a_refresh_that_answers_not_set_drops_the_name(mac: None) -> None:
-    clock = _Clock()
-    answers = iter([SimpleNamespace(returncode=0, stdout=_BONJOUR), SimpleNamespace(returncode=1, stdout="")])
-    _install(run=lambda *_a, **_k: next(answers), clock=clock, thread_factory=InlineThread, refresh_s=10.0)
-    assert mdns_name() == f"{_BONJOUR}.local"
-    clock.now += 10.0
-    assert mdns_name() == f"{_KERNEL}.local"

@@ -47,6 +47,13 @@ def coerce_positive_int(value: Any, default: int) -> int:
     return n if n >= 1 else default
 
 
+# hx-trigger for a lookup in a hidden-until-picked fragment: on load only for the
+# input the page shows, and on ``of-input-shown`` when the Source Type picker shows it.
+SHOWN_INPUT_TRIGGER = (
+    "load[!this.closest('[data-input-type][style*=none],[data-wizard-input-type][style*=none]')], of-input-shown"
+)
+
+
 @dataclass
 class ConfigField:
     """A config field that this input needs stored in config.toml."""
@@ -61,9 +68,6 @@ class ConfigField:
     # the secret and is invisible in a password field, so trimming one fails
     # authentication with nothing on screen to explain why.
     strip: bool = True
-    # False = stored with the source but never part of the build: a change to it
-    # alone does not reconnect the input.
-    rebuilds: bool = True
 
 
 @dataclass
@@ -387,14 +391,8 @@ class VideoInputBase(ABC):
 
     @classmethod
     def config_changed(cls, old_cfg: Any, new_cfg: Any) -> bool:
-        """Whether config relevant to this input changed, including the station interface a blank pin follows.
-
-        A field declared ``rebuilds=False`` is left out.
-        """
-        quiet = {f.name for f in cls.config_fields() if not f.rebuilds}
-        old = {key: value for key, value in cls.runtime_config(old_cfg).items() if key not in quiet}
-        new = {key: value for key, value in cls.runtime_config(new_cfg).items() if key not in quiet}
-        return old != new
+        """Whether config relevant to this input changed, including the station interface a blank pin follows."""
+        return cls.runtime_config(old_cfg) != cls.runtime_config(new_cfg)
 
     @classmethod
     def route_target(cls, config: dict[str, Any]) -> str:

@@ -6,6 +6,7 @@ openfollow/              # Single unified package
 ├── main.py              # CLI entry point
 ├── app.py               # Main application class + event loop
 ├── configuration.py     # Config model, TOML I/O, hot-reload logic
+├── first_run.py         # What Restore defaults returns to: the macOS first-run seed, else the defaults
 ├── config_restore.py    # Lists and reads back the station's own settings backups for a web restore
 ├── restore_hold.py      # What a restore holds until its restart: no write lands over a restored part
 ├── services.py          # Runtime service orchestration
@@ -14,7 +15,7 @@ openfollow/              # Single unified package
 ├── net_utils.py         # Local IP/network helpers
 ├── station_dir.py       # Config file's directory: home of the device-local stores
 ├── packet_chunking.py   # MTU-budgeted datagram split shared by every output
-├── send_health.py       # Whether each sender's datagrams are leaving; refused-send status rows
+├── send_health.py       # Whether macOS refuses a sender's datagrams; the Local Network status row
 ├── retry_backoff.py     # 2 s doubling to 60 s retry for failed network opens and rebinds
 ├── mdns_host.py         # The host name mDNS publishes (macOS: LocalHostName via scutil)
 ├── paths/               # Paths (the experimental `paths` feature)
@@ -46,6 +47,7 @@ openfollow/              # Single unified package
 │   ├── gl_display.py    # GL Operator Screen: video and HUD in one GL area, the checks it runs behind
 │   ├── gl_cadence.py    # When GL video frames meet the refresh, and what that did to them
 │   ├── detection.py     # Optional person detection
+│   ├── coreml_compile.py # First CoreML compile of a model, in a child process
 │   ├── tracking.py      # ByteTrack tracker (Kalman + two-stage association)
 │   ├── media_store.py   # Media Gallery library (images/clips, storage, validation)
 │   ├── connection_status.py

@@ -5022,7 +5022,7 @@ def test_api_config_reset_restores_defaults_and_keeps_device_fields(live_server)
     assert saved.camera.pos_x == pytest.approx(defaults.camera.pos_x)
     assert saved.grid.width == pytest.approx(defaults.grid.width)
     assert saved.controlled_marker_ids == []
-    assert saved.psn_system_name != "Front of House"
+    assert saved.psn_system_name == "Front of House"
     assert saved.web_port == 8123
     assert saved.psn_source_iface == "eth0"
     assert saved.detection.storage_path == "/mnt/nvme/openfollow/yolo"

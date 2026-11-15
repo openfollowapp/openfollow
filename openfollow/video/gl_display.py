@@ -27,7 +27,7 @@ from typing import Any
 
 from openfollow.logging_setup import ThrottledExceptionLogger
 from openfollow.runtime.overlay_layers import Layers, Sprite
-from openfollow.runtime.overlay_layout import SceneView, VideoRect
+from openfollow.runtime.overlay_layout import VideoRect
 from openfollow.video.gl_cadence import Cadence, CadenceReport, Durations
 
 logger = logging.getLogger(__name__)
@@ -304,8 +304,8 @@ def letterbox(frame_w: int, frame_h: int, area_w: int, area_h: int) -> tuple[flo
     return (-sx, -sy, sx, sy)
 
 
-def scene_view(frame_w: int, frame_h: int, area_w: int, area_h: int) -> SceneView:
-    """Where the HUD's scene sits on the video this display draws: ``letterbox`` in area pixels, square pixels.
+def scene_view(frame_w: int, frame_h: int, area_w: int, area_h: int) -> VideoRect:
+    """Where the HUD's scene sits on the video this display draws: ``letterbox`` in area pixels.
 
     Each edge is rounded to the nearest pixel, so the scene's pictures stay on whole pixels, within half
     a pixel of the video's edge.
@@ -319,7 +319,7 @@ def scene_view(frame_w: int, frame_h: int, area_w: int, area_h: int) -> SceneVie
     # Clip space has y up, the area y down.
     left, right = pixel((x0 + 1.0) * area_w / 2), pixel((x1 + 1.0) * area_w / 2)
     top, bottom = pixel((1.0 - y1) * area_h / 2), pixel((1.0 - y0) * area_h / 2)
-    return SceneView(VideoRect(left, top, right - left, bottom - top), 1.0)
+    return VideoRect(left, top, right - left, bottom - top)
 
 
 _VS = """#version 300 es

@@ -17,7 +17,6 @@ from openfollow.runtime.overlay_draw_style import (
     PATH_LOCKED_LINE_WIDTH,
     PATH_POINT_RADIUS,
 )
-from openfollow.runtime.overlay_layout import scene_view
 from openfollow.runtime.overlay_state import OverlayState
 from tests._fake_cairo import FakeCairo, FakeRenderer
 
@@ -197,12 +196,11 @@ BOTH = [(False, True), (True,), (False, True), (True,)]
         ({"state": {"lens_k2": 0.02}}, BOTH),
         ({"state": {"lens_cx": 0.03}}, BOTH),
         ({"state": {"lens_cy": -0.02}}, BOTH),
-        ({"state": {"scene_view": scene_view(1920, 1080, 704, 576, (12, 11))}}, BOTH),
         ({"size": (1280, 1080)}, BOTH),
         ({"size": (1920, 720)}, BOTH),
         ({"scale": 2.0}, BOTH),
     ],
-    ids=["curve", "end", "locked", "camera", "k1", "k2", "cx", "cy", "pixel-aspect", "width", "height", "scale"],
+    ids=["curve", "end", "locked", "camera", "k1", "k2", "cx", "cy", "width", "height", "scale"],
 )
 def test_anything_a_path_is_drawn_from_draws_its_picture_again(shape_calls, change: dict, calls: list) -> None:
     from types import SimpleNamespace

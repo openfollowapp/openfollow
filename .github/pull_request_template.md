@@ -1,6 +1,7 @@
 <!--
 Title: <type>(<scope>): <summary>, see CLAUDE.md "Commit messages, PR and issue titles".
-Workflow: CLAUDE.md "Issue → PR workflow".
+Workflow: CLAUDE.md "Issue → PR workflow". Mark a box that does not apply "n/a: <why>"
+(docs-only change, no Pi reachable); drop "Closes" for Dependabot and release bumps.
 -->
 
 Closes #<n>

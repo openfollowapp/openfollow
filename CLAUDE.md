@@ -101,8 +101,9 @@ ranges. Diagnostics bundles stay in the support channel.
    worktree once, `.claude/worktrees/<branch with / as ->`, and works only
    there. Never share a worktree between sessions, never delete or reset one
    you did not create.
-3. **Base branch:** `main`. Changes that only concern the macOS build target
-   `macos-integration-branch`.
+3. **Base branch:** `main`; a macOS-only change bases on
+   `macos-integration-branch` and runs the gate with
+   `OPENFOLLOW_CI_PERF_BASE=origin/macos-integration-branch`.
 4. **Gate:** tests per the next section, push gate per "Development".
 5. **Review loop:** run Claude Code `/code-review` on the branch, fix, repeat
    until no major finding (correctness, security, broken invariant) is left.
@@ -133,13 +134,15 @@ Untested code is treated as broken. A change without tests is incomplete.
    the sandbox>` **and** a row in the Pragma audit table of
    [`docs/COVERAGE.md`](docs/COVERAGE.md). A pragma without a row blocks review.
 8. No `@pytest.mark.skip` to unblock a merge.
-9. Platform-neutral by default: every test runs on both targets, Linux (Pi)
-   and macOS. Platform branches are tested on both by faking the platform
-   (`monkeypatch.setattr(<module>.sys, "platform", "darwin")`), so coverage
-   holds on each. A test that needs the real OS (a Linux-only binding, a macOS
-   framework) skips elsewhere with `if sys.platform != "linux":
-   pytest.skip("<why>")` (or `"darwin"`); a test failing on one target is
-   fixed, not skipped. `make ci` is green on both.
+9. Platform-neutral by default: no result depends on the host OS, so the suite
+   and its coverage gate pass on both targets, Linux (Pi) and macOS. A
+   platform branch is tested on both by setting the platform in the test
+   (`platform_support.current`, `monkeypatch.setattr(<module>.sys, "platform", "darwin")`).
+   A platform-specific test is allowed where the real OS is the point (a
+   Linux-only binding, a macOS framework): it skips elsewhere with
+   `if sys.platform != "linux": pytest.skip("<why>")` (or `"darwin"`) and is
+   never the only test covering its lines. A test failing on one target is
+   fixed, not skipped.
 
 ## Offline runtime (REQUIRED for every change)
 

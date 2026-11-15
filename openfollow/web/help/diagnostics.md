@@ -58,7 +58,7 @@ The chip shows the worse of the two: **Running**; orange **Send errors**; red **
 
 ### Person Detection
 
-The chip: green **Running** (processing frames), blue **Idle** (enabled, waiting, e.g. for video), red **Unavailable** (packages missing, named in a red box), grey **Off** (switched off in its section).
+The chip: green **Running** (processing frames), blue **Idle** (enabled, waiting, e.g. for video), blue **Compiling model** (on a Mac, the quality tier is being prepared for this Mac; outputs keep running), red **Unavailable** (packages missing, named in a red box), grey **Off** (switched off in its section).
 
 - **Tracked People** – people currently tracked.
 - **Inference (avg)** – milliseconds per detection pass. Higher means more load.

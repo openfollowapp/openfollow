@@ -47,6 +47,13 @@ def coerce_positive_int(value: Any, default: int) -> int:
     return n if n >= 1 else default
 
 
+# hx-trigger for a lookup in a hidden-until-picked fragment: on load only for the
+# input the page shows, and on ``of-input-shown`` when the Source Type picker shows it.
+SHOWN_INPUT_TRIGGER = (
+    "load[!this.closest('[data-input-type][style*=none],[data-wizard-input-type][style*=none]')], of-input-shown"
+)
+
+
 @dataclass
 class ConfigField:
     """A config field that this input needs stored in config.toml."""

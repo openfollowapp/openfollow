@@ -30,7 +30,7 @@ YOLO-based person detection finds people in the camera frame and can steer your 
 
 **Quality** tiers: **Fastest** (right for a Raspberry Pi), **Fast**, **Balanced** (workstation default), **Accurate**, **Most Accurate**. Higher tiers need more compute. Accurate and Most Accurate are grayed out on a Pi until fetched.
 
-On a Mac, a quality tier is prepared for this Mac the first time it is used, which pauses the station for a few seconds; the prepared copy takes about twice the model's size on disk and is removed with its model.
+On a Mac, a quality tier is prepared for this Mac the first time it is used, which takes a few seconds (up to about half a minute for the larger tiers). The station keeps sending meanwhile, and Status & Diagnostics shows **Compiling model**. The prepared copy takes about twice the model's size on disk and is removed with its model.
 
 **Advanced models** downloads other models, selects your own, deletes models and shows free storage space.
 

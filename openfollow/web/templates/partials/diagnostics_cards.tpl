@@ -35,6 +35,8 @@
 % if tracking_enabled:
 %     if tracking_missing:
 %         tracking_state = "Unavailable"
+%     elif tracking.get("compiling"):
+%         tracking_state = "Compiling model"
 %     else:
 %         tracking_state = "Running" if tracking_running else "Idle"
 %     end
@@ -43,6 +45,8 @@
 % # while the package probe is reporting a broken install.
 % if tracking_missing and tracking_enabled:
 %     tracking_chip_class = "off"
+% elif tracking_enabled and tracking.get("compiling"):
+%     tracking_chip_class = "info"
 % elif tracking_running:
 %     tracking_chip_class = "ok"
 % elif tracking_enabled:

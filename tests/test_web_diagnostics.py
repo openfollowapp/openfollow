@@ -3962,11 +3962,12 @@ def test_collect_device_permissions_ignores_unknown_state_strings() -> None:
     assert "0 unavailable" in joined
 
 
-def test_diagnostics_bundle_includes_g_permissions_section() -> None:
+def test_diagnostics_bundle_includes_g_permissions_section(monkeypatch) -> None:
     """End-to-end: ``collect_bundle`` packs the new ``g_permissions``
     field, and ``format_bundle`` renders it with the new section
     heading so support-ticket consumers can search for the
     capability state without knowing the field name."""
+    monkeypatch.setattr(diag.platform, "system", lambda: "Linux")
     p = diag.DiagnosticsProviders(
         privilege_states=lambda: {"service.restart": "passwordless"},
     )

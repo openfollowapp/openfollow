@@ -108,6 +108,7 @@ from openfollow.configuration import (
     stage_config,
     viewed_with_controlled,
 )
+from openfollow.first_run import first_run_config
 from openfollow.input.midi import bound_identifiers
 from openfollow.input.mouse3d_status import status_key
 from openfollow.lens_model import pull_back_to_valid
@@ -115,7 +116,7 @@ from openfollow.logging_setup import active_log_file
 
 # Module-level so handler closures resolve ``save_catalog`` from this
 # namespace at call time (tests monkeypatch it for persist-failure paths).
-from openfollow.marker_catalog import derive_station_name, save_catalog
+from openfollow.marker_catalog import save_catalog
 from openfollow.net_egress import LOOPBACK_ONLY
 from openfollow.net_utils import (
     HOST_RESOLVER,
@@ -3451,15 +3452,13 @@ def restored_from_backup(restored: AppConfig, current: AppConfig) -> AppConfig:
 
 
 def reset_config_to_defaults(current_cfg: AppConfig) -> AppConfig:
-    """Return a fresh ``AppConfig()`` carrying this device's identity over.
+    """Return the config a first run starts with, carrying this device's identity and name over.
 
-    The station name follows the preserved ``station_id`` the way a first run
-    seeds it, so a reset leaves the name a fresh install would have shown
-    instead of ``OpenFollow`` until the next restart re-derives it.
+    That is the macOS app's bundled seed there, else ``AppConfig()``.
     """
-    fresh = AppConfig()
+    fresh = first_run_config()
     restore_device_identity(fresh, capture_device_identity(current_cfg))
-    fresh.psn_system_name = derive_station_name(fresh.station_id)
+    fresh.psn_system_name = current_cfg.psn_system_name
     return fresh
 
 

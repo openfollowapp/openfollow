@@ -537,7 +537,7 @@ Everything lives under [`packaging/macos/`](../packaging/macos/):
 | `launcher.py` | Bundle entry point: `--export` re-exec, `OPENFOLLOW_SELFCHECK`, and the GUI (seeds per-user config + all quality-tier models on first run). |
 | `check_macos_minimum.py` | Build-time check: fails when a bundled Mach-O needs a newer macOS than the Info.plist's `LSMinimumSystemVersion`. |
 | `runtime_hook.py` | Points `GI_TYPELIB_PATH` / `GST_PLUGIN_PATH` / GdkPixbuf / GTK theme paths at the bundle before `gi` loads. |
-| `config.seed.toml` | First-run config (binds the web UI to port 8080, enables detection). |
+| `config.seed.toml` | First-run config (binds the web UI to port 8080, starts on the test pattern, detection off). |
 | `make-icns.sh` | Renders the `.icns` from `openfollow/web/static/icon.svg`. |
 
 ### Build it (macOS)

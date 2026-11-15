@@ -518,6 +518,37 @@
         });
     }
 
+    // ---- Output prediction: this station's prediction per controlled marker, saved on change.
+    function predictionInput(markerId) {
+        return '<input type="number" class="prediction-input" data-prediction min="0" max="1000" ' +
+            'placeholder="0" id="prediction-ms-' + markerId + '" aria-label="Prediction (ms)" disabled>';
+    }
+
+    function savePrediction(tr, id, input) {
+        // Text a number field can't read has an empty value; sent, it would clear the prediction.
+        if (input.validity && input.validity.badInput) {
+            tr._predictionUntil = 0;
+            writeFailed(input, {error: 'Prediction must be a whole number from 0 to 1000 ms.', action: '', href: ''});
+            flashRow(tr, false);
+            return;
+        }
+        const raw = input.value.trim();
+        // Held while the save is in flight, then until a poll begun before it has landed.
+        tr._predictionUntil = Infinity;
+        fetch('/api/markers/prediction/' + id, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({horizon_ms: raw === '' ? 0 : Number(raw)})
+        }).then(writeResult(input)).then(function(ok) {
+            tr._predictionUntil = ok ? Date.now() + 1600 : 0;
+            flashRow(tr, ok);
+        }).catch(function() {
+            tr._predictionUntil = 0;
+            flashRow(tr, false);
+            writeUnreachable(input)();
+        });
+    }
+
     // ---- Row factories: build the row once, attach listeners once.
     function createCatalogRow(id, root) {
         const tr = document.createElement('tr');
@@ -532,12 +563,14 @@
                 'data-color-picker="full" aria-label="Marker colour"></button></td>' +
             '<td class="cell-soft" data-cell="controlled-by"></td>' +
             '<td data-cell="this-station">' + thisStationToggle('this-station-' + id, id) + parkToggle(id) + '</td>' +
+            '<td data-cell="prediction" data-feature="output_prediction">' + predictionInput(id) + '</td>' +
             '<td class="row-actions">' +
                 '<span class="stat-chip info unsaved-chip" hidden>Unsaved</span>' +
                 '<button type="button" class="save-btn small" data-action="save">Save</button>' +
                 '<button type="button" class="danger small" data-action="delete">Delete</button>' +
             '</td>';
         tr._held = {name: false, color: false};
+        tr._predictionUntil = 0;
         tr._stored = storedValues('', '');
         // Until then a poll begun before the save may still carry the old values.
         tr._savedUntil = 0;
@@ -556,6 +589,10 @@
                 setPark(park, radio.value, park.getAttribute('aria-pressed') === 'true');
                 postSelection(root, tr);
             });
+        });
+        const prediction = tr.querySelector('input[data-prediction]');
+        prediction.addEventListener('change', function() {
+            savePrediction(tr, id, prediction);
         });
         park.addEventListener('click', function() {
             if (park.disabled) return;
@@ -622,10 +659,16 @@
             setPark(park, state, (thisStation.parked_ids || []).indexOf(entry.id) !== -1);
         }
         tr.dataset.synced = 'true';
+        const prediction = tr.querySelector('input[data-prediction]');
+        if (prediction.disabled !== (state !== 'control')) prediction.disabled = state !== 'control';
+        if (Date.now() >= tr._predictionUntil) {
+            setInputIfChanged(prediction, String((thisStation.prediction_ms || {})[String(entry.id)] || 0));
+        }
         const markerName = entry.name || ('Marker ' + entry.id);
         const label = 'This station: ' + markerName;
         if (toggle.getAttribute('aria-label') !== label) toggle.setAttribute('aria-label', label);
         if (park.getAttribute('aria-label') !== 'Park ' + markerName) park.setAttribute('aria-label', 'Park ' + markerName);
+        if (prediction.getAttribute('aria-label') !== 'Prediction (ms): ' + markerName) prediction.setAttribute('aria-label', 'Prediction (ms): ' + markerName);
     }
 
     function createAddRow() {
@@ -641,6 +684,7 @@
                 'data-color-picker="full" aria-label="New marker colour"></button></td>' +
             '<td><span id="add-marker-feedback" class="add-feedback" aria-live="polite"></span></td>' +
             '<td data-cell="this-station">' + thisStationToggle('this-station-new', null) + '</td>' +
+            '<td data-feature="output_prediction"></td>' +
             '<td class="row-actions"><button type="button" class="save-btn small" id="add-marker-btn">Add</button></td>';
         const idIn = tr.querySelector('#new-marker-id');
         const nameIn = tr.querySelector('#new-marker-name');
@@ -752,6 +796,7 @@
                         '<th>ID</th><th>Name</th><th>Color</th>' +
                         '<th>Controlled by</th>' +
                         '<th>This Station <span id="selection-saved-flash" class="saved-flash" aria-live="polite"></span></th>' +
+                        '<th data-feature="output_prediction">Prediction (ms)</th>' +
                         '<th></th>' +
                     '</tr></thead>' +
                     '<tbody data-role="catalog-body"></tbody>' +
@@ -831,6 +876,9 @@
 <style>
 .marker-catalog-table { margin-top: 0.5rem; }
 .marker-catalog-table td[data-cell="this-station"] { white-space: nowrap; }
+.marker-catalog-table .prediction-input { width: 5.5rem; }
+/* Only a View & Control row has a prediction. */
+.marker-catalog-table .prediction-input:disabled { visibility: hidden; }
 /* Park: grey while off, the info line while on, inert unless the row is View & Control. */
 .marker-catalog-table .park-toggle {
     display: inline-flex; align-items: center; justify-content: center; vertical-align: middle;

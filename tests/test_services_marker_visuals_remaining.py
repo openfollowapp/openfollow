@@ -23,6 +23,7 @@ point, ``build_marker_visual_state``, which:
 
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
@@ -68,12 +69,16 @@ class _FakeMarker:
         self.pos = pos
         self.speed = speed
         self.lift = 0.0
+        self.prediction = (0.0, 0.0)
         self.set_speed_calls: list[tuple[float, float, float]] = []
 
     @property
-    def sent_pos(self) -> tuple[float, float, float]:
+    def lifted_pos(self) -> tuple[float, float, float]:
         x, y, z = self.pos
         return (x, y, z + self.lift)
+
+    def set_prediction(self, dx: float, dy: float) -> None:
+        self.prediction = (dx, dy)
 
     def set_pos(self, x: float, y: float, z: float) -> None:
         self.pos = (x, y, z)
@@ -1927,6 +1932,128 @@ class TestZoneLiftOnTheScreen:
             marker.lift += 0.3 * _FRAME_DT
             _build(app)
         assert marker.set_speed_calls[-1] == pytest.approx((0.0, 0.0, 0.3), abs=1e-6)
+
+
+def _shift(marker: Marker) -> tuple[float, float]:
+    """The X/Y prediction a marker sends on top of where it really is."""
+    sent, real = marker.sent_pos, marker.lifted_pos
+    return (sent[0] - real[0], sent[1] - real[1])
+
+
+class TestOutputPrediction:
+    """The prediction rides on what every output sends; the station itself keeps the real position."""
+
+    @staticmethod
+    def _app(*, horizon_ms: int | None = 500, feature: bool = True) -> tuple[SimpleNamespace, Marker]:
+        marker = Marker(1, "T1")
+        marker.set_pos(0.0, 0.0, 1.0)
+        app = _build_app(controlled=[1], viewer=[1], server_markers={1: marker})  # type: ignore[dict-item]
+        if horizon_ms is not None:
+            app._config.marker_prediction_ms = {1: horizon_ms}
+        if feature:
+            app._config.ui.shown_features = [*app._config.ui.shown_features, "output_prediction"]
+        return app, marker
+
+    @staticmethod
+    def _walk(app: SimpleNamespace, marker: Marker, *, vx: float, frames: int = 120) -> OverlayState:
+        state = _build(app)
+        for _ in range(frames):
+            x, y, z = marker.pos
+            marker.set_pos(x + vx * _FRAME_DT, y, z)
+            state = _build(app)
+        return state
+
+    def test_a_moving_marker_is_sent_ahead_by_velocity_times_horizon(self) -> None:
+        app, marker = self._app(horizon_ms=500)
+        self._walk(app, marker, vx=1.5)
+        x, y, z = marker.pos
+        assert marker.sent_pos == pytest.approx((x + 0.75, y, z), abs=1e-3)
+
+    def test_the_station_draws_the_real_position(self) -> None:
+        app, marker = self._app(horizon_ms=1000)
+        state = self._walk(app, marker, vx=1.0)
+        drawn = state.markers[0]
+        assert (drawn.x, drawn.y, drawn.z) == pytest.approx(marker.pos)
+
+    def test_the_prediction_never_feeds_the_broadcast_velocity(self) -> None:
+        predicted_app, predicted = self._app(horizon_ms=1000)
+        plain_app, plain = self._app(horizon_ms=None)
+        self._walk(predicted_app, predicted, vx=1.2)
+        self._walk(plain_app, plain, vx=1.2)
+        assert predicted.speed == pytest.approx(plain.speed)
+        assert predicted.speed[0] == pytest.approx(1.2, abs=1e-3)
+
+    def test_the_feature_off_sends_the_real_position(self) -> None:
+        app, marker = self._app(horizon_ms=1000, feature=False)
+        self._walk(app, marker, vx=1.0)
+        assert marker.sent_pos == marker.pos
+
+    def test_switching_the_feature_off_drops_a_running_prediction(self) -> None:
+        app, marker = self._app(horizon_ms=1000)
+        self._walk(app, marker, vx=1.0)
+        assert _shift(marker) != (0.0, 0.0)
+        app._config.ui.shown_features = [k for k in app._config.ui.shown_features if k != "output_prediction"]
+        _build(app)
+        assert _shift(marker) == (0.0, 0.0)
+
+    def test_a_marker_without_a_horizon_is_not_predicted(self) -> None:
+        app, marker = self._app(horizon_ms=None)
+        self._walk(app, marker, vx=1.0)
+        assert marker.sent_pos == marker.pos
+
+    def test_a_still_marker_is_not_predicted(self) -> None:
+        app, marker = self._app(horizon_ms=1000)
+        for _ in range(30):
+            _build(app)
+        assert _shift(marker) == (0.0, 0.0)
+
+    def test_a_stop_overshoots_then_settles(self) -> None:
+        app, marker = self._app(horizon_ms=1000)
+        self._walk(app, marker, vx=1.5)
+        _build(app)
+        assert marker.sent_pos[0] > marker.pos[0] + 0.5
+        for _ in range(240):
+            _build(app)
+        assert marker.sent_pos == pytest.approx(marker.pos)
+
+    def test_a_snap_is_never_thrown_past_its_target(self) -> None:
+        """A repositioning leaves a decaying velocity behind; no frame sends a prediction from it."""
+        app, marker = self._app(horizon_ms=1000)
+        _build(app)
+        marker.set_pos(10.0, 0.0, 1.0)
+        predictions = []
+        for _ in range(120):
+            _build(app)
+            predictions.append(math.hypot(*_shift(marker)))
+        assert max(predictions) == 0.0
+        assert marker.sent_pos == marker.pos
+
+    def test_walking_on_after_a_snap_predictions_again(self) -> None:
+        app, marker = self._app(horizon_ms=500)
+        _build(app)
+        marker.set_pos(10.0, 0.0, 1.0)
+        self._walk(app, marker, vx=1.0, frames=150)
+        assert _shift(marker)[0] == pytest.approx(0.5, abs=1e-3)
+
+    def test_a_short_nudge_is_sent_less_than_its_full_prediction(self) -> None:
+        app, marker = self._app(horizon_ms=500)
+        self._walk(app, marker, vx=1.5, frames=10)
+        assert 0.0 < _shift(marker)[0] < 0.75 / 2
+
+    def test_a_stop_takes_the_prediction_back_within_a_few_frames(self) -> None:
+        app, marker = self._app(horizon_ms=500)
+        self._walk(app, marker, vx=1.5)
+        for _ in range(15):
+            _build(app)
+        assert _shift(marker) == (0.0, 0.0)
+
+    def test_a_received_marker_is_never_predicted(self) -> None:
+        received = Marker(2, "R", remote=True)
+        app = _build_app(viewer=[2], receiver_markers={2: received})  # type: ignore[dict-item]
+        app._config.marker_prediction_ms = {2: 1000}
+        app._config.ui.shown_features = [*app._config.ui.shown_features, "output_prediction"]
+        _build(app)
+        assert _shift(received) == (0.0, 0.0)
 
 
 class TestAssistGhostOverlay:

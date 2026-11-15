@@ -327,3 +327,110 @@ def test_a_failed_save_keeps_the_edit_unsaved_and_held() -> None:
         " later(5000); pollCatalog(LEAD, SECOND); out.lead = state(3);"
     )
     assert out["lead"] == {"name": "Lead Vocal", "color": "#ff0000", "unsaved": True, "outlined": ["name"]}
+
+
+_PREDICTION_STEPS = """
+function pollPrediction(prediction, controlled) {
+    document.body.dispatchEvent(makeEvent('htmx:afterRequest', {detail: {elt: root, xhr: {responseText: JSON.stringify({
+        entries: [{id: 3, name: 'Prediction', color: '#ff0000'}, {id: 4, name: 'Second', color: '#00ff00'}],
+        peer_selections: [],
+        this_station: {
+            station_id: 'me', station_name: 'FOH', controlled_ids: controlled || [3], viewer_ids: [3, 4],
+            parked_ids: [], prediction_ms: prediction,
+        },
+        next_free_id: 5,
+    })}}}));
+}
+function pred(id) { return root.querySelector('tr[data-marker-id="' + id + '"] input[data-prediction]'); }
+function predictionLater(ms) { var base = Date.now(); Date.now = function () { return base + ms; }; }
+function predictionPuts() {
+    return requests.filter(function (r) { return r.url.indexOf('/api/markers/prediction/') === 0; })
+        .map(function (r) { return [r.method, r.url, r.body]; });
+}
+"""
+
+
+def test_the_prediction_column_is_feature_gated_and_lines_up_with_every_row() -> None:
+    out = _run_async(
+        _PREDICTION_STEPS + "pollPrediction({});"
+        " out.head = root.querySelectorAll('th[data-feature=\"output_prediction\"]').length;"
+        " out.cells = root.querySelectorAll('td[data-feature=\"output_prediction\"]').length;"
+        " out.rows = root.querySelectorAll('tbody tr').length;"
+    )
+    assert out == {"head": 1, "cells": 3, "rows": 3}
+
+
+def test_the_prediction_shows_the_saved_value_and_only_a_controlled_row_can_edit_it() -> None:
+    out = _run_async(
+        _PREDICTION_STEPS + "pollPrediction({'3': 450});"
+        " out.prediction = [pred(3).value, pred(3).disabled]; out.second = [pred(4).value, pred(4).disabled];"
+    )
+    assert out == {"prediction": ["450", False], "second": ["0", True]}
+
+
+@pytest.mark.parametrize(("typed", "sent"), [("600", 600), ("", 0), ("12.5", 12.5)])
+def test_a_changed_prediction_saves_that_rows_value(typed: str, sent: float) -> None:
+    """The server decides what a prediction may be; a value it refuses comes back as a save error."""
+    out = _run_async(
+        _PREDICTION_STEPS + f"pollPrediction({{}}); typeInto(pred(3), {typed!r}); pred(3).blur(); await settle();"
+        " out.puts = predictionPuts();"
+    )
+    assert out["puts"] == [["PUT", "/api/markers/prediction/3", {"horizon_ms": sent}]]
+
+
+def test_the_poll_never_overwrites_a_prediction_being_typed_or_just_saved() -> None:
+    out = _run_async(
+        _PREDICTION_STEPS + "pollPrediction({'3': 100}); typeInto(pred(3), '700'); pollPrediction({'3': 100});"
+        " out.typing = pred(3).value; pred(3).blur(); await settle(); pollPrediction({'3': 100});"
+        " out.saved = pred(3).value;"
+    )
+    assert out == {"typing": "700", "saved": "700"}
+
+
+def test_a_prediction_set_elsewhere_shows_at_the_next_poll() -> None:
+    out = _run_async(
+        _PREDICTION_STEPS + "pollPrediction({'3': 100}); pollPrediction({'3': 900}); out.value = pred(3).value;"
+    )
+    assert out == {"value": "900"}
+
+
+def test_a_refused_prediction_reports_the_error_and_the_next_poll_shows_the_saved_value() -> None:
+    out = _run_async(
+        _PREDICTION_STEPS
+        + "var shown = []; window.OpenFollow.saveError.show = function (box, info) { shown.push(info.error); };"
+        " window.OpenFollow.saveError.fromResponse = function (r) { return r.json(); };"
+        " station = function () { return {status: 400, body: {error: 'Prediction must be 0 to 1000 ms.'}}; };"
+        " pollPrediction({'3': 100}); typeInto(pred(3), '5000'); pred(3).blur(); await settle();"
+        " pollPrediction({'3': 100}); out.value = pred(3).value; out.shown = shown;"
+    )
+    assert out == {"value": "100", "shown": ["Prediction must be 0 to 1000 ms."]}
+
+
+def test_text_the_field_cannot_read_is_an_error_not_a_cleared_prediction() -> None:
+    out = _run_async(
+        _PREDICTION_STEPS
+        + "var shown = []; window.OpenFollow.saveError.show = function (box, info) { shown.push(info.error); };"
+        " pollPrediction({'3': 100}); typeInto(pred(3), '');"
+        " Object.defineProperty(pred(3), 'validity', {value: {badInput: true}}); pred(3).blur(); await settle();"
+        " out.puts = predictionPuts(); out.shown = shown; pollPrediction({'3': 100}); out.value = pred(3).value;"
+    )
+    assert out == {"puts": [], "shown": ["Prediction must be a whole number from 0 to 1000 ms."], "value": "100"}
+
+
+def test_a_slow_save_holds_the_typed_prediction_until_it_answers() -> None:
+    """The hold starts when the save answers, so a poll during a long save never shows the old prediction."""
+    out = _run_async(
+        _PREDICTION_STEPS + "holdWhen = function (r) { return r.url.indexOf('/api/markers/prediction/') === 0; };"
+        " pollPrediction({'3': 100}); typeInto(pred(3), '700'); pred(3).blur(); await settle();"
+        " predictionLater(5000); pollPrediction({'3': 100}); out.during = pred(3).value;"
+        " release(); await settle(); pollPrediction({'3': 100}); out.after = pred(3).value;"
+    )
+    assert out == {"during": "700", "after": "700"}
+
+
+def test_a_row_leaving_view_and_control_can_no_longer_edit_its_prediction() -> None:
+    out = _run_async(
+        _PREDICTION_STEPS
+        + "pollPrediction({'3': 450}); pollPrediction({}, []); out.prediction = [pred(3).value, pred(3).disabled];"
+    )
+    assert out == {"prediction": ["0", True]}

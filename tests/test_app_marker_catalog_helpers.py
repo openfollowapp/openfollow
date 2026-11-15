@@ -577,19 +577,23 @@ class TestPruneSelectionIds:
     """Direct coverage for ``_prune_selection_ids`` (called from the sync
     receiver thread when a peer's delete tombstones a marker)."""
 
-    def test_a_peer_delete_drops_the_park_of_the_deleted_marker(self, tmp_path) -> None:
+    def test_a_peer_delete_drops_the_park_and_prediction_of_the_deleted_marker(self, tmp_path) -> None:
         import tomllib
 
         from openfollow.configuration import save_config
 
         config_path = tmp_path / "config.toml"
-        save_config(AppConfig(controlled_marker_ids=[1, 2], parked_marker_ids=[1, 2]), str(config_path))
+        save_config(
+            AppConfig(controlled_marker_ids=[1, 2], parked_marker_ids=[1, 2], marker_prediction_ms={1: 300, 2: 500}),
+            str(config_path),
+        )
         fake = types.SimpleNamespace(_config=AppConfig(), _config_path=str(config_path))
 
         OpenFollowApp._prune_selection_ids(fake, [2])  # type: ignore[arg-type]
 
         saved = tomllib.loads(config_path.read_text(encoding="utf-8"))
         assert (saved["controlled_marker_ids"], saved["parked_marker_ids"]) == ([1], [1])
+        assert saved["marker_prediction_ms"] == {"1": 300}
 
     def test_a_startup_prune_of_a_tombstoned_marker_drops_its_park(self, tmp_path, monkeypatch) -> None:
         from openfollow.marker_catalog.catalog import save_catalog as _save

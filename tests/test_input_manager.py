@@ -843,7 +843,9 @@ def test_a_failing_gamepad_move_spares_the_other_pads_and_the_rest_of_the_frame(
         return orient(source, vx, vy, pos)
 
     manager.control_frame.orient = flaky  # type: ignore[method-assign]
-    manager.osc_handler = SimpleNamespace(flush_parks=dict, flush_updates=lambda: {10: {"z": 4.0}})
+    manager.osc_handler = SimpleNamespace(
+        flush_parks=dict, flush_predictions=dict, flush_updates=lambda: {10: {"z": 4.0}}
+    )
     manager.update(1.0)
 
     assert app._server.get_marker(11).pos == pytest.approx((0.0, 2.0, 0.0))
@@ -890,7 +892,9 @@ def test_control_frame_leaves_osc_positions_absolute(monkeypatch) -> None:
     app._config.marker.control_frame = "heading"
     app._config.marker.control_heading = 180.0
     manager = InputManager(app)
-    manager.osc_handler = SimpleNamespace(flush_parks=dict, flush_updates=lambda: {10: {"x": 3.0, "y": 4.0, "z": 5.0}})
+    manager.osc_handler = SimpleNamespace(
+        flush_parks=dict, flush_predictions=dict, flush_updates=lambda: {10: {"x": 3.0, "y": 4.0, "z": 5.0}}
+    )
     manager.update(1.0)
 
     assert app._server.get_marker(10).pos == pytest.approx((3.0, 4.0, 5.0))
@@ -1049,7 +1053,9 @@ def test_an_osc_position_for_a_locked_marker_lands_on_its_path(path_app) -> None
     app._paths.press(10, (0.0, 0.0, 0.0))
     app._paths.tick(0.0)
     manager = InputManager(app)
-    manager.osc_handler = SimpleNamespace(flush_parks=dict, flush_updates=lambda: {10: {"x": 3.0, "y": 4.0, "z": 9.0}})
+    manager.osc_handler = SimpleNamespace(
+        flush_parks=dict, flush_predictions=dict, flush_updates=lambda: {10: {"x": 3.0, "y": 4.0, "z": 9.0}}
+    )
     manager.update(0.02)
     assert app._server.get_marker(10).pos == pytest.approx((3.0, 0.0, 0.0))
 
@@ -1076,7 +1082,7 @@ def test_a_per_axis_osc_position_during_the_pull_keeps_the_axes_it_leaves_out(  
     app._paths.press(10, marker.pos)
     manager = InputManager(app)
     manager.update_paths(0.5)
-    manager.osc_handler = SimpleNamespace(flush_parks=dict, flush_updates=lambda: {10: axes})
+    manager.osc_handler = SimpleNamespace(flush_parks=dict, flush_predictions=dict, flush_updates=lambda: {10: axes})
     manager.update(0.0)
     assert marker.pos == pytest.approx(pulled)
     manager.update_paths(0.5)
@@ -1245,7 +1251,11 @@ def _osc_station(monkeypatch, pending: dict[int, dict[str, float]]):  # noqa: AN
     clock = _Clock()
     manager._clock = clock
     adapter = SimpleNamespace(
-        start=lambda: None, stop=lambda: None, flush_parks=dict, flush_updates=lambda: dict(pending)
+        start=lambda: None,
+        stop=lambda: None,
+        flush_parks=dict,
+        flush_predictions=dict,
+        flush_updates=lambda: dict(pending),
     )
     monkeypatch.setattr(input_manager_module, "OscMarkerAdapter", lambda *_a, **_kw: adapter)
     paths = SimpleNamespace(start=lambda: None, stop=lambda: None, take=lambda: [])

@@ -73,6 +73,7 @@ from openfollow.configuration import (
     NETWORK_MODES,
     OFFERED_FEATURES,
     PLANE_PIN_FIELDS,
+    PREDICTION_HORIZON_MAX_MS,
     VALID_BUTTON_NAMES,
     AppConfig,
     CalibrationMarkConfig,
@@ -87,6 +88,7 @@ from openfollow.configuration import (
     _coerce_marker_tokens,
     apply_renamed_marker_keys,
     calibration_mark_drops,
+    coerce_marker_prediction_ms,
     config_file_health,
     config_problem_kind,
     config_problem_words,
@@ -103,6 +105,7 @@ from openfollow.configuration import (
     path_name_from,
     plane_pin_key,
     plane_pins,
+    predictions_applied,
     reconcile_simple_corners,
     save_config,
     stage_config,
@@ -3535,7 +3538,7 @@ _STARTUP_ONLY_FIELDS = ("update_include_prereleases", "auto_update_check", "auto
 def _apply_file_import_data(cfg: AppConfig, data: dict[str, Any]) -> None:
     """Apply what a file import restores and a push leaves as it is.
 
-    That is this station's own setup: its marker selection, detection masks, the
+    That is this station's own setup: its marker selection and predictions, detection masks, the
     fields of every video input rather than only the running one's, its 3D Mouse,
     operator messages, MIDI patches, virtual faders, gamepad mapping and whether it
     draws paths, and the settings read at startup (network backend, update and
@@ -3546,6 +3549,8 @@ def _apply_file_import_data(cfg: AppConfig, data: dict[str, Any]) -> None:
             setattr(cfg, name, marker_id_list(data[name], path="imported settings", field_name=name))
     cfg.viewer_marker_ids = viewed_with_controlled(cfg.controlled_marker_ids, cfg.viewer_marker_ids)
     cfg.parked_marker_ids = parked_within(cfg.controlled_marker_ids, cfg.parked_marker_ids)
+    if "marker_prediction_ms" in data:
+        cfg.marker_prediction_ms = coerce_marker_prediction_ms(data["marker_prediction_ms"])
 
     from openfollow.video.inputs import get_registry
 
@@ -4870,6 +4875,7 @@ def _register_marker_catalog_routes(
                         "controlled_ids": list(cfg.controlled_marker_ids),
                         "viewer_ids": list(cfg.viewer_marker_ids),
                         "parked_ids": list(cfg.parked_marker_ids),
+                        "prediction_ms": {str(mid): ms for mid, ms in cfg.marker_prediction_ms.items()},
                     },
                 }
             )
@@ -4898,6 +4904,7 @@ def _register_marker_catalog_routes(
                     "controlled_ids": list(cfg.controlled_marker_ids),
                     "viewer_ids": list(cfg.viewer_marker_ids),
                     "parked_ids": list(cfg.parked_marker_ids),
+                    "prediction_ms": {str(mid): ms for mid, ms in cfg.marker_prediction_ms.items()},
                 },
                 "next_free_id": catalog.next_free_id(),
             }
@@ -5053,6 +5060,24 @@ def _register_marker_catalog_routes(
         sync = server.get_marker_catalog_sync()
         if sync is not None:
             sync.request_delta([marker_id])
+        return json.dumps({"success": True})
+
+    @app.put("/api/markers/prediction/<marker_id:int>")
+    def api_put_marker_prediction(marker_id: int) -> Any:
+        """Set one controlled marker's output prediction horizon; ``0`` removes it."""
+        response.content_type = "application/json"
+        data = _load_json_body()
+        horizon = data.get("horizon_ms") if isinstance(data, dict) else None
+        if isinstance(horizon, bool) or not isinstance(horizon, int) or not 0 <= horizon <= PREDICTION_HORIZON_MAX_MS:
+            response.status = 400
+            return json.dumps({"error": f"Prediction must be a whole number from 0 to {PREDICTION_HORIZON_MAX_MS} ms."})
+        with _config_write_lock:
+            cfg = _config_for_save(server)
+            if marker_id not in cfg.controlled_marker_ids:
+                response.status = 409
+                return json.dumps({"error": "This station does not control that marker."})
+            cfg.marker_prediction_ms = predictions_applied(cfg.marker_prediction_ms, {marker_id: horizon})
+            save_config(cfg, server.config_path)
         return json.dumps({"success": True})
 
     @app.post("/api/markers/selection")

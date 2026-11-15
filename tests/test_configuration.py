@@ -1327,6 +1327,60 @@ def test_a_save_read_of_a_missing_file_takes_the_fallback_it_is_given(temp_confi
 # Per-marker move speed (``AppConfig.marker_move_speeds``)
 
 
+# Output prediction horizon per marker (``AppConfig.marker_prediction_ms``)
+_LED_IDS = [1, 2, 3, 4, 9]
+
+
+def test_marker_prediction_ms_round_trips_through_toml(temp_config_path) -> None:
+    save_config(
+        AppConfig(controlled_marker_ids=_LED_IDS, marker_prediction_ms={2: 250, 9: 1000}), str(temp_config_path)
+    )
+    assert load_config(str(temp_config_path)).marker_prediction_ms == {2: 250, 9: 1000}
+
+
+def test_marker_prediction_ms_from_toml_string_keys() -> None:
+    assert AppConfig(controlled_marker_ids=_LED_IDS, marker_prediction_ms={"4": "400"}).marker_prediction_ms == {4: 400}
+
+
+@pytest.mark.parametrize(("value", "expected"), [(1500, 1000), (1001, 1000), (-50, None), (0, None), (12.7, 12)])
+def test_marker_prediction_ms_clamps_the_horizon(value: object, expected: int | None) -> None:
+    horizons = AppConfig(controlled_marker_ids=_LED_IDS, marker_prediction_ms={1: value}).marker_prediction_ms
+    assert horizons == ({} if expected is None else {1: expected})
+
+
+@pytest.mark.parametrize("value", [None, "abc", True, False, [], {}, float("nan"), float("inf")])
+def test_marker_prediction_ms_drops_a_wrong_type_horizon(value: object) -> None:
+    assert AppConfig(controlled_marker_ids=_LED_IDS, marker_prediction_ms={1: value, 2: 300}).marker_prediction_ms == {
+        2: 300
+    }
+
+
+@pytest.mark.parametrize("key", [0, -3, "abc", None, True, "1.5"])
+def test_marker_prediction_ms_drops_a_bad_marker_id(key: object) -> None:
+    assert AppConfig(controlled_marker_ids=_LED_IDS, marker_prediction_ms={key: 300, 2: 300}).marker_prediction_ms == {
+        2: 300
+    }
+
+
+@pytest.mark.parametrize("raw", [None, "abc", 5, [1, 2], True])
+def test_marker_prediction_ms_not_a_table_is_empty(raw: object) -> None:
+    assert AppConfig(controlled_marker_ids=_LED_IDS, marker_prediction_ms=raw).marker_prediction_ms == {}  # type: ignore[arg-type]
+
+
+def test_marker_prediction_ms_saves_only_controlled_markers(temp_config_path) -> None:
+    """Only a controlled marker sends, so a marker leaving control drops its prediction on the next save."""
+    save_config(AppConfig(controlled_marker_ids=[2], marker_prediction_ms={1: 300, 2: 400}), str(temp_config_path))
+    assert load_config(str(temp_config_path)).marker_prediction_ms == {2: 400}
+
+
+def test_output_prediction_is_an_experimental_feature_off_by_default() -> None:
+    from openfollow.configuration import DEFAULT_SHOWN_FEATURES, EXPERIMENTAL_FEATURES, OFFERED_FEATURES
+
+    assert "output_prediction" in EXPERIMENTAL_FEATURES
+    assert "output_prediction" in OFFERED_FEATURES
+    assert "output_prediction" not in DEFAULT_SHOWN_FEATURES
+
+
 def test_marker_move_speeds_round_trip(temp_config_path) -> None:
     """Round-trip preserves int-keyed dict despite TOML's string-key
     constraint – keys are stringified on save and coerced back to int
@@ -1979,6 +2033,13 @@ def test_mouse3d_button_on_two_actions_stays_on_the_upper_one(upper: str, lower:
 def test_mouse3d_default_buttons_keep_their_bindings() -> None:
     config = Mouse3DConfig()
     assert (config.btn_next_marker, config.btn_prev_marker) == (0, 1)
+
+
+def test_apply_runtime_applies_marker_prediction_live() -> None:
+    app = _DummyApp(AppConfig(controlled_marker_ids=_LED_IDS, marker_prediction_ms={2: 300}))
+    apply_runtime_config_changes(app, AppConfig(controlled_marker_ids=_LED_IDS, marker_prediction_ms={2: 600, 3: 100}))
+    assert app._config.marker_prediction_ms == {2: 600, 3: 100}
+    assert app._web_commands.restart_requested is False
 
 
 def test_apply_runtime_does_not_reload_marker_move_speeds() -> None:

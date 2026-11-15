@@ -4525,3 +4525,39 @@ def test_a_push_leaves_this_stations_button_names() -> None:
     new = _apply_import_data(current, {"controller": {"button_name_style": "playstation"}}, pushed=True)
 
     assert new.controller.button_name_style == "xbox"
+
+
+def test_prediction_horizons_travel_with_export_and_import() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    source = AppConfig(controlled_marker_ids=[1, 2], marker_prediction_ms={1: 250, 2: 800})
+    payload = json.loads(json.dumps(_config_dict_redacted(source)))
+
+    assert _apply_import_data(AppConfig(), payload).marker_prediction_ms == {1: 250, 2: 800}
+
+
+def test_a_peer_push_keeps_the_receivers_own_predictions() -> None:
+    """The predictions belong to this station's marker selection, which a push leaves as it is."""
+    from openfollow.web.routes import _apply_import_data
+
+    source = AppConfig(controlled_marker_ids=[1], marker_prediction_ms={1: 250})
+    payload = json.loads(json.dumps(_config_dict_redacted(source)))
+    receiver = AppConfig(controlled_marker_ids=[2], marker_prediction_ms={2: 400})
+
+    assert _apply_import_data(receiver, payload, pushed=True).marker_prediction_ms == {2: 400}
+
+
+def test_an_import_without_prediction_horizons_keeps_the_current_ones() -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    current = AppConfig(controlled_marker_ids=[1], marker_prediction_ms={1: 250})
+    assert _apply_import_data(current, {}).marker_prediction_ms == {1: 250}
+
+
+@pytest.mark.parametrize("raw", [None, "abc", 5, {"1": 5000, "x": 10, "2": "bad"}])
+def test_an_imported_prediction_map_is_coerced(raw: object) -> None:
+    from openfollow.web.routes import _apply_import_data
+
+    expected = {1: 1000} if isinstance(raw, dict) else {}
+    current = AppConfig(controlled_marker_ids=[1, 2])
+    assert _apply_import_data(current, {"marker_prediction_ms": raw}).marker_prediction_ms == expected

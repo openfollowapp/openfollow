@@ -56,6 +56,16 @@ case "$1" in
       if command -v nmcli >/dev/null 2>&1; then
         nmcli general reload conf >/dev/null 2>&1 || true
       fi
+      # A desktop's display manager holds the display Cage needs. Say so in
+      # the apt output; never block the install.
+      if [ "$(systemctl get-default 2>/dev/null)" = graphical.target ] && \
+         [ "$(systemctl show -P LoadState display-manager.service 2>/dev/null)" = loaded ]; then
+        dm=$(systemctl show -P Id display-manager.service 2>/dev/null)
+        echo "OpenFollow: this system starts a desktop (${dm%.service}) at boot." >&2
+        echo "It holds the display, so the Operator Screen cannot show. To boot to" >&2
+        echo "the console instead, run:" >&2
+        echo "  sudo systemctl set-default multi-user.target && sudo reboot" >&2
+      fi
       # Restart the service if it's already running (upgrade path), otherwise
       # start it for the first time (fresh install).
       if systemctl is-active --quiet openfollow.service; then

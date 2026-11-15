@@ -45,7 +45,7 @@ def test_the_macos_bundle_starts_from_its_seed(bundle) -> None:
 
     assert bundled_seed() == bundle / SEED_CONFIG_NAME
     assert cfg.video_source_type == "testpattern"
-    assert cfg.detection.enabled is True
+    assert cfg.detection.enabled is False
     assert cfg.detection.model == "yolo26m.onnx"
     assert cfg.web_port == 8080
 
@@ -65,6 +65,6 @@ def test_each_call_returns_a_config_of_its_own(bundle) -> None:
     shutil.copyfile(_MACOS_SEED, bundle / SEED_CONFIG_NAME)
 
     first = first_run_config()
-    first.detection.enabled = False
+    first.detection.enabled = True
 
-    assert first_run_config().detection.enabled is True
+    assert first_run_config().detection.enabled is False

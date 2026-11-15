@@ -609,7 +609,7 @@ def test_restore_defaults_lands_on_what_the_first_run_seeded(launcher, tmp_path,
     first_run = load_config(str(launcher.seed_user_data(tmp_path / "support", resources)))
     edited = load_config(str(tmp_path / "support" / "config.toml"))
     edited.video_source_type = "srt"
-    edited.detection.enabled = False
+    edited.detection.enabled = True
     edited.grid.width = 42.0
 
     restored = asdict(reset_config_to_defaults(edited))

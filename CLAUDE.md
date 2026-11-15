@@ -92,6 +92,21 @@ ranges. Diagnostics bundles stay in the support channel.
 | `deps` / `deps-dev` | Dependency bumps |
 | `repo` | README, CLAUDE.md, docs conventions, `.github` templates |
 
+## Issue → PR workflow
+
+1. **Issue first.** Every change starts from an issue (templates in
+   `.github/ISSUE_TEMPLATE/`); the PR closes it with `Closes #<n>` in the body.
+2. **One branch, one worktree per agent session.** A session creates its
+   worktree once, `.claude/worktrees/<branch>`, and works only there. Never
+   share a worktree between sessions, never delete or reset one you did not create.
+3. **Base branch:** `main`. macOS work targets `macos-integration-branch`.
+4. **Gate:** tests per the next section, `make ci-remote` green before every push.
+5. **Review loop:** run Claude Code `/code-review` on the branch, fix, repeat
+   until no major finding (correctness, security, broken invariant) is left.
+   Remaining minor findings go in the PR description.
+6. **PR** from [`.github/pull_request_template.md`](.github/pull_request_template.md),
+   checklist filled in. The maintainer reviews and merges; agents never merge.
+
 ## Test coverage (REQUIRED for every code change)
 
 Untested code is treated as broken. A change without tests is incomplete.
@@ -115,6 +130,11 @@ Untested code is treated as broken. A change without tests is incomplete.
    the sandbox>` **and** a row in the Pragma audit table of
    [`docs/COVERAGE.md`](docs/COVERAGE.md). A pragma without a row blocks review.
 8. No `@pytest.mark.skip` to unblock a merge.
+9. Platform-neutral by default: a test runs on both targets, Linux (Pi) and
+   macOS. Behaviour that exists on one target only gets a platform-specific
+   test, marked `@pytest.mark.skipif(sys.platform != "darwin", reason="macOS only: <why>")`
+   (Linux: `not sys.platform.startswith("linux")`). A test that fails on one
+   target is fixed, not skipped there. `make ci` is green on both.
 
 ## Offline runtime (REQUIRED for every change)
 

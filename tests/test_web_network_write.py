@@ -837,7 +837,8 @@ def test_renew_partial_failures_surfaced(net_server) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_read_only_host_offers_no_edit_at_all(net_server) -> None:
+def test_read_only_host_offers_no_edit_at_all(net_server, monkeypatch) -> None:
+    monkeypatch.setattr("openfollow.web.routes._network_set_in_system_settings", lambda: False)
     fake, base = net_server
     fake.writable = False
     _, body = _get(base, "/section/network/status")
@@ -848,7 +849,8 @@ def test_read_only_host_offers_no_edit_at_all(net_server) -> None:
     assert "on-screen Settings menu" in body
 
 
-def test_read_only_linux_host_keeps_its_banner(net_server) -> None:
+def test_read_only_linux_host_keeps_its_banner(net_server, monkeypatch) -> None:
+    monkeypatch.setattr("openfollow.web.routes._network_set_in_system_settings", lambda: False)
     fake, base = net_server
     fake.writable = False
     _, body = _get(base, "/section/network/status")

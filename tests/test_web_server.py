@@ -9313,7 +9313,7 @@ def test_the_save_ring_outlives_its_animation(live_server) -> None:
 def test_what_dhcp_could_not_do_is_shown_under_the_custom_domain_name(live_server, fqdn: str, shown: bool) -> None:
     server, base = live_server
     save_config(AppConfig(station_fqdn=fqdn), server.config_path)
-    server._station_fqdn_problems_provider = lambda: ("Profile 'Wired connection 1' was not updated.",)
+    server._station_fqdn_problems_provider = lambda _name: ("Profile 'Wired connection 1' was not updated.",)
     _, body = _get(base, "/")
     row = body[
         body.index('id="general-station-fqdn-row"') : body.index(
@@ -9329,7 +9329,7 @@ def test_a_name_the_station_cannot_send_is_a_caution_under_the_custom_domain_nam
 
     server, base = live_server
     save_config(AppConfig(station_fqdn="of-1.stage.example.com"), server.config_path)
-    server._station_fqdn_problems_provider = lambda: (FQDN_NOT_SENT,)
+    server._station_fqdn_problems_provider = lambda _name: (FQDN_NOT_SENT,)
     _, body = _get(base, "/")
     start = body.index('id="general-station-fqdn-row"')
     row = body[start : body.index('<div class="row">', start)]
@@ -9337,14 +9337,27 @@ def test_a_name_the_station_cannot_send_is_a_caution_under_the_custom_domain_nam
     assert "Sent on no interface: this station&#039;s network settings are read-only." in notice
 
 
+def test_the_save_that_sets_a_name_answers_with_its_caution(live_server) -> None:
+    """The saved name reaches the running app only at its hot reload, after this answer."""
+    from openfollow.services import FQDN_NOT_SENT
+
+    server, base = live_server
+    server._station_fqdn_problems_provider = lambda name: (FQDN_NOT_SENT,) if name else ()
+    status, body = _post_form(base, "/section/general", {"station_fqdn": "of-1.stage.example.com"})
+    assert status == 200
+    start = body.index('id="general-station-fqdn-row"')
+    row = body[start : body.index('<div class="row">', start)]
+    assert "Sent on no interface: this station&#039;s network settings are read-only." in row
+
+
 def test_a_failing_dhcp_problems_provider_costs_nothing(live_server) -> None:
     server, base = live_server
 
-    def _boom() -> tuple[str, ...]:
+    def _boom(_name: str) -> tuple[str, ...]:
         raise RuntimeError("services gone")
 
     server._station_fqdn_problems_provider = _boom
-    assert server.get_station_fqdn_problems() == ()
+    assert server.get_station_fqdn_problems("of-1.stage.example.com") == ()
     assert _get(base, "/")[0] == 200
 
 

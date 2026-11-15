@@ -3835,6 +3835,14 @@ def test_a_save_on_a_read_only_station_keeps_its_caution(fqdn_services) -> None:
     assert services.station_fqdn_problems() == (services_module.FQDN_NOT_SENT,)
 
 
+def test_a_read_only_station_cautions_on_a_name_the_app_has_not_loaded_yet(fqdn_services) -> None:
+    services, _ = fqdn_services
+    services._network_adapter = _FqdnAdapter(writable=False)
+    services._app._config.station_fqdn = ""
+    assert services.station_fqdn_problems() == ()
+    assert services.station_fqdn_problems("of-1.stage.example.com") == (services_module.FQDN_NOT_SENT,)
+
+
 def test_a_web_change_holds_the_lock_the_operator_screen_takes(monkeypatch) -> None:
     """The Operator Screen changes the network inside ``network_change``, so it and a
     web apply exclude each other only if both hold the same lock."""

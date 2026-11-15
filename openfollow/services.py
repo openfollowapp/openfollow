@@ -2866,13 +2866,14 @@ class AppRuntimeServices:
         for failure in result.partial_failures:
             logger.warning("Station FQDN: %s", failure)
 
-    def station_fqdn_problems(self) -> tuple[str, ...]:
-        """What the last DHCP change for the configured name could not do; empty when it did it all."""
+    def station_fqdn_problems(self, fqdn: str | None = None) -> tuple[str, ...]:
+        """What the last DHCP change for ``fqdn`` (default: the loaded name) could not do; empty when it did it all."""
+        name = self._app._config.station_fqdn if fqdn is None else fqdn
         adapter = getattr(self, "_network_adapter", None)
-        if self._app._config.station_fqdn and (adapter is None or not adapter.is_writable()):
+        if name and (adapter is None or not adapter.is_writable()):
             return (FQDN_NOT_SENT,)
         last = self._fqdn_last
-        if last is None or last[0] != self._app._config.station_fqdn:
+        if last is None or last[0] != name:
             return ()
         result = last[1]
         return ((result.message,) if not result.ok else ()) + result.partial_failures

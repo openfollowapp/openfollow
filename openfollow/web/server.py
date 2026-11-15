@@ -413,7 +413,7 @@ class ConfigWebServer:
         log_ring: RingBufferLogHandler | None = None,
         # Read-only host-network snapshot for Overview; optional for tests.
         network_state_provider: Callable[[], dict[str, Any] | None] | None = None,
-        station_fqdn_problems_provider: Callable[[], tuple[str, ...]] | None = None,
+        station_fqdn_problems_provider: Callable[[str], tuple[str, ...]] | None = None,
         # Web write path: config snapshot + apply/renew handlers; optional for tests.
         network_config_provider: (Callable[[str | None], dict[str, Any] | None] | None) = None,
         # Every interface at once, for the Network Settings list. Costs one
@@ -696,12 +696,13 @@ class ConfigWebServer:
             logger.exception("Network state provider raised")
             return None
 
-    def get_station_fqdn_problems(self) -> tuple[str, ...]:
-        """What the last DHCP change for the configured station FQDN could not do."""
+    def get_station_fqdn_problems(self, fqdn: str) -> tuple[str, ...]:
+        """What the last DHCP change for ``fqdn`` could not do; the page passes the name it shows,
+        which reaches the running app only at the hot reload after a save."""
         if self._station_fqdn_problems_provider is None:
             return ()
         try:
-            return tuple(self._station_fqdn_problems_provider())
+            return tuple(self._station_fqdn_problems_provider(fqdn))
         except Exception:  # noqa: BLE001
             logger.exception("Station FQDN problems provider raised")
             return ()

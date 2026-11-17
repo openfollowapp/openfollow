@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import openfollow
-from openfollow import keyboard_layout, platform_support
+from openfollow import keyboard_layout, optional_packages, platform_support
 from openfollow.logging_setup import RingBufferLogHandler
 from openfollow.net_utils import HOST_RESOLVER, read_ipv4_routes
 from openfollow.network.validate import is_link_local
@@ -235,6 +235,8 @@ class DiagnosticsProviders:
     address_sources: Callable[[], list[dict[str, Any]] | None] | None = None
     # The address the web UI's listener was started on.
     web_listener: Callable[[], tuple[str, str]] | None = None
+    # Whether the network backend can set addresses; ``None`` when none is wired.
+    network_writable: Callable[[], bool | None] | None = None
 
     # Live per-controller snapshot for the dedicated gamepad section and the
     # USB visibility column.
@@ -1900,6 +1902,19 @@ def collect_os(config_path: Path | None = None) -> list[str]:
     return rows
 
 
+def collect_optional_packages(p: DiagnosticsProviders, *, platform_name: str | None = None) -> list[str]:
+    """E3's row naming the optional packages a feature needs and this Linux station lacks."""
+    if not (platform_name or sys.platform).startswith("linux"):
+        return []
+    writable, err = _safely_value(p.network_writable, "network_writable", None) if p.network_writable else (None, None)
+    # Unknown writability names no NetworkManager verdict: only a read-only backend makes it matter.
+    found = optional_packages.missing(network_writable=writable is None or bool(writable), platform=platform_name)
+    values = [f"{pkg.name} missing ({pkg.effect})" for pkg in found] or ["none missing"]
+    if err is not None:
+        values.append(err)
+    return [f"  {'optional packages' if i == 0 else '':<29}{value}" for i, value in enumerate(values)]
+
+
 # E4. CPU --------------------------------------------------------------------
 
 
@@ -3337,7 +3352,7 @@ def collect_bundle(
         "e1_runtime": lambda: collect_runtime_versions(repo_root, budget_s=remaining(_RUNTIME_SECTION_BUDGET_S)),
         "e1b_video": collect_video_capability,
         "e2_detection": lambda: collect_detection_stack(p),
-        "e3_os": lambda: collect_os(config_path),
+        "e3_os": lambda: collect_os(config_path) + collect_optional_packages(p),
         "e4_cpu": collect_cpu,
         "e5_memdisk": lambda: collect_memory_disk(extra_paths=extra_storage_paths),
         "e5b_storage": lambda: collect_storage_breakdown(

@@ -100,6 +100,10 @@ A box says what the station observed on its main line (off-white, 600) and
 one next step on its second line (`--muted`, 400). The two never blur into one
 sentence.
 
+A box whose next step is an address the operator opens on a phone (a missing
+optional package's install article) carries that link's QR code at its right
+(`.qr-notice`), hidden below 600px like the support card's.
+
 The dialog and diagnostics errors, the Media Gallery error, the network
 result, the Detection progress and result, the camera latency progress and
 result, the Status & Diagnostics warnings and the NDI box are all one of these four.

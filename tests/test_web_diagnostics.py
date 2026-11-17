@@ -2617,6 +2617,83 @@ def test_collect_os_handles_linux_missing_os_release(monkeypatch) -> None:
     assert any("/etc/os-release" in r for r in rows)
 
 
+def _lacking(monkeypatch: pytest.MonkeyPatch, *, nmcli: bool, webkit: bool) -> None:
+    from openfollow import optional_packages
+
+    monkeypatch.setattr(optional_packages, "_has_command", lambda name: nmcli or name != "nmcli")
+    monkeypatch.setattr(optional_packages, "_webkit_available", lambda: webkit)
+
+
+@pytest.mark.parametrize(
+    ("nmcli", "webkit", "writable", "rows"),
+    [
+        (
+            False,
+            False,
+            False,
+            [
+                "  optional packages            NetworkManager missing (network page read only)",
+                "                               WebKit missing (Open Web UI unavailable)",
+            ],
+        ),
+        (False, True, True, ["  optional packages            none missing"]),
+        (True, False, False, ["  optional packages            WebKit missing (Open Web UI unavailable)"]),
+        (False, True, None, ["  optional packages            none missing"]),
+    ],
+    ids=["both", "dhcpcd-writes", "webkit", "no-backend"],
+)
+def test_e3_names_the_optional_packages_a_station_lacks(
+    monkeypatch: pytest.MonkeyPatch, nmcli: bool, webkit: bool, writable: bool | None, rows: list[str]
+) -> None:
+    _lacking(monkeypatch, nmcli=nmcli, webkit=webkit)
+    p = diag.DiagnosticsProviders(network_writable=lambda: writable)
+    assert diag.collect_optional_packages(p, platform_name="linux") == rows
+
+
+def test_e3_says_when_the_network_backend_could_not_be_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    _lacking(monkeypatch, nmcli=False, webkit=True)
+
+    def boom() -> bool:
+        raise RuntimeError("backend gone")
+
+    rows = diag.collect_optional_packages(diag.DiagnosticsProviders(network_writable=boom), platform_name="linux")
+    assert rows == [
+        "  optional packages            none missing",
+        "                               [unavailable: network_writable: RuntimeError('backend gone')]",
+    ]
+
+
+def test_e3_without_a_backend_provider_names_no_networkmanager_verdict(monkeypatch: pytest.MonkeyPatch) -> None:
+    _lacking(monkeypatch, nmcli=False, webkit=True)
+    assert diag.collect_optional_packages(diag.DiagnosticsProviders(), platform_name="linux") == [
+        "  optional packages            none missing"
+    ]
+
+
+def test_e3_lists_no_optional_packages_off_linux(monkeypatch: pytest.MonkeyPatch) -> None:
+    _lacking(monkeypatch, nmcli=False, webkit=False)
+    p = diag.DiagnosticsProviders(network_writable=lambda: False)
+    assert diag.collect_optional_packages(p, platform_name="darwin") == []
+
+
+def test_the_bundle_appends_the_optional_packages_to_e3(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(diag, "collect_optional_packages", lambda p: ["  optional packages            marker"])
+    bundle = diag.collect_bundle()
+    assert bundle.e3_os[-1] == "  optional packages            marker"
+
+
+@pytest.mark.parametrize(
+    ("reading", "writable"), [({"writable": True}, True), ({"writable": False}, False), (None, None)]
+)
+def test_the_bundle_reads_network_writability_from_the_backend(reading: dict | None, writable: bool | None) -> None:
+    from openfollow.web.routes import _build_diagnostics_providers
+
+    server = _io_server(get_network_config=lambda: reading)
+    providers = _build_diagnostics_providers(server, SimpleNamespace(web_port=8080))
+    assert providers.network_writable is not None
+    assert providers.network_writable() is writable
+
+
 def test_collect_os_handles_macos_sw_vers_failure(monkeypatch) -> None:
     monkeypatch.setattr(diag.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(diag, "_run", lambda *a, **kw: (1, "[unavailable]"))

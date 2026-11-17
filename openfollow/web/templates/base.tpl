@@ -2263,6 +2263,11 @@
  .support-card-url { color: var(--text); font-size: 0.82rem; font-weight: 600; overflow-wrap: anywhere; }
  /* A phone is the scanner: on its own screen the code is dead weight, the link is not. */
  @media (max-width: 600px) { .support-card .qr { display: none; } }
+ /* A caution box carrying a link an operator opens on a phone: its QR beside the text. */
+ .qr-notice { display: flex; gap: 14px; align-items: flex-start; justify-content: space-between; }
+ .qr-notice-text { min-width: 0; overflow-wrap: anywhere; }
+ .qr-notice .qr { flex: none; width: 97px; height: 97px; }
+ @media (max-width: 600px) { .qr-notice .qr { display: none; } }
  /* Modal footer buttons reuse the global button system: a bare
  button reads as secondary; ``.primary`` and ``.danger`` map to
  the shared variants so modal and inline buttons match. */

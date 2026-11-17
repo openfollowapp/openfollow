@@ -2,6 +2,8 @@
 
 The station's network adapters and their IPv4 settings. If this page is unreachable, the station's **Settings → Network** screen lists its addresses.
 
+**Read only** – the station cannot set addresses. A caution box names a missing NetworkManager and links to its install article.
+
 ## Network mode
 
 - **Simple** – one interface carries everything: PSN, discovery, marker sync, OTP, RTTrPM, OSC and network video.

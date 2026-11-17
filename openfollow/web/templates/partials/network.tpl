@@ -137,8 +137,15 @@
     % if not _writable:
     <div class="net-mode-bar readonly">
         <span class="net-mode-pill readonly">Read only</span>
+        % if _net.get("nm_missing"):
+        <span class="net-mode-text">Addresses can't be set from this station.</span>
+        % else:
         <span class="net-mode-text">Network settings can't be changed from the web on this station. Use the on-screen Settings menu, or see openfollow.app for troubleshooting and how to enable web editing.</span>
+        % end
     </div>
+    % if _net.get("nm_missing"):
+    % include('partials/install_package_notice.tpl', lead="NetworkManager is not installed.")
+    % end
     % end
 
     <div class="group">

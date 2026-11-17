@@ -179,6 +179,16 @@ def _no_host_camera_modes(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _host_has_every_optional_package(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test may read the host's installed packages: every optional one reads as present; one that cares
+    installs its own."""
+    from openfollow import optional_packages
+
+    monkeypatch.setattr(optional_packages, "_has_command", lambda _name: True)
+    monkeypatch.setattr(optional_packages, "_webkit_available", lambda: True)
+
+
+@pytest.fixture(autouse=True)
 def _supported_platform(monkeypatch: pytest.MonkeyPatch) -> None:
     """No test may depend on the host's platform; one that cares sets ``platform_support.current`` itself."""
     from openfollow import platform_support

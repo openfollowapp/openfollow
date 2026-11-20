@@ -41,6 +41,8 @@ OpenFollow ships in two forms, and the obligations differ:
   from the operator's own operating system.
 - **Ready-to-flash Raspberry Pi appliance image**: OpenFollow also conveys a
   complete operating system – see §5.
+- **macOS app (DMG)**: the app carries its own notices and written offer,
+  generated from the app bundle when it is built (About page in the macOS app).
 
 Unless noted otherwise, every component listed here carries a license that is
 compatible with the GNU AGPL v3 (MIT, BSD, ISC, Apache-2.0, the Unlicense, and
